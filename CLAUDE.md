@@ -1,0 +1,668 @@
+# CLAUDE.md — DataBridge POC
+> AI-powered semantic data platform. Read this file at the start of every session.
+
+---
+
+## CLAUDE.md Maintenance Rules
+> These rules apply to every single session. No exceptions.
+
+**At the start of every session:**
+- Read this entire file before writing any code
+- Check the Current State section below to understand what already exists
+- Do not create files or folders that already exist
+- Do not reimplement logic that is already built — find it and use it
+
+**At the end of every session:**
+- Update the Current State section to reflect every file added or changed
+- Update the Build Order to mark completed steps with [x]
+- If any new environment variables were added, add them to the .env.example section
+- If the architecture changed in any meaningful way, update the relevant section
+- Do not end a session without completing this step
+
+**When the folder structure changes:**
+- Update the Folder Structure section to match what is actually on disk
+- If a file moved, update every reference to it in this document
+- If a file was deleted, remove it from the structure
+
+This document must always reflect reality. If it does not, the next session starts
+with false assumptions and produces broken code.
+
+---
+
+## Current State
+> Updated by Claude Code at the end of every session. Shows what actually exists now.
+
+**Last updated:** Not started — no code written yet
+
+**Build steps completed:** None
+
+**Files that exist on disk:**
+```
+databridge/
+└── CLAUDE.md
+```
+
+**Known issues / blockers:** None yet
+
+**Next session should start with:** Build step 1 — Docker + PostgreSQL setup
+
+---
+
+## Project Overview
+
+**DataBridge** is a POC platform that allows business users to connect to their source data,
+enrich it with a guided semantic layer (table definitions, column definitions, relationships,
+KPI formulas), and then query that data using conversational AI — without ever writing SQL.
+
+The target user is an SMB business owner or manager who understands their business
+but not their database.
+
+**POC scope:**
+- Single client / single tenant
+- One source connector: SQLite (a local `.db` file on the developer's machine)
+- In-app HTML dashboards and report output
+- Two roles: EpicData Admin, Client User
+- Fully local — runs on the developer's machine, no cloud needed
+
+---
+
+## What Docker Is and Why We Use It Here
+
+Docker is a tool that lets you run software in an isolated, self-contained box called
+a **container**. Think of it like a mini-computer running inside your computer, with
+its own software pre-installed, completely separate from everything else on your machine.
+
+**Why we need it for this project:**
+
+The platform has two databases:
+
+1. **The source database** — this is the client's actual business data. For the POC,
+   this is a local SQLite file (just a regular file on your machine, no Docker needed).
+
+2. **The semantic layer database** — this is where DataBridge stores all the definitions,
+   relationships, KPI formulas, query logs, and definition gaps. This needs to be a proper
+   relational database (PostgreSQL) that supports the richer data model we need.
+
+We use Docker **only for the semantic layer PostgreSQL database**. Without Docker, you'd
+have to manually install PostgreSQL on your machine, configure users, set passwords, and
+manage versions. With Docker, Claude Code will generate a single `docker-compose.yml` file,
+and you run one command (`docker compose up -d`) — Postgres starts in seconds, fully
+configured, in an isolated container. When you're done with the POC, one command removes
+it completely without leaving anything behind on your machine.
+
+**In summary:**
+- SQLite (client data) → just a file on your machine, no Docker
+- PostgreSQL (platform metadata) → runs in a Docker container, managed with one command
+
+You only need to install Docker Desktop once. Claude Code will handle everything else.
+
+---
+
+## Non-Negotiables
+
+- **Never show raw SQL to a business user.** A "show query" toggle is allowed for
+  power users (admin role), but never visible by default.
+- **Never expose API keys or credentials in the frontend.**
+- **Never query the source database without first passing through the semantic layer context.**
+- **Never guess a KPI definition.** If context is insufficient, ask a clarifying
+  question instead of executing.
+- **All AI calls go through a single AIService module.** No direct fetch() to the
+  Claude API anywhere else in the codebase.
+- **Every AI-generated SQL query must carry a confidence score** before execution.
+  Queries below 0.70 confidence are blocked and logged as definition gaps.
+
+---
+
+## Tech Stack
+
+### Backend
+- **Runtime:** Node.js 20+ with TypeScript
+- **Framework:** Express.js
+- **Query builder:** Knex.js — handles both SQLite (source) and PostgreSQL (semantic layer)
+  using the same API, just different config. This is why Knex is the right choice here.
+- **Semantic layer database:** PostgreSQL — runs in a Docker container (see Docker section above)
+- **Source database:** SQLite — a local `.db` file, path configured in `.env`
+- **Source connectors:** Custom connector classes, one per source type
+- **AI:** Anthropic Claude API (`claude-sonnet-4-6`) via `@anthropic-ai/sdk`
+- **Auth:** JWT-based, two roles: `epicdata_admin` and `client_user`
+- **Env management:** dotenv, never commit `.env`
+
+### Frontend
+- **Framework:** Next.js 14 (App Router)
+- **Styling:** Tailwind CSS
+- **Charts / Dashboards:** Recharts for data visualisation, custom HTML report renderer
+- **State:** React Context + useReducer (no Redux for POC)
+- **API calls:** Axios with a central `api.ts` client
+
+### Infrastructure (POC / local)
+- **Docker Compose:** one container for PostgreSQL (semantic layer only)
+- **SQLite:** no container needed — just a `.db` file on disk
+- Everything else (Node.js, Next.js) runs natively on the developer's machine
+- Single `.env` file at project root controls all paths and secrets
+
+---
+
+## Folder Structure
+
+```
+databridge/
+├── CLAUDE.md                    ← you are here
+├── .env                         ← never commit this file
+├── .env.example                 ← commit this — shows required variables without values
+├── docker-compose.yml           ← spins up PostgreSQL for the semantic layer
+├── data/
+│   └── sample.db                ← SQLite source database for POC testing
+├── backend/
+│   ├── src/
+│   │   ├── connectors/          ← one file per source type
+│   │   │   ├── BaseConnector.ts ← shared interface all connectors implement
+│   │   │   └── SqliteConnector.ts
+│   │   ├── semantic/            ← semantic layer logic
+│   │   │   ├── SchemaProfiler.ts   ← reads source schema, samples data
+│   │   │   ├── DefinitionStore.ts  ← CRUD for definitions in Postgres
+│   │   │   └── KpiEngine.ts        ← resolves KPI formulas into SQL
+│   │   ├── ai/                  ← ALL AI logic lives here, nowhere else
+│   │   │   ├── AIService.ts     ← single entry point for all Claude API calls
+│   │   │   ├── prompts/         ← prompt templates as typed .ts files
+│   │   │   │   ├── schemaDraftPrompt.ts
+│   │   │   │   ├── nlToSqlPrompt.ts
+│   │   │   │   └── answerFormatterPrompt.ts
+│   │   │   └── SqlValidator.ts  ← validates generated SQL before execution
+│   │   ├── routes/
+│   │   │   ├── connections.ts   ← connect a source, test connection
+│   │   │   ├── semantic.ts      ← CRUD for definitions, KPIs, relationships
+│   │   │   ├── query.ts         ← chat / NL query endpoint
+│   │   │   └── reports.ts       ← report builder endpoints
+│   │   ├── middleware/
+│   │   │   ├── auth.ts          ← JWT validation, role checking
+│   │   │   └── errorHandler.ts  ← global error handler, never leak internals
+│   │   ├── db/
+│   │   │   ├── knex.ts          ← two Knex instances: semantic (Postgres) + source (SQLite)
+│   │   │   └── migrations/      ← Postgres migrations for semantic layer tables
+│   │   └── index.ts             ← Express app entry point
+│   ├── package.json
+│   └── tsconfig.json
+├── frontend/
+│   ├── app/
+│   │   ├── layout.tsx
+│   │   ├── page.tsx             ← login / landing
+│   │   ├── setup/               ← guided setup wizard (admin only)
+│   │   ├── semantic/            ← definition management UI
+│   │   ├── query/               ← conversational AI chat interface
+│   │   └── reports/             ← report builder + rendered dashboards
+│   ├── components/
+│   │   ├── ui/                  ← reusable UI primitives (buttons, cards, inputs)
+│   │   ├── charts/              ← Recharts wrappers
+│   │   └── semantic/            ← definition cards, KPI editors, relationship viewer
+│   ├── lib/
+│   │   ├── api.ts               ← central Axios client, all backend calls go here
+│   │   └── auth.ts              ← JWT storage and helpers
+│   ├── package.json
+│   └── tsconfig.json
+└── shared/
+    └── types.ts                 ← TypeScript types shared between backend and frontend
+```
+
+---
+
+## Semantic Layer Data Model
+
+This is the core of the platform. Stored in PostgreSQL (the Docker container).
+The source data (SQLite) is never modified — DataBridge only reads from it.
+
+```sql
+-- Source connections (for POC: one row pointing to the SQLite file)
+connections (
+  id            SERIAL PRIMARY KEY,
+  name          TEXT NOT NULL,
+  type          TEXT NOT NULL,         -- 'sqlite' for POC, extensible later
+  config        JSONB NOT NULL,        -- { "filepath": "/path/to/data.db" }
+  created_by    TEXT,
+  created_at    TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Tables discovered from the source schema
+source_tables (
+  id            SERIAL PRIMARY KEY,
+  connection_id INTEGER REFERENCES connections(id),
+  table_name    TEXT NOT NULL,
+  display_name  TEXT,                  -- human-friendly name, e.g. "Sales Orders"
+  description   TEXT,                  -- what this table represents in plain language
+  owner_name    TEXT,                  -- person responsible for this definition
+  is_active     BOOLEAN DEFAULT TRUE,  -- false = excluded from AI context
+  ai_draft      BOOLEAN DEFAULT TRUE,  -- true = AI generated, pending human review
+  created_at    TIMESTAMPTZ DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Columns discovered from the source schema
+source_columns (
+  id              SERIAL PRIMARY KEY,
+  table_id        INTEGER REFERENCES source_tables(id),
+  column_name     TEXT NOT NULL,
+  data_type       TEXT,
+  display_name    TEXT,
+  description     TEXT,
+  example_values  JSONB,               -- up to 5 sample values, helps AI understand content
+  is_dimension    BOOLEAN DEFAULT FALSE, -- e.g. customer name, product category
+  is_measure      BOOLEAN DEFAULT FALSE, -- e.g. revenue, quantity
+  owner_name      TEXT,
+  ai_draft        BOOLEAN DEFAULT TRUE,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Relationships between tables (joins)
+table_relationships (
+  id                  SERIAL PRIMARY KEY,
+  from_table_id       INTEGER REFERENCES source_tables(id),
+  from_column_id      INTEGER REFERENCES source_columns(id),
+  to_table_id         INTEGER REFERENCES source_tables(id),
+  to_column_id        INTEGER REFERENCES source_columns(id),
+  relationship_type   TEXT,            -- 'one_to_many', 'many_to_one', 'many_to_many'
+  description         TEXT,
+  ai_draft            BOOLEAN DEFAULT TRUE
+)
+
+-- Business KPI definitions
+kpi_definitions (
+  id                  SERIAL PRIMARY KEY,
+  connection_id       INTEGER REFERENCES connections(id),
+  name                TEXT NOT NULL,   -- e.g. "Gross Margin"
+  description         TEXT,
+  formula_plain_text  TEXT,            -- "Revenue minus cost of goods sold"
+  formula_sql         TEXT,            -- resolved SQL: "SUM(revenue) - SUM(cogs)"
+  owner_name          TEXT,
+  ai_draft            BOOLEAN DEFAULT TRUE,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Every question asked, with the SQL generated and confidence score
+query_log (
+  id                SERIAL PRIMARY KEY,
+  user_id           TEXT,
+  question_text     TEXT NOT NULL,
+  generated_sql     TEXT,
+  confidence_score  FLOAT,
+  executed          BOOLEAN DEFAULT FALSE,
+  result_summary    TEXT,
+  was_flagged       BOOLEAN DEFAULT FALSE,
+  flag_reason       TEXT,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Questions the AI couldn't answer well — surfaces in admin UI for resolution
+definition_gaps (
+  id              SERIAL PRIMARY KEY,
+  query_log_id    INTEGER REFERENCES query_log(id),
+  gap_description TEXT,
+  resolved        BOOLEAN DEFAULT FALSE,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+)
+```
+
+---
+
+## AI Architecture — How Claude Is Used
+
+There are exactly **three AI call types** in this platform.
+All of them go through `AIService.ts` — no exceptions.
+
+---
+
+### Call Type 1 — Schema Draft (setup phase, runs once per connection)
+
+**When:** Right after a source database is connected and its schema is read.
+**Purpose:** Generate first-draft plain-language definitions for every table and column,
+so the admin has something to review and correct rather than starting from a blank form.
+**Model:** `claude-sonnet-4-6`
+**Pattern:** One API call with the full schema + sample values as input.
+
+```
+System prompt:
+  You are a data cataloguing assistant. Given a database schema with table names,
+  column names, data types, and sample values, generate plain-language definitions
+  for every table and column. Return JSON only, no preamble, no explanation.
+
+User prompt:
+  Source type: sqlite
+  Schema: [{ table_name, columns: [{ name, type, sample_values[] }] }]
+
+Expected JSON output:
+{
+  "tables": [
+    {
+      "table_name": "orders",
+      "display_name": "Sales Orders",
+      "description": "Records each customer order...",
+      "suggested_relationships": [
+        { "to_table": "customers", "via_column": "customer_id", "type": "many_to_one" }
+      ]
+    }
+  ],
+  "columns": [
+    {
+      "table_name": "orders",
+      "column_name": "order_date",
+      "display_name": "Order Date",
+      "description": "The date the customer placed the order",
+      "is_dimension": true,
+      "is_measure": false
+    }
+  ]
+}
+```
+
+All output is stored with `ai_draft: true`. Nothing becomes active until a human confirms it.
+
+---
+
+### Call Type 2 — Natural Language to SQL (every user question)
+
+**When:** A user types any question in the chat interface.
+**Purpose:** Convert the question into a valid SQL query using the confirmed semantic
+context as a guide — so the AI knows what the tables and columns actually mean.
+**Model:** `claude-sonnet-4-6`
+**Pattern:** Two sequential API calls (generate → then format the result).
+
+**Call 2a — Generate SQL + confidence score**
+
+```
+System prompt:
+  You are a SQL generation engine for a SQLite database.
+  You only return valid SQLite SQL and a confidence score between 0 and 1.
+  Never explain. Never add commentary. Return JSON only.
+
+  Available tables and their definitions:
+  [injected from confirmed source_tables + source_columns in semantic layer]
+
+  Known KPI formulas:
+  [injected from kpi_definitions where ai_draft = false]
+
+User prompt:
+  Question: "[user's question in plain language]"
+
+Expected JSON output:
+  {
+    "sql": "SELECT ...",
+    "confidence": 0.91,
+    "tables_used": ["orders", "customers"]
+  }
+```
+
+**If confidence < 0.70:**
+- Do NOT execute the SQL
+- Log the question and generated SQL to `query_log` with `was_flagged: true`
+- Insert a row into `definition_gaps`
+- Return to the user: "I don't have enough context to answer that confidently yet.
+  This question has been noted for review."
+
+**If confidence >= 0.70:**
+- Execute the SQL against the SQLite source database
+- Pass the result to Call 2b
+
+**Call 2b — Format the result as a plain-language answer**
+
+```
+System prompt:
+  You are a business analyst assistant talking to a non-technical business owner.
+  Summarise the query result in 1 to 3 plain sentences.
+  Never mention SQL, databases, tables, columns, or any technical terms.
+
+User prompt:
+  Original question: "[user's question]"
+  Query result: [JSON result set, maximum 50 rows]
+
+Expected output:
+  Plain text answer, 1-3 sentences. E.g.:
+  "Your top customer last month was Acme Corp with 42,000 EUR in orders,
+   followed by TechCorp at 38,500 EUR."
+```
+
+---
+
+### Call Type 3 — Report Narrative (on-demand, per report generation)
+
+**When:** A user builds a report by selecting multiple KPIs and clicking Generate.
+**Purpose:** Write a short executive summary paragraph that ties together all the KPI
+results — something a business owner can read in 10 seconds.
+**Model:** `claude-sonnet-4-6`
+**Pattern:** All KPI queries run in parallel first, then one single Claude call
+with all results combined.
+
+```
+System prompt:
+  You are writing a short management summary for a business owner.
+  Maximum 4 sentences. Be direct. Highlight what is notable, positive, or concerning.
+  Never use technical language.
+
+User prompt:
+  Report title: "[title]"
+  Period: "[e.g. March 2026]"
+  KPI results: [{ kpi_name, value, unit, comparison_to_previous_period }]
+
+Expected output:
+  Plain text paragraph, max 4 sentences.
+  E.g.: "March was your strongest month of the quarter, with revenue up 12%
+  versus February. Gross margin held steady at 38%. The only area of concern
+  is customer acquisition cost, which rose 8% — worth monitoring next month."
+```
+
+---
+
+## Key Workflows
+
+### Setup Wizard (Admin only)
+1. Choose source type (SQLite for POC) → point to `.db` file path → test connection
+2. Schema introspection runs automatically — reads all tables, columns, sample values
+3. Claude generates draft definitions (Call Type 1) — stored with `ai_draft: true`
+4. Admin reviews tables one by one: confirm, edit description, or exclude
+5. Admin reviews columns: confirm, edit, mark as dimension or measure
+6. Admin validates and adjusts suggested relationships
+7. Admin adds KPI definitions in plain language → Claude suggests SQL formula → admin confirms
+8. Run validation suite: 15 auto-generated test questions → admin marks pass/fail
+9. Platform goes live for client users
+
+### Query Flow (Client User)
+1. User types a question in the chat interface
+2. Backend fetches confirmed semantic context relevant to the question
+3. Claude generates SQL + confidence score (Call 2a)
+4. If confidence >= 0.70: SQL executes → Call 2b → plain answer displayed
+5. If confidence < 0.70: clarifying message shown, gap logged silently
+6. "Show query" toggle visible to admin role only
+
+### Report Builder (Client User + Admin)
+1. User selects KPIs from the confirmed KPI list
+2. User sets time period and any filters
+3. All KPI SQL queries run in parallel against SQLite source
+4. Results rendered as in-app HTML dashboard using Recharts
+5. Claude writes executive summary paragraph (Call Type 3)
+6. Dashboard is viewable in-app, saveable as a named report
+
+---
+
+## SQLite Connector — Notes
+
+SQLite is the simplest possible source connector because it is just a file.
+
+- No authentication, no network, no credentials — just a file path
+- Knex.js supports SQLite natively via the `better-sqlite3` driver
+- Schema introspection: use `PRAGMA table_list` and `PRAGMA table_info(tablename)`
+  to read all tables and columns programmatically
+- Sample values: run `SELECT DISTINCT [column] FROM [table] LIMIT 5` per column
+- The SQLite file is read-only from DataBridge's perspective — never write to it
+- Claude Code should also generate a `data/seed.ts` script that creates a realistic
+  sample SQLite database with 5 tables (customers, orders, order_lines, products,
+  invoices) and ~500 rows of fake but realistic Belgian SMB data
+
+---
+
+## Roles & Permissions
+
+| Feature                         | epicdata_admin | client_user |
+|--------------------------------|---------------|-------------|
+| Connect data source             | YES            | NO          |
+| Run schema introspection        | YES            | NO          |
+| Review / confirm definitions    | YES            | NO          |
+| Add / edit KPI definitions      | YES            | NO          |
+| View definition gaps            | YES            | NO          |
+| Ask questions (chat)            | YES            | YES         |
+| Build and view reports          | YES            | YES         |
+| View full query log             | YES            | NO          |
+| See "show query" SQL toggle     | YES            | NO          |
+
+---
+
+## Error Handling Rules
+
+- All connector errors must return a user-friendly message. Never expose file paths,
+  SQL errors, or stack traces to the frontend.
+- All AI call failures must be caught and logged server-side. Return a graceful
+  fallback message to the user: "Something went wrong. Please try again."
+- If the SQLite file is not found or unreadable, return a clear admin-facing error
+  during the connection test — not during a live user query.
+- Definition gaps must be silently logged without alarming the client user.
+  Return: "I don't have enough context to answer that confidently yet.
+  This question has been noted for review."
+- Never let a raw SQL error reach the frontend under any circumstances.
+
+---
+
+## Environment Variables (.env.example)
+
+```bash
+# Backend
+PORT=3001
+NODE_ENV=development
+
+# Semantic layer DB — PostgreSQL running in Docker
+# This is the platform's own internal database (definitions, logs, gaps)
+DATABASE_URL=postgresql://databridge:databridge@localhost:5432/databridge
+
+# JWT auth
+JWT_SECRET=change_me_in_production
+JWT_EXPIRES_IN=8h
+
+# Claude API (get key from console.anthropic.com)
+ANTHROPIC_API_KEY=your_key_here
+CLAUDE_MODEL=claude-sonnet-4-6
+
+# SQLite source database — path to the client's .db file on this machine
+# For POC, point this to data/sample.db which is generated by the seed script
+SQLITE_DB_PATH=./data/sample.db
+```
+
+---
+
+## Build Order for Claude Code Sessions
+
+Follow this order strictly. Do not skip ahead.
+Each step should be completed and tested before moving to the next.
+
+1. **[ ] Docker + PostgreSQL setup**
+   - Generate `docker-compose.yml` that starts a PostgreSQL container
+   - Named `databridge-postgres`, port 5432, credentials match `.env.example`
+   - Verify: `docker compose up -d` starts cleanly, Postgres is reachable
+
+2. **[ ] Semantic layer DB migrations**
+   - Create all Knex migration files for every table in the data model above
+   - Verify: `knex migrate:latest` runs without errors, all tables exist in Postgres
+
+3. **[ ] SQLite seed script**
+   - Generate `data/seed.ts` — creates `sample.db` with customers, orders,
+     order_lines, products, invoices (~500 rows, realistic Belgian SMB data)
+   - Verify: script runs, `.db` file is readable with a SQLite browser
+
+4. **[ ] BaseConnector + SqliteConnector**
+   - BaseConnector defines the interface: connect(), introspectSchema(), executeQuery()
+   - SqliteConnector implements it using `better-sqlite3` + Knex
+   - Introspection uses PRAGMA commands, samples 5 values per column
+   - Verify: connector reads `sample.db` schema and returns normalised structure
+
+5. **[ ] AIService.ts + all three prompt templates**
+   - Wire to Claude API using `@anthropic-ai/sdk`
+   - Implement all three call types as typed functions
+   - Test each call type in isolation with hardcoded inputs before integrating
+   - Verify: each function returns correctly structured JSON output
+
+6. **[ ] SchemaProfiler**
+   - Runs SqliteConnector.introspectSchema()
+   - Calls AIService Call Type 1
+   - Stores all results in Postgres with `ai_draft: true`
+   - Verify: running profiler on `sample.db` populates all semantic layer tables
+
+7. **[ ] Backend routes + auth middleware**
+   - JWT auth with two hardcoded test users for POC (admin + client)
+   - Routes: connections, semantic CRUD, query, reports
+   - Verify: all routes return correct responses, role checks work
+
+8. **[ ] Frontend: Setup Wizard**
+   - File path input → test connection button → trigger schema profiling
+   - Table review screen: list of tables with confirm / edit / exclude per row
+   - Column review screen: same pattern per column
+   - Relationship review: show suggested, allow edit
+   - KPI editor: plain text input → AI suggests SQL → admin confirms
+   - Verify: full wizard flow completes, definitions are confirmed in Postgres
+
+9. **[ ] Frontend: Chat Interface**
+   - Clean chat UI, question input, answer display
+   - Confidence < 0.70 shows soft "noted for review" message
+   - SQL toggle visible only for admin role
+   - Verify: ask 5 questions about sample data, get correct answers for at least 4
+
+10. **[ ] Frontend: Report Builder**
+    - KPI selector (only confirmed KPIs shown)
+    - Period picker
+    - Generate button → parallel queries → Recharts dashboard
+    - Executive summary paragraph below charts
+    - Verify: report with 3 KPIs renders correctly with real data from sample.db
+
+11. **[ ] Admin: Definition Gaps + Query Log**
+    - Simple table view of all flagged questions
+    - Mark gap as resolved
+    - Verify: a blocked question appears here and can be marked resolved
+
+---
+
+## What "Done" Looks Like for the POC
+
+- [ ] `docker compose up -d` starts Postgres with no errors
+- [ ] Seed script creates `sample.db` with realistic data
+- [ ] Admin connects `sample.db` and gets AI-generated draft definitions in under 2 minutes
+- [ ] Admin completes full setup wizard for all 5 tables
+- [ ] Client user asks 10 business questions, gets correct answers for at least 8
+- [ ] A report with 3 KPIs renders as an HTML dashboard with an AI-written summary
+- [ ] At least one question is correctly blocked (confidence < 0.70) and logged as a gap
+- [ ] Admin can view and resolve definition gaps
+
+---
+
+---
+
+## Session Closing Prompt
+> Copy and paste this at the end of every Claude Code session.
+
+```
+We are done for this session. Before we close:
+
+1. Update the Current State section in CLAUDE.md:
+   - Set "Last updated" to today's date
+   - List every file that now exists on disk under "Files that exist on disk"
+   - Mark completed build steps with [x] in the Build Order
+   - Add any new environment variables to the .env.example section
+   - Note any known issues or blockers we discovered
+   - Set "Next session should start with" to the next incomplete build step
+
+2. If the folder structure changed, update the Folder Structure section to match
+   what is actually on disk right now.
+
+3. If any architectural decision changed from what was planned, update the
+   relevant section and add a short note explaining why it changed.
+
+Do not summarise what you did in chat — write everything directly into CLAUDE.md.
+```
+
+---
+
+*Last updated: March 2026 — DataBridge POC v0.1*
