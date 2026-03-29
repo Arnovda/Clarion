@@ -27,7 +27,7 @@ function sanitizeAlias(name: string): string {
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, question } = req.body as { connectionId: number; question: string };
+    const { connectionId, question, domains } = req.body as { connectionId: number; question: string; domains?: string[] };
 
     if (!question?.trim()) {
       res.status(400).json({ ok: false, error: 'question is required' });
@@ -36,8 +36,17 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 1. Build semantic context — include both confirmed and AI-draft definitions
     //    so queries work even before the admin has reviewed every row
-    const tables = await semanticDb('source_tables')
+    let tablesQuery = semanticDb('source_tables')
       .where({ connection_id: connectionId, is_active: true });
+    // Optional domain filter — if one or more domains are specified, restrict to tables tagged with any of them
+    if (domains && domains.length > 0) {
+      tablesQuery = tablesQuery.where((builder) => {
+        for (const domain of domains) {
+          builder.orWhereRaw(`domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
+        }
+      });
+    }
+    const tables = await tablesQuery;
 
     const columns = await semanticDb('source_columns')
       .join('source_tables', 'source_columns.table_id', 'source_tables.id')

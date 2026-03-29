@@ -15,6 +15,12 @@ interface Props {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function parseDomains(raw: SourceTable['domains']): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  try { return JSON.parse(raw as unknown as string) ?? []; } catch { return []; }
+}
+
 function parseExamples(raw: SourceColumn['example_values']): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
@@ -111,12 +117,27 @@ export default function TableDetailPanel({ table, columns, focusColumnId, onSave
   // Keep local state in sync when parent switches to a different table
   if (table.id !== tbl.id) { setTbl(table); setCols(columns); }
 
+  const [domainInput, setDomainInput] = useState('');
+
+  function addDomain(value: string) {
+    const tag = value.trim().toLowerCase();
+    if (!tag) return;
+    const current: string[] = parseDomains(tbl.domains);
+    if (!current.includes(tag)) setTbl({ ...tbl, domains: [...current, tag] });
+    setDomainInput('');
+  }
+
+  function removeDomain(tag: string) {
+    setTbl({ ...tbl, domains: parseDomains(tbl.domains).filter((d) => d !== tag) });
+  }
+
   async function saveTable() {
     setSavingTable(true);
     await api.patch(`/semantic/tables/${tbl.id}`, {
       display_name: tbl.display_name,
       description:  tbl.description,
       is_active:    tbl.is_active,
+      domains:      parseDomains(tbl.domains),
     });
     setSavingTable(false);
     setSavedMsg('Table saved');
@@ -189,6 +210,31 @@ export default function TableDetailPanel({ table, columns, focusColumnId, onSave
             rows={2}
             className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
           />
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-slate-500 mb-1">Data domains</label>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {parseDomains(tbl.domains).map((tag) => (
+              <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2.5 py-0.5 font-medium">
+                {tag}
+                <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none">&times;</button>
+              </span>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={domainInput}
+              onChange={(e) => setDomainInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
+              placeholder="Add domain tag (e.g. sales, hr) and press Enter"
+              className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={() => addDomain(domainInput)}
+              className="px-3 py-1.5 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
+            >Add</button>
+          </div>
         </div>
 
         <div className="flex items-center gap-3">

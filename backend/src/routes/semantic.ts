@@ -24,11 +24,28 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
 // PATCH /api/semantic/tables/:id — confirm or edit a table definition
 router.patch('/tables/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { display_name, description, owner_name, is_active } = req.body as Record<string, unknown>;
+    const { display_name, description, owner_name, is_active, domains } = req.body as Record<string, unknown>;
     await semanticDb('source_tables')
       .where({ id: req.params.id })
-      .update({ display_name, description, owner_name, is_active, ai_draft: false, updated_at: semanticDb.fn.now() });
+      .update({ display_name, description, owner_name, is_active, domains: JSON.stringify(domains ?? []), ai_draft: false, updated_at: semanticDb.fn.now() });
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/domains?connectionId=1 — all unique domain tags in use
+router.get('/domains', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId } = req.query;
+    const rows = await semanticDb('source_tables')
+      .where({ connection_id: connectionId })
+      .whereNotNull('domains')
+      .select('domains');
+    const all = new Set<string>();
+    for (const row of rows) {
+      const arr: string[] = typeof row.domains === 'string' ? JSON.parse(row.domains) : (row.domains ?? []);
+      arr.forEach((d) => d && all.add(d));
+    }
+    res.json({ ok: true, data: Array.from(all).sort() });
   } catch (err) { next(err); }
 });
 

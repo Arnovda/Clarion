@@ -880,9 +880,13 @@ export default function QueryPage() {
   const [showSql,       setShowSql]       = useState(false);
   const [isAdmin,       setIsAdmin]       = useState(false);
 
-  // Data source selection
+  // Data source selection (silent — no UI picker)
   const [sources,       setSources]       = useState<DataSource[]>([]);
   const [selectedSource, setSelectedSource] = useState<string>('');
+
+  // Domain filter
+  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
+  const [selectedDomains,  setSelectedDomains]  = useState<string[]>([]);
 
   // Ephemeral repair state — never persisted
   const [repairState, setRepairState] = useState<RepairState | null>(null);
@@ -894,7 +898,7 @@ export default function QueryPage() {
 
   useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'epicdata_admin'); }, []);
 
-  // Load available connections + integration views
+  // Load available connections + integration views (silent — no UI picker shown)
   useEffect(() => {
     Promise.all([
       api.get('/connections').catch(() => ({ data: { data: [] } })),
@@ -907,12 +911,18 @@ export default function QueryPage() {
         ...views.map((v) => ({ type: 'view' as const, id: v.id, label: v.name })),
       ];
       setSources(all);
-      // Restore last selection or default to first connection
       const saved = localStorage.getItem('databridge_query_source');
       if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
         setSelectedSource(saved);
       } else if (all.length > 0) {
         setSelectedSource(`c:${all[0].id}`);
+      }
+      // Load domain tags for the first connection
+      const firstConn = conns[0];
+      if (firstConn) {
+        api.get(`/semantic/domains?connectionId=${firstConn.id}`)
+          .then((r) => setAvailableDomains(r.data.data ?? []))
+          .catch(() => {});
       }
     });
   }, []);
@@ -1174,7 +1184,7 @@ export default function QueryPage() {
       const sourceId    = Number(selectedSource.split(':')[1]);
       const res = isCrossView
         ? await api.post('/query/cross-view', { viewId: sourceId, question: q })
-        : await api.post('/query', { connectionId: sourceId, question: q });
+        : await api.post('/query', { connectionId: sourceId, question: q, ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}) });
       const d   = res.data.data;
 
       const assistantId = nextId.current++;
@@ -1243,25 +1253,32 @@ export default function QueryPage() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Header */}
           <div className="flex-shrink-0 bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <div>
                 <h1 className="text-base font-bold text-slate-900">Ask your data</h1>
                 <p className="text-xs text-slate-400 mt-0.5">Plain-English questions → instant answers</p>
               </div>
-              {sources.length > 0 && (
-                <SourceSelector
-                  sources={sources}
-                  selectedId={selectedSource}
-                  onChange={(v) => {
-                    setSelectedSource(v);
-                    localStorage.setItem('databridge_query_source', v);
-                  }}
-                />
-              )}
-              {selectedSource.startsWith('v:') && (
-                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
-                  Cross-source
-                </span>
+              {availableDomains.length > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-slate-400">Domain:</span>
+                  {availableDomains.map((d) => {
+                    const active = selectedDomains.includes(d);
+                    return (
+                      <button
+                        key={d}
+                        onClick={() => setSelectedDomains((prev) => active ? prev.filter((x) => x !== d) : [...prev, d])}
+                        className={`text-xs px-2.5 py-0.5 rounded-full border font-medium transition-colors ${active ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-300 hover:border-violet-400 hover:text-violet-600'}`}
+                      >
+                        {d}
+                      </button>
+                    );
+                  })}
+                  {selectedDomains.length > 0 && (
+                    <button onClick={() => setSelectedDomains([])} className="text-xs text-slate-400 hover:text-slate-600">
+                      Clear
+                    </button>
+                  )}
+                </div>
               )}
             </div>
             <div className="flex items-center gap-4">

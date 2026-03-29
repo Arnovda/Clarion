@@ -581,6 +581,8 @@ export default function DashboardsPage() {
   const [refineInput, setRefineInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
+  const [selectedDomains,  setSelectedDomains]  = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -670,6 +672,7 @@ export default function DashboardsPage() {
       const res = await api.post('/dashboards/refine', {
         connectionId: CONNECTION_ID,
         request: createInput.trim(),
+        ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
       });
       setRefinementQuestions(res.data.data.questions ?? []);
     } catch {
@@ -692,6 +695,7 @@ export default function DashboardsPage() {
         connectionId: CONNECTION_ID,
         request: createInput.trim(),
         answers: answers?.filter((a) => a.trim()),
+        ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
       });
       const spec: DashboardSpec = res.data.data.spec;
       const defaults = buildDefaultFilters(spec.filters);
@@ -870,6 +874,9 @@ export default function DashboardsPage() {
   useEffect(() => {
     setIsAdmin(getTokenPayload()?.role === 'epicdata_admin');
     loadDashboards();
+    api.get(`/semantic/domains?connectionId=${CONNECTION_ID}`)
+      .then((r) => setAvailableDomains(r.data.data ?? []))
+      .catch(() => {});
   }, [loadDashboards]);
 
   useEffect(() => {
@@ -1087,6 +1094,25 @@ export default function DashboardsPage() {
                 <p className="text-sm text-slate-500 mb-6">
                   Describe what you want to see and let AI design it for you.
                 </p>
+                {availableDomains.length > 0 && (
+                  <div className="mb-5 text-left">
+                    <p className="text-xs font-medium text-slate-500 mb-2">Filter by domain <span className="font-normal text-slate-400">(optional)</span></p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableDomains.map((d) => {
+                        const active = selectedDomains.includes(d);
+                        return (
+                          <button
+                            key={d}
+                            onClick={() => setSelectedDomains((prev) => active ? prev.filter((x) => x !== d) : [...prev, d])}
+                            className={`text-xs px-2.5 py-0.5 rounded-full border font-medium transition-colors ${active ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-300 hover:border-violet-400 hover:text-violet-600'}`}
+                          >
+                            {d}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="flex justify-center mb-6">
                   <CreateInput />
                 </div>
