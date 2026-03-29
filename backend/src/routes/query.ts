@@ -15,6 +15,15 @@ import {
 
 const router = Router();
 
+// Shared alias helper — used by both the single-source and cross-view handlers
+function sanitizeAlias(name: string): string {
+  return (name
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_(sqlite|db)$/, '') || 'db');
+}
+
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -86,8 +95,255 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       ? kpis.map((k: { name: string; formula_sql: string }) => `${k.name}: ${k.formula_sql}`).join('\n')
       : 'No KPIs defined yet.';
 
+    // 2a-quality. Build quality context — fetch latest profile + field stats + failing rules
+    //   for every active table in scope.  Appended to semanticContext so Claude can:
+    //   • add IS NOT NULL / COALESCE on high-null columns
+    //   • use exact categorical values from top_values
+    //   • reason about date ranges without guessing
+    //   • caveat answers when known quality rules are failing
+    type FieldProfile = {
+      field_name: string; null_pct: number; distinct_count: number;
+      min_value: string | null; max_value: string | null;
+      mean_value: number | null; top_values: { value: unknown; pct: number }[] | null;
+    };
+    type QualityRule = { rule_name: string; rule_type: string; dimension: string; rule_config: Record<string, unknown> | null; last_status: string | null; last_pass_rate: number | null };
+
+    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+
+    // Latest profile per table (one row per table — highest id = most recent)
+    const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
+      ? await semanticDb('dataset_profiles')
+          .where({ connection_id: connectionId })
+          .whereIn('table_name', tableNames)
+          .orderBy('id', 'desc')
+          // Keep only the latest per table_name
+          .select(semanticDb.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
+          .catch(() => []) // gracefully skip if profiling hasn't run
+      : [];
+
+    const profileIds = latestProfiles.map((p) => p.id);
+
+    const fieldProfiles: (FieldProfile & { profile_id: number })[] = profileIds.length
+      ? await semanticDb('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      : [];
+
+    // Active quality rules with their most recent execution result
+    const qualityRules: QualityRule[] = tableNames.length
+      ? await semanticDb('quality_rules as qr')
+          .leftJoin(
+            semanticDb('rule_executions').select('rule_id').max('id as latest_exec_id').groupBy('rule_id').as('le'),
+            'le.rule_id', 'qr.id',
+          )
+          .leftJoin('rule_executions as re', 're.id', 'le.latest_exec_id')
+          .where({ 'qr.connection_id': connectionId, 'qr.is_active': true })
+          .whereIn('qr.table_name', tableNames)
+          .select(
+            'qr.table_name', 'qr.rule_name', 'qr.rule_type', 'qr.dimension',
+            'qr.rule_config', 're.status as last_status', 're.pass_rate as last_pass_rate',
+          )
+          .catch(() => [])
+      : [];
+
+    // Build compact quality hints — one section per table
+    const qualityHints = latestProfiles.map((prof) => {
+      const fields = fieldProfiles.filter((f) => f.profile_id === prof.id);
+      const rules  = qualityRules.filter((r: QualityRule & { table_name: string }) => (r as { table_name: string }).table_name === prof.table_name);
+
+      const fieldLines = fields.map((f) => {
+        const parts: string[] = [];
+
+        // Nullability
+        if (f.null_pct > 0.01)
+          parts.push(`${Math.round(f.null_pct * 100)}% nulls — handle nulls in calculations`);
+
+        // Cardinality hint (categorical vs key vs free-text)
+        if (f.distinct_count <= 20 && f.top_values?.length) {
+          const vals = f.top_values.slice(0, 8)
+            .map((v) => `'${String(v.value)}' (${Math.round(v.pct * 100)}%)`)
+            .join(', ');
+          parts.push(`categorical — values: ${vals}`);
+        } else if (f.distinct_count === 1) {
+          parts.push('constant value — avoid filtering on this');
+        }
+
+        // Range for dates and numbers
+        if (f.min_value !== null && f.max_value !== null && f.distinct_count > 20) {
+          parts.push(`range ${f.min_value} to ${f.max_value}`);
+          if (f.mean_value !== null)
+            parts.push(`mean ${Number(f.mean_value.toFixed(2))}`);
+        }
+
+        return parts.length ? `    ${f.field_name}: ${parts.join('; ')}` : null;
+      }).filter(Boolean);
+
+      // Failing rules are the most actionable signal
+      const failingRules = rules
+        .filter((r) => r.last_status === 'FAIL' || r.last_status === 'WARNING')
+        .map((r) => {
+          const pct = r.last_pass_rate !== null ? ` (${Math.round(r.last_pass_rate * 100)}% passing)` : '';
+          return `    ⚠ ${r.rule_name} [${r.dimension}]${pct} — ${r.last_status}: caveat results from this table`;
+        });
+
+      const rowInfo  = prof.row_count !== null ? `, ${prof.row_count.toLocaleString()} rows` : '';
+      const scoreInfo = prof.overall_score !== null ? `, quality score ${Math.round(prof.overall_score * 100)}%` : '';
+      const header = `Quality hints for ${prof.table_name}${rowInfo}${scoreInfo}:`;
+
+      const body = [...fieldLines, ...failingRules];
+      return body.length ? `${header}\n${body.join('\n')}` : null;
+    }).filter(Boolean).join('\n\n');
+
+    // Append quality hints to semantic context when available
+    const semanticContextWithQuality = qualityHints
+      ? `${semanticContext}\n\n--- Data Quality Hints ---\n${qualityHints}`
+      : semanticContext;
+
+    // 2b. Integration enrichment — automatically include cross-source context
+    //     if any integration views involve this connection's tables.
+    //     When present, the prompt is upgraded to cross-source mode and SQL
+    //     execution uses ATTACH DATABASE automatically.
+    type CrossRel = {
+      from_table: string; from_conn_id: number; from_column: string | null;
+      to_table:   string; to_conn_id:   number; to_column:   string | null;
+      relationship_type: string;
+    };
+    type XTable = {
+      table_id: number; table_name: string; display_name: string; description: string;
+      connection_id: number; connection_name: string; connection_config: string | Record<string, unknown>;
+    };
+    type XCol = { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean };
+
+    let crossConnAliasMap: Map<number, { alias: string; filepath: string }> | null = null;
+    let enrichedSemanticContext  = semanticContextWithQuality;
+    let enrichedRelationshipContext = relationshipContext;
+    let isCrossSourceQuery = false;
+
+    if (tableIds.length) {
+      // Find all cross-view relationships where at least one side belongs to this connection
+      const crossRels: CrossRel[] = await semanticDb('cross_view_relationships as r')
+        .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
+        .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
+        .leftJoin('source_tables  as ft', 'r.from_table_id',  'ft.id')
+        .leftJoin('source_tables  as tt', 'r.to_table_id',    'tt.id')
+        .where(function () {
+          this.whereIn('r.from_table_id', tableIds).orWhereIn('r.to_table_id', tableIds);
+        })
+        .select(
+          'ft.table_name as from_table', 'ft.connection_id as from_conn_id', 'fc.column_name as from_column',
+          'tt.table_name as to_table',   'tt.connection_id as to_conn_id',   'tc.column_name as to_column',
+          'r.relationship_type',
+        );
+
+      if (crossRels.length) {
+        // Collect all unique table IDs referenced in these relationships
+        const allRelTableIds = [...new Set([
+          ...crossRels.map((r) => r.from_conn_id),  // we need table ids, not conn ids
+        ])];
+        void allRelTableIds; // unused — we query by relation table names below
+
+        // Collect all connection IDs referenced (other than the primary connection)
+        const relatedConnIds = [...new Set([
+          ...crossRels.map((r) => r.from_conn_id),
+          ...crossRels.map((r) => r.to_conn_id),
+        ])];
+
+        // Load ALL tables from related connections that appear in cross-view relationships
+        const relatedTableNames = [...new Set([
+          ...crossRels.map((r) => r.from_table),
+          ...crossRels.map((r) => r.to_table),
+        ])];
+
+        const xTables: XTable[] = await semanticDb('source_tables as st')
+          .join('connections as c', 'st.connection_id', 'c.id')
+          .whereIn('st.connection_id', relatedConnIds)
+          .whereIn('st.table_name',    relatedTableNames)
+          .select(
+            'st.id as table_id', 'st.table_name', 'st.display_name', 'st.description',
+            'st.connection_id', 'c.name as connection_name', 'c.config as connection_config',
+          );
+
+        // Build alias map for every involved connection
+        crossConnAliasMap = new Map();
+        for (const xt of xTables) {
+          if (!crossConnAliasMap.has(xt.connection_id)) {
+            const cfg = typeof xt.connection_config === 'string'
+              ? JSON.parse(xt.connection_config) as { filepath: string }
+              : xt.connection_config as { filepath: string };
+            crossConnAliasMap.set(xt.connection_id, {
+              alias:    sanitizeAlias(xt.connection_name),
+              filepath: path.resolve(cfg.filepath),
+            });
+          }
+        }
+
+        // Load columns for all cross-source tables
+        const xTableIds = xTables.map((t) => t.table_id);
+        const xCols: XCol[] = xTableIds.length
+          ? await semanticDb('source_columns').whereIn('table_id', xTableIds)
+          : [];
+
+        // Build enriched semantic context — primary tables + cross-source tables, all aliased
+        const primaryAlias = crossConnAliasMap.get(connectionId)?.alias ?? sanitizeAlias(
+          (await semanticDb('connections').where({ id: connectionId }).first())?.name ?? 'primary',
+        );
+
+        // Re-build primary tables with alias prefix
+        const primaryContext = tables.map((t: { id: number; table_name: string; description: string }) => {
+          const cols = columns
+            .filter((c: { table_id: number }) => c.table_id === t.id)
+            .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
+              `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+            ).join('\n');
+          return `Database: ${primaryAlias}\nTable: ${primaryAlias}.${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+        }).join('\n\n');
+
+        // Cross-source tables context
+        const crossContext = xTables
+          .filter((t) => t.connection_id !== connectionId)
+          .map((t) => {
+            const alias = crossConnAliasMap!.get(t.connection_id)?.alias ?? 'db';
+            const cols = xCols
+              .filter((c) => c.table_id === t.table_id)
+              .map((c) =>
+                `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+              ).join('\n');
+            return `Database: ${alias}\nTable: ${alias}.${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+          }).join('\n\n');
+
+        enrichedSemanticContext = [
+          primaryContext,
+          crossContext,
+          qualityHints ? `--- Data Quality Hints ---\n${qualityHints}` : '',
+        ].filter(Boolean).join('\n\n');
+
+        // Build enriched relationship context — single-source + cross-source rels
+        const singleSourceRels = relationships.length
+          ? relationships.map((r: { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }) => {
+              const from = r.from_column ? `${primaryAlias}.${r.from_table}.${r.from_column}` : `${primaryAlias}.${r.from_table}`;
+              const to   = r.to_column   ? `${primaryAlias}.${r.to_table}.${r.to_column}`     : `${primaryAlias}.${r.to_table}`;
+              return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
+            }).join('\n')
+          : '';
+
+        const crossSourceRels = crossRels.map((r) => {
+          const fa   = crossConnAliasMap!.get(r.from_conn_id)?.alias ?? 'db';
+          const ta   = crossConnAliasMap!.get(r.to_conn_id)?.alias   ?? 'db';
+          const from = r.from_column ? `${fa}.${r.from_table}.${r.from_column}` : `${fa}.${r.from_table}`;
+          const to   = r.to_column   ? `${ta}.${r.to_table}.${r.to_column}`     : `${ta}.${r.to_table}`;
+          return `- ${from} → ${to} (${r.relationship_type}) [cross-source]`;
+        }).join('\n');
+
+        enrichedRelationshipContext = [singleSourceRels, crossSourceRels].filter(Boolean).join('\n')
+          || 'No relationships defined yet.';
+
+        isCrossSourceQuery = true;
+      }
+    }
+
     // 2. Generate SQL + confidence (Call Type 2a)
-    const nlResult = await generateSql(question, semanticContext, relationshipContext, kpiFormulas);
+    //    Use cross-source SQL generator when integration context is present.
+    const nlResult = isCrossSourceQuery
+      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext)
+      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas);
 
     // 3. Log the query regardless of outcome
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
@@ -264,17 +520,33 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    // 6. Execute SQL against SQLite source
-    const sqliteConnector = new SqliteConnector(config.filepath);
-    await sqliteConnector.connect();
-    const queryResult = await sqliteConnector.executeQuery(nlResult.sql);
-    sqliteConnector.disconnect();
+    // 6. Execute SQL — cross-source via ATTACH DATABASE, or single-source normally
+    let execRows: Record<string, unknown>[];
+
+    if (isCrossSourceQuery && crossConnAliasMap && crossConnAliasMap.size > 0) {
+      // Open in-memory DB, ATTACH every source involved
+      const inMemDb = new Database(':memory:');
+      try {
+        for (const [, { alias, filepath }] of crossConnAliasMap) {
+          inMemDb.exec(`ATTACH DATABASE '${filepath.replace(/'/g, "''")}' AS "${alias}"`);
+        }
+        execRows = inMemDb.prepare(nlResult.sql).all() as Record<string, unknown>[];
+      } finally {
+        inMemDb.close();
+      }
+    } else {
+      const sqliteConnector = new SqliteConnector(config.filepath);
+      await sqliteConnector.connect();
+      const queryResult = await sqliteConnector.executeQuery(nlResult.sql);
+      sqliteConnector.disconnect();
+      execRows = queryResult.rows;
+    }
 
     // 7. Run result sanity check (Call Type 2c) — parallel with answer formatting
     // Non-blocking: a failed validation adds a warning but never hides the answer
     const [answer, validation] = await Promise.all([
-      formatAnswer(question, queryResult.rows),
-      validateQueryResult(question, nlResult.sql, queryResult.rows),
+      formatAnswer(question, execRows),
+      validateQueryResult(question, nlResult.sql, execRows),
     ]);
 
     // 8. Update query log as executed
@@ -289,11 +561,12 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         answer,
         confidence:  nlResult.confidence,
         blocked:     false,
+        crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
         // Sanity-check warning — shown to all users when validation flags a concern
         ...(validation.ok ? {} : { warning: validation.warning }),
         // Raw rows — used by the frontend to render a table / chart
-        rows: queryResult.rows.slice(0, 200),
+        rows: execRows.slice(0, 200),
         // Debug info — always sent; the frontend only renders it for admin role
         sql: nlResult.sql,
         debug: {
@@ -301,9 +574,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           confirmedColumns:       columns.length,
           confirmedRelationships: relationships.length,
           confirmedKpis:          kpis.length,
-          hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
-          semanticContext,
-          relationshipContext,
+          hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.${isCrossSourceQuery ? ' (cross-source via integration view)' : ''}`,
+          semanticContext:      enrichedSemanticContext,
+          relationshipContext:  enrichedRelationshipContext,
         },
       },
     });
@@ -519,14 +792,6 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /api/query/cross-view — query across multiple SQLite sources via ATTACH
 // ---------------------------------------------------------------------------
-
-function sanitizeAlias(name: string): string {
-  return (name
-    .toLowerCase()
-    .replace(/[-\s]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '')
-    .replace(/_(sqlite|db)$/, '') || 'db');
-}
 
 router.post('/cross-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   let inMemDb: Database.Database | null = null;

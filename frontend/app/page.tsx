@@ -47,7 +47,7 @@ export default function LoginPage() {
           <p className="text-slate-500 mt-1 text-sm">AI-powered data platform</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 space-y-4">
+        <form onSubmit={handleSubmit} suppressHydrationWarning className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
             <input

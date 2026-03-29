@@ -13,6 +13,7 @@ import queryRouter        from './routes/query';
 import reportsRouter      from './routes/reports';
 import dashboardsRouter   from './routes/dashboards';
 import crossViewsRouter   from './routes/cross-views';
+import qualityRouter      from './routes/quality';
 
 const app = express();
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
@@ -51,6 +52,7 @@ app.use('/api/query',        queryRouter);
 app.use('/api/reports',      reportsRouter);
 app.use('/api/dashboards',   dashboardsRouter);
 app.use('/api/cross-views',  crossViewsRouter);
+app.use('/api/quality',      qualityRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {

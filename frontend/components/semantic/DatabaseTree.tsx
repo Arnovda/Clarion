@@ -120,9 +120,17 @@ export default function DatabaseTree({
                       return (
                         <div key={table.id}>
                           {/* ── Table row ── */}
-                          <div className={`flex items-center gap-1 pl-2 pr-2 py-1.5 cursor-pointer group select-none ${
-                            isSelected && !selectedColumnId ? 'bg-blue-50' : 'hover:bg-slate-50'
-                          }`}>
+                          <div
+                            className={`flex items-center gap-1 pl-2 pr-2 py-1.5 cursor-grab group select-none ${
+                              isSelected && !selectedColumnId ? 'bg-blue-50' : 'hover:bg-slate-50'
+                            }`}
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = 'copy';
+                              e.dataTransfer.setData('application/x-table-id', String(table.id));
+                              e.dataTransfer.setData('application/x-conn-id',   String(conn.id));
+                            }}
+                          >
                             <button
                               onClick={(e) => { e.stopPropagation(); toggleTable(table.id); }}
                               className="p-0.5 rounded text-slate-300 hover:text-slate-500 flex-shrink-0"

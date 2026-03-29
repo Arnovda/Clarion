@@ -7,10 +7,12 @@ import DatabaseTree from '@/components/semantic/DatabaseTree';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
 import KpiPanel from '@/components/semantic/KpiPanel';
+import QualityPanel from '@/components/QualityPanel';
+import IntegrationsPanel from '@/components/IntegrationsPanel';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn, KpiDefinition } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'kpis';
+type MainTab = 'definitions' | 'relationships' | 'kpis' | 'quality' | 'integrations';
 
 interface Connection { id: number; name: string; }
 
@@ -144,6 +146,7 @@ function SemanticInner() {
     setSelectedColumnId(null);
     setZoomToTableId(tableId);
     localStorage.setItem('databridge_last_conn', String(connId));
+    // Switching tables while on KPIs → go back to definitions; Quality stays on quality
     if (tab === 'kpis') setTab('definitions');
   }
 
@@ -184,7 +187,9 @@ function SemanticInner() {
       {/* Tab bar */}
       <div className="bg-white border-b border-slate-200 px-4 flex items-center gap-0 flex-shrink-0">
         {tabBtn('definitions', 'Tables & Columns')}
+        {tabBtn('quality', 'Quality')}
         {tabBtn('relationships', 'Relationships')}
+        {tabBtn('integrations', 'Integrations')}
         {tabBtn('kpis', 'KPIs')}
       </div>
 
@@ -206,8 +211,8 @@ function SemanticInner() {
           />
         </div>
 
-        {/* Right panel */}
-        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
+        {/* Right panel — overflow-hidden for canvas tabs so flex heights propagate correctly */}
+        <div className={`flex-1 min-h-0 flex flex-col ${tab === 'integrations' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
           {tab === 'definitions' && (
             selectedTable ? (
               <TableDetailPanel
@@ -246,6 +251,26 @@ function SemanticInner() {
               kpis={kpis}
               onSaved={loadKpis}
             />
+          )}
+
+          {tab === 'quality' && (
+            selectedTable && activeConnId ? (
+              <QualityPanel
+                key={`${activeConnId}-${selectedTable.table_name}`}
+                connId={activeConnId}
+                tableName={selectedTable.table_name}
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
+                Select a table from the left panel
+              </div>
+            )
+          )}
+
+          {tab === 'integrations' && (
+            <div className="flex flex-col flex-1 min-h-0">
+              <IntegrationsPanel selectedTableId={selectedTableId} />
+            </div>
           )}
         </div>
       </div>
