@@ -47,6 +47,19 @@ export async function runSchemaProfiler(
     const existingTables = await trx('source_tables').where({ connection_id: connectionId }).select('id');
     const existingTableIds = existingTables.map((t: { id: number }) => t.id);
     if (existingTableIds.length) {
+      const existingColumnIds = await trx('source_columns')
+        .whereIn('table_id', existingTableIds)
+        .pluck('id');
+
+      // Remove cross_view_relationships that reference these columns before deleting columns
+      if (existingColumnIds.length) {
+        await trx('cross_view_relationships')
+          .where(function () {
+            this.whereIn('from_column_id', existingColumnIds).orWhereIn('to_column_id', existingColumnIds);
+          })
+          .delete();
+      }
+
       await trx('table_relationships')
         .where(function () {
           this.whereIn('from_table_id', existingTableIds).orWhereIn('to_table_id', existingTableIds);
