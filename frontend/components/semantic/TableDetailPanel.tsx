@@ -8,6 +8,7 @@ interface Props {
   table: SourceTable;
   columns: SourceColumn[];
   focusColumnId: number | null;
+  connectionDomains?: string[];
   onSaved: () => void;
 }
 
@@ -107,7 +108,7 @@ function PreviewTable({ connectionId, tableName }: { connectionId: number; table
 // Main panel
 // ---------------------------------------------------------------------------
 
-export default function TableDetailPanel({ table, columns, focusColumnId, onSaved }: Props) {
+export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved }: Props) {
   const [tbl, setTbl]               = useState<SourceTable>(table);
   const [cols, setCols]             = useState<SourceColumn[]>(columns);
   const [savingTable, setSavingTable] = useState(false);
@@ -214,20 +215,34 @@ export default function TableDetailPanel({ table, columns, focusColumnId, onSave
 
         <div className="mb-4">
           <label className="block text-xs font-medium text-slate-500 mb-1">Data domains</label>
+          {/* Inherited from source system */}
+          {connectionDomains.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {connectionDomains.map((tag) => (
+                <span key={tag} title="Inherited from source system" className="inline-flex items-center gap-1 text-xs bg-slate-100 text-slate-500 border border-slate-200 rounded-full px-2.5 py-0.5 font-medium">
+                  {tag}
+                  <span className="text-[10px] text-slate-400 italic">source</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {/* Table-specific domains */}
           <div className="flex flex-wrap gap-1.5 mb-2">
-            {parseDomains(tbl.domains).map((tag) => (
-              <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2.5 py-0.5 font-medium">
-                {tag}
-                <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none">&times;</button>
-              </span>
-            ))}
+            {parseDomains(tbl.domains)
+              .filter((tag) => !connectionDomains.includes(tag))
+              .map((tag) => (
+                <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2.5 py-0.5 font-medium">
+                  {tag}
+                  <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none">&times;</button>
+                </span>
+              ))}
           </div>
           <div className="flex gap-2">
             <input
               value={domainInput}
               onChange={(e) => setDomainInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
-              placeholder="Add domain tag (e.g. sales, hr) and press Enter"
+              placeholder="Add extra domain tag and press Enter"
               className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button

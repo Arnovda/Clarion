@@ -37,12 +37,16 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // 1. Build semantic context — include both confirmed and AI-draft definitions
     //    so queries work even before the admin has reviewed every row
     let tablesQuery = semanticDb('source_tables')
-      .where({ connection_id: connectionId, is_active: true });
-    // Optional domain filter — if one or more domains are specified, restrict to tables tagged with any of them
+      .join('connections', 'source_tables.connection_id', 'connections.id')
+      .where({ 'source_tables.connection_id': connectionId, 'source_tables.is_active': true })
+      .select('source_tables.*');
+    // Optional domain filter — a table matches if the requested domain appears in either
+    // the connection-level domains (inherited) OR the table-level domains (manually added)
     if (domains && domains.length > 0) {
       tablesQuery = tablesQuery.where((builder) => {
         for (const domain of domains) {
-          builder.orWhereRaw(`domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
+          builder.orWhereRaw(`source_tables.domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
+          builder.orWhereRaw(`connections.domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
         }
       });
     }

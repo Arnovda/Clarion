@@ -14,6 +14,7 @@ interface Connection {
   name: string;
   type: string;
   config: { filepath?: string } | string;
+  domains?: string[];
   created_by: string;
   created_at: string;
 }
@@ -213,6 +214,18 @@ function ConnectionCard({
         {config.filepath && (
           <p className="text-xs text-slate-500 font-mono truncate" title={config.filepath}>{config.filepath}</p>
         )}
+        {(() => {
+          const tags: string[] = Array.isArray(conn.domains)
+            ? conn.domains
+            : (() => { try { return JSON.parse(conn.domains as unknown as string) ?? []; } catch { return []; } })();
+          return tags.length > 0 ? (
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {tags.map((t) => (
+                <span key={t} className="text-[10px] px-2 py-0.5 bg-violet-100 text-violet-700 border border-violet-200 rounded-full font-medium">{t}</span>
+              ))}
+            </div>
+          ) : null;
+        })()}
         <p className="text-xs text-slate-400 mt-1">
           Added {new Date(conn.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
         </p>
@@ -306,11 +319,31 @@ function SlidePanel({
   const [fields, setFields] = useState<Record<string, string>>(
     Object.fromEntries(connector.formFields.map((f) => [f.key, (initialConfig as Record<string, string>)[f.key] ?? '']))
   );
+  const [domains, setDomains] = useState<string[]>(
+    (() => {
+      const raw = editConnection?.domains;
+      if (!raw) return [];
+      if (Array.isArray(raw)) return raw;
+      try { return JSON.parse(raw as unknown as string) ?? []; } catch { return []; }
+    })()
+  );
+  const [domainInput, setDomainInput] = useState('');
   // In edit mode start as 'ok' so Save is enabled immediately (path is already valid)
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>(isEdit ? 'ok' : 'idle');
   const [testMsg, setTestMsg] = useState(isEdit ? 'Connection previously verified' : '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  function addDomain(value: string) {
+    const tag = value.trim().toLowerCase();
+    if (!tag || domains.includes(tag)) return;
+    setDomains((prev) => [...prev, tag]);
+    setDomainInput('');
+  }
+
+  function removeDomain(tag: string) {
+    setDomains((prev) => prev.filter((d) => d !== tag));
+  }
 
   function setField(key: string, value: string) {
     setFields((prev) => ({ ...prev, [key]: value }));
@@ -348,13 +381,15 @@ function SlidePanel({
         await api.patch(`/connections/${editConnection!.id}`, {
           name: name.trim(),
           config: fields,
+          domains,
         });
-        onUpdated({ ...editConnection!, name: name.trim(), config: fields });
+        onUpdated({ ...editConnection!, name: name.trim(), config: fields, domains });
       } else {
         const res = await api.post('/connections', {
           name: name.trim(),
           type: connector.id,
           config: fields,
+          domains,
         });
         onConnected(res.data.data.connectionId, name.trim());
       }
@@ -415,6 +450,39 @@ function SlidePanel({
               {f.hint && <p className="text-xs text-slate-400 mt-1">{f.hint}</p>}
             </div>
           ))}
+
+          {/* Data domains */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">
+              Data domains <span className="font-normal text-slate-400 text-xs">(optional)</span>
+            </label>
+            <p className="text-xs text-slate-400 mb-2">
+              Tags set here apply to all tables in this source. You can still add extra tags on individual tables.
+            </p>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {domains.map((tag) => (
+                <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2.5 py-0.5 font-medium">
+                  {tag}
+                  <button type="button" onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none">&times;</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
+                placeholder="e.g. sales, hr, finance — press Enter to add"
+                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                type="button"
+                onClick={() => addDomain(domainInput)}
+                className="px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
+              >Add</button>
+            </div>
+          </div>
 
           {/* Test result */}
           {testStatus === 'ok' && (

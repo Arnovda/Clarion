@@ -14,7 +14,7 @@ import { SourceTable, SourceColumn, KpiDefinition } from '@/components/semantic/
 
 type MainTab = 'definitions' | 'relationships' | 'kpis' | 'quality' | 'integrations';
 
-interface Connection { id: number; name: string; }
+interface Connection { id: number; name: string; domains?: string[]; }
 
 function SemanticInner() {
   const params      = useSearchParams();
@@ -220,6 +220,7 @@ function SemanticInner() {
                 table={selectedTable}
                 columns={selectedCols}
                 focusColumnId={selectedColumnId}
+                connectionDomains={connections.find((c) => c.id === activeConnId)?.domains ?? []}
                 onSaved={() => activeConnId && reloadConnectionTables(activeConnId)}
               />
             ) : (

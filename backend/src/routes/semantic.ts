@@ -32,16 +32,25 @@ router.patch('/tables/:id', requireAuth, requireRole('epicdata_admin'), async (r
   } catch (err) { next(err); }
 });
 
-// GET /api/semantic/domains?connectionId=1 — all unique domain tags in use
+// GET /api/semantic/domains?connectionId=1 — all unique domain tags in use (connection-level + table-level)
 router.get('/domains', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { connectionId } = req.query;
-    const rows = await semanticDb('source_tables')
-      .where({ connection_id: connectionId })
-      .whereNotNull('domains')
-      .select('domains');
+    const [conn, tableRows] = await Promise.all([
+      semanticDb('connections').where({ id: connectionId }).first(),
+      semanticDb('source_tables')
+        .where({ connection_id: connectionId })
+        .whereNotNull('domains')
+        .select('domains'),
+    ]);
     const all = new Set<string>();
-    for (const row of rows) {
+    // Connection-level domains
+    const connDomains: string[] = conn?.domains
+      ? (typeof conn.domains === 'string' ? JSON.parse(conn.domains) : conn.domains)
+      : [];
+    connDomains.forEach((d: string) => d && all.add(d));
+    // Table-level domains
+    for (const row of tableRows) {
       const arr: string[] = typeof row.domains === 'string' ? JSON.parse(row.domains) : (row.domains ?? []);
       arr.forEach((d) => d && all.add(d));
     }

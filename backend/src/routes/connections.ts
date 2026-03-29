@@ -25,7 +25,7 @@ router.post('/test', requireAuth, requireRole('epicdata_admin'), async (req: Req
 // POST /api/connections — create a connection and run schema profiling
 router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, type, config } = req.body as { name: string; type: string; config: { filepath: string } };
+    const { name, type, config, domains } = req.body as { name: string; type: string; config: { filepath: string }; domains?: string[] };
 
     if (type !== 'sqlite') {
       res.status(400).json({ ok: false, error: 'Only sqlite connections are supported in this version' });
@@ -41,7 +41,7 @@ router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request
     }
 
     const [row] = await semanticDb('connections')
-      .insert({ name, type, config: JSON.stringify(config), created_by: req.user!.username })
+      .insert({ name, type, config: JSON.stringify(config), domains: JSON.stringify(domains ?? []), created_by: req.user!.username })
       .returning('id');
 
     const connectionId: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
@@ -70,10 +70,11 @@ router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request
 // PATCH /api/connections/:id — update name and/or config
 router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, config } = req.body as { name?: string; config?: { filepath: string } };
+    const { name, config, domains } = req.body as { name?: string; config?: { filepath: string }; domains?: string[] };
     const updates: Record<string, unknown> = {};
     if (name) updates.name = name;
     if (config) updates.config = JSON.stringify(config);
+    if (domains !== undefined) updates.domains = JSON.stringify(domains);
 
     const updated = await semanticDb('connections').where({ id: req.params.id }).update(updates);
     if (!updated) {
