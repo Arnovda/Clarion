@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: databridge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: databridge
+      POSTGRES_PASSWORD: databridge
+      POSTGRES_DB: databridge
+    ports:
+      - '5432:5432'
+    volumes:
+      - databridge_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U databridge -d databridge']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  databridge_pgdata:
+    driver: local
