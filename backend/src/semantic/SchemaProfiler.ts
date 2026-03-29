@@ -43,22 +43,88 @@ export async function runSchemaProfiler(
   const columnIdMap = new Map<string, number>(); // key: "tableName.columnName"
 
   await semanticDb.transaction(async (trx) => {
-    // Delete existing data for this connection before re-inserting
-    const existingTables = await trx('source_tables').where({ connection_id: connectionId }).select('id');
+    // Fetch existing tables/columns for this connection
+    const existingTables = await trx('source_tables')
+      .where({ connection_id: connectionId })
+      .select('id', 'table_name');
     const existingTableIds = existingTables.map((t: { id: number }) => t.id);
-    if (existingTableIds.length) {
-      const existingColumnIds = await trx('source_columns')
-        .whereIn('table_id', existingTableIds)
-        .pluck('id');
 
-      // Remove cross_view_relationships that reference these columns before deleting columns
-      if (existingColumnIds.length) {
-        await trx('cross_view_relationships')
+    // Snapshot cross-view references by name so we can restore them after re-insert
+    type CvRelSnapshot = {
+      id: number; view_id: number; relationship_type: string; label: string | null;
+      from_table: string; from_col: string | null;
+      to_table:   string; to_col:   string | null;
+    };
+    type CvTableSnapshot = { view_id: number; table_name: string; pos_x: number; pos_y: number };
+
+    let cvRelSnapshots:   CvRelSnapshot[]   = [];
+    let cvTableSnapshots: CvTableSnapshot[] = [];
+
+    if (existingTableIds.length) {
+      const existingColumns = await trx('source_columns')
+        .whereIn('table_id', existingTableIds)
+        .select('id', 'column_name', 'table_id');
+
+      const colIdToName = new Map(
+        existingColumns.map((c: { id: number; column_name: string; table_id: number }) => {
+          const tbl = existingTables.find((t: { id: number }) => t.id === c.table_id);
+          return [c.id, { table: tbl?.table_name ?? '', col: c.column_name }];
+        }),
+      );
+      const tableIdToName = new Map(existingTables.map((t: { id: number; table_name: string }) => [t.id, t.table_name]));
+
+      // Snapshot cross_view_relationships that touch these tables/columns
+      const existingColumnIds = existingColumns.map((c: { id: number }) => c.id);
+      if (existingColumnIds.length || existingTableIds.length) {
+        const cvRels = await trx('cross_view_relationships')
           .where(function () {
-            this.whereIn('from_column_id', existingColumnIds).orWhereIn('to_column_id', existingColumnIds);
+            this
+              .whereIn('from_table_id', existingTableIds)
+              .orWhereIn('to_table_id',   existingTableIds)
+              .orWhereIn('from_column_id', existingColumnIds)
+              .orWhereIn('to_column_id',   existingColumnIds);
           })
-          .delete();
+          .select('id', 'view_id', 'from_table_id', 'from_column_id',
+                  'to_table_id', 'to_column_id', 'relationship_type', 'label');
+
+        cvRelSnapshots = cvRels.map((r: {
+          id: number; view_id: number;
+          from_table_id: number; from_column_id: number | null;
+          to_table_id:   number; to_column_id:   number | null;
+          relationship_type: string; label: string | null;
+        }) => ({
+          id:                r.id,
+          view_id:           r.view_id,
+          relationship_type: r.relationship_type,
+          label:             r.label,
+          from_table: tableIdToName.get(r.from_table_id) ?? '',
+          from_col:   r.from_column_id ? (colIdToName.get(r.from_column_id)?.col ?? null) : null,
+          to_table:   tableIdToName.get(r.to_table_id) ?? '',
+          to_col:     r.to_column_id   ? (colIdToName.get(r.to_column_id)?.col   ?? null) : null,
+        }));
+
+        // Delete snapshotted rows to unblock the FK
+        if (cvRelSnapshots.length) {
+          await trx('cross_view_relationships')
+            .whereIn('id', cvRelSnapshots.map((r) => r.id))
+            .delete();
+        }
       }
+
+      // Snapshot cross_view_tables that touch these tables
+      const cvTables = await trx('cross_view_tables')
+        .whereIn('table_id', existingTableIds)
+        .select('view_id', 'table_id', 'pos_x', 'pos_y');
+
+      cvTableSnapshots = cvTables.map((r: { view_id: number; table_id: number; pos_x: number; pos_y: number }) => ({
+        view_id:    r.view_id,
+        table_name: tableIdToName.get(r.table_id) ?? '',
+        pos_x:      r.pos_x,
+        pos_y:      r.pos_y,
+      }));
+
+      // cross_view_tables has onDelete CASCADE so it will auto-delete when source_tables is deleted
+      // But we need the snapshot above to re-insert after — no explicit delete needed here.
 
       await trx('table_relationships')
         .where(function () {
@@ -67,8 +133,10 @@ export async function runSchemaProfiler(
         .delete();
       await trx('source_columns').whereIn('table_id', existingTableIds).delete();
       await trx('source_tables').whereIn('id', existingTableIds).delete();
+      // cross_view_tables rows cascade-deleted automatically here
     }
 
+    // Re-insert tables and columns (new IDs)
     for (const table of schema.tables) {
       const def = tableDefMap.get(table.tableName);
 
@@ -87,7 +155,6 @@ export async function runSchemaProfiler(
       tableIdMap.set(table.tableName, tableId);
       tablesInserted++;
 
-      // Insert columns for this table
       const colsForTable = columnDefs.filter((c) => c.table_name === table.tableName);
 
       for (const srcCol of table.columns) {
@@ -113,7 +180,7 @@ export async function runSchemaProfiler(
       }
     }
 
-    // 5. Insert suggested relationships — now with column IDs resolved
+    // 5. Insert suggested relationships
     for (const tableDef of draft.tables) {
       const fromTableId = tableIdMap.get(tableDef.table_name);
       if (!fromTableId) continue;
@@ -122,7 +189,6 @@ export async function runSchemaProfiler(
         const toTableId = tableIdMap.get(rel.to_table);
         if (!toTableId) continue;
 
-        // Resolve column IDs from the column map (best-effort — null if not found)
         const fromColId = rel.via_column
           ? (columnIdMap.get(`${tableDef.table_name}.${rel.via_column}`) ?? null)
           : null;
@@ -141,6 +207,44 @@ export async function runSchemaProfiler(
         });
         relationshipsInserted++;
       }
+    }
+
+    // 6. Restore cross_view_tables — only for tables that still exist
+    for (const snap of cvTableSnapshots) {
+      const newTableId = tableIdMap.get(snap.table_name);
+      if (!newTableId) continue; // table was removed from source — drop the canvas node
+      await trx('cross_view_tables')
+        .insert({ view_id: snap.view_id, table_id: newTableId, pos_x: snap.pos_x, pos_y: snap.pos_y })
+        .onConflict()
+        .ignore();
+    }
+
+    // 7. Restore cross_view_relationships — only where both tables AND columns still exist
+    for (const snap of cvRelSnapshots) {
+      const fromTableId = tableIdMap.get(snap.from_table);
+      const toTableId   = tableIdMap.get(snap.to_table);
+      if (!fromTableId || !toTableId) continue; // a referenced table was removed
+
+      const fromColId = snap.from_col
+        ? (columnIdMap.get(`${snap.from_table}.${snap.from_col}`) ?? null)
+        : null;
+      const toColId = snap.to_col
+        ? (columnIdMap.get(`${snap.to_table}.${snap.to_col}`) ?? null)
+        : null;
+
+      // If a specific column was referenced but no longer exists, drop this relationship
+      if (snap.from_col && !fromColId) continue;
+      if (snap.to_col   && !toColId)   continue;
+
+      await trx('cross_view_relationships').insert({
+        view_id:           snap.view_id,
+        from_table_id:     fromTableId,
+        from_column_id:    fromColId,
+        to_table_id:       toTableId,
+        to_column_id:      toColId,
+        relationship_type: snap.relationship_type,
+        label:             snap.label,
+      });
     }
   });
 
