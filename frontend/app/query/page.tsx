@@ -1180,11 +1180,20 @@ export default function QueryPage() {
     setLoading(true);
 
     try {
+      // If there's a prior exchange in this conversation, give Claude that context
+      // so follow-up questions like "give me a list" or "show top 10 instead" resolve correctly.
+      let fullQuestion = q;
+      const prior = messages.filter((m) => m.role === 'assistant').slice(-1)[0];
+      const priorQ = messages.filter((m) => m.role === 'user').slice(-1)[0];
+      if (prior && priorQ && priorQ.text !== q) {
+        fullQuestion = `Previous question: "${priorQ.text}"\nPrevious answer: "${prior.text.slice(0, 400)}"\n\nFollow-up: ${q}`;
+      }
+
       const isCrossView = selectedSource.startsWith('v:');
       const sourceId    = Number(selectedSource.split(':')[1]);
       const res = isCrossView
-        ? await api.post('/query/cross-view', { viewId: sourceId, question: q })
-        : await api.post('/query', { connectionId: sourceId, question: q, ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}) });
+        ? await api.post('/query/cross-view', { viewId: sourceId, question: fullQuestion })
+        : await api.post('/query', { connectionId: sourceId, question: fullQuestion, ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}) });
       const d   = res.data.data;
 
       const assistantId = nextId.current++;
