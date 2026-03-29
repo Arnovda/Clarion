@@ -37,6 +37,7 @@ function parseHandle(h: string | null | undefined): number | null {
 const TYPE_META: Record<string, { color: string; bg: string; border: string; label: string; src: string; tgt: string }> = {
   many_to_one:  { color: '#d97706', bg: '#fffbeb', border: '#fcd34d', label: 'Many → One',  src: 'N', tgt: '1' },
   one_to_many:  { color: '#2563eb', bg: '#eff6ff', border: '#93c5fd', label: 'One → Many',  src: '1', tgt: 'N' },
+  one_to_one:   { color: '#059669', bg: '#ecfdf5', border: '#6ee7b7', label: 'One → One',   src: '1', tgt: '1' },
   many_to_many: { color: '#7c3aed', bg: '#f5f3ff', border: '#c4b5fd', label: 'Many ↔ Many', src: 'N', tgt: 'N' },
 };
 const getMeta = (t: string) =>

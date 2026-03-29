@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import path from 'path';
+import Database from 'better-sqlite3';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateSql, formatAnswer, validateQueryResult, callClaudeMultiTurn } from '../ai/AIService';
+import { generateSql, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn } from '../ai/AIService';
 import {
   REPAIR_SYSTEM,
   buildRepairContext,
@@ -511,6 +513,192 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     res.end();
   } finally {
     sqliteConnector?.disconnect();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/query/cross-view — query across multiple SQLite sources via ATTACH
+// ---------------------------------------------------------------------------
+
+function sanitizeAlias(name: string): string {
+  return (name
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_')
+    .replace(/[^a-z0-9_]/g, '')
+    .replace(/_(sqlite|db)$/, '') || 'db');
+}
+
+router.post('/cross-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  let inMemDb: Database.Database | null = null;
+  try {
+    const { viewId, question } = req.body as { viewId: number; question: string };
+
+    if (!question?.trim()) {
+      res.status(400).json({ ok: false, error: 'question is required' });
+      return;
+    }
+
+    // 1. Load view tables with connection info
+    const viewTables = await semanticDb('cross_view_tables as vt')
+      .join('source_tables as st', 'vt.table_id', 'st.id')
+      .join('connections as c', 'st.connection_id', 'c.id')
+      .where('vt.view_id', viewId)
+      .select(
+        'st.id as table_id',
+        'st.table_name',
+        'st.display_name',
+        'st.description',
+        'st.connection_id',
+        'c.name as connection_name',
+        'c.config as connection_config',
+      );
+
+    if (!viewTables.length) {
+      res.status(400).json({ ok: false, error: 'This integration view has no tables. Add tables to the canvas first.' });
+      return;
+    }
+
+    // 2. Build connection → alias map (one alias per connection)
+    const connAliasMap = new Map<number, { alias: string; filepath: string }>();
+    for (const vt of viewTables as { connection_id: number; connection_name: string; connection_config: string | Record<string, unknown> }[]) {
+      if (!connAliasMap.has(vt.connection_id)) {
+        const cfg = typeof vt.connection_config === 'string'
+          ? JSON.parse(vt.connection_config) as { filepath: string }
+          : vt.connection_config as { filepath: string };
+        connAliasMap.set(vt.connection_id, {
+          alias:    sanitizeAlias(vt.connection_name),
+          filepath: path.resolve(cfg.filepath),
+        });
+      }
+    }
+
+    // 3. Load columns for all tables in the view
+    const tableIds = (viewTables as { table_id: number }[]).map((t) => t.table_id);
+    const columns = await semanticDb('source_columns').whereIn('table_id', tableIds).orderBy('id');
+
+    // 4. Load cross-view relationships with resolved names
+    const rawRels = await semanticDb('cross_view_relationships as r')
+      .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
+      .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
+      .leftJoin('source_tables  as ft', 'r.from_table_id',  'ft.id')
+      .leftJoin('source_tables  as tt', 'r.to_table_id',    'tt.id')
+      .where('r.view_id', viewId)
+      .select(
+        'ft.table_name as from_table',
+        'ft.connection_id as from_conn_id',
+        'fc.column_name as from_column',
+        'tt.table_name as to_table',
+        'tt.connection_id as to_conn_id',
+        'tc.column_name as to_column',
+        'r.relationship_type',
+      );
+
+    // 5. Build semantic context  —  each table prefixed with its schema alias
+    type VT = { table_id: number; table_name: string; display_name: string; description: string; connection_id: number; connection_name: string };
+    type Col = { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean };
+
+    const semanticContext = (viewTables as VT[]).map((t) => {
+      const alias = connAliasMap.get(t.connection_id)?.alias ?? 'db';
+      const cols  = (columns as Col[])
+        .filter((c) => c.table_id === t.table_id)
+        .map((c) =>
+          `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+        )
+        .join('\n');
+      return `Database: ${alias}\nTable: ${alias}.${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+    }).join('\n\n');
+
+    // 6. Build relationship context with fully-qualified names
+    type Rel = { from_table: string; from_conn_id: number; from_column: string | null; to_table: string; to_conn_id: number; to_column: string | null; relationship_type: string };
+    const relationshipContext = (rawRels as Rel[]).length
+      ? (rawRels as Rel[]).map((r) => {
+          const fa = connAliasMap.get(r.from_conn_id)?.alias ?? 'db';
+          const ta = connAliasMap.get(r.to_conn_id)?.alias   ?? 'db';
+          const from = r.from_column ? `${fa}.${r.from_table}.${r.from_column}` : `${fa}.${r.from_table}`;
+          const to   = r.to_column   ? `${ta}.${r.to_table}.${r.to_column}`     : `${ta}.${r.to_table}`;
+          return `- ${from} → ${to} (${r.relationship_type})`;
+        }).join('\n')
+      : 'No cross-source relationships defined yet — avoid cross-schema JOINs unless you are certain of the key columns.';
+
+    // 7. Generate SQL via Claude (cross-source variant)
+    const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext);
+
+    // 8. Log the query
+    const [logRow] = await semanticDb('query_log')
+      .insert({
+        user_id:          req.user!.sub,
+        question_text:    question,
+        generated_sql:    nlResult.sql,
+        confidence_score: nlResult.confidence,
+        was_flagged:      nlResult.confidence < 0.7,
+        flag_reason:      nlResult.confidence < 0.7 ? 'Low confidence (cross-source)' : null,
+      })
+      .returning('id');
+    const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
+
+    // 9. Block low-confidence queries
+    if (nlResult.confidence < 0.7) {
+      await semanticDb('definition_gaps').insert({
+        query_log_id:    queryLogId,
+        gap_description: `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`,
+      });
+      res.json({
+        ok: true,
+        data: {
+          answer:    "I don't have enough context to answer that confidently across these data sources. This question has been noted for review.",
+          confidence: nlResult.confidence,
+          blocked:    true,
+          sql:        nlResult.sql,
+          tablesUsed: nlResult.tables_used,
+          crossSource: true,
+          debug: { confirmedTables: tableIds.length, confirmedColumns: (columns as Col[]).length, confirmedRelationships: (rawRels as Rel[]).length, confirmedKpis: 0, hint: 'Cross-source query blocked due to low confidence. Check your integration view — ensure relationships are defined between the tables you are asking about.', semanticContext, relationshipContext },
+        },
+      });
+      return;
+    }
+
+    // 10. Execute SQL: open in-memory DB, ATTACH all sources, run query
+    inMemDb = new Database(':memory:');
+    for (const [, { alias, filepath }] of connAliasMap) {
+      inMemDb.exec(`ATTACH DATABASE '${filepath.replace(/'/g, "''")}' AS "${alias}"`);
+    }
+    const rows = inMemDb.prepare(nlResult.sql).all() as Record<string, unknown>[];
+    inMemDb.close();
+    inMemDb = null;
+
+    // 11. Format answer + validate
+    const [answer, validation] = await Promise.all([
+      formatAnswer(question, rows),
+      validateQueryResult(question, nlResult.sql, rows),
+    ]);
+
+    await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+
+    res.json({
+      ok: true,
+      data: {
+        answer,
+        confidence:  nlResult.confidence,
+        blocked:     false,
+        crossSource: true,
+        tablesUsed:  nlResult.tables_used,
+        rows:        rows.slice(0, 200),
+        sql:         nlResult.sql,
+        ...(validation.ok ? {} : { warning: validation.warning }),
+        debug: {
+          confirmedTables:        tableIds.length,
+          confirmedColumns:       (columns as Col[]).length,
+          confirmedRelationships: (rawRels as Rel[]).length,
+          confirmedKpis:          0,
+          hint: `Cross-source query executed with confidence ${Math.round(nlResult.confidence * 100)}%.`,
+          semanticContext,
+          relationshipContext,
+        },
+      },
+    });
+  } catch (err) {
+    inMemDb?.close();
+    next(err);
   }
 });
 

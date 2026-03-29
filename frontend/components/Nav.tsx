@@ -40,8 +40,9 @@ export default function Nav() {
       <div className="flex items-center gap-6">
         <span className="font-bold text-slate-900 text-base">DataBridge</span>
         <div className="flex gap-1">
-          {isAdmin && link('/setup',    'Setup')}
-          {isAdmin && link('/semantic', 'Definitions')}
+          {isAdmin && link('/setup',        'Sources')}
+          {isAdmin && link('/semantic',     'Definitions')}
+          {isAdmin && link('/cross-views',  'Integrations')}
           {link('/query',      'Ask')}
           {link('/dashboards', 'Dashboards')}
           {link('/reports',    'Reports')}

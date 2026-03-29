@@ -67,4 +67,75 @@ router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request
   }
 });
 
+// PATCH /api/connections/:id — update name and/or config
+router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { name, config } = req.body as { name?: string; config?: { filepath: string } };
+    const updates: Record<string, unknown> = {};
+    if (name) updates.name = name;
+    if (config) updates.config = JSON.stringify(config);
+
+    const updated = await semanticDb('connections').where({ id: req.params.id }).update(updates);
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/connections/:id/profile — re-run schema profiling (synchronous so errors surface)
+router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const connection = await semanticDb('connections').where({ id: req.params.id }).first();
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+    const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
+    const result = await runSchemaProfiler(connection.id, config.filepath);
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/connections/:id — delete a connection and its semantic data
+router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+
+    // Get table IDs for this connection so we can cascade manually
+    const tables = await semanticDb('source_tables').where({ connection_id: id }).select('id');
+    const tableIds = tables.map((t: { id: number }) => t.id);
+
+    if (tableIds.length) {
+      // Delete ALL relationships touching any of these tables (from or to)
+      await semanticDb('table_relationships')
+        .where(function () {
+          this.whereIn('from_table_id', tableIds).orWhereIn('to_table_id', tableIds);
+        })
+        .delete();
+
+      await semanticDb('source_columns').whereIn('table_id', tableIds).delete();
+      await semanticDb('source_tables').whereIn('id', tableIds).delete();
+    }
+
+    await semanticDb('kpi_definitions').where({ connection_id: id }).delete();
+    await semanticDb('dashboards').where({ connection_id: id }).delete();
+    const deleted = await semanticDb('connections').where({ id }).delete();
+
+    if (!deleted) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

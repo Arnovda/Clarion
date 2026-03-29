@@ -32,6 +32,7 @@ export async function runSchemaProfiler(
   const columnDefs = draft.columns;
 
   // 4. Insert source_tables and source_columns in a transaction
+  //    First wipe any existing rows so re-profiling never creates duplicates.
   let tablesInserted = 0;
   let columnsInserted = 0;
   let relationshipsInserted = 0;
@@ -41,6 +42,19 @@ export async function runSchemaProfiler(
   const columnIdMap = new Map<string, number>(); // key: "tableName.columnName"
 
   await semanticDb.transaction(async (trx) => {
+    // Delete existing data for this connection before re-inserting
+    const existingTables = await trx('source_tables').where({ connection_id: connectionId }).select('id');
+    const existingTableIds = existingTables.map((t: { id: number }) => t.id);
+    if (existingTableIds.length) {
+      await trx('table_relationships')
+        .where(function () {
+          this.whereIn('from_table_id', existingTableIds).orWhereIn('to_table_id', existingTableIds);
+        })
+        .delete();
+      await trx('source_columns').whereIn('table_id', existingTableIds).delete();
+      await trx('source_tables').whereIn('id', existingTableIds).delete();
+    }
+
     for (const table of schema.tables) {
       const def = tableDefMap.get(table.tableName);
 

@@ -8,7 +8,8 @@
     "migrate:latest": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:latest",
     "migrate:rollback": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:rollback",
     "migrate:status": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:status",
-    "seed": "ts-node src/seed.ts"
+    "seed": "ts-node src/seed.ts",
+    "seed:hr": "ts-node src/seed-hr.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

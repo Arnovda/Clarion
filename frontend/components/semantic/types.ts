@@ -15,6 +15,7 @@ export interface SourceColumn {
   display_name: string;
   description: string;
   data_type: string;
+  example_values: string | string[] | null;
   is_dimension: boolean;
   is_measure: boolean;
   ai_draft: boolean;

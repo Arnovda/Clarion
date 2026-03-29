@@ -1,130 +1,645 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Nav from '@/components/Nav';
 import api from '@/lib/api';
 
-type Step = 'connect' | 'profiling' | 'done';
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-export default function SetupPage() {
+interface Connection {
+  id: number;
+  name: string;
+  type: string;
+  config: { filepath?: string } | string;
+  created_by: string;
+  created_at: string;
+}
+
+interface Connector {
+  id: string;
+  name: string;
+  description: string;
+  available: boolean;
+  color: string;
+  iconLetter: string;
+  formFields: FormField[];
+}
+
+interface FormField {
+  key: string;
+  label: string;
+  placeholder: string;
+  type: 'text' | 'password' | 'number';
+  hint?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Connector catalog
+// ---------------------------------------------------------------------------
+
+const CONNECTORS: Connector[] = [
+  {
+    id: 'sqlite',
+    name: 'SQLite',
+    description: 'Local .db file on this machine',
+    available: true,
+    color: 'bg-blue-500',
+    iconLetter: 'S',
+    formFields: [
+      {
+        key: 'filepath',
+        label: 'File path',
+        placeholder: 'C:\\Users\\you\\Documents\\databridge\\data\\sample.db',
+        type: 'text',
+        hint: 'Absolute path to your .db file on this machine.',
+      },
+    ],
+  },
+  {
+    id: 'sqlserver',
+    name: 'SQL Server',
+    description: 'Microsoft SQL Server / Azure SQL',
+    available: false,
+    color: 'bg-red-500',
+    iconLetter: 'M',
+    formFields: [],
+  },
+  {
+    id: 'postgres',
+    name: 'PostgreSQL',
+    description: 'PostgreSQL database',
+    available: false,
+    color: 'bg-indigo-500',
+    iconLetter: 'P',
+    formFields: [],
+  },
+  {
+    id: 'mysql',
+    name: 'MySQL',
+    description: 'MySQL or MariaDB database',
+    available: false,
+    color: 'bg-orange-500',
+    iconLetter: 'M',
+    formFields: [],
+  },
+  {
+    id: 'exactonline',
+    name: 'Exact Online',
+    description: 'Belgian & Dutch ERP platform',
+    available: false,
+    color: 'bg-teal-500',
+    iconLetter: 'E',
+    formFields: [],
+  },
+  {
+    id: 'odoo',
+    name: 'Odoo',
+    description: 'Open-source ERP & CRM',
+    available: false,
+    color: 'bg-purple-500',
+    iconLetter: 'O',
+    formFields: [],
+  },
+  {
+    id: 'salesforce',
+    name: 'Salesforce',
+    description: 'CRM & cloud platform',
+    available: false,
+    color: 'bg-sky-500',
+    iconLetter: 'S',
+    formFields: [],
+  },
+  {
+    id: 'googlesheets',
+    name: 'Google Sheets',
+    description: 'Spreadsheet data source',
+    available: false,
+    color: 'bg-green-500',
+    iconLetter: 'G',
+    formFields: [],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getConfig(conn: Connection): { filepath?: string } {
+  if (typeof conn.config === 'string') {
+    try { return JSON.parse(conn.config); } catch { return {}; }
+  }
+  return conn.config ?? {};
+}
+
+function connectorForType(type: string): Connector | undefined {
+  return CONNECTORS.find((c) => c.id === type);
+}
+
+// ---------------------------------------------------------------------------
+// ConnectorIcon
+// ---------------------------------------------------------------------------
+
+function ConnectorIcon({ connector, size = 'md' }: { connector: Connector; size?: 'sm' | 'md' | 'lg' }) {
+  const sizes = { sm: 'w-8 h-8 text-sm', md: 'w-10 h-10 text-base', lg: 'w-12 h-12 text-lg' };
+  return (
+    <div className={`${sizes[size]} ${connector.color} rounded-lg flex items-center justify-center text-white font-bold shrink-0`}>
+      {connector.iconLetter}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ConnectionCard
+// ---------------------------------------------------------------------------
+
+function ConnectionCard({
+  conn,
+  onDelete,
+  onReProfile,
+  onEdit,
+}: {
+  conn: Connection;
+  onDelete: (id: number) => void;
+  onReProfile: (id: number) => void;
+  onEdit: (conn: Connection) => void;
+}) {
   const router = useRouter();
-  const [step, setStep]         = useState<Step>('connect');
-  const [filepath, setFilepath] = useState('');
-  const [testMsg, setTestMsg]   = useState('');
-  const [testOk, setTestOk]     = useState<boolean | null>(null);
-  const [connId, setConnId]     = useState<number | null>(null);
-  const [error, setError]       = useState('');
-  const [loading, setLoading]   = useState(false);
+  const connector = connectorForType(conn.type);
+  const config = getConfig(conn);
+  const [deleting, setDeleting] = useState(false);
+  const [reprofiling, setReprofiling] = useState(false);
 
-  async function testConnection() {
-    setTestMsg('');
-    setTestOk(null);
-    setLoading(true);
+  async function handleDelete() {
+    if (!confirm(`Remove connection "${conn.name}"? This will also delete all definitions.`)) return;
+    setDeleting(true);
     try {
-      const res = await api.post('/connections/test', { type: 'sqlite', config: { filepath } });
-      setTestOk(res.data.ok);
-      setTestMsg(res.data.data?.message ?? '');
+      await api.delete(`/connections/${conn.id}`);
+      onDelete(conn.id);
     } catch {
-      setTestOk(false);
-      setTestMsg('Connection failed. Check the file path.');
+      alert('Failed to delete connection.');
     } finally {
-      setLoading(false);
+      setDeleting(false);
     }
   }
 
-  async function createAndProfile() {
-    setError('');
-    setLoading(true);
+  async function handleReProfile() {
+    setReprofiling(true);
     try {
-      const res = await api.post('/connections', {
-        name:   'sample-sqlite',
-        type:   'sqlite',
-        config: { filepath },
-      });
-      setConnId(res.data.data.connectionId);
-      setStep('profiling');
-      // Profiling runs in the background — wait 8s then redirect to definitions
-      setTimeout(() => {
-        setStep('done');
-      }, 8000);
+      await api.post(`/connections/${conn.id}/profile`);
+      onReProfile(conn.id);
+    } catch {
+      alert('Re-profiling failed.');
+    } finally {
+      setTimeout(() => setReprofiling(false), 3000);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 hover:shadow-md transition-shadow">
+      {connector ? (
+        <ConnectorIcon connector={connector} size="lg" />
+      ) : (
+        <div className="w-12 h-12 bg-slate-400 rounded-lg flex items-center justify-center text-white font-bold shrink-0">?</div>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="font-semibold text-slate-900">{conn.name}</span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Connected</span>
+        </div>
+        <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">{conn.type}</p>
+        {config.filepath && (
+          <p className="text-xs text-slate-500 font-mono truncate" title={config.filepath}>{config.filepath}</p>
+        )}
+        <p className="text-xs text-slate-400 mt-1">
+          Added {new Date(conn.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+        </p>
+      </div>
+      <div className="flex flex-col gap-1 shrink-0">
+        <button
+          onClick={() => router.push(`/semantic?connectionId=${conn.id}`)}
+          className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors"
+        >
+          View definitions
+        </button>
+        <button
+          onClick={() => onEdit(conn)}
+          className="px-3 py-1.5 text-xs font-medium bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+        >
+          Edit
+        </button>
+        <button
+          onClick={handleReProfile}
+          disabled={reprofiling}
+          className="px-3 py-1.5 text-xs font-medium bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-50"
+        >
+          {reprofiling ? 'Re-analysing…' : 'Re-analyse'}
+        </button>
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          className="px-3 py-1.5 text-xs font-medium bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+        >
+          {deleting ? 'Removing…' : 'Remove'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ConnectorTile
+// ---------------------------------------------------------------------------
+
+function ConnectorTile({ connector, onClick }: { connector: Connector; onClick: () => void }) {
+  return (
+    <button
+      onClick={connector.available ? onClick : undefined}
+      disabled={!connector.available}
+      className={`relative bg-white rounded-xl border p-4 text-left transition-all flex flex-col gap-3 ${
+        connector.available
+          ? 'border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 cursor-pointer'
+          : 'border-slate-100 opacity-60 cursor-default'
+      }`}
+    >
+      {!connector.available && (
+        <span className="absolute top-2.5 right-2.5 text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">
+          Coming soon
+        </span>
+      )}
+      <ConnectorIcon connector={connector} size="md" />
+      <div>
+        <p className="font-semibold text-slate-800 text-sm">{connector.name}</p>
+        <p className="text-xs text-slate-500 mt-0.5">{connector.description}</p>
+      </div>
+      {connector.available && (
+        <span className="text-xs font-medium text-blue-600">Connect →</span>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SlidePanel — create or edit a connection
+// ---------------------------------------------------------------------------
+
+function SlidePanel({
+  connector,
+  editConnection,
+  onClose,
+  onConnected,
+  onUpdated,
+}: {
+  connector: Connector;
+  editConnection?: Connection;        // present → edit mode
+  onClose: () => void;
+  onConnected: (id: number, name: string) => void;
+  onUpdated: (conn: Connection) => void;
+}) {
+  const isEdit = !!editConnection;
+
+  // Seed state from existing connection when editing
+  const initialConfig = editConnection ? getConfig(editConnection) : {};
+  const [name, setName] = useState(editConnection?.name ?? '');
+  const [fields, setFields] = useState<Record<string, string>>(
+    Object.fromEntries(connector.formFields.map((f) => [f.key, (initialConfig as Record<string, string>)[f.key] ?? '']))
+  );
+  // In edit mode start as 'ok' so Save is enabled immediately (path is already valid)
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>(isEdit ? 'ok' : 'idle');
+  const [testMsg, setTestMsg] = useState(isEdit ? 'Connection previously verified' : '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  function setField(key: string, value: string) {
+    setFields((prev) => ({ ...prev, [key]: value }));
+    // Any field change in edit mode requires re-testing
+    if (isEdit) {
+      setTestStatus('idle');
+      setTestMsg('');
+    }
+  }
+
+  async function handleTest() {
+    setTestStatus('testing');
+    setTestMsg('');
+    try {
+      const res = await api.post('/connections/test', { type: connector.id, config: fields });
+      if (res.data.ok) {
+        setTestStatus('ok');
+        setTestMsg(res.data.data?.message ?? 'Connection successful');
+      } else {
+        setTestStatus('fail');
+        setTestMsg(res.data.error ?? 'Connection failed');
+      }
+    } catch {
+      setTestStatus('fail');
+      setTestMsg('Connection failed. Check the path and try again.');
+    }
+  }
+
+  async function handleSave() {
+    if (!name.trim()) { setError('Please enter a name for this connection.'); return; }
+    setError('');
+    setSaving(true);
+    try {
+      if (isEdit) {
+        await api.patch(`/connections/${editConnection!.id}`, {
+          name: name.trim(),
+          config: fields,
+        });
+        onUpdated({ ...editConnection!, name: name.trim(), config: fields });
+      } else {
+        const res = await api.post('/connections', {
+          name: name.trim(),
+          type: connector.id,
+          config: fields,
+        });
+        onConnected(res.data.data.connectionId, name.trim());
+      }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg ?? 'Failed to create connection.');
+      setError(msg ?? (isEdit ? 'Failed to save changes.' : 'Failed to create connection.'));
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
+  }
+
+  const allFilled = connector.formFields.every((f) => (fields[f.key] ?? '').trim());
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl z-50 flex flex-col">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 py-5 border-b border-slate-200">
+          <ConnectorIcon connector={connector} size="md" />
+          <div>
+            <h2 className="font-semibold text-slate-900">
+              {isEdit ? `Edit — ${editConnection!.name}` : `Connect ${connector.name}`}
+            </h2>
+            <p className="text-xs text-slate-500">{connector.description}</p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-700 text-xl leading-none">×</button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+          {/* Connection name */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Connection name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Sample SQLite DB"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Dynamic fields */}
+          {connector.formFields.map((f) => (
+            <div key={f.key}>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{f.label}</label>
+              <input
+                type={f.type}
+                value={fields[f.key] ?? ''}
+                onChange={(e) => setField(f.key, e.target.value)}
+                placeholder={f.placeholder}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {f.hint && <p className="text-xs text-slate-400 mt-1">{f.hint}</p>}
+            </div>
+          ))}
+
+          {/* Test result */}
+          {testStatus === 'ok' && (
+            <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              <span>✓</span> {testMsg}
+            </div>
+          )}
+          {testStatus === 'fail' && (
+            <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <span>✗</span> {testMsg}
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          {/* Info note */}
+          {!isEdit && (
+            <div className="bg-slate-50 rounded-lg p-4 text-xs text-slate-500 space-y-1">
+              <p className="font-medium text-slate-600">What happens when you connect?</p>
+              <p>1. DataBridge tests the connection to make sure it works.</p>
+              <p>2. The schema is read (tables, columns, sample values).</p>
+              <p>3. Claude generates plain-language definitions for your review.</p>
+            </div>
+          )}
+          {isEdit && (
+            <div className="bg-amber-50 rounded-lg p-4 text-xs text-amber-700 space-y-1">
+              <p className="font-medium">Changing the file path?</p>
+              <p>Test the connection first, then save. If you point to a different database, use Re-analyse to regenerate definitions.</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+          <button
+            onClick={handleTest}
+            disabled={!allFilled || testStatus === 'testing'}
+            className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors"
+          >
+            {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={testStatus !== 'ok' || saving}
+            className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors font-medium"
+          >
+            {saving
+              ? (isEdit ? 'Saving…' : 'Saving & analysing…')
+              : (isEdit ? 'Save changes' : 'Save & analyse')}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ProfilingBanner
+// ---------------------------------------------------------------------------
+
+function ProfilingBanner({ name, connId, onDismiss }: { name: string; connId: number; onDismiss: () => void }) {
+  const router = useRouter();
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setDone(true), 8000);
+    return () => clearTimeout(t);
+  }, []);
+
+  if (done) {
+    return (
+      <div className="bg-green-50 border border-green-200 rounded-xl px-5 py-4 flex items-center gap-4">
+        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-lg shrink-0">✓</div>
+        <div className="flex-1">
+          <p className="font-medium text-green-800 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
+          <p className="text-xs text-green-600">AI-generated definitions are ready for your review.</p>
+        </div>
+        <button
+          onClick={() => router.push(`/semantic?connectionId=${connId}`)}
+          className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+        >
+          Review definitions
+        </button>
+        <button onClick={onDismiss} className="text-green-400 hover:text-green-700 text-xl ml-1">×</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex items-center gap-4">
+      <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+      <div>
+        <p className="font-medium text-blue-800 text-sm">Analysing <span className="font-semibold">{name}</span>…</p>
+        <p className="text-xs text-blue-600">Claude is reading your schema and generating definitions. This takes about 5–10 seconds.</p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
+export default function SourcesPage() {
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
+  const [editingConn, setEditingConn] = useState<Connection | null>(null);
+  const [profiling, setProfiling] = useState<{ id: number; name: string } | null>(null);
+
+  useEffect(() => {
+    api.get('/connections')
+      .then((res) => setConnections(res.data.data ?? []))
+      .catch(() => setConnections([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  function openEdit(conn: Connection) {
+    const connector = connectorForType(conn.type);
+    if (!connector) return;
+    setEditingConn(conn);
+    setPanelConnector(connector);
+  }
+
+  function closePanel() {
+    setPanelConnector(null);
+    setEditingConn(null);
+  }
+
+  function handleConnected(id: number, name: string) {
+    closePanel();
+    setProfiling({ id, name });
+    api.get('/connections').then((res) => setConnections(res.data.data ?? []));
+  }
+
+  function handleUpdated(updated: Connection) {
+    setConnections((prev) => prev.map((c) => (c.id === updated.id ? { ...c, ...updated } : c)));
+    closePanel();
+  }
+
+  function handleDelete(id: number) {
+    setConnections((prev) => prev.filter((c) => c.id !== id));
+  }
+
+  function handleReProfile(id: number) {
+    const conn = connections.find((c) => c.id === id);
+    if (conn) setProfiling({ id, name: conn.name });
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
       <Nav />
-      <div className="max-w-xl mx-auto pt-16 px-4">
-        <h1 className="text-2xl font-bold text-slate-900 mb-1">Connect your data source</h1>
-        <p className="text-slate-500 text-sm mb-8">Point DataBridge to your SQLite database file to get started.</p>
 
-        {step === 'connect' && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">SQLite file path</label>
-              <input
-                type="text"
-                value={filepath}
-                onChange={(e) => setFilepath(e.target.value)}
-                placeholder="C:\Users\you\Documents\databridge\data\sample.db"
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+      <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+        {/* Profiling banner */}
+        {profiling && (
+          <ProfilingBanner
+            name={profiling.name}
+            connId={profiling.id}
+            onDismiss={() => setProfiling(null)}
+          />
+        )}
+
+        {/* Connected Sources */}
+        <section>
+          <div className="flex items-baseline gap-3 mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">Connected Sources</h2>
+            <span className="text-sm text-slate-400">{connections.length} source{connections.length !== 1 ? 's' : ''}</span>
+          </div>
+
+          {loading ? (
+            <div className="bg-white rounded-xl border border-slate-200 p-8 flex items-center justify-center">
+              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+          ) : connections.length === 0 ? (
+            <div className="bg-white rounded-xl border border-dashed border-slate-300 p-8 text-center">
+              <p className="text-slate-400 text-sm">No sources connected yet.</p>
+              <p className="text-slate-400 text-xs mt-1">Choose a connector below to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {connections.map((conn) => (
+                <ConnectionCard
+                  key={conn.id}
+                  conn={conn}
+                  onDelete={handleDelete}
+                  onReProfile={handleReProfile}
+                  onEdit={openEdit}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Add a Source */}
+        <section>
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">Add a Source</h2>
+            <p className="text-sm text-slate-500 mt-0.5">Choose a connector to bring in your data. More connectors are coming soon.</p>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {CONNECTORS.map((connector) => (
+              <ConnectorTile
+                key={connector.id}
+                connector={connector}
+                onClick={() => { setEditingConn(null); setPanelConnector(connector); }}
               />
-            </div>
-
-            {testMsg && (
-              <p className={`text-sm ${testOk ? 'text-green-600' : 'text-red-600'}`}>{testMsg}</p>
-            )}
-
-            {error && <p className="text-sm text-red-600">{error}</p>}
-
-            <div className="flex gap-3">
-              <button
-                onClick={testConnection}
-                disabled={!filepath || loading}
-                className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors"
-              >
-                Test connection
-              </button>
-              <button
-                onClick={createAndProfile}
-                disabled={!testOk || loading}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
-              >
-                Connect &amp; analyse
-              </button>
-            </div>
+            ))}
           </div>
-        )}
+        </section>
 
-        {step === 'profiling' && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center space-y-3">
-            <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="font-medium text-slate-800">Analysing your schema…</p>
-            <p className="text-sm text-slate-500">Claude is generating definitions for your tables and columns. This takes about 5–10 seconds.</p>
-          </div>
-        )}
-
-        {step === 'done' && (
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-8 text-center space-y-4">
-            <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-              <span className="text-green-600 text-xl">&#10003;</span>
-            </div>
-            <p className="font-medium text-slate-800">Schema analysis complete</p>
-            <p className="text-sm text-slate-500">AI-generated definitions are ready for your review.</p>
-            <button
-              onClick={() => router.push(`/semantic?connectionId=${connId}`)}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-            >
-              Review definitions
-            </button>
-          </div>
-        )}
       </div>
+
+      {/* Slide-in panel (create or edit) */}
+      {panelConnector && (
+        <SlidePanel
+          connector={panelConnector}
+          editConnection={editingConn ?? undefined}
+          onClose={closePanel}
+          onConnected={handleConnected}
+          onUpdated={handleUpdated}
+        />
+      )}
     </div>
   );
 }

@@ -219,4 +219,35 @@ router.patch('/kpis/:id', requireAuth, requireRole('epicdata_admin'), async (req
   } catch (err) { next(err); }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/semantic/preview?connectionId=1&table=orders&limit=10
+// ---------------------------------------------------------------------------
+
+router.get('/preview', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, table, limit = '10' } = req.query as Record<string, string>;
+
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
+    const connector = new SqliteConnector(config.filepath);
+    await connector.connect();
+
+    try {
+      const result = await connector.executeQuery(
+        `SELECT * FROM "${table}" LIMIT ${Math.min(Number(limit), 50)}`,
+      );
+      res.json({ ok: true, data: { rows: result.rows, columns: result.rows.length ? Object.keys(result.rows[0] as object) : [] } });
+    } finally {
+      connector.disconnect();
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;

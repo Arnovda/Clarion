@@ -11,12 +11,102 @@ interface Props {
   onSaved: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function parseExamples(raw: SourceColumn['example_values']): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
+  } catch {}
+  return [];
+}
+
+// ---------------------------------------------------------------------------
+// PreviewTable — inline data preview
+// ---------------------------------------------------------------------------
+
+function PreviewTable({ connectionId, tableName }: { connectionId: number; tableName: string }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [rows, setRows]   = useState<Record<string, unknown>[]>([]);
+  const [cols, setCols]   = useState<string[]>([]);
+
+  async function load() {
+    setState('loading');
+    try {
+      const res = await api.get(`/semantic/preview?connectionId=${connectionId}&table=${encodeURIComponent(tableName)}&limit=10`);
+      setRows(res.data.data.rows);
+      setCols(res.data.data.columns);
+      setState('done');
+    } catch {
+      setState('error');
+    }
+  }
+
+  if (state === 'idle') {
+    return (
+      <button
+        onClick={load}
+        className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+      >
+        Preview data →
+      </button>
+    );
+  }
+
+  if (state === 'loading') {
+    return <p className="text-xs text-slate-400">Loading preview…</p>;
+  }
+
+  if (state === 'error') {
+    return <p className="text-xs text-red-500">Could not load preview.</p>;
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs font-medium text-slate-500">First {rows.length} rows</span>
+        <button onClick={() => setState('idle')} className="text-xs text-slate-400 hover:text-slate-600">Hide</button>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-slate-200">
+        <table className="text-xs w-full">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              {cols.map((c) => (
+                <th key={c} className="px-3 py-2 text-left font-medium text-slate-600 whitespace-nowrap">{c}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                {cols.map((c) => (
+                  <td key={c} className="px-3 py-1.5 text-slate-700 whitespace-nowrap max-w-[180px] truncate" title={String(row[c] ?? '')}>
+                    {row[c] == null ? <span className="text-slate-300 italic">null</span> : String(row[c])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main panel
+// ---------------------------------------------------------------------------
+
 export default function TableDetailPanel({ table, columns, focusColumnId, onSaved }: Props) {
-  const [tbl, setTbl]         = useState<SourceTable>(table);
-  const [cols, setCols]       = useState<SourceColumn[]>(columns);
+  const [tbl, setTbl]               = useState<SourceTable>(table);
+  const [cols, setCols]             = useState<SourceColumn[]>(columns);
   const [savingTable, setSavingTable] = useState(false);
-  const [savingCol, setSavingCol]     = useState<number | null>(null);
-  const [savedMsg, setSavedMsg]       = useState('');
+  const [savingCol, setSavingCol]   = useState<number | null>(null);
+  const [savedMsg, setSavedMsg]     = useState('');
 
   // Keep local state in sync when parent switches to a different table
   if (table.id !== tbl.id) { setTbl(table); setCols(columns); }
@@ -111,6 +201,11 @@ export default function TableDetailPanel({ table, columns, focusColumnId, onSave
           </button>
           {savedMsg && <span className="text-sm text-green-600">{savedMsg}</span>}
         </div>
+
+        {/* Inline data preview */}
+        <div className="mt-4 pt-4 border-t border-slate-100">
+          <PreviewTable connectionId={tbl.connection_id} tableName={tbl.table_name} />
+        </div>
       </section>
 
       {/* Columns */}
@@ -120,20 +215,34 @@ export default function TableDetailPanel({ table, columns, focusColumnId, onSave
         </h3>
         <div className="space-y-3">
           {cols.map((col) => {
-            const isFocused = col.id === focusColumnId;
+            const isFocused  = col.id === focusColumnId;
+            const examples   = parseExamples(col.example_values);
             return (
               <div
                 key={col.id}
                 id={`col-${col.id}`}
                 className={`bg-white rounded-xl border p-4 transition-all ${isFocused ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'}`}
               >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-sm text-slate-700">{col.column_name}</span>
-                    <span className="ml-2 text-xs text-slate-400">{col.data_type}</span>
+                    <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{col.data_type}</span>
+                    {col.is_dimension && <span className="text-xs text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">dimension</span>}
+                    {col.is_measure   && <span className="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">measure</span>}
                   </div>
                   {badge(col.ai_draft)}
                 </div>
+
+                {/* Example values chips */}
+                {examples.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-3">
+                    {examples.map((v, i) => (
+                      <span key={i} className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-mono">
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-3 mb-3">
                   <div>

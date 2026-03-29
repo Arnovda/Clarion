@@ -17,6 +17,8 @@ import {
   RESULT_VALIDATION_SYSTEM,
   buildResultValidationUser,
   ResultValidationOutput,
+  NL_TO_SQL_CROSS_SYSTEM,
+  buildNlToSqlCrossUser,
 } from './prompts/nlToSqlPrompt';
 import {
   REPORT_NARRATIVE_SYSTEM,
@@ -43,10 +45,10 @@ const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async function callClaude(systemPrompt: string, userPrompt: string): Promise<string> {
+async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 4096,
+    max_tokens: maxTokens,
     messages: [{ role: 'user', content: userPrompt }],
     system: systemPrompt,
   });
@@ -94,6 +96,7 @@ export async function generateSchemaDraft(
   const raw = await callClaude(
     SCHEMA_DRAFT_SYSTEM,
     buildSchemaDraftUser(sourceType, tables),
+    16000,
   );
   return parseJson<SchemaDraftOutput>(raw);
 }
@@ -135,6 +138,22 @@ export async function validateQueryResult(
     // Validation is best-effort — never let it break a successful query response
     return { ok: true };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-source variant of Call Type 2a
+// ---------------------------------------------------------------------------
+
+export async function generateCrossSourceSql(
+  question: string,
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<NlToSqlOutput> {
+  const raw = await callClaude(
+    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext),
+    buildNlToSqlCrossUser(question),
+  );
+  return parseJson<NlToSqlOutput>(raw);
 }
 
 // ---------------------------------------------------------------------------

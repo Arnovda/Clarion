@@ -12,90 +12,159 @@ import { SourceTable, SourceColumn, KpiDefinition } from '@/components/semantic/
 
 type MainTab = 'definitions' | 'relationships' | 'kpis';
 
-function SemanticInner() {
-  const params       = useSearchParams();
-  const connectionId = params.get('connectionId') ?? '1';
+interface Connection { id: number; name: string; }
 
-  const [tab, setTab]                           = useState<MainTab>('definitions');
-  const [tables, setTables]                     = useState<SourceTable[]>([]);
-  const [columnsByTable, setColumnsByTable]     = useState<Record<number, SourceColumn[]>>({});
-  const [kpis, setKpis]                         = useState<KpiDefinition[]>([]);
+function SemanticInner() {
+  const params      = useSearchParams();
+  const paramConnId = params.get('connectionId');
+
+  // ── All connections ────────────────────────────────────────────────────────
+  const [connections, setConnections]   = useState<Connection[]>([]);
+
+  // ── Per-connection lazy data ───────────────────────────────────────────────
+  const [tablesByConn, setTablesByConn]     = useState<Record<number, SourceTable[]>>({});
+  const [columnsByTable, setColumnsByTable] = useState<Record<number, SourceColumn[]>>({});
+  const [expandedConns, setExpandedConns]   = useState<Set<number>>(new Set());
+  const [loadingConns, setLoadingConns]     = useState<Set<number>>(new Set());
+
+  // ── Selection ──────────────────────────────────────────────────────────────
+  const [activeConnId, setActiveConnId]     = useState<number | null>(null);
   const [selectedTableId, setSelectedTableId]   = useState<number | null>(null);
   const [selectedColumnId, setSelectedColumnId] = useState<number | null>(null);
-  const [zoomToTableId,   setZoomToTableId]     = useState<number | null>(null);
-  const [connectionName, setConnectionName]     = useState('sample-sqlite');
+  const [zoomToTableId, setZoomToTableId]       = useState<number | null>(null);
 
-  // Auto-select the first table exactly once on initial load — never again after that,
-  // so clearing selection (click blank canvas, etc.) stays cleared.
-  const hasAutoSelected = useRef(false);
+  // ── KPIs (for active connection) ───────────────────────────────────────────
+  const [kpis, setKpis] = useState<KpiDefinition[]>([]);
 
-  const loadTables = useCallback(async () => {
-    const tRes = await api.get(`/semantic/tables?connectionId=${connectionId}`);
-    const tbls: SourceTable[] = tRes.data.data;
-    setTables(tbls);
-    if (tbls.length && !hasAutoSelected.current) {
-      setSelectedTableId(tbls[0].id);
-      hasAutoSelected.current = true;
+  const [tab, setTab] = useState<MainTab>('definitions');
+
+  const hasAutoExpanded = useRef<Set<number>>(new Set());
+
+  // ── Load connections on mount ──────────────────────────────────────────────
+  useEffect(() => {
+    api.get('/connections').then((res) => {
+      const conns: Connection[] = res.data.data ?? [];
+      setConnections(conns);
+
+      if (!conns.length) return;
+
+      // Determine which connection to auto-expand & select
+      let targetId: number | null = null;
+      if (paramConnId) {
+        targetId = Number(paramConnId);
+      } else {
+        const remembered = localStorage.getItem('databridge_last_conn');
+        const valid = remembered && conns.some((c) => c.id === Number(remembered));
+        targetId = valid ? Number(remembered) : conns[0].id;
+      }
+
+      if (targetId) {
+        setExpandedConns(new Set([targetId]));
+        loadConnectionTables(targetId);
+      }
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramConnId]);
+
+  // ── Load tables + columns for a connection ─────────────────────────────────
+  async function loadConnectionTables(connId: number) {
+    if (hasAutoExpanded.current.has(connId)) return; // already loaded
+    hasAutoExpanded.current.add(connId);
+
+    setLoadingConns((prev) => new Set(prev).add(connId));
+    try {
+      const tRes = await api.get(`/semantic/tables?connectionId=${connId}`);
+      const tbls: SourceTable[] = tRes.data.data ?? [];
+      setTablesByConn((prev) => ({ ...prev, [connId]: tbls }));
+
+      // Load columns for every table in parallel
+      const colMap: Record<number, SourceColumn[]> = {};
+      await Promise.all(tbls.map(async (t) => {
+        const r = await api.get(`/semantic/columns?tableId=${t.id}`);
+        colMap[t.id] = r.data.data ?? [];
+      }));
+      setColumnsByTable((prev) => ({ ...prev, ...colMap }));
+
+      // Auto-select first table on first load
+      if (tbls.length && !selectedTableId) {
+        setActiveConnId(connId);
+        setSelectedTableId(tbls[0].id);
+      }
+    } finally {
+      setLoadingConns((prev) => { const s = new Set(prev); s.delete(connId); return s; });
     }
+  }
+
+  // ── Reload tables after a save ─────────────────────────────────────────────
+  const reloadConnectionTables = useCallback(async (connId: number) => {
+    const tRes = await api.get(`/semantic/tables?connectionId=${connId}`);
+    const tbls: SourceTable[] = tRes.data.data ?? [];
+    setTablesByConn((prev) => ({ ...prev, [connId]: tbls }));
 
     const colMap: Record<number, SourceColumn[]> = {};
     await Promise.all(tbls.map(async (t) => {
       const r = await api.get(`/semantic/columns?tableId=${t.id}`);
-      colMap[t.id] = r.data.data;
+      colMap[t.id] = r.data.data ?? [];
     }));
-    setColumnsByTable(colMap);
+    setColumnsByTable((prev) => ({ ...prev, ...colMap }));
+  }, []);
 
-    const conns = await api.get('/connections').catch(() => null);
-    const conn  = conns?.data?.data?.find((c: { id: number; name: string }) => String(c.id) === connectionId);
-    if (conn) setConnectionName(conn.name);
-  }, [connectionId]);  // ← selectedTableId removed from deps — prevents reload loop
-
+  // ── KPIs for active connection ─────────────────────────────────────────────
   const loadKpis = useCallback(async () => {
-    const res = await api.get(`/semantic/kpis?connectionId=${connectionId}`);
-    setKpis(res.data.data);
-  }, [connectionId]);
+    if (!activeConnId) return;
+    const res = await api.get(`/semantic/kpis?connectionId=${activeConnId}`);
+    setKpis(res.data.data ?? []);
+  }, [activeConnId]);
 
-  useEffect(() => { loadTables(); loadKpis(); }, [loadTables, loadKpis]);
+  useEffect(() => { loadKpis(); }, [loadKpis]);
 
-  // When a column is selected, scroll to it in the detail panel
-  useEffect(() => {
-    if (selectedColumnId && tab === 'definitions') {
-      setTimeout(() => {
-        document.getElementById(`col-${selectedColumnId}`)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 80);
-    }
-  }, [selectedColumnId, tab]);
+  // ── Toggle connection open/closed ─────────────────────────────────────────
+  function handleToggleConnection(connId: number) {
+    setExpandedConns((prev) => {
+      const next = new Set(prev);
+      if (next.has(connId)) {
+        next.delete(connId);
+      } else {
+        next.add(connId);
+        loadConnectionTables(connId);
+        // Activating a connection switches the right panel to it
+        setActiveConnId(connId);
+        setSelectedTableId(null);
+        setSelectedColumnId(null);
+        localStorage.setItem('databridge_last_conn', String(connId));
+      }
+      return next;
+    });
+  }
 
-  const selectedTable = tables.find((t) => t.id === selectedTableId) ?? null;
-  const selectedCols  = selectedTableId ? (columnsByTable[selectedTableId] ?? []) : [];
-
-  // Left-pane click — highlight AND zoom to the table on the canvas
-  function handleSelectTable(id: number) {
-    setSelectedTableId(id);
+  // ── Select a table ─────────────────────────────────────────────────────────
+  function handleSelectTable(connId: number, tableId: number) {
+    setActiveConnId(connId);
+    setSelectedTableId(tableId);
     setSelectedColumnId(null);
-    setZoomToTableId(id);          // triggers canvas zoom
+    setZoomToTableId(tableId);
+    localStorage.setItem('databridge_last_conn', String(connId));
     if (tab === 'kpis') setTab('definitions');
   }
 
-  // Canvas header click — highlight only, no zoom/pan
-  function handleCanvasSelectTable(id: number) {
-    setSelectedTableId(id);
-    setSelectedColumnId(null);
-    // deliberately does NOT update zoomToTableId
-  }
-
   function handleSelectColumn(tableId: number, columnId: number) {
-    setSelectedTableId(tableId);
     setSelectedColumnId(columnId);
     if (tab === 'definitions') {
       setTimeout(() => {
-        document.getElementById(`col-${columnId}`)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        document.getElementById(`col-${columnId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 80);
     }
-    // On relationships tab: stay there, canvas will zoom + highlight the column's edges
   }
+
+  function handleCanvasSelectTable(tableId: number) {
+    setSelectedTableId(tableId);
+    setSelectedColumnId(null);
+  }
+
+  // ── Derived ────────────────────────────────────────────────────────────────
+  const allTables   = Object.values(tablesByConn).flat();
+  const selectedTable = allTables.find((t) => t.id === selectedTableId) ?? null;
+  const selectedCols  = selectedTableId ? (columnsByTable[selectedTableId] ?? []) : [];
 
   const tabBtn = (t: MainTab, label: string) => (
     <button
@@ -109,7 +178,6 @@ function SemanticInner() {
   );
 
   return (
-    // Full viewport height, flex column, no page-level scroll
     <div className="flex flex-col bg-slate-50" style={{ height: '100vh', overflow: 'hidden' }}>
       <Nav />
 
@@ -120,24 +188,25 @@ function SemanticInner() {
         {tabBtn('kpis', 'KPIs')}
       </div>
 
-      {/* Body — left sidebar + right panel, both scroll independently */}
-      {/* min-h-0 is critical: without it flex children can't shrink below content size */}
       <div className="flex flex-1 min-h-0">
-
-        {/* Left sidebar — independent scroll */}
+        {/* Left sidebar */}
         <div className="flex-shrink-0 overflow-y-auto bg-white border-r border-slate-200" style={{ width: 260 }}>
           <DatabaseTree
-            connectionName={connectionName}
-            tables={tables}
+            connections={connections}
+            tablesByConnection={tablesByConn}
             columnsByTable={columnsByTable}
+            expandedConnectionIds={expandedConns}
+            loadingConnectionIds={loadingConns}
+            activeConnectionId={activeConnId}
             selectedTableId={selectedTableId}
             selectedColumnId={selectedColumnId}
+            onToggleConnection={handleToggleConnection}
             onSelectTable={handleSelectTable}
             onSelectColumn={handleSelectColumn}
           />
         </div>
 
-        {/* Right panel — independent scroll (except canvas which is self-contained) */}
+        {/* Right panel */}
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
           {tab === 'definitions' && (
             selectedTable ? (
@@ -146,7 +215,7 @@ function SemanticInner() {
                 table={selectedTable}
                 columns={selectedCols}
                 focusColumnId={selectedColumnId}
-                onSaved={loadTables}
+                onSaved={() => activeConnId && reloadConnectionTables(activeConnId)}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
@@ -156,11 +225,10 @@ function SemanticInner() {
           )}
 
           {tab === 'relationships' && (
-            // Canvas manages its own overflow — give it full height
             <div className="flex-1 min-h-0" style={{ height: '100%' }}>
               <RelationshipCanvas
-                connectionId={connectionId}
-                tables={tables}
+                connectionId={String(activeConnId ?? '')}
+                tables={activeConnId ? (tablesByConn[activeConnId] ?? []) : []}
                 columnsByTable={columnsByTable}
                 focusTableId={selectedTableId}
                 focusColumnId={selectedColumnId}
@@ -174,7 +242,7 @@ function SemanticInner() {
 
           {tab === 'kpis' && (
             <KpiPanel
-              connectionId={connectionId}
+              connectionId={String(activeConnId ?? '')}
               kpis={kpis}
               onSaved={loadKpis}
             />

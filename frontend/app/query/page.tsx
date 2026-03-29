@@ -12,9 +12,47 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY    = 'databridge_conversations';
-const CONNECTION_ID  = 1;
-const BACKEND_URL    = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
+const STORAGE_KEY = 'databridge_conversations';
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
+
+interface DataSource {
+  type: 'connection' | 'view';
+  id: number;
+  label: string;
+}
+
+function SourceSelector({
+  sources,
+  selectedId,
+  onChange,
+}: {
+  sources: DataSource[];
+  selectedId: string;  // "c:1" or "v:2"
+  onChange: (id: string) => void;
+}) {
+  return (
+    <select
+      value={selectedId}
+      onChange={(e) => onChange(e.target.value)}
+      className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 max-w-[200px]"
+    >
+      {sources.filter((s) => s.type === 'connection').length > 0 && (
+        <optgroup label="Single source">
+          {sources.filter((s) => s.type === 'connection').map((s) => (
+            <option key={`c:${s.id}`} value={`c:${s.id}`}>{s.label}</option>
+          ))}
+        </optgroup>
+      )}
+      {sources.filter((s) => s.type === 'view').length > 0 && (
+        <optgroup label="Integration views">
+          {sources.filter((s) => s.type === 'view').map((s) => (
+            <option key={`v:${s.id}`} value={`v:${s.id}`}>🔗 {s.label}</option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+}
 
 const STARTERS = [
   'Who are my top 5 customers by total order value?',
@@ -842,6 +880,10 @@ export default function QueryPage() {
   const [showSql,       setShowSql]       = useState(false);
   const [isAdmin,       setIsAdmin]       = useState(false);
 
+  // Data source selection
+  const [sources,       setSources]       = useState<DataSource[]>([]);
+  const [selectedSource, setSelectedSource] = useState<string>('');
+
   // Ephemeral repair state — never persisted
   const [repairState, setRepairState] = useState<RepairState | null>(null);
 
@@ -851,6 +893,29 @@ export default function QueryPage() {
   const initialized = useRef(false);
 
   useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'epicdata_admin'); }, []);
+
+  // Load available connections + integration views
+  useEffect(() => {
+    Promise.all([
+      api.get('/connections').catch(() => ({ data: { data: [] } })),
+      api.get('/cross-views').catch(() => ({ data: { data: [] } })),
+    ]).then(([connRes, viewRes]) => {
+      const conns = (connRes.data.data ?? []) as { id: number; name: string }[];
+      const views = (viewRes.data.data ?? []) as { id: number; name: string }[];
+      const all: DataSource[] = [
+        ...conns.map((c) => ({ type: 'connection' as const, id: c.id, label: c.name })),
+        ...views.map((v) => ({ type: 'view' as const, id: v.id, label: v.name })),
+      ];
+      setSources(all);
+      // Restore last selection or default to first connection
+      const saved = localStorage.getItem('databridge_query_source');
+      if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
+        setSelectedSource(saved);
+      } else if (all.length > 0) {
+        setSelectedSource(`c:${all[0].id}`);
+      }
+    });
+  }, []);
 
   // Load conversations from localStorage
   useEffect(() => {
@@ -953,7 +1018,7 @@ export default function QueryPage() {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          connectionId:        CONNECTION_ID,
+          connectionId:        selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : 1,
           question:            params.question,
           originalSql:         params.originalSql,
           originalRows:        params.originalRows,
@@ -1105,7 +1170,11 @@ export default function QueryPage() {
     setLoading(true);
 
     try {
-      const res = await api.post('/query', { connectionId: CONNECTION_ID, question: q });
+      const isCrossView = selectedSource.startsWith('v:');
+      const sourceId    = Number(selectedSource.split(':')[1]);
+      const res = isCrossView
+        ? await api.post('/query/cross-view', { viewId: sourceId, question: q })
+        : await api.post('/query', { connectionId: sourceId, question: q });
       const d   = res.data.data;
 
       const assistantId = nextId.current++;
@@ -1174,9 +1243,26 @@ export default function QueryPage() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Header */}
           <div className="flex-shrink-0 bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-            <div>
-              <h1 className="text-base font-bold text-slate-900">Ask your data</h1>
-              <p className="text-xs text-slate-400 mt-0.5">Plain-English questions → instant answers</p>
+            <div className="flex items-center gap-3">
+              <div>
+                <h1 className="text-base font-bold text-slate-900">Ask your data</h1>
+                <p className="text-xs text-slate-400 mt-0.5">Plain-English questions → instant answers</p>
+              </div>
+              {sources.length > 0 && (
+                <SourceSelector
+                  sources={sources}
+                  selectedId={selectedSource}
+                  onChange={(v) => {
+                    setSelectedSource(v);
+                    localStorage.setItem('databridge_query_source', v);
+                  }}
+                />
+              )}
+              {selectedSource.startsWith('v:') && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                  Cross-source
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-4">
               {isAdmin && (

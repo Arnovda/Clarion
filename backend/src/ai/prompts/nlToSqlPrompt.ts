@@ -150,3 +150,61 @@ SQL executed: ${sql}
 Total rows returned: ${rowCount}
 First rows (up to 10): ${JSON.stringify(rows.slice(0, 10))}`;
 }
+
+// ---------------------------------------------------------------------------
+// Cross-source NL → SQL  (multi-schema ATTACH pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * Variant of NL_TO_SQL_SYSTEM for cross-source integration views.
+ * All source databases are ATTACHed to a shared in-memory SQLite connection.
+ * Tables must be referenced as  schema_alias.table_name.
+ */
+export const NL_TO_SQL_CROSS_SYSTEM = (
+  semanticContext: string,
+  relationshipContext: string,
+) =>
+  `You are a SQL generation engine for a multi-schema SQLite session.
+You only return valid SQLite SQL and a confidence score between 0 and 1.
+Never explain. Never add commentary outside the JSON. Return JSON only.
+
+━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Multiple SQLite databases are ATTACHed to a single in-memory connection.
+Every table MUST be referenced with its schema alias prefix: alias.table_name
+Example:  sales.orders ,  hr.employees  — NEVER just  orders  or  employees.
+
+━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${semanticContext}
+
+Cross-source relationships — use these to write JOINs across databases:
+${relationshipContext}
+
+━━━ REASONING PROTOCOL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — Identify which schemas (alias) each required table belongs to.
+Step 2 — Always write alias.table_name — never an unqualified table name.
+Step 3 — Follow the cross-source relationships to form the JOIN path.
+Step 4 — Establish the correct grain before aggregating (same rules as single-source).
+Step 5 — Prevent fan-out: if joining across two fact tables, aggregate each in a CTE first.
+Step 6 — Apply sensible default filters (exclude cancelled/inactive records when a status column exists).
+
+━━━ ABSOLUTE PROHIBITIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+• Never use an unqualified table name — always alias.table_name
+• Never assume two same-named columns across schemas measure the same thing
+• Never join two un-aggregated fact tables directly
+
+━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Return exactly this JSON shape — nothing else:
+{
+  "sql": "SELECT ...",
+  "confidence": 0.95,
+  "tables_used": ["sales.orders", "hr.employees"]
+}`;
+
+export function buildNlToSqlCrossUser(question: string): string {
+  return `Question: "${question}"`;
+}

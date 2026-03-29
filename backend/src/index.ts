@@ -12,6 +12,7 @@ import semanticRouter     from './routes/semantic';
 import queryRouter        from './routes/query';
 import reportsRouter      from './routes/reports';
 import dashboardsRouter   from './routes/dashboards';
+import crossViewsRouter   from './routes/cross-views';
 
 const app = express();
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
@@ -49,6 +50,7 @@ app.use('/api/semantic',     semanticRouter);
 app.use('/api/query',        queryRouter);
 app.use('/api/reports',      reportsRouter);
 app.use('/api/dashboards',   dashboardsRouter);
+app.use('/api/cross-views',  crossViewsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
