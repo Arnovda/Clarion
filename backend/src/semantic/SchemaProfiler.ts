@@ -1,6 +1,7 @@
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { generateSchemaDraft } from '../ai/AIService';
 import { semanticDb } from '../db/knex';
+import { runQualityProfile } from '../quality/QualityProfiler';
 
 export interface ProfilerResult {
   connectionId: number;
@@ -129,6 +130,12 @@ export async function runSchemaProfiler(
       }
     }
   });
+
+  // Auto-run quality profiling for every table — fire and forget, never blocks schema profiling
+  for (const table of schema.tables) {
+    runQualityProfile(connectionId, table.tableName, filePath)
+      .catch((err) => console.error(`[QualityProfiler] auto-profile failed for ${table.tableName}:`, err));
+  }
 
   return { connectionId, tablesInserted, columnsInserted, relationshipsInserted };
 }
