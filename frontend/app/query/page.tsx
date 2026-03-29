@@ -1258,28 +1258,6 @@ export default function QueryPage() {
                 <h1 className="text-base font-bold text-slate-900">Ask your data</h1>
                 <p className="text-xs text-slate-400 mt-0.5">Plain-English questions → instant answers</p>
               </div>
-              {availableDomains.length > 0 && (
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs text-slate-400">Domain:</span>
-                  {availableDomains.map((d) => {
-                    const active = selectedDomains.includes(d);
-                    return (
-                      <button
-                        key={d}
-                        onClick={() => setSelectedDomains((prev) => active ? prev.filter((x) => x !== d) : [...prev, d])}
-                        className={`text-xs px-2.5 py-0.5 rounded-full border font-medium transition-colors ${active ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-300 hover:border-violet-400 hover:text-violet-600'}`}
-                      >
-                        {d}
-                      </button>
-                    );
-                  })}
-                  {selectedDomains.length > 0 && (
-                    <button onClick={() => setSelectedDomains([])} className="text-xs text-slate-400 hover:text-slate-600">
-                      Clear
-                    </button>
-                  )}
-                </div>
-              )}
             </div>
             <div className="flex items-center gap-4">
               {isAdmin && (
