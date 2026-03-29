@@ -2,6 +2,7 @@ import { SqliteConnector } from '../connectors/SqliteConnector';
 import { generateSchemaDraft } from '../ai/AIService';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile } from '../quality/QualityProfiler';
+import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 
 export interface ProfilerResult {
   connectionId: number;
@@ -25,8 +26,33 @@ export async function runSchemaProfiler(
   const schema = await connector.introspectSchema();
   connector.disconnect();
 
-  // 2. Generate AI draft definitions
-  const draft = await generateSchemaDraft('sqlite', schema.tables);
+  // 2. Run quality profiling for all tables first — results feed into the AI draft
+  //    so Claude has statistical signals (PK/FK detection, cardinality) for better relationships.
+  //    Failures are swallowed per-table so a bad table never blocks the rest.
+  const qualityStats: TableQualityStat[] = [];
+  for (const table of schema.tables) {
+    try {
+      const result = await runQualityProfile(connectionId, table.tableName, filePath);
+      qualityStats.push({
+        table_name: table.tableName,
+        row_count:  result.rowCount,
+        columns: result.fields.map((f) => ({
+          field_name:     f.field_name,
+          null_pct:       f.null_pct,
+          distinct_count: f.distinct_count,
+          row_count:      result.rowCount,
+          top_values:     (f.top_values ?? []).map((v) => ({ value: String(v.value), pct: v.pct })),
+          min_value:      f.min_value,
+          max_value:      f.max_value,
+        })),
+      });
+    } catch (err) {
+      console.warn(`[SchemaProfiler] quality pre-profile skipped for ${table.tableName}:`, err);
+    }
+  }
+
+  // 3. Generate AI draft definitions — now enriched with quality stats
+  const draft = await generateSchemaDraft('sqlite', schema.tables, qualityStats);
 
   // 3. Build lookup maps from the draft
   const tableDefMap = new Map(draft.tables.map((t) => [t.table_name, t]));
@@ -247,12 +273,6 @@ export async function runSchemaProfiler(
       });
     }
   });
-
-  // Auto-run quality profiling for every table — fire and forget, never blocks schema profiling
-  for (const table of schema.tables) {
-    runQualityProfile(connectionId, table.tableName, filePath)
-      .catch((err) => console.error(`[QualityProfiler] auto-profile failed for ${table.tableName}:`, err));
-  }
 
   return { connectionId, tablesInserted, columnsInserted, relationshipsInserted };
 }

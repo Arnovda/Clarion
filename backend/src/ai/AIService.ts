@@ -7,6 +7,7 @@ import {
   SCHEMA_DRAFT_SYSTEM,
   buildSchemaDraftUser,
   SchemaDraftOutput,
+  TableQualityStat,
 } from './prompts/schemaDraftPrompt';
 import {
   NL_TO_SQL_SYSTEM,
@@ -92,10 +93,11 @@ function parseJson<T>(raw: string): T {
 export async function generateSchemaDraft(
   sourceType: string,
   tables: TableInfo[],
+  qualityStats?: TableQualityStat[],
 ): Promise<SchemaDraftOutput> {
   const raw = await callClaude(
     SCHEMA_DRAFT_SYSTEM,
-    buildSchemaDraftUser(sourceType, tables),
+    buildSchemaDraftUser(sourceType, tables, qualityStats),
     16000,
   );
   return parseJson<SchemaDraftOutput>(raw);

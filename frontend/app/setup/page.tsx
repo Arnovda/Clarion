@@ -159,12 +159,14 @@ function ConnectorIcon({ connector, size = 'md' }: { connector: Connector; size?
 function ConnectionCard({
   conn,
   onDelete,
-  onReProfile,
+  onStartReProfile,
+  onReProfileDone,
   onEdit,
 }: {
   conn: Connection;
   onDelete: (id: number) => void;
-  onReProfile: (id: number) => void;
+  onStartReProfile: (id: number) => void;
+  onReProfileDone: (id: number) => void;
   onEdit: (conn: Connection) => void;
 }) {
   const router = useRouter();
@@ -188,13 +190,14 @@ function ConnectionCard({
 
   async function handleReProfile() {
     setReprofiling(true);
+    onStartReProfile(conn.id);
     try {
       await api.post(`/connections/${conn.id}/profile`);
-      onReProfile(conn.id);
+      onReProfileDone(conn.id);
     } catch {
       alert('Re-profiling failed.');
     } finally {
-      setTimeout(() => setReprofiling(false), 3000);
+      setReprofiling(false);
     }
   }
 
@@ -543,40 +546,114 @@ function SlidePanel({
 // ProfilingBanner
 // ---------------------------------------------------------------------------
 
-function ProfilingBanner({ name, connId, onDismiss }: { name: string; connId: number; onDismiss: () => void }) {
+const STEPS = [
+  { icon: '🔍', label: 'Reading schema',            detail: 'Scanning tables, columns and sample values…',       ms: 1500  },
+  { icon: '📊', label: 'Profiling data quality',    detail: 'Computing null rates, cardinality and value ranges…', ms: 9000  },
+  { icon: '🤖', label: 'Claude is learning your data', detail: 'Generating definitions and inferring relationships…', ms: 22000 },
+  { icon: '✨', label: 'Wrapping up',               detail: 'Storing definitions and quality hints…',             ms: Infinity },
+];
+
+function ProfilingBanner({ name, connId, onDismiss, done }: {
+  name: string;
+  connId: number;
+  onDismiss: () => void;
+  done?: boolean;
+}) {
   const router = useRouter();
-  const [done, setDone] = useState(false);
+  const [step, setStep] = useState(0);
 
   useEffect(() => {
-    const t = setTimeout(() => setDone(true), 8000);
+    if (done) { setStep(STEPS.length); return; }
+    let current = 0;
+    function advance() {
+      current++;
+      if (current < STEPS.length - 1) {
+        setStep(current);
+        setTimeout(advance, STEPS[current].ms);
+      } else {
+        setStep(STEPS.length - 1);
+      }
+    }
+    const t = setTimeout(advance, STEPS[0].ms);
     return () => clearTimeout(t);
-  }, []);
+  }, [done]);
 
-  if (done) {
+  if (done || step >= STEPS.length) {
     return (
-      <div className="bg-green-50 border border-green-200 rounded-xl px-5 py-4 flex items-center gap-4">
-        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center text-green-600 text-lg shrink-0">✓</div>
-        <div className="flex-1">
-          <p className="font-medium text-green-800 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
-          <p className="text-xs text-green-600">AI-generated definitions are ready for your review.</p>
+      <div className="bg-green-50 border border-green-200 rounded-xl p-5">
+        <div className="flex items-center gap-3 mb-3">
+          <span className="text-2xl">🎉</span>
+          <div>
+            <p className="font-semibold text-green-800 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
+            <p className="text-xs text-green-600 mt-0.5">Quality profiles, definitions and relationships are ready.</p>
+          </div>
+          <button onClick={onDismiss} className="ml-auto text-green-400 hover:text-green-700 text-xl leading-none">×</button>
+        </div>
+        <div className="flex gap-2">
+          {STEPS.map((s) => (
+            <div key={s.label} className="flex items-center gap-1 text-xs text-green-700 bg-green-100 rounded-full px-2.5 py-0.5">
+              <span>{s.icon}</span> <span className="font-medium">{s.label}</span>
+            </div>
+          ))}
         </div>
         <button
           onClick={() => router.push(`/semantic?connectionId=${connId}`)}
-          className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          className="mt-3 w-full px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
         >
-          Review definitions
+          Review definitions →
         </button>
-        <button onClick={onDismiss} className="text-green-400 hover:text-green-700 text-xl ml-1">×</button>
       </div>
     );
   }
 
+  const activeStep = STEPS[step];
+  const progress = Math.round(((step + 1) / STEPS.length) * 100);
+
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-xl px-5 py-4 flex items-center gap-4">
-      <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
-      <div>
-        <p className="font-medium text-blue-800 text-sm">Analysing <span className="font-semibold">{name}</span>…</p>
-        <p className="text-xs text-blue-600">Claude is reading your schema and generating definitions. This takes about 5–10 seconds.</p>
+    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-4">
+        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+        <p className="text-sm font-semibold text-slate-800">Analysing <span className="text-blue-600">{name}</span></p>
+        <span className="ml-auto text-xs text-slate-400">{progress}%</span>
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full h-1.5 bg-slate-100 rounded-full mb-4 overflow-hidden">
+        <div
+          className="h-full bg-blue-500 rounded-full transition-all duration-700 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      {/* Steps */}
+      <div className="space-y-2">
+        {STEPS.map((s, i) => {
+          const isDone    = i < step;
+          const isActive  = i === step;
+          const isPending = i > step;
+          return (
+            <div key={s.label} className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-all ${isActive ? 'bg-blue-50 border border-blue-100' : ''}`}>
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 transition-all ${
+                isDone   ? 'bg-green-100 text-green-600'  :
+                isActive ? 'bg-blue-100 text-blue-600'    :
+                           'bg-slate-100 text-slate-400'
+              }`}>
+                {isDone ? '✓' : isActive ? (
+                  <span className="block w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                ) : s.icon}
+              </div>
+              <div className="min-w-0">
+                <p className={`text-xs font-medium ${isDone ? 'text-green-700' : isActive ? 'text-blue-700' : 'text-slate-400'}`}>
+                  {s.label}
+                </p>
+                {isActive && (
+                  <p className="text-[11px] text-blue-500 mt-0.5">{s.detail}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -591,7 +668,7 @@ export default function SourcesPage() {
   const [loading, setLoading] = useState(true);
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
   const [editingConn, setEditingConn] = useState<Connection | null>(null);
-  const [profiling, setProfiling] = useState<{ id: number; name: string } | null>(null);
+  const [profiling, setProfiling] = useState<{ id: number; name: string; done?: boolean } | null>(null);
 
   useEffect(() => {
     api.get('/connections')
@@ -627,9 +704,13 @@ export default function SourcesPage() {
     setConnections((prev) => prev.filter((c) => c.id !== id));
   }
 
-  function handleReProfile(id: number) {
+  function handleStartReProfile(id: number) {
     const conn = connections.find((c) => c.id === id);
-    if (conn) setProfiling({ id, name: conn.name });
+    if (conn) setProfiling({ id, name: conn.name, done: false });
+  }
+
+  function handleReProfileDone(id: number) {
+    setProfiling((prev) => prev?.id === id ? { ...prev, done: true } : prev);
   }
 
   return (
@@ -643,6 +724,7 @@ export default function SourcesPage() {
           <ProfilingBanner
             name={profiling.name}
             connId={profiling.id}
+            done={profiling.done}
             onDismiss={() => setProfiling(null)}
           />
         )}
@@ -670,7 +752,8 @@ export default function SourcesPage() {
                   key={conn.id}
                   conn={conn}
                   onDelete={handleDelete}
-                  onReProfile={handleReProfile}
+                  onStartReProfile={handleStartReProfile}
+                  onReProfileDone={handleReProfileDone}
                   onEdit={openEdit}
                 />
               ))}
