@@ -30,6 +30,8 @@ import {
   REFINEMENT_SYSTEM,
   buildRefinementUser,
   RefinementOutput,
+  REFINE_SPEC_SYSTEM,
+  buildRefineSpecUser,
 } from './prompts/dashboardPrompt';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
@@ -175,6 +177,23 @@ export async function generateDashboardRefinement(
     buildRefinementUser(request, semanticContext, relationshipContext),
   );
   return parseJson<RefinementOutput>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard spec refinement — edits an existing spec based on user feedback
+// ---------------------------------------------------------------------------
+
+export async function refineDashboardSpec(
+  refinement: string,
+  currentSpec: DashboardSpec,
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<DashboardSpec> {
+  const raw = await callClaude(
+    REFINE_SPEC_SYSTEM,
+    buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext),
+  );
+  return parseJson<DashboardSpec>(raw);
 }
 
 // ---------------------------------------------------------------------------

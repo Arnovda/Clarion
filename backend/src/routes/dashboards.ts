@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateDashboardSpec, generateDashboardRefinement } from '../ai/AIService';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec } from '../ai/AIService';
 import { DashboardSpec, RefinementOutput } from '../ai/prompts/dashboardPrompt';
 
 const router = Router();
@@ -119,6 +119,36 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
     const result: RefinementOutput = await generateDashboardRefinement(request, semanticContext, relationshipContext);
 
     res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/refine-spec — update an existing spec based on user feedback
+// ---------------------------------------------------------------------------
+
+router.post('/refine-spec', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, refinement, currentSpec } = req.body as {
+      connectionId: number;
+      refinement: string;
+      currentSpec: DashboardSpec;
+    };
+
+    if (!refinement?.trim()) {
+      res.status(400).json({ ok: false, error: 'refinement is required' });
+      return;
+    }
+    if (!currentSpec) {
+      res.status(400).json({ ok: false, error: 'currentSpec is required' });
+      return;
+    }
+
+    const { semanticContext, relationshipContext } = await buildSemanticContext(connectionId);
+    const spec = await refineDashboardSpec(refinement, currentSpec, semanticContext, relationshipContext);
+
+    res.json({ ok: true, data: { spec } });
   } catch (err) {
     next(err);
   }

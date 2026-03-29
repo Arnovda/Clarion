@@ -6,6 +6,7 @@ import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  ComposedChart,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 
@@ -22,7 +23,7 @@ interface FilterSpec {
 
 interface WidgetSpec {
   id: string;
-  type: 'kpi_card' | 'bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table';
+  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table';
   title: string;
   sql: string;
   drillDownSql?: string;
@@ -62,6 +63,13 @@ interface DrillState {
 interface RefinementQuestion {
   question: string;
   suggestions: string[];
+}
+
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  type: 'query' | 'refine';
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -110,6 +118,69 @@ function relTime(ts: string): string {
   if (m < 60) return `${m}m ago`;
   if (h < 24) return `${h}h ago`;
   return `${dy}d ago`;
+}
+
+// ─── Markdown renderer (bold + tables) ───────────────────────────────────────
+
+function renderInline(text: string): React.ReactNode {
+  const parts = text.split(/\*\*(.*?)\*\*/g);
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <strong key={i}>{part}</strong> : part,
+  );
+}
+
+function MarkdownAnswer({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const elements: React.ReactNode[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Table: header row followed by separator row (|---|)
+    if (line.trim().startsWith('|') && lines[i + 1]?.trim().startsWith('|---')) {
+      const headers = line.split('|').map(c => c.trim()).filter(Boolean);
+      i += 2; // skip header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        rows.push(lines[i].split('|').map(c => c.trim()).filter(Boolean));
+        i++;
+      }
+      elements.push(
+        <div key={`t${i}`} className="overflow-x-auto mt-2 mb-1">
+          <table className="text-xs w-full border-collapse">
+            <thead>
+              <tr>
+                {headers.map((h, j) => (
+                  <th key={j} className="px-2 py-1 text-left font-semibold bg-slate-100 border border-slate-200 whitespace-nowrap">
+                    {renderInline(h)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, j) => (
+                <tr key={j} className={j % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+                  {row.map((cell, k) => (
+                    <td key={k} className="px-2 py-1 border border-slate-200 whitespace-nowrap">
+                      {renderInline(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+    } else if (line.trim()) {
+      elements.push(<p key={`p${i}`} className="mb-1">{renderInline(line)}</p>);
+      i++;
+    } else {
+      i++;
+    }
+  }
+
+  return <div className="text-sm leading-relaxed">{elements}</div>;
 }
 
 // ─── Widget card wrapper ──────────────────────────────────────────────────────
@@ -164,14 +235,31 @@ function WidgetError({ msg }: { msg: string }) {
 function KpiCard({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
   if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  const val = data.rows[0]?.value;
+  const row = data.rows[0] ?? {};
+  const val = row.value;
+  const delta = row.delta !== undefined && row.delta !== null ? Number(row.delta) : null;
+  const deltaLabel = row.delta_label ? String(row.delta_label) : 'vs prior period';
+  const isPositive = delta !== null && delta > 0;
+  const isNegative = delta !== null && delta < 0;
+
   return (
     <div>
       <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">{spec.title}</p>
       <p className="text-3xl font-bold text-slate-900">{formatValue(val, spec.format)}</p>
       <div className="mt-2 flex items-center gap-1.5">
-        <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
-        <span className="text-xs text-slate-400">Current period</span>
+        {delta !== null ? (
+          <>
+            <span className={`text-xs font-semibold ${isPositive ? 'text-emerald-600' : isNegative ? 'text-red-500' : 'text-slate-400'}`}>
+              {isPositive ? '▲' : isNegative ? '▼' : '—'} {Math.abs(delta).toFixed(1)}%
+            </span>
+            <span className="text-xs text-slate-400">{deltaLabel}</span>
+          </>
+        ) : (
+          <>
+            <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
+            <span className="text-xs text-slate-400">Current period</span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -277,6 +365,86 @@ function LineChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData })
           activeDot={{ r: 5 }}
         />
       </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── VerticalBarChartWidget ───────────────────────────────────────────────────
+
+function VerticalBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
+  if (data.loading) return <WidgetSpinner />;
+  if (data.error) return <WidgetError msg={data.error} />;
+  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+
+  const chartData = data.rows.map((r) => ({
+    label: String(r.label ?? ''),
+    value: Number(r.value ?? 0),
+    target: r.target !== undefined ? Number(r.target) : undefined,
+  }));
+  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
+  const yFmt = (v: number) => (maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k` : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
+
+  const hasTarget = chartData.some((r) => r.target !== undefined);
+
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <ComposedChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%">
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+        <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+        <Tooltip
+          formatter={(v: number, name: string) => [formatValue(v, spec.format), name === 'value' ? spec.title : 'Target']}
+          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+        />
+        <Bar dataKey="value" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
+        {hasTarget && (
+          <Line type="monotone" dataKey="target" stroke="#64748b" strokeWidth={2} strokeDasharray="4 2" dot={false} />
+        )}
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── StackedBarChartWidget ─────────────────────────────────────────────────────
+
+function StackedBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
+  if (data.loading) return <WidgetSpinner />;
+  if (data.error) return <WidgetError msg={data.error} />;
+  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+
+  // Pivot tidy format (label, series, value) → { label, [series]: value }
+  const labels = [...new Set(data.rows.map((r) => String(r.label ?? '')))];
+  const seriesNames = [...new Set(data.rows.map((r) => String(r.series ?? '')))];
+  const pivoted = labels.map((label) => {
+    const row: Record<string, unknown> = { label };
+    for (const s of seriesNames) {
+      const match = data.rows.find((r) => String(r.label) === label && String(r.series) === s);
+      row[s] = match ? Number(match.value ?? 0) : 0;
+    }
+    return row;
+  });
+
+  const maxVal = pivoted.reduce((acc, row) => {
+    const total = seriesNames.reduce((s, k) => s + Number(row[k] ?? 0), 0);
+    return Math.max(acc, total);
+  }, 0);
+  const yFmt = (v: number) => (maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k` : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
+
+  return (
+    <ResponsiveContainer width="100%" height={240}>
+      <BarChart data={pivoted} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%">
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+        <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+        <Tooltip
+          formatter={(v: number, name: string) => [formatValue(v, spec.format), name]}
+          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+        />
+        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
+        {seriesNames.map((s, i) => (
+          <Bar key={s} dataKey={s} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} radius={i === seriesNames.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
+        ))}
+      </BarChart>
     </ResponsiveContainer>
   );
 }
@@ -410,7 +578,11 @@ export default function DashboardsPage() {
   const [drillState, setDrillState] = useState<DrillState | null>(null);
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [refineInput, setRefineInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // ── Load saved dashboards ──────────────────────────────────────────────────
 
@@ -576,6 +748,7 @@ export default function DashboardsPage() {
       setIsUnsaved(false);
       setActiveId(id);
       setMode('viewing');
+      setChatMessages([]);
       loadFilterOptions(spec.filters);
       executeAllWidgets(spec, defaults, null);
     } catch {
@@ -637,12 +810,71 @@ export default function DashboardsPage() {
     if (currentSpec) executeAllWidgets(currentSpec, newFilters, drillState);
   }
 
+  // ── Intent detection — routes to query or refine ─────────────────────────
+
+  function detectIntent(input: string): 'query' | 'refine' {
+    const lower = input.toLowerCase().trim();
+    const queryPattern = /^(what|why|how|who|when|which|where|is |are |was |were |can |could |would |should |do |did |show me|tell me|give me|list |find |how many|how much|which |compare)/;
+    return queryPattern.test(lower) ? 'query' : 'refine';
+  }
+
+  // ── Smart chat submit — asks data questions OR refines the dashboard ───────
+
+  async function handleChatSubmit() {
+    if (!refineInput.trim() || chatLoading || !currentSpec) return;
+    const input = refineInput.trim();
+    setRefineInput('');
+
+    const intent = detectIntent(input);
+    const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: input, type: intent };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatLoading(true);
+
+    try {
+      if (intent === 'query') {
+        // Build context from previous Q&A if this looks like a follow-up
+        const prevMessages = chatMessages.filter(m => m.type === 'query');
+        const isFollowUp = /^(can you|could you|give me|show me|list|what about|and |also |them|they|those|it |that |these)/i.test(input);
+        let fullQuestion = input;
+        if (isFollowUp && prevMessages.length >= 2) {
+          const lastQ = prevMessages[prevMessages.length - 2];
+          const lastA = prevMessages[prevMessages.length - 1];
+          if (lastQ.role === 'user' && lastA.role === 'assistant') {
+            fullQuestion = `Previous question: "${lastQ.text}"\nPrevious answer summary: "${lastA.text.slice(0, 300)}"\n\nFollow-up question: ${input}`;
+          }
+        }
+        const res = await api.post('/query', { connectionId: CONNECTION_ID, question: fullQuestion });
+        const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
+        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
+      } else {
+        const res = await api.post('/dashboards/refine-spec', { connectionId: CONNECTION_ID, refinement: input, currentSpec });
+        const newSpec: DashboardSpec = res.data.data.spec;
+        const defaults = buildDefaultFilters(newSpec.filters);
+        setCurrentSpec(newSpec);
+        setFilterValues(defaults);
+        setDrillState(null);
+        setIsUnsaved(true);
+        loadFilterOptions(newSpec.filters);
+        executeAllWidgets(newSpec, defaults, null);
+        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated — "${newSpec.title}"`, type: 'refine' }]);
+      }
+    } catch {
+      setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_e', role: 'assistant', text: 'Something went wrong. Please try again.', type: intent }]);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
   // ── Effects ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
     setIsAdmin(getTokenPayload()?.role === 'epicdata_admin');
     loadDashboards();
   }, [loadDashboards]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   // ── Helper: discard unsaved dashboard ────────────────────────────────────
 
@@ -653,6 +885,7 @@ export default function DashboardsPage() {
     setMode('empty');
     setWidgetData({});
     setDrillState(null);
+    setChatMessages([]);
   }
 
   // ── Helper: partition dashboards ─────────────────────────────────────────
@@ -759,6 +992,20 @@ export default function DashboardsPage() {
           </WidgetCard>
         );
 
+      case 'vertical_bar_chart':
+        return (
+          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
+            <VerticalBarChartWidget spec={widget} data={data} />
+          </WidgetCard>
+        );
+
+      case 'stacked_bar_chart':
+        return (
+          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
+            <StackedBarChartWidget spec={widget} data={data} />
+          </WidgetCard>
+        );
+
       case 'pie_chart':
         return (
           <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
@@ -788,7 +1035,7 @@ export default function DashboardsPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
+    <div className="h-screen overflow-hidden bg-slate-50 flex flex-col">
       <Nav />
 
       <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 57px)' }}>
@@ -829,7 +1076,7 @@ export default function DashboardsPage() {
         </aside>
 
         {/* ── Main area ── */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-hidden flex flex-col">
 
           {/* Empty state */}
           {mode === 'empty' && (
@@ -990,7 +1237,7 @@ export default function DashboardsPage() {
 
           {/* Dashboard view */}
           {mode === 'viewing' && currentSpec && (
-            <div className="flex flex-col min-h-full">
+            <div className="flex-1 flex flex-col overflow-hidden">
               {/* Top bar */}
               <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-start justify-between gap-4 shrink-0">
                 <div className="min-w-0">
@@ -1072,21 +1319,69 @@ export default function DashboardsPage() {
               )}
 
               {/* Widget grid */}
+              <div className="flex-1 overflow-y-auto">
               <div
-                className="grid gap-4 p-4 flex-1"
+                className="grid gap-4 p-4"
                 style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}
               >
                 {currentSpec.widgets.map((widget) => renderWidget(widget))}
               </div>
+              </div>
 
-              {/* Bottom refinement bar */}
-              <div className="bg-white border-t border-slate-100 px-6 py-3 shrink-0">
-                <input
-                  type="text"
-                  disabled
-                  placeholder="AI refinement coming soon — describe how to improve this dashboard"
-                  className="w-full px-4 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 text-slate-400 placeholder-slate-400 cursor-not-allowed"
-                />
+              {/* Bottom chat bar */}
+              <div className="bg-white border-t border-slate-200 shrink-0">
+                {/* Chat history */}
+                {chatMessages.length > 0 && (
+                  <div className="px-6 pt-3 pb-1 max-h-52 overflow-y-auto space-y-2">
+                    {chatMessages.map((msg) => (
+                      <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] px-3 py-2 rounded-xl ${
+                          msg.role === 'user'
+                            ? 'bg-blue-600 text-white rounded-br-sm text-sm'
+                            : msg.type === 'refine'
+                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-bl-sm'
+                            : 'bg-slate-100 text-slate-800 rounded-bl-sm'
+                        }`}>
+                          {msg.role === 'assistant' && msg.type === 'refine' && (
+                            <span className="text-xs font-semibold block mb-0.5 text-emerald-600">✦ Dashboard updated</span>
+                          )}
+                          {msg.role === 'assistant'
+                            ? <MarkdownAnswer text={msg.text} />
+                            : msg.text}
+                        </div>
+                      </div>
+                    ))}
+                    {chatLoading && (
+                      <div className="flex justify-start">
+                        <div className="bg-slate-100 rounded-xl rounded-bl-sm px-3 py-2 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        </div>
+                      </div>
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+                )}
+                {/* Input row */}
+                <div className="px-6 py-3 flex gap-2">
+                  <input
+                    type="text"
+                    value={refineInput}
+                    onChange={(e) => setRefineInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
+                    placeholder='Ask about the data or say how to improve this dashboard…'
+                    disabled={chatLoading}
+                    className="flex-1 px-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white placeholder-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
+                  />
+                  <button
+                    onClick={handleChatSubmit}
+                    disabled={chatLoading || !refineInput.trim()}
+                    className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                  >
+                    {chatLoading ? '…' : 'Send'}
+                  </button>
+                </div>
               </div>
             </div>
           )}
