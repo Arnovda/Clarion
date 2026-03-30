@@ -2,7 +2,7 @@ import knex, { Knex } from 'knex';
 import path from 'path';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
 // Semantic layer database — PostgreSQL running in Docker
 // Used for all platform metadata: definitions, KPIs, query log, gaps

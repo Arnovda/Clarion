@@ -37,9 +37,22 @@ import {
   buildRefineSpecUser,
 } from './prompts/dashboardPrompt';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Lazy singleton — created on first use.
+// If the key still isn't in the environment by then (dotenv path resolution
+// can be tricky in git worktrees), we make one more attempt from process.cwd()
+// which is always the `backend/` directory when running `npm run dev`.
+let _client: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_client) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });
+    }
+    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  }
+  return _client;
+}
 const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
@@ -47,7 +60,7 @@ const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 // ---------------------------------------------------------------------------
 
 async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: MODEL,
     max_tokens: maxTokens,
     messages: [{ role: 'user', content: userPrompt }],
@@ -66,7 +79,7 @@ export async function callClaudeMultiTurn(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<string> {
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: MODEL,
     max_tokens: 4096,
     system: systemPrompt,
@@ -82,7 +95,12 @@ export async function callClaudeMultiTurn(
 
 function parseJson<T>(raw: string): T {
   // Strip markdown code fences if Claude wraps the JSON
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  let cleaned = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
+  // When extended thinking is on Claude sometimes emits prose before/after the JSON
+  // object. Find the outermost { ... } and use only that.
+  const start = cleaned.indexOf('{');
+  const end   = cleaned.lastIndexOf('}');
+  if (start !== -1 && end > start) cleaned = cleaned.slice(start, end + 1);
   return JSON.parse(cleaned) as T;
 }
 
@@ -157,6 +175,47 @@ export async function generateCrossSourceSql(
     buildNlToSqlCrossUser(question),
   );
   return parseJson<NlToSqlOutput>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Call Type 2a (streaming) — NL → SQL with extended thinking tokens live
+// Calls Claude with budget_tokens of thinking; fires onEvent for each delta
+// so the caller (SSE route) can stream them to the browser in real time.
+// ---------------------------------------------------------------------------
+
+export async function generateSqlStreaming(
+  question: string,
+  semanticContext: string,
+  relationshipContext: string,
+  kpiFormulas: string,
+  onEvent: (type: 'thinking' | 'text', delta: string) => void,
+): Promise<NlToSqlOutput> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model: MODEL,
+    max_tokens: 16000,
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    system: NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas),
+    messages: [{ role: 'user', content: buildNlToSqlUser(question) }],
+  };
+
+  const stream = getClient().messages.stream(params);
+  let fullText = '';
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+        onEvent('thinking', delta.thinking);
+      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        fullText += delta.text;
+        onEvent('text', delta.text);
+      }
+    }
+  }
+
+  return parseJson<NlToSqlOutput>(fullText);
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,9 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
+
+import { ensureNeo4jConstraints, closeDriver } from './db/neo4j';
 
 import { USERS, signToken, requireAuth, requireRole } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
@@ -77,6 +79,19 @@ app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.use(errorHandler);
 
 const PORT = Number(process.env.PORT ?? 3001);
-app.listen(PORT, () => console.log(`DataBridge backend running on http://localhost:${PORT}`));
+const server = app.listen(PORT, () => {
+  console.log(`DataBridge backend running on http://localhost:${PORT}`);
+  // Start Neo4j constraint setup in the background — non-blocking.
+  ensureNeo4jConstraints().catch(err => console.error('Neo4j constraint setup error:', err));
+});
+
+process.on('SIGTERM', async () => {
+  server.close();
+  await closeDriver();
+});
+process.on('SIGINT', async () => {
+  server.close();
+  await closeDriver();
+});
 
 export default app;
