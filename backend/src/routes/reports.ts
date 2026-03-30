@@ -4,6 +4,7 @@ import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { generateReportNarrative } from '../ai/AIService';
 import { KpiResult } from '../ai/prompts/answerFormatterPrompt';
+import { getKpisByIds } from '../db/semanticGraph';
 
 const router = Router();
 
@@ -22,10 +23,8 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       return;
     }
 
-    // 1. Fetch confirmed KPI definitions
-    const kpis = await semanticDb('kpi_definitions')
-      .whereIn('id', kpiIds)
-      .where({ connection_id: connectionId, ai_draft: false });
+    // 1. Fetch confirmed KPI definitions from Neo4j
+    const kpis = await getKpisByIds(kpiIds, connectionId);
 
     if (!kpis.length) {
       res.status(400).json({ ok: false, error: 'No confirmed KPIs found for the provided IDs' });

@@ -836,19 +836,123 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
   );
 }
 
-// ─── Loading bubble ───────────────────────────────────────────────────────────
+// ─── Live thinking bubble ────────────────────────────────────────────────────
 
-function ThinkingBubble() {
+function ThinkingBubble({
+  phase, thinkingText, sql, confidence, showReasoning,
+}: {
+  phase:          string;
+  thinkingText:   string;
+  sql:            string | null;
+  confidence:     number | null;
+  showReasoning:  boolean;
+}) {
+  // Word-by-word display state — independent of the raw incoming stream
+  const [displayedText, setDisplayedText] = useState('');
+  const fullRef  = useRef('');   // always the latest full thinkingText
+  const posRef   = useRef(0);    // how many chars we've already displayed
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Keep fullRef in sync with the incoming stream
+  useEffect(() => { fullRef.current = thinkingText; }, [thinkingText]);
+
+  // Reset when a new question starts (thinkingText goes back to '')
+  useEffect(() => {
+    if (thinkingText === '') {
+      setDisplayedText('');
+      posRef.current = 0;
+    }
+  }, [thinkingText]);
+
+  // Word-by-word advance — ~160 ms/word ≈ 375 wpm, just above comfortable reading pace
+  useEffect(() => {
+    if (!showReasoning) return;
+    let alive = true;
+
+    const tick = () => {
+      if (!alive) return;
+      const full = fullRef.current;
+      let pos = posRef.current;
+
+      if (pos >= full.length) {
+        // Nothing new yet — poll
+        setTimeout(tick, 40);
+        return;
+      }
+
+      // Skip leading whitespace (show immediately, don't delay on spaces/newlines)
+      while (pos < full.length && (full[pos] === ' ' || full[pos] === '\n')) pos++;
+      // Advance through the next word
+      while (pos < full.length && full[pos] !== ' ' && full[pos] !== '\n') pos++;
+      // Consume one trailing space so words have natural spacing
+      if (pos < full.length && full[pos] === ' ') pos++;
+
+      posRef.current = pos;
+      setDisplayedText(full.slice(0, pos));
+      setTimeout(tick, 160);
+    };
+
+    const t = setTimeout(tick, 100);
+    return () => { alive = false; clearTimeout(t); };
+  }, [showReasoning]);
+
+  // Auto-scroll as text grows
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [displayedText]);
+
+  const isExecuting = phase === 'Running your query…' || phase === 'Formatting answer…';
+
   return (
     <div className="flex justify-start">
-      <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
-        <div className="flex items-center gap-1.5">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
-              style={{ animationDelay: `${i * 0.18}s` }} />
-          ))}
-          <span className="text-xs text-slate-400 ml-1">Thinking…</span>
+      <div className="max-w-[85%] w-full bg-white border border-slate-200 rounded-2xl rounded-bl-md overflow-hidden shadow-sm">
+
+        {/* Phase header */}
+        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50">
+          {isExecuting ? (
+            <svg className="w-3.5 h-3.5 text-emerald-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+            </svg>
+          ) : (
+            <span className="flex gap-0.5 flex-shrink-0">
+              {[0,1,2].map((i) => (
+                <span key={i} className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce"
+                  style={{ animationDelay: `${i * 0.15}s` }} />
+              ))}
+            </span>
+          )}
+          <span className="text-xs font-semibold text-slate-600">{phase || 'Loading…'}</span>
         </div>
+
+        {/* Word-by-word reasoning — only visible when toggle is on */}
+        {showReasoning && displayedText && (
+          <div ref={scrollRef} className="px-4 py-3 max-h-52 overflow-y-auto">
+            <p className="text-[11px] text-slate-500 leading-relaxed whitespace-pre-wrap">
+              {displayedText}
+              <span className="inline-block w-[2px] h-[11px] bg-slate-400 ml-[1px] align-middle animate-pulse" />
+            </p>
+          </div>
+        )}
+
+        {/* SQL preview once generated */}
+        {sql && (
+          <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-900 space-y-1">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Generated SQL</span>
+              {confidence !== null && (
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${confidence >= 0.8 ? 'bg-emerald-900 text-emerald-400' : confidence >= 0.7 ? 'bg-amber-900 text-amber-400' : 'bg-red-900 text-red-400'}`}>
+                  {Math.round(confidence * 100)}% conf
+                </span>
+              )}
+            </div>
+            <pre className="text-[10px] text-emerald-400 font-mono whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-28">
+              {formatSql(sql)}
+            </pre>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -883,9 +987,12 @@ export default function QueryPage() {
   const [activeId,      setActiveId]      = useState<string | null>(null);
   const [messages,      setMessages]      = useState<Message[]>([]);
   const [input,         setInput]         = useState('');
-  const [loading,       setLoading]       = useState(false);
-  const [showSql,       setShowSql]       = useState(false);
-  const [isAdmin,       setIsAdmin]       = useState(false);
+  const [loading,        setLoading]        = useState(false);
+  const [showSql,        setShowSql]        = useState(false);
+  const [showReasoning,  setShowReasoning]  = useState(() => {
+    try { return localStorage.getItem('databridge_show_reasoning') === 'true'; } catch { return false; }
+  });
+  const [isAdmin,        setIsAdmin]        = useState(false);
 
   // Data source selection (silent — no UI picker)
   const [sources,       setSources]       = useState<DataSource[]>([]);
@@ -897,6 +1004,12 @@ export default function QueryPage() {
 
   // Ephemeral repair state — never persisted
   const [repairState, setRepairState] = useState<RepairState | null>(null);
+
+  // Live thinking state — shown while /think SSE stream is open
+  const [thinkingPhase, setThinkingPhase] = useState<string>('');
+  const [thinkingText,  setThinkingText]  = useState<string>('');
+  const [thinkingSql,   setThinkingSql]   = useState<string | null>(null);
+  const [thinkingConf,  setThinkingConf]  = useState<number | null>(null);
 
   const nextId      = useRef(0);
   const bottomRef   = useRef<HTMLDivElement>(null);
@@ -1185,10 +1298,13 @@ export default function QueryPage() {
     setInput('');
     setMessages((prev) => [...prev, { id: nextId.current++, role: 'user', text: q }]);
     setLoading(true);
+    setThinkingPhase('');
+    setThinkingText('');
+    setThinkingSql(null);
+    setThinkingConf(null);
 
     try {
-      // If there's a prior exchange in this conversation, give Claude that context
-      // so follow-up questions like "give me a list" or "show top 10 instead" resolve correctly.
+      // Build prior-Q context for follow-ups
       let fullQuestion = q;
       const prior = messages.filter((m) => m.role === 'assistant').slice(-1)[0];
       const priorQ = messages.filter((m) => m.role === 'user').slice(-1)[0];
@@ -1198,40 +1314,98 @@ export default function QueryPage() {
 
       const isCrossView = selectedSource.startsWith('v:');
       const sourceId    = Number(selectedSource.split(':')[1]);
-      const res = isCrossView
-        ? await api.post('/query/cross-view', { viewId: sourceId, question: fullQuestion })
-        : await api.post('/query', { connectionId: sourceId, question: fullQuestion, ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}) });
-      const d   = res.data.data;
 
-      const assistantId = nextId.current++;
-      const assistantMsg: Message = {
-        id:                  assistantId,
-        role:                'assistant',
-        text:                d.answer,
-        question:            q,            // stored for repair
-        sql:                 d.sql,
-        tablesUsed:          d.tablesUsed,
-        confidence:          d.confidence,
-        warning:             d.warning,
-        blocked:             d.blocked,
-        needsClarification:  d.needsClarification,
-        ambiguities:         d.ambiguities,
-        mismatches:          d.mismatches,
-        debug:                d.debug,
-        rows:                d.rows,
-      };
+      // Cross-view queries use the regular (non-streaming) route
+      if (isCrossView) {
+        const res = await api.post('/query/cross-view', { viewId: sourceId, question: fullQuestion });
+        const d   = res.data.data;
+        const assistantId = nextId.current++;
+        setMessages((prev) => [...prev, {
+          id: assistantId, role: 'assistant', text: d.answer, question: q,
+          sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
+          blocked: d.blocked, needsClarification: d.needsClarification,
+          ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
+        }]);
+        if (d.warning && !d.blocked && d.sql && d.rows) {
+          startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
+        }
+        return;
+      }
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      // Single-source: use the streaming /think endpoint
+      const token = getToken();
+      const response = await fetch(`${BACKEND_URL}/api/query/think`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          connectionId: sourceId,
+          question:     fullQuestion,
+          ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+        }),
+      });
 
-      // Auto-trigger repair if the validator flagged something and the query ran
-      if (d.warning && !d.blocked && d.sql && d.rows) {
-        startRepair({
-          messageId:   assistantId,
-          question:    q,
-          originalSql: d.sql,
-          originalRows: d.rows,
-          warning:     d.warning,
-        });
+      const reader  = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = '';
+      let   assistantId = -1;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: !done });
+
+        const lines = buffer.split('\n');
+        buffer = done ? '' : (lines.pop() ?? '');
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; }
+          catch { continue; }
+
+          const type = event.type as string;
+
+          if (type === 'phase') {
+            setThinkingPhase(event.text as string);
+
+          } else if (type === 'thinking') {
+            setThinkingText((prev) => prev + (event.text as string));
+
+          } else if (type === 'sql_ready') {
+            setThinkingSql(event.sql as string);
+            setThinkingConf(event.confidence as number);
+
+          } else if (type === 'done') {
+            const d = event.data as {
+              answer: string; confidence: number; blocked?: boolean; sql?: string;
+              tablesUsed?: string[]; warning?: string; rows?: Record<string, unknown>[];
+              debug?: DebugInfo; needsClarification?: boolean;
+              ambiguities?: EntityAmbiguity[]; mismatches?: EntityMismatch[];
+            };
+            assistantId = nextId.current++;
+            const assistantMsg: Message = {
+              id: assistantId, role: 'assistant', text: d.answer, question: q,
+              sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
+              blocked: d.blocked, needsClarification: d.needsClarification,
+              ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
+            };
+            setMessages((prev) => [...prev, assistantMsg]);
+            if (d.warning && !d.blocked && d.sql && d.rows) {
+              startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
+            }
+
+          } else if (type === 'error') {
+            setMessages((prev) => [...prev, {
+              id: nextId.current++, role: 'assistant',
+              text: (event.message as string) || 'Something went wrong. Please try again.',
+              error: true,
+            }]);
+          }
+        }
+
+        if (done) break;
       }
 
     } catch {
@@ -1241,6 +1415,10 @@ export default function QueryPage() {
       ]);
     } finally {
       setLoading(false);
+      setThinkingPhase('');
+      setThinkingText('');
+      setThinkingSql(null);
+      setThinkingConf(null);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1276,6 +1454,17 @@ export default function QueryPage() {
               </div>
             </div>
             <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+                <div onClick={() => setShowReasoning((s) => {
+                  const next = !s;
+                  try { localStorage.setItem('databridge_show_reasoning', String(next)); } catch { /* quota */ }
+                  return next;
+                })}
+                  className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showReasoning ? 'bg-violet-500' : 'bg-slate-300'}`}>
+                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${showReasoning ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </div>
+                Show reasoning
+              </label>
               {isAdmin && (
                 <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
                   <div onClick={() => setShowSql((s) => !s)}
@@ -1312,7 +1501,15 @@ export default function QueryPage() {
                       )}
                     </div>
                   ))}
-                  {loading && <ThinkingBubble />}
+                  {loading && (
+                    <ThinkingBubble
+                      phase={thinkingPhase}
+                      thinkingText={thinkingText}
+                      sql={thinkingSql}
+                      confidence={thinkingConf}
+                      showReasoning={showReasoning}
+                    />
+                  )}
                   <div ref={bottomRef} />
                 </div>
               )}

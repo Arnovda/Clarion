@@ -1,0 +1,1448 @@
+/**
+ * semanticGraph.ts — All Cypher queries for the Neo4j semantic knowledge graph.
+ * This is the ONLY file in the codebase that contains Cypher.
+ *
+ * Node labels:  SourceTable, SourceColumn, KpiDefinition, CrossSourceView, QualityRule
+ * Edge types:   HAS_COLUMN, RELATES_TO, DEFINES_KPI,
+ *               INCLUDES (view→table), CROSS_VIEW_LINK (table→table within a view),
+ *               APPLIES_TO (rule→table), CHECKS_FIELD (rule→column)
+ *
+ * Every node carries a `pgId` property — a stable integer drawn from the
+ * `semantic_node_id_seq` Postgres sequence.  Routes that return data to the
+ * frontend expose `pgId` as `id` so existing response shapes are unchanged.
+ */
+
+import { isInt, Integer as Neo4jInt } from 'neo4j-driver';
+import { getSession } from './neo4j';
+import { semanticDb } from './knex';
+
+// Draw a stable integer ID from the Postgres sequence for new Neo4j nodes.
+export async function nextPgId(): Promise<number> {
+  const result = await semanticDb.raw(`SELECT nextval('semantic_node_id_seq') AS id`);
+  return Number((result.rows as Array<{ id: string | number }>)[0].id);
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function toNum(v: unknown): number {
+  if (isInt(v as Neo4jInt)) return (v as Neo4jInt).toNumber();
+  if (typeof v === 'number') return v;
+  return Number(v);
+}
+
+function toStr(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  return String(v);
+}
+
+function parseDomains(v: unknown): string[] {
+  if (Array.isArray(v)) return v as string[];
+  if (typeof v === 'string') {
+    try { return JSON.parse(v) as string[]; } catch { return []; }
+  }
+  return [];
+}
+
+function parseJsonField(v: unknown): unknown {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } }
+  return v;
+}
+
+// Map a Neo4j SourceTable record back to a Postgres-compatible row shape.
+function mapTable(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:                   toNum(p.pgId),
+    connection_id:        toNum(p.connectionId),
+    table_name:           toStr(p.tableName),
+    display_name:         toStr(p.displayName),
+    description:          toStr(p.description),
+    owner_name:           toStr(p.ownerName),
+    is_active:            Boolean(p.isActive),
+    ai_draft:             Boolean(p.aiDraft),
+    domains:              JSON.stringify(parseDomains(p.domains)),
+    business_key_column:  toStr(p.businessKeyColumn),
+    row_count:            p.rowCount != null ? toNum(p.rowCount) : null,
+    last_profiled_at:     toStr(p.lastProfiledAt),
+    created_at:           toStr(p.createdAt),
+    updated_at:           toStr(p.updatedAt),
+  };
+}
+
+// Map a Neo4j SourceColumn record back to a Postgres-compatible row shape.
+function mapColumn(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:             toNum(p.pgId),
+    table_id:       toNum(p.tablePgId),
+    table_name:     toStr(p.tableName),     // denormalised — needed by query.ts
+    column_name:    toStr(p.columnName),
+    data_type:      toStr(p.dataType),
+    display_name:   toStr(p.displayName),
+    description:    toStr(p.description),
+    example_values: parseJsonField(p.exampleValues),
+    is_dimension:   Boolean(p.isDimension),
+    is_measure:     Boolean(p.isMeasure),
+    owner_name:     toStr(p.ownerName),
+    ai_draft:       Boolean(p.aiDraft),
+    // Quality stats (may be null if profiling has not run)
+    null_count:     p.nullCount     != null ? toNum(p.nullCount)     : null,
+    null_pct:       p.nullPct       != null ? Number(p.nullPct)      : null,
+    distinct_count: p.distinctCount != null ? toNum(p.distinctCount) : null,
+    distinct_pct:   p.distinctPct   != null ? Number(p.distinctPct)  : null,
+    min_value:      toStr(p.minValue),
+    max_value:      toStr(p.maxValue),
+    mean_value:     p.meanValue     != null ? Number(p.meanValue)    : null,
+    median_value:   p.medianValue   != null ? Number(p.medianValue)  : null,
+    top_values:     parseJsonField(p.topValues),
+    created_at:     toStr(p.createdAt),
+    updated_at:     toStr(p.updatedAt),
+  };
+}
+
+// Map a Neo4j KpiDefinition node back to a Postgres-compatible row shape.
+function mapKpi(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:                  toNum(p.pgId),
+    connection_id:       toNum(p.connectionId),
+    name:                toStr(p.name),
+    description:         toStr(p.description),
+    formula_plain_text:  toStr(p.formulaPlainText),
+    formula_sql:         toStr(p.formulaSql),
+    owner_name:          toStr(p.ownerName),
+    ai_draft:            Boolean(p.aiDraft),
+    created_at:          toStr(p.createdAt),
+    updated_at:          toStr(p.updatedAt),
+  };
+}
+
+// Map a Neo4j QualityRule node back to a Postgres-compatible row shape.
+function mapQualityRule(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:             toNum(p.pgId),
+    connection_id:  toNum(p.connectionId),
+    table_name:     toStr(p.tableName),
+    rule_name:      toStr(p.ruleName),
+    dimension:      toStr(p.dimension),
+    field_names:    JSON.stringify(parseDomains(p.fieldNames)),
+    description:    toStr(p.description),
+    rule_type:      toStr(p.ruleType),
+    rule_config:    JSON.stringify(parseJsonField(p.ruleConfig) ?? {}),
+    pass_threshold: p.passThreshold != null ? Number(p.passThreshold) : 0.95,
+    owner_name:     toStr(p.ownerName),
+    is_active:      Boolean(p.isActive),
+    created_at:     toStr(p.createdAt),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+export async function getTablesByConnection(
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid})
+       RETURN t ORDER BY t.tableName`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => mapTable(r.get('t').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateTable(
+  pgId: number,
+  patch: {
+    display_name?: unknown; description?: unknown; owner_name?: unknown;
+    is_active?: unknown; domains?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {pgId: $pgId})
+       SET t.displayName    = $displayName,
+           t.description    = $description,
+           t.ownerName      = $ownerName,
+           t.isActive       = $isActive,
+           t.domains        = $domains,
+           t.aiDraft        = false,
+           t.updatedAt      = $now`,
+      {
+        pgId,
+        displayName: patch.display_name ?? null,
+        description: patch.description ?? null,
+        ownerName:   patch.owner_name  ?? null,
+        isActive:    patch.is_active   !== undefined ? Boolean(patch.is_active) : true,
+        domains:     Array.isArray(patch.domains) ? patch.domains : parseDomains(patch.domains),
+        now:         new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function getTableDomains(connectionId: number): Promise<string[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid})
+       WHERE t.domains IS NOT NULL
+       RETURN t.domains AS domains`,
+      { cid: connectionId },
+    );
+    const all = new Set<string>();
+    for (const rec of result.records) {
+      for (const d of parseDomains(rec.get('domains'))) {
+        if (d) all.add(d);
+      }
+    }
+    return Array.from(all).sort();
+  } finally {
+    await session.close();
+  }
+}
+
+export async function getTableByConnectionAndName(
+  connectionId: number,
+  tableName: string,
+): Promise<Record<string, unknown> | null> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn}) RETURN t`,
+      { cid: connectionId, tn: tableName },
+    );
+    if (!result.records.length) return null;
+    return mapTable(result.records[0].get('t').properties as Record<string, unknown>);
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateTableBusinessKey(
+  connectionId: number,
+  tableName: string,
+  businessKeyColumn: string | null,
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+       SET t.businessKeyColumn = $bk, t.updatedAt = $now`,
+      { cid: connectionId, tn: tableName, bk: businessKeyColumn ?? null, now: new Date().toISOString() },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Columns
+// ---------------------------------------------------------------------------
+
+export async function getColumnsByTablePgId(
+  tablePgId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {pgId: $tpid})-[:HAS_COLUMN]->(c:SourceColumn)
+       RETURN c, t.tableName AS tableName
+       ORDER BY c.columnName`,
+      { tpid: tablePgId },
+    );
+    return result.records.map((r) => {
+      const props = r.get('c').properties as Record<string, unknown>;
+      props.tableName = r.get('tableName');
+      return mapColumn(props);
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateColumn(
+  pgId: number,
+  patch: {
+    display_name?: unknown; description?: unknown; owner_name?: unknown;
+    is_dimension?: unknown; is_measure?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (c:SourceColumn {pgId: $pgId})
+       SET c.displayName  = $displayName,
+           c.description  = $description,
+           c.ownerName    = $ownerName,
+           c.isDimension  = $isDimension,
+           c.isMeasure    = $isMeasure,
+           c.aiDraft      = false,
+           c.updatedAt    = $now`,
+      {
+        pgId,
+        displayName: patch.display_name ?? null,
+        description: patch.description  ?? null,
+        ownerName:   patch.owner_name   ?? null,
+        isDimension: Boolean(patch.is_dimension),
+        isMeasure:   Boolean(patch.is_measure),
+        now:         new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// All columns for a connection with their table_name denormalised — used by query/dashboards context.
+export async function getColumnsByConnection(
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+       RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
+       ORDER BY t.tableName, c.columnName`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => {
+      const props = r.get('c').properties as Record<string, unknown>;
+      props.tableName = r.get('tableName');
+      props.tablePgId = r.get('tablePgId');
+      return mapColumn(props);
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+// Dimension columns only — for entity pre-flight check in query.ts
+export async function getDimensionColumns(
+  connectionId: number,
+): Promise<{ column_name: string; table_name: string; data_type: string; example_values: unknown }[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn {isDimension: true})
+       RETURN c.columnName AS columnName, t.tableName AS tableName,
+              c.dataType AS dataType, c.exampleValues AS exampleValues`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => ({
+      column_name:    String(r.get('columnName') ?? ''),
+      table_name:     String(r.get('tableName')  ?? ''),
+      data_type:      String(r.get('dataType')   ?? ''),
+      example_values: parseJsonField(r.get('exampleValues')),
+    }));
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Relationships
+// ---------------------------------------------------------------------------
+
+export async function getRelationshipsForConnection(
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO]->(tt:SourceTable)
+       RETURN r, ft.tableName AS fromTableName, tt.tableName AS toTableName,
+              ft.pgId AS fromTablePgId, tt.pgId AS toTablePgId`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => {
+      const p = r.get('r').properties as Record<string, unknown>;
+      return {
+        id:                 toNum(p.pgId),
+        from_table_id:      toNum(r.get('fromTablePgId')),
+        from_column_id:     p.fromColPgId != null ? toNum(p.fromColPgId) : null,
+        to_table_id:        toNum(r.get('toTablePgId')),
+        to_column_id:       p.toColPgId   != null ? toNum(p.toColPgId)   : null,
+        relationship_type:  toStr(p.relType),
+        description:        toStr(p.description),
+        ai_draft:           Boolean(p.aiDraft),
+        from_table_name:    toStr(r.get('fromTableName')),
+        to_table_name:      toStr(r.get('toTableName')),
+      };
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+// Returns relationships as {from_table, from_column, to_table, to_column, relationship_type, description}
+// Used by query.ts and dashboards.ts for AI context.
+export async function getRelationshipsForContext(
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+       RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
+      { cid: connectionId },
+    );
+    return result.records.map((rec) => {
+      const p = rec.get('r').properties as Record<string, unknown>;
+      return {
+        from_table:        toStr(rec.get('fromTable')),
+        from_column:       toStr(p.fromColName),
+        to_table:          toStr(rec.get('toTable')),
+        to_column:         toStr(p.toColName),
+        relationship_type: toStr(p.relType),
+        description:       toStr(p.description),
+      };
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+export async function createRelationship(params: {
+  fromTablePgId: number;
+  fromColumnPgId: number | null;
+  fromColName: string | null;
+  toTablePgId: number;
+  toColumnPgId: number | null;
+  toColName: string | null;
+  relationshipType: string;
+  description: string | null;
+  aiDraft: boolean;
+  pgId: number;
+}): Promise<number> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
+       CREATE (ft)-[r:RELATES_TO {
+         pgId:        $pgId,
+         fromColPgId: $fromColPgId,
+         fromColName: $fromColName,
+         toColPgId:   $toColPgId,
+         toColName:   $toColName,
+         relType:     $relType,
+         description: $description,
+         aiDraft:     $aiDraft
+       }]->(tt)`,
+      {
+        pgId:        params.pgId,
+        fromTPgId:   params.fromTablePgId,
+        toTPgId:     params.toTablePgId,
+        fromColPgId: params.fromColumnPgId ?? null,
+        fromColName: params.fromColName    ?? null,
+        toColPgId:   params.toColumnPgId   ?? null,
+        toColName:   params.toColName      ?? null,
+        relType:     params.relationshipType,
+        description: params.description    ?? null,
+        aiDraft:     params.aiDraft,
+      },
+    );
+    return params.pgId;
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateRelationship(
+  pgId: number,
+  patch: {
+    relationship_type?: unknown;
+    description?: unknown;
+    fromColumnPgId?: number | null;
+    fromColName?: string | null;
+    toColumnPgId?: number | null;
+    toColName?: string | null;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH ()-[r:RELATES_TO {pgId: $pgId}]->()
+       SET r.relType     = COALESCE($relType, r.relType),
+           r.description = $description,
+           r.fromColPgId = $fromColPgId,
+           r.fromColName = $fromColName,
+           r.toColPgId   = $toColPgId,
+           r.toColName   = $toColName,
+           r.aiDraft     = false`,
+      {
+        pgId,
+        relType:     patch.relationship_type ?? null,
+        description: patch.description       ?? null,
+        fromColPgId: patch.fromColumnPgId    !== undefined ? patch.fromColumnPgId : null,
+        fromColName: patch.fromColName       !== undefined ? patch.fromColName    : null,
+        toColPgId:   patch.toColumnPgId      !== undefined ? patch.toColumnPgId   : null,
+        toColName:   patch.toColName         !== undefined ? patch.toColName      : null,
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function deleteRelationship(pgId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(`MATCH ()-[r:RELATES_TO {pgId: $pgId}]->() DELETE r`, { pgId });
+  } finally {
+    await session.close();
+  }
+}
+
+export async function deleteAiDraftRelationships(connectionId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
+      { cid: connectionId },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// Fetch a single column node by pgId — used when resolving column names for relationship creation.
+export async function getColumnByPgId(pgId: number): Promise<{ column_name: string; table_name: string } | null> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (c:SourceColumn {pgId: $pgId}) RETURN c.columnName AS cn, c.tableName AS tn`,
+      { pgId },
+    );
+    if (!result.records.length) return null;
+    return {
+      column_name: String(result.records[0].get('cn') ?? ''),
+      table_name:  String(result.records[0].get('tn') ?? ''),
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+// Returns relationships between a given table and any of the supplied table pgIds.
+// Used by cross-views when auto-importing existing relationships onto the canvas.
+export async function getRelationshipsBetweenTables(
+  tablePgId: number,
+  otherTablePgIds: number[],
+): Promise<{ from_table_id: number; from_column_id: number | null; to_table_id: number; to_column_id: number | null; relationship_type: string }[]> {
+  if (!otherTablePgIds.length) return [];
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (a:SourceTable)-[r:RELATES_TO]->(b:SourceTable)
+       WHERE (a.pgId = $tpid AND b.pgId IN $others)
+          OR (b.pgId = $tpid AND a.pgId IN $others)
+       RETURN a.pgId AS fromId, r.fromColPgId AS fromColId,
+              b.pgId AS toId,   r.toColPgId   AS toColId,
+              r.relType AS relType`,
+      { tpid: tablePgId, others: otherTablePgIds },
+    );
+    return result.records.map((rec) => ({
+      from_table_id:     toNum(rec.get('fromId')),
+      from_column_id:    rec.get('fromColId') != null ? toNum(rec.get('fromColId')) : null,
+      to_table_id:       toNum(rec.get('toId')),
+      to_column_id:      rec.get('toColId')   != null ? toNum(rec.get('toColId'))   : null,
+      relationship_type: String(rec.get('relType') ?? ''),
+    }));
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// KPI Definitions
+// ---------------------------------------------------------------------------
+
+export async function getKpisByConnection(
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => mapKpi(r.get('k').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function getKpisByIds(
+  pgIds: number[],
+  connectionId: number,
+): Promise<Record<string, unknown>[]> {
+  if (!pgIds.length) return [];
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (k:KpiDefinition)
+       WHERE k.pgId IN $ids AND k.connectionId = $cid AND k.aiDraft = false
+       RETURN k`,
+      { ids: pgIds, cid: connectionId },
+    );
+    return result.records.map((r) => mapKpi(r.get('k').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function createKpi(params: {
+  pgId: number;
+  connectionId: number;
+  name: string;
+  description?: string | null;
+  formulaPlainText?: string | null;
+  formulaSql?: string | null;
+  ownerName?: string | null;
+  aiDraft: boolean;
+}): Promise<number> {
+  const session = getSession();
+  const now = new Date().toISOString();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid})
+       WITH t LIMIT 1
+       CREATE (k:KpiDefinition {
+         pgId:             $pgId,
+         connectionId:     $cid,
+         name:             $name,
+         description:      $description,
+         formulaPlainText: $formulaPlainText,
+         formulaSql:       $formulaSql,
+         ownerName:        $ownerName,
+         aiDraft:          $aiDraft,
+         createdAt:        $now,
+         updatedAt:        $now
+       })
+       CREATE (t)-[:DEFINES_KPI]->(k)`,
+      {
+        pgId:             params.pgId,
+        cid:              params.connectionId,
+        name:             params.name,
+        description:      params.description      ?? null,
+        formulaPlainText: params.formulaPlainText  ?? null,
+        formulaSql:       params.formulaSql        ?? null,
+        ownerName:        params.ownerName         ?? null,
+        aiDraft:          params.aiDraft,
+        now,
+      },
+    );
+    return params.pgId;
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateKpi(
+  pgId: number,
+  patch: {
+    name?: unknown; description?: unknown;
+    formula_plain_text?: unknown; formula_sql?: unknown; owner_name?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (k:KpiDefinition {pgId: $pgId})
+       SET k.name             = COALESCE($name, k.name),
+           k.description      = $description,
+           k.formulaPlainText = $formulaPlainText,
+           k.formulaSql       = $formulaSql,
+           k.ownerName        = $ownerName,
+           k.aiDraft          = false,
+           k.updatedAt        = $now`,
+      {
+        pgId,
+        name:             patch.name              ?? null,
+        description:      patch.description       ?? null,
+        formulaPlainText: patch.formula_plain_text ?? null,
+        formulaSql:       patch.formula_sql        ?? null,
+        ownerName:        patch.owner_name         ?? null,
+        now:              new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Semantic context assembly — single-call replacement for the 4 sequential
+// Postgres queries currently in query.ts and dashboards.ts
+// ---------------------------------------------------------------------------
+
+export interface SemanticQueryContext {
+  tables:        Record<string, unknown>[];
+  columns:       Record<string, unknown>[];
+  kpis:          Record<string, unknown>[];
+  relationships: Record<string, unknown>[];
+}
+
+export async function buildSemanticContextForQuery(
+  connectionId: number,
+  domains?: string[],
+): Promise<SemanticQueryContext> {
+  const session = getSession();
+  try {
+    // --- Tables ---
+    const domainFilter = domains && domains.length > 0
+      ? 'AND ANY(d IN t.domains WHERE d IN $domains)'
+      : '';
+    const tableResult = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+       WHERE true ${domainFilter}
+       RETURN t ORDER BY t.tableName`,
+      { cid: connectionId, domains: domains ?? [] },
+    );
+    const tables = tableResult.records.map((r) =>
+      mapTable(r.get('t').properties as Record<string, unknown>),
+    );
+
+    if (!tables.length) return { tables: [], columns: [], kpis: [], relationships: [] };
+
+    // --- Columns ---
+    const colResult = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+       ${domainFilter ? `WHERE ANY(d IN t.domains WHERE d IN $domains)` : ''}
+       RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
+       ORDER BY t.tableName, c.columnName`,
+      { cid: connectionId, domains: domains ?? [] },
+    );
+    const columns = colResult.records.map((r) => {
+      const cp = { ...r.get('c').properties as Record<string, unknown> };
+      cp.tableName = r.get('tableName');
+      cp.tablePgId = r.get('tablePgId');
+      return mapColumn(cp);
+    });
+
+    // --- Relationships ---
+    const relResult = await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+       RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
+      { cid: connectionId },
+    );
+    const relationships = relResult.records.map((rec) => {
+      const p = rec.get('r').properties as Record<string, unknown>;
+      return {
+        from_table:        toStr(rec.get('fromTable')),
+        from_column:       toStr(p.fromColName),
+        to_table:          toStr(rec.get('toTable')),
+        to_column:         toStr(p.toColName),
+        relationship_type: toStr(p.relType),
+        description:       toStr(p.description),
+      };
+    });
+
+    // --- KPIs ---
+    const kpiResult = await session.run(
+      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
+      { cid: connectionId },
+    );
+    const kpis = kpiResult.records.map((r) =>
+      mapKpi(r.get('k').properties as Record<string, unknown>),
+    );
+
+    return { tables, columns, kpis, relationships };
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-source views
+// ---------------------------------------------------------------------------
+
+function mapCrossView(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:          toNum(p.pgId),
+    name:        toStr(p.name),
+    description: toStr(p.description),
+    user_id:     toStr(p.userId),
+    created_at:  toStr(p.createdAt),
+    updated_at:  toStr(p.updatedAt),
+  };
+}
+
+export async function getCrossSourceViews(): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (v:CrossSourceView) RETURN v ORDER BY v.updatedAt DESC`,
+    );
+    return result.records.map((r) => mapCrossView(r.get('v').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function createCrossSourceView(params: {
+  pgId: number;
+  name: string;
+  description?: string | null;
+  userId: string;
+}): Promise<number> {
+  const session = getSession();
+  const now = new Date().toISOString();
+  try {
+    await session.run(
+      `CREATE (v:CrossSourceView {
+         pgId:        $pgId,
+         name:        $name,
+         description: $description,
+         userId:      $userId,
+         createdAt:   $now,
+         updatedAt:   $now
+       })`,
+      { pgId: params.pgId, name: params.name, description: params.description ?? null, userId: params.userId, now },
+    );
+    return params.pgId;
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateCrossSourceView(
+  pgId: number,
+  patch: { name?: string; description?: string },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (v:CrossSourceView {pgId: $pgId})
+       SET v.name        = COALESCE($name, v.name),
+           v.description = $description,
+           v.updatedAt   = $now`,
+      { pgId, name: patch.name ?? null, description: patch.description ?? null, now: new Date().toISOString() },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function deleteCrossSourceView(pgId: number): Promise<void> {
+  const session = getSession();
+  try {
+    // DETACH DELETE removes the node and all its edges (INCLUDES, CROSS_VIEW_LINK if embedded)
+    await session.run(
+      `MATCH (v:CrossSourceView {pgId: $pgId})
+       OPTIONAL MATCH (v)-[:INCLUDES]->(t:SourceTable)
+       // Remove CROSS_VIEW_LINK edges that belong to this view
+       WITH v, collect(t) AS ts
+       UNWIND ts AS t
+       OPTIONAL MATCH (t)-[cvl:CROSS_VIEW_LINK {viewPgId: $pgId}]->()
+       DELETE cvl
+       WITH v
+       DETACH DELETE v`,
+      { pgId },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function getCrossSourceViewDetail(pgId: number): Promise<{
+  view: Record<string, unknown> | null;
+  viewTables: Record<string, unknown>[];
+  columns: Record<string, unknown>[];
+  relationships: Record<string, unknown>[];
+} | null> {
+  const session = getSession();
+  try {
+    const viewResult = await session.run(
+      `MATCH (v:CrossSourceView {pgId: $pgId}) RETURN v`,
+      { pgId },
+    );
+    if (!viewResult.records.length) return null;
+    const view = mapCrossView(viewResult.records[0].get('v').properties as Record<string, unknown>);
+
+    // Tables on canvas with position
+    const tablesResult = await session.run(
+      `MATCH (v:CrossSourceView {pgId: $pgId})-[inc:INCLUDES]->(t:SourceTable)
+       RETURN t, inc.posX AS posX, inc.posY AS posY`,
+      { pgId },
+    );
+    const viewTables = tablesResult.records.map((r) => {
+      const tp = r.get('t').properties as Record<string, unknown>;
+      return {
+        view_table_id: null, // no separate Postgres row
+        pos_x:         r.get('posX') != null ? Number(r.get('posX')) : 80,
+        pos_y:         r.get('posY') != null ? Number(r.get('posY')) : 80,
+        table_id:      toNum(tp.pgId),
+        table_name:    toStr(tp.tableName),
+        display_name:  toStr(tp.displayName),
+        connection_id: toNum(tp.connectionId),
+      };
+    });
+
+    // Columns for every table on the canvas
+    const tableIds = viewTables.map((t) => t.table_id as number);
+    const columns: Record<string, unknown>[] = [];
+    if (tableIds.length) {
+      const colResult = await session.run(
+        `MATCH (t:SourceTable)-[:HAS_COLUMN]->(c:SourceColumn)
+         WHERE t.pgId IN $tids
+         RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
+         ORDER BY c.columnName`,
+        { tids: tableIds },
+      );
+      for (const r of colResult.records) {
+        const cp = r.get('c').properties as Record<string, unknown>;
+        cp.tableName = r.get('tableName');
+        cp.tablePgId = r.get('tablePgId');
+        columns.push(mapColumn(cp));
+      }
+    }
+
+    // Cross-view relationships within this view
+    const relResult = await session.run(
+      `MATCH (a:SourceTable)-[r:CROSS_VIEW_LINK {viewPgId: $pgId}]->(b:SourceTable)
+       RETURN r, a.pgId AS fromTableId, b.pgId AS toTableId`,
+      { pgId },
+    );
+    const relationships = relResult.records.map((r) => {
+      const rp = r.get('r').properties as Record<string, unknown>;
+      return {
+        id:                toNum(rp.pgId),
+        view_id:           pgId,
+        from_table_id:     toNum(r.get('fromTableId')),
+        from_column_id:    rp.fromColPgId != null ? toNum(rp.fromColPgId) : null,
+        to_table_id:       toNum(r.get('toTableId')),
+        to_column_id:      rp.toColPgId   != null ? toNum(rp.toColPgId)   : null,
+        relationship_type: toStr(rp.relType),
+        label:             toStr(rp.label),
+      };
+    });
+
+    return { view, viewTables, columns, relationships };
+  } finally {
+    await session.close();
+  }
+}
+
+export async function addTableToView(
+  viewPgId: number,
+  tablePgId: number,
+  posX: number,
+  posY: number,
+): Promise<void> {
+  const session = getSession();
+  try {
+    // MERGE prevents duplicate INCLUDES edges
+    await session.run(
+      `MATCH (v:CrossSourceView {pgId: $vpid}), (t:SourceTable {pgId: $tpid})
+       MERGE (v)-[inc:INCLUDES]->(t)
+       ON CREATE SET inc.posX = $posX, inc.posY = $posY`,
+      { vpid: viewPgId, tpid: tablePgId, posX, posY },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function removeTableFromView(viewPgId: number, tablePgId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (v:CrossSourceView {pgId: $vpid})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
+       DELETE inc
+       WITH t
+       MATCH (t)-[cvl:CROSS_VIEW_LINK {viewPgId: $vpid}]-()
+       DELETE cvl`,
+      { vpid: viewPgId, tpid: tablePgId },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateTablePositionInView(
+  viewPgId: number,
+  tablePgId: number,
+  posX: number,
+  posY: number,
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (v:CrossSourceView {pgId: $vpid})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
+       SET inc.posX = $posX, inc.posY = $posY`,
+      { vpid: viewPgId, tpid: tablePgId, posX, posY },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function addCrossViewRelationship(params: {
+  pgId: number;
+  viewPgId: number;
+  fromTablePgId: number;
+  fromColumnPgId?: number | null;
+  fromColName?: string | null;
+  toTablePgId: number;
+  toColumnPgId?: number | null;
+  toColName?: string | null;
+  relationshipType: string;
+  label?: string | null;
+}): Promise<number> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (a:SourceTable {pgId: $fromTPgId}), (b:SourceTable {pgId: $toTPgId})
+       CREATE (a)-[:CROSS_VIEW_LINK {
+         pgId:        $pgId,
+         viewPgId:    $viewPgId,
+         relType:     $relType,
+         label:       $label,
+         fromColPgId: $fromColPgId,
+         fromColName: $fromColName,
+         toColPgId:   $toColPgId,
+         toColName:   $toColName
+       }]->(b)`,
+      {
+        pgId:        params.pgId,
+        fromTPgId:   params.fromTablePgId,
+        toTPgId:     params.toTablePgId,
+        viewPgId:    params.viewPgId,
+        relType:     params.relationshipType,
+        label:       params.label       ?? null,
+        fromColPgId: params.fromColumnPgId ?? null,
+        fromColName: params.fromColName   ?? null,
+        toColPgId:   params.toColumnPgId  ?? null,
+        toColName:   params.toColName     ?? null,
+      },
+    );
+    return params.pgId;
+  } finally {
+    await session.close();
+  }
+}
+
+export async function deleteCrossViewRelationship(pgId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(`MATCH ()-[r:CROSS_VIEW_LINK {pgId: $pgId}]->() DELETE r`, { pgId });
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quality rules
+// ---------------------------------------------------------------------------
+
+export async function getQualityRules(
+  connectionId: number,
+  tableName: string,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn})
+       RETURN q ORDER BY q.createdAt`,
+      { cid: connectionId, tn: tableName },
+    );
+    return result.records.map((r) => mapQualityRule(r.get('q').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function getActiveQualityRules(
+  connectionId: number,
+  tableName: string,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn, isActive: true})
+       RETURN q ORDER BY q.createdAt`,
+      { cid: connectionId, tn: tableName },
+    );
+    return result.records.map((r) => mapQualityRule(r.get('q').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+export async function createQualityRule(params: {
+  pgId: number;
+  connectionId: number;
+  tableName: string;
+  ruleName: string;
+  dimension?: string | null;
+  fieldNames?: string[];
+  description?: string | null;
+  ruleType: string;
+  ruleConfig?: Record<string, unknown>;
+  passThreshold?: number;
+  ownerName?: string | null;
+}): Promise<number> {
+  const session = getSession();
+  const now = new Date().toISOString();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+       CREATE (q:QualityRule {
+         pgId:          $pgId,
+         connectionId:  $cid,
+         tableName:     $tn,
+         ruleName:      $ruleName,
+         dimension:     $dimension,
+         fieldNames:    $fieldNames,
+         description:   $description,
+         ruleType:      $ruleType,
+         ruleConfig:    $ruleConfig,
+         passThreshold: $passThreshold,
+         ownerName:     $ownerName,
+         isActive:      true,
+         createdAt:     $now
+       })
+       CREATE (q)-[:APPLIES_TO]->(t)`,
+      {
+        pgId:          params.pgId,
+        cid:           params.connectionId,
+        tn:            params.tableName,
+        ruleName:      params.ruleName,
+        dimension:     params.dimension     ?? null,
+        fieldNames:    params.fieldNames    ?? [],
+        description:   params.description   ?? null,
+        ruleType:      params.ruleType,
+        ruleConfig:    JSON.stringify(params.ruleConfig ?? {}),
+        passThreshold: params.passThreshold ?? 0.95,
+        ownerName:     params.ownerName     ?? null,
+        now,
+      },
+    );
+    return params.pgId;
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateQualityRule(
+  pgId: number,
+  patch: {
+    rule_name?: unknown; dimension?: unknown; field_names?: unknown;
+    description?: unknown; rule_type?: unknown; rule_config?: unknown;
+    pass_threshold?: unknown; owner_name?: unknown; is_active?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    const setClauses: string[] = [];
+    const params: Record<string, unknown> = { pgId };
+
+    if (patch.rule_name     !== undefined) { setClauses.push('q.ruleName = $ruleName');       params.ruleName       = patch.rule_name; }
+    if (patch.dimension     !== undefined) { setClauses.push('q.dimension = $dimension');      params.dimension      = patch.dimension; }
+    if (patch.field_names   !== undefined) { setClauses.push('q.fieldNames = $fieldNames');    params.fieldNames     = Array.isArray(patch.field_names) ? patch.field_names : parseDomains(patch.field_names); }
+    if (patch.description   !== undefined) { setClauses.push('q.description = $description');  params.description    = patch.description; }
+    if (patch.rule_type     !== undefined) { setClauses.push('q.ruleType = $ruleType');        params.ruleType       = patch.rule_type; }
+    if (patch.rule_config   !== undefined) { setClauses.push('q.ruleConfig = $ruleConfig');    params.ruleConfig     = JSON.stringify(patch.rule_config); }
+    if (patch.pass_threshold!== undefined) { setClauses.push('q.passThreshold = $passThreshold'); params.passThreshold = patch.pass_threshold; }
+    if (patch.owner_name    !== undefined) { setClauses.push('q.ownerName = $ownerName');      params.ownerName      = patch.owner_name; }
+    if (patch.is_active     !== undefined) { setClauses.push('q.isActive = $isActive');        params.isActive       = Boolean(patch.is_active); }
+
+    if (!setClauses.length) return;
+    await session.run(
+      `MATCH (q:QualityRule {pgId: $pgId}) SET ${setClauses.join(', ')}`,
+      params,
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function deleteQualityRule(pgId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (q:QualityRule {pgId: $pgId}) DETACH DELETE q`,
+      { pgId },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quality stats sync — called after profiling to update node properties
+// ---------------------------------------------------------------------------
+
+export async function updateTableQualityStats(
+  connectionId: number,
+  tableName: string,
+  stats: { rowCount?: number | null; lastProfiledAt?: string | null },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+       SET t.rowCount      = $rowCount,
+           t.lastProfiledAt = $lastProfiledAt`,
+      {
+        cid:            connectionId,
+        tn:             tableName,
+        rowCount:       stats.rowCount        ?? null,
+        lastProfiledAt: stats.lastProfiledAt  ?? new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+export async function updateColumnQualityStats(
+  connectionId: number,
+  tableName: string,
+  fieldName: string,
+  stats: {
+    nullCount?: number | null; nullPct?: number | null;
+    distinctCount?: number | null; distinctPct?: number | null;
+    minValue?: string | null; maxValue?: string | null;
+    meanValue?: number | null; medianValue?: number | null;
+    topValues?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})-[:HAS_COLUMN]->(c:SourceColumn {columnName: $fn})
+       SET c.nullCount     = $nullCount,
+           c.nullPct       = $nullPct,
+           c.distinctCount = $distinctCount,
+           c.distinctPct   = $distinctPct,
+           c.minValue      = $minValue,
+           c.maxValue      = $maxValue,
+           c.meanValue     = $meanValue,
+           c.medianValue   = $medianValue,
+           c.topValues     = $topValues`,
+      {
+        cid:           connectionId,
+        tn:            tableName,
+        fn:            fieldName,
+        nullCount:     stats.nullCount     ?? null,
+        nullPct:       stats.nullPct       ?? null,
+        distinctCount: stats.distinctCount ?? null,
+        distinctPct:   stats.distinctPct   ?? null,
+        minValue:      stats.minValue      ?? null,
+        maxValue:      stats.maxValue      ?? null,
+        meanValue:     stats.meanValue     ?? null,
+        medianValue:   stats.medianValue   ?? null,
+        topValues:     stats.topValues     != null ? JSON.stringify(stats.topValues) : null,
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SchemaProfiler — MERGE-based upsert (idempotent, safe for re-profiling)
+// ---------------------------------------------------------------------------
+
+export interface UpsertTableInput {
+  pgId: number;
+  connectionId: number;
+  tableName: string;
+  displayName: string;
+  description: string | null;
+}
+
+export interface UpsertColumnInput {
+  pgId: number;
+  tablePgId: number;
+  tableName: string;
+  columnName: string;
+  dataType: string;
+  displayName: string;
+  description: string | null;
+  exampleValues: unknown;
+  isDimension: boolean;
+  isMeasure: boolean;
+}
+
+export interface UpsertRelationshipInput {
+  pgId: number;
+  fromTablePgId: number;
+  fromColPgId: number | null;
+  fromColName: string | null;
+  toTablePgId: number;
+  toColPgId: number | null;
+  toColName: string | null;
+  relType: string;
+  description: string | null;
+}
+
+export async function upsertConnectionGraph(
+  tables: UpsertTableInput[],
+  columns: UpsertColumnInput[],
+  relationships: UpsertRelationshipInput[],
+): Promise<void> {
+  const session = getSession();
+  const now = new Date().toISOString();
+  try {
+    // Upsert tables — MERGE on (connectionId, tableName) so re-profiling preserves nodes
+    for (const t of tables) {
+      await session.run(
+        `MERGE (tbl:SourceTable {connectionId: $cid, tableName: $tn})
+         ON CREATE SET
+           tbl.pgId         = $pgId,
+           tbl.displayName  = $displayName,
+           tbl.description  = $description,
+           tbl.isActive     = true,
+           tbl.aiDraft      = true,
+           tbl.domains      = [],
+           tbl.createdAt    = $now,
+           tbl.updatedAt    = $now
+         ON MATCH SET
+           tbl.displayName  = $displayName,
+           tbl.description  = $description,
+           tbl.updatedAt    = $now`,
+        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, now },
+      );
+    }
+
+    // Upsert columns — MERGE on (tablePgId, columnName)
+    for (const c of columns) {
+      await session.run(
+        `MATCH (tbl:SourceTable {pgId: $tpid})
+         MERGE (col:SourceColumn {tablePgId: $tpid, columnName: $cn})
+         ON CREATE SET
+           col.pgId          = $pgId,
+           col.tableName     = $tn,
+           col.dataType      = $dataType,
+           col.displayName   = $displayName,
+           col.description   = $description,
+           col.exampleValues = $exampleValues,
+           col.isDimension   = $isDimension,
+           col.isMeasure     = $isMeasure,
+           col.aiDraft       = true,
+           col.createdAt     = $now,
+           col.updatedAt     = $now
+         ON MATCH SET
+           col.dataType      = $dataType,
+           col.displayName   = $displayName,
+           col.description   = $description,
+           col.exampleValues = $exampleValues,
+           col.updatedAt     = $now
+         MERGE (tbl)-[:HAS_COLUMN]->(col)`,
+        {
+          pgId:          c.pgId,
+          tpid:          c.tablePgId,
+          tn:            c.tableName,
+          cn:            c.columnName,
+          dataType:      c.dataType,
+          displayName:   c.displayName,
+          description:   c.description,
+          exampleValues: JSON.stringify(c.exampleValues),
+          isDimension:   c.isDimension,
+          isMeasure:     c.isMeasure,
+          now,
+        },
+      );
+    }
+
+    // Remove old AI-draft RELATES_TO edges and re-create — confirmed edges are preserved
+    // because we only delete where aiDraft = true.
+    const connectionIds = [...new Set(tables.map((t) => t.connectionId))];
+    for (const cid of connectionIds) {
+      await session.run(
+        `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
+        { cid },
+      );
+    }
+    for (const rel of relationships) {
+      await session.run(
+        `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
+         CREATE (ft)-[r:RELATES_TO {
+           pgId:        $pgId,
+           fromColPgId: $fromColPgId,
+           fromColName: $fromColName,
+           toColPgId:   $toColPgId,
+           toColName:   $toColName,
+           relType:     $relType,
+           description: $description,
+           aiDraft:     true
+         }]->(tt)`,
+        {
+          pgId:        rel.pgId,
+          fromTPgId:   rel.fromTablePgId,
+          toTPgId:     rel.toTablePgId,
+          fromColPgId: rel.fromColPgId ?? null,
+          fromColName: rel.fromColName ?? null,
+          toColPgId:   rel.toColPgId   ?? null,
+          toColName:   rel.toColName   ?? null,
+          relType:     rel.relType,
+          description: rel.description ?? null,
+        },
+      );
+    }
+  } finally {
+    await session.close();
+  }
+}
+
+// Returns { tableName → pgId } map — needed by SchemaProfiler and re-suggest route
+export async function getTablePgIdMap(connectionId: number): Promise<Map<string, number>> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid}) RETURN t.tableName AS tn, t.pgId AS pgId`,
+      { cid: connectionId },
+    );
+    const map = new Map<string, number>();
+    for (const r of result.records) map.set(String(r.get('tn')), toNum(r.get('pgId')));
+    return map;
+  } finally {
+    await session.close();
+  }
+}
+
+// Returns { "tableName.columnName" → pgId } map — needed by SchemaProfiler and re-suggest route
+export async function getColumnPgIdMap(connectionId: number): Promise<Map<string, number>> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(c:SourceColumn)
+       RETURN t.tableName AS tn, c.columnName AS cn, c.pgId AS pgId`,
+      { cid: connectionId },
+    );
+    const map = new Map<string, number>();
+    for (const r of result.records) {
+      map.set(`${r.get('tn')}.${r.get('cn')}`, toNum(r.get('pgId')));
+    }
+    return map;
+  } finally {
+    await session.close();
+  }
+}
+
+// Returns tables by their pgIds — used by cross-views for integer FK compat
+export async function getTablesByPgIds(pgIds: number[]): Promise<Record<string, unknown>[]> {
+  if (!pgIds.length) return [];
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:SourceTable) WHERE t.pgId IN $ids RETURN t`,
+      { ids: pgIds },
+    );
+    return result.records.map((r) => mapTable(r.get('t').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}

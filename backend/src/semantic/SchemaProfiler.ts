@@ -3,6 +3,7 @@ import { generateSchemaDraft } from '../ai/AIService';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
+import * as graph from '../db/semanticGraph';
 
 export interface ProfilerResult {
   connectionId: number;
@@ -273,6 +274,88 @@ export async function runSchemaProfiler(
       });
     }
   });
+
+  // ── Sync to Neo4j ──────────────────────────────────────────────────────────
+  // After all Postgres inserts complete, mirror the semantic layer to Neo4j.
+  // Uses MERGE so re-profiling is safe and confirmed definitions are preserved.
+  try {
+    // Build UpsertTableInput / UpsertColumnInput arrays from the maps we just built.
+    const graphTables: graph.UpsertTableInput[] = schema.tables.map((t) => {
+      const def = tableDefMap.get(t.tableName);
+      return {
+        pgId:         tableIdMap.get(t.tableName) ?? 0,
+        connectionId,
+        tableName:    t.tableName,
+        displayName:  def?.display_name ?? t.tableName,
+        description:  def?.description  ?? null,
+      };
+    }).filter((t) => t.pgId > 0);
+
+    const graphColumns: graph.UpsertColumnInput[] = [];
+    for (const t of schema.tables) {
+      const tablePgId = tableIdMap.get(t.tableName);
+      if (!tablePgId) continue;
+      const colDefs = columnDefs.filter((c) => c.table_name === t.tableName);
+      for (const srcCol of t.columns) {
+        const colDef   = colDefs.find((c) => c.column_name === srcCol.name);
+        const colPgId  = columnIdMap.get(`${t.tableName}.${srcCol.name}`);
+        if (!colPgId) continue;
+        graphColumns.push({
+          pgId:          colPgId,
+          tablePgId,
+          tableName:     t.tableName,
+          columnName:    srcCol.name,
+          dataType:      srcCol.type,
+          displayName:   colDef?.display_name ?? srcCol.name,
+          description:   colDef?.description  ?? null,
+          exampleValues: srcCol.sampleValues,
+          isDimension:   colDef?.is_dimension  ?? false,
+          isMeasure:     colDef?.is_measure    ?? false,
+        });
+      }
+    }
+
+    // Fetch the just-inserted relationship rows from Postgres to get their IDs.
+    const insertedTableIds = Array.from(tableIdMap.values());
+    const pgRels = insertedTableIds.length
+      ? await semanticDb('table_relationships')
+          .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
+          .leftJoin('source_columns as tc', 'table_relationships.to_column_id',   'tc.id')
+          .whereIn('table_relationships.from_table_id', insertedTableIds)
+          .select(
+            'table_relationships.id',
+            'table_relationships.from_table_id', 'table_relationships.to_table_id',
+            'table_relationships.from_column_id', 'table_relationships.to_column_id',
+            'table_relationships.relationship_type',
+            'table_relationships.description',
+            'fc.column_name as from_col_name',
+            'tc.column_name as to_col_name',
+          )
+      : [];
+
+    const graphRels: graph.UpsertRelationshipInput[] = (pgRels as {
+      id: number; from_table_id: number; to_table_id: number;
+      from_column_id: number | null; to_column_id: number | null;
+      relationship_type: string; description: string | null;
+      from_col_name: string | null; to_col_name: string | null;
+    }[]).map((r) => ({
+      pgId:          r.id,
+      fromTablePgId: r.from_table_id,
+      fromColPgId:   r.from_column_id ?? null,
+      fromColName:   r.from_col_name  ?? null,
+      toTablePgId:   r.to_table_id,
+      toColPgId:     r.to_column_id   ?? null,
+      toColName:     r.to_col_name    ?? null,
+      relType:       r.relationship_type,
+      description:   r.description ?? null,
+    }));
+
+    await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels);
+  } catch (neo4jErr) {
+    // Non-fatal — Postgres is the source of truth until Phase 7.
+    // Log but don't throw; the profiler should still return success.
+    console.warn('[SchemaProfiler] Neo4j sync failed (non-fatal):', neo4jErr);
+  }
 
   return { connectionId, tablesInserted, columnsInserted, relationshipsInserted };
 }

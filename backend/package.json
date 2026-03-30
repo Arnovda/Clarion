@@ -9,7 +9,8 @@
     "migrate:rollback": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:rollback",
     "migrate:status": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:status",
     "seed": "ts-node src/seed.ts",
-    "seed:hr": "ts-node src/seed-hr.ts"
+    "seed:hr": "ts-node src/seed-hr.ts",
+    "neo4j:migrate": "ts-node src/db/migrateSemanticToNeo4j.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -19,6 +20,7 @@
     "express": "^4.18.3",
     "jsonwebtoken": "^9.0.2",
     "knex": "^3.1.0",
+    "neo4j-driver": "^5.27.0",
     "pg": "^8.11.3"
   },
   "devDependencies": {

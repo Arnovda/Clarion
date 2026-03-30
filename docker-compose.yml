@@ -17,6 +17,32 @@ services:
       timeout: 5s
       retries: 5
 
+  neo4j:
+    image: neo4j:5-community
+    container_name: databridge-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/databridge_secret
+      NEO4J_PLUGINS: '[]'
+      NEO4J_dbms_memory_heap_initial__size: 256m
+      NEO4J_dbms_memory_heap_max__size: 512m
+    ports:
+      - '7474:7474'
+      - '7687:7687'
+    volumes:
+      - databridge_neo4j_data:/data
+      - databridge_neo4j_logs:/logs
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
 volumes:
   databridge_pgdata:
+    driver: local
+  databridge_neo4j_data:
+    driver: local
+  databridge_neo4j_logs:
     driver: local

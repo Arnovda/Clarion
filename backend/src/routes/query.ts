@@ -4,7 +4,8 @@ import Database from 'better-sqlite3';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateSql, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn } from '../ai/AIService';
+import { buildSemanticContextForQuery, getDimensionColumns } from '../db/semanticGraph';
+import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn } from '../ai/AIService';
 import {
   REPAIR_SYSTEM,
   buildRepairContext,
@@ -34,57 +35,15 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    // 1. Build semantic context — include both confirmed and AI-draft definitions
-    //    so queries work even before the admin has reviewed every row
-    let tablesQuery = semanticDb('source_tables')
-      .join('connections', 'source_tables.connection_id', 'connections.id')
-      .where({ 'source_tables.connection_id': connectionId, 'source_tables.is_active': true })
-      .select('source_tables.*');
-    // Optional domain filter — a table matches if the requested domain appears in either
-    // the connection-level domains (inherited) OR the table-level domains (manually added)
-    if (domains && domains.length > 0) {
-      tablesQuery = tablesQuery.where((builder) => {
-        for (const domain of domains) {
-          builder.orWhereRaw(`source_tables.domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
-          builder.orWhereRaw(`connections.domains::jsonb @> ?::jsonb`, [JSON.stringify([domain])]);
-        }
-      });
-    }
-    const tables = await tablesQuery;
-
-    const columns = await semanticDb('source_columns')
-      .join('source_tables', 'source_columns.table_id', 'source_tables.id')
-      .where('source_tables.connection_id', connectionId)
-      .where('source_tables.is_active', true)
-      .select('source_columns.*', 'source_tables.table_name');
-
-    const kpis = await semanticDb('kpi_definitions')
-      .where({ connection_id: connectionId });
-
-    // Fetch all relationships (confirmed + draft) with resolved table + column names
-    const tableIds = tables.map((t: { id: number }) => t.id);
-    const relationships = tableIds.length
-      ? await semanticDb('table_relationships')
-          .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
-          .leftJoin('source_columns as tc', 'table_relationships.to_column_id',   'tc.id')
-          .leftJoin('source_tables  as ft', 'table_relationships.from_table_id',  'ft.id')
-          .leftJoin('source_tables  as tt', 'table_relationships.to_table_id',    'tt.id')
-          .whereIn('table_relationships.from_table_id', tableIds)
-          .select(
-            'ft.table_name as from_table',
-            'fc.column_name as from_column',
-            'tt.table_name as to_table',
-            'tc.column_name as to_column',
-            'table_relationships.relationship_type',
-            'table_relationships.description',
-          )
-      : [];
+    // 1. Build semantic context from Neo4j — single traversal replaces 4 Postgres queries.
+    //    Domain filter is applied inside Neo4j; columns carry quality stats from latest profiling run.
+    const { tables, columns, kpis, relationships } = await buildSemanticContextForQuery(connectionId, domains);
 
     // Format semantic context — table + column definitions
-    const semanticContext = tables.map((t: { id: number; table_name: string; description: string }) => {
-      const cols = columns
-        .filter((c: { table_id: number }) => c.table_id === t.id)
-        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
+    const semanticContext = (tables as { id: number; table_name: string; description: string }[]).map((t) => {
+      const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
+        .filter((c) => c.table_id === t.id)
+        .map((c) =>
           `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
         )
         .join('\n');
@@ -93,21 +52,18 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // Format relationship context — JOIN guidance
     const relationshipContext = relationships.length
-      ? relationships.map((r: {
-          from_table: string; from_column: string | null;
-          to_table: string;   to_column: string | null;
-          relationship_type: string; description: string | null;
-        }) => {
-          const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
-          const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
-          return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
-        }).join('\n')
+      ? (relationships as { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }[])
+          .map((r) => {
+            const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
+            const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
+            return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
+          }).join('\n')
       : 'No relationships defined yet — avoid JOINs unless you are certain of the key columns.';
 
     const kpiFormulas = kpis.length
-      ? kpis.map((k: { name: string; formula_plain_text: string | null; formula_sql: string }) =>
-          `${k.name}:\n  Business definition: ${k.formula_plain_text ?? k.name}\n  SQL formula: ${k.formula_sql ?? '(not yet defined)'}`
-        ).join('\n\n')
+      ? (kpis as { name: string; formula_plain_text: string | null; formula_sql: string }[])
+          .map((k) => `${k.name}:\n  Business definition: ${k.formula_plain_text ?? k.name}\n  SQL formula: ${k.formula_sql ?? '(not yet defined)'}`)
+          .join('\n\n')
       : 'No KPIs defined yet.';
 
     // 2a-quality. Build quality context — fetch latest profile + field stats + failing rules
@@ -226,6 +182,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       connection_id: number; connection_name: string; connection_config: string | Record<string, unknown>;
     };
     type XCol = { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean };
+
+    // tableIds: pgId values for all active tables returned from Neo4j (used for cross-view lookup)
+    const tableIds = (tables as { id: number }[]).map((t) => t.id);
 
     let crossConnAliasMap: Map<number, { alias: string; filepath: string }> | null = null;
     let enrichedSemanticContext  = semanticContextWithQuality;
@@ -422,13 +381,12 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     const literalMatches = [...nlResult.sql.matchAll(/'([^']+)'/g)];
     const stringLiterals = [...new Set(literalMatches.map((m) => m[1]))];
 
-    // Dimension columns (text/varchar) in the tables Claude used
-    const dimColumns = await semanticDb('source_columns')
-      .join('source_tables', 'source_columns.table_id', 'source_tables.id')
-      .whereIn('source_tables.table_name', nlResult.tables_used)
-      .where('source_columns.is_dimension', true)
-      .whereIn('source_columns.data_type', ['TEXT', 'VARCHAR', 'text', 'varchar', 'NVARCHAR', 'nvarchar', 'CHAR', 'char'])
-      .select('source_tables.table_name', 'source_columns.column_name');
+    // Dimension columns (text/varchar) in the tables Claude used — fetched from Neo4j
+    const allDimCols = await getDimensionColumns(connectionId);
+    const textTypes = new Set(['TEXT', 'VARCHAR', 'text', 'varchar', 'NVARCHAR', 'nvarchar', 'CHAR', 'char']);
+    const dimColumns = allDimCols.filter((c) =>
+      nlResult.tables_used.includes(c.table_name) && textTypes.has(c.data_type),
+    );
 
     type Mismatch   = { literal: string; alternatives: string[] };
     type Ambiguity  = { literal: string; tableName: string; columnName: string; rows: Record<string, unknown>[] };
@@ -600,6 +558,236 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     });
   } catch (err) {
     next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/query/think — same as POST / but streams Claude's thinking live
+// Extended thinking tokens are forwarded as SSE events so the browser can
+// render them in real time. Final result arrives as a single 'done' event.
+// ---------------------------------------------------------------------------
+
+router.post('/think', requireAuth, async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const emit = (data: object) => {
+    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
+  };
+
+  try {
+    const { connectionId, question, domains } = req.body as {
+      connectionId: number; question: string; domains?: string[];
+    };
+
+    if (!question?.trim()) {
+      emit({ type: 'error', message: 'question is required' });
+      res.end(); return;
+    }
+
+    // ── 1. Semantic context from Neo4j ─────────────────────────────────────
+    emit({ type: 'phase', text: 'Loading context…' });
+    const { tables, columns, kpis, relationships } = await buildSemanticContextForQuery(connectionId, domains);
+
+    const semanticContext = (tables as { id: number; table_name: string; description: string }[]).map((t) => {
+      const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
+        .filter((c) => c.table_id === t.id)
+        .map((c) =>
+          `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+        ).join('\n');
+      return `Table: ${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+    }).join('\n\n');
+
+    const relationshipContext = relationships.length
+      ? (relationships as { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }[])
+          .map((r) => {
+            const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
+            const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
+            return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
+          }).join('\n')
+      : 'No relationships defined yet.';
+
+    const kpiFormulas = kpis.length
+      ? (kpis as { name: string; formula_plain_text: string | null; formula_sql: string }[])
+          .map((k) => `${k.name}:\n  Business definition: ${k.formula_plain_text ?? k.name}\n  SQL formula: ${k.formula_sql ?? '(not yet defined)'}`)
+          .join('\n\n')
+      : 'No KPIs defined yet.';
+
+    // ── 2. Quality hints ────────────────────────────────────────────────────
+    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+    const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
+      ? await semanticDb('dataset_profiles')
+          .where({ connection_id: connectionId })
+          .whereIn('table_name', tableNames)
+          .orderBy('id', 'desc')
+          .select(semanticDb.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
+          .catch(() => [])
+      : [];
+    const profileIds = latestProfiles.map((p) => p.id);
+    const fieldProfiles: ({ profile_id: number; field_name: string; null_pct: number; distinct_count: number; min_value: string | null; max_value: string | null; mean_value: number | null; top_values: { value: unknown; pct: number }[] | null })[] = profileIds.length
+      ? await semanticDb('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      : [];
+
+    const qualityHints = latestProfiles.map((prof) => {
+      const fields = fieldProfiles.filter((f) => f.profile_id === prof.id);
+      const fieldLines = fields.map((f) => {
+        const parts: string[] = [];
+        if (f.null_pct > 0.01) parts.push(`${Math.round(f.null_pct * 100)}% nulls`);
+        if (f.distinct_count <= 20 && f.top_values?.length) {
+          const vals = f.top_values.slice(0, 8).map((v) => `'${String(v.value)}'`).join(', ');
+          parts.push(`values: ${vals}`);
+        } else if (f.min_value !== null && f.max_value !== null && f.distinct_count > 20) {
+          parts.push(`range ${f.min_value} to ${f.max_value}`);
+        }
+        return parts.length ? `    ${f.field_name}: ${parts.join('; ')}` : null;
+      }).filter(Boolean);
+      return fieldLines.length
+        ? `Quality for ${prof.table_name}:\n${fieldLines.join('\n')}`
+        : null;
+    }).filter(Boolean).join('\n\n');
+
+    const fullContext = qualityHints
+      ? `${semanticContext}\n\n--- Data Quality Hints ---\n${qualityHints}`
+      : semanticContext;
+
+    // ── 3. Stream SQL generation with extended thinking ─────────────────────
+    emit({ type: 'phase', text: 'Reasoning about your question…' });
+
+    const nlResult = await generateSqlStreaming(
+      question, fullContext, relationshipContext, kpiFormulas,
+      (type, delta) => emit({ type, text: delta }),
+    );
+
+    emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+
+    // ── 4. Log ──────────────────────────────────────────────────────────────
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const [logRow] = await semanticDb('query_log').insert({
+      user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
+      question_text:    question,
+      generated_sql:    nlResult.sql,
+      confidence_score: nlResult.confidence,
+      was_flagged:      nlResult.confidence < 0.7,
+      flag_reason:      nlResult.confidence < 0.7 ? 'Low confidence score' : null,
+    }).returning('id');
+    const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
+
+    // ── 5. Block low-confidence ─────────────────────────────────────────────
+    if (nlResult.confidence < 0.7) {
+      await semanticDb('definition_gaps').insert({
+        query_log_id:    queryLogId,
+        gap_description: `Low confidence (${nlResult.confidence}) for question: "${question}"`,
+      });
+      emit({ type: 'done', data: {
+        answer: "I don't have enough context to answer that confidently yet. This question has been noted for review.",
+        confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+        debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: 'Low confidence score', semanticContext, relationshipContext, kpiFormulas },
+      }});
+      res.end(); return;
+    }
+
+    // ── 6. Entity pre-flight check ──────────────────────────────────────────
+    const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
+    const entityCheckConnector = new SqliteConnector(cfg.filepath);
+    await entityCheckConnector.connect();
+
+    const literalMatches = [...nlResult.sql.matchAll(/'([^']+)'/g)];
+    const stringLiterals = [...new Set(literalMatches.map((m) => m[1]))];
+    const allDimCols = await getDimensionColumns(connectionId);
+    const textTypes = new Set(['TEXT', 'VARCHAR', 'text', 'varchar', 'NVARCHAR', 'nvarchar', 'CHAR', 'char']);
+    const dimColumns = allDimCols.filter((c) =>
+      nlResult.tables_used.includes(c.table_name) && textTypes.has(c.data_type),
+    );
+
+    type Mismatch  = { literal: string; alternatives: string[] };
+    type Ambiguity = { literal: string; tableName: string; columnName: string; rows: Record<string, unknown>[] };
+    const mismatches:  Mismatch[]  = [];
+    const ambiguities: Ambiguity[] = [];
+
+    for (const literal of stringLiterals) {
+      if (literal.length < 3 || /^\d+$/.test(literal)) continue;
+      let found = false, ambiguous = false;
+      let alternatives: string[] = [];
+      for (const col of dimColumns as { table_name: string; column_name: string }[]) {
+        try {
+          const exact = await entityCheckConnector.executeQuery(
+            `SELECT COUNT(*) as cnt FROM "${col.table_name}" WHERE "${col.column_name}" = '${literal.replace(/'/g, "''")}'`,
+          );
+          const count = Number((exact.rows[0] as { cnt: unknown })?.cnt ?? 0);
+          if (count === 1) { found = true; break; }
+          if (count > 1 && count <= 15) {
+            const rowsResult = await entityCheckConnector.executeQuery(
+              `SELECT * FROM "${col.table_name}" WHERE "${col.column_name}" = '${literal.replace(/'/g, "''")}' LIMIT 15`,
+            );
+            ambiguities.push({ literal, tableName: col.table_name, columnName: col.column_name, rows: rowsResult.rows });
+            ambiguous = true; break;
+          }
+          if (count > 15) { found = true; break; }
+          const words = literal.split(/\s+/).filter((w) => w.length >= 4);
+          for (const word of words) {
+            const fuzzy = await entityCheckConnector.executeQuery(
+              `SELECT DISTINCT "${col.column_name}" FROM "${col.table_name}" WHERE "${col.column_name}" LIKE '%${word.replace(/'/g, "''")}%' LIMIT 5`,
+            );
+            const hits = fuzzy.rows.map((r) => String((r as Record<string, unknown>)[col.column_name]));
+            alternatives = [...alternatives, ...hits];
+            if (hits.length > 0) break;
+          }
+        } catch { /* ignore per-column errors */ }
+      }
+      if (!found && !ambiguous && alternatives.length > 0) {
+        mismatches.push({ literal, alternatives: [...new Set(alternatives)].slice(0, 5) });
+      }
+    }
+    entityCheckConnector.disconnect();
+
+    if (ambiguities.length > 0 || mismatches.length > 0) {
+      const hint = ambiguities.length > 0
+        ? `Entity pre-flight: ${ambiguities.length} ambiguous name(s): ${ambiguities.map((a) => a.literal).join(', ')}`
+        : `Entity pre-flight: unrecognised literal(s): ${mismatches.map((m) => m.literal).join(', ')}`;
+      emit({ type: 'done', data: {
+        needsClarification: true, ambiguities, mismatches,
+        answer: ambiguities.length > 0
+          ? `"${ambiguities[0].literal}" matches multiple records. Please pick which one you mean.`
+          : `I couldn't find ${mismatches.map((m) => `"${m.literal}"`).join(' or ')} in your data.`,
+        confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+        debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint, semanticContext, relationshipContext, kpiFormulas },
+      }});
+      res.end(); return;
+    }
+
+    // ── 7. Execute SQL ──────────────────────────────────────────────────────
+    emit({ type: 'phase', text: 'Running your query…' });
+    const sqliteConnector = new SqliteConnector(cfg.filepath);
+    await sqliteConnector.connect();
+    const queryResult = await sqliteConnector.executeQuery(nlResult.sql);
+    sqliteConnector.disconnect();
+
+    // ── 8. Format answer ────────────────────────────────────────────────────
+    emit({ type: 'phase', text: 'Formatting answer…' });
+    const [answer, validation] = await Promise.all([
+      formatAnswer(question, queryResult.rows),
+      validateQueryResult(question, nlResult.sql, queryResult.rows),
+    ]);
+
+    await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+
+    emit({ type: 'done', data: {
+      answer, confidence: nlResult.confidence, blocked: false, tablesUsed: nlResult.tables_used,
+      ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
+      rows: queryResult.rows.slice(0, 200),
+      sql: nlResult.sql,
+      debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length,
+        hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
+        semanticContext, relationshipContext, kpiFormulas },
+    }});
+    res.end();
+
+  } catch (err) {
+    console.error('[/think] Error:', err);
+    emit({ type: 'error', message: 'Something went wrong. Please try again.' });
+    res.end();
   }
 });
 

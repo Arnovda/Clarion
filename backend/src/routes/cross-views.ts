@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import * as graph from '../db/semanticGraph';
 
 const router = Router();
 
@@ -9,7 +9,7 @@ const router = Router();
 // ---------------------------------------------------------------------------
 router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const views = await semanticDb('cross_source_views').select('*').orderBy('updated_at', 'desc');
+    const views = await graph.getCrossSourceViews();
     res.json({ ok: true, data: views });
   } catch (err) { next(err); }
 });
@@ -20,11 +20,9 @@ router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request
 router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description } = req.body as { name: string; description?: string };
-    const [row] = await semanticDb('cross_source_views')
-      .insert({ name, description, user_id: req.user!.sub })
-      .returning('id');
-    const id: number = typeof row === 'object' ? (row as { id: number }).id : row;
-    res.status(201).json({ ok: true, data: { id } });
+    const pgId = await graph.nextPgId();
+    await graph.createCrossSourceView({ pgId, name, description: description ?? null, userId: req.user!.sub });
+    res.status(201).json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
 });
 
@@ -33,35 +31,9 @@ router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request
 // ---------------------------------------------------------------------------
 router.get('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const view = await semanticDb('cross_source_views').where({ id: req.params.id }).first();
-    if (!view) { res.status(404).json({ ok: false, error: 'View not found' }); return; }
-
-    // Tables on this canvas with their source info and connection
-    const viewTables = await semanticDb('cross_view_tables as vt')
-      .join('source_tables as st', 'vt.table_id', 'st.id')
-      .join('connections as c', 'st.connection_id', 'c.id')
-      .where('vt.view_id', req.params.id)
-      .select(
-        'vt.id as view_table_id',
-        'vt.pos_x',
-        'vt.pos_y',
-        'st.id as table_id',
-        'st.table_name',
-        'st.display_name',
-        'st.connection_id',
-        'c.name as connection_name',
-      );
-
-    // Columns for every table
-    const tableIds = viewTables.map((t: { table_id: number }) => t.table_id);
-    const columns = tableIds.length
-      ? await semanticDb('source_columns').whereIn('table_id', tableIds).orderBy('id')
-      : [];
-
-    // Cross-source relationships
-    const relationships = await semanticDb('cross_view_relationships').where({ view_id: req.params.id });
-
-    res.json({ ok: true, data: { view, viewTables, columns, relationships } });
+    const detail = await graph.getCrossSourceViewDetail(Number(req.params.id));
+    if (!detail) { res.status(404).json({ ok: false, error: 'View not found' }); return; }
+    res.json({ ok: true, data: detail });
   } catch (err) { next(err); }
 });
 
@@ -71,7 +43,7 @@ router.get('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Reque
 router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description } = req.body as { name?: string; description?: string };
-    await semanticDb('cross_source_views').where({ id: req.params.id }).update({ name, description, updated_at: semanticDb.fn.now() });
+    await graph.updateCrossSourceView(Number(req.params.id), { name, description });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -81,7 +53,7 @@ router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Req
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await semanticDb('cross_source_views').where({ id: req.params.id }).delete();
+    await graph.deleteCrossSourceView(Number(req.params.id));
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -91,61 +63,44 @@ router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Re
 // ---------------------------------------------------------------------------
 router.post('/:id/tables', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const viewPgId  = Number(req.params.id);
     const { tableId, posX = 80, posY = 80 } = req.body as { tableId: number; posX?: number; posY?: number };
-    const viewId = req.params.id;
+    const tablePgId = Number(tableId);
 
-    // Prevent duplicates
-    const existing = await semanticDb('cross_view_tables').where({ view_id: viewId, table_id: tableId }).first();
-    if (existing) { res.json({ ok: true, data: { id: existing.id } }); return; }
+    await graph.addTableToView(viewPgId, tablePgId, posX, posY);
 
-    const [row] = await semanticDb('cross_view_tables')
-      .insert({ view_id: viewId, table_id: tableId, pos_x: posX, pos_y: posY })
-      .returning('id');
-    const id: number = typeof row === 'object' ? (row as { id: number }).id : row;
+    // Auto-import existing RELATES_TO edges between this table and tables already on the canvas.
+    const detail = await graph.getCrossSourceViewDetail(viewPgId);
+    if (detail) {
+      const existingTablePgIds = detail.viewTables
+        .map((t) => t.table_id as number)
+        .filter((id) => id !== tablePgId);
 
-    // Auto-import existing table_relationships between this table and any table already on the canvas.
-    // This surfaces Definitions → Relationships connections automatically.
-    const existingTableRows = await semanticDb('cross_view_tables')
-      .where({ view_id: viewId })
-      .whereNot({ table_id: tableId })
-      .select('table_id');
-    const existingTableIds: number[] = existingTableRows.map((r: { table_id: number }) => r.table_id);
-
-    if (existingTableIds.length) {
-      // Find relationships where the new table is on either side and the other table is already on the canvas
-      const rels = await semanticDb('table_relationships')
-        .where(function () {
-          this.where({ from_table_id: tableId }).whereIn('to_table_id', existingTableIds)
-            .orWhere(function () {
-              this.where({ to_table_id: tableId }).whereIn('from_table_id', existingTableIds);
+      if (existingTablePgIds.length) {
+        const rels = await graph.getRelationshipsBetweenTables(tablePgId, existingTablePgIds);
+        const existingRelPairs = new Set(
+          detail.relationships.map((r) => `${r.from_table_id}:${r.to_table_id}`),
+        );
+        for (const rel of rels) {
+          const key = `${rel.from_table_id}:${rel.to_table_id}`;
+          if (!existingRelPairs.has(key)) {
+            const pgId = await graph.nextPgId();
+            await graph.addCrossViewRelationship({
+              pgId,
+              viewPgId,
+              fromTablePgId:   rel.from_table_id,
+              fromColumnPgId:  rel.from_column_id,
+              toTablePgId:     rel.to_table_id,
+              toColumnPgId:    rel.to_column_id,
+              relationshipType: rel.relationship_type,
             });
-        })
-        .select('from_table_id', 'from_column_id', 'to_table_id', 'to_column_id', 'relationship_type');
-
-      for (const rel of rels as { from_table_id: number; from_column_id: number | null; to_table_id: number; to_column_id: number | null; relationship_type: string }[]) {
-        // Only insert if this exact relationship doesn't already exist in the view
-        const alreadyExists = await semanticDb('cross_view_relationships')
-          .where({
-            view_id:       viewId,
-            from_table_id: rel.from_table_id,
-            to_table_id:   rel.to_table_id,
-          })
-          .first();
-        if (!alreadyExists) {
-          await semanticDb('cross_view_relationships').insert({
-            view_id:           viewId,
-            from_table_id:     rel.from_table_id,
-            from_column_id:    rel.from_column_id ?? null,
-            to_table_id:       rel.to_table_id,
-            to_column_id:      rel.to_column_id ?? null,
-            relationship_type: rel.relationship_type,
-            label:             null,
-          });
+            existingRelPairs.add(key);
+          }
         }
       }
     }
 
-    res.json({ ok: true, data: { id } });
+    res.json({ ok: true, data: { id: tablePgId } });
   } catch (err) { next(err); }
 });
 
@@ -154,13 +109,7 @@ router.post('/:id/tables', requireAuth, requireRole('epicdata_admin'), async (re
 // ---------------------------------------------------------------------------
 router.delete('/:id/tables/:tableId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tableId = Number(req.params.tableId);
-    // Remove relationships involving this table
-    await semanticDb('cross_view_relationships')
-      .where({ view_id: req.params.id })
-      .where(function () { this.where({ from_table_id: tableId }).orWhere({ to_table_id: tableId }); })
-      .delete();
-    await semanticDb('cross_view_tables').where({ view_id: req.params.id, table_id: tableId }).delete();
+    await graph.removeTableFromView(Number(req.params.id), Number(req.params.tableId));
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -171,9 +120,7 @@ router.delete('/:id/tables/:tableId', requireAuth, requireRole('epicdata_admin')
 router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { posX, posY } = req.body as { posX: number; posY: number };
-    await semanticDb('cross_view_tables')
-      .where({ view_id: req.params.id, table_id: Number(req.params.tableId) })
-      .update({ pos_x: posX, pos_y: posY });
+    await graph.updateTablePositionInView(Number(req.params.id), Number(req.params.tableId), posX, posY);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -183,13 +130,29 @@ router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('epicdata
 // ---------------------------------------------------------------------------
 router.post('/:id/relationships', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const viewPgId = Number(req.params.id);
     const { fromTableId, fromColumnId, toTableId, toColumnId, relationshipType = 'many_to_one', label } =
       req.body as { fromTableId: number; fromColumnId?: number; toTableId: number; toColumnId?: number; relationshipType?: string; label?: string };
-    const [row] = await semanticDb('cross_view_relationships')
-      .insert({ view_id: req.params.id, from_table_id: fromTableId, from_column_id: fromColumnId ?? null, to_table_id: toTableId, to_column_id: toColumnId ?? null, relationship_type: relationshipType, label: label ?? null })
-      .returning('id');
-    const id: number = typeof row === 'object' ? (row as { id: number }).id : row;
-    res.json({ ok: true, data: { id } });
+
+    const [fromCol, toCol] = await Promise.all([
+      fromColumnId ? graph.getColumnByPgId(Number(fromColumnId)) : Promise.resolve(null),
+      toColumnId   ? graph.getColumnByPgId(Number(toColumnId))   : Promise.resolve(null),
+    ]);
+
+    const pgId = await graph.nextPgId();
+    await graph.addCrossViewRelationship({
+      pgId,
+      viewPgId,
+      fromTablePgId:   Number(fromTableId),
+      fromColumnPgId:  fromColumnId ?? null,
+      fromColName:     fromCol?.column_name ?? null,
+      toTablePgId:     Number(toTableId),
+      toColumnPgId:    toColumnId ?? null,
+      toColName:       toCol?.column_name ?? null,
+      relationshipType,
+      label: label ?? null,
+    });
+    res.json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
 });
 
@@ -198,7 +161,7 @@ router.post('/:id/relationships', requireAuth, requireRole('epicdata_admin'), as
 // ---------------------------------------------------------------------------
 router.delete('/:id/relationships/:relId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await semanticDb('cross_view_relationships').where({ id: req.params.relId, view_id: req.params.id }).delete();
+    await graph.deleteCrossViewRelationship(Number(req.params.relId));
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

@@ -4,6 +4,7 @@ import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec } from '../ai/AIService';
 import { DashboardSpec, RefinementOutput } from '../ai/prompts/dashboardPrompt';
+import { buildSemanticContextForQuery } from '../db/semanticGraph';
 
 const router = Router();
 
@@ -14,38 +15,13 @@ const router = Router();
 async function buildSemanticContext(
   connectionId: number,
 ): Promise<{ semanticContext: string; relationshipContext: string }> {
-  const tables = await semanticDb('source_tables')
-    .where({ connection_id: connectionId, is_active: true });
+  const { tables, columns, relationships } = await buildSemanticContextForQuery(connectionId);
 
-  const columns = await semanticDb('source_columns')
-    .join('source_tables', 'source_columns.table_id', 'source_tables.id')
-    .where('source_tables.connection_id', connectionId)
-    .where('source_tables.is_active', true)
-    .select('source_columns.*', 'source_tables.table_name');
-
-  const tableIds = tables.map((t: { id: number }) => t.id);
-  const relationships = tableIds.length
-    ? await semanticDb('table_relationships')
-        .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
-        .leftJoin('source_columns as tc', 'table_relationships.to_column_id',   'tc.id')
-        .leftJoin('source_tables  as ft', 'table_relationships.from_table_id',  'ft.id')
-        .leftJoin('source_tables  as tt', 'table_relationships.to_table_id',    'tt.id')
-        .whereIn('table_relationships.from_table_id', tableIds)
-        .select(
-          'ft.table_name as from_table',
-          'fc.column_name as from_column',
-          'tt.table_name as to_table',
-          'tc.column_name as to_column',
-          'table_relationships.relationship_type',
-          'table_relationships.description',
-        )
-    : [];
-
-  const semanticContext = tables
-    .map((t: { id: number; table_name: string; description: string }) => {
-      const cols = columns
-        .filter((c: { table_id: number }) => c.table_id === t.id)
-        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
+  const semanticContext = (tables as { id: number; table_name: string; description: string }[])
+    .map((t) => {
+      const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
+        .filter((c) => c.table_id === t.id)
+        .map((c) =>
           `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
         )
         .join('\n');
@@ -54,12 +30,8 @@ async function buildSemanticContext(
     .join('\n\n');
 
   const relationshipContext = relationships.length
-    ? relationships
-        .map((r: {
-          from_table: string; from_column: string | null;
-          to_table: string;   to_column: string | null;
-          relationship_type: string; description: string | null;
-        }) => {
+    ? (relationships as { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }[])
+        .map((r) => {
           const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
           const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
           return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;

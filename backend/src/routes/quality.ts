@@ -20,6 +20,7 @@ import Database from 'better-sqlite3';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile } from '../quality/QualityProfiler';
+import * as graph from '../db/semanticGraph';
 
 const router = Router();
 
@@ -279,6 +280,30 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('epicdata_admin'
     await evaluateRules(connId, table, fp);
     // Return updated summary
     const updated = await semanticDb('dataset_profiles').where({ id: result.profileId }).first();
+
+    // Sync latest stats to Neo4j nodes (non-fatal if Neo4j is unavailable)
+    try {
+      await graph.updateTableQualityStats(connId, table, {
+        rowCount:       result.rowCount ?? null,
+        lastProfiledAt: new Date().toISOString(),
+      });
+      for (const f of result.fields) {
+        await graph.updateColumnQualityStats(connId, table, f.field_name, {
+          nullCount:     f.null_count    ?? null,
+          nullPct:       f.null_pct      ?? null,
+          distinctCount: f.distinct_count ?? null,
+          distinctPct:   f.distinct_pct  ?? null,
+          minValue:      f.min_value     != null ? String(f.min_value)  : null,
+          maxValue:      f.max_value     != null ? String(f.max_value)  : null,
+          meanValue:     f.mean_value    ?? null,
+          medianValue:   f.median_value  ?? null,
+          topValues:     f.top_values    ?? null,
+        });
+      }
+    } catch (neo4jErr) {
+      console.warn('[Quality] Neo4j stats sync failed (non-fatal):', neo4jErr);
+    }
+
     res.json({ ok: true, data: updated });
   } catch (err) { next(err); }
 });
