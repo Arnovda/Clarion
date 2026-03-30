@@ -105,7 +105,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       : 'No relationships defined yet — avoid JOINs unless you are certain of the key columns.';
 
     const kpiFormulas = kpis.length
-      ? kpis.map((k: { name: string; formula_sql: string }) => `${k.name}: ${k.formula_sql}`).join('\n')
+      ? kpis.map((k: { name: string; formula_plain_text: string | null; formula_sql: string }) =>
+          `${k.name}:\n  Business definition: ${k.formula_plain_text ?? k.name}\n  SQL formula: ${k.formula_sql ?? '(not yet defined)'}`
+        ).join('\n\n')
       : 'No KPIs defined yet.';
 
     // 2a-quality. Build quality context — fetch latest profile + field stats + failing rules
@@ -355,7 +357,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // 2. Generate SQL + confidence (Call Type 2a)
     //    Use cross-source SQL generator when integration context is present.
     const nlResult = isCrossSourceQuery
-      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext)
+      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas)
       : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas);
 
     // 3. Log the query regardless of outcome
@@ -399,6 +401,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
                 : `Context has ${tables.length} tables and ${relationships.length} relationships — Claude returned low confidence. Try improving descriptions or rephrasing.`,
             semanticContext,
             relationshipContext,
+            kpiFormulas,
           },
         },
       });
@@ -527,6 +530,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
             hint,
             semanticContext,
             relationshipContext,
+            kpiFormulas,
           },
         },
       });
@@ -590,6 +594,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.${isCrossSourceQuery ? ' (cross-source via integration view)' : ''}`,
           semanticContext:      enrichedSemanticContext,
           relationshipContext:  enrichedRelationshipContext,
+          kpiFormulas,
         },
       },
     });

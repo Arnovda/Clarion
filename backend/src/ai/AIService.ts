@@ -150,9 +150,10 @@ export async function generateCrossSourceSql(
   question: string,
   semanticContext: string,
   relationshipContext: string,
+  kpiFormulas: string,
 ): Promise<NlToSqlOutput> {
   const raw = await callClaude(
-    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext),
+    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas),
     buildNlToSqlCrossUser(question),
   );
   return parseJson<NlToSqlOutput>(raw);

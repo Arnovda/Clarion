@@ -163,6 +163,7 @@ First rows (up to 10): ${JSON.stringify(rows.slice(0, 10))}`;
 export const NL_TO_SQL_CROSS_SYSTEM = (
   semanticContext: string,
   relationshipContext: string,
+  kpiFormulas: string,
 ) =>
   `You are a SQL generation engine for a multi-schema SQLite session.
 You only return valid SQLite SQL and a confidence score between 0 and 1.
@@ -180,6 +181,9 @@ ${semanticContext}
 
 Cross-source relationships — use these to write JOINs across databases:
 ${relationshipContext}
+
+Known KPI formulas — use these INSTEAD of inventing your own aggregation logic:
+${kpiFormulas}
 
 ━━━ REASONING PROTOCOL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

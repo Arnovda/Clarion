@@ -229,6 +229,11 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
       column: string;
     };
 
+    if (!table || !column) {
+      res.status(400).json({ ok: false, error: 'table and column are required' });
+      return;
+    }
+
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     if (!connection) {
       res.status(404).json({ ok: false, error: 'Connection not found' });

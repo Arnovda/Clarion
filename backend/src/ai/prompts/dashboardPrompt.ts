@@ -142,6 +142,18 @@ top_list — ranked list. SQL returns "label" and "value".
 data_table — tabular detail. SQL returns multiple named columns. Always colSpan 3.
   { "id": "w_table", "type": "data_table", "title": "Recent Orders Detail", "sql": "...", "colSpan": 3 }
 
+━━━ FILTER SPEC FORMAT (REQUIRED FIELDS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Date range filter — use for any date/time column:
+  { "id": "date_filter", "type": "date_range", "label": "Date Range", "table": "orders", "column": "order_date" }
+
+Select filter — use for low-cardinality categorical columns (status, category, region, etc.):
+  { "id": "status_filter", "type": "select", "label": "Order Status", "table": "orders", "column": "status", "allLabel": "All statuses" }
+
+CRITICAL: Both filter types MUST include "table" and "column" — they are used to load dropdown options.
+Never omit "table". Never omit "column". Never set them to null or undefined.
+Use exactly the real table name and column name from the schema context provided.
+
 ━━━ FILTER PLACEHOLDER RULES (CRITICAL) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Every widget SQL affected by a filter MUST include the placeholder.
@@ -150,8 +162,8 @@ Date range filter (id = "date_filter"):
   Use {{date_filter_from}} and {{date_filter_to}}.
   Write: AND column >= '{{date_filter_from}}' AND column <= '{{date_filter_to}}'
 
-Select filter (any select filter id, e.g. "category_filter"):
-  Write: AND ('{{category_filter}}' = 'all' OR column = '{{category_filter}}')
+Select filter (any select filter id, e.g. "status_filter"):
+  Write: AND ('{{status_filter}}' = 'all' OR column = '{{status_filter}}')
 
 Drill-down SQL: use {{drill_value}} as the clicked value placeholder.
 

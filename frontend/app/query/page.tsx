@@ -73,6 +73,7 @@ interface DebugInfo {
   hint:                   string;
   semanticContext:        string;
   relationshipContext:    string;
+  kpiFormulas?:           string;
 }
 
 interface EntityMismatch {
@@ -308,7 +309,7 @@ function LowConfidenceGuide({ confidence, debug }: { confidence?: number; debug?
 
 // ─── Admin debug panel ────────────────────────────────────────────────────────
 
-type DebugTab = 'stats' | 'sql' | 'tables' | 'relationships';
+type DebugTab = 'stats' | 'sql' | 'tables' | 'relationships' | 'kpis';
 
 function AdminDebugPanel({ msg }: { msg: Message }) {
   const [open, setOpen] = useState(!!msg.blocked || !!msg.error);
@@ -319,6 +320,7 @@ function AdminDebugPanel({ msg }: { msg: Message }) {
     { id: 'sql',           label: 'SQL',           show: !!msg.sql },
     { id: 'tables',        label: 'Table context', show: !!(d?.semanticContext) },
     { id: 'relationships', label: 'Relationships', show: !!(d?.relationshipContext) },
+    { id: 'kpis',          label: `KPIs (${d?.confirmedKpis ?? 0})`, show: !!(d?.kpiFormulas) },
   ].filter((t) => t.show);
 
   const [tab, setTab] = useState<DebugTab>(tabs[0]?.id ?? 'stats');
@@ -399,6 +401,11 @@ function AdminDebugPanel({ msg }: { msg: Message }) {
             {tab === 'relationships' && d?.relationshipContext && (
               <pre className="text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-64 overflow-y-auto">
                 {d.relationshipContext}
+              </pre>
+            )}
+            {tab === 'kpis' && d?.kpiFormulas && (
+              <pre className="text-violet-300 whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-64 overflow-y-auto">
+                {d.kpiFormulas}
               </pre>
             )}
           </div>

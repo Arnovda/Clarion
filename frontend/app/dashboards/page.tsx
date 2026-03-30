@@ -74,7 +74,6 @@ interface ChatMessage {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CONNECTION_ID = 1;
 const CHART_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6',
   '#ef4444', '#06b6d4', '#84cc16', '#f97316',
@@ -558,6 +557,41 @@ function DataTableWidget({ data }: { spec: WidgetSpec; data: WidgetData }) {
   );
 }
 
+// ─── Create input — defined OUTSIDE the page so it is never remounted ────────
+
+function CreateInput({
+  value, onChange, onSubmit, loading, compact, inputRef,
+}: {
+  value:     string;
+  onChange:  (v: string) => void;
+  onSubmit:  () => void;
+  loading:   boolean;
+  compact?:  boolean;
+  inputRef?: React.RefObject<HTMLInputElement>;
+}) {
+  return (
+    <div className={`flex gap-2 ${compact ? '' : 'w-full max-w-lg'}`}>
+      <input
+        ref={compact ? undefined : inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
+        placeholder={compact ? 'Describe a dashboard…' : 'e.g. Sales overview by product and region'}
+        className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white placeholder-slate-400"
+        disabled={loading}
+      />
+      <button
+        onClick={onSubmit}
+        disabled={loading || !value.trim()}
+        className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {loading ? '…' : 'Go'}
+      </button>
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function DashboardsPage() {
@@ -581,8 +615,10 @@ export default function DashboardsPage() {
   const [refineInput, setRefineInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
-  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
-  const [selectedDomains,  setSelectedDomains]  = useState<string[]>([]);
+  const [availableDomains,  setAvailableDomains]  = useState<string[]>([]);
+  const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
+  const [connectionId,      setConnectionId]      = useState<number>(1);
+  const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -603,11 +639,11 @@ export default function DashboardsPage() {
 
   // ── Execute a single widget ────────────────────────────────────────────────
 
-  async function executeWidget(widgetId: string, sql: string, filters: Record<string, string>) {
+  async function executeWidget(widgetId: string, sql: string, filters: Record<string, string>, connId: number) {
     setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: [], loading: true } }));
     try {
       const res = await api.post('/dashboards/execute', {
-        connectionId: CONNECTION_ID,
+        connectionId: connId,
         sql,
         filterValues: filters,
       });
@@ -622,12 +658,12 @@ export default function DashboardsPage() {
   // ── Execute all widgets ───────────────────────────────────────────────────
 
   const executeAllWidgets = useCallback(
-    async (spec: DashboardSpec, filters: Record<string, string>, drill: DrillState | null) => {
+    async (spec: DashboardSpec, filters: Record<string, string>, drill: DrillState | null, connId: number) => {
       for (const widget of spec.widgets) {
         const isDrilled = drill?.widgetId === widget.id && widget.drillDownSql;
         const sql = isDrilled ? widget.drillDownSql! : widget.sql;
         const filterPayload = isDrilled ? { ...filters, drill_value: drill!.value } : filters;
-        executeWidget(widget.id, sql, filterPayload);
+        executeWidget(widget.id, sql, filterPayload, connId);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -636,12 +672,12 @@ export default function DashboardsPage() {
 
   // ── Load filter options ───────────────────────────────────────────────────
 
-  async function loadFilterOptions(filters: FilterSpec[]) {
+  async function loadFilterOptions(filters: FilterSpec[], connId: number) {
     for (const f of filters) {
-      if (f.type === 'select') {
+      if (f.type === 'select' && f.table && f.column) {
         try {
           const res = await api.post('/dashboards/filter-options', {
-            connectionId: CONNECTION_ID,
+            connectionId: connId,
             table: f.table,
             column: f.column,
           });
@@ -670,7 +706,7 @@ export default function DashboardsPage() {
     setMode('refining');
     try {
       const res = await api.post('/dashboards/refine', {
-        connectionId: CONNECTION_ID,
+        connectionId: connectionId,
         request: createInput.trim(),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
       });
@@ -692,7 +728,7 @@ export default function DashboardsPage() {
     setMode('creating');
     try {
       const res = await api.post('/dashboards/generate', {
-        connectionId: CONNECTION_ID,
+        connectionId: connectionId,
         request: createInput.trim(),
         answers: answers?.filter((a) => a.trim()),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
@@ -704,8 +740,8 @@ export default function DashboardsPage() {
       setDrillState(null);
       setIsUnsaved(true);
       setMode('viewing');
-      loadFilterOptions(spec.filters);
-      executeAllWidgets(spec, defaults, null);
+      loadFilterOptions(spec.filters, connectionId);
+      executeAllWidgets(spec, defaults, null, connectionId);
       setCreateInput('');
     } catch {
       setCreateError('Failed to generate dashboard. Please try again.');
@@ -722,7 +758,7 @@ export default function DashboardsPage() {
     setSaving(true);
     try {
       const res = await api.post('/dashboards', {
-        connectionId: CONNECTION_ID,
+        connectionId: connectionId,
         title: currentSpec.title,
         description: currentSpec.description,
         spec: currentSpec,
@@ -753,8 +789,8 @@ export default function DashboardsPage() {
       setActiveId(id);
       setMode('viewing');
       setChatMessages([]);
-      loadFilterOptions(spec.filters);
-      executeAllWidgets(spec, defaults, null);
+      loadFilterOptions(spec.filters, connectionId);
+      executeAllWidgets(spec, defaults, null, connectionId);
     } catch {
       // ignore
     }
@@ -795,7 +831,7 @@ export default function DashboardsPage() {
   function handleDrillDown(widgetId: string, value: string | null, spec: DashboardSpec) {
     if (!value) {
       setDrillState(null);
-      if (currentSpec) executeAllWidgets(currentSpec, filterValues, null);
+      if (currentSpec) executeAllWidgets(currentSpec, filterValues, null, connectionId);
       return;
     }
     const widget = spec.widgets.find((w) => w.id === widgetId);
@@ -803,7 +839,7 @@ export default function DashboardsPage() {
       widget?.drillDownLabel?.replace('{{drill_value}}', value) ?? value;
     const newDrill = { widgetId, value, label };
     setDrillState(newDrill);
-    if (currentSpec) executeAllWidgets(currentSpec, filterValues, newDrill);
+    if (currentSpec) executeAllWidgets(currentSpec, filterValues, newDrill, connectionId);
   }
 
   // ── Handle filter change ──────────────────────────────────────────────────
@@ -811,7 +847,7 @@ export default function DashboardsPage() {
   function handleFilterChange(key: string, value: string) {
     const newFilters = { ...filterValues, [key]: value };
     setFilterValues(newFilters);
-    if (currentSpec) executeAllWidgets(currentSpec, newFilters, drillState);
+    if (currentSpec) executeAllWidgets(currentSpec, newFilters, drillState, connectionId);
   }
 
   // ── Intent detection — routes to query or refine ─────────────────────────
@@ -847,19 +883,19 @@ export default function DashboardsPage() {
             fullQuestion = `Previous question: "${lastQ.text}"\nPrevious answer summary: "${lastA.text.slice(0, 300)}"\n\nFollow-up question: ${input}`;
           }
         }
-        const res = await api.post('/query', { connectionId: CONNECTION_ID, question: fullQuestion });
+        const res = await api.post('/query', { connectionId: connectionId, question: fullQuestion });
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
-        const res = await api.post('/dashboards/refine-spec', { connectionId: CONNECTION_ID, refinement: input, currentSpec });
+        const res = await api.post('/dashboards/refine-spec', { connectionId: connectionId, refinement: input, currentSpec });
         const newSpec: DashboardSpec = res.data.data.spec;
         const defaults = buildDefaultFilters(newSpec.filters);
         setCurrentSpec(newSpec);
         setFilterValues(defaults);
         setDrillState(null);
         setIsUnsaved(true);
-        loadFilterOptions(newSpec.filters);
-        executeAllWidgets(newSpec, defaults, null);
+        loadFilterOptions(newSpec.filters, connectionId);
+        executeAllWidgets(newSpec, defaults, null, connectionId);
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated — "${newSpec.title}"`, type: 'refine' }]);
       }
     } catch {
@@ -874,8 +910,27 @@ export default function DashboardsPage() {
   useEffect(() => {
     setIsAdmin(getTokenPayload()?.role === 'epicdata_admin');
     loadDashboards();
-    api.get(`/semantic/domains?connectionId=${CONNECTION_ID}`)
-      .then((r) => setAvailableDomains(r.data.data ?? []))
+    // Load the real connection ID — never assume it is 1
+    api.get('/connections')
+      .then((r) => {
+        const conns = r.data.data as { id: number; name: string; domains?: string | string[] }[];
+        if (conns.length > 0) {
+          const parsed = conns.map((c) => ({
+            id: c.id,
+            name: c.name,
+            domains: Array.isArray(c.domains)
+              ? c.domains
+              : c.domains
+                ? JSON.parse(c.domains as string)
+                : [],
+          }));
+          setConnections(parsed);
+          setConnectionId(parsed[0].id);
+          api.get(`/semantic/domains?connectionId=${conns[0].id}`)
+            .then((dr) => setAvailableDomains(dr.data.data ?? []))
+            .catch(() => {});
+        }
+      })
       .catch(() => {});
   }, [loadDashboards]);
 
@@ -940,30 +995,6 @@ export default function DashboardsPage() {
   }
 
   // ── Create input row ──────────────────────────────────────────────────────
-
-  function CreateInput({ compact }: { compact?: boolean }) {
-    return (
-      <div className={`flex gap-2 ${compact ? '' : 'w-full max-w-lg'}`}>
-        <input
-          ref={compact ? undefined : inputRef}
-          type="text"
-          value={createInput}
-          onChange={(e) => setCreateInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && initiateCreate()}
-          placeholder={compact ? 'Describe a dashboard…' : 'e.g. Sales overview by product and region'}
-          className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white placeholder-slate-400"
-          disabled={createLoading}
-        />
-        <button
-          onClick={initiateCreate}
-          disabled={createLoading || !createInput.trim()}
-          className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        >
-          {createLoading ? '…' : 'Go'}
-        </button>
-      </div>
-    );
-  }
 
   // ── Render widget by type ─────────────────────────────────────────────────
 
@@ -1060,7 +1091,13 @@ export default function DashboardsPage() {
                 + New
               </button>
             </div>
-            <CreateInput compact />
+            <CreateInput
+              compact
+              value={createInput}
+              onChange={setCreateInput}
+              onSubmit={initiateCreate}
+              loading={createLoading}
+            />
             {createError && <p className="text-xs text-red-500 mt-1">{createError}</p>}
           </div>
 
@@ -1094,27 +1131,14 @@ export default function DashboardsPage() {
                 <p className="text-sm text-slate-500 mb-6">
                   Describe what you want to see and let AI design it for you.
                 </p>
-                {availableDomains.length > 0 && (
-                  <div className="mb-5 text-left">
-                    <p className="text-xs font-medium text-slate-500 mb-2">Filter by domain <span className="font-normal text-slate-400">(optional)</span></p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {availableDomains.map((d) => {
-                        const active = selectedDomains.includes(d);
-                        return (
-                          <button
-                            key={d}
-                            onClick={() => setSelectedDomains((prev) => active ? prev.filter((x) => x !== d) : [...prev, d])}
-                            className={`text-xs px-2.5 py-0.5 rounded-full border font-medium transition-colors ${active ? 'bg-violet-600 text-white border-violet-600' : 'bg-white text-slate-600 border-slate-300 hover:border-violet-400 hover:text-violet-600'}`}
-                          >
-                            {d}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
                 <div className="flex justify-center mb-6">
-                  <CreateInput />
+                  <CreateInput
+                    value={createInput}
+                    onChange={setCreateInput}
+                    onSubmit={initiateCreate}
+                    loading={createLoading}
+                    inputRef={inputRef}
+                  />
                 </div>
                 {createError && <p className="text-xs text-red-500 mb-4">{createError}</p>}
                 <div className="flex flex-wrap justify-center gap-2">
@@ -1137,7 +1161,41 @@ export default function DashboardsPage() {
             <div className="flex items-center justify-center h-full p-8">
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 max-w-lg w-full">
                 <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Your request</p>
-                <p className="text-base font-semibold text-slate-800 mb-6 leading-snug">&ldquo;{createInput}&rdquo;</p>
+                <p className="text-base font-semibold text-slate-800 mb-4 leading-snug">&ldquo;{createInput}&rdquo;</p>
+
+                {/* Data domain selector — shown when multiple connections / domains exist */}
+                {connections.length > 1 && (() => {
+                  // Build flat list: one chip per domain; fall back to connection name
+                  const chips: { label: string; connId: number }[] = [];
+                  for (const c of connections) {
+                    if (c.domains.length > 0) {
+                      c.domains.forEach((d) => chips.push({ label: d, connId: c.id }));
+                    } else {
+                      chips.push({ label: c.name, connId: c.id });
+                    }
+                  }
+                  return (
+                    <div className="mb-5">
+                      <p className="text-xs text-slate-500 mb-1.5 font-medium">Data domain</p>
+                      <div className="flex flex-wrap gap-2">
+                        {chips.map((chip) => (
+                          <button
+                            key={`${chip.connId}-${chip.label}`}
+                            onClick={() => setConnectionId(chip.connId)}
+                            className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium capitalize ${
+                              connectionId === chip.connId
+                                ? 'bg-blue-600 text-white border-blue-600'
+                                : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                            }`}
+                          >
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <p className="text-sm text-slate-500 mb-5">How would you like to proceed?</p>
                 <div className="grid grid-cols-2 gap-3">
                   <button
