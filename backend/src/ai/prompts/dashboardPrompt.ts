@@ -167,6 +167,19 @@ Select filter (any select filter id, e.g. "status_filter"):
 
 Drill-down SQL: use {{drill_value}} as the clicked value placeholder.
 
+━━━ CROSS-FILTER RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every non-kpi_card widget MUST declare "crossFilterKey": the SQL column name used as the main grouping dimension (the label column, before aliasing).
+  Example: if SQL has "SELECT customer_name as label, ..." then crossFilterKey = "customer_name"
+  Example: if SQL has "SELECT product_name as label, ..." then crossFilterKey = "product_name"
+
+All non-kpi_card widget SQLs MUST include cross-filter receive placeholders for every relevant dimension used in the dashboard.
+  Pattern: AND ('{{xf_<col>}}' = 'all' OR <col_expr> = '{{xf_<col>}}')
+  Example: AND ('{{xf_customer_name}}' = 'all' OR o.customer_name = '{{xf_customer_name}}')
+  Example: AND ('{{xf_status}}' = 'all' OR o.status = '{{xf_status}}')
+
+This enables clicking a customer bar to instantly cross-filter all other charts to that customer's data.
+
 ━━━ LAYOUT RULES — INVERTED PYRAMID ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Row 1: 3–4 kpi_card widgets (colSpan 1 each) — ALWAYS first, most important metrics
@@ -225,6 +238,7 @@ export interface WidgetSpec {
   drillDownLabel?: string;
   format?: 'currency' | 'number' | 'percentage';
   colSpan?: 1 | 2 | 3;
+  crossFilterKey?: string;  // column name emitted as xf_<key> placeholder when a value is clicked
 }
 
 export interface DashboardSpec {
@@ -312,4 +326,65 @@ ${semanticContext}
 
 ━━━ Relationships ━━━
 ${relationshipContext}`;
+}
+
+// ---------------------------------------------------------------------------
+// Validation prompt — fixes a spec based on actual query execution results
+// ---------------------------------------------------------------------------
+
+export interface WidgetExecutionResult {
+  id: string;
+  title: string;
+  type: string;
+  rowCount: number;
+  error?: string;
+  sampleRows: Record<string, unknown>[];
+}
+
+export const VALIDATE_DASHBOARD_SYSTEM =
+`You are a senior BI engineer doing a post-generation validation pass on a dashboard spec.
+You have just received execution results for every widget — actual row counts, errors, and sample data.
+Your job is to fix the spec so every widget shows meaningful, correct data.
+Return the complete fixed DashboardSpec as JSON only — no prose, no markdown fences.
+
+━━━ FIX RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. SQL ERROR → Rewrite the SQL to fix the error. Common causes: wrong column name, wrong table name, invalid syntax, missing JOIN. Use only tables/columns from the schema context.
+
+2. ZERO ROWS → Diagnose why. Either:
+   a. Date filter too restrictive — relax it (widen the range or remove the date filter from this widget)
+   b. Wrong table or column — rewrite SQL using the schema
+   c. Filter placeholder not correctly applied — check the WHERE clause
+   If you cannot fix it, replace the widget with a different metric that WILL have data.
+
+3. PIE CHART WITH >3 ROWS → Convert type to "bar_chart" (horizontal). Keep the same SQL and format.
+
+4. KPI CARD WITH WRONG COLUMNS → Fix SQL so it returns a "value" column (and optionally "delta", "delta_label").
+
+5. STACKED BAR WITH MISSING "series" COLUMN → Fix SQL to return label, series, value.
+
+6. WIDGET WITH NULL/UNDEFINED VALUES → Add COALESCE or NULLIF guards.
+
+PRESERVE: Keep all filter specs, widget order, colSpan, titles, and drillDownSql unless broken.
+Only change what is broken. Do not invent new widgets or remove working widgets.`;
+
+export function buildValidateUser(
+  currentSpec: DashboardSpec,
+  executionResults: WidgetExecutionResult[],
+  semanticContext: string,
+  relationshipContext: string,
+): string {
+  return `Dashboard spec to validate:
+${JSON.stringify(currentSpec, null, 2)}
+
+━━━ Execution results ━━━
+${JSON.stringify(executionResults, null, 2)}
+
+━━━ Schema context ━━━
+${semanticContext}
+
+━━━ Relationships ━━━
+${relationshipContext}
+
+Fix every widget that has an error or 0 rows. Return the corrected full DashboardSpec JSON.`;
 }

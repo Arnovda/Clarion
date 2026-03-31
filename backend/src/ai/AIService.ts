@@ -35,6 +35,9 @@ import {
   RefinementOutput,
   REFINE_SPEC_SYSTEM,
   buildRefineSpecUser,
+  VALIDATE_DASHBOARD_SYSTEM,
+  buildValidateUser,
+  WidgetExecutionResult,
 } from './prompts/dashboardPrompt';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
@@ -289,6 +292,25 @@ export async function generateDashboardSpec(
   const raw = await callClaude(
     DASHBOARD_SYSTEM,
     buildDashboardUser(request, semanticContext, relationshipContext),
+    16000,
+  );
+  return parseJson<DashboardSpec>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard spec validation — fixes broken/empty widgets after a test run
+// ---------------------------------------------------------------------------
+
+export async function validateAndFixDashboardSpec(
+  spec: DashboardSpec,
+  executionResults: WidgetExecutionResult[],
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<DashboardSpec> {
+  const raw = await callClaude(
+    VALIDATE_DASHBOARD_SYSTEM,
+    buildValidateUser(spec, executionResults, semanticContext, relationshipContext),
+    16000,
   );
   return parseJson<DashboardSpec>(raw);
 }

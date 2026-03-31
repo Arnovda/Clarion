@@ -5,9 +5,10 @@ import Nav from '@/components/Nav';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import {
-  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
-  ComposedChart,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell,
+  ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  Legend, ReferenceLine, RadarChart, Radar, PolarGrid, PolarAngleAxis,
+  PolarRadiusAxis, RadialBarChart, RadialBar, Treemap,
 } from 'recharts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -23,13 +24,15 @@ interface FilterSpec {
 
 interface WidgetSpec {
   id: string;
-  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table';
+  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart';
   title: string;
   sql: string;
   drillDownSql?: string;
   drillDownLabel?: string;
   format?: 'currency' | 'number' | 'percentage';
-  colSpan?: 1 | 2 | 3;
+  colSpan?: 1 | 2 | 3 | 4;
+  featured?: boolean;
+  crossFilterKey?: string;  // SQL column name emitted as {{xf_<key>}} when clicked
 }
 
 interface DashboardSpec {
@@ -56,6 +59,7 @@ interface WidgetData {
 
 interface DrillState {
   widgetId: string;
+  key: string;    // crossFilterKey → passed as xf_<key> to all widget executions
   value: string;
   label: string;
 }
@@ -78,6 +82,20 @@ const CHART_COLORS = [
   '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6',
   '#ef4444', '#06b6d4', '#84cc16', '#f97316',
 ];
+
+const TYPE_ACCENT: Record<string, string> = {
+  kpi_card:           '#6366f1',
+  bar_chart:          '#3b82f6',
+  vertical_bar_chart: '#10b981',
+  stacked_bar_chart:  '#f59e0b',
+  line_chart:         '#06b6d4',
+  pie_chart:          '#8b5cf6',
+  top_list:           '#ef4444',
+  data_table:         '#64748b',
+  combo_chart:        '#0ea5e9',
+  radar_chart:        '#a855f7',
+  treemap_chart:      '#10b981',
+};
 
 // ─── Utility functions ────────────────────────────────────────────────────────
 
@@ -117,6 +135,27 @@ function relTime(ts: string): string {
   if (m < 60) return `${m}m ago`;
   if (h < 24) return `${h}h ago`;
   return `${dy}d ago`;
+}
+
+// ─── CustomTooltip ────────────────────────────────────────────────────────────
+
+function CustomTooltip({ active, payload, label, format }: {
+  active?: boolean;
+  payload?: { name?: string; value?: number; color?: string }[];
+  label?: string;
+  format?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm border border-black/10 dark:border-white/10 rounded-xl shadow-xl px-3 py-2 text-xs">
+      {label && <p className="font-semibold text-slate-700 dark:text-slate-200 mb-1">{label}</p>}
+      {payload.map((p, i) => (
+        <p key={i} className="text-slate-600 dark:text-slate-300" style={{ color: p.color }}>
+          {p.name ? `${p.name}: ` : ''}{formatValue(p.value, format)}
+        </p>
+      ))}
+    </div>
+  );
 }
 
 // ─── Markdown renderer (bold + tables) ───────────────────────────────────────
@@ -185,23 +224,53 @@ function MarkdownAnswer({ text }: { text: string }) {
 // ─── Widget card wrapper ──────────────────────────────────────────────────────
 
 function WidgetCard({
-  spec,
-  colSpan,
-  children,
+  spec, colSpan, children, isFiltered, isCrossFilterSource,
 }: {
   spec: WidgetSpec;
   colSpan: number;
   children: React.ReactNode;
+  isFiltered?: boolean;
+  isCrossFilterSource?: boolean;
 }) {
+  const isKpi   = spec.type === 'kpi_card';
+  const accent  = TYPE_ACCENT[spec.type] ?? '#6366f1';
+  const featured = spec.featured;
+
   return (
     <div
-      style={{ gridColumn: `span ${colSpan}` }}
-      className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden"
+      style={{
+        gridColumn: `span ${colSpan}`,
+        gridRow: featured ? 'span 2' : undefined,
+      }}
+      className={`rounded-2xl overflow-hidden transition-all duration-300 flex flex-col
+        backdrop-blur-md border
+        ${isCrossFilterSource
+          ? 'bg-white/85 dark:bg-slate-800/80 border-indigo-300/60 dark:border-indigo-500/40 shadow-[0_0_0_2px_rgba(99,102,241,0.25),0_8px_32px_rgba(99,102,241,0.12)]'
+          : isFiltered
+          ? 'bg-white/50 dark:bg-slate-800/40 border-white/30 dark:border-slate-700/30 shadow-sm opacity-55'
+          : 'bg-white/80 dark:bg-slate-800/70 border-white/60 dark:border-slate-700/40 shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.04)] hover:shadow-[0_8px_32px_rgba(0,0,0,0.10),0_2px_8px_rgba(0,0,0,0.06)] hover:-translate-y-0.5'
+        }`}
     >
-      <div className="px-4 py-3 border-b border-slate-100">
-        <h3 className="text-sm font-semibold text-slate-700">{spec.title}</h3>
-      </div>
-      <div className="p-4">{children}</div>
+      {/* Colored accent bar */}
+      <div className="h-0.5 w-full shrink-0" style={{ background: isCrossFilterSource ? '#6366f1' : accent }} />
+
+      {/* Card header (non-KPI only) */}
+      {!isKpi && (
+        <div className="px-4 py-2 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accent }} />
+            <h3 className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate">{spec.title}</h3>
+          </div>
+          {isCrossFilterSource && (
+            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
+              style={{ color: '#6366f1', background: 'rgba(99,102,241,0.10)' }}>
+              Filtering
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className={`flex-1 ${isKpi ? 'p-4' : 'p-3'}`}>{children}</div>
     </div>
   );
 }
@@ -210,17 +279,20 @@ function WidgetCard({
 
 function WidgetSkeleton() {
   return (
-    <div className="animate-pulse space-y-2">
-      <div className="h-4 bg-slate-100 rounded w-1/2" />
-      <div className="h-8 bg-slate-100 rounded w-3/4" />
+    <div className="animate-pulse space-y-3">
+      <div className="h-3 bg-slate-100 dark:bg-slate-700 rounded-full w-1/3" />
+      <div className="h-10 bg-slate-100 dark:bg-slate-700 rounded-lg w-2/3" />
+      <div className="h-3 bg-slate-100 dark:bg-slate-700 rounded-full w-1/2" />
     </div>
   );
 }
 
-function WidgetSpinner() {
+function ChartSkeleton({ height = 200 }: { height?: number }) {
   return (
-    <div className="flex items-center justify-center py-8">
-      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+    <div className="animate-pulse flex items-end gap-2 px-2" style={{ height }}>
+      {[65, 40, 80, 55, 90, 35, 70, 50].map((h, i) => (
+        <div key={i} className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-t-sm" style={{ height: `${h}%` }} />
+      ))}
     </div>
   );
 }
@@ -243,8 +315,8 @@ function KpiCard({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
 
   return (
     <div>
-      <p className="text-xs text-slate-500 uppercase tracking-wide mb-1">{spec.title}</p>
-      <p className="text-3xl font-bold text-slate-900">{formatValue(val, spec.format)}</p>
+      <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wide mb-1">{spec.title}</p>
+      <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{formatValue(val, spec.format)}</p>
       <div className="mt-2 flex items-center gap-1.5">
         {delta !== null ? (
           <>
@@ -267,68 +339,51 @@ function KpiCard({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
 // ─── BarChartWidget ──────────────────────────────────────────────────────────
 
 function BarChartWidget({
-  spec,
-  data,
-  onDrillDown,
-  isDrilled,
-  drillLabel,
+  spec, data, onCrossFilter, isCrossFilterActive, drillLabel,
 }: {
   spec: WidgetSpec;
   data: WidgetData;
-  onDrillDown?: (value: string | null) => void;
-  isDrilled?: boolean;
+  onCrossFilter?: (value: string | null) => void;
+  isCrossFilterActive?: boolean;
   drillLabel?: string;
 }) {
-  if (data.loading) return <WidgetSpinner />;
+  if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const chartData = data.rows.map((r) => ({ label: String(r.label ?? ''), value: Number(r.value ?? 0) }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 0);
   const height = Math.max(180, Math.min(chartData.length * 36 + 48, 320));
-
   const yFmt = (v: number) => (maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
 
   return (
     <div>
-      {isDrilled && drillLabel && (
-        <div className="mb-3">
-          <button
-            onClick={() => onDrillDown?.(null)}
-            className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
-          >
-            ← Back to all
-          </button>
-          <p className="text-xs text-slate-500 mt-0.5">{drillLabel}</p>
+      {isCrossFilterActive && drillLabel && (
+        <div className="mb-3 flex items-center gap-2">
+          <button onClick={() => onCrossFilter?.(null)} className="text-xs text-blue-600 hover:text-blue-800">← Clear</button>
+          <p className="text-xs text-slate-500 dark:text-slate-400">{drillLabel}</p>
         </div>
       )}
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(148,163,184,0.15)" />
           <XAxis type="number" tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-          <YAxis
-            type="category"
-            dataKey="label"
-            width={110}
-            tick={{ fontSize: 11, fill: '#64748b' }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <Tooltip
-            formatter={(v: number) => [formatValue(v, spec.format), spec.title]}
-            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-          />
+          <YAxis type="category" dataKey="label" width={110} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+          <Tooltip formatter={(v: number) => [formatValue(v, spec.format), spec.title]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
           <Bar
             dataKey="value"
-            fill={CHART_COLORS[0]}
             radius={[0, 4, 4, 0]}
-            cursor={onDrillDown ? 'pointer' : undefined}
-            onClick={onDrillDown ? (entry) => onDrillDown(String(entry.label)) : undefined}
-          />
+            cursor={onCrossFilter ? 'pointer' : undefined}
+            onClick={onCrossFilter ? (entry) => onCrossFilter(String(entry.label)) : undefined}
+          >
+            {chartData.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Bar>
         </BarChart>
       </ResponsiveContainer>
-      {onDrillDown && !isDrilled && (
-        <p className="text-xs text-slate-400 mt-1 text-center">Click a bar to drill down ↓</p>
+      {onCrossFilter && !isCrossFilterActive && (
+        <p className="text-xs text-slate-400 dark:text-slate-600 mt-1 text-center">Click a bar to cross-filter</p>
       )}
     </div>
   );
@@ -336,10 +391,10 @@ function BarChartWidget({
 
 // ─── LineChartWidget ──────────────────────────────────────────────────────────
 
-function LineChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function LineChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const chartData = data.rows.map((r) => ({ label: String(r.label ?? ''), value: Number(r.value ?? 0) }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 0);
@@ -347,22 +402,15 @@ function LineChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData })
 
   return (
     <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+      <LineChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
+        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
+        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
         <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip
-          formatter={(v: number) => [formatValue(v, spec.format), spec.title]}
-          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-        />
-        <Line
-          type="monotone"
-          dataKey="value"
-          stroke="#3b82f6"
-          strokeWidth={2}
-          dot={{ r: 3, fill: '#3b82f6' }}
-          activeDot={{ r: 5 }}
-        />
+        <Tooltip formatter={(v: number) => [formatValue(v, spec.format), spec.title]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} activeDot={{ r: 5 }} />
       </LineChart>
     </ResponsiveContainer>
   );
@@ -370,10 +418,10 @@ function LineChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData })
 
 // ─── VerticalBarChartWidget ───────────────────────────────────────────────────
 
-function VerticalBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function VerticalBarChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const chartData = data.rows.map((r) => ({
     label: String(r.label ?? ''),
@@ -387,14 +435,14 @@ function VerticalBarChartWidget({ spec, data }: { spec: WidgetSpec; data: Widget
 
   return (
     <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%">
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+      <ComposedChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%"
+        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
+        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
+      >
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.15)" />
         <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip
-          formatter={(v: number, name: string) => [formatValue(v, spec.format), name === 'value' ? spec.title : 'Target']}
-          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-        />
+        <Tooltip formatter={(v: number, name: string) => [formatValue(v, spec.format), name === 'value' ? spec.title : 'Target']} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
         <Bar dataKey="value" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
         {hasTarget && (
           <Line type="monotone" dataKey="target" stroke="#64748b" strokeWidth={2} strokeDasharray="4 2" dot={false} />
@@ -406,10 +454,10 @@ function VerticalBarChartWidget({ spec, data }: { spec: WidgetSpec; data: Widget
 
 // ─── StackedBarChartWidget ─────────────────────────────────────────────────────
 
-function StackedBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function StackedBarChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   // Pivot tidy format (label, series, value) → { label, [series]: value }
   const labels = [...new Set(data.rows.map((r) => String(r.label ?? '')))];
@@ -431,14 +479,14 @@ function StackedBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetD
 
   return (
     <ResponsiveContainer width="100%" height={240}>
-      <BarChart data={pivoted} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%">
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+      <BarChart data={pivoted} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%"
+        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
+        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
+      >
+        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.15)" />
         <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip
-          formatter={(v: number, name: string) => [formatValue(v, spec.format), name]}
-          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-        />
+        <Tooltip formatter={(v: number, name: string) => [formatValue(v, spec.format), name]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
         {seriesNames.map((s, i) => (
           <Bar key={s} dataKey={s} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} radius={i === seriesNames.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
@@ -450,10 +498,10 @@ function StackedBarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetD
 
 // ─── PieChartWidget ──────────────────────────────────────────────────────────
 
-function PieChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function PieChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const chartData = data.rows.map((r) => ({ name: String(r.label ?? ''), value: Number(r.value ?? 0) }));
 
@@ -469,15 +517,14 @@ function PieChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) 
           outerRadius={80}
           label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
           labelLine={false}
+          cursor={onCrossFilter ? 'pointer' : undefined}
+          onClick={onCrossFilter ? (entry) => onCrossFilter(String(entry.name)) : undefined}
         >
           {chartData.map((_, i) => (
             <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
           ))}
         </Pie>
-        <Tooltip
-          formatter={(v: number) => [formatValue(v, spec.format)]}
-          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
-        />
+        <Tooltip formatter={(v: number) => [formatValue(v, spec.format)]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
         <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
       </PieChart>
     </ResponsiveContainer>
@@ -486,10 +533,10 @@ function PieChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) 
 
 // ─── TopListWidget ────────────────────────────────────────────────────────────
 
-function TopListWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function TopListWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const rows = data.rows.slice(0, 10);
 
@@ -498,13 +545,16 @@ function TopListWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
       {rows.map((row, i) => (
         <div
           key={i}
-          className={`flex items-center justify-between px-2 py-1.5 rounded-md ${i % 2 === 0 ? 'bg-slate-50' : 'bg-white'}`}
+          onClick={onCrossFilter ? () => onCrossFilter(String(row.label ?? '')) : undefined}
+          className={`flex items-center justify-between px-2 py-1.5 rounded-md transition-colors
+            ${onCrossFilter ? 'cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30' : ''}
+            ${i % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700/40' : 'bg-white dark:bg-slate-800/40'}`}
         >
           <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-medium text-slate-400 w-5 shrink-0">{i + 1}.</span>
-            <span className="text-sm text-slate-700 truncate">{String(row.label ?? '—')}</span>
+            <span className="text-xs font-medium text-slate-400 dark:text-slate-500 w-5 shrink-0">{i + 1}.</span>
+            <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{String(row.label ?? '—')}</span>
           </div>
-          <span className="text-sm font-semibold text-slate-900 shrink-0 ml-2">
+          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 shrink-0 ml-2">
             {formatValue(row.value, spec.format)}
           </span>
         </div>
@@ -513,26 +563,153 @@ function TopListWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
   );
 }
 
+// ─── Combo Chart (Bar + Line overlay) ────────────────────────────────────────
+
+function ComboChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
+  if (data.loading) return <ChartSkeleton />;
+  if (data.error)   return <WidgetError msg={data.error} />;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
+
+  const chartData = data.rows.map((r) => ({
+    label: String(r.label ?? ''),
+    value: Number(r.value ?? 0),
+    line:  r.line !== undefined ? Number(r.line) : undefined,
+  }));
+  const maxVal = Math.max(...chartData.map((r) => r.value), 1);
+  const yFmt = (v: number) =>
+    maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k`
+    : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k`
+    : String(v);
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <ComposedChart data={chartData} margin={{ left: 4, right: 24, top: 4, bottom: 20 }}>
+        <defs>
+          <linearGradient id={`combo-${spec.id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={CHART_COLORS[0]} stopOpacity={0.9} />
+            <stop offset="100%" stopColor={CHART_COLORS[0]} stopOpacity={0.6} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
+        <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} angle={-30} textAnchor="end" />
+        <YAxis yAxisId="left" tickFormatter={yFmt} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: '#a855f7' }} axisLine={false} tickLine={false} />
+        <Tooltip content={<CustomTooltip format={spec.format} />} />
+        <Bar yAxisId="left" dataKey="value" fill={`url(#combo-${spec.id})`} radius={[4, 4, 0, 0]} name="Value" />
+        {chartData.some((r) => r.line !== undefined) && (
+          <Line yAxisId="right" type="monotone" dataKey="line" stroke="#a855f7" strokeWidth={2.5} dot={{ fill: '#a855f7', r: 3 }} name="Rate" />
+        )}
+      </ComposedChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Radar Chart ─────────────────────────────────────────────────────────────
+
+function RadarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
+  if (data.loading) return <ChartSkeleton />;
+  if (data.error)   return <WidgetError msg={data.error} />;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
+
+  const chartData = data.rows.map((r) => ({
+    subject: String(r.label ?? ''),
+    value:   Number(r.value ?? 0),
+    fullMark: Math.max(...data.rows.map((x) => Number(x.value ?? 0))) * 1.2,
+  }));
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <RadarChart data={chartData} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
+        <PolarGrid stroke="rgba(148,163,184,0.25)" />
+        <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+        <PolarRadiusAxis tick={false} axisLine={false} />
+        <Radar
+          name={spec.title}
+          dataKey="value"
+          stroke={CHART_COLORS[4]}
+          fill={CHART_COLORS[4]}
+          fillOpacity={0.25}
+          strokeWidth={2}
+        />
+        <Tooltip content={<CustomTooltip format={spec.format} />} />
+      </RadarChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ─── Treemap Chart ────────────────────────────────────────────────────────────
+
+function TreemapWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
+  if (data.loading) return <ChartSkeleton />;
+  if (data.error)   return <WidgetError msg={data.error} />;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
+
+  const chartData = data.rows.map((r, i) => ({
+    name:  String(r.label ?? ''),
+    size:  Number(r.value ?? 0),
+    fill:  CHART_COLORS[i % CHART_COLORS.length],
+  }));
+
+  const CustomTreemapContent = (props: {
+    x?: number; y?: number; width?: number; height?: number;
+    name?: string; fill?: string; size?: number;
+  }) => {
+    const { x = 0, y = 0, width = 0, height = 0, name = '', fill = '#6366f1', size = 0 } = props;
+    if (width < 30 || height < 20) return null;
+    return (
+      <g>
+        <rect x={x + 1} y={y + 1} width={width - 2} height={height - 2} fill={fill} fillOpacity={0.85} rx={4} />
+        {width > 60 && height > 30 && (
+          <>
+            <text x={x + 8} y={y + 18} fill="white" fontSize={11} fontWeight={600} style={{ pointerEvents: 'none' }}>
+              {name.length > 14 ? name.slice(0, 13) + '…' : name}
+            </text>
+            {height > 44 && (
+              <text x={x + 8} y={y + 32} fill="rgba(255,255,255,0.75)" fontSize={9} style={{ pointerEvents: 'none' }}>
+                {formatValue(size, spec.format)}
+              </text>
+            )}
+          </>
+        )}
+      </g>
+    );
+  };
+
+  return (
+    <ResponsiveContainer width="100%" height={200}>
+      <Treemap
+        data={chartData}
+        dataKey="size"
+        aspectRatio={4 / 3}
+        content={<CustomTreemapContent />}
+      >
+        <Tooltip formatter={(v: number) => [formatValue(v, spec.format), '']} />
+      </Treemap>
+    </ResponsiveContainer>
+  );
+}
+
 // ─── DataTableWidget ──────────────────────────────────────────────────────────
 
-function DataTableWidget({ data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSpinner />;
+function DataTableWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
+  if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400">No data</p>;
+  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
 
   const keys = Object.keys(data.rows[0]);
   const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   const headerLabel = (k: string) => capitalize(k.replace(/_/g, ' '));
-
   const isNumeric = (v: unknown) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)));
+  // Cross-filter: emit the value of the first non-numeric column in a clicked row
+  const firstTextKey = keys.find((k) => !isNumeric(data.rows[0][k]));
 
   return (
     <div className="overflow-y-auto" style={{ maxHeight: 300 }}>
       <table className="w-full text-xs border-collapse">
         <thead>
-          <tr className="sticky top-0 bg-slate-50">
+          <tr className="sticky top-0 bg-slate-50 dark:bg-slate-800">
             {keys.map((k) => (
-              <th key={k} className="px-2 py-1.5 text-left font-semibold text-slate-600 border-b border-slate-200 whitespace-nowrap">
+              <th key={k} className="px-2 py-1.5 text-left font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">
                 {headerLabel(k)}
               </th>
             ))}
@@ -540,12 +717,15 @@ function DataTableWidget({ data }: { spec: WidgetSpec; data: WidgetData }) {
         </thead>
         <tbody>
           {data.rows.map((row, i) => (
-            <tr key={i} className={i % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
+            <tr
+              key={i}
+              onClick={onCrossFilter && firstTextKey ? () => onCrossFilter(String(row[firstTextKey] ?? '')) : undefined}
+              className={`transition-colors
+                ${onCrossFilter ? 'cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30' : ''}
+                ${i % 2 === 0 ? 'bg-white dark:bg-slate-800/50' : 'bg-slate-50 dark:bg-slate-700/30'}`}
+            >
               {keys.map((k) => (
-                <td
-                  key={k}
-                  className={`px-2 py-1.5 text-slate-700 ${isNumeric(row[k]) ? 'text-right font-mono' : ''}`}
-                >
+                <td key={k} className={`px-2 py-1.5 text-slate-700 dark:text-slate-300 ${isNumeric(row[k]) ? 'text-right font-mono' : ''}`}>
                   {String(row[k] ?? '—')}
                 </td>
               ))}
@@ -595,6 +775,10 @@ function CreateInput({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function DashboardsPage() {
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('db_dark') === '1';
+  });
   const [dashboards, setDashboards] = useState<SavedDashboard[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [currentSpec, setCurrentSpec] = useState<DashboardSpec | null>(null);
@@ -609,7 +793,7 @@ export default function DashboardsPage() {
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const [filterOptions, setFilterOptions] = useState<Record<string, string[]>>({});
   const [widgetData, setWidgetData] = useState<Record<string, WidgetData>>({});
-  const [drillState, setDrillState] = useState<DrillState | null>(null);
+  const [crossFilter, setCrossFilter] = useState<DrillState | null>(null);
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [refineInput, setRefineInput] = useState('');
@@ -647,7 +831,11 @@ export default function DashboardsPage() {
         sql,
         filterValues: filters,
       });
-      setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: res.data.data.rows, loading: false } }));
+      if (res.data.ok === false) {
+        setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: [], loading: false, error: res.data.error ?? 'Query failed' } }));
+      } else {
+        setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: res.data.data?.rows ?? [], loading: false } }));
+      }
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Query failed';
@@ -658,11 +846,22 @@ export default function DashboardsPage() {
   // ── Execute all widgets ───────────────────────────────────────────────────
 
   const executeAllWidgets = useCallback(
-    async (spec: DashboardSpec, filters: Record<string, string>, drill: DrillState | null, connId: number) => {
+    async (
+      spec: DashboardSpec,
+      filters: Record<string, string>,
+      xFilter: DrillState | null,
+      connId: number,
+    ) => {
       for (const widget of spec.widgets) {
-        const isDrilled = drill?.widgetId === widget.id && widget.drillDownSql;
+        // If this widget is the cross-filter source AND has a drill SQL, show its drill view
+        const isDrilled = xFilter?.widgetId === widget.id && widget.drillDownSql;
         const sql = isDrilled ? widget.drillDownSql! : widget.sql;
-        const filterPayload = isDrilled ? { ...filters, drill_value: drill!.value } : filters;
+        const filterPayload: Record<string, string> = {
+          ...filters,
+          ...(isDrilled ? { drill_value: xFilter!.value } : {}),
+          // Pass xf_<key> so any widget SQL with that placeholder gets filtered
+          ...(xFilter ? { [`xf_${xFilter.key}`]: xFilter.value } : {}),
+        };
         executeWidget(widget.id, sql, filterPayload, connId);
       }
     },
@@ -737,7 +936,8 @@ export default function DashboardsPage() {
       const defaults = buildDefaultFilters(spec.filters);
       setCurrentSpec(spec);
       setFilterValues(defaults);
-      setDrillState(null);
+      setCrossFilter(null);
+      setChatMessages([]);
       setIsUnsaved(true);
       setMode('viewing');
       loadFilterOptions(spec.filters, connectionId);
@@ -784,7 +984,7 @@ export default function DashboardsPage() {
       const defaults = buildDefaultFilters(spec.filters);
       setCurrentSpec(spec);
       setFilterValues(defaults);
-      setDrillState(null);
+      setCrossFilter(null);
       setIsUnsaved(false);
       setActiveId(id);
       setMode('viewing');
@@ -826,20 +1026,20 @@ export default function DashboardsPage() {
     }
   }
 
-  // ── Handle drill-down ─────────────────────────────────────────────────────
+  // ── Handle cross-filter / drill-down ─────────────────────────────────────
 
-  function handleDrillDown(widgetId: string, value: string | null, spec: DashboardSpec) {
-    if (!value) {
-      setDrillState(null);
+  function handleCrossFilter(widgetId: string, xfKey: string, value: string | null) {
+    if (!value || (crossFilter?.widgetId === widgetId && crossFilter?.value === value)) {
+      // Second click on same item → clear
+      setCrossFilter(null);
       if (currentSpec) executeAllWidgets(currentSpec, filterValues, null, connectionId);
       return;
     }
-    const widget = spec.widgets.find((w) => w.id === widgetId);
-    const label =
-      widget?.drillDownLabel?.replace('{{drill_value}}', value) ?? value;
-    const newDrill = { widgetId, value, label };
-    setDrillState(newDrill);
-    if (currentSpec) executeAllWidgets(currentSpec, filterValues, newDrill, connectionId);
+    const widget = currentSpec?.widgets.find((w) => w.id === widgetId);
+    const label = widget?.drillDownLabel?.replace('{{drill_value}}', value) ?? value;
+    const newXF: DrillState = { widgetId, key: xfKey, value, label };
+    setCrossFilter(newXF);
+    if (currentSpec) executeAllWidgets(currentSpec, filterValues, newXF, connectionId);
   }
 
   // ── Handle filter change ──────────────────────────────────────────────────
@@ -847,7 +1047,7 @@ export default function DashboardsPage() {
   function handleFilterChange(key: string, value: string) {
     const newFilters = { ...filterValues, [key]: value };
     setFilterValues(newFilters);
-    if (currentSpec) executeAllWidgets(currentSpec, newFilters, drillState, connectionId);
+    if (currentSpec) executeAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
   }
 
   // ── Intent detection — routes to query or refine ─────────────────────────
@@ -892,7 +1092,7 @@ export default function DashboardsPage() {
         const defaults = buildDefaultFilters(newSpec.filters);
         setCurrentSpec(newSpec);
         setFilterValues(defaults);
-        setDrillState(null);
+        setCrossFilter(null);
         setIsUnsaved(true);
         loadFilterOptions(newSpec.filters, connectionId);
         executeAllWidgets(newSpec, defaults, null, connectionId);
@@ -906,6 +1106,10 @@ export default function DashboardsPage() {
   }
 
   // ── Effects ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    localStorage.setItem('db_dark', darkMode ? '1' : '0');
+  }, [darkMode]);
 
   useEffect(() => {
     setIsAdmin(getTokenPayload()?.role === 'epicdata_admin');
@@ -946,7 +1150,7 @@ export default function DashboardsPage() {
     setActiveId(null);
     setMode('empty');
     setWidgetData({});
-    setDrillState(null);
+    setCrossFilter(null);
     setChatMessages([]);
   }
 
@@ -969,10 +1173,10 @@ export default function DashboardsPage() {
         }`}
       >
         <div className="min-w-0">
-          <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700'}`}>
+          <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700 dark:text-slate-200'}`}>
             {d.title}
           </p>
-          <p className="text-xs text-slate-400 mt-0.5">{relTime(d.updated_at)}</p>
+          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">{relTime(d.updated_at)}</p>
         </div>
         <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
           <button
@@ -1000,68 +1204,104 @@ export default function DashboardsPage() {
 
   function renderWidget(widget: WidgetSpec) {
     const data: WidgetData = widgetData[widget.id] ?? { rows: [], loading: true };
-    const colSpan = widget.colSpan ?? 1;
+
+    // 12-column grid: spec colSpan 1→3cols, 2→6cols, 3→9cols, 4→12cols
+    // kpi_card=3 → 4 per row (12), everything else=6 → 2 per row (12), data_table=12 → full row
+    const defaultCols: Record<string, number> = {
+      kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
+      line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
+      combo_chart: 6, radar_chart: 6, treemap_chart: 6,
+    };
+    const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
+    const col12 = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
+
+    const isCrossFilterSource = crossFilter?.widgetId === widget.id;
+    const isFiltered = crossFilter !== null && !isCrossFilterSource;
+
+    // Cross-filter handler: use widget.crossFilterKey, fall back to the widget id
+    const xfKey = widget.crossFilterKey ?? widget.id;
+    const onCF = (val: string | null) => handleCrossFilter(widget.id, xfKey, val);
+    const hasCrossFilter = Boolean(widget.crossFilterKey);
 
     switch (widget.type) {
       case 'kpi_card':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
             <KpiCard spec={widget} data={data} />
           </WidgetCard>
         );
 
       case 'bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
             <BarChartWidget
               spec={widget}
               data={data}
-              onDrillDown={widget.drillDownSql ? (val) => handleDrillDown(widget.id, val, currentSpec!) : undefined}
-              isDrilled={drillState?.widgetId === widget.id}
-              drillLabel={drillState?.widgetId === widget.id ? drillState.label : undefined}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+              isCrossFilterActive={isCrossFilterSource}
+              drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
             />
           </WidgetCard>
         );
 
       case 'line_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <LineChartWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <LineChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
 
       case 'vertical_bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <VerticalBarChartWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <VerticalBarChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
 
       case 'stacked_bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <StackedBarChartWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <StackedBarChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
 
       case 'pie_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <PieChartWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <PieChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
 
       case 'top_list':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <TopListWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <TopListWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
 
       case 'data_table':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={colSpan}>
-            <DataTableWidget spec={widget} data={data} />
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <DataTableWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          </WidgetCard>
+        );
+
+      case 'combo_chart':
+        return (
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <ComboChartWidget spec={widget} data={data} />
+          </WidgetCard>
+        );
+      case 'radar_chart':
+        return (
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <RadarChartWidget spec={widget} data={data} />
+          </WidgetCard>
+        );
+      case 'treemap_chart':
+        return (
+          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+            <TreemapWidget spec={widget} data={data} />
           </WidgetCard>
         );
 
@@ -1073,17 +1313,20 @@ export default function DashboardsPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="h-screen overflow-hidden bg-slate-50 flex flex-col">
+    <div className={`h-screen overflow-hidden flex flex-col ${darkMode ? 'dark' : ''}`}
+      style={{ background: darkMode
+        ? 'linear-gradient(135deg, #0f1117 0%, #1a1d2e 50%, #0f1117 100%)'
+        : 'linear-gradient(135deg, #eef2ff 0%, #f8faff 40%, #f3f0ff 100%)' }}>
       <Nav />
 
       <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 57px)' }}>
 
         {/* ── Left sidebar ── */}
-        <aside className="w-56 bg-white border-r border-slate-200 flex flex-col shrink-0 overflow-hidden">
+        <aside className="w-56 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-r border-black/5 dark:border-white/5 flex flex-col shrink-0 overflow-hidden">
           {/* Sidebar header */}
           <div className="px-3 py-3 border-b border-slate-100">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Dashboards</span>
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Dashboards</span>
               <button
                 onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
                 className="text-xs text-blue-600 hover:text-blue-800 font-medium"
@@ -1323,7 +1566,7 @@ export default function DashboardsPage() {
           {mode === 'viewing' && currentSpec && (
             <div className="flex-1 flex flex-col overflow-hidden">
               {/* Top bar */}
-              <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-start justify-between gap-4 shrink-0">
+              <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-black/5 dark:border-white/5 px-6 py-3 flex items-center justify-between gap-4 shrink-0">
                 <div className="min-w-0">
                   <h1 className="font-bold text-lg text-slate-900 leading-tight">{currentSpec.title}</h1>
                   {currentSpec.description && (
@@ -1331,6 +1574,13 @@ export default function DashboardsPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setDarkMode((d) => !d)}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-base"
+                    title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+                  >
+                    {darkMode ? '☀️' : '🌙'}
+                  </button>
                   {isUnsaved ? (
                     <>
                       <button
@@ -1357,7 +1607,7 @@ export default function DashboardsPage() {
 
               {/* Filter bar */}
               {currentSpec.filters.length > 0 && (
-                <div className="bg-white border-b border-slate-200 px-6 py-3 flex flex-wrap items-center gap-4 shrink-0">
+                <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-black/5 dark:border-white/5 px-6 py-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 shrink-0">
                   {currentSpec.filters.map((f) => {
                     if (f.type === 'date_range') {
                       return (
@@ -1404,16 +1654,13 @@ export default function DashboardsPage() {
 
               {/* Widget grid */}
               <div className="flex-1 overflow-y-auto">
-              <div
-                className="grid gap-4 p-4"
-                style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}
-              >
+              <div className="grid gap-3 p-4" style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}>
                 {currentSpec.widgets.map((widget) => renderWidget(widget))}
               </div>
               </div>
 
               {/* Bottom chat bar */}
-              <div className="bg-white border-t border-slate-200 shrink-0">
+              <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-t border-black/5 dark:border-white/5 shrink-0">
                 {/* Chat history */}
                 {chatMessages.length > 0 && (
                   <div className="px-6 pt-3 pb-1 max-h-52 overflow-y-auto space-y-2">
@@ -1456,7 +1703,7 @@ export default function DashboardsPage() {
                     onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
                     placeholder='Ask about the data or say how to improve this dashboard…'
                     disabled={chatLoading}
-                    className="flex-1 px-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white placeholder-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
+                    className="flex-1 px-4 py-2 text-sm border border-black/10 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white/80 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 disabled:opacity-50 backdrop-blur-sm"
                   />
                   <button
                     onClick={handleChatSubmit}

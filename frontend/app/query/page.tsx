@@ -105,6 +105,7 @@ interface Message {
   debug?:              DebugInfo;
   rows?:               Record<string, unknown>[];
   wasRepaired?:        boolean;           // prevents re-triggering repair on already-fixed answers
+  reasoning?:          string;            // Claude's extended thinking, stored for replay
 }
 
 interface Conversation {
@@ -621,7 +622,24 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
   msg: Message; showSql: boolean; isAdmin: boolean;
   onSend: (q: string) => void;
 }) {
-  const [sqlOpen, setSqlOpen] = useState(false);
+  const [sqlOpen,       setSqlOpen]       = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const brainRef = useRef<HTMLDivElement>(null);
+
+  function toggleReasoning() {
+    setReasoningOpen((o) => !o);
+  }
+
+  useEffect(() => {
+    if (!reasoningOpen) return;
+    function handleClickOutside(e: MouseEvent) {
+      if (brainRef.current && !brainRef.current.contains(e.target as Node)) {
+        setReasoningOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [reasoningOpen]);
 
   if (msg.role === 'user') {
     return (
@@ -789,8 +807,54 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
   }
 
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] space-y-2">
+    <div className="flex justify-start gap-2 items-start">
+      {/* Left column: brain button — speech bubble floats absolutely so layout never shifts */}
+      <div ref={brainRef} className="relative flex-shrink-0 pt-1">
+        {msg.reasoning ? (
+          <button
+            onClick={toggleReasoning}
+            title={reasoningOpen ? 'Hide reasoning' : 'Show reasoning'}
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${
+              reasoningOpen
+                ? 'bg-violet-500 ring-2 ring-violet-300 ring-offset-1 shadow-lg shadow-violet-200'
+                : 'bg-violet-100 hover:bg-violet-200 hover:shadow-md hover:shadow-violet-100'
+            }`}
+          >
+            <span className="text-sm leading-none">🧠</span>
+          </button>
+        ) : (
+          <div className="w-7" />
+        )}
+
+        {/* Comic speech bubble — absolutely positioned, overlays chat, never shifts layout */}
+        {reasoningOpen && msg.reasoning && (
+          <div
+            className="absolute z-30 top-0 left-9 w-72"
+            style={{ filter: 'drop-shadow(0 4px 14px rgba(109,40,217,0.18))' }}
+          >
+            {/* Tail pointing left toward the brain */}
+            <div className="absolute -left-[9px] top-[10px] w-0 h-0"
+              style={{ borderTop:'8px solid transparent', borderBottom:'8px solid transparent', borderRight:'9px solid #ddd6fe' }} />
+            <div className="absolute -left-[7px] top-[11px] w-0 h-0"
+              style={{ borderTop:'7px solid transparent', borderBottom:'7px solid transparent', borderRight:'8px solid white' }} />
+
+            {/* Bubble body */}
+            <div className="bg-white border border-violet-200 rounded-2xl rounded-tl-sm overflow-hidden">
+              <div className="px-3 py-1.5 bg-violet-50 border-b border-violet-100 flex items-center gap-1.5">
+                <span className="text-[9px] font-bold text-violet-500 uppercase tracking-widest">Reasoning</span>
+              </div>
+              <div className="px-3 py-2.5 max-h-64 overflow-y-auto">
+                <p className="text-[11px] text-slate-500 leading-relaxed whitespace-pre-wrap">
+                  {msg.reasoning}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Right column: answer bubble — shape never changes */}
+      <div className="flex-1 min-w-0 space-y-2">
         <div className={`bg-white border rounded-2xl rounded-bl-md px-4 py-3 text-sm shadow-sm space-y-2.5 ${
           msg.wasRepaired ? 'border-emerald-300' : 'border-slate-200'
         }`}>
@@ -839,76 +903,52 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
 // ─── Live thinking bubble ────────────────────────────────────────────────────
 
 function ThinkingBubble({
-  phase, thinkingText, sql, confidence, showReasoning,
+  phase, liveText, sql, confidence,
 }: {
-  phase:          string;
-  thinkingText:   string;
-  sql:            string | null;
-  confidence:     number | null;
-  showReasoning:  boolean;
+  phase:      string;
+  liveText:   string;
+  sql:        string | null;
+  confidence: number | null;
 }) {
-  // Word-by-word display state — independent of the raw incoming stream
-  const [displayedText, setDisplayedText] = useState('');
-  const fullRef  = useRef('');   // always the latest full thinkingText
-  const posRef   = useRef(0);    // how many chars we've already displayed
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Word-by-word display of live reasoning — ~220 ms/word (readable pace)
+  const [displayed, setDisplayed] = useState('');
+  const fullRef = useRef('');
+  const posRef  = useRef(0);
 
-  // Keep fullRef in sync with the incoming stream
-  useEffect(() => { fullRef.current = thinkingText; }, [thinkingText]);
+  useEffect(() => { fullRef.current = liveText; }, [liveText]);
 
-  // Reset when a new question starts (thinkingText goes back to '')
   useEffect(() => {
-    if (thinkingText === '') {
-      setDisplayedText('');
-      posRef.current = 0;
-    }
-  }, [thinkingText]);
+    if (liveText === '') { setDisplayed(''); posRef.current = 0; }
+  }, [liveText]);
 
-  // Word-by-word advance — ~160 ms/word ≈ 375 wpm, just above comfortable reading pace
   useEffect(() => {
-    if (!showReasoning) return;
     let alive = true;
-
     const tick = () => {
       if (!alive) return;
       const full = fullRef.current;
       let pos = posRef.current;
-
-      if (pos >= full.length) {
-        // Nothing new yet — poll
-        setTimeout(tick, 40);
-        return;
-      }
-
-      // Skip leading whitespace (show immediately, don't delay on spaces/newlines)
+      if (pos >= full.length) { setTimeout(tick, 40); return; }
       while (pos < full.length && (full[pos] === ' ' || full[pos] === '\n')) pos++;
-      // Advance through the next word
-      while (pos < full.length && full[pos] !== ' ' && full[pos] !== '\n') pos++;
-      // Consume one trailing space so words have natural spacing
+      while (pos < full.length && full[pos] !== ' '  && full[pos] !== '\n') pos++;
       if (pos < full.length && full[pos] === ' ') pos++;
-
       posRef.current = pos;
-      setDisplayedText(full.slice(0, pos));
-      setTimeout(tick, 160);
+      setDisplayed(full.slice(0, pos));
+      setTimeout(tick, 220);
     };
-
     const t = setTimeout(tick, 100);
     return () => { alive = false; clearTimeout(t); };
-  }, [showReasoning]);
-
-  // Auto-scroll as text grows
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [displayedText]);
+  }, []);
 
   const isExecuting = phase === 'Running your query…' || phase === 'Formatting answer…';
 
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] w-full bg-white border border-slate-200 rounded-2xl rounded-bl-md overflow-hidden shadow-sm">
+    <div className="flex justify-start gap-2">
+      {/* Pulsing brain while thinking */}
+      <div className="flex-shrink-0 w-7 h-7 mt-1 rounded-full bg-violet-200 flex items-center justify-center animate-pulse">
+        <span className="text-sm">🧠</span>
+      </div>
 
+      <div className="max-w-[85%] w-full bg-white border border-slate-200 rounded-2xl rounded-bl-md overflow-hidden shadow-sm">
         {/* Phase header */}
         <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50">
           {isExecuting ? (
@@ -927,12 +967,12 @@ function ThinkingBubble({
           <span className="text-xs font-semibold text-slate-600">{phase || 'Loading…'}</span>
         </div>
 
-        {/* Word-by-word reasoning — only visible when toggle is on */}
-        {showReasoning && displayedText && (
-          <div ref={scrollRef} className="px-4 py-3 max-h-52 overflow-y-auto">
-            <p className="text-[11px] text-slate-500 leading-relaxed whitespace-pre-wrap">
-              {displayedText}
-              <span className="inline-block w-[2px] h-[11px] bg-slate-400 ml-[1px] align-middle animate-pulse" />
+        {/* Word-by-word reasoning — plain grey text, no scroll, grows naturally */}
+        {displayed && (
+          <div className="px-4 pt-3 pb-2">
+            <p className="text-[11px] text-slate-400 leading-relaxed whitespace-pre-wrap">
+              {displayed}
+              <span className="inline-block w-[2px] h-[11px] bg-slate-300 ml-[1px] align-middle animate-pulse" />
             </p>
           </div>
         )}
@@ -989,9 +1029,6 @@ export default function QueryPage() {
   const [input,         setInput]         = useState('');
   const [loading,        setLoading]        = useState(false);
   const [showSql,        setShowSql]        = useState(false);
-  const [showReasoning,  setShowReasoning]  = useState(() => {
-    try { return localStorage.getItem('databridge_show_reasoning') === 'true'; } catch { return false; }
-  });
   const [isAdmin,        setIsAdmin]        = useState(false);
 
   // Data source selection (silent — no UI picker)
@@ -1351,6 +1388,7 @@ export default function QueryPage() {
       const decoder = new TextDecoder();
       let   buffer  = '';
       let   assistantId = -1;
+      let   accumulatedThinking = '';
 
       while (true) {
         const { done, value } = await reader.read();
@@ -1371,6 +1409,7 @@ export default function QueryPage() {
             setThinkingPhase(event.text as string);
 
           } else if (type === 'thinking') {
+            accumulatedThinking += event.text as string;
             setThinkingText((prev) => prev + (event.text as string));
 
           } else if (type === 'sql_ready') {
@@ -1390,6 +1429,7 @@ export default function QueryPage() {
               sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
               blocked: d.blocked, needsClarification: d.needsClarification,
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
+              reasoning: accumulatedThinking || undefined,
             };
             setMessages((prev) => [...prev, assistantMsg]);
             if (d.warning && !d.blocked && d.sql && d.rows) {
@@ -1454,17 +1494,6 @@ export default function QueryPage() {
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
-                <div onClick={() => setShowReasoning((s) => {
-                  const next = !s;
-                  try { localStorage.setItem('databridge_show_reasoning', String(next)); } catch { /* quota */ }
-                  return next;
-                })}
-                  className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showReasoning ? 'bg-violet-500' : 'bg-slate-300'}`}>
-                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${showReasoning ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                </div>
-                Show reasoning
-              </label>
               {isAdmin && (
                 <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
                   <div onClick={() => setShowSql((s) => !s)}
@@ -1504,10 +1533,9 @@ export default function QueryPage() {
                   {loading && (
                     <ThinkingBubble
                       phase={thinkingPhase}
-                      thinkingText={thinkingText}
+                      liveText={thinkingText}
                       sql={thinkingSql}
                       confidence={thinkingConf}
-                      showReasoning={showReasoning}
                     />
                   )}
                   <div ref={bottomRef} />

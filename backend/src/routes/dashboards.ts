@@ -2,8 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec } from '../ai/AIService';
-import { DashboardSpec, RefinementOutput } from '../ai/prompts/dashboardPrompt';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec } from '../ai/AIService';
+import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 
 const router = Router();
@@ -43,6 +43,68 @@ async function buildSemanticContext(
 }
 
 // ---------------------------------------------------------------------------
+// Helper — apply default filter values to SQL placeholders
+// ---------------------------------------------------------------------------
+
+function applyDefaultFilters(sql: string): string {
+  return sql
+    .replace(/\{\{[^}]+_from\}\}/g, '1900-01-01')
+    .replace(/\{\{[^}]+_to\}\}/g, '2099-12-31')
+    .replace(/\{\{[^}]+\}\}/g, 'all');
+}
+
+// ---------------------------------------------------------------------------
+// Helper — execute all widgets with default filters, return results for validation
+// ---------------------------------------------------------------------------
+
+async function executeSpecForValidation(
+  spec: DashboardSpec,
+  connectionId: number,
+): Promise<WidgetExecutionResult[]> {
+  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  if (!connection) return [];
+
+  const config = typeof connection.config === 'string'
+    ? JSON.parse(connection.config)
+    : connection.config;
+
+  const connector = new SqliteConnector(config.filepath);
+  await connector.connect();
+
+  const results: WidgetExecutionResult[] = [];
+
+  try {
+    for (const widget of spec.widgets) {
+      const resolvedSql = applyDefaultFilters(widget.sql);
+      try {
+        const result = await connector.executeQuery(resolvedSql);
+        const rows = result.rows as Record<string, unknown>[];
+        results.push({
+          id: widget.id,
+          title: widget.title,
+          type: widget.type,
+          rowCount: rows.length,
+          sampleRows: rows.slice(0, 3),
+        });
+      } catch (err: unknown) {
+        results.push({
+          id: widget.id,
+          title: widget.title,
+          type: widget.type,
+          rowCount: 0,
+          error: err instanceof Error ? err.message : String(err),
+          sampleRows: [],
+        });
+      }
+    }
+  } finally {
+    connector.disconnect();
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/dashboards/generate
 // ---------------------------------------------------------------------------
 
@@ -66,7 +128,20 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       : request;
 
     const { semanticContext, relationshipContext } = await buildSemanticContext(connectionId);
-    const spec = await generateDashboardSpec(fullRequest, semanticContext, relationshipContext);
+    let spec = await generateDashboardSpec(fullRequest, semanticContext, relationshipContext);
+
+    // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets
+    try {
+      const executionResults = await executeSpecForValidation(spec, connectionId);
+      const hasIssues = executionResults.some(
+        (r) => r.error || r.rowCount === 0 || (r.type === 'pie_chart' && r.rowCount > 3),
+      );
+      if (hasIssues) {
+        spec = await validateAndFixDashboardSpec(spec, executionResults, semanticContext, relationshipContext);
+      }
+    } catch {
+      // Validation is best-effort — never block the response if it fails
+    }
 
     res.json({ ok: true, data: { spec } });
   } catch (err) {
