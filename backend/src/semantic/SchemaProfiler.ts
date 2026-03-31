@@ -12,6 +12,16 @@ export interface ProfilerResult {
   relationshipsInserted: number;
 }
 
+export interface ProfilerProgress {
+  phase: 'schema' | 'quality' | 'ai_draft' | 'storing' | 'neo4j' | 'done' | 'error';
+  message: string;
+  table?: string;
+  tableIndex?: number;
+  tableCount?: number;
+  batchIndex?: number;
+  batchCount?: number;
+}
+
 /**
  * Reads the source schema, calls Claude for draft definitions, and stores
  * everything in the semantic layer (PostgreSQL) with ai_draft = true.
@@ -20,18 +30,37 @@ export interface ProfilerResult {
 export async function runSchemaProfiler(
   connectionId: number,
   filePath: string,
+  onProgress?: (p: ProfilerProgress) => void,
 ): Promise<ProfilerResult> {
+  const emit = onProgress ?? (() => {});
+
   // 1. Introspect source schema
+  emit({ phase: 'schema', message: 'Reading database schema…' });
   const connector = new SqliteConnector(filePath);
   await connector.connect();
   const schema = await connector.introspectSchema();
   connector.disconnect();
+  const fkCandidates = schema.fkCandidates ?? [];
+  const declaredCount = fkCandidates.filter((fk) => fk.source === 'declared').length;
+  const fuzzyCount = fkCandidates.filter((fk) => fk.source === 'fuzzy_name').length;
+  const patternCount = fkCandidates.filter((fk) => fk.source === 'name_pattern').length;
+  const overlapCount = fkCandidates.filter((fk) => fk.source === 'value_overlap').length;
+
+  const fkParts: string[] = [];
+  if (declaredCount) fkParts.push(`${declaredCount} declared`);
+  if (patternCount) fkParts.push(`${patternCount} by name`);
+  if (fuzzyCount) fkParts.push(`${fuzzyCount} fuzzy`);
+  if (overlapCount) fkParts.push(`${overlapCount} by data`);
+  const fkSummary = fkParts.length ? ` — relationships: ${fkParts.join(', ')}` : '';
+  emit({ phase: 'schema', message: `Found ${schema.tables.length} tables${fkSummary}` });
 
   // 2. Run quality profiling for all tables first — results feed into the AI draft
   //    so Claude has statistical signals (PK/FK detection, cardinality) for better relationships.
   //    Failures are swallowed per-table so a bad table never blocks the rest.
   const qualityStats: TableQualityStat[] = [];
-  for (const table of schema.tables) {
+  for (let ti = 0; ti < schema.tables.length; ti++) {
+    const table = schema.tables[ti];
+    emit({ phase: 'quality', message: `Profiling ${table.tableName}…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
     try {
       const result = await runQualityProfile(connectionId, table.tableName, filePath);
       qualityStats.push({
@@ -53,7 +82,10 @@ export async function runSchemaProfiler(
   }
 
   // 3. Generate AI draft definitions — now enriched with quality stats
-  const draft = await generateSchemaDraft('sqlite', schema.tables, qualityStats);
+  emit({ phase: 'ai_draft', message: 'Claude is generating definitions…' });
+  const draft = await generateSchemaDraft('sqlite', schema.tables, qualityStats, schema.fkCandidates, (tableNames, batchIndex, totalBatches) => {
+    emit({ phase: 'ai_draft', message: `Generating definitions for ${tableNames.join(', ')}…`, batchIndex, batchCount: totalBatches });
+  });
 
   // 3. Build lookup maps from the draft
   const tableDefMap = new Map(draft.tables.map((t) => [t.table_name, t]));
@@ -69,6 +101,7 @@ export async function runSchemaProfiler(
   const tableIdMap  = new Map<string, number>();
   const columnIdMap = new Map<string, number>(); // key: "tableName.columnName"
 
+  emit({ phase: 'storing', message: 'Saving definitions to database…' });
   await semanticDb.transaction(async (trx) => {
     // Fetch existing tables/columns for this connection
     const existingTables = await trx('source_tables')
@@ -207,7 +240,10 @@ export async function runSchemaProfiler(
       }
     }
 
-    // 5. Insert suggested relationships
+    // 5. Insert suggested relationships (AI-generated + programmatic FK merge)
+    //    Track which column pairs have been inserted to avoid duplicates.
+    const insertedRelKeys = new Set<string>();
+
     for (const tableDef of draft.tables) {
       const fromTableId = tableIdMap.get(tableDef.table_name);
       if (!fromTableId) continue;
@@ -223,6 +259,10 @@ export async function runSchemaProfiler(
           ? (columnIdMap.get(`${rel.to_table}.${rel.to_column}`) ?? null)
           : null;
 
+        const relKey = `${tableDef.table_name}.${rel.via_column ?? ''}→${rel.to_table}.${rel.to_column ?? ''}`;
+        if (insertedRelKeys.has(relKey)) continue;
+        insertedRelKeys.add(relKey);
+
         await trx('table_relationships').insert({
           from_table_id:     fromTableId,
           from_column_id:    fromColId,
@@ -234,6 +274,32 @@ export async function runSchemaProfiler(
         });
         relationshipsInserted++;
       }
+    }
+
+    // 5b. Insert any high-confidence programmatic FK candidates that Claude missed
+    for (const fk of schema.fkCandidates ?? []) {
+      if (fk.confidence < 0.7) continue; // skip low-confidence guesses
+      const relKey = `${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`;
+      if (insertedRelKeys.has(relKey)) continue; // already inserted by AI
+
+      const fromTableId = tableIdMap.get(fk.fromTable);
+      const toTableId   = tableIdMap.get(fk.toTable);
+      if (!fromTableId || !toTableId) continue;
+
+      const fromColId = columnIdMap.get(`${fk.fromTable}.${fk.fromColumn}`) ?? null;
+      const toColId   = columnIdMap.get(`${fk.toTable}.${fk.toColumn}`) ?? null;
+
+      insertedRelKeys.add(relKey);
+      await trx('table_relationships').insert({
+        from_table_id:     fromTableId,
+        from_column_id:    fromColId,
+        to_table_id:       toTableId,
+        to_column_id:      toColId,
+        relationship_type: 'many_to_one', // safe default for FK relationships
+        description:       `${fk.fromTable}.${fk.fromColumn} → ${fk.toTable}.${fk.toColumn} [${fk.source}]`,
+        ai_draft:          true,
+      });
+      relationshipsInserted++;
     }
 
     // 6. Restore cross_view_tables — only for tables that still exist
@@ -278,6 +344,7 @@ export async function runSchemaProfiler(
   // ── Sync to Neo4j ──────────────────────────────────────────────────────────
   // After all Postgres inserts complete, mirror the semantic layer to Neo4j.
   // Uses MERGE so re-profiling is safe and confirmed definitions are preserved.
+  emit({ phase: 'neo4j', message: 'Syncing to knowledge graph…' });
   try {
     // Build UpsertTableInput / UpsertColumnInput arrays from the maps we just built.
     const graphTables: graph.UpsertTableInput[] = schema.tables.map((t) => {

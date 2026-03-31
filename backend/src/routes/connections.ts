@@ -46,11 +46,8 @@ router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request
 
     const connectionId: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
 
-    // Run schema profiling asynchronously — client polls for completion
-    runSchemaProfiler(connectionId, config.filepath).catch((err) =>
-      console.error('[SchemaProfiler] background error:', err),
-    );
-
+    // Do NOT run schema profiling here — the frontend will trigger it via
+    // POST /:id/profile with SSE so the user sees real-time progress.
     res.status(201).json({ ok: true, data: { connectionId } });
   } catch (err) {
     next(err);
@@ -87,19 +84,43 @@ router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Req
   }
 });
 
-// POST /api/connections/:id/profile — re-run schema profiling (synchronous so errors surface)
-router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const connection = await semanticDb('connections').where({ id: req.params.id }).first();
-    if (!connection) {
-      res.status(404).json({ ok: false, error: 'Connection not found' });
-      return;
+// POST /api/connections/:id/profile — re-run schema profiling with SSE progress
+router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response) => {
+  const connection = await semanticDb('connections').where({ id: req.params.id }).first();
+  if (!connection) {
+    res.status(404).json({ ok: false, error: 'Connection not found' });
+    return;
+  }
+
+  // If client accepts SSE, stream progress events
+  const wantsStream = req.headers.accept?.includes('text/event-stream');
+  if (wantsStream) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const emit = (data: object) => {
+      try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
+    };
+
+    try {
+      const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
+      const result = await runSchemaProfiler(connection.id, config.filepath, (p) => emit(p));
+      emit({ phase: 'done', message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`, result });
+    } catch (err) {
+      emit({ phase: 'error', message: err instanceof Error ? err.message : 'Profiling failed' });
     }
-    const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const result = await runSchemaProfiler(connection.id, config.filepath);
-    res.json({ ok: true, data: result });
-  } catch (err) {
-    next(err);
+    res.end();
+  } else {
+    // Fallback: synchronous JSON response for non-SSE clients
+    try {
+      const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
+      const result = await runSchemaProfiler(connection.id, config.filepath);
+      res.json({ ok: true, data: result });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Profiling failed' });
+    }
   }
 });
 

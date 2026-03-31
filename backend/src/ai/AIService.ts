@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import path from 'path';
 import dotenv from 'dotenv';
 
-import { TableInfo } from '../connectors/BaseConnector';
+import { TableInfo, FkCandidate } from '../connectors/BaseConnector';
 import {
   SCHEMA_DRAFT_SYSTEM,
   buildSchemaDraftUser,
@@ -111,17 +111,43 @@ function parseJson<T>(raw: string): T {
 // Call Type 1 — Schema Draft
 // ---------------------------------------------------------------------------
 
+/**
+ * Generate schema draft in batches of BATCH_SIZE tables to avoid token limit
+ * truncation. Each batch produces a partial SchemaDraftOutput; results are merged.
+ * Calls onProgress(tableName) after each batch so callers can report status.
+ */
+const DRAFT_BATCH_SIZE = 3;
+
 export async function generateSchemaDraft(
   sourceType: string,
   tables: TableInfo[],
   qualityStats?: TableQualityStat[],
+  fkCandidates?: FkCandidate[],
+  onProgress?: (tableNames: string[], batchIndex: number, totalBatches: number) => void,
 ): Promise<SchemaDraftOutput> {
-  const raw = await callClaude(
-    SCHEMA_DRAFT_SYSTEM,
-    buildSchemaDraftUser(sourceType, tables, qualityStats),
-    16000,
-  );
-  return parseJson<SchemaDraftOutput>(raw);
+  const merged: SchemaDraftOutput = { tables: [], columns: [] };
+  const batches: TableInfo[][] = [];
+  for (let i = 0; i < tables.length; i += DRAFT_BATCH_SIZE) {
+    batches.push(tables.slice(i, i + DRAFT_BATCH_SIZE));
+  }
+
+  for (let bi = 0; bi < batches.length; bi++) {
+    const batch = batches[bi];
+    const batchStats = qualityStats?.filter((s) =>
+      batch.some((t) => t.tableName === s.table_name),
+    );
+    onProgress?.(batch.map((t) => t.tableName), bi, batches.length);
+
+    const raw = await callClaude(
+      SCHEMA_DRAFT_SYSTEM,
+      buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates),
+      16000,
+    );
+    const partial = parseJson<SchemaDraftOutput>(raw);
+    merged.tables.push(...partial.tables);
+    merged.columns.push(...partial.columns);
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------

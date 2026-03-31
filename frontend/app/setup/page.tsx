@@ -188,17 +188,10 @@ function ConnectionCard({
     }
   }
 
-  async function handleReProfile() {
+  function handleReProfile() {
     setReprofiling(true);
     onStartReProfile(conn.id);
-    try {
-      await api.post(`/connections/${conn.id}/profile`);
-      onReProfileDone(conn.id);
-    } catch {
-      alert('Re-profiling failed.');
-    } finally {
-      setReprofiling(false);
-    }
+    // The ProfilingBanner handles the SSE stream — no direct API call needed here
   }
 
   return (
@@ -543,62 +536,127 @@ function SlidePanel({
 }
 
 // ---------------------------------------------------------------------------
-// ProfilingBanner
+// ProfilingBanner — SSE-driven real-time progress
 // ---------------------------------------------------------------------------
 
-const STEPS = [
-  { icon: '🔍', label: 'Reading schema',            detail: 'Scanning tables, columns and sample values…',       ms: 1500  },
-  { icon: '📊', label: 'Profiling data quality',    detail: 'Computing null rates, cardinality and value ranges…', ms: 9000  },
-  { icon: '🤖', label: 'Claude is learning your data', detail: 'Generating definitions and inferring relationships…', ms: 22000 },
-  { icon: '✨', label: 'Wrapping up',               detail: 'Storing definitions and quality hints…',             ms: Infinity },
-];
+const PHASE_META: Record<string, { icon: string; label: string; order: number }> = {
+  schema:   { icon: '🔍', label: 'Reading schema',               order: 0 },
+  quality:  { icon: '📊', label: 'Profiling data quality',       order: 1 },
+  ai_draft: { icon: '🤖', label: 'Claude is learning your data', order: 2 },
+  storing:  { icon: '💾', label: 'Saving definitions',           order: 3 },
+  neo4j:    { icon: '🔗', label: 'Syncing knowledge graph',      order: 4 },
+  done:     { icon: '✨', label: 'Complete',                     order: 5 },
+};
+const PHASE_KEYS = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'];
 
-function ProfilingBanner({ name, connId, onDismiss, done }: {
+function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   name: string;
   connId: number;
   onDismiss: () => void;
-  done?: boolean;
+  startStream?: boolean;
 }) {
   const router = useRouter();
-  const [step, setStep] = useState(0);
+  const [currentPhase, setCurrentPhase] = useState('schema');
+  const [message, setMessage] = useState('Starting analysis…');
+  const [finished, setFinished] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [doneMessage, setDoneMessage] = useState('');
 
   useEffect(() => {
-    if (done) { setStep(STEPS.length); return; }
-    let current = 0;
-    function advance() {
-      current++;
-      if (current < STEPS.length - 1) {
-        setStep(current);
-        setTimeout(advance, STEPS[current].ms);
-      } else {
-        setStep(STEPS.length - 1);
-      }
-    }
-    const t = setTimeout(advance, STEPS[0].ms);
-    return () => clearTimeout(t);
-  }, [done]);
+    if (!startStream || !connId) return;
 
-  if (done || step >= STEPS.length) {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const abortCtrl = new AbortController();
+
+    (async () => {
+      try {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/connections/${connId}/profile`, {
+          method: 'POST',
+          headers: {
+            'Accept': 'text/event-stream',
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+          },
+          signal: abortCtrl.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          setError('Failed to start profiling stream');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done: streamDone, value } = await reader.read();
+          if (streamDone) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.phase === 'done') {
+                setCurrentPhase('done');
+                setDoneMessage(evt.message ?? 'Analysis complete');
+                setFinished(true);
+              } else if (evt.phase === 'error') {
+                setError(evt.message ?? 'Profiling failed');
+              } else {
+                setCurrentPhase(evt.phase);
+                setMessage(evt.message);
+              }
+            } catch { /* skip unparseable */ }
+          }
+        }
+        // If stream ended without explicit done/error, mark as done
+        if (!finished && !error) {
+          setFinished(true);
+          setCurrentPhase('done');
+        }
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          setError('Connection to server lost');
+        }
+      }
+    })();
+
+    return () => abortCtrl.abort();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startStream, connId]);
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-xl p-5">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">⚠</span>
+          <div>
+            <p className="font-semibold text-red-800 text-sm">Profiling failed</p>
+            <p className="text-xs text-red-600 mt-0.5">{error}</p>
+          </div>
+          <button onClick={onDismiss} className="ml-auto text-red-400 hover:text-red-700 text-xl leading-none">×</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (finished) {
     return (
       <div className="bg-green-50 border border-green-200 rounded-xl p-5">
         <div className="flex items-center gap-3 mb-3">
           <span className="text-2xl">🎉</span>
           <div>
             <p className="font-semibold text-green-800 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
-            <p className="text-xs text-green-600 mt-0.5">Quality profiles, definitions and relationships are ready.</p>
+            <p className="text-xs text-green-600 mt-0.5">{doneMessage || 'Quality profiles, definitions and relationships are ready.'}</p>
           </div>
           <button onClick={onDismiss} className="ml-auto text-green-400 hover:text-green-700 text-xl leading-none">×</button>
         </div>
-        <div className="flex gap-2">
-          {STEPS.map((s) => (
-            <div key={s.label} className="flex items-center gap-1 text-xs text-green-700 bg-green-100 rounded-full px-2.5 py-0.5">
-              <span>{s.icon}</span> <span className="font-medium">{s.label}</span>
-            </div>
-          ))}
-        </div>
         <button
           onClick={() => router.push(`/semantic?connectionId=${connId}`)}
-          className="mt-3 w-full px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          className="mt-1 w-full px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
         >
           Review definitions →
         </button>
@@ -606,8 +664,8 @@ function ProfilingBanner({ name, connId, onDismiss, done }: {
     );
   }
 
-  const activeStep = STEPS[step];
-  const progress = Math.round(((step + 1) / STEPS.length) * 100);
+  const currentOrder = PHASE_META[currentPhase]?.order ?? 0;
+  const progress = Math.round(((currentOrder + 1) / PHASE_KEYS.length) * 100);
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
@@ -628,12 +686,12 @@ function ProfilingBanner({ name, connId, onDismiss, done }: {
 
       {/* Steps */}
       <div className="space-y-2">
-        {STEPS.map((s, i) => {
-          const isDone    = i < step;
-          const isActive  = i === step;
-          const isPending = i > step;
+        {PHASE_KEYS.filter((k) => k !== 'done').map((phaseKey) => {
+          const meta = PHASE_META[phaseKey];
+          const isDone    = meta.order < currentOrder;
+          const isActive  = phaseKey === currentPhase;
           return (
-            <div key={s.label} className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-all ${isActive ? 'bg-blue-50 border border-blue-100' : ''}`}>
+            <div key={phaseKey} className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-all ${isActive ? 'bg-blue-50 border border-blue-100' : ''}`}>
               <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 transition-all ${
                 isDone   ? 'bg-green-100 text-green-600'  :
                 isActive ? 'bg-blue-100 text-blue-600'    :
@@ -641,14 +699,14 @@ function ProfilingBanner({ name, connId, onDismiss, done }: {
               }`}>
                 {isDone ? '✓' : isActive ? (
                   <span className="block w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                ) : s.icon}
+                ) : meta.icon}
               </div>
               <div className="min-w-0">
                 <p className={`text-xs font-medium ${isDone ? 'text-green-700' : isActive ? 'text-blue-700' : 'text-slate-400'}`}>
-                  {s.label}
+                  {meta.label}
                 </p>
                 {isActive && (
-                  <p className="text-[11px] text-blue-500 mt-0.5">{s.detail}</p>
+                  <p className="text-[11px] text-blue-500 mt-0.5">{message}</p>
                 )}
               </div>
             </div>
@@ -668,7 +726,7 @@ export default function SourcesPage() {
   const [loading, setLoading] = useState(true);
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
   const [editingConn, setEditingConn] = useState<Connection | null>(null);
-  const [profiling, setProfiling] = useState<{ id: number; name: string; done?: boolean } | null>(null);
+  const [profiling, setProfiling] = useState<{ id: number; name: string; startStream?: boolean } | null>(null);
 
   useEffect(() => {
     api.get('/connections')
@@ -691,7 +749,7 @@ export default function SourcesPage() {
 
   function handleConnected(id: number, name: string) {
     closePanel();
-    setProfiling({ id, name });
+    setProfiling({ id, name, startStream: true });
     api.get('/connections').then((res) => setConnections(res.data.data ?? []));
   }
 
@@ -706,11 +764,11 @@ export default function SourcesPage() {
 
   function handleStartReProfile(id: number) {
     const conn = connections.find((c) => c.id === id);
-    if (conn) setProfiling({ id, name: conn.name, done: false });
+    if (conn) setProfiling({ id, name: conn.name, startStream: true });
   }
 
-  function handleReProfileDone(id: number) {
-    setProfiling((prev) => prev?.id === id ? { ...prev, done: true } : prev);
+  function handleReProfileDone(_id: number) {
+    // No-op — SSE banner handles completion internally
   }
 
   return (
@@ -724,8 +782,8 @@ export default function SourcesPage() {
           <ProfilingBanner
             name={profiling.name}
             connId={profiling.id}
-            done={profiling.done}
-            onDismiss={() => setProfiling(null)}
+            startStream={profiling.startStream}
+            onDismiss={() => { setProfiling(null); api.get('/connections').then((r) => setConnections(r.data.data ?? [])); }}
           />
         )}
 

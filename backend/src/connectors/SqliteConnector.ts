@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
-import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
+import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo, FkCandidate } from './BaseConnector';
 
 export class SqliteConnector extends BaseConnector {
   private readonly filePath: string;
@@ -80,7 +80,38 @@ export class SqliteConnector extends BaseConnector {
       tables.push({ tableName, columns });
     }
 
-    return { tables };
+    // ── FK detection (engine-agnostic layers live in BaseConnector) ─────────
+    const fkCandidates = await this.detectForeignKeys(tables);
+
+    return { tables, fkCandidates };
+  }
+
+  /**
+   * SQLite-specific: read declared FKs via PRAGMA foreign_key_list.
+   * Other connectors override this with their engine's equivalent
+   * (e.g. information_schema for Postgres/MySQL).
+   */
+  async introspectDeclaredFks(tables: TableInfo[]): Promise<FkCandidate[]> {
+    const db = this.requireDb();
+    const declared: FkCandidate[] = [];
+    for (const table of tables) {
+      try {
+        const fks = db
+          .prepare(`PRAGMA foreign_key_list(${JSON.stringify(table.tableName)})`)
+          .all() as Array<{ table: string; from: string; to: string }>;
+        for (const fk of fks) {
+          declared.push({
+            fromTable: table.tableName,
+            fromColumn: fk.from,
+            toTable: fk.table,
+            toColumn: fk.to,
+            source: 'declared',
+            confidence: 1.0,
+          });
+        }
+      } catch { /* PRAGMA may fail on views or virtual tables */ }
+    }
+    return declared;
   }
 
   async executeQuery(sql: string): Promise<QueryResult> {
