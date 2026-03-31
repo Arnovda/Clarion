@@ -23,6 +23,8 @@ The statistical hints tell you:
 - When a column's distinct_count in one table closely matches the row_count of another table → strong FOREIGN KEY signal; suggest a relationship
 - Low-cardinality columns (few distinct values) are dimensions; high-range numeric columns are likely measures
 
+For each table, determine its GRAIN — what does one row represent? Express it as a short phrase starting with "one row per" (e.g. "one row per order", "one row per line item", "one row per customer").
+
 Return JSON only, no preamble, no explanation. You MUST use exactly this structure:
 
 {
@@ -31,6 +33,7 @@ Return JSON only, no preamble, no explanation. You MUST use exactly this structu
       "table_name": "orders",
       "display_name": "Sales Orders",
       "description": "Records each customer order placed in the system.",
+      "grain": "one row per order",
       "suggested_relationships": [
         { "to_table": "customers", "via_column": "customer_id", "to_column": "id", "type": "many_to_one" }
       ]
@@ -111,6 +114,7 @@ export interface SchemaDraftOutput {
     table_name: string;
     display_name: string;
     description: string;
+    grain?: string;        // e.g. "one row per order"
     suggested_relationships: Array<{
       to_table: string;
       via_column: string;   // column in the FROM table (the FK side)

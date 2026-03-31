@@ -12,6 +12,8 @@ interface Gap {
   question_text: string;
   gap_description: string;
   resolved: boolean;
+  hit_count: number;
+  last_hit_at: string;
   created_at: string;
 }
 
@@ -247,9 +249,16 @@ export default function GapsPage() {
                             &ldquo;{g.question_text}&rdquo;
                           </p>
                           <p className="text-sm text-slate-500 mt-1">{g.gap_description}</p>
-                          <p className="text-xs text-slate-400 mt-1">
-                            {new Date(g.created_at).toLocaleDateString('nl-BE')}
-                          </p>
+                          <div className="flex items-center gap-2 mt-1">
+                            {g.hit_count > 1 && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
+                                blocked {g.hit_count} questions
+                              </span>
+                            )}
+                            <p className="text-xs text-slate-400">
+                              {new Date(g.created_at).toLocaleDateString('nl-BE')}
+                            </p>
+                          </div>
                         </div>
                         <div className="shrink-0">
                           {!g.resolved ? (

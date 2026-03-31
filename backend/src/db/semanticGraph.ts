@@ -63,6 +63,7 @@ function mapTable(p: Record<string, unknown>): Record<string, unknown> {
     is_active:            Boolean(p.isActive),
     ai_draft:             Boolean(p.aiDraft),
     domains:              JSON.stringify(parseDomains(p.domains)),
+    grain:                toStr(p.grain),
     business_key_column:  toStr(p.businessKeyColumn),
     row_count:            p.rowCount != null ? toNum(p.rowCount) : null,
     last_profiled_at:     toStr(p.lastProfiledAt),
@@ -160,7 +161,7 @@ export async function updateTable(
   pgId: number,
   patch: {
     display_name?: unknown; description?: unknown; owner_name?: unknown;
-    is_active?: unknown; domains?: unknown;
+    is_active?: unknown; domains?: unknown; grain?: unknown;
   },
 ): Promise<void> {
   const session = getSession();
@@ -172,6 +173,7 @@ export async function updateTable(
            t.ownerName      = $ownerName,
            t.isActive       = $isActive,
            t.domains        = $domains,
+           t.grain          = $grain,
            t.aiDraft        = false,
            t.updatedAt      = $now`,
       {
@@ -181,6 +183,7 @@ export async function updateTable(
         ownerName:   patch.owner_name  ?? null,
         isActive:    patch.is_active   !== undefined ? Boolean(patch.is_active) : true,
         domains:     Array.isArray(patch.domains) ? patch.domains : parseDomains(patch.domains),
+        grain:       typeof patch.grain === 'string' ? patch.grain : null,
         now:         new Date().toISOString(),
       },
     );
@@ -692,6 +695,121 @@ export interface SemanticQueryContext {
   relationships: Record<string, unknown>[];
 }
 
+/**
+ * Lightweight fetch — returns only table/column NAMES (no full properties).
+ * Used for entity extraction without loading full context.
+ */
+export async function getTableAndColumnNames(
+  connectionId: number,
+  domains?: string[],
+): Promise<{ tableName: string; displayName: string; columnNames: string[] }[]> {
+  const session = getSession();
+  try {
+    const domainFilter = domains && domains.length > 0
+      ? 'AND ANY(d IN t.domains WHERE d IN $domains)'
+      : '';
+    const result = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+       WHERE true ${domainFilter}
+       OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:SourceColumn)
+       RETURN t.tableName AS tableName, t.displayName AS displayName,
+              collect(c.columnName) AS columnNames
+       ORDER BY t.tableName`,
+      { cid: connectionId, domains: domains ?? [] },
+    );
+    return result.records.map((r) => ({
+      tableName:   toStr(r.get('tableName')),
+      displayName: toStr(r.get('displayName')),
+      columnNames: (r.get('columnNames') as string[]) ?? [],
+    }));
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * 2-hop subgraph — fetches full context for tables in the neighbourhood of
+ * the given seed tables. Returns the same shape as buildSemanticContextForQuery.
+ */
+export async function buildRelevantSubgraph(
+  connectionId: number,
+  seedTableNames: string[],
+  domains?: string[],
+): Promise<SemanticQueryContext> {
+  const session = getSession();
+  try {
+    const domainFilter = domains && domains.length > 0
+      ? 'AND ANY(d IN n.domains WHERE d IN $domains)'
+      : '';
+    // Find seed tables + their 2-hop RELATES_TO neighbours
+    const neighborResult = await session.run(
+      `MATCH (seed:SourceTable {connectionId: $cid, isActive: true})
+       WHERE seed.tableName IN $seeds
+       MATCH (seed)-[:RELATES_TO*0..2]-(n:SourceTable {connectionId: $cid, isActive: true})
+       WHERE true ${domainFilter}
+       RETURN DISTINCT n.tableName AS tableName`,
+      { cid: connectionId, seeds: seedTableNames, domains: domains ?? [] },
+    );
+    const neighborNames = neighborResult.records.map((r) => toStr(r.get('tableName')));
+    if (!neighborNames.length) return { tables: [], columns: [], kpis: [], relationships: [] };
+
+    // Fetch full context for the neighbourhood only
+    const tableResult = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+       WHERE t.tableName IN $names
+       RETURN t ORDER BY t.tableName`,
+      { cid: connectionId, names: neighborNames },
+    );
+    const tables = tableResult.records.map((r) =>
+      mapTable(r.get('t').properties as Record<string, unknown>),
+    );
+
+    const colResult = await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+       WHERE t.tableName IN $names
+       RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
+       ORDER BY t.tableName, c.columnName`,
+      { cid: connectionId, names: neighborNames },
+    );
+    const columns = colResult.records.map((r) => {
+      const cp = { ...r.get('c').properties as Record<string, unknown> };
+      cp.tableName = r.get('tableName');
+      cp.tablePgId = r.get('tablePgId');
+      return mapColumn(cp);
+    });
+
+    const relResult = await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+       WHERE ft.tableName IN $names AND tt.tableName IN $names
+       RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
+      { cid: connectionId, names: neighborNames },
+    );
+    const relationships = relResult.records.map((rec) => {
+      const p = rec.get('r').properties as Record<string, unknown>;
+      return {
+        from_table:        toStr(rec.get('fromTable')),
+        from_column:       toStr(p.fromColName),
+        to_table:          toStr(rec.get('toTable')),
+        to_column:         toStr(p.toColName),
+        relationship_type: toStr(p.relType),
+        description:       toStr(p.description),
+      };
+    });
+
+    const kpiResult = await session.run(
+      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
+      { cid: connectionId },
+    );
+    const kpis = kpiResult.records.map((r) =>
+      mapKpi(r.get('k').properties as Record<string, unknown>),
+    );
+
+    return { tables, columns, kpis, relationships };
+  } finally {
+    await session.close();
+  }
+}
+
 export async function buildSemanticContextForQuery(
   connectionId: number,
   domains?: string[],
@@ -757,6 +875,69 @@ export async function buildSemanticContextForQuery(
     );
 
     return { tables, columns, kpis, relationships };
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-hop JOIN path discovery
+// ---------------------------------------------------------------------------
+
+export interface JoinPathStep {
+  from_table: string;
+  from_column: string;
+  to_table: string;
+  to_column: string;
+  relationship_type: string;
+}
+
+/**
+ * For each pair of tables in `tableNames`, find the shortest path through
+ * RELATES_TO edges. Returns paths with 2+ hops (direct relationships are
+ * already in the standard relationship context).
+ */
+export async function getJoinPaths(
+  connectionId: number,
+  tableNames: string[],
+): Promise<{ from: string; to: string; steps: JoinPathStep[] }[]> {
+  if (tableNames.length < 2) return [];
+  const session = getSession();
+  const paths: { from: string; to: string; steps: JoinPathStep[] }[] = [];
+  try {
+    // Check each pair once
+    for (let i = 0; i < tableNames.length; i++) {
+      for (let j = i + 1; j < tableNames.length; j++) {
+        const result = await session.run(
+          `MATCH path = shortestPath(
+             (a:SourceTable {connectionId: $cid, tableName: $from})
+             -[:RELATES_TO*..4]-
+             (b:SourceTable {connectionId: $cid, tableName: $to})
+           )
+           WHERE length(path) >= 2
+           RETURN [n IN nodes(path) | n.tableName] AS nodeNames,
+                  [r IN relationships(path) | {
+                    fromTable: startNode(r).tableName,
+                    fromCol:   r.fromColName,
+                    toTable:   endNode(r).tableName,
+                    toCol:     r.toColName,
+                    relType:   r.relType
+                  }] AS steps`,
+          { cid: connectionId, from: tableNames[i], to: tableNames[j] },
+        );
+        for (const rec of result.records) {
+          const steps = (rec.get('steps') as Record<string, unknown>[]).map((s) => ({
+            from_table:        toStr(s.fromTable),
+            from_column:       toStr(s.fromCol),
+            to_table:          toStr(s.toTable),
+            to_column:         toStr(s.toCol),
+            relationship_type: toStr(s.relType),
+          }));
+          paths.push({ from: tableNames[i], to: tableNames[j], steps });
+        }
+      }
+    }
+    return paths;
   } finally {
     await session.close();
   }
@@ -1261,6 +1442,7 @@ export interface UpsertTableInput {
   tableName: string;
   displayName: string;
   description: string | null;
+  grain?: string | null;
 }
 
 export interface UpsertColumnInput {
@@ -1304,6 +1486,7 @@ export async function upsertConnectionGraph(
            tbl.pgId         = $pgId,
            tbl.displayName  = $displayName,
            tbl.description  = $description,
+           tbl.grain        = $grain,
            tbl.isActive     = true,
            tbl.aiDraft      = true,
            tbl.domains      = [],
@@ -1312,8 +1495,9 @@ export async function upsertConnectionGraph(
          ON MATCH SET
            tbl.displayName  = $displayName,
            tbl.description  = $description,
+           tbl.grain        = $grain,
            tbl.updatedAt    = $now`,
-        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, now },
+        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, now },
       );
     }
 

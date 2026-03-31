@@ -4,8 +4,8 @@ import Database from 'better-sqlite3';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { buildSemanticContextForQuery, getDimensionColumns } from '../db/semanticGraph';
-import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn } from '../ai/AIService';
+import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
+import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion } from '../ai/AIService';
 import {
   REPAIR_SYSTEM,
   buildRepairContext,
@@ -25,6 +25,87 @@ function sanitizeAlias(name: string): string {
     .replace(/_(sqlite|db)$/, '') || 'db');
 }
 
+// Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
+import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
+
+function shouldBlockQuery(r: NlToSqlOutput): { blocked: boolean; reason: string } {
+  if (r.confidence < 0.7)
+    return { blocked: true, reason: `Low overall confidence (${r.confidence})` };
+  if (r.schema_confidence < 0.5)
+    return { blocked: true, reason: `Low schema confidence (${r.schema_confidence}) — unsure which tables/columns to use` };
+  if (r.join_confidence < 0.5)
+    return { blocked: true, reason: `Low join confidence (${r.join_confidence}) — unsure how tables connect` };
+  if (r.formula_confidence < 0.5)
+    return { blocked: true, reason: `Low formula confidence (${r.formula_confidence}) — unsure about the aggregation/KPI formula` };
+  return { blocked: false, reason: '' };
+}
+
+function buildGapDescription(question: string, r: NlToSqlOutput): string {
+  const parts = [
+    `confidence=${r.confidence}`,
+    `schema=${r.schema_confidence}`,
+    `join=${r.join_confidence}`,
+    `formula=${r.formula_confidence}`,
+  ];
+  const notes = r.uncertainty_notes.length ? ` | Notes: ${r.uncertainty_notes.join('; ')}` : '';
+  return `Blocked (${parts.join(', ')}) for question: "${question}"${notes}`;
+}
+
+function blockedUserMessage(r: NlToSqlOutput): string {
+  if (r.uncertainty_notes.length > 0) {
+    return `I'm not confident enough to answer: ${r.uncertainty_notes[0]}. This question has been noted for review.`;
+  }
+  return "I don't have enough context to answer that confidently yet. This question has been noted for review.";
+}
+
+// Detect columns that share the same name across 2+ tables in scope.
+// Returns a disambiguation warning to append to the semantic context.
+function buildColumnDisambiguationWarning(
+  columns: { table_name?: string; table_id: number; column_name: string; description?: string }[],
+  tables: { id: number; table_name: string }[],
+): string {
+  const tableMap = new Map(tables.map((t) => [t.id, t.table_name]));
+  const colByName = new Map<string, string[]>();
+  for (const c of columns) {
+    const tName = c.table_name ?? tableMap.get(c.table_id) ?? '?';
+    const key = c.column_name.toLowerCase();
+    if (!colByName.has(key)) colByName.set(key, []);
+    colByName.get(key)!.push(`${tName}.${c.column_name}${c.description ? ` (${c.description})` : ''}`);
+  }
+  const ambiguous = [...colByName.entries()].filter(([, refs]) => refs.length >= 2);
+  if (!ambiguous.length) return '';
+  const lines = ambiguous.map(([name, refs]) =>
+    `  "${name}" exists in: ${refs.join(', ')}`,
+  );
+  return `\n--- COLUMN DISAMBIGUATION WARNING ---\nThe following column names appear in multiple tables. Be explicit about which table you use:\n${lines.join('\n')}`;
+}
+
+// Dedup-or-increment gap: if a similar unresolved gap exists (keyword overlap),
+// bump its hit_count instead of creating a duplicate.
+async function upsertDefinitionGap(queryLogId: number, description: string, question: string): Promise<void> {
+  const words = question.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  if (words.length > 0) {
+    const existing = await semanticDb('definition_gaps').where({ resolved: false });
+    for (const gap of existing) {
+      const gapWords = (gap.gap_description as string).toLowerCase();
+      const overlap = words.filter((w) => gapWords.includes(w));
+      if (overlap.length >= 2) {
+        await semanticDb('definition_gaps').where({ id: gap.id }).update({
+          hit_count: semanticDb.raw('hit_count + 1'),
+          last_hit_at: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+  }
+  await semanticDb('definition_gaps').insert({
+    query_log_id: queryLogId,
+    gap_description: description,
+    hit_count: 1,
+    last_hit_at: new Date().toISOString(),
+  });
+}
+
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -35,19 +116,48 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    // 1. Build semantic context from Neo4j — single traversal replaces 4 Postgres queries.
-    //    Domain filter is applied inside Neo4j; columns carry quality stats from latest profiling run.
-    const { tables, columns, kpis, relationships } = await buildSemanticContextForQuery(connectionId, domains);
+    // 1. Build semantic context — use semantic retrieval when possible.
+    //    First extract entities from the question, then fetch only the relevant
+    //    2-hop subgraph from Neo4j. Falls back to full context if no entities match.
+    const catalog = await getTableAndColumnNames(connectionId, domains);
+    const entityMatches = extractEntitiesFromQuestion(question, catalog);
+
+    let contextSource: 'subgraph' | 'kpi_fallback' | 'full';
+    let seedTables = entityMatches;
+
+    if (seedTables.length === 0) {
+      // Fallback: extract table names referenced in KPI formulas
+      const allKpis = (await buildSemanticContextForQuery(connectionId, domains)).kpis as { formula_sql?: string }[];
+      const kpiTableRefs = new Set<string>();
+      for (const k of allKpis) {
+        if (k.formula_sql) {
+          for (const entry of catalog) {
+            if (k.formula_sql.toLowerCase().includes(entry.tableName.toLowerCase())) {
+              kpiTableRefs.add(entry.tableName);
+            }
+          }
+        }
+      }
+      seedTables = [...kpiTableRefs];
+      contextSource = seedTables.length > 0 ? 'kpi_fallback' : 'full';
+    } else {
+      contextSource = 'subgraph';
+    }
+
+    const { tables, columns, kpis, relationships } = contextSource === 'full'
+      ? await buildSemanticContextForQuery(connectionId, domains)
+      : await buildRelevantSubgraph(connectionId, seedTables, domains);
 
     // Format semantic context — table + column definitions
-    const semanticContext = (tables as { id: number; table_name: string; description: string }[]).map((t) => {
+    const semanticContext = (tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
       const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
         .filter((c) => c.table_id === t.id)
         .map((c) =>
           `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
         )
         .join('\n');
-      return `Table: ${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+      const grainNote = t.grain ? ` (grain: ${t.grain})` : '';
+      return `Table: ${t.table_name}${grainNote} — ${t.description ?? ''}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
     // Format relationship context — JOIN guidance
@@ -65,6 +175,22 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           .map((k) => `${k.name}:\n  Business definition: ${k.formula_plain_text ?? k.name}\n  SQL formula: ${k.formula_sql ?? '(not yet defined)'}`)
           .join('\n\n')
       : 'No KPIs defined yet.';
+
+    // 2a-join-paths. Discover multi-hop join paths (2+ hops) via Neo4j shortestPath.
+    //   Direct relationships are already in relationshipContext; this adds explicit
+    //   chains for 3+ table queries so Claude doesn't have to infer them.
+    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+    const joinPaths = await getJoinPaths(connectionId, tableNames);
+    let relationshipContextWithPaths = relationshipContext;
+    if (joinPaths.length > 0) {
+      const pathLines = joinPaths.map((p) => {
+        const chain = p.steps
+          .map((s) => `${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column} (${s.relationship_type})`)
+          .join(' → ');
+        return `  ${p.from} ↔ ${p.to}: ${chain}`;
+      });
+      relationshipContextWithPaths += `\n\nRecommended JOIN paths (multi-hop):\n${pathLines.join('\n')}`;
+    }
 
     // 2a-quality. Build quality context — fetch latest profile + field stats + failing rules
     //   for every active table in scope.  Appended to semanticContext so Claude can:
@@ -163,10 +289,16 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       return body.length ? `${header}\n${body.join('\n')}` : null;
     }).filter(Boolean).join('\n\n');
 
+    // Append column disambiguation warning
+    const colDisambig = buildColumnDisambiguationWarning(
+      columns as { table_name?: string; table_id: number; column_name: string; description?: string }[],
+      tables as { id: number; table_name: string }[],
+    );
+
     // Append quality hints to semantic context when available
     const semanticContextWithQuality = qualityHints
-      ? `${semanticContext}\n\n--- Data Quality Hints ---\n${qualityHints}`
-      : semanticContext;
+      ? `${semanticContext}${colDisambig}\n\n--- Data Quality Hints ---\n${qualityHints}`
+      : `${semanticContext}${colDisambig}`;
 
     // 2b. Integration enrichment — automatically include cross-source context
     //     if any integration views involve this connection's tables.
@@ -188,7 +320,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     let crossConnAliasMap: Map<number, { alias: string; filepath: string }> | null = null;
     let enrichedSemanticContext  = semanticContextWithQuality;
-    let enrichedRelationshipContext = relationshipContext;
+    let enrichedRelationshipContext = relationshipContextWithPaths;
     let isCrossSourceQuery = false;
 
     if (tableIds.length) {
@@ -320,6 +452,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas);
 
     // 3. Log the query regardless of outcome
+    const blockCheck = shouldBlockQuery(nlResult);
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const [logRow] = await semanticDb('query_log')
       .insert({
@@ -327,24 +460,27 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         question_text:    question,
         generated_sql:    nlResult.sql,
         confidence_score: nlResult.confidence,
-        was_flagged:      nlResult.confidence < 0.7,
-        flag_reason:      nlResult.confidence < 0.7 ? 'Low confidence score' : null,
+        was_flagged:      blockCheck.blocked,
+        flag_reason:      blockCheck.blocked ? blockCheck.reason : null,
       })
       .returning('id');
     const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
-    // 4. Block low-confidence queries
-    if (nlResult.confidence < 0.7) {
-      await semanticDb('definition_gaps').insert({
-        query_log_id:    queryLogId,
-        gap_description: `Low confidence (${nlResult.confidence}) for question: "${question}"`,
-      });
+    // 4. Block low-confidence queries (overall < 0.7 OR any sub-score < 0.5)
+    if (blockCheck.blocked) {
+      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
 
       res.json({
         ok: true,
         data: {
-          answer: "I don't have enough context to answer that confidently yet. This question has been noted for review.",
+          answer: blockedUserMessage(nlResult),
           confidence: nlResult.confidence,
+          subScores: {
+            schema: nlResult.schema_confidence,
+            join: nlResult.join_confidence,
+            formula: nlResult.formula_confidence,
+          },
+          uncertaintyNotes: nlResult.uncertainty_notes,
           blocked: true,
           sql:        nlResult.sql,
           tablesUsed: nlResult.tables_used,
@@ -357,7 +493,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
               ? 'No table definitions found at all. Run the schema profiler first (Setup page).'
               : relationships.length === 0
                 ? 'No relationships found. Re-suggest on the Definitions → Relationships tab.'
-                : `Context has ${tables.length} tables and ${relationships.length} relationships — Claude returned low confidence. Try improving descriptions or rephrasing.`,
+                : `Context has ${tables.length} tables and ${relationships.length} relationships — ${blockCheck.reason}. Try improving descriptions or rephrasing.`,
             semanticContext,
             relationshipContext,
             kpiFormulas,
@@ -535,6 +671,12 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       data: {
         answer,
         confidence:  nlResult.confidence,
+        subScores: {
+          schema: nlResult.schema_confidence,
+          join: nlResult.join_confidence,
+          formula: nlResult.formula_confidence,
+        },
+        uncertaintyNotes: nlResult.uncertainty_notes,
         blocked:     false,
         crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
@@ -587,17 +729,37 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       res.end(); return;
     }
 
-    // ── 1. Semantic context from Neo4j ─────────────────────────────────────
+    // ── 1. Semantic context — semantic retrieval with fallback ──────────────
     emit({ type: 'phase', text: 'Loading context…' });
-    const { tables, columns, kpis, relationships } = await buildSemanticContextForQuery(connectionId, domains);
+    const thinkCatalog = await getTableAndColumnNames(connectionId, domains);
+    const thinkEntityMatches = extractEntitiesFromQuestion(question, thinkCatalog);
 
-    const semanticContext = (tables as { id: number; table_name: string; description: string }[]).map((t) => {
+    let thinkSeeds = thinkEntityMatches;
+    if (thinkSeeds.length === 0) {
+      const allKpis = (await buildSemanticContextForQuery(connectionId, domains)).kpis as { formula_sql?: string }[];
+      const kpiRefs = new Set<string>();
+      for (const k of allKpis) {
+        if (k.formula_sql) {
+          for (const entry of thinkCatalog) {
+            if (k.formula_sql.toLowerCase().includes(entry.tableName.toLowerCase())) kpiRefs.add(entry.tableName);
+          }
+        }
+      }
+      thinkSeeds = [...kpiRefs];
+    }
+
+    const { tables, columns, kpis, relationships } = thinkSeeds.length > 0
+      ? await buildRelevantSubgraph(connectionId, thinkSeeds, domains)
+      : await buildSemanticContextForQuery(connectionId, domains);
+
+    const semanticContext = (tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
       const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
         .filter((c) => c.table_id === t.id)
         .map((c) =>
           `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
         ).join('\n');
-      return `Table: ${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+      const grainNote = t.grain ? ` (grain: ${t.grain})` : '';
+      return `Table: ${t.table_name}${grainNote} — ${t.description ?? ''}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
     const relationshipContext = relationships.length
@@ -615,8 +777,21 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
           .join('\n\n')
       : 'No KPIs defined yet.';
 
-    // ── 2. Quality hints ────────────────────────────────────────────────────
+    // ── 2a. Multi-hop join paths ─────────────────────────────────────────────
     const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+    const thinkJoinPaths = await getJoinPaths(connectionId, tableNames);
+    let thinkRelCtx = relationshipContext;
+    if (thinkJoinPaths.length > 0) {
+      const pathLines = thinkJoinPaths.map((p) => {
+        const chain = p.steps
+          .map((s) => `${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column} (${s.relationship_type})`)
+          .join(' → ');
+        return `  ${p.from} ↔ ${p.to}: ${chain}`;
+      });
+      thinkRelCtx += `\n\nRecommended JOIN paths (multi-hop):\n${pathLines.join('\n')}`;
+    }
+
+    // ── 2b. Quality hints ────────────────────────────────────────────────────
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
       ? await semanticDb('dataset_profiles')
           .where({ connection_id: connectionId })
@@ -648,42 +823,47 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         : null;
     }).filter(Boolean).join('\n\n');
 
+    const thinkColDisambig = buildColumnDisambiguationWarning(
+      columns as { table_name?: string; table_id: number; column_name: string; description?: string }[],
+      tables as { id: number; table_name: string }[],
+    );
     const fullContext = qualityHints
-      ? `${semanticContext}\n\n--- Data Quality Hints ---\n${qualityHints}`
-      : semanticContext;
+      ? `${semanticContext}${thinkColDisambig}\n\n--- Data Quality Hints ---\n${qualityHints}`
+      : `${semanticContext}${thinkColDisambig}`;
 
     // ── 3. Stream SQL generation with extended thinking ─────────────────────
     emit({ type: 'phase', text: 'Reasoning about your question…' });
 
     const nlResult = await generateSqlStreaming(
-      question, fullContext, relationshipContext, kpiFormulas,
+      question, fullContext, thinkRelCtx, kpiFormulas,
       (type, delta) => emit({ type, text: delta }),
     );
 
     emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 
     // ── 4. Log ──────────────────────────────────────────────────────────────
+    const thinkBlockCheck = shouldBlockQuery(nlResult);
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const [logRow] = await semanticDb('query_log').insert({
       user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
       question_text:    question,
       generated_sql:    nlResult.sql,
       confidence_score: nlResult.confidence,
-      was_flagged:      nlResult.confidence < 0.7,
-      flag_reason:      nlResult.confidence < 0.7 ? 'Low confidence score' : null,
+      was_flagged:      thinkBlockCheck.blocked,
+      flag_reason:      thinkBlockCheck.blocked ? thinkBlockCheck.reason : null,
     }).returning('id');
     const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
-    // ── 5. Block low-confidence ─────────────────────────────────────────────
-    if (nlResult.confidence < 0.7) {
-      await semanticDb('definition_gaps').insert({
-        query_log_id:    queryLogId,
-        gap_description: `Low confidence (${nlResult.confidence}) for question: "${question}"`,
-      });
+    // ── 5. Block low-confidence (overall < 0.7 OR any sub-score < 0.5) ────
+    if (thinkBlockCheck.blocked) {
+      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
       emit({ type: 'done', data: {
-        answer: "I don't have enough context to answer that confidently yet. This question has been noted for review.",
-        confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
-        debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: 'Low confidence score', semanticContext, relationshipContext, kpiFormulas },
+        answer: blockedUserMessage(nlResult),
+        confidence: nlResult.confidence,
+        subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+        uncertaintyNotes: nlResult.uncertainty_notes,
+        blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+        debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: thinkBlockCheck.reason, semanticContext, relationshipContext, kpiFormulas },
       }});
       res.end(); return;
     }
@@ -774,7 +954,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
     emit({ type: 'done', data: {
-      answer, confidence: nlResult.confidence, blocked: false, tablesUsed: nlResult.tables_used,
+      answer, confidence: nlResult.confidence,
+      subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+      uncertaintyNotes: nlResult.uncertainty_notes,
+      blocked: false, tablesUsed: nlResult.tables_used,
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       rows: queryResult.rows.slice(0, 200),
       sql: nlResult.sql,
@@ -1109,10 +1292,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
     // 9. Block low-confidence queries
     if (nlResult.confidence < 0.7) {
-      await semanticDb('definition_gaps').insert({
-        query_log_id:    queryLogId,
-        gap_description: `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`,
-      });
+      await upsertDefinitionGap(queryLogId, `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`, question);
       res.json({
         ok: true,
         data: {

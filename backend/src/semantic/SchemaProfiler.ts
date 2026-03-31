@@ -288,6 +288,7 @@ export async function runSchemaProfiler(
         tableName:    t.tableName,
         displayName:  def?.display_name ?? t.tableName,
         description:  def?.description  ?? null,
+        grain:        def?.grain        ?? null,
       };
     }).filter((t) => t.pgId > 0);
 

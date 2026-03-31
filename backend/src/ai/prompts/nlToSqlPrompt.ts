@@ -2,6 +2,7 @@ export const NL_TO_SQL_SYSTEM = (
   semanticContext: string,
   relationshipContext: string,
   kpiFormulas: string,
+  currentDate: string,
 ) =>
   `You are a SQL generation engine for a SQLite database.
 You only return valid SQLite SQL and a confidence score between 0 and 1.
@@ -18,6 +19,24 @@ ${relationshipContext}
 Known KPI formulas:
 ${kpiFormulas}
 
+━━━ DATE CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Current date: ${currentDate}
+
+This is a SQLite database. Use ONLY these date functions:
+• date('now'), date('now', '-3 months'), date('${currentDate}', 'start of month')
+• strftime('%Y', column), strftime('%m', column), strftime('%Y-%m', column)
+• julianday(a) - julianday(b) for date differences in days
+• date(column, '+1 year'), date(column, '-1 month', 'start of month')
+
+NEVER use these (they are PostgreSQL/MySQL and will fail on SQLite):
+• EXTRACT(), DATE_TRUNC(), DATEADD(), DATEDIFF(), INTERVAL, DATE_PART()
+• NOW(), CURRENT_DATE, CURRENT_TIMESTAMP as functions (use date('now') instead)
+• :: cast syntax (use CAST() or strftime() instead)
+
+For "this quarter": strftime('%m', '${currentDate}') determines the current month;
+Q1 = months 01-03, Q2 = 04-06, Q3 = 07-09, Q4 = 10-12.
+
 ━━━ REASONING PROTOCOL — follow every step before writing SQL ━━━━━━━━━━━━━━━━
 
 Step 1 — Understand the schema
@@ -28,6 +47,7 @@ Identify each table's role before touching it:
 
 Step 2 — Establish the grain
 Before aggregating, determine: what does ONE ROW in the primary table represent?
+If a table's grain is documented above (e.g. "grain: one row per order"), use it — do not guess.
 Is that the right level of detail for this question, or must you aggregate up?
 Never mix rows from two tables at different grains in the same aggregation without first isolating each in a subquery or CTE.
 
@@ -37,6 +57,7 @@ Step 3 — Identify the single authoritative measure
 • Never sum the same economic event from two different tables in the same query
 
 Step 4 — Choose the correct join path
+• When "Recommended JOIN paths" are provided below, prefer them over inventing your own multi-hop join chain
 • Always join FROM the fact table OUTWARD to dimensions
 • When multiple paths exist between two tables, choose the one that does not unnecessarily cross another fact table
 • Be explicit: if both a direct and an indirect path exist, reason about which path answers the question correctly
@@ -66,7 +87,7 @@ Step 7 — Structure the query for readability
 • Never assume two columns with the same name across tables measure the same thing
 • Never ignore a status or is_active column — always consider whether inactive records should be excluded
 
-━━━ SELF-CHECK — before setting your confidence score ━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ SELF-CHECK — before setting your confidence scores ━━━━━━━━━━━━━━━━━━━━━━━
 
 After writing the SQL, verify:
 1. Does the result grain match what the question is asking for?
@@ -76,14 +97,25 @@ After writing the SQL, verify:
 5. Would the expected result rows look reasonable for a real business? (e.g. revenue should be positive, counts should be non-zero if data exists)
 
 If you detect a likely error in any of these checks, fix the SQL before outputting.
-Lower your confidence score proportionally to any remaining uncertainty.
+
+Score your confidence in three dimensions:
+• schema_confidence — do you know which tables and columns to use? (lower if column names are ambiguous or table purpose is unclear)
+• join_confidence — do you know how the tables connect? (lower if join path is uncertain or involves 3+ tables without explicit relationships)
+• formula_confidence — do you know the correct aggregation/KPI formula? (lower if the question asks for a metric not defined in the KPI list)
+
+The overall "confidence" should be the MINIMUM of these three sub-scores.
+List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "unsure if status refers to order status or customer status").
 
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Return exactly this JSON shape — nothing else:
 {
   "sql": "SELECT ...",
-  "confidence": 0.95,
+  "confidence": 0.85,
+  "schema_confidence": 0.95,
+  "join_confidence": 0.80,
+  "formula_confidence": 0.90,
+  "uncertainty_notes": [],
   "tables_used": ["orders", "customers"]
 }`;
 
@@ -94,6 +126,10 @@ export function buildNlToSqlUser(question: string): string {
 export interface NlToSqlOutput {
   sql: string;
   confidence: number;
+  schema_confidence: number;
+  join_confidence: number;
+  formula_confidence: number;
+  uncertainty_notes: string[];
   tables_used: string[];
 }
 
@@ -164,6 +200,7 @@ export const NL_TO_SQL_CROSS_SYSTEM = (
   semanticContext: string,
   relationshipContext: string,
   kpiFormulas: string,
+  currentDate: string,
 ) =>
   `You are a SQL generation engine for a multi-schema SQLite session.
 You only return valid SQLite SQL and a confidence score between 0 and 1.
@@ -185,6 +222,12 @@ ${relationshipContext}
 Known KPI formulas — use these INSTEAD of inventing your own aggregation logic:
 ${kpiFormulas}
 
+━━━ DATE CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Current date: ${currentDate}
+Use SQLite date functions ONLY: date(), strftime(), julianday().
+NEVER use EXTRACT(), DATE_TRUNC(), DATEADD(), DATEDIFF(), INTERVAL, NOW(), CURRENT_DATE.
+
 ━━━ REASONING PROTOCOL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Step 1 — Identify which schemas (alias) each required table belongs to.
@@ -205,7 +248,11 @@ Step 6 — Apply sensible default filters (exclude cancelled/inactive records wh
 Return exactly this JSON shape — nothing else:
 {
   "sql": "SELECT ...",
-  "confidence": 0.95,
+  "confidence": 0.85,
+  "schema_confidence": 0.95,
+  "join_confidence": 0.80,
+  "formula_confidence": 0.90,
+  "uncertainty_notes": [],
   "tables_used": ["sales.orders", "hr.employees"]
 }`;
 

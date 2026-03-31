@@ -84,7 +84,7 @@ router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextF
     const rows = await semanticDb('definition_gaps')
       .join('query_log', 'definition_gaps.query_log_id', 'query_log.id')
       .select('definition_gaps.*', 'query_log.question_text')
-      .orderBy('definition_gaps.created_at', 'desc');
+      .orderByRaw('definition_gaps.resolved ASC, definition_gaps.hit_count DESC, definition_gaps.last_hit_at DESC');
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });

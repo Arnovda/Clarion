@@ -125,8 +125,65 @@ export async function generateSchemaDraft(
 }
 
 // ---------------------------------------------------------------------------
+// Entity extraction — keyword-based, no API call
+// Matches question tokens against table/column names and display names.
+// ---------------------------------------------------------------------------
+
+export function extractEntitiesFromQuestion(
+  question: string,
+  catalog: { tableName: string; displayName: string; columnNames: string[] }[],
+): string[] {
+  const q = question.toLowerCase();
+  const tokens = q.split(/\s+/).filter((w) => w.length > 2);
+  const matched = new Set<string>();
+
+  for (const entry of catalog) {
+    const tn = entry.tableName.toLowerCase();
+    const dn = (entry.displayName ?? '').toLowerCase();
+    // Match table name (with underscore→space variants) or display name
+    const tnWords = tn.replace(/_/g, ' ');
+    // Simple singular/plural: if question has "order" match table "orders" and vice versa
+    const tnVariants = [tn, tnWords, tn.replace(/s$/, ''), tn + 's', tnWords.replace(/s$/, ''), tnWords + 's'];
+    const dnVariants = dn ? [dn, dn.replace(/s$/, ''), dn + 's'] : [];
+
+    for (const variant of [...tnVariants, ...dnVariants]) {
+      if (variant && q.includes(variant)) {
+        matched.add(entry.tableName);
+        break;
+      }
+    }
+
+    // Also match column names (less weight — only if token is an exact column name)
+    for (const col of entry.columnNames) {
+      const colLower = col.toLowerCase();
+      const colWords = colLower.replace(/_/g, ' ');
+      if (tokens.includes(colLower) || q.includes(colWords)) {
+        matched.add(entry.tableName);
+        break;
+      }
+    }
+  }
+  return [...matched];
+}
+
+// ---------------------------------------------------------------------------
 // Call Type 2a — Natural Language → SQL + confidence score
 // ---------------------------------------------------------------------------
+
+function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
+  const confidence = parsed.confidence as number;
+  return {
+    sql:                 parsed.sql as string,
+    confidence,
+    schema_confidence:   (parsed.schema_confidence as number)   ?? confidence,
+    join_confidence:     (parsed.join_confidence as number)     ?? confidence,
+    formula_confidence:  (parsed.formula_confidence as number)  ?? confidence,
+    uncertainty_notes:   (parsed.uncertainty_notes as string[]) ?? [],
+    tables_used:         parsed.tables_used as string[],
+  };
+}
+
+const currentDateStr = () => new Date().toISOString().slice(0, 10);
 
 export async function generateSql(
   question: string,
@@ -135,10 +192,10 @@ export async function generateSql(
   kpiFormulas: string,
 ): Promise<NlToSqlOutput> {
   const raw = await callClaude(
-    NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas),
+    NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
     buildNlToSqlUser(question),
   );
-  return parseJson<NlToSqlOutput>(raw);
+  return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -174,10 +231,10 @@ export async function generateCrossSourceSql(
   kpiFormulas: string,
 ): Promise<NlToSqlOutput> {
   const raw = await callClaude(
-    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas),
+    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
     buildNlToSqlCrossUser(question),
   );
-  return parseJson<NlToSqlOutput>(raw);
+  return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +255,7 @@ export async function generateSqlStreaming(
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'enabled', budget_tokens: 8000 },
-    system: NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas),
+    system: NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
     messages: [{ role: 'user', content: buildNlToSqlUser(question) }],
   };
 
@@ -218,7 +275,7 @@ export async function generateSqlStreaming(
     }
   }
 
-  return parseJson<NlToSqlOutput>(fullText);
+  return defaultSubScores(parseJson<Record<string, unknown>>(fullText));
 }
 
 // ---------------------------------------------------------------------------

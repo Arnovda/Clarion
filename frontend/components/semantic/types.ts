@@ -7,6 +7,7 @@ export interface SourceTable {
   ai_draft: boolean;
   is_active: boolean;
   domains?: string[];
+  grain?: string;
 }
 
 export interface SourceColumn {
