@@ -19,17 +19,38 @@ export interface FkCandidate {
   toTable: string;
   toColumn: string;
   /** How was this candidate detected? */
-  source: 'declared' | 'name_pattern' | 'fuzzy_name' | 'value_overlap';
+  source: 'declared' | 'name_pattern' | 'ai_suggested' | 'value_overlap';
   /** 0-1 — how confident the heuristic is */
   confidence: number;
   /** Fraction of fromColumn values found in toColumn (null if not checked) */
   overlapRatio?: number;
 }
 
+/** Row-count info per table, used by fact/dimension classification. */
+export interface TableRowCount {
+  tableName: string;
+  rowCount: number;
+}
+
+/** Classification of a table as fact, dimension, or bridge. */
+export type TableRole = 'fact' | 'dimension' | 'bridge' | 'unknown';
+
+export interface TableClassification {
+  tableName: string;
+  role: TableRole;
+  rowCount: number;
+  /** Columns that look like business keys (PKs, _code, _key, _no, etc.) */
+  businessKeys: string[];
+  /** Columns that look like foreign keys pointing elsewhere */
+  keyColumns: string[];
+}
+
 export interface SchemaResult {
   tables: TableInfo[];
-  /** Pre-detected FK candidates from heuristics (PRAGMA, name patterns, value overlap) */
+  /** Pre-detected FK candidates from heuristics */
   fkCandidates?: FkCandidate[];
+  /** Fact/dimension classification for each table */
+  tableClassifications?: TableClassification[];
 }
 
 export interface QueryResult {
@@ -38,7 +59,7 @@ export interface QueryResult {
 }
 
 // ---------------------------------------------------------------------------
-// Common abbreviation map for fuzzy column-name matching.
+// Common abbreviation map for name-pattern matching.
 // Maps short form → canonical long form.
 // ---------------------------------------------------------------------------
 const ABBREVIATIONS: Record<string, string> = {
@@ -76,31 +97,15 @@ const ABBREVIATIONS: Record<string, string> = {
   ven: 'vendor', vnd: 'vendor',
 };
 
-/** Expand abbreviations and normalise a column name into canonical tokens. */
-function canonicalTokens(colName: string): string[] {
-  const raw = colName.toLowerCase().split(/[_\s]+/).filter(Boolean);
-  return raw.map((t) => ABBREVIATIONS[t] ?? t);
-}
-
-/**
- * Compute token-level similarity between two column names.
- * Returns 0-1: 1 = all tokens match, 0 = nothing in common.
- */
-function tokenSimilarity(a: string[], b: string[]): number {
-  if (a.length === 0 || b.length === 0) return 0;
-  const setA = new Set(a);
-  const setB = new Set(b);
-  let shared = 0;
-  for (const t of setA) if (setB.has(t)) shared++;
-  return shared / Math.max(setA.size, setB.size);
-}
-
-/** Columns to always skip during fuzzy matching — too generic to be meaningful. */
-const SKIP_COLUMNS = new Set([
-  'id', 'created_at', 'updated_at', 'deleted_at', 'is_active',
+// Columns that are never business keys — skip entirely
+const MEASURE_PATTERNS = /^(amount|total|price|cost|qty|quantity|sum|count|avg|balance|weight|rate|pct|percentage|margin|tax|discount|subtotal|grand_total|net|gross|debit|credit)/i;
+const META_COLUMNS = new Set([
+  'id', 'created_at', 'updated_at', 'deleted_at', 'is_active', 'is_deleted',
   'created_by', 'updated_by', 'modified_at', 'modified_by',
-  'row_version', 'version',
+  'row_version', 'version', 'notes', 'remarks', 'comment', 'comments',
+  'description',
 ]);
+const KEY_SUFFIXES = ['_id', '_code', '_key', '_ref', '_no', '_num', '_number', '_nr'];
 
 export abstract class BaseConnector {
   abstract connect(): Promise<void>;
@@ -112,26 +117,111 @@ export abstract class BaseConnector {
   /**
    * Override in subclass to return FKs declared in the database schema
    * (e.g. PRAGMA for SQLite, information_schema for PostgreSQL/MySQL).
-   * Default returns empty — subclasses add engine-specific logic.
    */
   async introspectDeclaredFks(_tables: TableInfo[]): Promise<FkCandidate[]> {
     return [];
   }
 
   // ---------------------------------------------------------------------------
-  // Engine-agnostic FK detection layers
-  // These work on any SQL database — they use executeQuery() internally.
+  // Table classification: fact vs dimension
+  // ---------------------------------------------------------------------------
+
+  async classifyTables(tables: TableInfo[]): Promise<TableClassification[]> {
+    // Get row counts
+    const rowCounts = new Map<string, number>();
+    for (const t of tables) {
+      try {
+        const result = await this.executeQuery(`SELECT COUNT(*) as cnt FROM "${t.tableName}"`);
+        rowCounts.set(t.tableName, (result.rows[0] as { cnt: number }).cnt);
+      } catch {
+        rowCounts.set(t.tableName, 0);
+      }
+    }
+
+    const medianRowCount = [...rowCounts.values()].sort((a, b) => a - b)[Math.floor(rowCounts.size / 2)] || 0;
+
+    return tables.map((t) => {
+      const rc = rowCounts.get(t.tableName) ?? 0;
+      const cols = t.columns.map((c) => c.name.toLowerCase());
+
+      // Identify key-looking columns (potential FKs outward)
+      const keyColumns: string[] = [];
+      // Identify business key columns (what other tables might point TO)
+      const businessKeys: string[] = [];
+
+      const tnLower = t.tableName.toLowerCase();
+      const tnStem = tnLower.replace(/s$/, ''); // "verkooporders" → "verkooporder"
+
+      for (const col of t.columns) {
+        const cn = col.name.toLowerCase();
+        if (META_COLUMNS.has(cn)) continue;
+        if (MEASURE_PATTERNS.test(cn)) continue;
+
+        const isKeySuffix = KEY_SUFFIXES.some((s) => cn.endsWith(s));
+
+        if (isKeySuffix) {
+          // Check if this key column belongs to THIS table (= business key)
+          // or points to ANOTHER table (= FK outward)
+          const colStem = cn.replace(/_(id|code|key|ref|no|num|number|nr)$/, '');
+          const belongsToThisTable =
+            cn === 'id' || cn === `${tnLower}_id` || cn === `${tnStem}_id` ||
+            colStem === tnLower || colStem === tnStem;
+
+          if (belongsToThisTable) {
+            businessKeys.push(col.name);
+          } else {
+            keyColumns.push(col.name); // FK pointing outward
+          }
+        }
+      }
+
+      // Also add short generic key columns as business keys (for dimensions)
+      for (const col of t.columns) {
+        const cn = col.name.toLowerCase();
+        if (['code', 'name', 'naam', 'nummer', 'key', 'ref'].includes(cn) && !businessKeys.includes(col.name)) {
+          businessKeys.push(col.name);
+        }
+      }
+
+      // Classification heuristics
+      const fkCount = keyColumns.length;
+      const hasDateCols = cols.some((c) => c.includes('date') || c.includes('datum') || c.includes('_dt'));
+      const hasMeasures = t.columns.some((c) => MEASURE_PATTERNS.test(c.name.toLowerCase()));
+      const hasDescriptive = cols.some((c) => c === 'name' || c === 'description' || c === 'label' || c === 'naam' || c === 'omschrijving');
+
+      let role: TableRole = 'unknown';
+      if (fkCount >= 2 && (hasDateCols || hasMeasures) && rc > medianRowCount * 0.5) {
+        role = 'fact';
+      } else if (hasDescriptive && rc <= medianRowCount * 2 && fkCount <= 2) {
+        role = 'dimension';
+      } else if (fkCount >= 2 && !hasDateCols && !hasMeasures && rc <= medianRowCount) {
+        role = 'bridge'; // junction/bridge table
+      } else if (rc > medianRowCount && fkCount >= 1) {
+        role = 'fact';
+      } else if (rc <= medianRowCount) {
+        role = 'dimension';
+      }
+
+      console.log(`[FK] classify: ${t.tableName} → ${role} (${rc} rows, ${fkCount} key cols, ${businessKeys.length} biz keys)`);
+      return { tableName: t.tableName, role, rowCount: rc, businessKeys, keyColumns };
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // FK detection pipeline
   // ---------------------------------------------------------------------------
 
   /**
    * Run all FK detection layers:
    *   1. Declared FKs (engine-specific)
-   *   2. Strict name-pattern (_id suffix → matching table)
-   *   3. Fuzzy name matching (abbreviations, shared tokens, same-name columns)
-   *   4. Value overlap verification (runs JOINs against actual data)
-   *   5. Value overlap discovery (integer columns vs PKs)
+   *   2. Name-pattern matching (_id/_code/_key suffix → matching table)
+   *   3. Value overlap verification (runs JOINs against actual data)
+   *   4. Value overlap discovery (integer columns in facts → dimension PKs)
+   *
+   * Layer 3 (old fuzzy brute-force) is removed.
+   * AI-assisted matching is handled separately by SchemaProfiler.
    */
-  async detectForeignKeys(tables: TableInfo[]): Promise<FkCandidate[]> {
+  async detectForeignKeys(tables: TableInfo[]): Promise<{ candidates: FkCandidate[]; classifications: TableClassification[] }> {
     const candidates: FkCandidate[] = [];
     const seen = new Set<string>();
     const tableNamesLower = new Set(tables.map((t) => t.tableName.toLowerCase()));
@@ -141,22 +231,38 @@ export abstract class BaseConnector {
       if (!seen.has(key)) { seen.add(key); candidates.push(c); }
     };
 
+    // ── Classify tables ─────────────────────────────────────────────────────
+    const classifications = await this.classifyTables(tables);
+    const classMap = new Map(classifications.map((c) => [c.tableName, c]));
+
     // ── Layer 1: Engine-specific declared FKs ────────────────────────────────
+    console.log(`[FK] Layer 1: checking declared FKs for ${tables.length} tables…`);
     try {
       const declared = await this.introspectDeclaredFks(tables);
       for (const fk of declared) addCandidate(fk);
+      console.log(`[FK] Layer 1: ${declared.length} declared FK(s)${declared.length ? ': ' + declared.map(f => `${f.fromTable}.${f.fromColumn}→${f.toTable}.${f.toColumn}`).join(', ') : ''}`);
     } catch (err) {
-      console.warn('[FK detection] declared FK introspection failed:', err);
+      console.warn('[FK] Layer 1 failed:', err);
     }
 
-    // ── Layer 2: Strict name-pattern (_id suffix → matching table) ──────────
+    // ── Layer 2: Name-pattern matching ───────────────────────────────────────
+    // Matches _id, _code, _key, _ref, _no, _num suffixes to table names
+    const preLayer2 = candidates.length;
     for (const table of tables) {
       for (const col of table.columns) {
         const colLower = col.name.toLowerCase();
-        if (!colLower.endsWith('_id') || colLower === 'id') continue;
 
-        const stem = colLower.replace(/_id$/, '');
-        // Also expand abbreviations: cust_id → customer → customers
+        // Check all key suffixes, not just _id
+        let stem: string | null = null;
+        for (const suffix of KEY_SUFFIXES) {
+          if (colLower.endsWith(suffix) && colLower !== 'id') {
+            stem = colLower.slice(0, -suffix.length);
+            break;
+          }
+        }
+        if (!stem) continue;
+
+        // Expand abbreviations: cust → customer, prod → product
         const expandedStem = ABBREVIATIONS[stem] ?? stem;
         const allStems = stem === expandedStem ? [stem] : [stem, expandedStem];
 
@@ -172,10 +278,17 @@ export abstract class BaseConnector {
           if (!tableNamesLower.has(variant)) continue;
 
           const targetTable = tables.find((t) => t.tableName.toLowerCase() === variant)!;
-          const targetPk = targetTable.columns.find(
-            (c) => c.name.toLowerCase() === 'id' ||
-                   c.name.toLowerCase() === `${targetTable.tableName.toLowerCase()}_id`,
-          );
+          // Look for the target column — strict priority order:
+          //   1. 'id' (surrogate PK — most common FK target)
+          //   2. '{tablename}_id' (natural PK convention)
+          //   3. Business keys from classification (fallback)
+          const targetClass = classMap.get(targetTable.tableName);
+          const targetPk =
+            targetTable.columns.find((c) => c.name.toLowerCase() === 'id') ??
+            targetTable.columns.find((c) => c.name.toLowerCase() === `${targetTable.tableName.toLowerCase()}_id`) ??
+            targetTable.columns.find((c) =>
+              (targetClass?.businessKeys ?? []).map(k => k.toLowerCase()).includes(c.name.toLowerCase()),
+            );
           if (!targetPk) continue;
 
           addCandidate({
@@ -186,191 +299,135 @@ export abstract class BaseConnector {
         }
       }
     }
+    const layer2Added = candidates.length - preLayer2;
+    console.log(`[FK] Layer 2: ${layer2Added} name-pattern match(es)${layer2Added ? ': ' + candidates.slice(preLayer2).map(c => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}`).join(', ') : ''}`);
 
-    // ── Layer 3: Fuzzy name matching ─────────────────────────────────────────
-    // Generates candidates that Layer 4 will verify with actual data.
-    //
-    // Strategy A: Same column name in different tables
-    //   e.g. customers.email ↔ orders.email → natural join key
-    //
-    // Strategy B: Fuzzy token match after abbreviation expansion
-    //   e.g. orders.cust_no ↔ customers.customer_number
-    //        (tokens: [customer, number] vs [customer, number] → similarity 1.0)
-    //
-    // Strategy C: Table-name prefix stripping
-    //   e.g. orders.product_code ↔ products.code
-    //        (strip "product_" prefix on orders column → "code" matches products.code)
-
-    // Build a lookup: canonical tokens → [{ table, column, tokens }]
-    type ColRef = { table: TableInfo; col: ColumnInfo; tokens: string[] };
-    const allCols: ColRef[] = [];
-    for (const table of tables) {
-      for (const col of table.columns) {
-        if (SKIP_COLUMNS.has(col.name.toLowerCase())) continue;
-        allCols.push({ table, col, tokens: canonicalTokens(col.name) });
-      }
-    }
-
-    // Strategy A: Exact same column name across different tables
-    const colNameToRefs = new Map<string, ColRef[]>();
-    for (const ref of allCols) {
-      const key = ref.col.name.toLowerCase();
-      if (!colNameToRefs.has(key)) colNameToRefs.set(key, []);
-      colNameToRefs.get(key)!.push(ref);
-    }
-    for (const [colName, refs] of colNameToRefs) {
-      if (refs.length < 2) continue;
-      if (colName.endsWith('_id')) continue; // already handled by Layer 2
-      // Only consider columns with moderate cardinality (not booleans, not pure PKs)
-      // — verification in Layer 4 will confirm
-      for (let i = 0; i < refs.length; i++) {
-        for (let j = i + 1; j < refs.length; j++) {
-          const a = refs[i], b = refs[j];
-          if (a.table.tableName === b.table.tableName) continue;
-          // Add both directions — Layer 4 will verify which direction has containment
-          addCandidate({
-            fromTable: a.table.tableName, fromColumn: a.col.name,
-            toTable: b.table.tableName, toColumn: b.col.name,
-            source: 'fuzzy_name', confidence: 0.5, // low until verified
-          });
-          addCandidate({
-            fromTable: b.table.tableName, fromColumn: b.col.name,
-            toTable: a.table.tableName, toColumn: a.col.name,
-            source: 'fuzzy_name', confidence: 0.5,
-          });
-        }
-      }
-    }
-
-    // Strategy B: Token similarity after abbreviation expansion
-    for (let i = 0; i < allCols.length; i++) {
-      for (let j = i + 1; j < allCols.length; j++) {
-        const a = allCols[i], b = allCols[j];
-        if (a.table.tableName === b.table.tableName) continue;
-        if (a.tokens.length < 2 || b.tokens.length < 2) continue; // single-token = too vague
-
-        const sim = tokenSimilarity(a.tokens, b.tokens);
-        if (sim < 0.6) continue; // need at least 60% token overlap
-
-        // Skip if exact same name (already handled in Strategy A)
-        if (a.col.name.toLowerCase() === b.col.name.toLowerCase()) continue;
-
-        addCandidate({
-          fromTable: a.table.tableName, fromColumn: a.col.name,
-          toTable: b.table.tableName, toColumn: b.col.name,
-          source: 'fuzzy_name', confidence: 0.4 + sim * 0.3, // 0.4–0.7 range
-        });
-        addCandidate({
-          fromTable: b.table.tableName, fromColumn: b.col.name,
-          toTable: a.table.tableName, toColumn: a.col.name,
-          source: 'fuzzy_name', confidence: 0.4 + sim * 0.3,
-        });
-      }
-    }
-
-    // Strategy C: Table-name prefix stripping
-    // If orders has "product_code" and products has "code", that's likely a match
-    for (const fromTable of tables) {
-      for (const fromCol of fromTable.columns) {
-        const colLower = fromCol.name.toLowerCase();
-        if (SKIP_COLUMNS.has(colLower)) continue;
-
-        for (const toTable of tables) {
-          if (toTable.tableName === fromTable.tableName) continue;
-
-          // Check if column starts with target table name (singular form)
-          const tableStem = toTable.tableName.toLowerCase().replace(/s$/, '');
-          if (!colLower.startsWith(tableStem + '_')) continue;
-          const strippedName = colLower.slice(tableStem.length + 1); // e.g. "code" from "product_code"
-          if (!strippedName || strippedName === 'id') continue; // _id handled in Layer 2
-
-          const matchedCol = toTable.columns.find((c) => c.name.toLowerCase() === strippedName);
-          if (!matchedCol) continue;
-
-          addCandidate({
-            fromTable: fromTable.tableName, fromColumn: fromCol.name,
-            toTable: toTable.tableName, toColumn: matchedCol.name,
-            source: 'fuzzy_name', confidence: 0.55,
-          });
-        }
-      }
-    }
-
-    // ── Layer 4: Value overlap verification ──────────────────────────────────
-    // Runs actual JOINs to check what fraction of values in fromColumn
-    // exist in toColumn. This is the definitive test — upgrades or kills
-    // candidates from layers 1–3.
+    // ── Layer 3: Value overlap verification ──────────────────────────────────
+    const toVerify = candidates.filter(c => c.overlapRatio === undefined).length;
+    console.log(`[FK] Layer 3: verifying ${toVerify} candidate(s) with value overlap JOINs…`);
+    let verified = 0, killed = 0;
     for (const c of [...candidates]) {
       if (c.overlapRatio !== undefined) continue;
       try {
         const result = await this.executeQuery(
           `SELECT COUNT(DISTINCT f.v) as matched,
                   (SELECT COUNT(DISTINCT "${c.fromColumn}") FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL) as total
-           FROM (SELECT DISTINCT "${c.fromColumn}" as v FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL LIMIT 500) f
+           FROM (SELECT DISTINCT "${c.fromColumn}" as v FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL ORDER BY "${c.fromColumn}" LIMIT 500) f
            INNER JOIN "${c.toTable}" t ON CAST(f.v AS TEXT) = CAST(t."${c.toColumn}" AS TEXT)`,
         );
         const row = result.rows[0] as { matched: number; total: number } | undefined;
         if (row && row.total > 0) {
           c.overlapRatio = row.matched / row.total;
-          if (c.overlapRatio >= 0.95) c.confidence = Math.max(c.confidence, 0.95);
-          else if (c.overlapRatio >= 0.80) c.confidence = Math.max(c.confidence, 0.85);
-          else if (c.overlapRatio >= 0.50) c.confidence = Math.max(c.confidence, 0.7);
-          else c.confidence = Math.min(c.confidence, 0.3);
+          if (c.overlapRatio >= 0.95) { c.confidence = Math.max(c.confidence, 0.95); verified++; }
+          else if (c.overlapRatio >= 0.80) { c.confidence = Math.max(c.confidence, 0.85); verified++; }
+          else if (c.overlapRatio >= 0.50) { c.confidence = Math.max(c.confidence, 0.7); verified++; }
+          else { c.confidence = Math.min(c.confidence, 0.3); killed++; }
+          console.log(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: overlap ${Math.round(c.overlapRatio * 100)}% → conf ${c.confidence.toFixed(2)}`);
         } else {
-          // No overlap at all — downgrade hard
-          c.confidence = 0.1;
-          c.overlapRatio = 0;
+          c.confidence = 0.1; c.overlapRatio = 0; killed++;
+          console.log(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: no overlap → killed`);
         }
-      } catch {
-        // Query failed (type mismatch etc.) — leave confidence as-is
-      }
+      } catch { /* type mismatch etc. */ }
     }
+    console.log(`[FK] Layer 3: ${verified} verified, ${killed} killed`);
 
-    // ── Layer 5: Value overlap discovery (integer columns vs PKs) ────────────
-    // Catches FKs that aren't named conventionally at all
-    for (const fromTable of tables) {
-      for (const fromCol of fromTable.columns) {
-        const colType = fromCol.type.toUpperCase();
-        if (!colType.includes('INT') && !colType.includes('NUM') && !colType.includes('SERIAL')) continue;
-        if (fromCol.name.toLowerCase() === 'id') continue;
+    // ── Layer 4: Value overlap discovery (fact key columns → dimension PKs) ──
+    // Only check fact/bridge tables against dimension/unknown tables
+    console.log(`[FK] Layer 4: scanning fact key columns against dimension PKs…`);
+    const preLayer4 = candidates.length;
+    const factTables = classifications.filter((c) => c.role === 'fact' || c.role === 'bridge');
+    const dimTables  = classifications.filter((c) => c.role === 'dimension' || c.role === 'unknown');
 
-        for (const toTable of tables) {
-          if (toTable.tableName === fromTable.tableName) continue;
-          const toCol = toTable.columns.find((c) => c.name.toLowerCase() === 'id');
-          if (!toCol) continue;
+    for (const factClass of factTables) {
+      const factTable = tables.find((t) => t.tableName === factClass.tableName)!;
+      for (const fromCol of factTable.columns) {
+        const cn = fromCol.name.toLowerCase();
+        if (META_COLUMNS.has(cn)) continue;
+        if (MEASURE_PATTERNS.test(cn)) continue;
+        // Only check key-like columns and integer columns
+        const isKeyLike = KEY_SUFFIXES.some((s) => cn.endsWith(s)) || fromCol.type.toUpperCase().includes('INT');
+        if (!isKeyLike) continue;
 
-          const key = `${fromTable.tableName}.${fromCol.name}→${toTable.tableName}.${toCol.name}`;
-          if (seen.has(key)) continue;
+        for (const dimClass of dimTables) {
+          if (dimClass.tableName === factClass.tableName) continue;
+          const dimTable = tables.find((t) => t.tableName === dimClass.tableName)!;
 
-          try {
-            const result = await this.executeQuery(
-              `SELECT COUNT(DISTINCT f.v) as matched,
-                      (SELECT COUNT(DISTINCT "${fromCol.name}") FROM "${fromTable.tableName}" WHERE "${fromCol.name}" IS NOT NULL) as total,
-                      (SELECT COUNT(*) FROM "${toTable.tableName}") as target_rows
-               FROM (SELECT DISTINCT "${fromCol.name}" as v FROM "${fromTable.tableName}" WHERE "${fromCol.name}" IS NOT NULL LIMIT 500) f
-               INNER JOIN "${toTable.tableName}" t ON f.v = t."${toCol.name}"`,
-            );
-            const row = result.rows[0] as { matched: number; total: number; target_rows: number } | undefined;
-            if (row && row.total > 0 && row.matched > 0) {
-              const ratio = row.matched / row.total;
-              if (ratio >= 0.7 && row.total <= row.target_rows * 1.1) {
-                addCandidate({
-                  fromTable: fromTable.tableName, fromColumn: fromCol.name,
-                  toTable: toTable.tableName, toColumn: toCol.name,
-                  source: 'value_overlap',
-                  confidence: ratio >= 0.95 ? 0.9 : 0.7,
-                  overlapRatio: ratio,
-                });
+          // Try matching against dimension's business keys and 'id'
+          const targetCols = dimTable.columns.filter((c) =>
+            c.name.toLowerCase() === 'id' || dimClass.businessKeys.map(k => k.toLowerCase()).includes(c.name.toLowerCase()),
+          );
+
+          for (const toCol of targetCols) {
+            const key = `${factClass.tableName}.${fromCol.name}→${dimClass.tableName}.${toCol.name}`;
+            if (seen.has(key)) continue;
+
+            try {
+              const result = await this.executeQuery(
+                `SELECT COUNT(DISTINCT f.v) as matched,
+                        (SELECT COUNT(DISTINCT "${fromCol.name}") FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL) as total,
+                        (SELECT COUNT(*) FROM "${dimClass.tableName}") as target_rows
+                 FROM (SELECT DISTINCT "${fromCol.name}" as v FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL ORDER BY "${fromCol.name}" LIMIT 500) f
+                 INNER JOIN "${dimClass.tableName}" t ON CAST(f.v AS TEXT) = CAST(t."${toCol.name}" AS TEXT)`,
+              );
+              const row = result.rows[0] as { matched: number; total: number; target_rows: number } | undefined;
+              if (row && row.total > 0 && row.matched > 0) {
+                const ratio = row.matched / row.total;
+                if (ratio >= 0.7 && row.total <= row.target_rows * 1.5) {
+                  console.log(`[FK]   discovered: ${factClass.tableName}.${fromCol.name} → ${dimClass.tableName}.${toCol.name}: overlap ${Math.round(ratio * 100)}%`);
+                  addCandidate({
+                    fromTable: factClass.tableName, fromColumn: fromCol.name,
+                    toTable: dimClass.tableName, toColumn: toCol.name,
+                    source: 'value_overlap',
+                    confidence: ratio >= 0.95 ? 0.9 : 0.7,
+                    overlapRatio: ratio,
+                  });
+                }
               }
-            }
-          } catch { /* skip */ }
+            } catch { /* skip */ }
+          }
         }
       }
     }
+    const layer4Added = candidates.length - preLayer4;
+    console.log(`[FK] Layer 4: ${layer4Added} new FK(s) discovered`);
 
-    // Drop candidates with very low confidence (failed verification)
-    return candidates
-      .filter((c) => c.confidence >= 0.3)
-      .sort((a, b) => b.confidence - a.confidence);
+    // Drop candidates with very low confidence
+    const final = candidates.filter((c) => c.confidence >= 0.3);
+    console.log(`[FK] Heuristic done: ${final.length} candidates kept (${candidates.length - final.length} dropped)`);
+    return { candidates: final.sort((a, b) => b.confidence - a.confidence), classifications };
+  }
+
+  /**
+   * Returns unmatched key-looking columns from fact/bridge tables
+   * that weren't matched by heuristic layers. Used to feed the AI-assisted layer.
+   */
+  getUnmatchedKeyColumns(
+    tables: TableInfo[],
+    classifications: TableClassification[],
+    matched: FkCandidate[],
+  ): { table: string; column: string; sampleValues: unknown[] }[] {
+    const matchedKeys = new Set(matched.map((c) => `${c.fromTable}.${c.fromColumn}`));
+    const result: { table: string; column: string; sampleValues: unknown[] }[] = [];
+
+    const factBridge = new Set(
+      classifications.filter((c) => c.role === 'fact' || c.role === 'bridge').map((c) => c.tableName),
+    );
+
+    for (const t of tables) {
+      if (!factBridge.has(t.tableName)) continue;
+      for (const col of t.columns) {
+        const cn = col.name.toLowerCase();
+        if (META_COLUMNS.has(cn)) continue;
+        if (MEASURE_PATTERNS.test(cn)) continue;
+        if (cn === 'id') continue;
+        // Only key-like columns
+        const isKeyLike = KEY_SUFFIXES.some((s) => cn.endsWith(s));
+        if (!isKeyLike) continue;
+        if (matchedKeys.has(`${t.tableName}.${col.name}`)) continue;
+
+        result.push({ table: t.tableName, column: col.name, sampleValues: col.sampleValues });
+      }
+    }
+    return result;
   }
 }

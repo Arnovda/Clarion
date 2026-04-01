@@ -81,9 +81,9 @@ export class SqliteConnector extends BaseConnector {
     }
 
     // ── FK detection (engine-agnostic layers live in BaseConnector) ─────────
-    const fkCandidates = await this.detectForeignKeys(tables);
+    const { candidates: fkCandidates, classifications: tableClassifications } = await this.detectForeignKeys(tables);
 
-    return { tables, fkCandidates };
+    return { tables, fkCandidates, tableClassifications };
   }
 
   /**

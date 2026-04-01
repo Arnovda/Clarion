@@ -205,8 +205,6 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     };
     type QualityRule = { rule_name: string; rule_type: string; dimension: string; rule_config: Record<string, unknown> | null; last_status: string | null; last_pass_rate: number | null };
 
-    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
-
     // Latest profile per table (one row per table — highest id = most recent)
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
       ? await semanticDb('dataset_profiles')

@@ -62,19 +62,37 @@ const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
-  const message = await getClient().messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    messages: [{ role: 'user', content: userPrompt }],
-    system: systemPrompt,
-  });
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [2000, 5000, 10000]; // ms — exponential-ish backoff
 
-  const block = message.content[0];
-  if (block.type !== 'text') {
-    throw new Error('AIService: unexpected non-text response from Claude');
+async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const message = await getClient().messages.create({
+        model: MODEL,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: userPrompt }],
+        system: systemPrompt,
+      });
+
+      const block = message.content[0];
+      if (block.type !== 'text') {
+        throw new Error('AIService: unexpected non-text response from Claude');
+      }
+      return block.text;
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      const isRetryable = status === 529 || status === 503 || status === 500 || status === 429;
+      if (isRetryable && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAYS[attempt] ?? 10000;
+        console.warn(`[AIService] ${status} error on attempt ${attempt + 1}/${MAX_RETRIES + 1}, retrying in ${delay}ms…`);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
   }
-  return block.text;
+  throw new Error('AIService: exhausted retries');
 }
 
 // Multi-turn version — used by the repair loop where Claude sees its own previous replies
@@ -148,6 +166,69 @@ export async function generateSchemaDraft(
     merged.columns.push(...partial.columns);
   }
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// AI-assisted FK suggestion — for unmatched key columns
+// ---------------------------------------------------------------------------
+
+export interface AiFkSuggestion {
+  from_table: string;
+  from_column: string;
+  to_table: string;
+  to_column: string;
+  reasoning: string;
+}
+
+const FK_SUGGESTION_SYSTEM = `You are a database relationship expert. Given:
+1. A list of UNMATCHED KEY COLUMNS from fact/transaction tables (with sample values)
+2. A list of DIMENSION/REFERENCE tables with their columns and sample values
+
+Your job: identify which unmatched fact columns are business keys that JOIN to which dimension table columns.
+
+Rules:
+- Only suggest relationships where you are reasonably confident the values would match
+- Use domain knowledge: korting_code likely joins to a kortingen/discounts table, leverancier_id to a leveranciers/suppliers table, etc.
+- Consider sample values — if values look like codes, IDs, or references, they likely join somewhere
+- If a column has no plausible target dimension, do NOT force a match — skip it
+- Each suggestion must specify BOTH the from and to column names exactly as given
+
+Return JSON only:
+{
+  "suggestions": [
+    { "from_table": "orders", "from_column": "korting_code", "to_table": "kortingen", "to_column": "code", "reasoning": "korting_code contains discount codes that reference the kortingen lookup table" }
+  ]
+}
+
+If no suggestions, return: { "suggestions": [] }`;
+
+export async function suggestFkMatches(
+  unmatchedColumns: { table: string; column: string; sampleValues: unknown[] }[],
+  dimensionTables: { tableName: string; columns: { name: string; sampleValues: unknown[] }[]; role: string }[],
+): Promise<AiFkSuggestion[]> {
+  if (unmatchedColumns.length === 0) return [];
+
+  const userPrompt = `UNMATCHED KEY COLUMNS from fact/transaction tables:
+${unmatchedColumns.map((c) => `  ${c.table}.${c.column} — samples: ${JSON.stringify(c.sampleValues.slice(0, 5))}`).join('\n')}
+
+DIMENSION/REFERENCE tables:
+${dimensionTables.map((t) => `  ${t.tableName} (${t.role}): columns = ${t.columns.map((c) => `${c.name} [${JSON.stringify(c.sampleValues.slice(0, 3))}]`).join(', ')}`).join('\n')}
+
+Which unmatched columns are business keys to which dimension columns?`;
+
+  console.log(`[FK AI] Asking Claude to match ${unmatchedColumns.length} unmatched key column(s) against ${dimensionTables.length} dimension table(s)…`);
+  try {
+    const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, 4096);
+    const result = parseJson<{ suggestions: AiFkSuggestion[] }>(raw);
+    console.log(`[FK AI] Claude suggested ${result.suggestions.length} match(es):`);
+    for (const s of result.suggestions) {
+      console.log(`[FK AI]   ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: ${s.reasoning}`);
+    }
+    return result.suggestions;
+  } catch (err) {
+    console.warn('[FK AI] suggestion call failed:', err);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------

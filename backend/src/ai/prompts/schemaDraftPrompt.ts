@@ -21,9 +21,10 @@ export const SCHEMA_DRAFT_SYSTEM = `You are a data cataloguing assistant. Given 
 RELATIONSHIP DETECTION RULES (in order of priority):
 1. PRE-DETECTED FKs with source "declared" are DECLARED in the database schema — ALWAYS include these. Confidence = 1.0.
 2. PRE-DETECTED FKs with source "name_pattern" + high overlap_ratio (≥ 0.9) are near-certain — include these.
-3. PRE-DETECTED FKs with source "value_overlap" + high overlap_ratio (≥ 0.9) are strong candidates — include these.
-4. For any remaining relationships YOU detect from the statistics (column naming patterns, cardinality matching), add them too — but ONLY if they don't duplicate a pre-detected one.
-5. Prefer SPECIFIC column references (via_column + to_column) over vague guesses.
+3. PRE-DETECTED FKs with source "ai_suggested" were identified by AI and verified with data overlap — include these.
+4. PRE-DETECTED FKs with source "value_overlap" + high overlap_ratio (≥ 0.9) are strong candidates — include these.
+5. For any remaining relationships YOU detect from the statistics (column naming patterns, cardinality matching), add them too — but ONLY if they don't duplicate a pre-detected one.
+6. Prefer SPECIFIC column references (via_column + to_column) over vague guesses.
 
 The statistical hints tell you:
 - When distinct_count equals row_count and null_pct is ~0 → that column is almost certainly the PRIMARY KEY

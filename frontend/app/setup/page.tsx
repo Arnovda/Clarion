@@ -565,7 +565,7 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   useEffect(() => {
     if (!startStream || !connId) return;
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('databridge_token') : null;
     const abortCtrl = new AbortController();
 
     (async () => {
@@ -581,7 +581,10 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
         });
 
         if (!res.ok || !res.body) {
-          setError('Failed to start profiling stream');
+          let detail = `HTTP ${res.status}`;
+          try { detail = await res.text(); } catch { /* ignore */ }
+          console.error('[ProfilingBanner] stream failed:', res.status, detail);
+          setError(`Failed to start profiling stream (${res.status})`);
           return;
         }
 

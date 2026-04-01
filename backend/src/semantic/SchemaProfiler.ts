@@ -1,5 +1,6 @@
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateSchemaDraft } from '../ai/AIService';
+import { FkCandidate } from '../connectors/BaseConnector';
+import { generateSchemaDraft, suggestFkMatches } from '../ai/AIService';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
@@ -39,20 +40,70 @@ export async function runSchemaProfiler(
   const connector = new SqliteConnector(filePath);
   await connector.connect();
   const schema = await connector.introspectSchema();
-  connector.disconnect();
-  const fkCandidates = schema.fkCandidates ?? [];
-  const declaredCount = fkCandidates.filter((fk) => fk.source === 'declared').length;
-  const fuzzyCount = fkCandidates.filter((fk) => fk.source === 'fuzzy_name').length;
-  const patternCount = fkCandidates.filter((fk) => fk.source === 'name_pattern').length;
-  const overlapCount = fkCandidates.filter((fk) => fk.source === 'value_overlap').length;
+  const heuristicFks: FkCandidate[] = schema.fkCandidates ?? [];
+  const classifications = schema.tableClassifications ?? [];
 
+  const declaredCount = heuristicFks.filter((fk) => fk.source === 'declared').length;
+  const patternCount = heuristicFks.filter((fk) => fk.source === 'name_pattern').length;
+  const overlapCount = heuristicFks.filter((fk) => fk.source === 'value_overlap').length;
   const fkParts: string[] = [];
   if (declaredCount) fkParts.push(`${declaredCount} declared`);
   if (patternCount) fkParts.push(`${patternCount} by name`);
-  if (fuzzyCount) fkParts.push(`${fuzzyCount} fuzzy`);
   if (overlapCount) fkParts.push(`${overlapCount} by data`);
-  const fkSummary = fkParts.length ? ` — relationships: ${fkParts.join(', ')}` : '';
+  const fkSummary = fkParts.length ? ` — ${fkParts.join(', ')}` : '';
   emit({ phase: 'schema', message: `Found ${schema.tables.length} tables${fkSummary}` });
+
+  // 1b. AI-assisted FK matching — send unmatched key columns to Claude
+  const unmatched = connector.getUnmatchedKeyColumns(schema.tables, classifications, heuristicFks);
+  const allFkCandidates = [...heuristicFks];
+  if (unmatched.length > 0) {
+    emit({ phase: 'schema', message: `Asking Claude to match ${unmatched.length} unmatched key column(s)…` });
+    const dimTables = classifications
+      .filter((c) => c.role === 'dimension' || c.role === 'unknown')
+      .map((c) => {
+        const t = schema.tables.find((t2) => t2.tableName === c.tableName)!;
+        return {
+          tableName: c.tableName,
+          columns: t.columns.map((col) => ({ name: col.name, sampleValues: col.sampleValues })),
+          role: c.role,
+        };
+      });
+    try {
+      const aiSuggestions = await suggestFkMatches(unmatched, dimTables);
+      // Verify AI suggestions with value overlap
+      for (const s of aiSuggestions) {
+        const key = `${s.from_table}.${s.from_column}→${s.to_table}.${s.to_column}`;
+        if (allFkCandidates.some((c) => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}` === key)) continue;
+        try {
+          const result = await connector.executeQuery(
+            `SELECT COUNT(DISTINCT f.v) as matched,
+                    (SELECT COUNT(DISTINCT "${s.from_column}") FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL) as total
+             FROM (SELECT DISTINCT "${s.from_column}" as v FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL ORDER BY "${s.from_column}" LIMIT 500) f
+             INNER JOIN "${s.to_table}" t ON CAST(f.v AS TEXT) = CAST(t."${s.to_column}" AS TEXT)`,
+          );
+          const row = result.rows[0] as { matched: number; total: number } | undefined;
+          const ratio = row && row.total > 0 ? row.matched / row.total : 0;
+          if (ratio >= 0.5) {
+            console.log(`[FK AI] verified: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+            allFkCandidates.push({
+              fromTable: s.from_table, fromColumn: s.from_column,
+              toTable: s.to_table, toColumn: s.to_column,
+              source: 'ai_suggested', confidence: ratio >= 0.9 ? 0.9 : 0.75,
+              overlapRatio: ratio,
+            });
+          } else {
+            console.log(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+          }
+        } catch { /* verification query failed — skip */ }
+      }
+      const aiAdded = allFkCandidates.length - heuristicFks.length;
+      if (aiAdded > 0) emit({ phase: 'schema', message: `Claude found ${aiAdded} additional relationship(s)` });
+    } catch (err) {
+      // AI FK matching is non-fatal — heuristic results are still used
+      console.warn('[SchemaProfiler] AI FK matching failed (non-fatal):', err);
+    }
+  }
+  connector.disconnect();
 
   // 2. Run quality profiling for all tables first — results feed into the AI draft
   //    so Claude has statistical signals (PK/FK detection, cardinality) for better relationships.
@@ -83,7 +134,7 @@ export async function runSchemaProfiler(
 
   // 3. Generate AI draft definitions — now enriched with quality stats
   emit({ phase: 'ai_draft', message: 'Claude is generating definitions…' });
-  const draft = await generateSchemaDraft('sqlite', schema.tables, qualityStats, schema.fkCandidates, (tableNames, batchIndex, totalBatches) => {
+  const draft = await generateSchemaDraft('sqlite', schema.tables, qualityStats, allFkCandidates, (tableNames, batchIndex, totalBatches) => {
     emit({ phase: 'ai_draft', message: `Generating definitions for ${tableNames.join(', ')}…`, batchIndex, batchCount: totalBatches });
   });
 
@@ -277,7 +328,7 @@ export async function runSchemaProfiler(
     }
 
     // 5b. Insert any high-confidence programmatic FK candidates that Claude missed
-    for (const fk of schema.fkCandidates ?? []) {
+    for (const fk of allFkCandidates) {
       if (fk.confidence < 0.7) continue; // skip low-confidence guesses
       const relKey = `${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`;
       if (insertedRelKeys.has(relKey)) continue; // already inserted by AI
