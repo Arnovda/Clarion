@@ -10,7 +10,7 @@ import KpiPanel from '@/components/semantic/KpiPanel';
 import QualityPanel from '@/components/QualityPanel';
 import IntegrationsPanel from '@/components/IntegrationsPanel';
 import api from '@/lib/api';
-import { SourceTable, SourceColumn, KpiDefinition } from '@/components/semantic/types';
+import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView } from '@/components/semantic/types';
 
 type MainTab = 'definitions' | 'relationships' | 'kpis' | 'quality' | 'integrations';
 
@@ -39,6 +39,10 @@ function SemanticInner() {
   const [kpis, setKpis] = useState<KpiDefinition[]>([]);
 
   const [tab, setTab] = useState<MainTab>('definitions');
+
+  // ── Cross-source views (for Relationships tab) ────────────────────────────
+  const [views, setViews] = useState<CrossSourceView[]>([]);
+  const [activeViewId, setActiveViewId] = useState<number | null>(null);
 
   const hasAutoExpanded = useRef<Set<number>>(new Set());
 
@@ -119,6 +123,47 @@ function SemanticInner() {
   }, [activeConnId]);
 
   useEffect(() => { loadKpis(); }, [loadKpis]);
+
+  // ── Load cross-source views for active connection ─────────────────────────
+  const loadViews = useCallback(async () => {
+    if (!activeConnId) { setViews([]); return; }
+    try {
+      const res = await api.get(`/cross-views?connectionId=${activeConnId}`);
+      setViews(res.data.data ?? res.data ?? []);
+    } catch { setViews([]); }
+  }, [activeConnId]);
+
+  useEffect(() => { loadViews(); }, [loadViews]);
+
+  async function handleCreateView() {
+    const name = window.prompt('New view name:');
+    if (!name || !activeConnId) return;
+    try {
+      const res = await api.post('/cross-views', { name, connectionId: activeConnId });
+      await loadViews();
+      const newId = res.data?.data?.id ?? res.data?.id;
+      if (newId) setActiveViewId(newId);
+    } catch { /* ignore */ }
+  }
+
+  async function handleDeleteView(viewId: number) {
+    if (!confirm('Delete this view?')) return;
+    try {
+      await api.delete(`/cross-views/${viewId}`);
+      if (activeViewId === viewId) setActiveViewId(null);
+      await loadViews();
+    } catch { /* ignore */ }
+  }
+
+  async function handleRenameView(viewId: number) {
+    const v = views.find((vw) => vw.id === viewId);
+    const name = window.prompt('Rename view:', v?.name ?? '');
+    if (!name) return;
+    try {
+      await api.patch(`/cross-views/${viewId}`, { name });
+      await loadViews();
+    } catch { /* ignore */ }
+  }
 
   // ── Toggle connection open/closed ─────────────────────────────────────────
   function handleToggleConnection(connId: number) {
@@ -231,18 +276,62 @@ function SemanticInner() {
           )}
 
           {tab === 'relationships' && (
-            <div className="flex-1 min-h-0" style={{ height: '100%' }}>
-              <RelationshipCanvas
-                connectionId={String(activeConnId ?? '')}
-                tables={activeConnId ? (tablesByConn[activeConnId] ?? []) : []}
-                columnsByTable={columnsByTable}
-                focusTableId={selectedTableId}
-                focusColumnId={selectedColumnId}
-                zoomToTableId={zoomToTableId}
-                onSelectTable={handleCanvasSelectTable}
-                onSelectColumn={handleSelectColumn}
-                onClearSelection={() => { setSelectedTableId(null); setSelectedColumnId(null); }}
-              />
+            <div className="flex-1 min-h-0 flex flex-col" style={{ height: '100%' }}>
+              <div className="flex-1 min-h-0">
+                <RelationshipCanvas
+                  connectionId={String(activeConnId ?? '')}
+                  tables={activeConnId ? (tablesByConn[activeConnId] ?? []) : []}
+                  columnsByTable={columnsByTable}
+                  focusTableId={selectedTableId}
+                  focusColumnId={selectedColumnId}
+                  zoomToTableId={zoomToTableId}
+                  onSelectTable={handleCanvasSelectTable}
+                  onSelectColumn={handleSelectColumn}
+                  onClearSelection={() => { setSelectedTableId(null); setSelectedColumnId(null); }}
+                  viewId={activeViewId}
+                />
+              </div>
+              {/* View tab bar */}
+              <div className="h-10 border-t border-slate-200 bg-white flex items-center gap-0 px-2 overflow-x-auto flex-shrink-0">
+                <button
+                  onClick={() => setActiveViewId(null)}
+                  className={`px-3 h-full text-xs whitespace-nowrap transition-colors ${
+                    activeViewId === null
+                      ? 'border-b-2 border-blue-600 text-blue-700 font-medium'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  All tables
+                </button>
+                {views.map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => setActiveViewId(v.id)}
+                    onDoubleClick={(e) => { e.preventDefault(); handleRenameView(v.id); }}
+                    className={`px-3 h-full text-xs whitespace-nowrap transition-colors flex items-center gap-1 ${
+                      activeViewId === v.id
+                        ? 'border-b-2 border-blue-600 text-blue-700 font-medium'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    {v.name}
+                    <span
+                      onClick={(e) => { e.stopPropagation(); handleDeleteView(v.id); }}
+                      className="ml-1 text-slate-400 hover:text-red-500 cursor-pointer text-sm leading-none"
+                      title="Delete view"
+                    >
+                      &times;
+                    </span>
+                  </button>
+                ))}
+                <button
+                  onClick={handleCreateView}
+                  className="px-2 h-full text-slate-400 hover:text-blue-600 text-lg leading-none transition-colors"
+                  title="Create new view"
+                >
+                  +
+                </button>
+              </div>
             </div>
           )}
 

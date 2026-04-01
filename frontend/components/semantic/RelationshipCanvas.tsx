@@ -57,6 +57,11 @@ interface TableNodeData {
   colSideMap:     Map<number, 'N'|'1'>; // table-focus mode: N→blue, 1→orange
   onSelectTable:  (id: number) => void;
   onSelectColumn: (tableId: number, colId: number) => void;
+  // Custom-view mode fields
+  mode?:            'all' | 'view';
+  viewId?:          number | null;
+  onShowRelations?: (tableId: number) => void;
+  onRemoveFromView?: (tableId: number) => void;
 }
 
 const HANDLE_STYLE = {
@@ -70,9 +75,23 @@ const HANDLE_STYLE = {
 
 function TableNode({ data }: NodeProps<TableNodeData>) {
   const { table, columns, focused, focusColId, pairedColIds, colSideMap,
-          onSelectTable, onSelectColumn } = data;
+          onSelectTable, onSelectColumn,
+          mode, viewId, onShowRelations, onRemoveFromView } = data;
   const borderColor = focused ? '#2563eb' : '#bfdbfe';
   const totalH = HEADER_H + columns.length * ROW_H;
+  const isViewMode = mode === 'view';
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as HTMLElement)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
 
   return (
     // Root: position:relative, NO overflow:hidden — handles can poke out the sides
@@ -128,10 +147,54 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
           </p>
           {table.ai_draft && (
             <span style={{
-              position: 'absolute', top: 7, right: 10,
+              position: 'absolute', top: 7, right: isViewMode ? 30 : 10,
               fontSize: 9, background: '#fef3c7', color: '#b45309',
               padding: '1px 6px', borderRadius: 99, fontWeight: 700,
             }}>draft</span>
+          )}
+          {/* 3-dot menu for custom-view mode */}
+          {isViewMode && (
+            <div ref={menuRef} className="nopan nodrag nowheel" style={{ position: 'absolute', top: 6, right: 6 }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen); }}
+                style={{
+                  background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 4,
+                  color: '#fff', cursor: 'pointer', padding: '2px 5px', fontSize: 14, lineHeight: 1,
+                }}
+              >
+                &#8942;
+              </button>
+              {menuOpen && (
+                <div style={{
+                  position: 'absolute', top: 26, right: 0, zIndex: 50,
+                  background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8,
+                  boxShadow: '0 4px 16px rgba(0,0,0,.15)', minWidth: 160, overflow: 'hidden',
+                }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onShowRelations?.(table.id); }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'none',
+                      padding: '8px 12px', fontSize: 12, color: '#334155', cursor: 'pointer',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    Show relations
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onRemoveFromView?.(table.id); }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left', border: 'none', background: 'none',
+                      padding: '8px 12px', fontSize: 12, color: '#ef4444', cursor: 'pointer',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#fef2f2')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    Remove from view
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -750,6 +813,7 @@ function buildNodes(
   colSideMap:      Map<number, 'N' | '1'>,
   onSelectTable:   (id: number) => void,
   onSelectColumn:  (tableId: number, colId: number) => void,
+  viewMode?:       { mode: 'view'; viewId: number; onShowRelations: (id: number) => void; onRemoveFromView: (id: number) => void },
 ): Node[] {
   return tables.map((t, i) => ({
     id:       String(t.id),
@@ -764,6 +828,12 @@ function buildNodes(
       colSideMap,
       onSelectTable,
       onSelectColumn,
+      ...(viewMode ? {
+        mode:              viewMode.mode,
+        viewId:            viewMode.viewId,
+        onShowRelations:   viewMode.onShowRelations,
+        onRemoveFromView:  viewMode.onRemoveFromView,
+      } : {}),
     },
   }));
 }
@@ -839,10 +909,11 @@ interface Props {
   onSelectTable?:    (id: number) => void;
   onSelectColumn?:   (tableId: number, colId: number) => void;
   onClearSelection?: () => void;
+  viewId?:           number | null;   // when set, operate in custom-view mode
 }
 
 function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColumnId,
-                  zoomToTableId, onSelectTable, onSelectColumn, onClearSelection }: Props) {
+                  zoomToTableId, onSelectTable, onSelectColumn, onClearSelection, viewId }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -850,42 +921,129 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
   const [hoveredRelId,  setHoveredRelId]  = useState<number | null>(null);
   const [pendingConn,   setPendingConn]   = useState<PendingConn | null>(null);
 
+  // ── Custom-view mode state ──
+  const isViewMode = viewId != null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [viewDetail, setViewDetail] = useState<any>(null);
+  const viewTables = useMemo<SourceTable[]>(() => {
+    if (!isViewMode || !viewDetail?.tables) return [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return viewDetail.tables.map((vt: any) => ({
+      id: vt.table_id,
+      connection_id: 0,
+      table_name: vt.table_name,
+      display_name: vt.display_name || vt.table_name,
+      description: '',
+      ai_draft: false,
+      is_active: true,
+    }));
+  }, [isViewMode, viewDetail]);
+  const viewColumnsByTable = useMemo<Record<number, SourceColumn[]>>(() => {
+    if (!isViewMode || !viewDetail?.tables) return {};
+    const map: Record<number, SourceColumn[]> = {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    viewDetail.tables.forEach((vt: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      map[vt.table_id] = (vt.columns ?? []).map((c: any) => ({
+        id: c.id ?? c.column_id,
+        table_id: vt.table_id,
+        column_name: c.column_name,
+        display_name: c.display_name || c.column_name,
+        description: c.description ?? '',
+        data_type: c.data_type ?? '',
+        example_values: c.example_values ?? null,
+        is_dimension: c.is_dimension ?? false,
+        is_measure: c.is_measure ?? false,
+        ai_draft: c.ai_draft ?? false,
+      }));
+    });
+    return map;
+  }, [isViewMode, viewDetail]);
+  const viewRelationships = useMemo<Relationship[]>(() => {
+    if (!isViewMode || !viewDetail?.relationships) return [];
+    const tableIds = new Set(viewTables.map((t) => t.id));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (viewDetail.relationships ?? []).filter((r: any) =>
+      tableIds.has(r.from_table_id) && tableIds.has(r.to_table_id)
+    ).map((r: any) => ({ // eslint-disable-line @typescript-eslint/no-explicit-any
+      id: r.id,
+      from_table_id: r.from_table_id,
+      from_column_id: r.from_column_id ?? null,
+      to_table_id: r.to_table_id,
+      to_column_id: r.to_column_id ?? null,
+      from_table_name: r.from_table_name ?? '',
+      to_table_name: r.to_table_name ?? '',
+      relationship_type: r.relationship_type ?? 'many_to_one',
+      description: r.description ?? r.label ?? '',
+      ai_draft: r.ai_draft ?? false,
+    }));
+  }, [isViewMode, viewDetail, viewTables]);
+
+  // Effective tables/columns/rels for current mode
+  const effTables         = isViewMode ? viewTables : tables;
+  const effColumnsByTable = isViewMode ? viewColumnsByTable : columnsByTable;
+  const effRelationships  = isViewMode ? viewRelationships : relationships;
+
   // Stable map of node id → position (preserves user-dragged positions)
   const posMap            = useRef<Map<string, { x: number; y: number }>>(new Map());
   // Set to true on first relationship load or when user clicks "Reset layout"
   const needsDagreLayout  = useRef(true);
 
+  // ── Load view detail when viewId changes ──
+  const reloadViewDetail = useCallback(async () => {
+    if (!viewId) { setViewDetail(null); return; }
+    try {
+      const res = await api.get(`/cross-views/${viewId}`);
+      setViewDetail(res.data.data ?? res.data);
+    } catch { setViewDetail(null); }
+  }, [viewId]);
+
+  useEffect(() => {
+    if (isViewMode) {
+      posMap.current.clear();
+      needsDagreLayout.current = true;
+      reloadViewDetail();
+    }
+  }, [isViewMode, reloadViewDetail]);
+
+  // Seed posMap from view detail pos_x/pos_y
+  useEffect(() => {
+    if (!isViewMode || !viewDetail?.tables) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    viewDetail.tables.forEach((vt: any) => {
+      if (vt.pos_x != null && vt.pos_y != null) {
+        posMap.current.set(String(vt.table_id), { x: vt.pos_x, y: vt.pos_y });
+      }
+    });
+    needsDagreLayout.current = false;
+  }, [isViewMode, viewDetail]);
+
   // ── Compute highlight / dim sets from current focus ──
-  // highlightRelIds: relationships that should be fully visible when a filter is active
-  // pairedColIds:    columns on the OTHER side of a focused column's relationships
   const highlightRelIds = useMemo(() => {
     const ids = new Set<number>();
     if (focusColumnId) {
-      relationships.forEach((r) => {
+      effRelationships.forEach((r) => {
         if (r.from_column_id === focusColumnId || r.to_column_id === focusColumnId) ids.add(r.id);
       });
     } else if (focusTableId) {
-      relationships.forEach((r) => {
+      effRelationships.forEach((r) => {
         if (r.from_table_id === focusTableId || r.to_table_id === focusTableId) ids.add(r.id);
       });
     }
     return ids;
-  }, [focusColumnId, focusTableId, relationships]);
+  }, [focusColumnId, focusTableId, effRelationships]);
 
   const pairedColIds = useMemo(() => {
     const ids = new Set<number>();
     if (focusColumnId) {
-      relationships.forEach((r) => {
+      effRelationships.forEach((r) => {
         if (r.from_column_id === focusColumnId && r.to_column_id)   ids.add(r.to_column_id);
         if (r.to_column_id   === focusColumnId && r.from_column_id) ids.add(r.from_column_id);
       });
     }
     return ids;
-  }, [focusColumnId, relationships]);
+  }, [focusColumnId, effRelationships]);
 
-  // Assign 'N' or '1' to every column that participates in a highlighted relationship.
-  // Works in both table-focus and column-focus modes.
-  // Colours BOTH sides of the relationship so connected nodes also light up correctly.
   const colSideMap = useMemo(() => {
     const map = new Map<number, 'N' | '1'>();
     const fSide = (type: string): 'N' | '1' =>
@@ -893,8 +1051,7 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     const tSide = (type: string): 'N' | '1' =>
       (type === 'one_to_many'  || type === 'many_to_many') ? 'N' : '1';
 
-    // Which relationships are relevant to the current focus?
-    const relevant = relationships.filter((r) => {
+    const relevant = effRelationships.filter((r) => {
       if (focusColumnId)
         return r.from_column_id === focusColumnId || r.to_column_id === focusColumnId;
       if (focusTableId)
@@ -908,40 +1065,75 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     });
 
     return map;
-  }, [focusTableId, focusColumnId, relationships]);
+  }, [focusTableId, focusColumnId, effRelationships]);
+
+  // ── View-mode actions: show relations, remove from view ──
+  const handleShowRelations = useCallback(async (tableId: number) => {
+    if (!viewId) return;
+    try {
+      const res = await api.get(`/cross-views/related-tables/${tableId}`);
+      const related = res.data.data ?? res.data ?? [];
+      const existingIds = new Set(viewTables.map((t) => t.id));
+      // Source table position
+      const srcPos = posMap.current.get(String(tableId)) ?? { x: 400, y: 300 };
+      const RADIUS = 350;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const toAdd = related.filter((rt: any) => !existingIds.has(rt.table_id ?? rt.id));
+      await Promise.all(toAdd.map((rt: any, i: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+        const angle = (2 * Math.PI * i) / (toAdd.length || 1);
+        const posX = Math.round(srcPos.x + RADIUS * Math.cos(angle));
+        const posY = Math.round(srcPos.y + RADIUS * Math.sin(angle));
+        const tId = rt.table_id ?? rt.id;
+        return api.post(`/cross-views/${viewId}/tables`, { tableId: tId, posX, posY });
+      }));
+      await reloadViewDetail();
+    } catch { /* ignore */ }
+  }, [viewId, viewTables, reloadViewDetail]);
+
+  const handleRemoveFromView = useCallback(async (tableId: number) => {
+    if (!viewId) return;
+    try {
+      await api.delete(`/cross-views/${viewId}/tables/${tableId}`);
+      await reloadViewDetail();
+    } catch { /* ignore */ }
+  }, [viewId, reloadViewDetail]);
 
   // ── Rebuild graph whenever any relevant data changes ──
   const rebuildGraph = useCallback(() => {
-    // Apply dagre layout when relationships first arrive or after a reset
-    if (needsDagreLayout.current && relationships.length > 0 && tables.length > 0) {
-      const dagrePos = getDagrePositions(tables, columnsByTable, relationships);
-      // Only set positions that haven't been manually overridden
+    // Apply dagre layout when relationships first arrive or after a reset (all-tables mode only)
+    if (needsDagreLayout.current && effRelationships.length > 0 && effTables.length > 0 && !isViewMode) {
+      const dagrePos = getDagrePositions(effTables, effColumnsByTable, effRelationships);
       dagrePos.forEach((pos, id) => posMap.current.set(id, pos));
       needsDagreLayout.current = false;
     }
 
     const selTable  = onSelectTable  ?? (() => {});
     const selColumn = onSelectColumn ?? (() => {});
+    const viewModeArg = isViewMode && viewId
+      ? { mode: 'view' as const, viewId, onShowRelations: handleShowRelations, onRemoveFromView: handleRemoveFromView }
+      : undefined;
     const newNodes = buildNodes(
-      tables, columnsByTable, posMap.current,
+      effTables, effColumnsByTable, posMap.current,
       focusTableId ?? null, focusColumnId ?? null,
       pairedColIds, colSideMap,
       selTable, selColumn,
+      viewModeArg,
     );
     setNodes(newNodes);
     setEdges(buildEdges(
-      relationships, tables, columnsByTable,
+      effRelationships, effTables, effColumnsByTable,
       posMap.current, selectedRelId, hoveredRelId,
       setSelectedRelId, setHoveredRelId,
       highlightRelIds,
     ));
-  }, [tables, columnsByTable, focusTableId, focusColumnId, relationships, selectedRelId, hoveredRelId,
-      highlightRelIds, pairedColIds, colSideMap, onSelectTable, onSelectColumn]);
+  }, [effTables, effColumnsByTable, focusTableId, focusColumnId, effRelationships, selectedRelId, hoveredRelId,
+      highlightRelIds, pairedColIds, colSideMap, onSelectTable, onSelectColumn,
+      isViewMode, viewId, handleShowRelations, handleRemoveFromView]);
 
   useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
 
   // Reset layout: clear all positions, re-run dagre on next rebuild
-  const { fitView } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   function resetLayout() {
     posMap.current.clear();
     needsDagreLayout.current = true;
@@ -949,40 +1141,87 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     setTimeout(() => fitView({ duration: 600, padding: 0.2 }), 50);
   }
 
-  // ── API ──
+  // ── API (all-tables mode) ──
   const reload = useCallback(async () => {
+    if (isViewMode) return; // view mode uses reloadViewDetail instead
     const res = await api.get(`/semantic/relationships?connectionId=${connectionId}`);
     setRelationships(res.data.data);
-  }, [connectionId]);
+  }, [connectionId, isViewMode]);
 
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => { if (!isViewMode) reload(); }, [reload, isViewMode]);
 
   const deleteRel = useCallback(async (id: number) => {
     await api.delete(`/semantic/relationships/${id}`);
-    await reload();
-  }, [reload]);
+    if (isViewMode) await reloadViewDetail(); else await reload();
+  }, [reload, isViewMode, reloadViewDetail]);
 
   const changeType = useCallback(async (id: number, type: string) => {
     await api.patch(`/semantic/relationships/${id}`, { relationship_type: type });
-    setRelationships((prev) => prev.map((r) => r.id === id ? { ...r, relationship_type: type } : r));
-  }, []);
+    if (isViewMode) {
+      await reloadViewDetail();
+    } else {
+      setRelationships((prev) => prev.map((r) => r.id === id ? { ...r, relationship_type: type } : r));
+    }
+  }, [isViewMode, reloadViewDetail]);
 
   // ── Node drag — update position map so edges follow the moved node ──
+  // In view mode, also persist position to the backend
+  const dragSaveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const handleNodesChange = useCallback((changes: Parameters<typeof onNodesChange>[0]) => {
     onNodesChange(changes);
     let moved = false;
     changes.forEach((c) => {
-      if (c.type === 'position' && c.position) { posMap.current.set(c.id, c.position); moved = true; }
+      if (c.type === 'position' && c.position) {
+        posMap.current.set(c.id, c.position);
+        moved = true;
+        // Persist position in view mode (debounced)
+        if (isViewMode && viewId && c.dragging === false) {
+          const tableId = c.id;
+          clearTimeout(dragSaveTimers.current[tableId]);
+          dragSaveTimers.current[tableId] = setTimeout(() => {
+            const pos = posMap.current.get(tableId);
+            if (pos) {
+              api.patch(`/cross-views/${viewId}/tables/${tableId}/position`, {
+                posX: Math.round(pos.x), posY: Math.round(pos.y),
+              }).catch(() => {});
+            }
+          }, 300);
+        }
+      }
     });
     if (moved) {
       setEdges(buildEdges(
-        relationships, tables, columnsByTable,
+        effRelationships, effTables, effColumnsByTable,
         posMap.current, selectedRelId, hoveredRelId,
         setSelectedRelId, setHoveredRelId,
         highlightRelIds,
       ));
     }
-  }, [onNodesChange, relationships, tables, columnsByTable, selectedRelId, hoveredRelId, highlightRelIds]);
+  }, [onNodesChange, effRelationships, effTables, effColumnsByTable, selectedRelId, hoveredRelId, highlightRelIds, isViewMode, viewId]);
+
+  // ── Drop handler (view mode): add a table from the left panel ──
+  const handleDrop = useCallback(async (event: React.DragEvent) => {
+    if (!isViewMode || !viewId) return;
+    event.preventDefault();
+    const tableIdStr = event.dataTransfer.getData('application/x-table-id');
+    if (!tableIdStr) return;
+    const tableId = Number(tableIdStr);
+    // Check if already in view
+    if (viewTables.some((t) => t.id === tableId)) return;
+    const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    try {
+      await api.post(`/cross-views/${viewId}/tables`, {
+        tableId, posX: Math.round(flowPos.x), posY: Math.round(flowPos.y),
+      });
+      await reloadViewDetail();
+    } catch { /* ignore */ }
+  }, [isViewMode, viewId, viewTables, screenToFlowPosition, reloadViewDetail]);
+
+  const handleDragOver = useCallback((event: React.DragEvent) => {
+    if (!isViewMode) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }, [isViewMode]);
 
   // ── Connect ──
   const onConnect = useCallback((c: Connection) => {
@@ -1002,12 +1241,30 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
       from_column_id: fromColId, to_column_id: toColId, relationship_type: type,
     });
     setPendingConn(null);
-    await reload();
+    if (isViewMode) await reloadViewDetail(); else await reload();
+  }
+
+  // ── Empty state for custom view mode ──
+  if (isViewMode && viewTables.length === 0 && viewDetail) {
+    return (
+      <div className="flex flex-1 min-h-0" style={{ height: '100%' }}>
+        <div
+          className="flex-1 flex items-center justify-center text-slate-400 text-sm"
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          <div className="text-center">
+            <p className="text-3xl mb-2">&#128269;</p>
+            <p className="font-medium">Drag a table from the left panel to start building this view</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-1 min-h-0" style={{ height: '100%' }}>
-      <div className="flex-1 relative">
+      <div className="flex-1 relative" onDragOver={handleDragOver} onDrop={handleDrop}>
         <ReactFlow
           nodes={nodes} edges={edges}
           nodeTypes={nodeTypes} edgeTypes={edgeTypes}
@@ -1029,18 +1286,20 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
         </ReactFlow>
       </div>
 
-      <RelationshipPanel
-        relationships={relationships} tables={tables} columnsByTable={columnsByTable}
-        connectionId={connectionId}
-        selectedRelId={selectedRelId} onSelect={setSelectedRelId}
-        onDelete={deleteRel} onChangeType={changeType}
-        onReload={reload}
-        onResetLayout={resetLayout}
-      />
+      {!isViewMode && (
+        <RelationshipPanel
+          relationships={effRelationships} tables={effTables} columnsByTable={effColumnsByTable}
+          connectionId={connectionId}
+          selectedRelId={selectedRelId} onSelect={setSelectedRelId}
+          onDelete={deleteRel} onChangeType={changeType}
+          onReload={reload}
+          onResetLayout={resetLayout}
+        />
+      )}
 
       {pendingConn && (
         <NewRelDialog
-          pending={pendingConn} tables={tables} allColumns={columnsByTable}
+          pending={pendingConn} tables={effTables} allColumns={effColumnsByTable}
           onConfirm={confirmNewRel} onCancel={() => setPendingConn(null)}
         />
       )}

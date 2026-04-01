@@ -5,11 +5,12 @@ import * as graph from '../db/semanticGraph';
 const router = Router();
 
 // ---------------------------------------------------------------------------
-// GET /api/cross-views — list all views
+// GET /api/cross-views — list all views (optionally filter by connectionId)
 // ---------------------------------------------------------------------------
-router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const views = await graph.getCrossSourceViews();
+    const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
+    const views = await graph.getCrossSourceViews(connectionId);
     res.json({ ok: true, data: views });
   } catch (err) { next(err); }
 });
@@ -19,10 +20,20 @@ router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request
 // ---------------------------------------------------------------------------
 router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, description } = req.body as { name: string; description?: string };
+    const { name, description, connectionId } = req.body as { name: string; description?: string; connectionId?: number };
     const pgId = await graph.nextPgId();
-    await graph.createCrossSourceView({ pgId, name, description: description ?? null, userId: req.user!.sub });
+    await graph.createCrossSourceView({ pgId, name, description: description ?? null, connectionId: connectionId ?? null, userId: req.user!.sub });
     res.status(201).json({ ok: true, data: { id: pgId } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/cross-views/related-tables/:tableId — 1-hop neighbourhood of a table
+// ---------------------------------------------------------------------------
+router.get('/related-tables/:tableId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const data = await graph.getRelatedTables(Number(req.params.tableId));
+    res.json({ ok: true, data });
   } catch (err) { next(err); }
 });
 

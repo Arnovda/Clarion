@@ -36,6 +36,13 @@ export interface Relationship {
   ai_draft: boolean;
 }
 
+export interface CrossSourceView {
+  id: number;
+  name: string;
+  description: string | null;
+  connection_id: number | null;
+}
+
 export interface KpiDefinition {
   id: number;
   connection_id: number;

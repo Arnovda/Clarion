@@ -565,6 +565,66 @@ export async function getRelationshipsBetweenTables(
   }
 }
 
+// Returns a source table and its 1-hop RELATES_TO neighbours, plus the edges.
+// Used by the relationship viewer to expand a table's neighbourhood on demand.
+export async function getRelatedTables(tablePgId: number): Promise<{
+  tables: Array<{ id: number; tableName: string; displayName: string; connectionId: number }>;
+  relationships: Array<{ id: number; fromTableId: number; fromColumnId: number | null; toTableId: number; toColumnId: number | null; relType: string; description: string | null }>;
+}> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (src:SourceTable {pgId: $pgId})-[r:RELATES_TO]-(neighbor:SourceTable)
+       RETURN neighbor.pgId         AS nPgId,
+              neighbor.tableName    AS nTableName,
+              neighbor.displayName  AS nDisplayName,
+              neighbor.connectionId AS nConnId,
+              r.pgId                AS rPgId,
+              startNode(r).pgId     AS fromId,
+              r.fromColPgId         AS fromColId,
+              endNode(r).pgId       AS toId,
+              r.toColPgId           AS toColId,
+              r.relType             AS relType,
+              r.description         AS description`,
+      { pgId: tablePgId },
+    );
+
+    const tablesMap = new Map<number, { id: number; tableName: string; displayName: string; connectionId: number }>();
+    const relsMap   = new Map<number, { id: number; fromTableId: number; fromColumnId: number | null; toTableId: number; toColumnId: number | null; relType: string; description: string | null }>();
+
+    for (const rec of result.records) {
+      const nId = toNum(rec.get('nPgId'));
+      if (!tablesMap.has(nId)) {
+        tablesMap.set(nId, {
+          id:           nId,
+          tableName:    String(rec.get('nTableName') ?? ''),
+          displayName:  String(rec.get('nDisplayName') ?? ''),
+          connectionId: toNum(rec.get('nConnId')),
+        });
+      }
+      const rId = toNum(rec.get('rPgId'));
+      if (!relsMap.has(rId)) {
+        relsMap.set(rId, {
+          id:           rId,
+          fromTableId:  toNum(rec.get('fromId')),
+          fromColumnId: rec.get('fromColId') != null ? toNum(rec.get('fromColId')) : null,
+          toTableId:    toNum(rec.get('toId')),
+          toColumnId:   rec.get('toColId') != null ? toNum(rec.get('toColId')) : null,
+          relType:      String(rec.get('relType') ?? ''),
+          description:  rec.get('description') != null ? String(rec.get('description')) : null,
+        });
+      }
+    }
+
+    return {
+      tables:        Array.from(tablesMap.values()),
+      relationships: Array.from(relsMap.values()),
+    };
+  } finally {
+    await session.close();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // KPI Definitions
 // ---------------------------------------------------------------------------
@@ -949,21 +1009,23 @@ export async function getJoinPaths(
 
 function mapCrossView(p: Record<string, unknown>): Record<string, unknown> {
   return {
-    id:          toNum(p.pgId),
-    name:        toStr(p.name),
-    description: toStr(p.description),
-    user_id:     toStr(p.userId),
-    created_at:  toStr(p.createdAt),
-    updated_at:  toStr(p.updatedAt),
+    id:            toNum(p.pgId),
+    name:          toStr(p.name),
+    description:   toStr(p.description),
+    connection_id: p.connectionId != null ? toNum(p.connectionId) : null,
+    user_id:       toStr(p.userId),
+    created_at:    toStr(p.createdAt),
+    updated_at:    toStr(p.updatedAt),
   };
 }
 
-export async function getCrossSourceViews(): Promise<Record<string, unknown>[]> {
+export async function getCrossSourceViews(connectionId?: number): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
-    const result = await session.run(
-      `MATCH (v:CrossSourceView) RETURN v ORDER BY v.updatedAt DESC`,
-    );
+    const cypher = connectionId != null
+      ? `MATCH (v:CrossSourceView {connectionId: $cid}) RETURN v ORDER BY v.updatedAt DESC`
+      : `MATCH (v:CrossSourceView) RETURN v ORDER BY v.updatedAt DESC`;
+    const result = await session.run(cypher, connectionId != null ? { cid: connectionId } : {});
     return result.records.map((r) => mapCrossView(r.get('v').properties as Record<string, unknown>));
   } finally {
     await session.close();
@@ -974,6 +1036,7 @@ export async function createCrossSourceView(params: {
   pgId: number;
   name: string;
   description?: string | null;
+  connectionId?: number | null;
   userId: string;
 }): Promise<number> {
   const session = getSession();
@@ -981,14 +1044,15 @@ export async function createCrossSourceView(params: {
   try {
     await session.run(
       `CREATE (v:CrossSourceView {
-         pgId:        $pgId,
-         name:        $name,
-         description: $description,
-         userId:      $userId,
-         createdAt:   $now,
-         updatedAt:   $now
+         pgId:         $pgId,
+         name:         $name,
+         description:  $description,
+         connectionId: $connectionId,
+         userId:       $userId,
+         createdAt:    $now,
+         updatedAt:    $now
        })`,
-      { pgId: params.pgId, name: params.name, description: params.description ?? null, userId: params.userId, now },
+      { pgId: params.pgId, name: params.name, description: params.description ?? null, connectionId: params.connectionId ?? null, userId: params.userId, now },
     );
     return params.pgId;
   } finally {
