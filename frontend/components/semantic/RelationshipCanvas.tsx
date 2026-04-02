@@ -3,7 +3,7 @@
 import dagre from 'dagre';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
-  Background, Controls,
+  Background, Controls, MiniMap,
   useNodesState, useEdgesState,
   Connection, Edge, Node, NodeProps,
   Handle, Position,
@@ -51,6 +51,9 @@ const getMeta = (t: string) =>
 interface TableNodeData {
   table:          SourceTable;
   columns:        SourceColumn[];
+  allColumnCount: number;              // total columns (before filtering)
+  relCount:       number;              // number of relationships this table participates in
+  searchDimmed:   boolean;             // true when search is active and this table doesn't match
   focused:        boolean;
   focusColId:     number | null;       // column the user clicked (blue tint)
   pairedColIds:   Set<number>;         // paired columns in column-focus mode (amber tint)
@@ -74,7 +77,7 @@ const HANDLE_STYLE = {
 };
 
 function TableNode({ data }: NodeProps<TableNodeData>) {
-  const { table, columns, focused, focusColId, pairedColIds, colSideMap,
+  const { table, columns, allColumnCount, relCount, searchDimmed, focused, focusColId, pairedColIds, colSideMap,
           onSelectTable, onSelectColumn,
           mode, viewId, onShowRelations, onRemoveFromView } = data;
   const borderColor = focused ? '#2563eb' : '#bfdbfe';
@@ -95,7 +98,10 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
 
   return (
     // Root: position:relative, NO overflow:hidden — handles can poke out the sides
-    <div style={{ position: 'relative', width: NODE_W, height: totalH }}>
+    <div style={{ position: 'relative', width: NODE_W, height: totalH,
+      opacity: searchDimmed ? 0.25 : 1, transition: 'opacity 0.2s',
+      pointerEvents: searchDimmed ? 'none' : 'auto',
+    }}>
 
       {/* ── Handles — positioned relative to the root div ── */}
       {/* Table-level (header) */}
@@ -142,8 +148,14 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {table.display_name || table.table_name}
           </p>
-          <p style={{ margin: '2px 0 0', color: '#93c5fd', fontSize: 10, fontFamily: 'monospace' }}>
-            {table.table_name} · {columns.length} cols
+          <p style={{ margin: '2px 0 0', color: '#93c5fd', fontSize: 10, fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>{table.table_name} · {columns.length === allColumnCount ? `${columns.length} cols` : `${columns.length}/${allColumnCount} cols`}</span>
+            {relCount > 0 && (
+              <span style={{
+                background: 'rgba(255,255,255,0.2)', padding: '0 5px', borderRadius: 99,
+                fontSize: 9, fontWeight: 700, color: '#fff', lineHeight: '16px',
+              }}>{relCount} rel{relCount !== 1 ? 's' : ''}</span>
+            )}
           </p>
           {table.ai_draft && (
             <span style={{
@@ -272,9 +284,15 @@ interface RelEdgeData {
   toLabel:    string;
   onSelect:   (id: number) => void;
   onHover:    (id: number | null) => void;
+  onDelete:   (id: number) => void;
+  onConfirm:  (id: number) => void;   // confirm AI draft
   hovered:    boolean;
-  dimmed:      boolean;  // true when a focus filter is active and this edge isn't highlighted
-  highlighted: boolean;  // true when a filter IS active and this edge IS part of the selection
+  dimmed:      boolean;
+  highlighted: boolean;
+  aiDraft:    boolean;                 // edge comes from AI suggestion
+  searchDimmed: boolean;               // dimmed by search filter
+  parallelOffset: number;              // curvature offset for fanning parallel edges (0 = default)
+  warnings:   string[];                // validation warnings to show as icons
 }
 
 function RelationshipEdge({
@@ -286,10 +304,15 @@ function RelationshipEdge({
   const isHovered     = data?.hovered     ?? false;
   const isDimmed      = data?.dimmed      ?? false;
   const isHighlighted = data?.highlighted ?? false;
+  const isAiDraft     = data?.aiDraft     ?? false;
+  const isSearchDim   = data?.searchDimmed ?? false;
+  const parallelOff   = data?.parallelOffset ?? 0;
+  const warnings      = data?.warnings ?? [];
+  const hasWarning    = warnings.length > 0;
   const active        = isSelected || isHovered;
-  const color         = active ? '#1d4ed8' : isDimmed ? '#cbd5e1' : meta.color;
-  const strokeW       = active ? 3.5 : isDimmed ? 1.5 : 2;
-  const opacity       = isDimmed ? 0.3 : 1;
+  const color         = active ? '#1d4ed8' : isDimmed || isSearchDim ? '#cbd5e1' : hasWarning && !isAiDraft ? '#ef4444' : isAiDraft ? '#f59e0b' : meta.color;
+  const strokeW       = active ? 3.5 : isDimmed || isSearchDim ? 1.5 : 2;
+  const opacity       = isDimmed || isSearchDim ? 0.15 : 1;
   const markerId      = `arr-${id}`;
 
   // N/1 label colours: grey unless this edge is explicitly highlighted
@@ -298,10 +321,14 @@ function RelationshipEdge({
   const srcLabelColor = meta.src === 'N' ? nColor : meta.src === '1' ? oColor : '#94a3b8';
   const tgtLabelColor = meta.tgt === 'N' ? nColor : meta.tgt === '1' ? oColor : '#94a3b8';
 
+  // Fan parallel edges apart by varying curvature
+  const baseCurvature = 0.35;
+  const curvature = baseCurvature + parallelOff * 0.45;
+
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX, sourceY, sourcePosition,
     targetX, targetY, targetPosition,
-    curvature: 0.35,
+    curvature,
   });
 
   return (
@@ -322,6 +349,11 @@ function RelationshipEdge({
         onClick={() => data?.onSelect(data.relId)}
         onMouseEnter={() => data?.onHover(data.relId)}
         onMouseLeave={() => data?.onHover(null)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (data && confirm('Delete this relationship?')) data.onDelete(data.relId);
+        }}
       />
 
       {/* Visible stroke */}
@@ -332,12 +364,17 @@ function RelationshipEdge({
         fill="none"
         stroke={color}
         strokeWidth={strokeW}
-        strokeDasharray={isSelected ? '7 4' : undefined}
+        strokeDasharray={isAiDraft ? '6 3' : isSelected ? '7 4' : undefined}
         markerEnd={`url(#${markerId})`}
         style={{ cursor: 'pointer', transition: 'stroke 0.15s, stroke-width 0.15s' }}
         onClick={() => data?.onSelect(data.relId)}
         onMouseEnter={() => data?.onHover(data.relId)}
         onMouseLeave={() => data?.onHover(null)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (data && confirm('Delete this relationship?')) data.onDelete(data.relId);
+        }}
       />
 
       <EdgeLabelRenderer>
@@ -369,6 +406,7 @@ function RelationshipEdge({
         <div className="nodrag nopan" style={{
           position: 'absolute', pointerEvents: 'all', cursor: 'pointer',
           transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
         }}
           onClick={() => data?.onSelect(data.relId)}
           onMouseEnter={() => data?.onHover(data.relId)}
@@ -377,18 +415,63 @@ function RelationshipEdge({
           <span style={{
             fontSize: 10, fontWeight: 700,
             color: 'white',
-            background: color,
+            background: isAiDraft && !active ? '#f59e0b' : color,
             padding: '2px 8px', borderRadius: 99,
-            border: `1.5px solid ${color}`,
+            border: `1.5px solid ${isAiDraft && !active ? '#f59e0b' : color}`,
             whiteSpace: 'nowrap',
             boxShadow: '0 1px 4px rgba(0,0,0,.12)',
             transition: 'all 0.15s',
-            opacity: active ? 1 : 0,
-            pointerEvents: active ? 'all' : 'none',
+            opacity: active || isAiDraft ? 1 : 0,
+            pointerEvents: active || isAiDraft ? 'all' : 'none',
           }}>
-            {meta.label}
+            {isAiDraft && !active ? 'draft' : meta.label}
           </span>
+          {/* Inline confirm / reject for AI draft edges */}
+          {isAiDraft && isHovered && (
+            <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
+              <button
+                onClick={(e) => { e.stopPropagation(); data?.onConfirm(data.relId); }}
+                title="Confirm relationship"
+                style={{
+                  width: 24, height: 24, borderRadius: '50%', border: '2px solid #16a34a',
+                  background: '#fff', color: '#16a34a', fontSize: 14, fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: '0 1px 4px rgba(0,0,0,.15)',
+                }}
+              >&#10003;</button>
+              <button
+                onClick={(e) => { e.stopPropagation(); data?.onDelete(data.relId); }}
+                title="Reject relationship"
+                style={{
+                  width: 24, height: 24, borderRadius: '50%', border: '2px solid #dc2626',
+                  background: '#fff', color: '#dc2626', fontSize: 14, fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  boxShadow: '0 1px 4px rgba(0,0,0,.15)',
+                }}
+              >&#10005;</button>
+            </div>
+          )}
         </div>
+
+        {/* Validation warning icon — always visible when there are warnings */}
+        {hasWarning && !isDimmed && !isSearchDim && (
+          <div className="nodrag nopan" style={{
+            position: 'absolute', pointerEvents: 'all',
+            transform: `translate(-50%,-50%) translate(${labelX + 40}px,${labelY}px)`,
+            cursor: 'default',
+          }}
+            title={warnings.join('\n')}
+          >
+            <div style={{
+              width: 20, height: 20, borderRadius: '50%',
+              background: '#fef2f2', border: '1.5px solid #fca5a5',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 1px 4px rgba(0,0,0,.1)',
+            }}>
+              <span style={{ fontSize: 12, color: '#dc2626', fontWeight: 800, lineHeight: 1 }}>!</span>
+            </div>
+          </div>
+        )}
 
         {/* Hover tooltip — appears above the centre label */}
         {isHovered && (
@@ -427,6 +510,17 @@ function RelationshipEdge({
                 <span style={{ color: '#94a3b8', fontSize: 10 }}>TO</span>
                 <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{data?.toLabel ?? '—'}</span>
               </div>
+              {/* Warnings */}
+              {warnings.length > 0 && (
+                <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #334155' }}>
+                  {warnings.map((w, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: i > 0 ? 2 : 0 }}>
+                      <span style={{ color: '#fca5a5', fontSize: 10 }}>⚠</span>
+                      <span style={{ color: '#fca5a5', fontSize: 10 }}>{w}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               {/* Arrow pointing down */}
               <div style={{
                 position: 'absolute', bottom: -6, left: '50%',
@@ -455,6 +549,47 @@ interface PendingConn {
   fromColId: number | null; toColId: number | null;
 }
 
+// ── Smart column matching: guesses FK→PK pair between two tables ──
+function guessColumnPair(
+  fromTable: SourceTable, toTable: SourceTable,
+  fromCols: SourceColumn[], toCols: SourceColumn[],
+): { fromColId: string; toColId: string; type: string } | null {
+  const toName = (toTable.table_name ?? '').toLowerCase().replace(/s$/, ''); // singular
+  const fromName = (fromTable.table_name ?? '').toLowerCase().replace(/s$/, '');
+
+  // Strategy 1: fromTable has {toTableName}_id → toTable has id
+  const fkCol = fromCols.find((c) => {
+    const cn = c.column_name.toLowerCase();
+    return cn === `${toName}_id` || cn === `${toName}id` || cn === `fk_${toName}`;
+  });
+  const pkCol = toCols.find((c) => {
+    const cn = c.column_name.toLowerCase();
+    return cn === 'id' || cn === `${toName}_id` || cn === `pk_${toName}`;
+  });
+  if (fkCol && pkCol) return { fromColId: String(fkCol.id), toColId: String(pkCol.id), type: 'many_to_one' };
+
+  // Strategy 2: reverse — toTable has {fromTableName}_id → fromTable has id
+  const revFk = toCols.find((c) => {
+    const cn = c.column_name.toLowerCase();
+    return cn === `${fromName}_id` || cn === `${fromName}id` || cn === `fk_${fromName}`;
+  });
+  const revPk = fromCols.find((c) => {
+    const cn = c.column_name.toLowerCase();
+    return cn === 'id' || cn === `${fromName}_id` || cn === `pk_${fromName}`;
+  });
+  if (revFk && revPk) return { fromColId: String(revPk.id), toColId: String(revFk.id), type: 'one_to_many' };
+
+  // Strategy 3: exact column name match (e.g. both have "product_id")
+  for (const fc of fromCols) {
+    const cn = fc.column_name.toLowerCase();
+    if (!cn.endsWith('_id') && !cn.endsWith('id')) continue;
+    const match = toCols.find((tc) => tc.column_name.toLowerCase() === cn);
+    if (match) return { fromColId: String(fc.id), toColId: String(match.id), type: 'many_to_one' };
+  }
+
+  return null;
+}
+
 function NewRelDialog({
   pending, tables, allColumns, onConfirm, onCancel,
 }: {
@@ -465,9 +600,23 @@ function NewRelDialog({
 }) {
   const ft = tables.find((t) => t.id === pending.fromTableId);
   const tt = tables.find((t) => t.id === pending.toTableId);
-  const [fromCol, setFromCol] = useState(pending.fromColId ? String(pending.fromColId) : '');
-  const [toCol,   setToCol]   = useState(pending.toColId   ? String(pending.toColId)   : '');
-  const [type,    setType]    = useState('many_to_one');
+
+  // Smart column matching — auto-suggest when no columns were explicitly dragged
+  const suggestion = useMemo(() => {
+    if (pending.fromColId || pending.toColId) return null;   // user already picked handles
+    if (!ft || !tt) return null;
+    return guessColumnPair(ft, tt, allColumns[ft.id] ?? [], allColumns[tt.id] ?? []);
+  }, [pending.fromColId, pending.toColId, ft, tt, allColumns]);
+
+  const [fromCol, setFromCol] = useState(
+    pending.fromColId ? String(pending.fromColId) : suggestion?.fromColId ?? '',
+  );
+  const [toCol, setToCol] = useState(
+    pending.toColId ? String(pending.toColId) : suggestion?.toColId ?? '',
+  );
+  const [type, setType] = useState(suggestion?.type ?? 'many_to_one');
+  const [showSuggestion, setShowSuggestion] = useState(!!suggestion);
+
   if (!ft || !tt) return null;
 
   return (
@@ -481,6 +630,24 @@ function NewRelDialog({
             <span className="font-semibold text-slate-700">{tt.display_name || tt.table_name}</span>
           </p>
         </div>
+
+        {/* Smart suggestion banner */}
+        {showSuggestion && suggestion && (
+          <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+            <span className="text-blue-500 text-sm mt-0.5">💡</span>
+            <div className="flex-1">
+              <p className="text-xs font-medium text-blue-700">Auto-detected column match</p>
+              <p className="text-[10px] text-blue-600 mt-0.5">
+                {(allColumns[ft.id] ?? []).find((c) => String(c.id) === suggestion.fromColId)?.column_name}
+                {' → '}
+                {(allColumns[tt.id] ?? []).find((c) => String(c.id) === suggestion.toColId)?.column_name}
+              </p>
+            </div>
+            <button onClick={() => {
+              setFromCol(''); setToCol(''); setType('many_to_one'); setShowSuggestion(false);
+            }} className="text-blue-400 hover:text-blue-600 text-xs" title="Dismiss suggestion">✕</button>
+          </div>
+        )}
 
         {([
           { label: 'From column', tid: pending.fromTableId, val: fromCol, set: setFromCol },
@@ -546,9 +713,11 @@ interface PanelProps {
   onChangeType: (id: number, type: string) => void;
   onReload: () => void;
   onResetLayout: () => void;
+  draftCount: number;
+  onStartDraftReview: () => void;
 }
 
-function RelationshipPanel({ relationships, tables, columnsByTable, connectionId, selectedRelId, onSelect, onDelete, onChangeType, onReload, onResetLayout }: PanelProps) {
+function RelationshipPanel({ relationships, tables, columnsByTable, connectionId, selectedRelId, onSelect, onDelete, onChangeType, onReload, onResetLayout, draftCount, onStartDraftReview }: PanelProps) {
   const [reSuggesting, setReSuggesting] = useState(false);
 
   async function handleReSuggest() {
@@ -610,6 +779,24 @@ function RelationshipPanel({ relationships, tables, columnsByTable, connectionId
               ↺ Layout
             </button>
           </div>
+        )}
+        {!sel && (
+          <button
+            onClick={onStartDraftReview}
+            disabled={draftCount === 0}
+            className={`w-full flex items-center justify-center gap-1.5 mt-2 py-2 text-xs font-semibold rounded-lg transition-colors ${
+              draftCount > 0
+                ? 'text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200'
+                : 'text-slate-400 bg-slate-50 border border-slate-200 cursor-default'
+            }`}
+          >
+            <span>⚡</span> Review all drafts
+            {draftCount > 0 ? (
+              <span className="ml-1 px-1.5 py-0 bg-amber-200 text-amber-800 rounded-full text-[10px] font-bold">{draftCount}</span>
+            ) : (
+              <span className="ml-1 text-[10px] text-slate-400">none</span>
+            )}
+          </button>
         )}
       </div>
 
@@ -814,28 +1001,40 @@ function buildNodes(
   onSelectTable:   (id: number) => void,
   onSelectColumn:  (tableId: number, colId: number) => void,
   viewMode?:       { mode: 'view'; viewId: number; onShowRelations: (id: number) => void; onRemoveFromView: (id: number) => void },
+  relationshipColIds?: Set<number>,
+  relCountMap?: Map<number, number>,   // table id → relationship count
+  searchDimmedIds?: Set<number>,       // tables that don't match the search query
 ): Node[] {
-  return tables.map((t, i) => ({
-    id:       String(t.id),
-    type:     'tableNode',
-    position: posMap.get(String(t.id)) ?? gridFallback(i),
-    data: {
-      table:          t,
-      columns:        columnsByTable[t.id] ?? [],
-      focused:        t.id === focusTableId,
-      focusColId,
-      pairedColIds,
-      colSideMap,
-      onSelectTable,
-      onSelectColumn,
-      ...(viewMode ? {
-        mode:              viewMode.mode,
-        viewId:            viewMode.viewId,
-        onShowRelations:   viewMode.onShowRelations,
-        onRemoveFromView:  viewMode.onRemoveFromView,
-      } : {}),
-    },
-  }));
+  return tables.map((t, i) => {
+    const allCols = columnsByTable[t.id] ?? [];
+    const cols = relationshipColIds
+      ? allCols.filter((c) => relationshipColIds.has(c.id))
+      : allCols;
+    return {
+      id:       String(t.id),
+      type:     'tableNode',
+      position: posMap.get(String(t.id)) ?? gridFallback(i),
+      data: {
+        table:          t,
+        columns:        cols,
+        allColumnCount: allCols.length,
+        relCount:       relCountMap?.get(t.id) ?? 0,
+        searchDimmed:   searchDimmedIds?.has(t.id) ?? false,
+        focused:        t.id === focusTableId,
+        focusColId,
+        pairedColIds,
+        colSideMap,
+        onSelectTable,
+        onSelectColumn,
+        ...(viewMode ? {
+          mode:              viewMode.mode,
+          viewId:            viewMode.viewId,
+          onShowRelations:   viewMode.onShowRelations,
+          onRemoveFromView:  viewMode.onRemoveFromView,
+        } : {}),
+      },
+    };
+  });
 }
 
 function buildEdges(
@@ -848,6 +1047,9 @@ function buildEdges(
   onSelect:         (id: number) => void,
   onHover:          (id: number | null) => void,
   highlightRelIds:  Set<number>,   // non-empty = filter active
+  onDelete:         (id: number) => void,
+  onConfirm:        (id: number) => void,
+  searchDimmedIds?: Set<number>,
 ): Edge[] {
   const hasFilter = highlightRelIds.size > 0;
   const tName = (id: number) => { const t = tables.find((t) => t.id === id); return t?.display_name || t?.table_name || ''; };
@@ -857,10 +1059,44 @@ function buildEdges(
     return c?.display_name || c?.column_name || null;
   };
 
+  // ── Parallel edge detection: group edges by table pair ──
+  const pairKey = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`;
+  const pairGroups = new Map<string, number[]>(); // key → list of rel ids
+  relationships.forEach((r) => {
+    const k = pairKey(r.from_table_id, r.to_table_id);
+    if (!pairGroups.has(k)) pairGroups.set(k, []);
+    pairGroups.get(k)!.push(r.id);
+  });
+  // For each rel, compute its offset within its parallel group: 0, ±1, ±2 …
+  const parallelOffsets = new Map<number, number>();
+  pairGroups.forEach((ids) => {
+    if (ids.length <= 1) { parallelOffsets.set(ids[0], 0); return; }
+    ids.forEach((id, i) => {
+      // Center the group around 0: e.g. 3 edges → offsets -1, 0, +1
+      const offset = i - (ids.length - 1) / 2;
+      parallelOffsets.set(id, offset);
+    });
+  });
+
+  // ── Validation warnings ──
+  // 1) Duplicate detection: same from_table+to_table+from_col+to_col
+  const dupKeys = new Map<string, number>();
+  const dupRelIds = new Set<number>();
+  relationships.forEach((r) => {
+    const dk = `${r.from_table_id}:${r.to_table_id}:${r.from_column_id ?? ''}:${r.to_column_id ?? ''}`;
+    if (dupKeys.has(dk)) { dupRelIds.add(r.id); dupRelIds.add(dupKeys.get(dk)!); }
+    else dupKeys.set(dk, r.id);
+  });
+
+  // 2) Build a quick set of existing column IDs per table for orphan detection
+  const colIdSets = new Map<number, Set<number>>();
+  for (const [tid, cols] of Object.entries(columnsByTable)) {
+    colIdSets.set(Number(tid), new Set(cols.map((c) => c.id)));
+  }
+
   return relationships.map((r) => {
     const srcPos  = posMap.get(String(r.from_table_id));
     const tgtPos  = posMap.get(String(r.to_table_id));
-    // source is to the RIGHT of target → exit left side, enter right side
     const srcIsRight = srcPos && tgtPos ? srcPos.x > tgtPos.x : false;
 
     const srcHandle = r.from_column_id
@@ -874,6 +1110,24 @@ function buildEdges(
     const tc = cName(r.to_table_id,   r.to_column_id);
     const fromLabel = fc ? `${tName(r.from_table_id)}.${fc}` : tName(r.from_table_id);
     const toLabel   = tc ? `${tName(r.to_table_id)}.${tc}`   : tName(r.to_table_id);
+
+    // Compute warnings
+    const warnings: string[] = [];
+    if (!r.from_column_id && !r.to_column_id) {
+      warnings.push('No column assignment — join columns not specified');
+    } else if (!r.from_column_id || !r.to_column_id) {
+      warnings.push('Partial column assignment — one side is missing');
+    }
+    if (dupRelIds.has(r.id)) {
+      warnings.push('Exact duplicate — identical join already exists (same tables + same columns)');
+    }
+    // Orphan FK: column ID references a column not present in the table
+    if (r.from_column_id && colIdSets.has(r.from_table_id) && !colIdSets.get(r.from_table_id)!.has(r.from_column_id)) {
+      warnings.push('Orphan FK — from-column not found in source table');
+    }
+    if (r.to_column_id && colIdSets.has(r.to_table_id) && !colIdSets.get(r.to_table_id)!.has(r.to_column_id)) {
+      warnings.push('Orphan FK — to-column not found in target table');
+    }
 
     return {
       id:           `rel-${r.id}`,
@@ -889,8 +1143,12 @@ function buildEdges(
         hovered:   r.id === hoveredRelId,
         dimmed:      hasFilter && !highlightRelIds.has(r.id),
         highlighted: hasFilter &&  highlightRelIds.has(r.id),
+        aiDraft:     r.ai_draft ?? false,
+        searchDimmed: searchDimmedIds ? (searchDimmedIds.has(r.from_table_id) && searchDimmedIds.has(r.to_table_id)) : false,
+        parallelOffset: parallelOffsets.get(r.id) ?? 0,
+        warnings,
         fromLabel, toLabel,
-        onSelect, onHover,
+        onSelect, onHover, onDelete, onConfirm,
       },
     };
   });
@@ -921,14 +1179,22 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
   const [hoveredRelId,  setHoveredRelId]  = useState<number | null>(null);
   const [pendingConn,   setPendingConn]   = useState<PendingConn | null>(null);
 
+  // ── Compact mode: only show relationship columns ──
+  const [compactMode, setCompactMode] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // ── Bulk draft review mode ──
+  const [draftReviewActive, setDraftReviewActive] = useState(false);
+  const [draftReviewIdx, setDraftReviewIdx]       = useState(0);
+
   // ── Custom-view mode state ──
   const isViewMode = viewId != null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [viewDetail, setViewDetail] = useState<any>(null);
   const viewTables = useMemo<SourceTable[]>(() => {
-    if (!isViewMode || !viewDetail?.tables) return [];
+    if (!isViewMode || !viewDetail?.viewTables) return [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return viewDetail.tables.map((vt: any) => ({
+    return viewDetail.viewTables.map((vt: any) => ({
       id: vt.table_id,
       connection_id: 0,
       table_name: vt.table_name,
@@ -939,14 +1205,18 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     }));
   }, [isViewMode, viewDetail]);
   const viewColumnsByTable = useMemo<Record<number, SourceColumn[]>>(() => {
-    if (!isViewMode || !viewDetail?.tables) return {};
+    if (!isViewMode || !viewDetail?.viewTables) return {};
     const map: Record<number, SourceColumn[]> = {};
+    // Columns arrive as a flat array with table_id on each entry
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    viewDetail.tables.forEach((vt: any) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      map[vt.table_id] = (vt.columns ?? []).map((c: any) => ({
+    const allCols: any[] = viewDetail.columns ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const c of allCols) {
+      const tid = c.table_id;
+      if (!map[tid]) map[tid] = [];
+      map[tid].push({
         id: c.id ?? c.column_id,
-        table_id: vt.table_id,
+        table_id: tid,
         column_name: c.column_name,
         display_name: c.display_name || c.column_name,
         description: c.description ?? '',
@@ -955,8 +1225,8 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
         is_dimension: c.is_dimension ?? false,
         is_measure: c.is_measure ?? false,
         ai_draft: c.ai_draft ?? false,
-      }));
-    });
+      } as SourceColumn);
+    }
     return map;
   }, [isViewMode, viewDetail]);
   const viewRelationships = useMemo<Relationship[]>(() => {
@@ -1008,9 +1278,9 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
 
   // Seed posMap from view detail pos_x/pos_y
   useEffect(() => {
-    if (!isViewMode || !viewDetail?.tables) return;
+    if (!isViewMode || !viewDetail?.viewTables) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    viewDetail.tables.forEach((vt: any) => {
+    viewDetail.viewTables.forEach((vt: any) => {
       if (vt.pos_x != null && vt.pos_y != null) {
         posMap.current.set(String(vt.table_id), { x: vt.pos_x, y: vt.pos_y });
       }
@@ -1072,19 +1342,21 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     if (!viewId) return;
     try {
       const res = await api.get(`/cross-views/related-tables/${tableId}`);
-      const related = res.data.data ?? res.data ?? [];
+      const payload = res.data.data ?? res.data ?? {};
+      const relatedTables: any[] = payload.tables ?? payload ?? []; // eslint-disable-line @typescript-eslint/no-explicit-any
       const existingIds = new Set(viewTables.map((t) => t.id));
-      // Source table position
       const srcPos = posMap.current.get(String(tableId)) ?? { x: 400, y: 300 };
-      const RADIUS = 350;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const toAdd = related.filter((rt: any) => !existingIds.has(rt.table_id ?? rt.id));
+      const toAdd = relatedTables.filter((rt: any) => !existingIds.has(rt.id));
+      if (toAdd.length === 0) return;
+
+      // Place related tables in a circle around the source.
+      const RADIUS = Math.max(350, toAdd.length * 60);
       await Promise.all(toAdd.map((rt: any, i: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-        const angle = (2 * Math.PI * i) / (toAdd.length || 1);
+        const angle = (2 * Math.PI * i) / toAdd.length - Math.PI / 2; // start at top
         const posX = Math.round(srcPos.x + RADIUS * Math.cos(angle));
         const posY = Math.round(srcPos.y + RADIUS * Math.sin(angle));
-        const tId = rt.table_id ?? rt.id;
-        return api.post(`/cross-views/${viewId}/tables`, { tableId: tId, posX, posY });
+        return api.post(`/cross-views/${viewId}/tables`, { tableId: rt.id, posX, posY });
       }));
       await reloadViewDetail();
     } catch { /* ignore */ }
@@ -1097,6 +1369,31 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
       await reloadViewDetail();
     } catch { /* ignore */ }
   }, [viewId, reloadViewDetail]);
+
+  // ── API (all-tables mode) ──
+  const reload = useCallback(async () => {
+    if (isViewMode) return; // view mode uses reloadViewDetail instead
+    const res = await api.get(`/semantic/relationships?connectionId=${connectionId}`);
+    setRelationships(res.data.data);
+  }, [connectionId, isViewMode]);
+
+  useEffect(() => { if (!isViewMode) reload(); }, [reload, isViewMode]);
+
+  const deleteRel = useCallback(async (id: number) => {
+    await api.delete(`/semantic/relationships/${id}`);
+    if (isViewMode) await reloadViewDetail(); else await reload();
+  }, [reload, isViewMode, reloadViewDetail]);
+
+  const confirmRel = useCallback(async (id: number) => {
+    await api.patch(`/semantic/relationships/${id}`, { ai_draft: false });
+    if (isViewMode) await reloadViewDetail(); else await reload();
+  }, [reload, isViewMode, reloadViewDetail]);
+
+  // ── Draft review: computed list of drafts ──
+  const draftRels = useMemo(() => effRelationships.filter((r) => r.ai_draft), [effRelationships]);
+  const currentDraft = draftReviewActive && draftRels.length > 0
+    ? draftRels[Math.min(draftReviewIdx, draftRels.length - 1)]
+    : null;
 
   // ── Rebuild graph whenever any relevant data changes ──
   const rebuildGraph = useCallback(() => {
@@ -1112,23 +1409,56 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     const viewModeArg = isViewMode && viewId
       ? { mode: 'view' as const, viewId, onShowRelations: handleShowRelations, onRemoveFromView: handleRemoveFromView }
       : undefined;
+
+    // Compact mode: collect column IDs that participate in any relationship
+    let relColIds: Set<number> | undefined;
+    if (compactMode) {
+      relColIds = new Set<number>();
+      for (const r of effRelationships) {
+        if (r.from_column_id) relColIds.add(r.from_column_id);
+        if (r.to_column_id) relColIds.add(r.to_column_id);
+      }
+    }
+
+    // Relationship count per table
+    const relCountMap = new Map<number, number>();
+    for (const r of effRelationships) {
+      relCountMap.set(r.from_table_id, (relCountMap.get(r.from_table_id) ?? 0) + 1);
+      relCountMap.set(r.to_table_id,   (relCountMap.get(r.to_table_id)   ?? 0) + 1);
+    }
+
+    // Search filter: dim tables that don't match
+    let searchDimmedIds: Set<number> | undefined;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      searchDimmedIds = new Set<number>();
+      for (const t of effTables) {
+        const name = (t.display_name || t.table_name || '').toLowerCase();
+        if (!name.includes(q)) searchDimmedIds.add(t.id);
+      }
+    }
+
     const newNodes = buildNodes(
       effTables, effColumnsByTable, posMap.current,
       focusTableId ?? null, focusColumnId ?? null,
       pairedColIds, colSideMap,
       selTable, selColumn,
       viewModeArg,
+      relColIds,
+      relCountMap,
+      searchDimmedIds,
     );
     setNodes(newNodes);
     setEdges(buildEdges(
       effRelationships, effTables, effColumnsByTable,
       posMap.current, selectedRelId, hoveredRelId,
       setSelectedRelId, setHoveredRelId,
-      highlightRelIds,
+      highlightRelIds, deleteRel, confirmRel,
+      searchDimmedIds,
     ));
   }, [effTables, effColumnsByTable, focusTableId, focusColumnId, effRelationships, selectedRelId, hoveredRelId,
       highlightRelIds, pairedColIds, colSideMap, onSelectTable, onSelectColumn,
-      isViewMode, viewId, handleShowRelations, handleRemoveFromView]);
+      isViewMode, viewId, handleShowRelations, handleRemoveFromView, compactMode, deleteRel, confirmRel, searchQuery]);
 
   useEffect(() => { rebuildGraph(); }, [rebuildGraph]);
 
@@ -1141,19 +1471,22 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     setTimeout(() => fitView({ duration: 600, padding: 0.2 }), 50);
   }
 
-  // ── API (all-tables mode) ──
-  const reload = useCallback(async () => {
-    if (isViewMode) return; // view mode uses reloadViewDetail instead
-    const res = await api.get(`/semantic/relationships?connectionId=${connectionId}`);
-    setRelationships(res.data.data);
-  }, [connectionId, isViewMode]);
-
-  useEffect(() => { if (!isViewMode) reload(); }, [reload, isViewMode]);
-
-  const deleteRel = useCallback(async (id: number) => {
-    await api.delete(`/semantic/relationships/${id}`);
-    if (isViewMode) await reloadViewDetail(); else await reload();
-  }, [reload, isViewMode, reloadViewDetail]);
+  // ── Draft review: zoom to current draft relationship ──
+  useEffect(() => {
+    if (!currentDraft) return;
+    // Select the current draft and zoom to both connected tables
+    setSelectedRelId(currentDraft.id);
+    const t = setTimeout(() => {
+      fitView({
+        nodes: [
+          { id: String(currentDraft.from_table_id) },
+          { id: String(currentDraft.to_table_id) },
+        ],
+        duration: 500, padding: 0.35, maxZoom: 1.1,
+      });
+    }, 100);
+    return () => clearTimeout(t);
+  }, [currentDraft, fitView]);
 
   const changeType = useCallback(async (id: number, type: string) => {
     await api.patch(`/semantic/relationships/${id}`, { relationship_type: type });
@@ -1194,25 +1527,29 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
         effRelationships, effTables, effColumnsByTable,
         posMap.current, selectedRelId, hoveredRelId,
         setSelectedRelId, setHoveredRelId,
-        highlightRelIds,
+        highlightRelIds, deleteRel, confirmRel,
       ));
     }
-  }, [onNodesChange, effRelationships, effTables, effColumnsByTable, selectedRelId, hoveredRelId, highlightRelIds, isViewMode, viewId]);
+  }, [onNodesChange, effRelationships, effTables, effColumnsByTable, selectedRelId, hoveredRelId, highlightRelIds, isViewMode, viewId, deleteRel, confirmRel]);
 
   // ── Drop handler (view mode): add a table from the left panel ──
   const handleDrop = useCallback(async (event: React.DragEvent) => {
     if (!isViewMode || !viewId) return;
     event.preventDefault();
-    const tableIdStr = event.dataTransfer.getData('application/x-table-id');
+    const tableIdStr = event.dataTransfer.getData('application/x-table-id')
+      || event.dataTransfer.getData('text/plain');
     if (!tableIdStr) return;
     const tableId = Number(tableIdStr);
-    // Check if already in view
+    if (isNaN(tableId) || tableId <= 0) return;
     if (viewTables.some((t) => t.id === tableId)) return;
-    const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    let posX = 100, posY = 100;
     try {
-      await api.post(`/cross-views/${viewId}/tables`, {
-        tableId, posX: Math.round(flowPos.x), posY: Math.round(flowPos.y),
-      });
+      const flowPos = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      posX = Math.round(flowPos.x);
+      posY = Math.round(flowPos.y);
+    } catch { /* empty state — no ReactFlow mounted yet */ }
+    try {
+      await api.post(`/cross-views/${viewId}/tables`, { tableId, posX, posY });
       await reloadViewDetail();
     } catch { /* ignore */ }
   }, [isViewMode, viewId, viewTables, screenToFlowPosition, reloadViewDetail]);
@@ -1220,6 +1557,7 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
   const handleDragOver = useCallback((event: React.DragEvent) => {
     if (!isViewMode) return;
     event.preventDefault();
+    event.stopPropagation();
     event.dataTransfer.dropEffect = 'copy';
   }, [isViewMode]);
 
@@ -1244,6 +1582,31 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
     if (isViewMode) await reloadViewDetail(); else await reload();
   }
 
+  // ── Keyboard shortcuts: Delete = remove selected rel, Esc = deselect, C = toggle compact ──
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input/textarea/select
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedRelId) {
+          e.preventDefault();
+          if (confirm('Delete this relationship?')) deleteRel(selectedRelId);
+          setSelectedRelId(null);
+        }
+      } else if (e.key === 'Escape') {
+        setSelectedRelId(null);
+        setHoveredRelId(null);
+        onClearSelection?.();
+      } else if (e.key === 'c' || e.key === 'C') {
+        setCompactMode((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [selectedRelId, deleteRel, onClearSelection]);
+
   // ── Empty state for custom view mode ──
   if (isViewMode && viewTables.length === 0 && viewDetail) {
     return (
@@ -1264,13 +1627,15 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
 
   return (
     <div className="flex flex-1 min-h-0" style={{ height: '100%' }}>
-      <div className="flex-1 relative" onDragOver={handleDragOver} onDrop={handleDrop}>
+      <div className="flex-1 relative">
         <ReactFlow
           nodes={nodes} edges={edges}
           nodeTypes={nodeTypes} edgeTypes={edgeTypes}
           onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
           onPaneClick={() => {
             setSelectedRelId(null);
             setHoveredRelId(null);
@@ -1279,11 +1644,227 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
           connectionMode={ConnectionMode.Loose}
           fitView fitViewOptions={{ padding: 0.2 }}
           minZoom={0.15} maxZoom={1.5}
+          deleteKeyCode={null}
         >
           <Background color="#e2e8f0" gap={24} size={1} />
           <Controls showInteractive={false} />
+          <MiniMap
+            nodeColor={(n) => {
+              if (n.data?.focused) return '#2563eb';
+              // Colour intensity by relationship count: 0 rels = light, 5+ = darkest
+              const rc = Math.min(n.data?.relCount ?? 0, 5);
+              const lightness = 70 - rc * 8; // 70% → 30%
+              return `hsl(222, 80%, ${lightness}%)`;
+            }}
+            nodeStrokeColor="#bfdbfe"
+            maskColor="rgba(241,245,249,0.7)"
+            style={{ borderRadius: 8, border: '1px solid #e2e8f0' }}
+          />
           <CanvasController zoomToTableId={zoomToTableId ?? null} />
         </ReactFlow>
+
+        {/* ── Toolbar: search + compact toggle ── */}
+        <div style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 10,
+          display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          {/* Search input */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"
+              style={{ position: 'absolute', left: 8, pointerEvents: 'none' }}>
+              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Filter tables…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: searchQuery ? 180 : 140,
+                padding: '6px 8px 6px 28px',
+                border: '1px solid #cbd5e1',
+                borderRadius: 8,
+                fontSize: 12,
+                background: '#fff',
+                outline: 'none',
+                boxShadow: '0 1px 4px rgba(0,0,0,.1)',
+                transition: 'width 0.2s',
+              }}
+              onFocus={(e) => (e.currentTarget.style.borderColor = '#93c5fd')}
+              onBlur={(e) => (e.currentTarget.style.borderColor = '#cbd5e1')}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#94a3b8', fontSize: 14, lineHeight: 1, padding: 2,
+                }}
+                title="Clear search"
+              >×</button>
+            )}
+          </div>
+
+          {/* Compact mode toggle */}
+          <button
+            onClick={() => setCompactMode((v) => !v)}
+            title={compactMode ? 'Show all columns (C)' : 'Show only relationship columns (C)'}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '6px 12px',
+              background: compactMode ? '#1e40af' : '#fff',
+              color: compactMode ? '#fff' : '#475569',
+              border: compactMode ? '1px solid #1e40af' : '1px solid #cbd5e1',
+              borderRadius: 8,
+              fontSize: 12, fontWeight: 600,
+              cursor: 'pointer',
+              boxShadow: '0 1px 4px rgba(0,0,0,.1)',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 3H3v7h18V3zM21 14H3v7h18v-7z" />
+            </svg>
+            {compactMode ? 'Compact' : 'Full'}
+          </button>
+        </div>
+
+        {/* ── Draft review floating panel ── */}
+        {draftReviewActive && currentDraft && (() => {
+          const meta = getMeta(currentDraft.relationship_type);
+          const idx  = Math.min(draftReviewIdx, draftRels.length - 1);
+          const tNameFn = (id: number) => {
+            const t = effTables.find((t) => t.id === id);
+            return t?.display_name || t?.table_name || '—';
+          };
+          const cNameFn = (tid: number, cid: number | null) => {
+            if (!cid) return null;
+            const c = (effColumnsByTable[tid] ?? []).find((c) => c.id === cid);
+            return c?.display_name || c?.column_name || null;
+          };
+          const fc = cNameFn(currentDraft.from_table_id, currentDraft.from_column_id);
+          const tc = cNameFn(currentDraft.to_table_id, currentDraft.to_column_id);
+
+          return (
+            <div style={{
+              position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 30, background: '#fff', borderRadius: 16,
+              border: '1px solid #e2e8f0', boxShadow: '0 8px 32px rgba(0,0,0,.15)',
+              padding: '16px 20px', minWidth: 420, maxWidth: 520,
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>⚡</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>Review AI Drafts</span>
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, color: '#64748b',
+                    background: '#f1f5f9', padding: '2px 8px', borderRadius: 99,
+                  }}>{idx + 1} / {draftRels.length}</span>
+                </div>
+                <button
+                  onClick={() => { setDraftReviewActive(false); setSelectedRelId(null); }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', fontSize: 18, lineHeight: 1 }}
+                  title="Exit review"
+                >×</button>
+              </div>
+
+              {/* Relationship detail */}
+              <div style={{
+                background: '#f8fafc', borderRadius: 10, padding: '10px 14px', marginBottom: 12,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>
+                    {tNameFn(currentDraft.from_table_id)}
+                    {fc && <span style={{ fontFamily: 'monospace', color: '#64748b', fontWeight: 500 }}>.{fc}</span>}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, paddingLeft: 4 }}>
+                  <span style={{ fontSize: 11, fontWeight: 800, color: meta.color }}>{meta.src}</span>
+                  <div style={{ flex: 1, height: 1.5, background: meta.color, borderRadius: 1 }} />
+                  <span style={{ fontSize: 9, color: meta.color, fontWeight: 700 }}>{meta.label}</span>
+                  <div style={{ flex: 1, height: 1.5, background: meta.color, borderRadius: 1 }} />
+                  <span style={{ fontSize: 11, fontWeight: 800, color: meta.color }}>{meta.tgt}</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#334155' }}>
+                    {tNameFn(currentDraft.to_table_id)}
+                    {tc && <span style={{ fontFamily: 'monospace', color: '#64748b', fontWeight: 500 }}>.{tc}</span>}
+                  </span>
+                </div>
+              </div>
+
+              {/* Action buttons */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  onClick={async () => {
+                    await confirmRel(currentDraft.id);
+                    // Stay on same index — list will shrink, so next draft slides in
+                  }}
+                  style={{
+                    flex: 1, padding: '8px 0', borderRadius: 8, border: '2px solid #16a34a',
+                    background: '#f0fdf4', color: '#16a34a', fontWeight: 700, fontSize: 12,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                  }}
+                >✓ Confirm</button>
+                <button
+                  onClick={async () => {
+                    await deleteRel(currentDraft.id);
+                    // Same — list shrinks
+                  }}
+                  style={{
+                    flex: 1, padding: '8px 0', borderRadius: 8, border: '2px solid #dc2626',
+                    background: '#fef2f2', color: '#dc2626', fontWeight: 700, fontSize: 12,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                  }}
+                >✗ Delete</button>
+                <button
+                  onClick={() => setDraftReviewIdx((i) => Math.min(i + 1, draftRels.length - 1))}
+                  disabled={idx >= draftRels.length - 1}
+                  style={{
+                    padding: '8px 14px', borderRadius: 8, border: '1px solid #cbd5e1',
+                    background: '#fff', color: '#475569', fontWeight: 600, fontSize: 12,
+                    cursor: idx >= draftRels.length - 1 ? 'default' : 'pointer',
+                    opacity: idx >= draftRels.length - 1 ? 0.4 : 1,
+                  }}
+                >Skip →</button>
+              </div>
+
+              {/* Progress bar */}
+              <div style={{ marginTop: 10, height: 3, background: '#e2e8f0', borderRadius: 2, overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', background: '#16a34a', borderRadius: 2,
+                  width: `${Math.round(((idx + 1) / draftRels.length) * 100)}%`,
+                  transition: 'width 0.3s',
+                }} />
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Exit review when all drafts are done */}
+        {draftReviewActive && draftRels.length === 0 && (() => {
+          return (
+            <div style={{
+              position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
+              zIndex: 30, background: '#fff', borderRadius: 16,
+              border: '1px solid #e2e8f0', boxShadow: '0 8px 32px rgba(0,0,0,.15)',
+              padding: '20px 24px', textAlign: 'center', minWidth: 320,
+            }}>
+              <span style={{ fontSize: 28 }}>🎉</span>
+              <p style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', marginTop: 8 }}>All drafts reviewed!</p>
+              <p style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>Every relationship has been confirmed or removed.</p>
+              <button
+                onClick={() => { setDraftReviewActive(false); setSelectedRelId(null); }}
+                style={{
+                  marginTop: 12, padding: '8px 20px', borderRadius: 8,
+                  background: '#1e40af', color: '#fff', fontWeight: 600, fontSize: 12,
+                  cursor: 'pointer', border: 'none',
+                }}
+              >Done</button>
+            </div>
+          );
+        })()}
       </div>
 
       {!isViewMode && (
@@ -1294,6 +1875,8 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
           onDelete={deleteRel} onChangeType={changeType}
           onReload={reload}
           onResetLayout={resetLayout}
+          draftCount={draftRels.length}
+          onStartDraftReview={() => { setDraftReviewIdx(0); setDraftReviewActive(true); }}
         />
       )}
 

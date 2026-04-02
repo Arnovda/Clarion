@@ -69,6 +69,21 @@ router.patch('/columns/:id', requireAuth, requireRole('epicdata_admin'), async (
 // Relationships
 // ---------------------------------------------------------------------------
 
+// GET /api/semantic/paths?connectionId=1&fromTableId=2&toTableId=3
+router.get('/paths', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const connectionId = Number(req.query.connectionId);
+    const fromTableId  = Number(req.query.fromTableId);
+    const toTableId    = Number(req.query.toTableId);
+    if (!connectionId || !fromTableId || !toTableId) {
+      res.status(400).json({ ok: false, error: 'connectionId, fromTableId and toTableId required' });
+      return;
+    }
+    const result = await graph.findAllShortestPaths(connectionId, fromTableId, toTableId);
+    res.json({ ok: true, data: result });
+  } catch (err) { next(err); }
+});
+
 // GET /api/semantic/relationships?connectionId=1
 router.get('/relationships', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {

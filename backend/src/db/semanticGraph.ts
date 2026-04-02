@@ -475,18 +475,20 @@ export async function updateRelationship(
     await session.run(
       `MATCH ()-[r:RELATES_TO {pgId: $pgId}]->()
        SET r.relType     = COALESCE($relType, r.relType),
-           r.description = $description,
-           r.fromColPgId = $fromColPgId,
-           r.fromColName = $fromColName,
-           r.toColPgId   = $toColPgId,
-           r.toColName   = $toColName,
+           r.description = COALESCE($description, r.description),
+           r.fromColPgId = CASE WHEN $hasFromCol THEN $fromColPgId ELSE r.fromColPgId END,
+           r.fromColName = CASE WHEN $hasFromCol THEN $fromColName ELSE r.fromColName END,
+           r.toColPgId   = CASE WHEN $hasToCol   THEN $toColPgId   ELSE r.toColPgId   END,
+           r.toColName   = CASE WHEN $hasToCol   THEN $toColName   ELSE r.toColName   END,
            r.aiDraft     = false`,
       {
         pgId,
         relType:     patch.relationship_type ?? null,
         description: patch.description       ?? null,
+        hasFromCol:  patch.fromColumnPgId !== undefined,
         fromColPgId: patch.fromColumnPgId    !== undefined ? patch.fromColumnPgId : null,
         fromColName: patch.fromColName       !== undefined ? patch.fromColName    : null,
+        hasToCol:    patch.toColumnPgId   !== undefined,
         toColPgId:   patch.toColumnPgId      !== undefined ? patch.toColumnPgId   : null,
         toColName:   patch.toColName         !== undefined ? patch.toColName      : null,
       },
@@ -998,6 +1000,81 @@ export async function getJoinPaths(
       }
     }
     return paths;
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Path finder — all shortest paths between two tables
+// ---------------------------------------------------------------------------
+
+export interface PathFinderResult {
+  paths: {
+    tables: { pgId: number; tableName: string; displayName: string }[];
+    relationships: {
+      pgId: number;
+      fromTablePgId: number;
+      fromColPgId: number | null;
+      fromColName: string | null;
+      toTablePgId: number;
+      toColPgId: number | null;
+      toColName: string | null;
+      relType: string;
+    }[];
+  }[];
+}
+
+export async function findAllShortestPaths(
+  connectionId: number,
+  fromTablePgId: number,
+  toTablePgId: number,
+): Promise<PathFinderResult> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (a:SourceTable {connectionId: $cid, pgId: $from}),
+            (b:SourceTable {connectionId: $cid, pgId: $to})
+       MATCH path = allShortestPaths((a)-[:RELATES_TO*..8]-(b))
+       RETURN [n IN nodes(path) | {
+                pgId: n.pgId,
+                tableName: n.tableName,
+                displayName: n.displayName
+              }] AS tables,
+              [r IN relationships(path) | {
+                pgId: r.pgId,
+                fromTablePgId: startNode(r).pgId,
+                fromColPgId: r.fromColPgId,
+                fromColName: r.fromColName,
+                toTablePgId: endNode(r).pgId,
+                toColPgId: r.toColPgId,
+                toColName: r.toColName,
+                relType: r.relType
+              }] AS rels
+       LIMIT 10`,
+      { cid: connectionId, from: fromTablePgId, to: toTablePgId },
+    );
+
+    const paths = result.records.map((rec) => {
+      const tables = (rec.get('tables') as Record<string, unknown>[]).map((t) => ({
+        pgId:        toNum(t.pgId),
+        tableName:   toStr(t.tableName),
+        displayName: toStr(t.displayName),
+      }));
+      const relationships = (rec.get('rels') as Record<string, unknown>[]).map((r) => ({
+        pgId:          toNum(r.pgId),
+        fromTablePgId: toNum(r.fromTablePgId),
+        fromColPgId:   r.fromColPgId != null ? toNum(r.fromColPgId) : null,
+        fromColName:   r.fromColName != null ? toStr(r.fromColName) : null,
+        toTablePgId:   toNum(r.toTablePgId),
+        toColPgId:     r.toColPgId != null ? toNum(r.toColPgId) : null,
+        toColName:     r.toColName != null ? toStr(r.toColName) : null,
+        relType:       toStr(r.relType),
+      }));
+      return { tables, relationships };
+    });
+
+    return { paths };
   } finally {
     await session.close();
   }

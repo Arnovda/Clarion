@@ -7,12 +7,13 @@ import DatabaseTree from '@/components/semantic/DatabaseTree';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
 import KpiPanel from '@/components/semantic/KpiPanel';
+import PathFinderPanel from '@/components/semantic/PathFinderPanel';
 import QualityPanel from '@/components/QualityPanel';
 import IntegrationsPanel from '@/components/IntegrationsPanel';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'kpis' | 'quality' | 'integrations';
+type MainTab = 'definitions' | 'relationships' | 'pathfinder' | 'kpis' | 'quality' | 'integrations';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
@@ -234,6 +235,7 @@ function SemanticInner() {
         {tabBtn('definitions', 'Tables & Columns')}
         {tabBtn('quality', 'Quality')}
         {tabBtn('relationships', 'Relationships')}
+        {tabBtn('pathfinder', 'Path Finder')}
         {tabBtn('integrations', 'Integrations')}
         {tabBtn('kpis', 'KPIs')}
       </div>
@@ -257,7 +259,7 @@ function SemanticInner() {
         </div>
 
         {/* Right panel — overflow-hidden for canvas tabs so flex heights propagate correctly */}
-        <div className={`flex-1 min-h-0 flex flex-col ${tab === 'integrations' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+        <div className={`flex-1 min-h-0 flex flex-col ${tab === 'integrations' || tab === 'pathfinder' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
           {tab === 'definitions' && (
             selectedTable ? (
               <TableDetailPanel
@@ -332,6 +334,16 @@ function SemanticInner() {
                   +
                 </button>
               </div>
+            </div>
+          )}
+
+          {tab === 'pathfinder' && (
+            <div className="flex-1 min-h-0 flex flex-col" style={{ height: '100%' }}>
+              <PathFinderPanel
+                connectionId={String(activeConnId ?? '')}
+                tables={activeConnId ? (tablesByConn[activeConnId] ?? []) : []}
+                columnsByTable={columnsByTable}
+              />
             </div>
           )}
 

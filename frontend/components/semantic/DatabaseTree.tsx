@@ -126,9 +126,10 @@ export default function DatabaseTree({
                             }`}
                             draggable
                             onDragStart={(e) => {
-                              e.dataTransfer.effectAllowed = 'copy';
+                              e.dataTransfer.effectAllowed = 'copyMove';
                               e.dataTransfer.setData('application/x-table-id', String(table.id));
                               e.dataTransfer.setData('application/x-conn-id',   String(conn.id));
+                              e.dataTransfer.setData('text/plain', String(table.id));
                             }}
                           >
                             <button
