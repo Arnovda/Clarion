@@ -20,9 +20,11 @@ export function isAuthenticated(): boolean {
 }
 
 export interface TokenPayload {
-  sub: string;
-  username: string;
-  role: 'epicdata_admin' | 'client_user';
+  sub: number;
+  tenantId: number;
+  email: string;
+  displayName: string;
+  role: 'admin' | 'analyst' | 'viewer';
   exp: number;
 }
 
@@ -38,5 +40,5 @@ export function getTokenPayload(): TokenPayload | null {
 }
 
 export function isAdmin(): boolean {
-  return getTokenPayload()?.role === 'epicdata_admin';
+  return getTokenPayload()?.role === 'admin';
 }

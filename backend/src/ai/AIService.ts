@@ -22,12 +22,17 @@ import {
   buildNlToSqlCrossUser,
 } from './prompts/nlToSqlPrompt';
 import {
+  NL_TO_SQL_DUCKDB_SYSTEM,
+  NL_TO_SQL_CROSS_DUCKDB_SYSTEM,
+} from './prompts/nlToSqlPromptDuckDB';
+import {
   REPORT_NARRATIVE_SYSTEM,
   buildReportNarrativeUser,
   KpiResult,
 } from './prompts/answerFormatterPrompt';
 import {
   DASHBOARD_SYSTEM,
+  getDashboardSystem,
   buildDashboardUser,
   DashboardSpec,
   REFINEMENT_SYSTEM,
@@ -39,6 +44,21 @@ import {
   buildValidateUser,
   WidgetExecutionResult,
 } from './prompts/dashboardPrompt';
+import {
+  STAR_SCHEMA_DESIGN_SYSTEM,
+  buildStarSchemaDesignUser,
+  StarSchemaDesignOutput,
+  TRANSFORMATION_SQL_SYSTEM,
+  buildTransformationSqlUser,
+  TransformationSqlOutput,
+  COLUMN_EDIT_SYSTEM,
+  buildColumnEditUser,
+} from './prompts/starSchemaPrompt';
+
+// ---------------------------------------------------------------------------
+// SQL dialect type — used to select the correct prompt variant
+// ---------------------------------------------------------------------------
+export type SqlDialect = 'sqlite' | 'duckdb';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
@@ -93,6 +113,33 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
     }
   }
   throw new Error('AIService: exhausted retries');
+}
+
+// Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses
+// but collects the full text and returns it as a string (no event callbacks).
+async function callClaudeStreaming(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model: MODEL,
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }],
+  };
+
+  const stream = getClient().messages.stream(params);
+  let fullText = '';
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        fullText += delta.text;
+      }
+    }
+  }
+
+  return fullText;
 }
 
 // Multi-turn version — used by the repair loop where Claude sees its own previous replies
@@ -297,11 +344,12 @@ export async function generateSql(
   semanticContext: string,
   relationshipContext: string,
   kpiFormulas: string,
+  dialect: SqlDialect = 'sqlite',
 ): Promise<NlToSqlOutput> {
-  const raw = await callClaude(
-    NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
-    buildNlToSqlUser(question),
-  );
+  const systemPrompt = dialect === 'duckdb'
+    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
+    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question));
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
@@ -336,11 +384,12 @@ export async function generateCrossSourceSql(
   semanticContext: string,
   relationshipContext: string,
   kpiFormulas: string,
+  dialect: SqlDialect = 'sqlite',
 ): Promise<NlToSqlOutput> {
-  const raw = await callClaude(
-    NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
-    buildNlToSqlCrossUser(question),
-  );
+  const systemPrompt = dialect === 'duckdb'
+    ? NL_TO_SQL_CROSS_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
+    : NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question));
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
@@ -356,13 +405,17 @@ export async function generateSqlStreaming(
   relationshipContext: string,
   kpiFormulas: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
+  dialect: SqlDialect = 'sqlite',
 ): Promise<NlToSqlOutput> {
+  const systemPrompt = dialect === 'duckdb'
+    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
+    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'enabled', budget_tokens: 8000 },
-    system: NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr()),
+    system: systemPrompt,
     messages: [{ role: 'user', content: buildNlToSqlUser(question) }],
   };
 
@@ -452,9 +505,10 @@ export async function generateDashboardSpec(
   request: string,
   semanticContext: string,
   relationshipContext: string,
+  dialect: SqlDialect = 'sqlite',
 ): Promise<DashboardSpec> {
   const raw = await callClaude(
-    DASHBOARD_SYSTEM,
+    getDashboardSystem(dialect),
     buildDashboardUser(request, semanticContext, relationshipContext),
     16000,
   );
@@ -477,4 +531,128 @@ export async function validateAndFixDashboardSpec(
     16000,
   );
   return parseJson<DashboardSpec>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Star Schema Design — AI designs a Kimball star schema from source tables
+// ---------------------------------------------------------------------------
+
+export async function generateStarSchemaDesign(
+  dataProductName: string,
+  dataProductDescription: string,
+  sourceTablesContext: string,
+): Promise<StarSchemaDesignOutput> {
+  const raw = await callClaudeStreaming(
+    STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
+    buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext),
+    64000,
+  );
+  return parseJson<StarSchemaDesignOutput>(raw);
+}
+
+/**
+ * Streaming version of star schema design — fires thinking + text deltas
+ * so the frontend can show live AI reasoning and skeleton previews.
+ */
+export async function generateStarSchemaDesignStreaming(
+  dataProductName: string,
+  dataProductDescription: string,
+  sourceTablesContext: string,
+  onEvent: (type: 'thinking' | 'text', delta: string) => void,
+): Promise<StarSchemaDesignOutput> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model: MODEL,
+    max_tokens: 64000,
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    system: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
+    messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
+  };
+
+  const stream = getClient().messages.stream(params);
+  let fullText = '';
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+        onEvent('thinking', delta.thinking);
+      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        fullText += delta.text;
+        onEvent('text', delta.text);
+      }
+    }
+  }
+
+  return parseJson<StarSchemaDesignOutput>(fullText);
+}
+
+/**
+ * Streaming version of transformation SQL generation.
+ */
+export async function generateTransformationSqlStreaming(
+  starSchemaJson: string,
+  sourceContext: string,
+  onEvent: (type: 'thinking' | 'text', delta: string) => void,
+): Promise<TransformationSqlOutput> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model: MODEL,
+    max_tokens: 64000,
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    system: TRANSFORMATION_SQL_SYSTEM(sourceContext),
+    messages: [{ role: 'user', content: buildTransformationSqlUser(starSchemaJson) }],
+  };
+
+  const stream = getClient().messages.stream(params);
+  let fullText = '';
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+        onEvent('thinking', delta.thinking);
+      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        fullText += delta.text;
+        onEvent('text', delta.text);
+      }
+    }
+  }
+
+  return parseJson<TransformationSqlOutput>(fullText);
+}
+
+// ---------------------------------------------------------------------------
+// Transformation SQL Generation — generates DuckDB SQL for each product table
+// (non-streaming fallback)
+// ---------------------------------------------------------------------------
+
+export async function generateTransformationSql(
+  starSchemaJson: string,
+  sourceContext: string,
+): Promise<TransformationSqlOutput> {
+  const raw = await callClaudeStreaming(
+    TRANSFORMATION_SQL_SYSTEM(sourceContext),
+    buildTransformationSqlUser(starSchemaJson),
+    64000,
+  );
+  return parseJson<TransformationSqlOutput>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Column Edit — surgical edit of one column's transformation expression
+// ---------------------------------------------------------------------------
+
+export async function editColumnExpression(
+  columnName: string,
+  currentExpression: string,
+  editRequest: string,
+  tableContext: string,
+): Promise<string> {
+  return callClaude(
+    COLUMN_EDIT_SYSTEM,
+    buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
+  );
 }

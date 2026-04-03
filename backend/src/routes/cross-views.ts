@@ -7,7 +7,7 @@ const router = Router();
 // ---------------------------------------------------------------------------
 // GET /api/cross-views — list all views (optionally filter by connectionId)
 // ---------------------------------------------------------------------------
-router.get('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
     const views = await graph.getCrossSourceViews(connectionId);
@@ -18,7 +18,7 @@ router.get('/', requireAuth, requireRole('epicdata_admin'), async (req: Request,
 // ---------------------------------------------------------------------------
 // POST /api/cross-views — create a view
 // ---------------------------------------------------------------------------
-router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description, connectionId } = req.body as { name: string; description?: string; connectionId?: number };
     const pgId = await graph.nextPgId();
@@ -30,7 +30,7 @@ router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request
 // ---------------------------------------------------------------------------
 // GET /api/cross-views/related-tables/:tableId — 1-hop neighbourhood of a table
 // ---------------------------------------------------------------------------
-router.get('/related-tables/:tableId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/related-tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const data = await graph.getRelatedTables(Number(req.params.tableId));
     res.json({ ok: true, data });
@@ -40,7 +40,7 @@ router.get('/related-tables/:tableId', requireAuth, requireRole('epicdata_admin'
 // ---------------------------------------------------------------------------
 // GET /api/cross-views/:id — full view with tables, columns, relationships
 // ---------------------------------------------------------------------------
-router.get('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const detail = await graph.getCrossSourceViewDetail(Number(req.params.id));
     if (!detail) { res.status(404).json({ ok: false, error: 'View not found' }); return; }
@@ -51,7 +51,7 @@ router.get('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Reque
 // ---------------------------------------------------------------------------
 // PATCH /api/cross-views/:id — rename / redescribe
 // ---------------------------------------------------------------------------
-router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description } = req.body as { name?: string; description?: string };
     await graph.updateCrossSourceView(Number(req.params.id), { name, description });
@@ -62,7 +62,7 @@ router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Req
 // ---------------------------------------------------------------------------
 // DELETE /api/cross-views/:id
 // ---------------------------------------------------------------------------
-router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.deleteCrossSourceView(Number(req.params.id));
     res.json({ ok: true });
@@ -72,7 +72,7 @@ router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Re
 // ---------------------------------------------------------------------------
 // POST /api/cross-views/:id/tables — add a table to the canvas
 // ---------------------------------------------------------------------------
-router.post('/:id/tables', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/tables', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const viewPgId  = Number(req.params.id);
     const { tableId, posX = 80, posY = 80 } = req.body as { tableId: number; posX?: number; posY?: number };
@@ -118,7 +118,7 @@ router.post('/:id/tables', requireAuth, requireRole('epicdata_admin'), async (re
 // ---------------------------------------------------------------------------
 // DELETE /api/cross-views/:id/tables/:tableId — remove a table from canvas
 // ---------------------------------------------------------------------------
-router.delete('/:id/tables/:tableId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id/tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.removeTableFromView(Number(req.params.id), Number(req.params.tableId));
     res.json({ ok: true });
@@ -128,7 +128,7 @@ router.delete('/:id/tables/:tableId', requireAuth, requireRole('epicdata_admin')
 // ---------------------------------------------------------------------------
 // PATCH /api/cross-views/:id/tables/:tableId/position — save drag position
 // ---------------------------------------------------------------------------
-router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { posX, posY } = req.body as { posX: number; posY: number };
     await graph.updateTablePositionInView(Number(req.params.id), Number(req.params.tableId), posX, posY);
@@ -139,7 +139,7 @@ router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('epicdata
 // ---------------------------------------------------------------------------
 // POST /api/cross-views/:id/relationships — draw a relationship line
 // ---------------------------------------------------------------------------
-router.post('/:id/relationships', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/relationships', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const viewPgId = Number(req.params.id);
     const { fromTableId, fromColumnId, toTableId, toColumnId, relationshipType = 'many_to_one', label } =
@@ -170,7 +170,7 @@ router.post('/:id/relationships', requireAuth, requireRole('epicdata_admin'), as
 // ---------------------------------------------------------------------------
 // DELETE /api/cross-views/:id/relationships/:relId
 // ---------------------------------------------------------------------------
-router.delete('/:id/relationships/:relId', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id/relationships/:relId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.deleteCrossViewRelationship(Number(req.params.relId));
     res.json({ ok: true });

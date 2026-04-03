@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { clearToken, getTokenPayload, TokenPayload } from '@/lib/auth';
@@ -15,7 +16,7 @@ export default function Nav() {
     setPayload(getTokenPayload());
   }, []);
 
-  const isAdmin = payload?.role === 'epicdata_admin';
+  const isAdmin = payload?.role === 'admin';
 
   function logout() {
     clearToken();
@@ -38,17 +39,18 @@ export default function Nav() {
   return (
     <nav className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
       <div className="flex items-center gap-6">
-        <span className="font-bold text-slate-900 text-base">DataBridge</span>
+        <Image src="/logo.svg" alt="DataBridge" width={110} height={25} priority />
         <div className="flex gap-1">
           {isAdmin && link('/setup',       'Sources')}
-          {isAdmin && link('/semantic',    'Semantics')}
+          {isAdmin && link('/semantic',    'Source Semantics')}
+          {isAdmin && link('/products',    'Product Semantics')}
           {link('/query',      'Ask')}
           {link('/dashboards', 'Dashboards')}
           {isAdmin && link('/gaps', 'Gaps')}
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-xs text-slate-400">{payload?.username} · {payload?.role}</span>
+        <span className="text-xs text-slate-400">{payload?.displayName} · {payload?.role}</span>
         <button onClick={logout} className="text-sm text-slate-500 hover:text-slate-800">Sign out</button>
       </div>
     </nav>

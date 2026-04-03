@@ -7,8 +7,9 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
 
 import { ensureNeo4jConstraints, closeDriver } from './db/neo4j';
 
-import { USERS, signToken, requireAuth, requireRole } from './middleware/auth';
+import { requireAuth, requireRole } from './middleware/auth';
 import { errorHandler } from './middleware/errorHandler';
+import authRouter         from './routes/auth';
 import connectionsRouter  from './routes/connections';
 import semanticRouter     from './routes/semantic';
 import queryRouter        from './routes/query';
@@ -16,36 +17,21 @@ import reportsRouter      from './routes/reports';
 import dashboardsRouter   from './routes/dashboards';
 import crossViewsRouter   from './routes/cross-views';
 import qualityRouter      from './routes/quality';
+import ingestionRouter    from './routes/ingestion';
+import productsRouter     from './routes/products';
 
 const app = express();
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
 
 // ---------------------------------------------------------------------------
-// Auth endpoints (no token required)
+// Auth routes (register, login, forgot-password, reset-password, refresh, me)
 // ---------------------------------------------------------------------------
 
-// POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body as { username: string; password: string };
-  const user = USERS[username];
-
-  if (!user || user.password !== password) {
-    res.status(401).json({ ok: false, error: 'Invalid username or password' });
-    return;
-  }
-
-  const token = signToken({ sub: username, username, role: user.role });
-  res.json({ ok: true, data: { token, role: user.role, username } });
-});
-
-// GET /api/auth/me — returns current user info
-app.get('/api/auth/me', requireAuth, (req, res) => {
-  res.json({ ok: true, data: req.user });
-});
+app.use('/api/auth', authRouter);
 
 // ---------------------------------------------------------------------------
-// Feature routes (all require JWT)
+// Feature routes (all require JWT — tenant context set automatically by requireAuth)
 // ---------------------------------------------------------------------------
 
 app.use('/api/connections',  connectionsRouter);
@@ -55,9 +41,11 @@ app.use('/api/reports',      reportsRouter);
 app.use('/api/dashboards',   dashboardsRouter);
 app.use('/api/cross-views',  crossViewsRouter);
 app.use('/api/quality',      qualityRouter);
+app.use('/api/ingestion',    ingestionRouter);
+app.use('/api/products',     productsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
-app.post('/api/connections/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const { semanticDb } = await import('./db/knex');
     const { runSchemaProfiler } = await import('./semantic/SchemaProfiler');
@@ -83,6 +71,23 @@ const server = app.listen(PORT, () => {
   console.log(`DataBridge backend running on http://localhost:${PORT}`);
   // Start Neo4j constraint setup in the background — non-blocking.
   ensureNeo4jConstraints().catch(err => console.error('Neo4j constraint setup error:', err));
+
+  // Stale ingestion cleanup — mark any ingestion stuck in 'running' for >30min as failed.
+  // Runs every 5 minutes.
+  setInterval(async () => {
+    try {
+      const { semanticDb } = await import('./db/knex');
+      const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+      const stale = await semanticDb('connections')
+        .where('ingestion_status', 'running')
+        .where('created_at', '<', thirtyMinAgo)
+        .update({
+          ingestion_status: 'error',
+          ingestion_error: 'Ingestion timed out (>30 minutes)',
+        });
+      if (stale > 0) console.log(`[cleanup] Marked ${stale} stale ingestion(s) as failed`);
+    } catch { /* non-fatal */ }
+  }, 5 * 60 * 1000);
 });
 
 process.on('SIGTERM', async () => {

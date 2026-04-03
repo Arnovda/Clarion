@@ -31,7 +31,19 @@ export async function ensureNeo4jConstraints(): Promise<void> {
         ['CrossSourceView_pgId',   'CREATE CONSTRAINT crossView_pgId      IF NOT EXISTS FOR (n:CrossSourceView)  REQUIRE n.pgId IS UNIQUE'],
         ['QualityRule_pgId',       'CREATE CONSTRAINT qualityRule_pgId    IF NOT EXISTS FOR (n:QualityRule)      REQUIRE n.pgId IS UNIQUE'],
       ];
+
+      // Indexes on tenantId for future multi-tenant Neo4j filtering
+      const indexes: string[] = [
+        'CREATE INDEX sourceTable_tenantId   IF NOT EXISTS FOR (n:SourceTable)      ON (n.tenantId)',
+        'CREATE INDEX sourceColumn_tenantId  IF NOT EXISTS FOR (n:SourceColumn)     ON (n.tenantId)',
+        'CREATE INDEX kpiDef_tenantId        IF NOT EXISTS FOR (n:KpiDefinition)    ON (n.tenantId)',
+        'CREATE INDEX crossView_tenantId     IF NOT EXISTS FOR (n:CrossSourceView)  ON (n.tenantId)',
+        'CREATE INDEX qualityRule_tenantId   IF NOT EXISTS FOR (n:QualityRule)      ON (n.tenantId)',
+      ];
       for (const [, cypher] of constraints) {
+        await session.run(cypher);
+      }
+      for (const cypher of indexes) {
         await session.run(cypher);
       }
       console.log('Neo4j constraints verified.');

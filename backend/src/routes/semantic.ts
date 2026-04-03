@@ -3,6 +3,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { generateSchemaDraft } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
+import { createConnector } from '../connectors/ConnectorFactory';
 import * as graph from '../db/semanticGraph';
 
 const router = Router();
@@ -21,7 +22,7 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
 });
 
 // PATCH /api/semantic/tables/:id — confirm or edit a table definition
-router.patch('/tables/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/tables/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.updateTable(Number(req.params.id), req.body as Record<string, unknown>);
     res.json({ ok: true });
@@ -58,7 +59,7 @@ router.get('/columns', requireAuth, async (req: Request, res: Response, next: Ne
 });
 
 // PATCH /api/semantic/columns/:id
-router.patch('/columns/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/columns/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.updateColumn(Number(req.params.id), req.body as Record<string, unknown>);
     res.json({ ok: true });
@@ -93,7 +94,7 @@ router.get('/relationships', requireAuth, async (req: Request, res: Response, ne
 });
 
 // POST /api/semantic/relationships
-router.post('/relationships', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/relationships', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description } =
       req.body as Record<string, unknown>;
@@ -122,7 +123,7 @@ router.post('/relationships', requireAuth, requireRole('epicdata_admin'), async 
 });
 
 // PATCH /api/semantic/relationships/:id
-router.patch('/relationships/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/relationships/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { relationship_type, description, from_column_id, to_column_id } =
       req.body as Record<string, unknown>;
@@ -145,7 +146,7 @@ router.patch('/relationships/:id', requireAuth, requireRole('epicdata_admin'), a
 });
 
 // DELETE /api/semantic/relationships/:id
-router.delete('/relationships/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/relationships/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.deleteRelationship(Number(req.params.id));
     res.json({ ok: true });
@@ -153,7 +154,7 @@ router.delete('/relationships/:id', requireAuth, requireRole('epicdata_admin'), 
 });
 
 // POST /api/semantic/relationships/re-suggest?connectionId=1
-router.post('/relationships/re-suggest', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const connectionId = Number(req.query.connectionId);
     if (!connectionId) return res.status(400).json({ ok: false, error: 'connectionId required' });
@@ -218,7 +219,7 @@ router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextF
 });
 
 // POST /api/semantic/kpis
-router.post('/kpis', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/kpis', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { connection_id, name, description, formula_plain_text, formula_sql, owner_name } =
       req.body as Record<string, unknown>;
@@ -238,7 +239,7 @@ router.post('/kpis', requireAuth, requireRole('epicdata_admin'), async (req: Req
 });
 
 // PATCH /api/semantic/kpis/:id
-router.patch('/kpis/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     await graph.updateKpi(Number(req.params.id), req.body as Record<string, unknown>);
     res.json({ ok: true });
@@ -250,7 +251,7 @@ router.patch('/kpis/:id', requireAuth, requireRole('epicdata_admin'), async (req
 // (reads from SQLite source — unchanged)
 // ---------------------------------------------------------------------------
 
-router.get('/preview', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { connectionId, table, limit = '10' } = req.query as Record<string, string>;
 
@@ -260,8 +261,7 @@ router.get('/preview', requireAuth, requireRole('epicdata_admin'), async (req: R
       return;
     }
 
-    const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const connector = new SqliteConnector(config.filepath);
+    const connector = createConnector(connection);
     await connector.connect();
 
     try {

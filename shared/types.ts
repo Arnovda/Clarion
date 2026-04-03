@@ -1,16 +1,21 @@
 // Shared TypeScript types used by both backend and frontend
 
-export type UserRole = 'epicdata_admin' | 'client_user';
+// Roles: admin = full access, analyst = query + dashboards + reports, viewer = read-only
+export type UserRole = 'admin' | 'analyst' | 'viewer';
 
 export interface AuthUser {
-  id: string;
-  username: string;
+  id: number;
+  tenantId: number;
+  email: string;
+  displayName: string;
   role: UserRole;
 }
 
 export interface JwtPayload {
-  sub: string;
-  username: string;
+  sub: number;          // user id
+  tenantId: number;     // tenant id
+  email: string;
+  displayName: string;
   role: UserRole;
   iat?: number;
   exp?: number;

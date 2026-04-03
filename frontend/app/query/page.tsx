@@ -106,6 +106,7 @@ interface Message {
   rows?:               Record<string, unknown>[];
   wasRepaired?:        boolean;           // prevents re-triggering repair on already-fixed answers
   reasoning?:          string;            // Claude's extended thinking, stored for replay
+  queryLayer?:         'product' | 'source'; // which data layer was queried
 }
 
 interface Conversation {
@@ -265,6 +266,20 @@ function ConfidenceBadge({ value }: { value: number }) {
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${color}`}>
       <span className="opacity-60">confidence</span> {pct}%
+    </span>
+  );
+}
+
+// ─── Query layer badge ───────────────────────────────────────────────────────
+
+function QueryLayerBadge({ layer }: { layer: 'product' | 'source' }) {
+  const isProduct = layer === 'product';
+  const color = isProduct
+    ? 'text-violet-600 bg-violet-50 border-violet-200'
+    : 'text-slate-500 bg-slate-50 border-slate-200';
+  return (
+    <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${color}`}>
+      {isProduct ? '⭐ Star Schema' : '📦 Source'}
     </span>
   );
 }
@@ -782,8 +797,11 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
               <span className="text-amber-400 mt-0.5 flex-shrink-0">⚠</span>
               <p className="leading-relaxed">{msg.text}</p>
             </div>
-            {msg.confidence !== undefined && (
-              <div className="mt-2 pl-5"><ConfidenceBadge value={msg.confidence} /></div>
+            {(msg.confidence !== undefined || msg.queryLayer) && (
+              <div className="mt-2 pl-5 flex items-center gap-2">
+                {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
+                {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
+              </div>
             )}
             <LowConfidenceGuide confidence={msg.confidence} debug={msg.debug} />
           </div>
@@ -874,6 +892,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
           {isAdmin && (msg.confidence !== undefined || msg.sql) && (
             <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
               {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
+              {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
               {msg.tablesUsed && msg.tablesUsed.length > 0 && (
                 <span className="text-[10px] text-slate-400">tables: {msg.tablesUsed.join(', ')}</span>
               )}
@@ -1053,7 +1072,7 @@ export default function QueryPage() {
   const inputRef    = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
 
-  useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'epicdata_admin'); }, []);
+  useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'admin'); }, []);
 
   // Load available connections + integration views (silent — no UI picker shown)
   useEffect(() => {
@@ -1362,6 +1381,7 @@ export default function QueryPage() {
           sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
           blocked: d.blocked, needsClarification: d.needsClarification,
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
+          queryLayer: d.queryLayer,
         }]);
         if (d.warning && !d.blocked && d.sql && d.rows) {
           startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
@@ -1422,6 +1442,7 @@ export default function QueryPage() {
               tablesUsed?: string[]; warning?: string; rows?: Record<string, unknown>[];
               debug?: DebugInfo; needsClarification?: boolean;
               ambiguities?: EntityAmbiguity[]; mismatches?: EntityMismatch[];
+              queryLayer?: 'product' | 'source';
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
@@ -1430,6 +1451,7 @@ export default function QueryPage() {
               blocked: d.blocked, needsClarification: d.needsClarification,
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
               reasoning: accumulatedThinking || undefined,
+              queryLayer: d.queryLayer,
             };
             setMessages((prev) => [...prev, assistantMsg]);
             if (d.warning && !d.blocked && d.sql && d.rows) {

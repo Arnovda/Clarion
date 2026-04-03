@@ -1,8 +1,9 @@
 import { SqliteConnector } from '../connectors/SqliteConnector';
-import { FkCandidate } from '../connectors/BaseConnector';
+import { BaseConnector, FkCandidate } from '../connectors/BaseConnector';
+import { createConnector } from '../connectors/ConnectorFactory';
 import { generateSchemaDraft, suggestFkMatches } from '../ai/AIService';
 import { semanticDb } from '../db/knex';
-import { runQualityProfile } from '../quality/QualityProfiler';
+import { runQualityProfile, runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 
@@ -27,17 +28,39 @@ export interface ProfilerProgress {
  * Reads the source schema, calls Claude for draft definitions, and stores
  * everything in the semantic layer (PostgreSQL) with ai_draft = true.
  * Nothing is visible to end-users until an admin confirms each definition.
+ *
+ * @param connectorOverride — if provided, use this connector instead of creating one from config.
+ *        Used when profiling runs on DuckDB after ingestion.
  */
 export async function runSchemaProfiler(
   connectionId: number,
-  filePath: string,
+  filePath: string | null,
   onProgress?: (p: ProfilerProgress) => void,
+  connectorOverride?: BaseConnector,
 ): Promise<ProfilerResult> {
   const emit = onProgress ?? (() => {});
 
   // 1. Introspect source schema
   emit({ phase: 'schema', message: 'Reading database schema…' });
-  const connector = new SqliteConnector(filePath);
+  let connector: BaseConnector;
+  let shouldDisconnect = true;
+
+  if (connectorOverride) {
+    connector = connectorOverride;
+    shouldDisconnect = false; // caller manages lifecycle
+  } else {
+    // Use the factory to create the right connector from the connection record
+    const conn = await semanticDb('connections').where({ id: connectionId }).first();
+    if (conn) {
+      connector = createConnector(conn);
+    } else if (filePath) {
+      // Legacy fallback for SQLite filepath
+      connector = new SqliteConnector(filePath);
+    } else {
+      throw new Error(`Connection ${connectionId} not found and no file path provided`);
+    }
+  }
+
   await connector.connect();
   const schema = await connector.introspectSchema();
   const heuristicFks: FkCandidate[] = schema.fkCandidates ?? [];
@@ -103,7 +126,7 @@ export async function runSchemaProfiler(
       console.warn('[SchemaProfiler] AI FK matching failed (non-fatal):', err);
     }
   }
-  connector.disconnect();
+  if (shouldDisconnect) connector.disconnect();
 
   // 2. Run quality profiling for all tables first — results feed into the AI draft
   //    so Claude has statistical signals (PK/FK detection, cardinality) for better relationships.
@@ -113,7 +136,14 @@ export async function runSchemaProfiler(
     const table = schema.tables[ti];
     emit({ phase: 'quality', message: `Profiling ${table.tableName}…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
     try {
-      const result = await runQualityProfile(connectionId, table.tableName, filePath);
+      // Use connector-based profiler for DuckDB; file-based for SQLite
+      const useDuckDb = connectorOverride || (await semanticDb('connections').where({ id: connectionId }).first())?.query_engine === 'duckdb';
+      let result: Awaited<ReturnType<typeof runQualityProfile>>;
+      if (useDuckDb && connectorOverride) {
+        result = await runQualityProfileWithConnector(connectionId, table.tableName, connectorOverride, table.columns.map(c => ({ name: c.name, type: c.type })));
+      } else {
+        result = await runQualityProfile(connectionId, table.tableName, filePath);
+      }
       qualityStats.push({
         table_name: table.tableName,
         row_count:  result.rowCount,

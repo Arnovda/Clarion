@@ -1,21 +1,23 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import path from 'path';
+import fs from 'fs';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { SqliteConnector } from '../connectors/SqliteConnector';
+import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
+import { encryptCredentials } from '../utils/crypto';
 
 const router = Router();
 
 // POST /api/connections/test — test a source connection without saving it
-router.post('/test', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/test', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { type, config } = req.body as { type: string; config: { filepath: string } };
-    if (type !== 'sqlite') {
-      res.status(400).json({ ok: false, error: 'Only sqlite connections are supported in this version' });
+    const { type, config } = req.body as { type: string; config: Record<string, unknown> };
+    if (!SUPPORTED_TYPES.includes(type as any)) {
+      res.status(400).json({ ok: false, error: `Unsupported connection type: ${type}. Supported: ${SUPPORTED_TYPES.join(', ')}` });
       return;
     }
-    const connector = new SqliteConnector(config.filepath);
-    const result = await connector.testConnection();
+    const result = await testConnector(type, config);
     res.json({ ok: result.ok, data: { message: result.message } });
   } catch (err) {
     next(err);
@@ -23,25 +25,39 @@ router.post('/test', requireAuth, requireRole('epicdata_admin'), async (req: Req
 });
 
 // POST /api/connections — create a connection and run schema profiling
-router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, type, config, domains } = req.body as { name: string; type: string; config: { filepath: string }; domains?: string[] };
+    const { name, type, config, domains } = req.body as {
+      name: string;
+      type: string;
+      config: Record<string, unknown>;
+      domains?: string[];
+    };
 
-    if (type !== 'sqlite') {
-      res.status(400).json({ ok: false, error: 'Only sqlite connections are supported in this version' });
+    if (!SUPPORTED_TYPES.includes(type as any)) {
+      res.status(400).json({ ok: false, error: `Unsupported connection type: ${type}. Supported: ${SUPPORTED_TYPES.join(', ')}` });
       return;
     }
 
     // Test before saving
-    const connector = new SqliteConnector(config.filepath);
-    const test = await connector.testConnection();
+    const test = await testConnector(type, config);
     if (!test.ok) {
       res.status(400).json({ ok: false, error: test.message });
       return;
     }
 
+    // Encrypt credentials before storing
+    const configJson = JSON.stringify(config);
+    const encryptedConfig = encryptCredentials(configJson);
+
     const [row] = await semanticDb('connections')
-      .insert({ name, type, config: JSON.stringify(config), domains: JSON.stringify(domains ?? []), created_by: req.user!.username })
+      .insert({
+        name,
+        type,
+        config: encryptedConfig,
+        domains: JSON.stringify(domains ?? []),
+        created_by: req.user!.email ?? 'unknown',
+      })
       .returning('id');
 
     const connectionId: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
@@ -55,22 +71,34 @@ router.post('/', requireAuth, requireRole('epicdata_admin'), async (req: Request
 });
 
 // GET /api/connections — list all connections
-router.get('/', requireAuth, requireRole('epicdata_admin'), async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, requireRole('admin'), async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const rows = await semanticDb('connections').select('*').orderBy('created_at', 'desc');
-    res.json({ ok: true, data: rows });
+    // Strip encrypted config secrets from the response — only send type + non-sensitive info
+    const sanitized = rows.map((r: Record<string, unknown>) => {
+      const config = typeof r.config === 'string'
+        ? (() => { try { return JSON.parse(r.config as string); } catch { return {}; } })()
+        : r.config;
+      // Mask passwords in the response
+      const safeConfig = { ...config };
+      if (safeConfig.password) safeConfig.password = '••••••••';
+      return { ...r, config: safeConfig };
+    });
+    res.json({ ok: true, data: sanitized });
   } catch (err) {
     next(err);
   }
 });
 
 // PATCH /api/connections/:id — update name and/or config
-router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, config, domains } = req.body as { name?: string; config?: { filepath: string }; domains?: string[] };
+    const { name, config, domains } = req.body as { name?: string; config?: Record<string, unknown>; domains?: string[] };
     const updates: Record<string, unknown> = {};
     if (name) updates.name = name;
-    if (config) updates.config = JSON.stringify(config);
+    if (config) {
+      updates.config = encryptCredentials(JSON.stringify(config));
+    }
     if (domains !== undefined) updates.domains = JSON.stringify(domains);
 
     const updated = await semanticDb('connections').where({ id: req.params.id }).update(updates);
@@ -85,7 +113,7 @@ router.patch('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Req
 });
 
 // POST /api/connections/:id/profile — re-run schema profiling with SSE progress
-router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response) => {
+router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   const connection = await semanticDb('connections').where({ id: req.params.id }).first();
   if (!connection) {
     res.status(404).json({ ok: false, error: 'Connection not found' });
@@ -105,8 +133,21 @@ router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (r
     };
 
     try {
-      const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-      const result = await runSchemaProfiler(connection.id, config.filepath, (p) => emit(p));
+      // Create the appropriate source connector for profiling
+      let connectorOverride;
+      if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
+        connectorOverride = createConnector(connection);
+        await connectorOverride.connect();
+      } else {
+        // For non-SQLite connectors, we need to pass the connector to the profiler
+        connectorOverride = createSourceConnector(connection);
+        await connectorOverride.connect();
+      }
+
+      const result = await runSchemaProfiler(connection.id, null, (p) => emit(p), connectorOverride);
+
+      connectorOverride.disconnect();
+
       emit({ phase: 'done', message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`, result });
     } catch (err) {
       emit({ phase: 'error', message: err instanceof Error ? err.message : 'Profiling failed' });
@@ -115,8 +156,18 @@ router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (r
   } else {
     // Fallback: synchronous JSON response for non-SSE clients
     try {
-      const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-      const result = await runSchemaProfiler(connection.id, config.filepath);
+      let connectorOverride;
+      if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
+        connectorOverride = createConnector(connection);
+      } else {
+        connectorOverride = createSourceConnector(connection);
+      }
+      await connectorOverride.connect();
+
+      const result = await runSchemaProfiler(connection.id, null, undefined, connectorOverride);
+
+      connectorOverride.disconnect();
+
       res.json({ ok: true, data: result });
     } catch (err) {
       res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Profiling failed' });
@@ -125,9 +176,12 @@ router.post('/:id/profile', requireAuth, requireRole('epicdata_admin'), async (r
 });
 
 // DELETE /api/connections/:id — delete a connection and its semantic data
-router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
+
+    // Fetch connection before deleting — need warehouse_path for cleanup
+    const conn = await semanticDb('connections').where({ id }).first();
 
     // Get table IDs for this connection so we can cascade manually
     const tables = await semanticDb('source_tables').where({ connection_id: id }).select('id');
@@ -145,9 +199,24 @@ router.delete('/:id', requireAuth, requireRole('epicdata_admin'), async (req: Re
       await semanticDb('source_tables').whereIn('id', tableIds).delete();
     }
 
+    await semanticDb('ingested_tables').where({ connection_id: id }).delete();
     await semanticDb('kpi_definitions').where({ connection_id: id }).delete();
     await semanticDb('dashboards').where({ connection_id: id }).delete();
     const deleted = await semanticDb('connections').where({ id }).delete();
+
+    // Clean up Delta Lake warehouse files on disk
+    if (conn) {
+      const warehouseDir = conn.warehouse_path
+        ?? path.resolve(__dirname, '../../../warehouse', `conn_${id}`);
+      try {
+        if (fs.existsSync(warehouseDir)) {
+          fs.rmSync(warehouseDir, { recursive: true, force: true });
+          console.log(`[connections] Deleted warehouse: ${warehouseDir}`);
+        }
+      } catch (err) {
+        console.warn(`[connections] Failed to delete warehouse ${warehouseDir}:`, err);
+      }
+    }
 
     if (!deleted) {
       res.status(404).json({ ok: false, error: 'Connection not found' });

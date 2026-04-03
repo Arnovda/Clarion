@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { SqliteConnector } from '../connectors/SqliteConnector';
+import { createConnector } from '../connectors/ConnectorFactory';
 import { generateReportNarrative } from '../ai/AIService';
 import { KpiResult } from '../ai/prompts/answerFormatterPrompt';
 import { getKpisByIds } from '../db/semanticGraph';
@@ -34,7 +35,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     // 2. Get source connection
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const sqliteConnector = new SqliteConnector(cfg.filepath);
+    const sqliteConnector = createConnector(connection);
     await sqliteConnector.connect();
 
     // 3. Execute all KPI queries in parallel

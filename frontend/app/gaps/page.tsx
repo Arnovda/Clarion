@@ -102,7 +102,7 @@ function StatusBadge({ row }: { row: QueryLogRow }) {
 
 export default function GapsPage() {
   const role = getTokenPayload()?.role;
-  const isAdmin = role === 'epicdata_admin';
+  const isAdmin = role === 'admin';
 
   const [activeTab, setActiveTab] = useState<'gaps' | 'log'>('gaps');
 

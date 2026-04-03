@@ -4,11 +4,28 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
-// Semantic layer database — PostgreSQL running in Docker
-// Used for all platform metadata: definitions, KPIs, query log, gaps
+/**
+ * Semantic layer database — PostgreSQL
+ *
+ * Uses `databridge_app` role (non-superuser, NOBYPASSRLS) so that
+ * Row-Level Security policies are enforced. The superuser `databridge`
+ * role is only used for migrations (via knexfile.ts).
+ *
+ * The app.current_tenant session variable is set by requireAuth middleware,
+ * and RLS policies filter all queries to the authenticated tenant.
+ */
+
+const baseUrl = process.env.DATABASE_URL ?? 'postgresql://databridge:databridge@localhost:5432/databridge';
+
+// Replace the superuser credentials with the app role for runtime queries
+const appUrl = baseUrl.replace(
+  /^postgresql:\/\/[^:]+:[^@]+@/,
+  'postgresql://databridge_app:databridge@',
+);
+
 export const semanticDb: Knex = knex({
   client: 'pg',
-  connection: process.env.DATABASE_URL,
+  connection: appUrl,
 });
 
 // Source database — SQLite file on disk (read-only)

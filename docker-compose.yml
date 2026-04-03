@@ -39,6 +39,25 @@ services:
       retries: 10
       start_period: 30s
 
+  etl:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: databridge-etl
+    restart: unless-stopped
+    environment:
+      WAREHOUSE_ROOT: /warehouse
+    ports:
+      - '8000:8000'
+    volumes:
+      - ./warehouse:/warehouse
+      - ./data:/sources:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   databridge_pgdata:
     driver: local

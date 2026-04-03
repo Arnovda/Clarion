@@ -2,8 +2,16 @@
 // Prompt for the agentic SQL repair loop (Call Type 2d)
 // ---------------------------------------------------------------------------
 
-export const REPAIR_SYSTEM =
-`You are a SQL repair agent for a SQLite database.
+export function getRepairSystem(dialect: 'sqlite' | 'duckdb' = 'sqlite'): string {
+  const engine = dialect === 'duckdb' ? 'DuckDB' : 'SQLite';
+  const dateHint = dialect === 'duckdb'
+    ? `Date functions: current_date, date_trunc('month', col), extract(year from col), date_diff('day', a, b), col + INTERVAL '1 month'. Use strftime(col, '%Y-%m') — note DuckDB arg order is (value, format). Use ILIKE for case-insensitive matching.`
+    : `Date functions: date('now'), strftime('%Y-%m', col), julianday(a) - julianday(b). Do NOT use EXTRACT, DATE_TRUNC, INTERVAL — they are not available in SQLite.`;
+  return REPAIR_SYSTEM_TEMPLATE.replace('{{ENGINE}}', engine).replace('{{DATE_HINT}}', dateHint);
+}
+
+const REPAIR_SYSTEM_TEMPLATE =
+`You are a SQL repair agent for a {{ENGINE}} database.
 A query was executed and its result was flagged as suspicious by a validator.
 Your job is to diagnose the root cause and deliver a corrected, verified query.
 
@@ -49,6 +57,10 @@ before generating revised SQL. Show the user the distinguishing fields (id, city
 phone, VAT number, address) and ask which specific record they mean.
 Never silently merge multiple records with the same name into one result.
 
+━━━ SQL DIALECT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{DATE_HINT}}
+
 ━━━ REVISED SQL RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 - Apply all SQL quality rules from the original generation
@@ -57,6 +69,9 @@ Never silently merge multiple records with the same name into one result.
 - Use CTEs (WITH blocks) for multi-step logic; name them semantically
 - Double-check: does the grain of the revised query match what the question needs?
 - Lower confidence proportionally to remaining uncertainty`;
+
+/** Backward-compat: default SQLite dialect */
+export const REPAIR_SYSTEM = getRepairSystem('sqlite');
 
 // ---------------------------------------------------------------------------
 // Message builders

@@ -1,12 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../../../shared/types';
+import { semanticDb } from '../db/knex';
 
-// Two hardcoded users for the POC — replace with DB-backed auth in production
-export const USERS: Record<string, { password: string; role: UserRole }> = {
-  admin:  { password: 'admin123',  role: 'epicdata_admin' },
-  client: { password: 'client123', role: 'client_user'    },
-};
+// ---------------------------------------------------------------------------
+// Re-export types for convenience
+// ---------------------------------------------------------------------------
+
+export type { JwtPayload, UserRole };
+
+// ---------------------------------------------------------------------------
+// Express augmentation
+// ---------------------------------------------------------------------------
 
 declare global {
   namespace Express {
@@ -15,6 +21,24 @@ declare global {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Password helpers
+// ---------------------------------------------------------------------------
+
+const SALT_ROUNDS = 12;
+
+export async function hashPassword(plain: string): Promise<string> {
+  return bcrypt.hash(plain, SALT_ROUNDS);
+}
+
+export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(plain, hash);
+}
+
+// ---------------------------------------------------------------------------
+// JWT helpers
+// ---------------------------------------------------------------------------
 
 function getSecret(): string {
   const secret = process.env.JWT_SECRET;
@@ -28,8 +52,31 @@ export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
   } as jwt.SignOptions);
 }
 
+export function verifyToken(token: string): JwtPayload {
+  return jwt.verify(token, getSecret()) as JwtPayload;
+}
+
+// ---------------------------------------------------------------------------
+// User lookup helpers
+// ---------------------------------------------------------------------------
+
+export async function findUserByEmail(tenantId: number, email: string) {
+  return semanticDb('users')
+    .where({ tenant_id: tenantId, email: email.toLowerCase(), is_active: true })
+    .first();
+}
+
+export async function findUserByEmailAcrossTenants(email: string) {
+  return semanticDb('users')
+    .where({ email: email.toLowerCase(), is_active: true })
+    .first();
+}
+
+// ---------------------------------------------------------------------------
 // Middleware: require a valid JWT
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+// ---------------------------------------------------------------------------
+
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ ok: false, error: 'Missing or invalid Authorization header' });
@@ -38,15 +85,24 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 
   try {
     const token = header.slice(7);
-    const payload = jwt.verify(token, getSecret()) as JwtPayload;
+    const payload = verifyToken(token);
     req.user = payload;
+
+    // Set Postgres RLS tenant context so queries are automatically filtered
+    if (payload.tenantId) {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
+    }
+
     next();
   } catch {
     res.status(401).json({ ok: false, error: 'Invalid or expired token' });
   }
 }
 
+// ---------------------------------------------------------------------------
 // Middleware: require a specific role (call after requireAuth)
+// ---------------------------------------------------------------------------
+
 export function requireRole(...roles: UserRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {

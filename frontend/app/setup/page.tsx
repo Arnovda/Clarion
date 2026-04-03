@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Nav from '@/components/Nav';
+import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 
 // ---------------------------------------------------------------------------
@@ -13,10 +14,13 @@ interface Connection {
   id: number;
   name: string;
   type: string;
-  config: { filepath?: string } | string;
+  config: Record<string, string> | string;
   domains?: string[];
   created_by: string;
   created_at: string;
+  query_engine?: string;          // 'source' | 'duckdb'
+  ingestion_status?: string;      // null | 'pending' | 'running' | 'done' | 'error'
+  last_ingested_at?: string;
 }
 
 interface Connector {
@@ -63,28 +67,52 @@ const CONNECTORS: Connector[] = [
     id: 'sqlserver',
     name: 'SQL Server',
     description: 'Microsoft SQL Server / Azure SQL',
-    available: false,
+    available: true,
     color: 'bg-red-500',
     iconLetter: 'M',
-    formFields: [],
+    formFields: [
+      { key: 'host', label: 'Server', placeholder: 'localhost or myserver.database.windows.net', type: 'text' },
+      { key: 'port', label: 'Port', placeholder: '1433', type: 'number' },
+      { key: 'database', label: 'Database', placeholder: 'AdventureWorks', type: 'text' },
+      { key: 'user', label: 'Username', placeholder: 'sa', type: 'text' },
+      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
+      { key: 'encrypt', label: 'Encrypt connection', placeholder: 'true', type: 'text', hint: 'Required for Azure SQL. Enter true or false.' },
+      { key: 'trustServerCertificate', label: 'Trust server certificate', placeholder: 'false', type: 'text', hint: 'Set true for local dev with self-signed certs.' },
+      { key: 'schema', label: 'Schema', placeholder: 'dbo', type: 'text', hint: 'Leave empty for default (dbo).' },
+    ],
   },
   {
     id: 'postgres',
     name: 'PostgreSQL',
     description: 'PostgreSQL database',
-    available: false,
+    available: true,
     color: 'bg-indigo-500',
     iconLetter: 'P',
-    formFields: [],
+    formFields: [
+      { key: 'host', label: 'Host', placeholder: 'localhost or db.example.com', type: 'text' },
+      { key: 'port', label: 'Port', placeholder: '5432', type: 'number' },
+      { key: 'database', label: 'Database', placeholder: 'mydb', type: 'text' },
+      { key: 'user', label: 'Username', placeholder: 'postgres', type: 'text' },
+      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
+      { key: 'ssl', label: 'SSL', placeholder: 'false', type: 'text', hint: 'Enter true for SSL connections.' },
+      { key: 'schema', label: 'Schema', placeholder: 'public', type: 'text', hint: 'Leave empty for default (public).' },
+    ],
   },
   {
     id: 'mysql',
     name: 'MySQL',
     description: 'MySQL or MariaDB database',
-    available: false,
+    available: true,
     color: 'bg-orange-500',
     iconLetter: 'M',
-    formFields: [],
+    formFields: [
+      { key: 'host', label: 'Host', placeholder: 'localhost or db.example.com', type: 'text' },
+      { key: 'port', label: 'Port', placeholder: '3306', type: 'number' },
+      { key: 'database', label: 'Database', placeholder: 'mydb', type: 'text' },
+      { key: 'user', label: 'Username', placeholder: 'root', type: 'text' },
+      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
+      { key: 'ssl', label: 'SSL', placeholder: 'false', type: 'text', hint: 'Enter true for SSL connections.' },
+    ],
   },
   {
     id: 'exactonline',
@@ -128,11 +156,11 @@ const CONNECTORS: Connector[] = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getConfig(conn: Connection): { filepath?: string } {
+function getConfig(conn: Connection): Record<string, string> {
   if (typeof conn.config === 'string') {
     try { return JSON.parse(conn.config); } catch { return {}; }
   }
-  return conn.config ?? {};
+  return (conn.config as Record<string, string>) ?? {};
 }
 
 function connectorForType(type: string): Connector | undefined {
@@ -162,12 +190,14 @@ function ConnectionCard({
   onStartReProfile,
   onReProfileDone,
   onEdit,
+  onReIngest,
 }: {
   conn: Connection;
   onDelete: (id: number) => void;
   onStartReProfile: (id: number) => void;
   onReProfileDone: (id: number) => void;
   onEdit: (conn: Connection) => void;
+  onReIngest: (conn: Connection) => void;
 }) {
   const router = useRouter();
   const connector = connectorForType(conn.type);
@@ -205,10 +235,21 @@ function ConnectionCard({
         <div className="flex items-center gap-2 mb-0.5">
           <span className="font-semibold text-slate-900">{conn.name}</span>
           <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Connected</span>
+          {conn.query_engine === 'duckdb' ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-100 text-purple-700">Delta Lake</span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">Source</span>
+          )}
         </div>
         <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">{conn.type}</p>
         {config.filepath && (
           <p className="text-xs text-slate-500 font-mono truncate" title={config.filepath}>{config.filepath}</p>
+        )}
+        {(config as Record<string, unknown>).host && (
+          <p className="text-xs text-slate-500 font-mono truncate">
+            {(config as Record<string, unknown>).host}:{(config as Record<string, unknown>).port ?? ''}
+            {(config as Record<string, unknown>).database ? ` / ${(config as Record<string, unknown>).database}` : ''}
+          </p>
         )}
         {(() => {
           const tags: string[] = Array.isArray(conn.domains)
@@ -224,6 +265,11 @@ function ConnectionCard({
         })()}
         <p className="text-xs text-slate-400 mt-1">
           Added {new Date(conn.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+          {conn.last_ingested_at && (
+            <span className="ml-2">
+              · Ingested {new Date(conn.last_ingested_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          )}
         </p>
       </div>
       <div className="flex flex-col gap-1 shrink-0">
@@ -238,6 +284,12 @@ function ConnectionCard({
           className="px-3 py-1.5 text-xs font-medium bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
         >
           Edit
+        </button>
+        <button
+          onClick={() => onReIngest(conn)}
+          className="px-3 py-1.5 text-xs font-medium bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 transition-colors"
+        >
+          Re-ingest
         </button>
         <button
           onClick={handleReProfile}
@@ -350,11 +402,26 @@ function SlidePanel({
     }
   }
 
+  /** Convert string booleans and number ports to their real types for the backend. */
+  function normalizeConfig(raw: Record<string, string>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (!v.trim()) continue; // skip empty optional fields
+      if (k === 'port') { result[k] = Number(v) || v; }
+      else if (['ssl', 'encrypt', 'trustServerCertificate', 'windowsAuth'].includes(k)) {
+        result[k] = v.toLowerCase() === 'true';
+      } else {
+        result[k] = v;
+      }
+    }
+    return result;
+  }
+
   async function handleTest() {
     setTestStatus('testing');
     setTestMsg('');
     try {
-      const res = await api.post('/connections/test', { type: connector.id, config: fields });
+      const res = await api.post('/connections/test', { type: connector.id, config: normalizeConfig(fields) });
       if (res.data.ok) {
         setTestStatus('ok');
         setTestMsg(res.data.data?.message ?? 'Connection successful');
@@ -373,10 +440,11 @@ function SlidePanel({
     setError('');
     setSaving(true);
     try {
+      const normalizedCfg = normalizeConfig(fields);
       if (isEdit) {
         await api.patch(`/connections/${editConnection!.id}`, {
           name: name.trim(),
-          config: fields,
+          config: normalizedCfg,
           domains,
         });
         onUpdated({ ...editConnection!, name: name.trim(), config: fields, domains });
@@ -384,7 +452,7 @@ function SlidePanel({
         const res = await api.post('/connections', {
           name: name.trim(),
           type: connector.id,
-          config: fields,
+          config: normalizedCfg,
           domains,
         });
         onConnected(res.data.data.connectionId, name.trim());
@@ -499,13 +567,14 @@ function SlidePanel({
             <div className="bg-slate-50 rounded-lg p-4 text-xs text-slate-500 space-y-1">
               <p className="font-medium text-slate-600">What happens when you connect?</p>
               <p>1. DataBridge tests the connection to make sure it works.</p>
-              <p>2. The schema is read (tables, columns, sample values).</p>
-              <p>3. Claude generates plain-language definitions for your review.</p>
+              <p>2. You pick which tables to ingest into the data warehouse.</p>
+              <p>3. Data is ingested as Delta Lake tables for fast querying.</p>
+              <p>4. The schema is profiled and Claude generates definitions for your review.</p>
             </div>
           )}
           {isEdit && (
             <div className="bg-amber-50 rounded-lg p-4 text-xs text-amber-700 space-y-1">
-              <p className="font-medium">Changing the file path?</p>
+              <p className="font-medium">Changing connection details?</p>
               <p>Test the connection first, then save. If you point to a different database, use Re-analyse to regenerate definitions.</p>
             </div>
           )}
@@ -540,12 +609,12 @@ function SlidePanel({
 // ---------------------------------------------------------------------------
 
 const PHASE_META: Record<string, { icon: string; label: string; order: number }> = {
-  schema:   { icon: '🔍', label: 'Reading schema',               order: 0 },
-  quality:  { icon: '📊', label: 'Profiling data quality',       order: 1 },
-  ai_draft: { icon: '🤖', label: 'Claude is learning your data', order: 2 },
-  storing:  { icon: '💾', label: 'Saving definitions',           order: 3 },
-  neo4j:    { icon: '🔗', label: 'Syncing knowledge graph',      order: 4 },
-  done:     { icon: '✨', label: 'Complete',                     order: 5 },
+  schema:   { icon: '~', label: 'Reading schema',                order: 0 },
+  quality:  { icon: '#', label: 'Profiling data quality',        order: 1 },
+  ai_draft: { icon: '*', label: 'Claude is learning your data',  order: 2 },
+  storing:  { icon: '>', label: 'Saving definitions',            order: 3 },
+  neo4j:    { icon: '+', label: 'Syncing knowledge graph',       order: 4 },
+  done:     { icon: '!', label: 'Complete',                      order: 5 },
 };
 const PHASE_KEYS = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'];
 
@@ -730,6 +799,7 @@ export default function SourcesPage() {
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
   const [editingConn, setEditingConn] = useState<Connection | null>(null);
   const [profiling, setProfiling] = useState<{ id: number; name: string; startStream?: boolean } | null>(null);
+  const [ingesting, setIngesting] = useState<{ id: number; name: string } | null>(null);
 
   useEffect(() => {
     api.get('/connections')
@@ -752,7 +822,8 @@ export default function SourcesPage() {
 
   function handleConnected(id: number, name: string) {
     closePanel();
-    setProfiling({ id, name, startStream: true });
+    // Show ingestion wizard first, then profile
+    setIngesting({ id, name });
     api.get('/connections').then((res) => setConnections(res.data.data ?? []));
   }
 
@@ -765,9 +836,17 @@ export default function SourcesPage() {
     setConnections((prev) => prev.filter((c) => c.id !== id));
   }
 
+  function handleReIngest(conn: Connection) {
+    // Show ingestion wizard for an existing connection (re-ingest)
+    setIngesting({ id: conn.id, name: conn.name });
+  }
+
   function handleStartReProfile(id: number) {
     const conn = connections.find((c) => c.id === id);
-    if (conn) setProfiling({ id, name: conn.name, startStream: true });
+    if (conn) {
+      // For re-profile, go straight to profiling (data is already ingested)
+      setProfiling({ id, name: conn.name, startStream: true });
+    }
   }
 
   function handleReProfileDone(_id: number) {
@@ -779,6 +858,24 @@ export default function SourcesPage() {
       <Nav />
 
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+        {/* Ingestion wizard — pick tables & ingest before profiling */}
+        {ingesting && !profiling && (
+          <IngestionWizard
+            connectionId={ingesting.id}
+            connectionName={ingesting.name}
+            onIngestionDone={() => {
+              // After ingestion, start profiling
+              setProfiling({ id: ingesting.id, name: ingesting.name, startStream: true });
+              setIngesting(null);
+            }}
+            onSkip={() => {
+              // Skip ingestion, go straight to profiling (uses original source)
+              setProfiling({ id: ingesting.id, name: ingesting.name, startStream: true });
+              setIngesting(null);
+            }}
+          />
+        )}
 
         {/* Profiling banner */}
         {profiling && (
@@ -816,6 +913,7 @@ export default function SourcesPage() {
                   onStartReProfile={handleStartReProfile}
                   onReProfileDone={handleReProfileDone}
                   onEdit={openEdit}
+                  onReIngest={handleReIngest}
                 />
               ))}
             </div>

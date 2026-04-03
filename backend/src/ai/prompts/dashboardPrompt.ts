@@ -203,10 +203,26 @@ Write titles that state the INSIGHT, not the description:
 - Always ROUND monetary values: ROUND(SUM(col), 2)
 - Exclude bad records: WHERE status NOT IN ('cancelled', 'voided', 'returned') when applicable
 - Use the most granular table for measures (order_lines for revenue, not orders header)
-- Monthly labels: strftime('%Y-%m', date_column)
 - stacked_bar_chart: ORDER BY label, series — required for correct rendering
 - kpi_card delta: compute inline with a subquery or CTE comparing current vs prior period
 - Use NULLIF in division to avoid divide-by-zero: / NULLIF(prev_value, 0)`;
+
+const DASHBOARD_SQL_SQLITE = `
+- Monthly labels: strftime('%Y-%m', date_column)
+- Date filtering: date_column >= '2025-01-01'
+- Current date: date('now')`;
+
+const DASHBOARD_SQL_DUCKDB = `
+- Monthly labels: strftime(date_column, '%Y-%m')  (NOTE: DuckDB argument order is value, format)
+- Date filtering: date_column >= '2025-01-01'
+- Date math: current_date - INTERVAL '3 months', date_trunc('month', date_column)
+- Use ILIKE for case-insensitive text matching
+- Use extract(year from date_column), extract(month from date_column)`;
+
+export function getDashboardSystem(dialect: 'sqlite' | 'duckdb' = 'sqlite'): string {
+  const sqlDialectRules = dialect === 'duckdb' ? DASHBOARD_SQL_DUCKDB : DASHBOARD_SQL_SQLITE;
+  return DASHBOARD_SYSTEM + '\n' + sqlDialectRules;
+}
 
 export function buildDashboardUser(
   request: string,

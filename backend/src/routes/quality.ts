@@ -249,7 +249,7 @@ router.get('/:connId/:table/history', requireAuth, async (req, res, next) => {
 });
 
 // POST /api/quality/:connId/:table/evaluate  — run rule evaluation only (no re-profiling)
-router.post('/:connId/:table/evaluate', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
@@ -263,7 +263,7 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('epicdata_admin
 });
 
 // POST /api/quality/:connId/:table/profile  — trigger profiling + rule eval
-router.post('/:connId/:table/profile', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
@@ -333,7 +333,7 @@ router.get('/:connId/:table/settings', requireAuth, async (req, res, next) => {
 });
 
 // PATCH /api/quality/:connId/:table/settings  — set user business key override
-router.patch('/:connId/:table/settings', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.patch('/:connId/:table/settings', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = decodeURIComponent(req.params.table);
@@ -385,7 +385,7 @@ router.get('/:connId/:table/rules', requireAuth, async (req, res, next) => {
 });
 
 // POST /api/quality/:connId/:table/rules  — create a rule
-router.post('/:connId/:table/rules', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.post('/:connId/:table/rules', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
@@ -408,7 +408,7 @@ router.post('/:connId/:table/rules', requireAuth, requireRole('epicdata_admin'),
 });
 
 // PATCH /api/quality/rules/:ruleId
-router.patch('/rules/:ruleId', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.patch('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     const { rule_name, dimension, field_names, description, rule_type, rule_config, pass_threshold, owner_name, is_active } = req.body;
     const update: Record<string, unknown> = {};
@@ -428,7 +428,7 @@ router.patch('/rules/:ruleId', requireAuth, requireRole('epicdata_admin'), async
 });
 
 // DELETE /api/quality/rules/:ruleId
-router.delete('/rules/:ruleId', requireAuth, requireRole('epicdata_admin'), async (req, res, next) => {
+router.delete('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
     await semanticDb('quality_rules').where({ id: req.params.ruleId }).delete();
     res.json({ ok: true });

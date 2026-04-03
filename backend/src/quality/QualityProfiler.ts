@@ -7,6 +7,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { semanticDb } from '../db/knex';
+import { BaseConnector } from '../connectors/BaseConnector';
 
 export interface FieldStat {
   field_name:     string;
@@ -274,4 +275,220 @@ export async function runQualityProfile(
   } finally {
     db.close();
   }
+}
+
+/**
+ * Connector-based quality profiler — works with any BaseConnector (DuckDB, SQLite, etc).
+ * Uses generic SQL via executeQuery() instead of better-sqlite3 PRAGMAs.
+ */
+export async function runQualityProfileWithConnector(
+  connectionId: number,
+  tableName: string,
+  connector: BaseConnector,
+  columnDefs?: Array<{ name: string; type: string }>,
+  overrideBkColumn?: string,
+): Promise<ProfileResult> {
+  // Row count
+  const rcResult = await connector.executeQuery(`SELECT COUNT(*) AS cnt FROM "${tableName}"`);
+  const rowCount = (rcResult.rows[0] as { cnt: number }).cnt;
+
+  // Column definitions — use provided list, or introspect via DESCRIBE-style query
+  let cols: Array<{ name: string; type: string }>;
+  if (columnDefs && columnDefs.length > 0) {
+    cols = columnDefs;
+  } else {
+    // Fallback: read a row and infer columns
+    const sampleResult = await connector.executeQuery(`SELECT * FROM "${tableName}" LIMIT 1`);
+    if (sampleResult.rows.length > 0) {
+      cols = Object.keys(sampleResult.rows[0] as object).map((k) => ({ name: k, type: 'TEXT' }));
+    } else {
+      cols = [];
+    }
+  }
+
+  const fields: FieldStat[] = [];
+
+  for (const col of cols) {
+    const fn = col.name;
+    const dataType = col.type || 'TEXT';
+    const numeric = isNumeric(dataType);
+
+    // Null count
+    const nullResult = await connector.executeQuery(
+      `SELECT COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NULL`,
+    );
+    const nullCount = (nullResult.rows[0] as { cnt: number }).cnt;
+    const nullPct = rowCount > 0 ? nullCount / rowCount : 0;
+
+    // Distinct count
+    const distResult = await connector.executeQuery(
+      `SELECT COUNT(DISTINCT "${fn}") AS cnt FROM "${tableName}"`,
+    );
+    const distinctCount = (distResult.rows[0] as { cnt: number }).cnt;
+    const distinctPct = rowCount > 0 ? distinctCount / rowCount : 0;
+
+    // Min / Max
+    let minValue: string | null = null;
+    let maxValue: string | null = null;
+    if (rowCount > 0) {
+      try {
+        const mmResult = await connector.executeQuery(
+          `SELECT MIN("${fn}") AS mn, MAX("${fn}") AS mx FROM "${tableName}"`,
+        );
+        const mm = mmResult.rows[0] as { mn: unknown; mx: unknown };
+        minValue = mm.mn != null ? String(mm.mn) : null;
+        maxValue = mm.mx != null ? String(mm.mx) : null;
+      } catch { /* skip */ }
+    }
+
+    // Mean / Median (numeric only)
+    let meanValue: number | null = null;
+    let medianValue: number | null = null;
+    if (numeric && rowCount > 0) {
+      try {
+        const avgResult = await connector.executeQuery(
+          `SELECT AVG("${fn}") AS avg FROM "${tableName}" WHERE "${fn}" IS NOT NULL`,
+        );
+        meanValue = (avgResult.rows[0] as { avg: number | null }).avg;
+
+        const nonNull = rowCount - nullCount;
+        if (nonNull > 0) {
+          const medResult = await connector.executeQuery(
+            `SELECT "${fn}" AS val FROM "${tableName}" WHERE "${fn}" IS NOT NULL ORDER BY "${fn}" LIMIT 1 OFFSET ${Math.floor(nonNull / 2)}`,
+          );
+          medianValue = medResult.rows.length > 0 ? ((medResult.rows[0] as { val: number }).val ?? null) : null;
+        }
+      } catch { /* skip */ }
+    }
+
+    // Top values
+    let topValues: Array<{ value: string; count: number; pct: number }> = [];
+    try {
+      const topResult = await connector.executeQuery(
+        `SELECT "${fn}" AS v, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY "${fn}" ORDER BY cnt DESC LIMIT 5`,
+      );
+      topValues = topResult.rows.map((r) => ({
+        value: String((r as { v: unknown }).v),
+        count: (r as { cnt: number }).cnt,
+        pct: rowCount > 0 ? (r as { cnt: number }).cnt / rowCount : 0,
+      }));
+    } catch { /* skip */ }
+
+    // Histogram
+    let histogram: Array<{ label: string; count: number }> = [];
+    if (numeric && minValue != null && maxValue != null && rowCount > 0) {
+      const mn = Number(minValue), mx = Number(maxValue);
+      if (!isNaN(mn) && !isNaN(mx) && mx > mn) {
+        const buckets = 10;
+        const bsize = (mx - mn) / buckets;
+        try {
+          const hResult = await connector.executeQuery(
+            `SELECT CAST(("${fn}" - ${mn}) / ${bsize} AS INT) AS b, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY b ORDER BY b`,
+          );
+          const hrows = hResult.rows as Array<{ b: number; cnt: number }>;
+          for (let i = 0; i < buckets; i++) {
+            const matched = hrows.filter((r) => (i === buckets - 1 ? r.b >= i : r.b === i));
+            histogram.push({
+              label: (mn + i * bsize).toFixed(1),
+              count: matched.reduce((s, r) => s + r.cnt, 0),
+            });
+          }
+        } catch { /* skip */ }
+      }
+    } else if (!numeric && distinctCount <= 20 && rowCount > 0) {
+      histogram = topValues.map((r) => ({ label: String(r.value).slice(0, 20), count: r.count }));
+    } else if (isDate(dataType) && rowCount > 0) {
+      try {
+        // DuckDB and SQLite both support strftime
+        const mResult = await connector.executeQuery(
+          `SELECT strftime('%Y-%m', "${fn}") AS m, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY m ORDER BY m DESC LIMIT 12`,
+        );
+        histogram = (mResult.rows as Array<{ m: string; cnt: number }>).reverse().map((r) => ({ label: r.m, count: r.cnt }));
+      } catch { /* skip */ }
+    }
+
+    fields.push({
+      field_name: fn, data_type: dataType,
+      null_count: nullCount, null_pct: nullPct,
+      distinct_count: distinctCount, distinct_pct: distinctPct,
+      min_value: minValue, max_value: maxValue,
+      mean_value: meanValue, median_value: medianValue,
+      top_values: topValues, histogram,
+    });
+  }
+
+  // Business-key column selection
+  let pkField: FieldStat | null = null;
+  if (overrideBkColumn) {
+    pkField = fields.find((f) => f.field_name === overrideBkColumn) ?? null;
+  }
+  if (!pkField && fields.length > 0) {
+    // Without PRAGMA pk info, pick the most distinct column
+    pkField = fields.reduce(
+      (best, f) => f.distinct_pct > best.distinct_pct ? f : best,
+      fields[0],
+    );
+  }
+
+  const bkColumnUsed = pkField?.field_name ?? null;
+  const completenessScore = pkField ? 1 - pkField.null_pct : 1;
+  const uniquenessScore = pkField ? pkField.distinct_pct : 1;
+  const validityScore: number | null = null;
+  const overallScore = (completenessScore + uniquenessScore) / 2;
+
+  // Persist
+  const [pRow] = await semanticDb('dataset_profiles')
+    .insert({
+      connection_id: connectionId,
+      table_name: tableName,
+      row_count: rowCount,
+      overall_score: overallScore,
+      completeness_score: completenessScore,
+      uniqueness_score: uniquenessScore,
+      validity_score: validityScore,
+      consistency_score: null,
+      timeliness_score: null,
+      accuracy_score: null,
+      business_key_column: bkColumnUsed,
+    })
+    .returning('id');
+  const profileId: number = typeof pRow === 'object' ? (pRow as { id: number }).id : pRow;
+
+  for (const f of fields) {
+    await semanticDb('field_profiles').insert({
+      profile_id: profileId,
+      field_name: f.field_name,
+      data_type: f.data_type,
+      null_count: f.null_count,
+      null_pct: f.null_pct,
+      distinct_count: f.distinct_count,
+      distinct_pct: f.distinct_pct,
+      min_value: f.min_value,
+      max_value: f.max_value,
+      mean_value: f.mean_value,
+      median_value: f.median_value,
+      top_values: JSON.stringify(f.top_values),
+      histogram: JSON.stringify(f.histogram),
+    });
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+  await semanticDb('quality_score_history')
+    .insert({
+      connection_id: connectionId,
+      table_name: tableName,
+      score_date: today,
+      overall_score: overallScore,
+      completeness_score: completenessScore,
+      uniqueness_score: uniquenessScore,
+      validity_score: null,
+      consistency_score: null,
+      timeliness_score: null,
+      accuracy_score: null,
+    })
+    .onConflict(['connection_id', 'table_name', 'score_date'])
+    .merge(['overall_score', 'completeness_score', 'uniqueness_score',
+            'validity_score', 'consistency_score', 'timeliness_score', 'accuracy_score']);
+
+  return { profileId, rowCount, fields, overallScore, completenessScore, uniquenessScore, validityScore };
 }

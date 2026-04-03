@@ -1112,7 +1112,7 @@ export default function DashboardsPage() {
   }, [darkMode]);
 
   useEffect(() => {
-    setIsAdmin(getTokenPayload()?.role === 'epicdata_admin');
+    setIsAdmin(getTokenPayload()?.role === 'admin');
     loadDashboards();
     // Load the real connection ID — never assume it is 1
     api.get('/connections')

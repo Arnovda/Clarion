@@ -1,10 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
-import { SqliteConnector } from '../connectors/SqliteConnector';
-import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec } from '../ai/AIService';
+import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, SqlDialect } from '../ai/AIService';
 import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
+import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 
 const router = Router();
 
@@ -64,11 +65,11 @@ async function executeSpecForValidation(
   const connection = await semanticDb('connections').where({ id: connectionId }).first();
   if (!connection) return [];
 
-  const config = typeof connection.config === 'string'
-    ? JSON.parse(connection.config)
-    : connection.config;
-
-  const connector = new SqliteConnector(config.filepath);
+  // Use product layer connector if available
+  const productPath = await getProductWarehousePath(connectionId);
+  const connector = productPath
+    ? createProductConnector(productPath)
+    : createConnector(connection);
   await connector.connect();
 
   const results: WidgetExecutionResult[] = [];
@@ -127,8 +128,17 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       ? `${request}\n\nAdditional requirements from the user:\n${nonEmptyAnswers.map((a) => `- ${a}`).join('\n')}`
       : request;
 
-    const { semanticContext, relationshipContext } = await buildSemanticContext(connectionId);
-    let spec = await generateDashboardSpec(fullRequest, semanticContext, relationshipContext);
+    // Check for product layer first — star schema context is much better for dashboards
+    const productCtx = await buildProductSemanticContext(connectionId);
+    const semanticCtx = productCtx
+      ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
+      : await buildSemanticContext(connectionId);
+
+    // Determine SQL dialect from the connection's query engine
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const dialect: SqlDialect = productCtx ? 'duckdb' : (connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite');
+
+    let spec = await generateDashboardSpec(fullRequest, semanticCtx.semanticContext, semanticCtx.relationshipContext, dialect);
 
     // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets
     try {
@@ -137,7 +147,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
         (r) => r.error || r.rowCount === 0 || (r.type === 'pie_chart' && r.rowCount > 3),
       );
       if (hasIssues) {
-        spec = await validateAndFixDashboardSpec(spec, executionResults, semanticContext, relationshipContext);
+        spec = await validateAndFixDashboardSpec(spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext);
       }
     } catch {
       // Validation is best-effort — never block the response if it fails
@@ -162,8 +172,11 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
       return;
     }
 
-    const { semanticContext, relationshipContext } = await buildSemanticContext(connectionId);
-    const result: RefinementOutput = await generateDashboardRefinement(request, semanticContext, relationshipContext);
+    const productCtx = await buildProductSemanticContext(connectionId);
+    const semanticCtx = productCtx
+      ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
+      : await buildSemanticContext(connectionId);
+    const result: RefinementOutput = await generateDashboardRefinement(request, semanticCtx.semanticContext, semanticCtx.relationshipContext);
 
     res.json({ ok: true, data: result });
   } catch (err) {
@@ -192,8 +205,11 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
       return;
     }
 
-    const { semanticContext, relationshipContext } = await buildSemanticContext(connectionId);
-    const spec = await refineDashboardSpec(refinement, currentSpec, semanticContext, relationshipContext);
+    const productCtx = await buildProductSemanticContext(connectionId);
+    const semanticCtx = productCtx
+      ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
+      : await buildSemanticContext(connectionId);
+    const spec = await refineDashboardSpec(refinement, currentSpec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
 
     res.json({ ok: true, data: { spec } });
   } catch (err) {
@@ -243,11 +259,11 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       return;
     }
 
-    const config = typeof connection.config === 'string'
-      ? JSON.parse(connection.config)
-      : connection.config;
-
-    const connector = new SqliteConnector(config.filepath);
+    // Use product layer connector if available
+    const productPath = await getProductWarehousePath(connectionId);
+    const connector = productPath
+      ? createProductConnector(productPath)
+      : createConnector(connection);
     await connector.connect();
 
     try {
@@ -287,11 +303,11 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
       return;
     }
 
-    const config = typeof connection.config === 'string'
-      ? JSON.parse(connection.config)
-      : connection.config;
-
-    const connector = new SqliteConnector(config.filepath);
+    // Use product layer connector if available
+    const filterProductPath = await getProductWarehousePath(connectionId);
+    const connector = filterProductPath
+      ? createProductConnector(filterProductPath)
+      : createConnector(connection);
     await connector.connect();
 
     try {

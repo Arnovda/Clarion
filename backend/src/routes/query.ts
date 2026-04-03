@@ -3,11 +3,13 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
-import { SqliteConnector } from '../connectors/SqliteConnector';
+import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
-import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion } from '../ai/AIService';
+import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion, SqlDialect } from '../ai/AIService';
 import {
   REPAIR_SYSTEM,
+  getRepairSystem,
   buildRepairContext,
   buildRepairQueryResult,
   buildRepairClarificationAnswer,
@@ -23,6 +25,11 @@ function sanitizeAlias(name: string): string {
     .replace(/[-\s]+/g, '_')
     .replace(/[^a-z0-9_]/g, '')
     .replace(/_(sqlite|db)$/, '') || 'db');
+}
+
+// Helper — derive SQL dialect from connection record
+function getDialect(connection: { query_engine?: string } | undefined): SqlDialect {
+  return connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite';
 }
 
 // Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
@@ -115,6 +122,88 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       res.status(400).json({ ok: false, error: 'question is required' });
       return;
     }
+
+    // 0. Check for product layer — if a star schema exists with transformed tables,
+    //    use product context (cleaner Kimball model) instead of raw source context.
+    const productCtx = await buildProductSemanticContext(connectionId);
+    const productWarehouse = productCtx ? await getProductWarehousePath(connectionId) : null;
+
+    if (productCtx && productWarehouse) {
+      // ── PRODUCT LAYER QUERY PATH ──────────────────────────────────────
+      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const dialect: SqlDialect = 'duckdb'; // product layer always uses DuckDB
+
+      const nlResult = await generateSql(
+        question, productCtx.semanticContext, productCtx.relationshipContext, productCtx.kpiFormulas, dialect,
+      );
+
+      const blockCheck = shouldBlockQuery(nlResult);
+      const [logRow] = await semanticDb('query_log')
+        .insert({
+          user_id:          req.user!.sub,
+          question_text:    question,
+          generated_sql:    nlResult.sql,
+          confidence_score: nlResult.confidence,
+          was_flagged:      blockCheck.blocked,
+          flag_reason:      blockCheck.blocked ? blockCheck.reason : null,
+        })
+        .returning('id');
+      const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
+
+      if (blockCheck.blocked) {
+        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+        res.json({
+          ok: true,
+          data: {
+            answer: blockedUserMessage(nlResult),
+            confidence: nlResult.confidence,
+            subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+            uncertaintyNotes: nlResult.uncertainty_notes,
+            blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+            queryLayer: 'product',
+            debug: { hint: blockCheck.reason, semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext, kpiFormulas: productCtx.kpiFormulas },
+          },
+        });
+        return;
+      }
+
+      // Execute against product layer DuckDB
+      const connector = createProductConnector(productWarehouse);
+      await connector.connect();
+      let execRows: Record<string, unknown>[];
+      try {
+        const result = await connector.executeQuery(nlResult.sql);
+        execRows = result.rows;
+      } finally {
+        connector.disconnect();
+      }
+
+      const [answer, validation] = await Promise.all([
+        formatAnswer(question, execRows),
+        validateQueryResult(question, nlResult.sql, execRows),
+      ]);
+
+      await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+
+      res.json({
+        ok: true,
+        data: {
+          answer, confidence: nlResult.confidence,
+          subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+          uncertaintyNotes: nlResult.uncertainty_notes,
+          blocked: false, tablesUsed: nlResult.tables_used,
+          queryLayer: 'product',
+          ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
+          rows: execRows.slice(0, 200),
+          sql: nlResult.sql,
+          debug: { hint: `Query executed against product layer (star schema) with confidence ${Math.round(nlResult.confidence * 100)}%.`,
+            semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext, kpiFormulas: productCtx.kpiFormulas },
+        },
+      });
+      return;
+    }
+
+    // ── SOURCE LAYER QUERY PATH (fallback when no product layer exists) ──
 
     // 1. Build semantic context — use semantic retrieval when possible.
     //    First extract entities from the question, then fetch only the relevant
@@ -445,13 +534,15 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 2. Generate SQL + confidence (Call Type 2a)
     //    Use cross-source SQL generator when integration context is present.
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const dialect = getDialect(connection);
+
     const nlResult = isCrossSourceQuery
-      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas)
-      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas);
+      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect)
+      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect);
 
     // 3. Log the query regardless of outcome
     const blockCheck = shouldBlockQuery(nlResult);
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const [logRow] = await semanticDb('query_log')
       .insert({
         user_id:          req.user!.sub,
@@ -482,6 +573,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           blocked: true,
           sql:        nlResult.sql,
           tablesUsed: nlResult.tables_used,
+          queryLayer: 'source',
           debug: {
             confirmedTables:        tables.length,
             confirmedColumns:       columns.length,
@@ -508,7 +600,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       ? JSON.parse(connection.config)
       : connection.config;
 
-    const entityCheckConnector = new SqliteConnector(config.filepath);
+    const entityCheckConnector = createConnector(connection);
     await entityCheckConnector.connect();
 
     // Extract every single-quoted string literal from the SQL
@@ -614,6 +706,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           blocked: true,
           sql: nlResult.sql,
           tablesUsed: nlResult.tables_used,
+          queryLayer: 'source',
           debug: {
             confirmedTables:        tables.length,
             confirmedColumns:       columns.length,
@@ -644,10 +737,10 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         inMemDb.close();
       }
     } else {
-      const sqliteConnector = new SqliteConnector(config.filepath);
-      await sqliteConnector.connect();
-      const queryResult = await sqliteConnector.executeQuery(nlResult.sql);
-      sqliteConnector.disconnect();
+      const queryConnector = createConnector(connection);
+      await queryConnector.connect();
+      const queryResult = await queryConnector.executeQuery(nlResult.sql);
+      queryConnector.disconnect();
       execRows = queryResult.rows;
     }
 
@@ -678,6 +771,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         blocked:     false,
         crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
+        queryLayer:  'source',
         // Sanity-check warning — shown to all users when validation flags a concern
         ...(validation.ok ? {} : { warning: validation.warning }),
         // Raw rows — used by the frontend to render a table / chart
@@ -727,8 +821,74 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       res.end(); return;
     }
 
-    // ── 1. Semantic context — semantic retrieval with fallback ──────────────
+    // ── 0. Check for product layer ────────────────────────────────────────
     emit({ type: 'phase', text: 'Loading context…' });
+    const thinkProductCtx = await buildProductSemanticContext(connectionId);
+    const thinkProductWarehouse = thinkProductCtx ? await getProductWarehousePath(connectionId) : null;
+
+    if (thinkProductCtx && thinkProductWarehouse) {
+      // ── PRODUCT LAYER STREAMING PATH ──────────────────────────────────
+      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const dialect: SqlDialect = 'duckdb';
+
+      emit({ type: 'phase', text: 'Reasoning about your question (star schema)…' });
+      const nlResult = await generateSqlStreaming(
+        question, thinkProductCtx.semanticContext, thinkProductCtx.relationshipContext, thinkProductCtx.kpiFormulas,
+        (type, delta) => emit({ type, text: delta }),
+        dialect,
+      );
+      emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+
+      const thinkBlockCheck = shouldBlockQuery(nlResult);
+      const [logRow] = await semanticDb('query_log').insert({
+        user_id: req.user!.sub, question_text: question, generated_sql: nlResult.sql,
+        confidence_score: nlResult.confidence, was_flagged: thinkBlockCheck.blocked,
+        flag_reason: thinkBlockCheck.blocked ? thinkBlockCheck.reason : null,
+      }).returning('id');
+      const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
+
+      if (thinkBlockCheck.blocked) {
+        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+        emit({ type: 'done', data: {
+          answer: blockedUserMessage(nlResult), confidence: nlResult.confidence,
+          subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+          blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'product',
+        }});
+        res.end(); return;
+      }
+
+      emit({ type: 'phase', text: 'Running query on star schema…' });
+      const connector = createProductConnector(thinkProductWarehouse);
+      await connector.connect();
+      let queryRows: Record<string, unknown>[];
+      try {
+        const result = await connector.executeQuery(nlResult.sql);
+        queryRows = result.rows;
+      } finally {
+        connector.disconnect();
+      }
+
+      emit({ type: 'phase', text: 'Formatting answer…' });
+      const [answer, validation] = await Promise.all([
+        formatAnswer(question, queryRows),
+        validateQueryResult(question, nlResult.sql, queryRows),
+      ]);
+      await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+
+      emit({ type: 'done', data: {
+        answer, confidence: nlResult.confidence,
+        subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+        blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
+        ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
+        rows: queryRows.slice(0, 200), sql: nlResult.sql,
+        debug: { hint: `Query executed against product layer with confidence ${Math.round(nlResult.confidence * 100)}%.` },
+      }});
+      res.end(); return;
+    }
+
+    // ── SOURCE LAYER STREAMING PATH (fallback) ──────────────────────────
+
+    // ── 1. Semantic context — semantic retrieval with fallback ──────────────
     const thinkCatalog = await getTableAndColumnNames(connectionId, domains);
     const thinkEntityMatches = extractEntitiesFromQuestion(question, thinkCatalog);
 
@@ -832,16 +992,19 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // ── 3. Stream SQL generation with extended thinking ─────────────────────
     emit({ type: 'phase', text: 'Reasoning about your question…' });
 
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const dialect = getDialect(connection);
+
     const nlResult = await generateSqlStreaming(
       question, fullContext, thinkRelCtx, kpiFormulas,
       (type, delta) => emit({ type, text: delta }),
+      dialect,
     );
 
     emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 
     // ── 4. Log ──────────────────────────────────────────────────────────────
     const thinkBlockCheck = shouldBlockQuery(nlResult);
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const [logRow] = await semanticDb('query_log').insert({
       user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
       question_text:    question,
@@ -860,7 +1023,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         confidence: nlResult.confidence,
         subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
         uncertaintyNotes: nlResult.uncertainty_notes,
-        blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+        blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: thinkBlockCheck.reason, semanticContext, relationshipContext, kpiFormulas },
       }});
       res.end(); return;
@@ -868,7 +1031,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 6. Entity pre-flight check ──────────────────────────────────────────
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const entityCheckConnector = new SqliteConnector(cfg.filepath);
+    const entityCheckConnector = createConnector(connection);
     await entityCheckConnector.connect();
 
     const literalMatches = [...nlResult.sql.matchAll(/'([^']+)'/g)];
@@ -929,7 +1092,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         answer: ambiguities.length > 0
           ? `"${ambiguities[0].literal}" matches multiple records. Please pick which one you mean.`
           : `I couldn't find ${mismatches.map((m) => `"${m.literal}"`).join(' or ')} in your data.`,
-        confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
+        confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint, semanticContext, relationshipContext, kpiFormulas },
       }});
       res.end(); return;
@@ -937,10 +1100,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
     emit({ type: 'phase', text: 'Running your query…' });
-    const sqliteConnector = new SqliteConnector(cfg.filepath);
-    await sqliteConnector.connect();
-    const queryResult = await sqliteConnector.executeQuery(nlResult.sql);
-    sqliteConnector.disconnect();
+    const queryConnector = createConnector(connection);
+    await queryConnector.connect();
+    const queryResult = await queryConnector.executeQuery(nlResult.sql);
+    queryConnector.disconnect();
 
     // ── 8. Format answer ────────────────────────────────────────────────────
     emit({ type: 'phase', text: 'Formatting answer…' });
@@ -955,7 +1118,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       answer, confidence: nlResult.confidence,
       subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
       uncertaintyNotes: nlResult.uncertainty_notes,
-      blocked: false, tablesUsed: nlResult.tables_used,
+      blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'source',
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       rows: queryResult.rows.slice(0, 200),
       sql: nlResult.sql,
@@ -989,7 +1152,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     (res as unknown as { flush?: () => void }).flush?.();
   }
 
-  let sqliteConnector: SqliteConnector | null = null;
+  let sqliteConnector: import('../connectors/BaseConnector').BaseConnector | null = null;
 
   try {
     const {
@@ -1055,7 +1218,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     // ── SQLite connection ──
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    sqliteConnector = new SqliteConnector(cfg.filepath);
+    sqliteConnector = createConnector(connection);
     await sqliteConnector.connect();
 
     // ── Build initial conversation ──
@@ -1078,7 +1241,8 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       let raw: string;
       try {
-        raw = await callClaudeMultiTurn(REPAIR_SYSTEM, messages);
+        const repairDialect = connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite';
+        raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages);
       } catch (err: unknown) {
         send('error', { text: 'Claude API call failed. Please try again.' });
         break;
@@ -1273,7 +1437,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
       : 'No cross-source relationships defined yet — avoid cross-schema JOINs unless you are certain of the key columns.';
 
     // 7. Generate SQL via Claude (cross-source variant)
-    const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext);
+    const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext, 'No KPIs defined yet.');
 
     // 8. Log the query
     const [logRow] = await semanticDb('query_log')
