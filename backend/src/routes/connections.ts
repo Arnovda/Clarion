@@ -52,12 +52,15 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
     const configJson = JSON.stringify(config);
     const encryptedConfig = encryptCredentials(configJson);
 
+    // Wrap encrypted string in a JSON object so it's valid JSONB
+    const configForDb = JSON.stringify({ encrypted: encryptedConfig });
+
     const [row] = await semanticDb('connections')
       .insert({
         tenant_id: req.user!.tenantId,
         name,
         type,
-        config: encryptedConfig,
+        config: configForDb,
         domains: JSON.stringify(domains ?? []),
         created_by: req.user!.email ?? 'unknown',
       })

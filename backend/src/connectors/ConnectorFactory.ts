@@ -19,8 +19,15 @@ interface ConnectionRow {
  * Parse and optionally decrypt the config JSON stored in the connections table.
  */
 function parseConfig(raw: string | Record<string, unknown>): Record<string, unknown> {
-  if (typeof raw === 'object') return raw;
-  // Check if the entire config string is encrypted
+  // JSONB columns return a parsed object
+  if (typeof raw === 'object') {
+    // Check if it's a wrapped encrypted config: { encrypted: "enc:..." }
+    if (raw.encrypted && typeof raw.encrypted === 'string' && isEncrypted(raw.encrypted)) {
+      return JSON.parse(decryptCredentials(raw.encrypted));
+    }
+    return raw;
+  }
+  // String config — check if encrypted
   if (isEncrypted(raw)) {
     return JSON.parse(decryptCredentials(raw));
   }
