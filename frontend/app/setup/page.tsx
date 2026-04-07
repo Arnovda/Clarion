@@ -700,6 +700,43 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startStream, connId]);
 
+  // Poll for profiling status when banner is shown without a live stream
+  // (e.g. user navigated away and came back while profiling was running)
+  useEffect(() => {
+    if (startStream || !connId) return; // SSE is active, no need to poll
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const res = await api.get(`/connections/${connId}/profile/status`);
+        const d = res.data?.data;
+        if (!d || cancelled) return;
+
+        if (d.profiling_status === 'done') {
+          setCurrentPhase('done');
+          setDoneMessage(d.profiling_message ?? 'Analysis complete');
+          setFinished(true);
+          return; // stop polling
+        }
+        if (d.profiling_status === 'error') {
+          setError(d.profiling_message ?? 'Profiling failed');
+          return; // stop polling
+        }
+        // Still running — update UI and continue polling
+        if (d.profiling_phase) setCurrentPhase(d.profiling_phase);
+        if (d.profiling_message) setMessage(d.profiling_message);
+      } catch { /* ignore fetch errors, will retry */ }
+
+      if (!cancelled) {
+        setTimeout(poll, 2000); // poll every 2s
+      }
+    };
+
+    poll();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startStream, connId]);
+
   if (error) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-xl p-5">
@@ -803,7 +840,15 @@ export default function SourcesPage() {
 
   useEffect(() => {
     api.get('/connections')
-      .then((res) => setConnections(res.data.data ?? []))
+      .then((res) => {
+        const conns: Connection[] = res.data.data ?? [];
+        setConnections(conns);
+        // Resume profiling banner if any connection is still being profiled
+        const running = conns.find((c: any) => c.profiling_status === 'running');
+        if (running && !profiling) {
+          setProfiling({ id: running.id, name: running.name, startStream: false });
+        }
+      })
       .catch(() => setConnections([]))
       .finally(() => setLoading(false));
   }, []);

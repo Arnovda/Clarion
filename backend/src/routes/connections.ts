@@ -118,13 +118,55 @@ router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectio
   }
 });
 
+// Helper: compute profiling progress percentage from phase
+const PROFILING_PHASES = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'] as const;
+function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {
+  // Each phase gets a weight — quality + ai_draft are heaviest
+  const weights: Record<string, [number, number]> = {
+    schema:   [0,  10],
+    quality:  [10, 45],
+    ai_draft: [45, 80],
+    storing:  [80, 90],
+    neo4j:    [90, 98],
+    done:     [100, 100],
+    error:    [0, 0],
+  };
+  const [start, end] = weights[phase] ?? [0, 0];
+  if (phase === 'error') return 0;
+  if (tableIndex != null && tableCount && tableCount > 0) {
+    return Math.round(start + (end - start) * (tableIndex + 1) / tableCount);
+  }
+  return end;
+}
+
 // POST /api/connections/:id/profile — re-run schema profiling with SSE progress
 router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
-  const connection = await semanticDb('connections').where({ id: req.params.id }).first();
+  const connectionId = Number(req.params.id);
+  const connection = await semanticDb('connections').where({ id: connectionId }).first();
   if (!connection) {
     res.status(404).json({ ok: false, error: 'Connection not found' });
     return;
   }
+
+  // Mark profiling as running in DB so other clients can see it
+  await semanticDb('connections').where({ id: connectionId }).update({
+    profiling_status: 'running',
+    profiling_phase: 'schema',
+    profiling_message: 'Starting profiling…',
+    profiling_progress: 0,
+    profiling_started_at: new Date().toISOString(),
+  });
+
+  // Persist progress to DB on every phase change
+  const persistProgress = async (p: { phase: string; message: string; tableIndex?: number; tableCount?: number }) => {
+    try {
+      await semanticDb('connections').where({ id: connectionId }).update({
+        profiling_phase: p.phase,
+        profiling_message: p.message,
+        profiling_progress: profilingProgressPct(p.phase, p.tableIndex, p.tableCount),
+      });
+    } catch { /* non-fatal — DB write failed but profiling continues */ }
+  };
 
   // If client accepts SSE, stream progress events
   const wantsStream = req.headers.accept?.includes('text/event-stream');
@@ -139,24 +181,35 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
     };
 
     try {
-      // Create the appropriate source connector for profiling
       let connectorOverride;
       if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
         connectorOverride = await createConnector(connection);
         await connectorOverride.connect();
       } else {
-        // For non-SQLite connectors, we need to pass the connector to the profiler
         connectorOverride = createSourceConnector(connection);
         await connectorOverride.connect();
       }
 
-      const result = await runSchemaProfiler(connection.id, null, (p) => emit(p), connectorOverride);
+      const result = await runSchemaProfiler(connection.id, null, (p) => {
+        emit(p);
+        persistProgress(p);
+      }, connectorOverride);
 
       connectorOverride.disconnect();
 
-      emit({ phase: 'done', message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`, result });
+      const doneMsg = `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`;
+      emit({ phase: 'done', message: doneMsg, result });
+      await semanticDb('connections').where({ id: connectionId }).update({
+        profiling_status: 'done', profiling_phase: 'done',
+        profiling_message: doneMsg, profiling_progress: 100,
+      });
     } catch (err) {
-      emit({ phase: 'error', message: err instanceof Error ? err.message : 'Profiling failed' });
+      const errMsg = err instanceof Error ? err.message : 'Profiling failed';
+      emit({ phase: 'error', message: errMsg });
+      await semanticDb('connections').where({ id: connectionId }).update({
+        profiling_status: 'error', profiling_phase: 'error',
+        profiling_message: errMsg, profiling_progress: 0,
+      }).catch(() => {});
     }
     res.end();
   } else {
@@ -170,15 +223,38 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       }
       await connectorOverride.connect();
 
-      const result = await runSchemaProfiler(connection.id, null, undefined, connectorOverride);
+      const result = await runSchemaProfiler(connection.id, null, (p) => persistProgress(p), connectorOverride);
 
       connectorOverride.disconnect();
 
+      await semanticDb('connections').where({ id: connectionId }).update({
+        profiling_status: 'done', profiling_phase: 'done',
+        profiling_message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`,
+        profiling_progress: 100,
+      });
       res.json({ ok: true, data: result });
     } catch (err) {
-      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Profiling failed' });
+      const errMsg = err instanceof Error ? err.message : 'Profiling failed';
+      await semanticDb('connections').where({ id: connectionId }).update({
+        profiling_status: 'error', profiling_phase: 'error',
+        profiling_message: errMsg, profiling_progress: 0,
+      }).catch(() => {});
+      res.status(500).json({ ok: false, error: errMsg });
     }
   }
+});
+
+// GET /api/connections/:id/profile/status — poll profiling progress
+router.get('/:id/profile/status', requireAuth, async (req: Request, res: Response) => {
+  const row = await semanticDb('connections')
+    .where({ id: req.params.id })
+    .select('profiling_status', 'profiling_phase', 'profiling_message', 'profiling_progress', 'profiling_started_at')
+    .first();
+  if (!row) {
+    res.status(404).json({ ok: false, error: 'Connection not found' });
+    return;
+  }
+  res.json({ ok: true, data: row });
 });
 
 // DELETE /api/connections/:id — delete a connection and its semantic data

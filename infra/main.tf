@@ -253,7 +253,7 @@ resource "azurerm_container_app" "neo4j" {
   tags                         = var.tags
 
   template {
-    min_replicas = 0
+    min_replicas = 1
     max_replicas = 1
 
     volume {
