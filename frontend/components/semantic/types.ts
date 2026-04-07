@@ -8,6 +8,10 @@ export interface SourceTable {
   is_active: boolean;
   domains?: string[];
   grain?: string;
+  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected';
+  approved_by?: string;
+  approved_at?: string;
+  rejection_reason?: string;
 }
 
 export interface SourceColumn {
@@ -21,6 +25,10 @@ export interface SourceColumn {
   is_dimension: boolean;
   is_measure: boolean;
   ai_draft: boolean;
+  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected';
+  approved_by?: string;
+  approved_at?: string;
+  rejection_reason?: string;
 }
 
 export interface Relationship {
@@ -51,4 +59,8 @@ export interface KpiDefinition {
   formula_plain_text: string;
   formula_sql: string;
   ai_draft: boolean;
+  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected';
+  approved_by?: string;
+  approved_at?: string;
+  rejection_reason?: string;
 }

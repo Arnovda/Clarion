@@ -6,11 +6,13 @@ import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES 
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { encryptCredentials } from '../utils/crypto';
+import { validate } from '../middleware/validate';
+import { testConnectionSchema, createConnectionSchema, updateConnectionSchema } from '../middleware/schemas';
 
 const router = Router();
 
 // POST /api/connections/test — test a source connection without saving it
-router.post('/test', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/test', requireAuth, requireRole('admin'), validate(testConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { type, config } = req.body as { type: string; config: Record<string, unknown> };
     if (!SUPPORTED_TYPES.includes(type as any)) {
@@ -25,7 +27,7 @@ router.post('/test', requireAuth, requireRole('admin'), async (req: Request, res
 });
 
 // POST /api/connections — create a connection and run schema profiling
-router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, type, config, domains } = req.body as {
       name: string;
@@ -52,6 +54,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
 
     const [row] = await semanticDb('connections')
       .insert({
+        tenant_id: req.user!.tenantId,
         name,
         type,
         config: encryptedConfig,
@@ -91,7 +94,7 @@ router.get('/', requireAuth, requireRole('admin'), async (_req: Request, res: Re
 });
 
 // PATCH /api/connections/:id — update name and/or config
-router.patch('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, config, domains } = req.body as { name?: string; config?: Record<string, unknown>; domains?: string[] };
     const updates: Record<string, unknown> = {};

@@ -8,6 +8,10 @@ import {
   buildSchemaDraftUser,
   SchemaDraftOutput,
   TableQualityStat,
+  RELATIONSHIP_SUGGEST_SYSTEM,
+  buildRelationshipSuggestUser,
+  SemanticContext,
+  RelationshipSuggestOutput,
 } from './prompts/schemaDraftPrompt';
 import {
   NL_TO_SQL_SYSTEM,
@@ -60,6 +64,9 @@ import {
 // ---------------------------------------------------------------------------
 export type SqlDialect = 'sqlite' | 'duckdb';
 
+import { logger } from '../utils/logger';
+import { trackMetric, trackEvent } from '../utils/monitoring';
+
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
 // Lazy singleton — created on first use.
@@ -85,7 +92,10 @@ const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [2000, 5000, 10000]; // ms — exponential-ish backoff
 
-async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
+async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096, callLabel?: string): Promise<string> {
+  // Auto-derive label from system prompt if not provided
+  if (!callLabel) callLabel = systemPrompt.slice(0, 60).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
+  const start = Date.now();
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const message = await getClient().messages.create({
@@ -99,16 +109,31 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
       if (block.type !== 'text') {
         throw new Error('AIService: unexpected non-text response from Claude');
       }
+
+      // Track AI call metrics
+      const durationMs = Date.now() - start;
+      const inputTokens  = message.usage?.input_tokens  ?? 0;
+      const outputTokens = message.usage?.output_tokens ?? 0;
+      const props = { callLabel, model: MODEL, attempt: String(attempt + 1) };
+      trackMetric('ai_call_duration_ms', durationMs, props);
+      trackMetric('ai_input_tokens',     inputTokens, props);
+      trackMetric('ai_output_tokens',    outputTokens, props);
+      trackMetric('ai_total_tokens',     inputTokens + outputTokens, props);
+      logger.info({ callLabel, durationMs, inputTokens, outputTokens, attempt: attempt + 1 }, 'AI call completed');
+
       return block.text;
     } catch (err: unknown) {
       const status = (err as { status?: number }).status;
       const isRetryable = status === 529 || status === 503 || status === 500 || status === 429;
       if (isRetryable && attempt < MAX_RETRIES) {
         const delay = RETRY_DELAYS[attempt] ?? 10000;
-        console.warn(`[AIService] ${status} error on attempt ${attempt + 1}/${MAX_RETRIES + 1}, retrying in ${delay}ms…`);
+        logger.warn({ callLabel, status, attempt: attempt + 1, retryIn: delay }, 'AI call retrying');
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
+      const durationMs = Date.now() - start;
+      logger.error({ callLabel, status, durationMs, err }, 'AI call failed');
+      trackEvent('ai_call_failed', { callLabel, model: MODEL, status: String(status ?? 'unknown'), durationMs: String(durationMs) });
       throw err;
     }
   }
@@ -117,7 +142,9 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
 
 // Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses
 // but collects the full text and returns it as a string (no event callbacks).
-async function callClaudeStreaming(systemPrompt: string, userPrompt: string, maxTokens = 4096): Promise<string> {
+async function callClaudeStreaming(systemPrompt: string, userPrompt: string, maxTokens = 4096, callLabel?: string): Promise<string> {
+  if (!callLabel) callLabel = 'stream_' + systemPrompt.slice(0, 50).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
+  const start = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
@@ -138,6 +165,12 @@ async function callClaudeStreaming(systemPrompt: string, userPrompt: string, max
       }
     }
   }
+
+  const durationMs = Date.now() - start;
+  // Stream API doesn't return usage easily; log what we can
+  const props = { callLabel, model: MODEL, streaming: 'true' };
+  trackMetric('ai_call_duration_ms', durationMs, props);
+  logger.info({ callLabel, durationMs, outputChars: fullText.length, streaming: true }, 'AI streaming call completed');
 
   return fullText;
 }
@@ -213,6 +246,21 @@ export async function generateSchemaDraft(
     merged.columns.push(...partial.columns);
   }
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Relationship Re-Suggest — uses full semantic context
+// ---------------------------------------------------------------------------
+
+export async function suggestRelationships(
+  ctx: SemanticContext,
+): Promise<RelationshipSuggestOutput> {
+  const raw = await callClaude(
+    RELATIONSHIP_SUGGEST_SYSTEM,
+    buildRelationshipSuggestUser(ctx),
+    8000,
+  );
+  return parseJson<RelationshipSuggestOutput>(raw);
 }
 
 // ---------------------------------------------------------------------------

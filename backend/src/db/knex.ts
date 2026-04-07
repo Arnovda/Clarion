@@ -2,7 +2,10 @@ import knex, { Knex } from 'knex';
 import path from 'path';
 import dotenv from 'dotenv';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
+// Don't override env vars in test mode — setup.ts sets DATABASE_URL to test DB
+if (!process.env.VITEST) {
+  dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
+}
 
 /**
  * Semantic layer database — PostgreSQL
@@ -17,15 +20,21 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true }
 
 const baseUrl = process.env.DATABASE_URL ?? 'postgresql://databridge:databridge@localhost:5432/databridge';
 
-// Replace the superuser credentials with the app role for runtime queries
-const appUrl = baseUrl.replace(
-  /^postgresql:\/\/[^:]+:[^@]+@/,
-  'postgresql://databridge_app:databridge@',
-);
+// In production (Azure), use the admin role directly — databridge_app role
+// is only created when RLS setup script runs. Locally, try app role if available.
+const useAppRole = process.env.NODE_ENV !== 'production';
+const connectionUrl = useAppRole
+  ? baseUrl.replace(/^postgresql:\/\/[^:]+:[^@]+@/, 'postgresql://databridge_app:databridge@')
+  : baseUrl;
+
+// Azure Postgres requires SSL
+const needsSsl = baseUrl.includes('azure.com') || baseUrl.includes('sslmode=require');
 
 export const semanticDb: Knex = knex({
   client: 'pg',
-  connection: appUrl,
+  connection: needsSsl
+    ? { connectionString: connectionUrl, ssl: { rejectUnauthorized: false } }
+    : connectionUrl,
 });
 
 // Source database — SQLite file on disk (read-only)

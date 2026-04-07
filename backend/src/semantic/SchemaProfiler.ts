@@ -142,7 +142,7 @@ export async function runSchemaProfiler(
       if (useDuckDb && connectorOverride) {
         result = await runQualityProfileWithConnector(connectionId, table.tableName, connectorOverride, table.columns.map(c => ({ name: c.name, type: c.type })));
       } else {
-        result = await runQualityProfile(connectionId, table.tableName, filePath);
+        result = await runQualityProfile(connectionId, table.tableName, filePath ?? '');
       }
       qualityStats.push({
         table_name: table.tableName,
@@ -181,6 +181,7 @@ export async function runSchemaProfiler(
   // Map from table_name → inserted id, and "table_name.column_name" → column id
   const tableIdMap  = new Map<string, number>();
   const columnIdMap = new Map<string, number>(); // key: "tableName.columnName"
+  let pgRelsForNeo4j: Array<Record<string, unknown>> = []; // populated inside trx for Neo4j sync
 
   emit({ phase: 'storing', message: 'Saving definitions to database…' });
   await semanticDb.transaction(async (trx) => {
@@ -420,6 +421,25 @@ export async function runSchemaProfiler(
         label:             snap.label,
       });
     }
+
+    // Pre-fetch relationships inside the transaction (while RLS context is active)
+    // so Neo4j sync has the data after the transaction closes.
+    const _insertedTableIds = Array.from(tableIdMap.values());
+    pgRelsForNeo4j = _insertedTableIds.length
+      ? await trx('table_relationships')
+          .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
+          .leftJoin('source_columns as tc', 'table_relationships.to_column_id',   'tc.id')
+          .whereIn('table_relationships.from_table_id', _insertedTableIds)
+          .select(
+            'table_relationships.id',
+            'table_relationships.from_table_id', 'table_relationships.to_table_id',
+            'table_relationships.from_column_id', 'table_relationships.to_column_id',
+            'table_relationships.relationship_type',
+            'table_relationships.description',
+            'fc.column_name as from_col_name',
+            'tc.column_name as to_col_name',
+          )
+      : [];
   });
 
   // ── Sync to Neo4j ──────────────────────────────────────────────────────────
@@ -464,25 +484,9 @@ export async function runSchemaProfiler(
       }
     }
 
-    // Fetch the just-inserted relationship rows from Postgres to get their IDs.
-    const insertedTableIds = Array.from(tableIdMap.values());
-    const pgRels = insertedTableIds.length
-      ? await semanticDb('table_relationships')
-          .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
-          .leftJoin('source_columns as tc', 'table_relationships.to_column_id',   'tc.id')
-          .whereIn('table_relationships.from_table_id', insertedTableIds)
-          .select(
-            'table_relationships.id',
-            'table_relationships.from_table_id', 'table_relationships.to_table_id',
-            'table_relationships.from_column_id', 'table_relationships.to_column_id',
-            'table_relationships.relationship_type',
-            'table_relationships.description',
-            'fc.column_name as from_col_name',
-            'tc.column_name as to_col_name',
-          )
-      : [];
-
-    const graphRels: graph.UpsertRelationshipInput[] = (pgRels as {
+    // Use relationships pre-fetched inside the transaction (RLS context was active there)
+    console.log(`[SchemaProfiler] Neo4j sync: ${graphTables.length} tables, ${graphColumns.length} columns, ${pgRelsForNeo4j.length} relationships pre-fetched from Postgres`);
+    const graphRels: graph.UpsertRelationshipInput[] = (pgRelsForNeo4j as {
       id: number; from_table_id: number; to_table_id: number;
       from_column_id: number | null; to_column_id: number | null;
       relationship_type: string; description: string | null;
@@ -500,6 +504,22 @@ export async function runSchemaProfiler(
     }));
 
     await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels);
+
+    // Persist FK candidates so re-suggest can use them later
+    if (allFkCandidates.length > 0) {
+      await graph.saveFkCandidates(
+        connectionId,
+        allFkCandidates.map((fk) => ({
+          fromTable:    fk.fromTable,
+          fromColumn:   fk.fromColumn,
+          toTable:      fk.toTable,
+          toColumn:     fk.toColumn,
+          source:       fk.source,
+          confidence:   fk.confidence,
+          overlapRatio: fk.overlapRatio ?? null,
+        })),
+      );
+    }
   } catch (neo4jErr) {
     // Non-fatal — Postgres is the source of truth until Phase 7.
     // Log but don't throw; the profiler should still return success.

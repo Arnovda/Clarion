@@ -3,6 +3,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
+import { notifyAdmins } from '../services/notificationService';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
@@ -126,7 +127,13 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // 0. Check for product layer — if a star schema exists with transformed tables,
     //    use product context (cleaner Kimball model) instead of raw source context.
     const productCtx = await buildProductSemanticContext(connectionId);
-    const productWarehouse = productCtx ? await getProductWarehousePath(connectionId) : null;
+    const tenantId = req.user!.tenantId;
+    const productWarehouse = productCtx
+      ? await semanticDb.transaction(async (trx) => {
+          if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+          return getProductWarehousePath(connectionId, trx);
+        })
+      : null;
 
     if (productCtx && productWarehouse) {
       // ── PRODUCT LAYER QUERY PATH ──────────────────────────────────────
@@ -268,7 +275,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // 2a-join-paths. Discover multi-hop join paths (2+ hops) via Neo4j shortestPath.
     //   Direct relationships are already in relationshipContext; this adds explicit
     //   chains for 3+ table queries so Claude doesn't have to infer them.
-    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+    const tableNames = (tables as { table_name: string }[]).map((t) => t.table_name);
     const joinPaths = await getJoinPaths(connectionId, tableNames);
     let relationshipContextWithPaths = relationshipContext;
     if (joinPaths.length > 0) {
@@ -558,6 +565,13 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // 4. Block low-confidence queries (overall < 0.7 OR any sub-score < 0.5)
     if (blockCheck.blocked) {
       await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+      // Notify admins about the new gap
+      if (req.user?.tenantId) {
+        notifyAdmins(req.user.tenantId, 'new_gap', 'New definition gap', {
+          message: `Question blocked (confidence ${(nlResult.confidence * 100).toFixed(0)}%): "${question.slice(0, 80)}"`,
+          link: '/gaps',
+        }).catch(() => {});
+      }
 
       res.json({
         ok: true,
@@ -824,7 +838,13 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // ── 0. Check for product layer ────────────────────────────────────────
     emit({ type: 'phase', text: 'Loading context…' });
     const thinkProductCtx = await buildProductSemanticContext(connectionId);
-    const thinkProductWarehouse = thinkProductCtx ? await getProductWarehousePath(connectionId) : null;
+    const thinkTenantId = req.user!.tenantId;
+    const thinkProductWarehouse = thinkProductCtx
+      ? await semanticDb.transaction(async (trx) => {
+          if (thinkTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(thinkTenantId)}'`);
+          return getProductWarehousePath(connectionId, trx);
+        })
+      : null;
 
     if (thinkProductCtx && thinkProductWarehouse) {
       // ── PRODUCT LAYER STREAMING PATH ──────────────────────────────────
@@ -936,7 +956,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       : 'No KPIs defined yet.';
 
     // ── 2a. Multi-hop join paths ─────────────────────────────────────────────
-    const tableNames = tables.map((t: { table_name: string }) => t.table_name);
+    const tableNames = (tables as { table_name: string }[]).map((t) => t.table_name);
     const thinkJoinPaths = await getJoinPaths(connectionId, tableNames);
     let thinkRelCtx = relationshipContext;
     if (thinkJoinPaths.length > 0) {

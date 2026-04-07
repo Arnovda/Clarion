@@ -719,15 +719,74 @@ interface PanelProps {
 
 function RelationshipPanel({ relationships, tables, columnsByTable, connectionId, selectedRelId, onSelect, onDelete, onChangeType, onReload, onResetLayout, draftCount, onStartDraftReview }: PanelProps) {
   const [reSuggesting, setReSuggesting] = useState(false);
+  const [reSuggestStatus, setReSuggestStatus] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); };
+  }, []);
+
+  function handleCancel() {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+      setReSuggesting(false);
+      setReSuggestStatus('Cancelled');
+      setTimeout(() => setReSuggestStatus(''), 2000);
+    }
+  }
 
   async function handleReSuggest() {
     if (!confirm('This will delete all AI-draft relationships and re-generate them with correct column links. Manually confirmed relationships are kept. Continue?')) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setReSuggesting(true);
+    setReSuggestStatus('Starting…');
     try {
-      await api.post(`/semantic/relationships/re-suggest?connectionId=${connectionId}`);
+      const token = localStorage.getItem('databridge_token');
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/semantic/relationships/re-suggest?connectionId=${connectionId}`, {
+        method: 'POST',
+        headers: {
+          'Accept': 'text/event-stream',
+          'Authorization': `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const evt = JSON.parse(line.slice(6));
+                setReSuggestStatus(evt.message ?? '');
+              } catch { /* ignore parse errors */ }
+            }
+          }
+        }
+      }
+
+      abortRef.current = null;
       await onReload();
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return; // cancelled by user
+      setReSuggestStatus(`Error: ${err instanceof Error ? err.message : 'Failed'}`);
     } finally {
-      setReSuggesting(false);
+      setTimeout(() => {
+        setReSuggesting(false);
+        setReSuggestStatus('');
+      }, 2000);
     }
   }
   const tName = (id: number) => { const t = tables.find((t) => t.id === id); return t?.display_name || t?.table_name || '—'; };
@@ -771,6 +830,15 @@ function RelationshipPanel({ relationships, tables, columnsByTable, connectionId
                 </>
               ) : <>⚡ Re-suggest</>}
             </button>
+            {reSuggesting && (
+              <button
+                onClick={handleCancel}
+                className="flex items-center justify-center gap-1 px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg transition-colors"
+                title="Cancel re-suggest"
+              >
+                ✕ Cancel
+              </button>
+            )}
             <button
               onClick={onResetLayout}
               title="Reset to auto-layout"
@@ -778,6 +846,11 @@ function RelationshipPanel({ relationships, tables, columnsByTable, connectionId
             >
               ↺ Layout
             </button>
+          </div>
+        )}
+        {reSuggestStatus && (
+          <div className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 animate-pulse">
+            {reSuggestStatus}
           </div>
         )}
         {!sel && (

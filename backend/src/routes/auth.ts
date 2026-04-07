@@ -8,6 +8,13 @@ import {
   verifyToken,
   requireAuth,
 } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import {
+  registerSchema,
+  loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+} from '../middleware/schemas';
 
 const router = Router();
 
@@ -15,34 +22,16 @@ const router = Router();
 // POST /api/auth/register — Create a new tenant + first admin user
 // ---------------------------------------------------------------------------
 
-router.post('/register', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register', validate(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { companyName, email, password, displayName } = req.body as {
       companyName: string;
-      email: string;
+      email: string;    // already lowercased + trimmed by Zod
       password: string;
       displayName: string;
     };
 
-    // Validation
-    if (!companyName?.trim()) {
-      res.status(400).json({ ok: false, error: 'Company name is required' });
-      return;
-    }
-    if (!email?.trim() || !email.includes('@')) {
-      res.status(400).json({ ok: false, error: 'Valid email is required' });
-      return;
-    }
-    if (!password || password.length < 8) {
-      res.status(400).json({ ok: false, error: 'Password must be at least 8 characters' });
-      return;
-    }
-    if (!displayName?.trim()) {
-      res.status(400).json({ ok: false, error: 'Display name is required' });
-      return;
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = email; // already normalized by Zod transform
 
     // Check if email already exists
     const existing = await semanticDb('users').where({ email: normalizedEmail }).first();
@@ -112,16 +101,11 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
 // POST /api/auth/login — Authenticate with email + password
 // ---------------------------------------------------------------------------
 
-router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/login', validate(loginSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = req.body as { email: string; password: string };
 
-    if (!email || !password) {
-      res.status(400).json({ ok: false, error: 'Email and password are required' });
-      return;
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = email; // already normalized by Zod transform
 
     // Find user (across all tenants — email is unique per tenant but we look up globally for login)
     const user = await semanticDb('users')
@@ -221,16 +205,11 @@ router.post('/refresh', requireAuth, (req: Request, res: Response) => {
 // POST /api/auth/forgot-password — Request a password reset email
 // ---------------------------------------------------------------------------
 
-router.post('/forgot-password', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.body as { email: string };
 
-    if (!email) {
-      res.status(400).json({ ok: false, error: 'Email is required' });
-      return;
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = email; // already normalized by Zod
     const user = await semanticDb('users').where({ email: normalizedEmail, is_active: true }).first();
 
     // Always return success to prevent email enumeration
@@ -265,25 +244,16 @@ router.post('/forgot-password', async (req: Request, res: Response, next: NextFu
 // POST /api/auth/reset-password — Set a new password with reset token
 // ---------------------------------------------------------------------------
 
-router.post('/reset-password', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/reset-password', validate(resetPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, token, newPassword } = req.body as {
+    // Zod schema uses 'password' but the route originally used 'newPassword'
+    const { email, token, password: newPassword } = req.body as {
       email: string;
       token: string;
-      newPassword: string;
+      password: string;
     };
 
-    if (!email || !token || !newPassword) {
-      res.status(400).json({ ok: false, error: 'Email, token, and new password are required' });
-      return;
-    }
-
-    if (newPassword.length < 8) {
-      res.status(400).json({ ok: false, error: 'Password must be at least 8 characters' });
-      return;
-    }
-
-    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedEmail = email; // already normalized by Zod
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
     const user = await semanticDb('users')

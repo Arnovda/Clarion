@@ -21,6 +21,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile } from '../quality/QualityProfiler';
 import * as graph from '../db/semanticGraph';
+import { notifyTenant } from '../services/notificationService';
 
 const router = Router();
 
@@ -180,6 +181,105 @@ async function evaluateRules(connId: number, tableName: string, filepath: string
   }
 }
 
+// ─── quality alert generation ───────────────────────────────────────────────
+
+const ALERT_THRESHOLD = 0.75; // overall score below this triggers a critical alert
+const DROP_THRESHOLD  = 0.10; // score drop of >10% triggers a warning alert
+
+async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?: number): Promise<void> {
+  // Get the two most recent profiles
+  const profiles = await semanticDb('dataset_profiles')
+    .where({ connection_id: connId, table_name: tableName })
+    .orderBy('profiled_at', 'desc')
+    .limit(2);
+
+  if (profiles.length === 0) return;
+  const current = profiles[0];
+  const previous = profiles.length > 1 ? profiles[1] : null;
+
+  const currentScore = current.overall_score as number | null;
+  if (currentScore == null) return;
+
+  // Alert 1: Score below absolute threshold
+  if (currentScore < ALERT_THRESHOLD) {
+    const existing = await semanticDb('quality_alerts')
+      .where({ connection_id: connId, table_name: tableName, alert_type: 'score_drop', dismissed: false })
+      .where('current_score', '<', ALERT_THRESHOLD)
+      .first();
+    if (!existing) {
+      await semanticDb('quality_alerts').insert({
+        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+        connection_id: connId,
+        table_name: tableName,
+        alert_type: 'score_drop',
+        severity: 'critical',
+        message: `Quality score for "${tableName}" is ${(currentScore * 100).toFixed(0)}%, below the ${(ALERT_THRESHOLD * 100).toFixed(0)}% threshold.`,
+        previous_score: previous?.overall_score ?? null,
+        current_score: currentScore,
+        threshold: ALERT_THRESHOLD,
+      });
+      if (tenantId) {
+        notifyTenant(tenantId, 'quality_alert', `Quality alert: ${tableName}`, {
+          message: `Score is ${(currentScore * 100).toFixed(0)}%, below ${(ALERT_THRESHOLD * 100).toFixed(0)}% threshold`,
+          link: `/semantic?tab=quality`,
+        }).catch(() => {});
+      }
+    }
+  }
+
+  // Alert 2: Significant score drop
+  if (previous?.overall_score != null) {
+    const prevScore = previous.overall_score as number;
+    const drop = prevScore - currentScore;
+    if (drop >= DROP_THRESHOLD) {
+      await semanticDb('quality_alerts').insert({
+        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+        connection_id: connId,
+        table_name: tableName,
+        alert_type: 'score_drop',
+        severity: drop >= 0.20 ? 'critical' : 'warning',
+        message: `Quality score for "${tableName}" dropped ${(drop * 100).toFixed(0)}% (from ${(prevScore * 100).toFixed(0)}% to ${(currentScore * 100).toFixed(0)}%).`,
+        previous_score: prevScore,
+        current_score: currentScore,
+        threshold: DROP_THRESHOLD,
+      });
+    }
+  }
+
+  // Alert 3: Rule failures — check latest rule executions
+  const failedRules = await semanticDb('rule_executions as re')
+    .join('quality_rules as qr', 're.rule_id', 'qr.id')
+    .where({ 'qr.connection_id': connId, 'qr.table_name': tableName, 'qr.is_active': true })
+    .where('re.status', 'FAIL')
+    .orderBy('re.executed_at', 'desc')
+    .select('qr.rule_name', 'qr.id as rule_id', 're.pass_rate', 're.status');
+
+  // Deduplicate by rule_id (latest execution only)
+  const seenAlertRules = new Set<number>();
+  for (const fr of failedRules as { rule_name: string; rule_id: number; pass_rate: number }[]) {
+    if (seenAlertRules.has(fr.rule_id)) continue;
+    seenAlertRules.add(fr.rule_id);
+
+    // Only create if there isn't already an active alert for this rule
+    const existing = await semanticDb('quality_alerts')
+      .where({ connection_id: connId, table_name: tableName, alert_type: 'rule_fail', dismissed: false })
+      .whereRaw(`details->>'rule_id' = ?`, [String(fr.rule_id)])
+      .first();
+    if (!existing) {
+      await semanticDb('quality_alerts').insert({
+        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+        connection_id: connId,
+        table_name: tableName,
+        alert_type: 'rule_fail',
+        severity: 'warning',
+        message: `Rule "${fr.rule_name}" failed with ${(fr.pass_rate * 100).toFixed(1)}% pass rate.`,
+        current_score: fr.pass_rate,
+        details: JSON.stringify({ rule_id: fr.rule_id, rule_name: fr.rule_name }),
+      });
+    }
+  }
+}
+
 // ─── routes ──────────────────────────────────────────────────────────────────
 
 // GET /api/quality/tables?connectionId=
@@ -255,6 +355,7 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin'), async
     const table  = req.params.table;
     const fp     = await getFilepath(connId);
     await evaluateRules(connId, table, fp);
+    await checkAndCreateAlerts(connId, table, req.user?.tenantId);
     const updated = await semanticDb('dataset_profiles')
       .where({ connection_id: connId, table_name: table })
       .orderBy('profiled_at', 'desc').first();
@@ -278,6 +379,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async 
 
     const result = await runQualityProfile(connId, table, fp, bkOverride);
     await evaluateRules(connId, table, fp);
+    await checkAndCreateAlerts(connId, table, req.user?.tenantId);
     // Return updated summary
     const updated = await semanticDb('dataset_profiles').where({ id: result.profileId }).first();
 
@@ -485,6 +587,49 @@ router.patch('/failures/:failId', requireAuth, async (req, res, next) => {
   try {
     const { status } = req.body as { status: string };
     await semanticDb('quality_failures').where({ id: req.params.failId }).update({ status });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ─── quality alerts ─────────────────────────────────────────────────────────
+
+// GET /api/quality/alerts?dismissed=false
+router.get('/alerts', requireAuth, async (req, res, next) => {
+  try {
+    const dismissed = req.query.dismissed === 'true';
+    const q = semanticDb('quality_alerts')
+      .where({ dismissed })
+      .orderBy('created_at', 'desc')
+      .limit(50);
+    const alerts = await q;
+    res.json({ ok: true, data: alerts });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/quality/alerts/:id/dismiss
+router.patch('/alerts/:id/dismiss', requireAuth, async (req, res, next) => {
+  try {
+    await semanticDb('quality_alerts')
+      .where({ id: req.params.id })
+      .update({
+        dismissed: true,
+        dismissed_by: req.user!.email,
+        dismissed_at: new Date().toISOString(),
+      });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/quality/alerts/dismiss-all
+router.post('/alerts/dismiss-all', requireAuth, async (req, res, next) => {
+  try {
+    await semanticDb('quality_alerts')
+      .where({ dismissed: false })
+      .update({
+        dismissed: true,
+        dismissed_by: req.user!.email,
+        dismissed_at: new Date().toISOString(),
+      });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

@@ -5,6 +5,7 @@ import Nav from '@/components/Nav';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import dynamic from 'next/dynamic';
+import SchedulePanel from '@/components/SchedulePanel';
 
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
@@ -63,6 +64,7 @@ interface ProductTable {
   row_count: number | null;
   last_run_at: string | null;
   last_run_error: string | null;
+  load_mode: string; // 'full' | 'incremental'
   quality_checks?: QualityCheck[];
 }
 
@@ -383,22 +385,40 @@ export default function ProductSemanticsPage() {
   // ----------- Transformation controls -----------
   const [runningAll, setRunningAll] = useState(false);
   const [runningTableId, setRunningTableId] = useState<number | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
 
   const handleRunTable = async (tableId: number) => {
     setRunningTableId(tableId);
+    setRunError(null);
     try {
       await api.post(`/products/tables/${tableId}/run`);
       if (selectedProduct) await loadFullProduct(selectedProduct.id);
-    } catch { /* ignore */ }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Transformation failed';
+      setRunError(msg);
+    }
     setRunningTableId(null);
   };
 
-  const handleRunAll = async (productId: number) => {
+  const handleRunAll = async (productId: number, fullRefresh = false) => {
     setRunningAll(true);
+    setRunError(null);
     try {
-      await api.post(`/products/${productId}/run`);
+      const endpoint = fullRefresh ? `/products/${productId}/run-full` : `/products/${productId}/run`;
+      const res = await api.post(endpoint);
+      // Track which tables completed with errors
+      const results = res.data?.data;
+      if (Array.isArray(results)) {
+        const failed = results.filter((r: { status: string }) => r.status === 'error');
+        if (failed.length > 0) {
+          setRunError(`${failed.length} table(s) failed. Check individual tables for details.`);
+        }
+      }
       await loadFullProduct(productId);
-    } catch { /* ignore */ }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Transformation run failed';
+      setRunError(msg);
+    }
     setRunningAll(false);
   };
 
@@ -591,13 +611,23 @@ export default function ProductSemanticsPage() {
                       {selectedProduct.status === 'approved' && selectedProduct.star_schemas.some((s) =>
                         s.tables.some((t) => t.transformation_sql),
                       ) && (
-                        <button
-                          onClick={() => handleRunAll(selectedProduct.id)}
-                          disabled={runningAll}
-                          className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                        >
-                          {runningAll ? 'Running...' : 'Run All Transformations'}
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleRunAll(selectedProduct.id)}
+                            disabled={runningAll}
+                            className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {runningAll ? 'Running...' : 'Run All'}
+                          </button>
+                          <button
+                            onClick={() => handleRunAll(selectedProduct.id, true)}
+                            disabled={runningAll}
+                            className="px-3 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+                            title="Ignore incremental settings and do a full overwrite for all tables"
+                          >
+                            Full Refresh
+                          </button>
+                        </>
                       )}
                       <button
                         onClick={() => handleDelete(selectedProduct.id)}
@@ -607,6 +637,11 @@ export default function ProductSemanticsPage() {
                       </button>
                     </div>
                   </div>
+
+                  {/* Schedule panel — visible for approved products */}
+                  {selectedProduct.status === 'approved' && (
+                    <SchedulePanel productId={selectedProduct.id} />
+                  )}
 
                   {/* ── Live design panel (visible while designing) ──────── */}
                   {designing && (
@@ -767,6 +802,8 @@ export default function ProductSemanticsPage() {
               runningTableId={runningTableId}
               onGenerateSql={selectedProduct ? () => handleGenerateSql(selectedProduct.id) : undefined}
               generatingSql={generatingSql}
+              runError={runError}
+              onDismissError={() => setRunError(null)}
             />
           )}
 
@@ -1049,6 +1086,8 @@ function TransformationsView({
   runningTableId,
   onGenerateSql,
   generatingSql,
+  runError,
+  onDismissError,
 }: {
   product: FullDataProduct | null;
   selectedTableId: number | null;
@@ -1061,6 +1100,8 @@ function TransformationsView({
   runningTableId?: number | null;
   onGenerateSql?: () => Promise<void>;
   generatingSql?: boolean;
+  runError?: string | null;
+  onDismissError?: () => void;
 }) {
   const [editingSql, setEditingSql] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1104,13 +1145,45 @@ function TransformationsView({
             <button
               onClick={onRunAll}
               disabled={runningAll}
-              className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+              className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
             >
+              {runningAll && (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                </svg>
+              )}
               {runningAll ? 'Running All...' : 'Run All'}
             </button>
           )}
         </div>
       </div>
+
+      {/* Error banner */}
+      {runError && (
+        <div className="mb-4 flex items-center justify-between bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
+          <span>{runError}</span>
+          <button onClick={onDismissError} className="text-red-400 hover:text-red-600 ml-4">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      {/* Running All progress banner */}
+      {runningAll && (
+        <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-center gap-3">
+          <svg className="w-5 h-5 text-emerald-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+          </svg>
+          <div>
+            <p className="text-sm font-medium text-emerald-800">Running all transformations...</p>
+            <p className="text-xs text-emerald-600 mt-0.5">Processing {allTables.filter((t) => t.transformation_sql).length} tables in DAG order. This may take a moment.</p>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-4">
         {/* Table list */}
@@ -1119,19 +1192,27 @@ function TransformationsView({
             const hasFailedCheck = tbl.quality_checks?.some((c) => c.status === 'fail');
             const hasChecks = tbl.quality_checks && tbl.quality_checks.length > 0;
             const allPass = hasChecks && tbl.quality_checks!.every((c) => c.status === 'pass' || c.status === 'skip');
+            const isRunning = runningTableId === tbl.id || (runningAll && !!tbl.transformation_sql);
             return (
               <button
                 key={tbl.id}
                 onClick={() => { onSelectTable(tbl.id); setEditingSql(null); }}
-                className={`w-full text-left px-3 py-2 rounded-lg mb-1 text-sm flex items-center gap-2 ${
+                className={`w-full text-left px-3 py-2 rounded-lg mb-1 text-sm flex items-center gap-2 transition-all ${
                   selected?.id === tbl.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-600'
-                }`}
+                } ${isRunning ? 'bg-emerald-50 border border-emerald-200' : ''}`}
               >
-                <RoleBadge role={tbl.table_role} />
+                {isRunning ? (
+                  <svg className="w-3.5 h-3.5 text-emerald-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                  </svg>
+                ) : (
+                  <RoleBadge role={tbl.table_role} />
+                )}
                 <span className="truncate flex-1">{tbl.table_name}</span>
-                {hasFailedCheck && <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" title="Quality check failed" />}
-                {allPass && <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" title="Quality checks passed" />}
-                <StatusBadge status={tbl.transformation_status} />
+                {hasFailedCheck && !isRunning && <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" title="Quality check failed" />}
+                {allPass && !isRunning && <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" title="Quality checks passed" />}
+                {!isRunning && <StatusBadge status={tbl.transformation_status} />}
               </button>
             );
           })}
@@ -1156,13 +1237,35 @@ function TransformationsView({
                     </button>
                   )}
                   {(selected.transformation_status === 'approved' || selected.transformation_status === 'success' || selected.transformation_status === 'error') && (
-                    <button
-                      onClick={() => onRun(selected.id)}
-                      disabled={runningTableId === selected.id || runningAll}
-                      className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                    >
-                      {runningTableId === selected.id ? 'Running...' : 'Run'}
-                    </button>
+                    <>
+                      <select
+                        value={selected.load_mode ?? 'full'}
+                        onChange={async (e) => {
+                          try {
+                            await api.patch(`/products/tables/${selected.id}/load-mode`, { load_mode: e.target.value });
+                            onRefresh();
+                          } catch { /* ignore */ }
+                        }}
+                        className="px-2 py-1 text-xs border border-slate-200 rounded-lg bg-white text-slate-600"
+                        title="Load mode: full overwrites all data, incremental merges new rows"
+                      >
+                        <option value="full">Full refresh</option>
+                        <option value="incremental">Incremental</option>
+                      </select>
+                      <button
+                        onClick={() => onRun(selected.id)}
+                        disabled={runningTableId === selected.id || runningAll}
+                        className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {(runningTableId === selected.id || runningAll) && (
+                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                          </svg>
+                        )}
+                        {runningTableId === selected.id ? 'Running...' : runningAll ? 'Running...' : 'Run'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>

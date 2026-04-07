@@ -5,6 +5,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { clearToken, getTokenPayload, TokenPayload } from '@/lib/auth';
+import NotificationBell from './NotificationBell';
 
 export default function Nav() {
   const router   = useRouter();
@@ -47,10 +48,14 @@ export default function Nav() {
           {link('/query',      'Ask')}
           {link('/dashboards', 'Dashboards')}
           {isAdmin && link('/gaps', 'Gaps')}
+          {isAdmin && link('/users', 'Team')}
         </div>
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-xs text-slate-400">{payload?.displayName} · {payload?.role}</span>
+        <NotificationBell />
+        <Link href="/profile" className="text-xs text-slate-400 hover:text-slate-600">
+          {payload?.displayName} · {payload?.role}
+        </Link>
         <button onClick={logout} className="text-sm text-slate-500 hover:text-slate-800">Sign out</button>
       </div>
     </nav>

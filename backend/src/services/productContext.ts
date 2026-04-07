@@ -8,6 +8,7 @@
  */
 
 import { semanticDb } from '../db/knex';
+import type { Knex } from 'knex';
 
 interface ProductTableRow {
   id: number;
@@ -84,11 +85,19 @@ export async function hasProductLayer(connectionId: number): Promise<boolean> {
  */
 export async function buildProductSemanticContext(
   connectionId: number,
+  filterProductIds?: number[],
 ): Promise<ProductSemanticContext | null> {
   // Find data products for this connection
-  const products = await semanticDb('data_products')
+  let query = semanticDb('data_products')
     .where({ connection_id: connectionId })
     .whereIn('status', ['approved', 'success']);
+
+  // Optionally filter to specific product IDs
+  if (filterProductIds && filterProductIds.length > 0) {
+    query = query.whereIn('id', filterProductIds);
+  }
+
+  const products = await query;
 
   if (products.length === 0) return null;
 
@@ -195,8 +204,9 @@ export async function buildProductSemanticContext(
  * Get the warehouse path for the product layer of a connection.
  * Returns the product directory path or null if not available.
  */
-export async function getProductWarehousePath(connectionId: number): Promise<string | null> {
-  const product = await semanticDb('data_products')
+export async function getProductWarehousePath(connectionId: number, trx?: Knex | Knex.Transaction): Promise<string | null> {
+  const db = trx ?? semanticDb;
+  const product = await db('data_products')
     .where({ connection_id: connectionId })
     .whereIn('status', ['approved', 'success'])
     .first();
@@ -204,7 +214,7 @@ export async function getProductWarehousePath(connectionId: number): Promise<str
   if (!product) return null;
 
   // Check if any tables have been materialized
-  const materializedTable = await semanticDb('product_tables')
+  const materializedTable = await db('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
     .where({ 'star_schemas.data_product_id': product.id })
     .where('product_tables.transformation_status', 'success')

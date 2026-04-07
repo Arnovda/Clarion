@@ -25,6 +25,7 @@ export async function setTenantContext(req: Request, _res: Response, next: NextF
     }
 
     // Set session-level variable — RLS policies check this
+    // SET doesn't support parameterized queries in Postgres — Number() coercion prevents injection
     await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     next();
   } catch (err) {

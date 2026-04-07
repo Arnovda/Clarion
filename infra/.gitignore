@@ -1,0 +1,9 @@
+# Terraform state (use remote backend in production)
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Secret variable files
+*.tfvars
+!*.tfvars.example

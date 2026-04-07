@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
+import { parsePagination, paginatedResponse } from '../utils/paginate';
 
 const router = Router();
 
@@ -10,14 +11,18 @@ const router = Router();
 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
+    const [{ count: total }] = await semanticDb('data_products').count('* as count');
     const products = await semanticDb('data_products')
       .select('data_products.*')
       .select(
         semanticDb.raw('(SELECT COUNT(*) FROM star_schemas WHERE star_schemas.data_product_id = data_products.id) as star_schema_count'),
       )
-      .orderBy('data_products.created_at', 'desc');
+      .orderBy('data_products.created_at', 'desc')
+      .limit(limit)
+      .offset(offset);
 
-    res.json({ ok: true, data: products });
+    res.json(paginatedResponse(products, Number(total), page, limit));
   } catch (err) { next(err); }
 });
 
@@ -791,7 +796,7 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
       : [];
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const results = await runProductTransformation(product, tables);
+    const results = await runProductTransformation(product, tables, req.user?.tenantId);
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
@@ -818,7 +823,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
     const product = await semanticDb('data_products').where({ id: schema.data_product_id }).first();
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const results = await runProductTransformation(product, [table]);
+    const results = await runProductTransformation(product, [table], req.user?.tenantId);
 
     res.json({ ok: true, data: results[0] ?? null });
   } catch (err) { next(err); }
@@ -956,6 +961,55 @@ router.delete('/kpis/:kpiId', requireAuth, requireRole('admin'), async (req: Req
   try {
     await semanticDb('product_kpis').where({ id: req.params.kpiId }).delete();
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/products/tables/:tableId/load-mode — Toggle incremental vs full
+// Body: { load_mode: 'full' | 'incremental' }
+// ---------------------------------------------------------------------------
+router.patch('/tables/:tableId/load-mode', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { load_mode } = req.body as { load_mode: 'full' | 'incremental' };
+    if (!['full', 'incremental'].includes(load_mode)) {
+      res.status(400).json({ ok: false, error: 'load_mode must be "full" or "incremental"' });
+      return;
+    }
+    await semanticDb('product_tables')
+      .where({ id: req.params.tableId })
+      .update({ load_mode });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/:id/run-full — Force a full refresh (ignores load_mode)
+// ---------------------------------------------------------------------------
+router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    if (!product) {
+      res.status(404).json({ ok: false, error: 'Data product not found' });
+      return;
+    }
+
+    const schemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
+    const schemaIds = schemas.map((s: { id: number }) => s.id);
+
+    const tables = schemaIds.length
+      ? await semanticDb('product_tables')
+          .whereIn('star_schema_id', schemaIds)
+          .whereNotNull('transformation_sql')
+          .orderBy('dag_order', 'asc')
+      : [];
+
+    // Override load_mode to 'full' for this run only
+    const fullTables = tables.map((t: Record<string, unknown>) => ({ ...t, load_mode: 'full' }));
+
+    const { runProductTransformation } = await import('../services/transformationRunner');
+    const results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
+
+    res.json({ ok: true, data: results });
   } catch (err) { next(err); }
 });
 

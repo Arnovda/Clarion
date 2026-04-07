@@ -24,6 +24,7 @@ interface TableRow {
   table_role: string;
   transformation_sql: string;
   dag_order: number;
+  load_mode: string; // 'full' | 'incremental'
 }
 
 interface TransformResult {
@@ -47,6 +48,7 @@ interface TransformResult {
 export async function runProductTransformation(
   product: ProductRow,
   tables: TableRow[],
+  tenantId?: number,
 ): Promise<TransformResult[]> {
   // Get the connection's warehouse path for source data
   const connection = await semanticDb('connections').where({ id: product.connection_id }).first();
@@ -87,11 +89,56 @@ export async function runProductTransformation(
 
     for (const it of ingestedTables) {
       const deltaPath = (it.delta_path as string).replace(/\\/g, '/');
-      // Remap Docker path to host path if needed
-      const hostPath = deltaPath.startsWith('/warehouse/')
-        ? path.resolve('./warehouse', deltaPath.replace('/warehouse/', ''))
-        : deltaPath;
-      await db.exec(`CREATE OR REPLACE VIEW "${it.table_name}" AS SELECT * FROM delta_scan('${hostPath.replace(/'/g, "''")}');`);
+      // Remap Docker path to host path — resolve against the connection's warehouse_path
+      let hostPath: string;
+      if (deltaPath.startsWith('/warehouse/')) {
+        // ETL stores paths like /warehouse/conn_15/table_name
+        // The connection's warehouse_path points to the actual directory (e.g. .../databridge/warehouse/conn_15)
+        // Use the connection's warehouse_path as the base
+        const tableDirName = deltaPath.split('/').pop()!;
+        hostPath = path.resolve(resolvedWarehouse, tableDirName);
+      } else {
+        hostPath = deltaPath;
+      }
+      const scanPath = hostPath.replace(/\\/g, '/');
+      await db.exec(`CREATE OR REPLACE VIEW "${it.table_name}" AS SELECT * FROM delta_scan('${scanPath.replace(/'/g, "''")}');`);
+    }
+
+    // Pre-load existing product tables from disk so single-table runs can
+    // reference dimensions/other tables that were previously materialized.
+    // Use explicit tenant context — the route's SET may be on a different pool connection
+    const allProductTables = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      return trx('product_tables')
+        .whereIn('star_schema_id', function () {
+          this.select('id').from('star_schemas').where({ data_product_id: product.id });
+        })
+        .where('transformation_status', 'success');
+    });
+
+    console.log(`[transformationRunner] Pre-loading ${allProductTables.length} existing product tables for product "${product.name}" (productDir: ${productDir})`);
+    for (const pt of allProductTables) {
+      // Skip tables that are about to be re-run (they're in the sorted list)
+      if (sorted.some((s) => s.id === pt.id)) { console.log(`  skip (re-running): ${pt.table_name}`); continue; }
+      const ptDir = path.join(productDir, pt.table_name).replace(/\\/g, '/');
+      const dirExists = fs.existsSync(path.join(productDir, pt.table_name));
+      if (!dirExists) { console.log(`  skip (no dir): ${pt.table_name} — looked for ${path.join(productDir, pt.table_name)}`); continue; }
+      const hasDelta = fs.existsSync(path.join(productDir, pt.table_name, '_delta_log'));
+      console.log(`  loading: ${pt.table_name} (delta=${hasDelta}, dir=${ptDir})`);
+      try {
+        if (hasDelta) {
+          await db.exec(`CREATE OR REPLACE VIEW "${pt.table_name}" AS SELECT * FROM delta_scan('${ptDir.replace(/'/g, "''")}');`);
+        } else {
+          await db.exec(`CREATE OR REPLACE VIEW "${pt.table_name}" AS SELECT * FROM read_parquet('${ptDir.replace(/'/g, "''")}/*.parquet');`);
+        }
+        console.log(`  OK: ${pt.table_name}`);
+      } catch (e1) {
+        console.log(`  first attempt failed for ${pt.table_name}:`, e1 instanceof Error ? e1.message : e1);
+        try {
+          await db.exec(`CREATE OR REPLACE VIEW "${pt.table_name}" AS SELECT * FROM read_parquet('${ptDir.replace(/'/g, "''")}');`);
+          console.log(`  OK (fallback): ${pt.table_name}`);
+        } catch (e2) { console.log(`  FAILED: ${pt.table_name}:`, e2 instanceof Error ? e2.message : e2); }
+      }
     }
 
     // Execute each transformation in order
@@ -130,7 +177,7 @@ export async function runProductTransformation(
 
         // Execute the transformation SQL to get the result
         const rows = await db.all(table.transformation_sql);
-        const rowCount = rows.length;
+        let rowCount = rows.length;
 
         // Write to Delta format using COPY TO
         // First create a temp table, then COPY TO Delta
@@ -146,8 +193,57 @@ export async function runProductTransformation(
         }
 
         const parquetFile = path.join(deltaDir, 'data.parquet').replace(/\\/g, '/');
-        await db.exec(`COPY ${tempTable} TO '${parquetFile}' (FORMAT PARQUET);`);
-        await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+        const existingParquet = fs.existsSync(path.join(deltaDir, 'data.parquet'));
+
+        if (table.load_mode === 'incremental' && existingParquet) {
+          // Incremental: read existing data, union with new, deduplicate by BK
+          const bkCols = await semanticDb('product_columns')
+            .where({ product_table_id: table.id })
+            .whereIn('column_role', ['surrogate_key', 'natural_key'])
+            .select('column_name');
+
+          if (bkCols.length > 0) {
+            // Load existing data, merge with new (new rows win on conflict)
+            const existingPath = parquetFile.replace(/\\/g, '/');
+            await db.exec(`CREATE OR REPLACE TABLE __existing AS SELECT * FROM read_parquet('${existingPath}');`);
+            const bkList = bkCols.map((c: { column_name: string }) => `"${c.column_name}"`).join(', ');
+            // Union: new rows take priority (appear first in row_number partition)
+            await db.exec(`
+              CREATE OR REPLACE TABLE __merged AS
+              WITH combined AS (
+                SELECT *, 1 AS __src_priority FROM ${tempTable}
+                UNION ALL
+                SELECT *, 2 AS __src_priority FROM __existing
+              ),
+              ranked AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY ${bkList} ORDER BY __src_priority) AS __rn
+                FROM combined
+              )
+              SELECT * EXCLUDE (__src_priority, __rn) FROM ranked WHERE __rn = 1;
+            `);
+            await db.exec(`DROP TABLE IF EXISTS __existing;`);
+            await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+            // Write merged result
+            await db.exec(`COPY __merged TO '${parquetFile}' (FORMAT PARQUET);`);
+            const mergedCount = await db.all('SELECT COUNT(*) AS cnt FROM __merged');
+            rowCount = Number(mergedCount[0]?.cnt ?? rowCount);
+            await db.exec(`DROP TABLE IF EXISTS __merged;`);
+          } else {
+            // No BK columns — just append (overwrite with union)
+            const existingPath = parquetFile.replace(/\\/g, '/');
+            await db.exec(`CREATE OR REPLACE TABLE __existing AS SELECT * FROM read_parquet('${existingPath}');`);
+            await db.exec(`INSERT INTO __existing SELECT * FROM ${tempTable};`);
+            const totalCount = await db.all('SELECT COUNT(*) AS cnt FROM __existing');
+            rowCount = Number(totalCount[0]?.cnt ?? rowCount);
+            await db.exec(`COPY __existing TO '${parquetFile}' (FORMAT PARQUET);`);
+            await db.exec(`DROP TABLE IF EXISTS __existing;`);
+            await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+          }
+        } else {
+          // Full overwrite (default behavior)
+          await db.exec(`COPY ${tempTable} TO '${parquetFile}' (FORMAT PARQUET);`);
+          await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+        }
 
         // Update metadata
         await semanticDb('product_tables').where({ id: table.id }).update({

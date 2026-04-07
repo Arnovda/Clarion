@@ -30,11 +30,19 @@ class DiscoverRequest(BaseModel):
     config: dict      # { "filepath": "/sources/sample.db" }
 
 
+class TableIngestSpec(BaseModel):
+    table_name: str
+    load_mode: str = "full"                   # 'full' | 'incremental'
+    watermark_column: Optional[str] = None    # e.g. 'updated_at', 'id'
+    watermark_value: Optional[str] = None     # last loaded value
+
+
 class IngestRequest(BaseModel):
     source_type: str
     config: dict
     connection_id: int
-    tables: list[str]  # which tables to ingest
+    tables: list[str]  # which tables to ingest (backward compat)
+    table_specs: Optional[list[TableIngestSpec]] = None  # detailed specs with watermark info
 
 
 class TableDiscovery(BaseModel):
@@ -55,6 +63,7 @@ class IngestTableResult(BaseModel):
     file_size_bytes: Optional[int] = None
     delta_path: Optional[str] = None
     error: Optional[str] = None
+    new_watermark: Optional[str] = None  # updated watermark value after incremental load
 
 
 class IngestResponse(BaseModel):
@@ -139,15 +148,48 @@ def ingest_tables(req: IngestRequest):
 
     results: list[IngestTableResult] = []
 
+    # Build a spec map for incremental support
+    spec_map: dict[str, TableIngestSpec] = {}
+    if req.table_specs:
+        for spec in req.table_specs:
+            spec_map[spec.table_name] = spec
+
     try:
         for table_name in req.tables:
             try:
-                # Read entire table into pandas
-                df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
+                spec = spec_map.get(table_name)
+                is_incremental = (
+                    spec is not None
+                    and spec.load_mode == "incremental"
+                    and spec.watermark_column
+                    and spec.watermark_value is not None
+                )
+
+                # Build the query — add WHERE clause for incremental
+                if is_incremental:
+                    query = (
+                        f'SELECT * FROM "{table_name}" '
+                        f'WHERE "{spec.watermark_column}" > ?'
+                    )
+                    df = pd.read_sql_query(query, conn, params=[spec.watermark_value])
+                else:
+                    df = pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
+
                 row_count = len(df)
 
+                # If incremental returned 0 new rows, skip write but still report success
+                if is_incremental and row_count == 0:
+                    delta_path = _delta_path_for_table(req.connection_id, table_name)
+                    results.append(IngestTableResult(
+                        table_name=table_name,
+                        status="done",
+                        row_count=0,
+                        file_size_bytes=_get_delta_dir_size(delta_path) if os.path.isdir(delta_path) else 0,
+                        delta_path=delta_path,
+                    ))
+                    continue
+
                 # Fix null-only columns: Delta Lake can't handle pa.null() type.
-                # Cast any all-null columns to string so they survive the write.
                 for col in df.columns:
                     if df[col].isna().all():
                         df[col] = df[col].astype("str")
@@ -156,7 +198,6 @@ def ingest_tables(req: IngestRequest):
                 os.makedirs(delta_path, exist_ok=True)
 
                 # Convert to PyArrow table for Delta write.
-                # Replace any remaining pa.null() fields with pa.string().
                 arrow_table = pa.Table.from_pandas(df, preserve_index=False)
                 new_fields = []
                 for field in arrow_table.schema:
@@ -168,13 +209,29 @@ def ingest_tables(req: IngestRequest):
                     new_schema = pa.schema(new_fields)
                     arrow_table = arrow_table.cast(new_schema)
 
-                # Overwrite mode for now — merge will come later
-                write_deltalake(
-                    delta_path,
-                    arrow_table,
-                    mode="overwrite",
-                    schema_mode="overwrite",
-                )
+                if is_incremental and os.path.exists(os.path.join(delta_path, "_delta_log")):
+                    # Append new rows to existing Delta table
+                    write_deltalake(
+                        delta_path,
+                        arrow_table,
+                        mode="append",
+                    )
+                    # Get total row count from the Delta table after append
+                    dt = DeltaTable(delta_path)
+                    row_count = len(dt.to_pandas())
+                else:
+                    # Full overwrite
+                    write_deltalake(
+                        delta_path,
+                        arrow_table,
+                        mode="overwrite",
+                        schema_mode="overwrite",
+                    )
+
+                # Compute new watermark value if watermark column is specified
+                new_watermark = None
+                if spec and spec.watermark_column and spec.watermark_column in df.columns and len(df) > 0:
+                    new_watermark = str(df[spec.watermark_column].max())
 
                 file_size = _get_delta_dir_size(delta_path)
 
@@ -184,6 +241,7 @@ def ingest_tables(req: IngestRequest):
                     row_count=row_count,
                     file_size_bytes=file_size,
                     delta_path=delta_path,
+                    new_watermark=new_watermark,
                 ))
 
             except Exception as e:

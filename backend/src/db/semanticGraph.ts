@@ -5,7 +5,8 @@
  * Node labels:  SourceTable, SourceColumn, KpiDefinition, CrossSourceView, QualityRule
  * Edge types:   HAS_COLUMN, RELATES_TO, DEFINES_KPI,
  *               INCLUDES (view→table), CROSS_VIEW_LINK (table→table within a view),
- *               APPLIES_TO (rule→table), CHECKS_FIELD (rule→column)
+ *               APPLIES_TO (rule→table), CHECKS_FIELD (rule→column),
+ *               FK_CANDIDATE (column→column: pre-detected join candidates from profiling)
  *
  * Every node carries a `pgId` property — a stable integer drawn from the
  * `semantic_node_id_seq` Postgres sequence.  Routes that return data to the
@@ -15,6 +16,7 @@
 import { isInt, Integer as Neo4jInt } from 'neo4j-driver';
 import { getSession } from './neo4j';
 import { semanticDb } from './knex';
+import { cacheThrough, cacheInvalidate, CacheKeys } from '../utils/cache';
 
 // Draw a stable integer ID from the Postgres sequence for new Neo4j nodes.
 export async function nextPgId(): Promise<number> {
@@ -67,6 +69,10 @@ function mapTable(p: Record<string, unknown>): Record<string, unknown> {
     business_key_column:  toStr(p.businessKeyColumn),
     row_count:            p.rowCount != null ? toNum(p.rowCount) : null,
     last_profiled_at:     toStr(p.lastProfiledAt),
+    approval_status:      toStr(p.approvalStatus) || 'draft',
+    approved_by:          toStr(p.approvedBy),
+    approved_at:          toStr(p.approvedAt),
+    rejection_reason:     toStr(p.rejectionReason),
     created_at:           toStr(p.createdAt),
     updated_at:           toStr(p.updatedAt),
   };
@@ -87,6 +93,10 @@ function mapColumn(p: Record<string, unknown>): Record<string, unknown> {
     is_measure:     Boolean(p.isMeasure),
     owner_name:     toStr(p.ownerName),
     ai_draft:       Boolean(p.aiDraft),
+    approval_status:  toStr(p.approvalStatus) || 'draft',
+    approved_by:      toStr(p.approvedBy),
+    approved_at:      toStr(p.approvedAt),
+    rejection_reason: toStr(p.rejectionReason),
     // Quality stats (may be null if profiling has not run)
     null_count:     p.nullCount     != null ? toNum(p.nullCount)     : null,
     null_pct:       p.nullPct       != null ? Number(p.nullPct)      : null,
@@ -113,6 +123,10 @@ function mapKpi(p: Record<string, unknown>): Record<string, unknown> {
     formula_sql:         toStr(p.formulaSql),
     owner_name:          toStr(p.ownerName),
     ai_draft:            Boolean(p.aiDraft),
+    approval_status:     toStr(p.approvalStatus) || 'draft',
+    approved_by:         toStr(p.approvedBy),
+    approved_at:         toStr(p.approvedAt),
+    rejection_reason:    toStr(p.rejectionReason),
     created_at:          toStr(p.createdAt),
     updated_at:          toStr(p.updatedAt),
   };
@@ -746,6 +760,51 @@ export async function updateKpi(
 }
 
 // ---------------------------------------------------------------------------
+// Approval workflow — update approval status on Neo4j nodes
+// ---------------------------------------------------------------------------
+
+const LABEL_MAP: Record<string, string> = {
+  table: 'SourceTable',
+  column: 'SourceColumn',
+  kpi: 'KpiDefinition',
+};
+
+export async function updateApprovalStatus(
+  entityType: 'table' | 'column' | 'kpi',
+  pgId: number,
+  updates: {
+    approval_status: string;
+    approved_by?: string | null;
+    approved_at?: string | null;
+    rejection_reason?: string | null;
+  },
+): Promise<void> {
+  const label = LABEL_MAP[entityType];
+  if (!label) throw new Error(`Unknown entityType: ${entityType}`);
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (n:${label} {pgId: $pgId})
+       SET n.approvalStatus   = $approvalStatus,
+           n.approvedBy       = $approvedBy,
+           n.approvedAt       = $approvedAt,
+           n.rejectionReason  = $rejectionReason,
+           n.updatedAt        = $now`,
+      {
+        pgId,
+        approvalStatus:  updates.approval_status,
+        approvedBy:      updates.approved_by ?? null,
+        approvedAt:      updates.approved_at ?? null,
+        rejectionReason: updates.rejection_reason ?? null,
+        now:             new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Semantic context assembly — single-call replacement for the 4 sequential
 // Postgres queries currently in query.ts and dashboards.ts
 // ---------------------------------------------------------------------------
@@ -876,6 +935,14 @@ export async function buildSemanticContextForQuery(
   connectionId: number,
   domains?: string[],
 ): Promise<SemanticQueryContext> {
+  const cacheKey = CacheKeys.semanticContext(connectionId, domains);
+  return cacheThrough(cacheKey, () => _buildSemanticContextForQuery(connectionId, domains), 5 * 60 * 1000);
+}
+
+async function _buildSemanticContextForQuery(
+  connectionId: number,
+  domains?: string[],
+): Promise<SemanticQueryContext> {
   const session = getSession();
   try {
     // --- Tables ---
@@ -939,6 +1006,18 @@ export async function buildSemanticContextForQuery(
     return { tables, columns, kpis, relationships };
   } finally {
     await session.close();
+  }
+}
+
+/**
+ * Invalidate all cached semantic data for a connection (or all connections).
+ * Call this after schema changes, re-profiling, definition updates, etc.
+ */
+export async function invalidateSemanticCache(connectionId?: number): Promise<void> {
+  if (connectionId) {
+    await cacheInvalidate(CacheKeys.semanticPattern(connectionId));
+  } else {
+    await cacheInvalidate('semantic:*');
   }
 }
 
@@ -1114,7 +1193,7 @@ export async function createCrossSourceView(params: {
   name: string;
   description?: string | null;
   connectionId?: number | null;
-  userId: string;
+  userId: string | number;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1634,6 +1713,7 @@ export async function upsertConnectionGraph(
            tbl.createdAt    = $now,
            tbl.updatedAt    = $now
          ON MATCH SET
+           tbl.pgId         = $pgId,
            tbl.displayName  = $displayName,
            tbl.description  = $description,
            tbl.grain        = $grain,
@@ -1642,14 +1722,15 @@ export async function upsertConnectionGraph(
       );
     }
 
-    // Upsert columns — MERGE on (tablePgId, columnName)
+    // Upsert columns — MERGE on (tableName, columnName) so re-profiling reuses existing nodes
+    // even when Postgres IDs change (delete + re-insert gives new PKs).
     for (const c of columns) {
       await session.run(
         `MATCH (tbl:SourceTable {pgId: $tpid})
-         MERGE (col:SourceColumn {tablePgId: $tpid, columnName: $cn})
+         MERGE (col:SourceColumn {tableName: $tn, columnName: $cn})
          ON CREATE SET
            col.pgId          = $pgId,
-           col.tableName     = $tn,
+           col.tablePgId     = $tpid,
            col.dataType      = $dataType,
            col.displayName   = $displayName,
            col.description   = $description,
@@ -1660,6 +1741,8 @@ export async function upsertConnectionGraph(
            col.createdAt     = $now,
            col.updatedAt     = $now
          ON MATCH SET
+           col.pgId          = $pgId,
+           col.tablePgId     = $tpid,
            col.dataType      = $dataType,
            col.displayName   = $displayName,
            col.description   = $description,
@@ -1752,6 +1835,96 @@ export async function getColumnPgIdMap(connectionId: number): Promise<Map<string
       map.set(`${r.get('tn')}.${r.get('cn')}`, toNum(r.get('pgId')));
     }
     return map;
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FK Candidate edges — pre-detected join candidates stored during profiling
+// ---------------------------------------------------------------------------
+
+export interface FkCandidateEdge {
+  fromTable: string;
+  fromColumn: string;
+  toTable: string;
+  toColumn: string;
+  source: string;       // 'declared' | 'name_pattern' | 'ai_suggested' | 'value_overlap'
+  confidence: number;
+  overlapRatio: number | null;
+}
+
+/**
+ * Persist FK candidates as FK_CANDIDATE edges between SourceColumn nodes.
+ * Old candidates for this connection are deleted first.
+ */
+export async function saveFkCandidates(
+  connectionId: number,
+  candidates: FkCandidateEdge[],
+): Promise<void> {
+  if (!candidates.length) return;
+  const session = getSession();
+  try {
+    // Clear old candidates for this connection
+    await session.run(
+      `MATCH (t:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(fc:SourceColumn)
+       -[r:FK_CANDIDATE]->(:SourceColumn)
+       DELETE r`,
+      { cid: connectionId },
+    );
+
+    // Insert new candidates
+    for (const c of candidates) {
+      await session.run(
+        `MATCH (ft:SourceTable {connectionId: $cid, tableName: $fromTable})-[:HAS_COLUMN]->(fc:SourceColumn {columnName: $fromCol})
+         MATCH (tt:SourceTable {connectionId: $cid, tableName: $toTable})-[:HAS_COLUMN]->(tc:SourceColumn {columnName: $toCol})
+         CREATE (fc)-[:FK_CANDIDATE {
+           source:       $source,
+           confidence:   $confidence,
+           overlapRatio: $overlapRatio
+         }]->(tc)`,
+        {
+          cid:          connectionId,
+          fromTable:    c.fromTable,
+          fromCol:      c.fromColumn,
+          toTable:      c.toTable,
+          toCol:        c.toColumn,
+          source:       c.source,
+          confidence:   c.confidence,
+          overlapRatio: c.overlapRatio,
+        },
+      );
+    }
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * Retrieve all FK_CANDIDATE edges for a connection, including table/column names.
+ */
+export async function getFkCandidates(
+  connectionId: number,
+): Promise<FkCandidateEdge[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ft:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(fc:SourceColumn)
+       -[r:FK_CANDIDATE]->(tc:SourceColumn)<-[:HAS_COLUMN]-(tt:SourceTable)
+       RETURN ft.tableName AS fromTable, fc.columnName AS fromCol,
+              tt.tableName AS toTable,   tc.columnName AS toCol,
+              r.source AS source, r.confidence AS confidence, r.overlapRatio AS overlapRatio`,
+      { cid: connectionId },
+    );
+    return result.records.map((r) => ({
+      fromTable:    String(r.get('fromTable')),
+      fromColumn:   String(r.get('fromCol')),
+      toTable:      String(r.get('toTable')),
+      toColumn:     String(r.get('toCol')),
+      source:       String(r.get('source')),
+      confidence:   Number(r.get('confidence')),
+      overlapRatio: r.get('overlapRatio') != null ? Number(r.get('overlapRatio')) : null,
+    }));
   } finally {
     await session.close();
   }

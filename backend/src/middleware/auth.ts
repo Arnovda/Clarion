@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { JwtPayload, UserRole } from '../../../shared/types';
+import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@ export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
 }
 
 export function verifyToken(token: string): JwtPayload {
-  return jwt.verify(token, getSecret()) as JwtPayload;
+  return jwt.verify(token, getSecret()) as unknown as JwtPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +90,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
     // Set Postgres RLS tenant context so queries are automatically filtered
     if (payload.tenantId) {
+      // SET doesn't support parameterized queries in Postgres — Number() coercion prevents injection
       await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
     }
 

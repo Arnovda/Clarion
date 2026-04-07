@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import api from '@/lib/api';
 import { KpiDefinition } from './types';
+import ApprovalBadge from './ApprovalBadge';
+import HistoryPanel from './HistoryPanel';
 
 interface Props {
   connectionId: string;
@@ -16,6 +18,7 @@ export default function KpiPanel({ connectionId, kpis, onSaved }: Props) {
   const [adding, setAdding]     = useState(false);
   const [form, setForm]         = useState(BLANK);
   const [saving, setSaving]     = useState(false);
+  const [showHistory, setShowHistory] = useState<number | null>(null);
 
   async function save() {
     setSaving(true);
@@ -26,11 +29,6 @@ export default function KpiPanel({ connectionId, kpis, onSaved }: Props) {
     onSaved();
   }
 
-  const badge = (draft: boolean) => (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${draft ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
-      {draft ? 'AI draft' : 'Confirmed'}
-    </span>
-  );
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6">
@@ -45,7 +43,14 @@ export default function KpiPanel({ connectionId, kpis, onSaved }: Props) {
           <div key={k.id} className="bg-white rounded-xl border border-slate-200 p-4">
             <div className="flex items-center justify-between mb-1">
               <span className="font-semibold text-slate-800">{k.name}</span>
-              {badge(k.ai_draft)}
+              <ApprovalBadge
+                entityType="kpi"
+                entityId={k.id}
+                status={k.approval_status}
+                aiDraft={k.ai_draft}
+                rejectionReason={k.rejection_reason}
+                onChanged={onSaved}
+              />
             </div>
             {k.description && <p className="text-sm text-slate-500 mb-2">{k.description}</p>}
             {k.formula_plain_text && (
@@ -55,6 +60,17 @@ export default function KpiPanel({ connectionId, kpis, onSaved }: Props) {
             )}
             {k.formula_sql && (
               <p className="text-xs font-mono bg-slate-50 border border-slate-100 rounded px-2 py-1 text-slate-600 mt-1">{k.formula_sql}</p>
+            )}
+            <button
+              onClick={() => setShowHistory(showHistory === k.id ? null : k.id)}
+              className="mt-2 px-2 py-1 text-xs text-slate-400 border border-slate-200 rounded-lg hover:bg-slate-50"
+            >
+              {showHistory === k.id ? 'Hide History' : 'History'}
+            </button>
+            {showHistory === k.id && (
+              <div className="mt-3 pt-3 border-t border-slate-100">
+                <HistoryPanel entityType="kpi" entityId={k.id} entityName={k.name} />
+              </div>
             )}
           </div>
         ))}

@@ -12,7 +12,6 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'databridge_conversations';
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
 interface DataSource {
@@ -107,13 +106,17 @@ interface Message {
   wasRepaired?:        boolean;           // prevents re-triggering repair on already-fixed answers
   reasoning?:          string;            // Claude's extended thinking, stored for replay
   queryLayer?:         'product' | 'source'; // which data layer was queried
+  feedback?:           'up' | 'down' | null; // user feedback
+  feedbackComment?:    string;
+  serverId?:           number;            // DB id from conversation_messages table
 }
 
 interface Conversation {
-  id:        string;
+  id:        number;          // server-side DB id
   title:     string;
-  createdAt: number;
-  updatedAt: number;
+  starred:   boolean;
+  createdAt: string;
+  updatedAt: string;
   messages:  Message[];
 }
 
@@ -565,16 +568,19 @@ function ThinkingPanel({
 // ─── Chat sidebar ─────────────────────────────────────────────────────────────
 
 function ChatSidebar({
-  conversations, activeId, onSelect, onNew, onDelete,
+  conversations, activeId, onSelect, onNew, onDelete, onStar, starFilter, onToggleStarFilter,
 }: {
   conversations: Conversation[];
-  activeId:      string | null;
-  onSelect:      (id: string) => void;
+  activeId:      number | null;
+  onSelect:      (id: number) => void;
   onNew:         () => void;
-  onDelete:      (id: string) => void;
+  onDelete:      (id: number) => void;
+  onStar:        (id: number) => void;
+  starFilter:    boolean;
+  onToggleStarFilter: () => void;
 }) {
-  function relTime(ts: number) {
-    const d = Date.now() - ts;
+  function relTime(ts: string) {
+    const d = Date.now() - new Date(ts).getTime();
     const m = Math.floor(d / 60000);
     const h = Math.floor(d / 3600000);
     const dy = Math.floor(d / 86400000);
@@ -586,7 +592,7 @@ function ChatSidebar({
 
   return (
     <aside className="w-56 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-hidden">
-      <div className="flex-shrink-0 p-3 border-b border-slate-100">
+      <div className="flex-shrink-0 p-3 border-b border-slate-100 space-y-2">
         <button onClick={onNew}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -594,12 +600,19 @@ function ChatSidebar({
           </svg>
           New chat
         </button>
+        <button onClick={onToggleStarFilter}
+          className={`w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-colors border ${
+            starFilter ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+          }`}>
+          <span>{starFilter ? '★' : '☆'}</span>
+          {starFilter ? 'Showing starred' : 'Show starred'}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto py-1">
         {conversations.length === 0 && (
           <p className="text-center text-[11px] text-slate-400 mt-8 px-4 leading-relaxed">
-            Your conversations will appear here
+            {starFilter ? 'No starred conversations' : 'Your conversations will appear here'}
           </p>
         )}
         {conversations.map((conv) => (
@@ -610,20 +623,32 @@ function ChatSidebar({
             onClick={() => onSelect(conv.id)}
           >
             <div className="flex-1 min-w-0">
-              <p className={`text-xs font-medium truncate leading-snug ${conv.id === activeId ? 'text-blue-700' : 'text-slate-700'}`}>
-                {conv.title}
-              </p>
+              <div className="flex items-center gap-1">
+                {conv.starred && <span className="text-amber-400 text-[10px] flex-shrink-0">★</span>}
+                <p className={`text-xs font-medium truncate leading-snug ${conv.id === activeId ? 'text-blue-700' : 'text-slate-700'}`}>
+                  {conv.title}
+                </p>
+              </div>
               <p className="text-[10px] text-slate-400 mt-0.5">{relTime(conv.updatedAt)}</p>
             </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); onDelete(conv.id); }}
-              className="flex-shrink-0 opacity-0 group-hover:opacity-100 p-0.5 rounded text-slate-300 hover:text-red-400 transition-all mt-0.5"
-              title="Delete"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+            <div className="flex-shrink-0 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-all mt-0.5">
+              <button
+                onClick={(e) => { e.stopPropagation(); onStar(conv.id); }}
+                className="p-0.5 rounded text-slate-300 hover:text-amber-400 transition-colors"
+                title={conv.starred ? 'Unstar' : 'Star'}
+              >
+                <span className="text-[10px]">{conv.starred ? '★' : '☆'}</span>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDelete(conv.id); }}
+                className="p-0.5 rounded text-slate-300 hover:text-red-400 transition-colors"
+                title="Delete"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
         ))}
       </div>
@@ -633,9 +658,12 @@ function ChatSidebar({
 
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, showSql, isAdmin, onSend }: {
+function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, conversationId }: {
   msg: Message; showSql: boolean; isAdmin: boolean;
   onSend: (q: string) => void;
+  onFeedback: (msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) => void;
+  onExport: (format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) => void;
+  conversationId: number | null;
 }) {
   const [sqlOpen,       setSqlOpen]       = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
@@ -912,6 +940,64 @@ function MessageBubble({ msg, showSql, isAdmin, onSend }: {
               {formatSql(msg.sql)}
             </pre>
           )}
+          {/* Feedback + Export row */}
+          {msg.role === 'assistant' && !msg.error && !msg.blocked && (
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+              {/* Feedback buttons */}
+              {msg.serverId && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => onFeedback(msg.id, msg.serverId!, msg.feedback === 'up' ? null : 'up')}
+                    className={`p-1 rounded transition-colors ${msg.feedback === 'up' ? 'text-emerald-600 bg-emerald-50' : 'text-slate-300 hover:text-emerald-500'}`}
+                    title="Good answer"
+                  >
+                    <svg className="w-3.5 h-3.5" fill={msg.feedback === 'up' ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M14 9V5a3 3 0 00-3-3l-4 9v11h11.28a2 2 0 002-1.7l1.38-9a2 2 0 00-2-2.3H14z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => onFeedback(msg.id, msg.serverId!, msg.feedback === 'down' ? null : 'down')}
+                    className={`p-1 rounded transition-colors ${msg.feedback === 'down' ? 'text-red-500 bg-red-50' : 'text-slate-300 hover:text-red-400'}`}
+                    title="Incorrect answer"
+                  >
+                    <svg className="w-3.5 h-3.5" fill={msg.feedback === 'down' ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M10 15v4a3 3 0 003 3l4-9V2H5.72a2 2 0 00-2 1.7l-1.38 9a2 2 0 002 2.3H10z" />
+                    </svg>
+                  </button>
+                  {msg.feedback && (
+                    <span className={`text-[10px] ml-1 ${msg.feedback === 'up' ? 'text-emerald-500' : 'text-red-400'}`}>
+                      {msg.feedback === 'up' ? 'Helpful' : 'Reported'}
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* Export buttons */}
+              {msg.rows && msg.rows.length > 0 && conversationId && (
+                <div className="flex items-center gap-1 ml-auto">
+                  <button
+                    onClick={() => onExport('csv', conversationId, msg.serverId)}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                    title="Export as CSV"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    CSV
+                  </button>
+                  <button
+                    onClick={() => onExport('xlsx', conversationId, msg.serverId)}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                    title="Export as Excel"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Excel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         {isAdmin && <AdminDebugPanel msg={msg} />}
       </div>
@@ -1043,12 +1129,13 @@ function EmptyState({ onStarter }: { onStarter: (q: string) => void }) {
 
 export default function QueryPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeId,      setActiveId]      = useState<string | null>(null);
+  const [activeId,      setActiveId]      = useState<number | null>(null);
   const [messages,      setMessages]      = useState<Message[]>([]);
   const [input,         setInput]         = useState('');
   const [loading,        setLoading]        = useState(false);
   const [showSql,        setShowSql]        = useState(false);
   const [isAdmin,        setIsAdmin]        = useState(false);
+  const [starFilter,     setStarFilter]     = useState(false);
 
   // Data source selection (silent — no UI picker)
   const [sources,       setSources]       = useState<DataSource[]>([]);
@@ -1103,82 +1190,183 @@ export default function QueryPage() {
     });
   }, []);
 
-  // Load conversations from localStorage
-  useEffect(() => {
+  // Load conversations from server
+  const loadConversations = useCallback(async (filterStarred?: boolean) => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const convs = JSON.parse(raw) as Conversation[];
-        setConversations(convs);
-        if (convs.length > 0) {
-          setActiveId(convs[0].id);
-          setMessages(convs[0].messages);
-          nextId.current = Math.max(...convs[0].messages.map((m) => m.id), 0) + 1;
-        }
-      }
-    } catch { /* ignore */ }
-    initialized.current = true;
+      const url = filterStarred ? '/conversations?starred=true' : '/conversations';
+      const res = await api.get(url);
+      const convs = (res.data.data ?? []).map((c: Record<string, unknown>) => ({
+        id: c.id as number,
+        title: c.title as string,
+        starred: c.starred as boolean,
+        createdAt: c.created_at as string,
+        updatedAt: c.updated_at as string,
+        messages: [], // loaded on select
+      }));
+      setConversations(convs);
+      return convs as Conversation[];
+    } catch {
+      return [];
+    }
   }, []);
 
-  // Persist on message change
   useEffect(() => {
-    if (!initialized.current || !activeId) return;
-    const title = messages.find((m) => m.role === 'user')?.text.slice(0, 50) ?? 'New conversation';
-    setConversations((prev) => {
-      const next = prev.map((c) =>
-        c.id === activeId ? { ...c, title, messages, updatedAt: Date.now() } : c,
-      );
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* quota */ }
-      return next;
+    loadConversations(starFilter).then((convs) => {
+      if (convs.length > 0 && !activeId) {
+        selectConversation(convs[0].id);
+      }
+      initialized.current = true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+  }, [starFilter]);
+
+  // Helper: persist a message to the server
+  async function persistMessage(conversationId: number, msg: Partial<Message> & { role: string; text: string }): Promise<number | undefined> {
+    try {
+      const res = await api.post(`/conversations/${conversationId}/messages`, {
+        role: msg.role,
+        content: msg.text,
+        question: msg.question,
+        sql: msg.sql,
+        tablesUsed: msg.tablesUsed,
+        confidence: msg.confidence,
+        warning: msg.warning,
+        blocked: msg.blocked,
+        needsClarification: msg.needsClarification,
+        mismatches: msg.mismatches,
+        ambiguities: msg.ambiguities,
+        error: msg.error,
+        debug: msg.debug,
+        rows: msg.rows,
+        wasRepaired: msg.wasRepaired,
+        reasoning: msg.reasoning,
+        queryLayer: msg.queryLayer,
+      });
+      return res.data.data?.id as number | undefined;
+    } catch { /* non-fatal — message still shown locally */ }
+  }
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading, repairState?.events.length]);
 
-  // ── Conversation management ──
+  // ── Conversation management (server-side) ──
 
-  function makeId() {
-    return typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID() : Date.now().toString();
+  async function startNewConversation() {
+    try {
+      const res = await api.post('/conversations', { sourceKey: selectedSource });
+      const conv: Conversation = {
+        id: res.data.data.id,
+        title: res.data.data.title,
+        starred: false,
+        createdAt: res.data.data.created_at,
+        updatedAt: res.data.data.updated_at,
+        messages: [],
+      };
+      setConversations((prev) => [conv, ...prev]);
+      setActiveId(conv.id);
+      setMessages([]);
+      setRepairState(null);
+      nextId.current = 0;
+      setTimeout(() => inputRef.current?.focus(), 50);
+    } catch {
+      // Fallback: still allow local usage
+      const tempId = -Date.now();
+      setConversations((prev) => [{ id: tempId, title: 'New conversation', starred: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] }, ...prev]);
+      setActiveId(tempId);
+      setMessages([]);
+      setRepairState(null);
+      nextId.current = 0;
+    }
   }
 
-  function startNewConversation() {
-    const id = makeId();
-    const conv: Conversation = { id, title: 'New conversation', createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
-    setConversations((prev) => {
-      const next = [conv, ...prev];
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* quota */ }
-      return next;
-    });
+  async function selectConversation(id: number) {
+    if (id === activeId) return;
     setActiveId(id);
-    setMessages([]);
     setRepairState(null);
-    setTimeout(() => inputRef.current?.focus(), 50);
+    try {
+      const res = await api.get(`/conversations/${id}`);
+      const data = res.data.data;
+      const msgs: Message[] = (data.messages ?? []).map((m: Record<string, unknown>) => ({
+        id: m.id as number,
+        serverId: m.id as number,
+        role: m.role as 'user' | 'assistant',
+        text: m.content as string,
+        question: m.question as string | undefined,
+        sql: m.sql as string | undefined,
+        tablesUsed: m.tables_used ? (typeof m.tables_used === 'string' ? JSON.parse(m.tables_used as string) : m.tables_used) : undefined,
+        confidence: m.confidence as number | undefined,
+        warning: m.warning as string | undefined,
+        blocked: m.blocked as boolean | undefined,
+        needsClarification: m.needs_clarification as boolean | undefined,
+        mismatches: m.mismatches ? (typeof m.mismatches === 'string' ? JSON.parse(m.mismatches as string) : m.mismatches) : undefined,
+        ambiguities: m.ambiguities ? (typeof m.ambiguities === 'string' ? JSON.parse(m.ambiguities as string) : m.ambiguities) : undefined,
+        error: m.error as boolean | undefined,
+        debug: m.debug ? (typeof m.debug === 'string' ? JSON.parse(m.debug as string) : m.debug) : undefined,
+        rows: m.rows ? (typeof m.rows === 'string' ? JSON.parse(m.rows as string) : m.rows) : undefined,
+        wasRepaired: m.was_repaired as boolean | undefined,
+        reasoning: m.reasoning as string | undefined,
+        queryLayer: m.query_layer as 'product' | 'source' | undefined,
+        feedback: m.feedback as 'up' | 'down' | null,
+        feedbackComment: m.feedback_comment as string | undefined,
+      }));
+      setMessages(msgs);
+      nextId.current = msgs.length > 0 ? Math.max(...msgs.map((m) => m.id)) + 1 : 0;
+    } catch {
+      setMessages([]);
+      nextId.current = 0;
+    }
   }
 
-  function selectConversation(id: string) {
-    const conv = conversations.find((c) => c.id === id);
-    if (!conv || conv.id === activeId) return;
-    setActiveId(id);
-    setMessages(conv.messages);
-    setRepairState(null);
-    nextId.current = Math.max(...conv.messages.map((m) => m.id), 0) + 1;
-  }
-
-  function deleteConversation(id: string) {
+  async function deleteConversation(id: number) {
+    try { await api.delete(`/conversations/${id}`); } catch { /* non-fatal */ }
     setConversations((prev) => {
       const next = prev.filter((c) => c.id !== id);
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* quota */ }
       if (id === activeId) {
-        if (next.length > 0) { setActiveId(next[0].id); setMessages(next[0].messages); }
-        else                  { setActiveId(null);       setMessages([]); }
+        if (next.length > 0) { selectConversation(next[0].id); }
+        else { setActiveId(null); setMessages([]); }
         setRepairState(null);
       }
       return next;
     });
+  }
+
+  async function toggleStar(id: number) {
+    try {
+      const res = await api.patch(`/conversations/${id}/star`);
+      const newStarred = res.data.data.starred;
+      setConversations((prev) =>
+        prev.map((c) => c.id === id ? { ...c, starred: newStarred } : c)
+          .filter((c) => !starFilter || c.starred)
+      );
+    } catch { /* non-fatal */ }
+  }
+
+  async function handleFeedback(msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) {
+    try {
+      await api.patch(`/conversations/messages/${serverId}/feedback`, { feedback, comment });
+      setMessages((prev) => prev.map((m) =>
+        m.id === msgId ? { ...m, feedback, feedbackComment: comment } : m
+      ));
+    } catch { /* non-fatal */ }
+  }
+
+  function handleExport(format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) {
+    const params = messageServerId ? `?messageId=${messageServerId}` : '';
+    const url = `${BACKEND_URL}/api/conversations/${conversationId}/export/${format}${params}`;
+    // Open in new tab to trigger download, with auth token
+    const token = getToken();
+    // Use fetch + blob for authenticated download
+    fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `databridge-export-${conversationId}.${format}`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      })
+      .catch(() => alert('Export failed'));
   }
 
   // ── Repair stream ──
@@ -1341,18 +1529,34 @@ export default function QueryPage() {
 
     let cid = activeId;
     if (!cid) {
-      cid = makeId();
-      const conv: Conversation = { id: cid, title: q.slice(0, 50), createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
-      setConversations((prev) => {
-        const next = [conv, ...prev];
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* quota */ }
-        return next;
-      });
+      // Create a new conversation on the server
+      try {
+        const res = await api.post('/conversations', { title: q.slice(0, 80), sourceKey: selectedSource });
+        cid = res.data.data.id;
+        const conv: Conversation = {
+          id: cid!,
+          title: q.slice(0, 80),
+          starred: false,
+          createdAt: res.data.data.created_at,
+          updatedAt: res.data.data.updated_at,
+          messages: [],
+        };
+        setConversations((prev) => [conv, ...prev]);
+      } catch {
+        cid = -Date.now();
+        setConversations((prev) => [{
+          id: cid!, title: q.slice(0, 80), starred: false,
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [],
+        }, ...prev]);
+      }
       setActiveId(cid);
     }
 
     setInput('');
-    setMessages((prev) => [...prev, { id: nextId.current++, role: 'user', text: q }]);
+    const userMsgId = nextId.current++;
+    setMessages((prev) => [...prev, { id: userMsgId, role: 'user', text: q }]);
+    // Persist user message to server
+    if (cid && cid > 0) persistMessage(cid, { role: 'user', text: q });
     setLoading(true);
     setThinkingPhase('');
     setThinkingText('');
@@ -1376,13 +1580,19 @@ export default function QueryPage() {
         const res = await api.post('/query/cross-view', { viewId: sourceId, question: fullQuestion });
         const d   = res.data.data;
         const assistantId = nextId.current++;
-        setMessages((prev) => [...prev, {
+        const assistantMsg: Message = {
           id: assistantId, role: 'assistant', text: d.answer, question: q,
           sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
           blocked: d.blocked, needsClarification: d.needsClarification,
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
           queryLayer: d.queryLayer,
-        }]);
+        };
+        // Persist to server
+        if (cid && cid > 0) {
+          const serverId = await persistMessage(cid, assistantMsg);
+          if (serverId) assistantMsg.serverId = serverId;
+        }
+        setMessages((prev) => [...prev, assistantMsg]);
         if (d.warning && !d.blocked && d.sql && d.rows) {
           startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
         }
@@ -1453,6 +1663,14 @@ export default function QueryPage() {
               reasoning: accumulatedThinking || undefined,
               queryLayer: d.queryLayer,
             };
+            // Persist to server
+            if (cid && cid > 0) {
+              persistMessage(cid, assistantMsg).then((serverId) => {
+                if (serverId) {
+                  setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, serverId } : m));
+                }
+              });
+            }
             setMessages((prev) => [...prev, assistantMsg]);
             if (d.warning && !d.blocked && d.sql && d.rows) {
               startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
@@ -1484,7 +1702,7 @@ export default function QueryPage() {
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, activeId]);
+  }, [loading, activeId, selectedSource]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1504,6 +1722,9 @@ export default function QueryPage() {
           onSelect={selectConversation}
           onNew={startNewConversation}
           onDelete={deleteConversation}
+          onStar={toggleStar}
+          starFilter={starFilter}
+          onToggleStarFilter={() => setStarFilter((f) => !f)}
         />
 
         <div className="flex-1 flex flex-col min-w-0">
@@ -1526,7 +1747,15 @@ export default function QueryPage() {
                 </label>
               )}
               {messages.length > 0 && (
-                <button onClick={() => { setMessages([]); setRepairState(null); }}
+                <button onClick={() => {
+                  if (activeId && activeId > 0) {
+                    api.delete(`/conversations/${activeId}`).catch(() => {});
+                    setConversations((prev) => prev.filter((c) => c.id !== activeId));
+                  }
+                  setActiveId(null);
+                  setMessages([]);
+                  setRepairState(null);
+                }}
                   className="text-xs text-slate-400 hover:text-slate-700 transition-colors">
                   Clear chat
                 </button>
@@ -1543,7 +1772,7 @@ export default function QueryPage() {
                 <div className="space-y-4">
                   {messages.map((m) => (
                     <div key={m.id}>
-                      <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} />
+                      <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} />
                       {/* Ephemeral thinking panel — shown after the message being repaired */}
                       {repairState?.forMessageId === m.id && (
                         <div className="mt-3">

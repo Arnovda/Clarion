@@ -6,6 +6,7 @@ import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec
 import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
+import { parsePagination, paginatedResponse } from '../utils/paginate';
 
 const router = Router();
 
@@ -61,12 +62,17 @@ function applyDefaultFilters(sql: string): string {
 async function executeSpecForValidation(
   spec: DashboardSpec,
   connectionId: number,
+  tenantId?: number,
 ): Promise<WidgetExecutionResult[]> {
-  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  // Wrap all RLS-dependent queries in a single transaction
+  const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+    const conn = await trx('connections').where({ id: connectionId }).first();
+    const pp = await getProductWarehousePath(connectionId, trx);
+    return { connection: conn, productPath: pp };
+  });
   if (!connection) return [];
 
-  // Use product layer connector if available
-  const productPath = await getProductWarehousePath(connectionId);
   const connector = productPath
     ? createProductConnector(productPath)
     : createConnector(connection);
@@ -111,10 +117,11 @@ async function executeSpecForValidation(
 
 router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, request, answers } = req.body as {
+    const { connectionId, request, answers, productIds } = req.body as {
       connectionId: number;
       request: string;
       answers?: string[];
+      productIds?: number[];
     };
 
     if (!request?.trim()) {
@@ -129,7 +136,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       : request;
 
     // Check for product layer first — star schema context is much better for dashboards
-    const productCtx = await buildProductSemanticContext(connectionId);
+    const productCtx = await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -142,7 +149,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 
     // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets
     try {
-      const executionResults = await executeSpecForValidation(spec, connectionId);
+      const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId);
       const hasIssues = executionResults.some(
         (r) => r.error || r.rowCount === 0 || (r.type === 'pie_chart' && r.rowCount > 3),
       );
@@ -165,14 +172,14 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 
 router.post('/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, request } = req.body as { connectionId: number; request: string };
+    const { connectionId, request, productIds } = req.body as { connectionId: number; request: string; productIds?: number[] };
 
     if (!request?.trim()) {
       res.status(400).json({ ok: false, error: 'request is required' });
       return;
     }
 
-    const productCtx = await buildProductSemanticContext(connectionId);
+    const productCtx = await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -190,10 +197,11 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
 
 router.post('/refine-spec', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, refinement, currentSpec } = req.body as {
+    const { connectionId, refinement, currentSpec, productIds } = req.body as {
       connectionId: number;
       refinement: string;
       currentSpec: DashboardSpec;
+      productIds?: number[];
     };
 
     if (!refinement?.trim()) {
@@ -205,7 +213,7 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
       return;
     }
 
-    const productCtx = await buildProductSemanticContext(connectionId);
+    const productCtx = await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -253,14 +261,20 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       .replace(/\{\{[^}]+_to\}\}/g, '2099-12-31')
       .replace(/\{\{[^}]+\}\}/g, 'all');
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    // Wrap all RLS-dependent queries in a single transaction to guarantee tenant context
+    const tenantId = req.user!.tenantId;
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
     if (!connection) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
     }
 
-    // Use product layer connector if available
-    const productPath = await getProductWarehousePath(connectionId);
     const connector = productPath
       ? createProductConnector(productPath)
       : createConnector(connection);
@@ -297,17 +311,23 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
       return;
     }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
-    if (!connection) {
+    // Wrap all RLS-dependent queries in a single transaction
+    const filterTenantId = req.user!.tenantId;
+    const { connection: filterConn, productPath: filterProductPath } = await semanticDb.transaction(async (trx) => {
+      if (filterTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(filterTenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!filterConn) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
     }
 
-    // Use product layer connector if available
-    const filterProductPath = await getProductWarehousePath(connectionId);
     const connector = filterProductPath
       ? createProductConnector(filterProductPath)
-      : createConnector(connection);
+      : createConnector(filterConn);
     await connector.connect();
 
     try {
@@ -325,19 +345,63 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/dashboards
+// GET /api/dashboards — list own + shared dashboards in the same tenant
 // ---------------------------------------------------------------------------
 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.user!.sub;
-    const rows = await semanticDb('dashboards')
-      .where({ user_id: userId })
-      .select('id', 'title', 'description', 'is_favorite', 'created_at', 'updated_at')
-      .orderBy('is_favorite', 'desc')
-      .orderBy('updated_at', 'desc');
+    const folder = req.query.folder as string | undefined;
+    const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
 
-    res.json({ ok: true, data: rows });
+    // Own dashboards + shared dashboards from same tenant (RLS handles tenant isolation)
+    let baseQuery = semanticDb('dashboards')
+      .where(function () {
+        this.where({ user_id: userId }).orWhere({ is_shared: true });
+      });
+
+    if (folder) {
+      baseQuery = baseQuery.where({ folder });
+    }
+
+    const [{ count: total }] = await baseQuery.clone().count('* as count');
+
+    const rows = await baseQuery
+      .select(
+        'id', 'title', 'description', 'is_favorite', 'is_shared',
+        'shared_permission', 'folder', 'auto_refresh_seconds',
+        'user_id', 'created_at', 'updated_at',
+      )
+      .orderBy('is_favorite', 'desc')
+      .orderBy('updated_at', 'desc')
+      .limit(limit)
+      .offset(offset);
+
+    // Tag each row with is_owner so the frontend knows permission level
+    const tagged = rows.map((r: Record<string, unknown>) => ({
+      ...r,
+      is_owner: r.user_id === userId,
+      permission: r.user_id === userId ? 'owner' : (r.shared_permission ?? 'viewer'),
+    }));
+
+    res.json(paginatedResponse(tagged, Number(total), page, limit));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/folders — list distinct folders
+// ---------------------------------------------------------------------------
+
+router.get('/folders', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rows = await semanticDb('dashboards')
+      .whereNotNull('folder')
+      .distinct('folder')
+      .orderBy('folder');
+
+    res.json({ ok: true, data: rows.map((r: { folder: string }) => r.folder) });
   } catch (err) {
     next(err);
   }
@@ -349,11 +413,12 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, title, description, spec } = req.body as {
+    const { connectionId, title, description, spec, folder } = req.body as {
       connectionId: number;
       title: string;
       description: string;
       spec: DashboardSpec;
+      folder?: string;
     };
 
     const [row] = await semanticDb('dashboards')
@@ -363,6 +428,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         title,
         description,
         spec:          JSON.stringify(spec),
+        folder:        folder || null,
       })
       .returning('id');
 
@@ -374,13 +440,131 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/dashboards/:id
+// GET /api/dashboards/templates/list — list available templates
+// ---------------------------------------------------------------------------
+
+router.get('/templates/list', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rows = await semanticDb('dashboard_templates')
+      .select('id', 'name', 'description', 'category', 'created_at')
+      .orderBy('category')
+      .orderBy('name');
+
+    res.json({ ok: true, data: rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/templates/:id — get a template spec
+// ---------------------------------------------------------------------------
+
+router.get('/templates/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const row = await semanticDb('dashboard_templates')
+      .where({ id: req.params.id })
+      .first();
+
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Template not found' });
+      return;
+    }
+
+    res.json({ ok: true, data: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/templates — create a template (admin only)
+// ---------------------------------------------------------------------------
+
+router.post('/templates', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (req.user!.role !== 'admin') {
+      res.status(403).json({ ok: false, error: 'Admin only' });
+      return;
+    }
+
+    const { name, description, category, spec } = req.body as {
+      name: string;
+      description?: string;
+      category?: string;
+      spec: DashboardSpec;
+    };
+
+    const [row] = await semanticDb('dashboard_templates')
+      .insert({
+        name,
+        description: description || null,
+        category: category || 'General',
+        spec: JSON.stringify(spec),
+      })
+      .returning('id');
+
+    const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+    res.json({ ok: true, data: { id } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/from-template — create dashboard from a template
+// ---------------------------------------------------------------------------
+
+router.post('/from-template', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { templateId, connectionId, folder } = req.body as {
+      templateId: number;
+      connectionId: number;
+      folder?: string;
+    };
+
+    const template = await semanticDb('dashboard_templates')
+      .where({ id: templateId })
+      .first();
+
+    if (!template) {
+      res.status(404).json({ ok: false, error: 'Template not found' });
+      return;
+    }
+
+    const spec = typeof template.spec === 'string' ? JSON.parse(template.spec) : template.spec;
+
+    const [row] = await semanticDb('dashboards')
+      .insert({
+        user_id: req.user!.sub,
+        connection_id: connectionId,
+        title: template.name,
+        description: template.description,
+        spec: JSON.stringify(spec),
+        folder: folder || null,
+      })
+      .returning('id');
+
+    const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+    res.json({ ok: true, data: { id } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/:id — accessible if owned or shared within tenant
 // ---------------------------------------------------------------------------
 
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const userId = req.user!.sub;
+    // RLS ensures tenant isolation; allow access if owned or shared
     const row = await semanticDb('dashboards')
-      .where({ id: req.params.id, user_id: req.user!.sub })
+      .where({ id: req.params.id })
+      .where(function () {
+        this.where({ user_id: userId }).orWhere({ is_shared: true });
+      })
       .first();
 
     if (!row) {
@@ -388,7 +572,15 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       return;
     }
 
-    res.json({ ok: true, data: row });
+    const isOwner = row.user_id === userId;
+    res.json({
+      ok: true,
+      data: {
+        ...row,
+        is_owner: isOwner,
+        permission: isOwner ? 'owner' : (row.shared_permission ?? 'viewer'),
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -436,6 +628,95 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
       .update({ is_favorite: newValue });
 
     res.json({ ok: true, data: { is_favorite: newValue } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/dashboards/:id — update dashboard properties (title, folder, sharing, auto-refresh)
+// ---------------------------------------------------------------------------
+
+router.patch('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.sub;
+    const row = await semanticDb('dashboards')
+      .where({ id: req.params.id, user_id: userId })
+      .first();
+
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Dashboard not found or not owned by you' });
+      return;
+    }
+
+    const { title, description, folder, is_shared, shared_permission, auto_refresh_seconds, spec } = req.body as {
+      title?: string;
+      description?: string;
+      folder?: string | null;
+      is_shared?: boolean;
+      shared_permission?: string;
+      auto_refresh_seconds?: number | null;
+      spec?: DashboardSpec;
+    };
+
+    const updates: Record<string, unknown> = {};
+    if (title !== undefined) updates.title = title;
+    if (description !== undefined) updates.description = description;
+    if (folder !== undefined) updates.folder = folder || null;
+    if (is_shared !== undefined) updates.is_shared = is_shared;
+    if (shared_permission !== undefined) updates.shared_permission = shared_permission;
+    if (auto_refresh_seconds !== undefined) updates.auto_refresh_seconds = auto_refresh_seconds;
+    if (spec !== undefined) updates.spec = JSON.stringify(spec);
+
+    if (Object.keys(updates).length === 0) {
+      res.json({ ok: true, data: row });
+      return;
+    }
+
+    updates.updated_at = new Date().toISOString();
+    await semanticDb('dashboards').where({ id: req.params.id }).update(updates);
+    const updated = await semanticDb('dashboards').where({ id: req.params.id }).first();
+    res.json({ ok: true, data: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/:id/duplicate — clone a dashboard
+// ---------------------------------------------------------------------------
+
+router.post('/:id/duplicate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.sub;
+    // Allow duplicating owned or shared dashboards
+    const source = await semanticDb('dashboards')
+      .where({ id: req.params.id })
+      .where(function () {
+        this.where({ user_id: userId }).orWhere({ is_shared: true });
+      })
+      .first();
+
+    if (!source) {
+      res.status(404).json({ ok: false, error: 'Dashboard not found' });
+      return;
+    }
+
+    const [row] = await semanticDb('dashboards')
+      .insert({
+        user_id: userId,
+        connection_id: source.connection_id,
+        title: `${source.title} (copy)`,
+        description: source.description,
+        spec: typeof source.spec === 'string' ? source.spec : JSON.stringify(source.spec),
+        folder: source.folder,
+        is_shared: false,
+        is_favorite: false,
+      })
+      .returning('id');
+
+    const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+    res.json({ ok: true, data: { id } });
   } catch (err) {
     next(err);
   }

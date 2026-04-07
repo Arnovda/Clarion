@@ -1,0 +1,142 @@
+# docker-compose.production.yml
+# Production-like stack — all services in containers.
+# For actual Azure deployment, use Terraform templates in /infra instead.
+#
+# Usage:
+#   docker compose -f docker-compose.production.yml build
+#   docker compose -f docker-compose.production.yml up -d
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: databridge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: databridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-databridge}
+      POSTGRES_DB: databridge
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U databridge -d databridge']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Neo4j ───────────────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: databridge-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-databridge_secret}
+      NEO4J_PLUGINS: '[]'
+      NEO4J_dbms_memory_heap_initial__size: 256m
+      NEO4J_dbms_memory_heap_max__size: 512m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Redis (job queues + caching) ────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: databridge-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-databridge_redis}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', '${REDIS_PASSWORD:-databridge_redis}', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ETL service (Python/FastAPI) ────────────────────────────────────────
+  etl:
+    build:
+      context: ./etl
+      dockerfile: Dockerfile
+    container_name: databridge-etl
+    restart: unless-stopped
+    environment:
+      WAREHOUSE_ROOT: /warehouse
+    volumes:
+      - warehouse:/warehouse
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(\"http://localhost:8000/health\")"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (Node.js API) ───────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: databridge-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      NODE_ENV: production
+      DATABASE_URL: postgresql://databridge:${POSTGRES_PASSWORD:-databridge}@postgres:5432/databridge
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: 8h
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CLAUDE_MODEL: claude-sonnet-4-6
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-databridge_secret}
+      NEO4J_DATABASE: neo4j
+      ETL_URL: http://etl:8000
+      CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-databridge_redis}@redis:6379
+      # Azure (optional — leave blank for self-hosted)
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_KEY_VAULT_URL: ${AZURE_KEY_VAULT_URL:-}
+      APPLICATIONINSIGHTS_CONNECTION_STRING: ${APPLICATIONINSIGHTS_CONNECTION_STRING:-}
+    ports:
+      - '3001:3001'
+    volumes:
+      - warehouse:/app/warehouse
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001/api}
+    container_name: databridge-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+
+volumes:
+  pgdata:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  redis_data:
+    driver: local
+  warehouse:
+    driver: local

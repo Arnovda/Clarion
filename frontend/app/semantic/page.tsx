@@ -9,11 +9,15 @@ import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
 import KpiPanel from '@/components/semantic/KpiPanel';
 import PathFinderPanel from '@/components/semantic/PathFinderPanel';
 import QualityPanel from '@/components/QualityPanel';
+import QualityAlertBanner from '@/components/QualityAlertBanner';
 import IntegrationsPanel from '@/components/IntegrationsPanel';
+import AuditPanel from '@/components/semantic/AuditPanel';
+import BulkImportModal from '@/components/semantic/BulkImportModal';
 import api from '@/lib/api';
+import { isAdmin } from '@/lib/auth';
 import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'pathfinder' | 'kpis' | 'quality' | 'integrations';
+type MainTab = 'definitions' | 'relationships' | 'pathfinder' | 'kpis' | 'quality' | 'integrations' | 'audit';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
@@ -44,6 +48,8 @@ function SemanticInner() {
   // ── Cross-source views (for Relationships tab) ────────────────────────────
   const [views, setViews] = useState<CrossSourceView[]>([]);
   const [activeViewId, setActiveViewId] = useState<number | null>(null);
+
+  const [showImportModal, setShowImportModal] = useState(false);
 
   const hasAutoExpanded = useRef<Set<number>>(new Set());
 
@@ -238,6 +244,37 @@ function SemanticInner() {
         {tabBtn('pathfinder', 'Path Finder')}
         {tabBtn('integrations', 'Integrations')}
         {tabBtn('kpis', 'KPIs')}
+        {tabBtn('audit', 'Audit Trail')}
+
+        {/* Spacer + action buttons */}
+        <div className="flex-1" />
+        {isAdmin() && activeConnId && (
+          <div className="flex items-center gap-2 py-2">
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+            >
+              Import Definitions
+            </button>
+            <button
+              onClick={async () => {
+                try {
+                  const res = await api.get(`/semantic/dictionary?connectionId=${activeConnId}&format=html`, { responseType: 'blob' });
+                  const blob = new Blob([res.data], { type: 'text/html' });
+                  const url = URL.createObjectURL(blob);
+                  window.open(url, '_blank');
+                  setTimeout(() => URL.revokeObjectURL(url), 60000);
+                } catch (err) {
+                  alert('Failed to load data dictionary. Check the console for details.');
+                  console.error('Dictionary error:', err);
+                }
+              }}
+              className="px-3 py-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors"
+            >
+              Data Dictionary
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-1 min-h-0">
@@ -356,17 +393,20 @@ function SemanticInner() {
           )}
 
           {tab === 'quality' && (
-            selectedTable && activeConnId ? (
-              <QualityPanel
-                key={`${activeConnId}-${selectedTable.table_name}`}
-                connId={activeConnId}
-                tableName={selectedTable.table_name}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
-                Select a table from the left panel
-              </div>
-            )
+            <>
+              <QualityAlertBanner />
+              {selectedTable && activeConnId ? (
+                <QualityPanel
+                  key={`${activeConnId}-${selectedTable.table_name}`}
+                  connId={activeConnId}
+                  tableName={selectedTable.table_name}
+                />
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
+                  Select a table from the left panel
+                </div>
+              )}
+            </>
           )}
 
           {tab === 'integrations' && (
@@ -374,8 +414,26 @@ function SemanticInner() {
               <IntegrationsPanel selectedTableId={selectedTableId} />
             </div>
           )}
+
+          {tab === 'audit' && (
+            <div className="px-6 py-6">
+              <h2 className="text-lg font-semibold text-slate-900 mb-4">Audit Trail</h2>
+              <AuditPanel limit={100} />
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Bulk Import Modal */}
+      {showImportModal && activeConnId && (
+        <BulkImportModal
+          connectionId={activeConnId}
+          onClose={() => setShowImportModal(false)}
+          onImported={() => {
+            if (activeConnId) reloadConnectionTables(activeConnId);
+          }}
+        />
+      )}
     </div>
   );
 }

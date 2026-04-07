@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Nav from '@/components/Nav';
+import Pagination from '@/components/Pagination';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
+import { usePagination } from '@/lib/hooks/useDebounce';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -106,44 +108,56 @@ export default function GapsPage() {
 
   const [activeTab, setActiveTab] = useState<'gaps' | 'log'>('gaps');
 
-  // Gaps state
+  // Gaps state + pagination
   const [gaps, setGaps] = useState<Gap[]>([]);
   const [gapsLoading, setGapsLoading] = useState(true);
+  const gapsPag = usePagination(50);
 
-  // Query log state
+  // Query log state + pagination
   const [logRows, setLogRows] = useState<QueryLogRow[]>([]);
   const [logLoading, setLogLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const logPag = usePagination(50);
 
-  const loadGaps = useCallback(async () => {
+  const loadGaps = useCallback(async (page = 1) => {
     setGapsLoading(true);
     try {
-      const res = await api.get('/reports/gaps');
+      const res = await api.get(`/reports/gaps?page=${page}&limit=${gapsPag.limit}`);
       setGaps(res.data.data ?? []);
+      if (res.data.pagination) {
+        gapsPag.setTotal(res.data.pagination.total);
+      }
     } catch {
       setGaps([]);
     } finally {
       setGapsLoading(false);
     }
-  }, []);
+  }, [gapsPag.limit]);
 
-  const loadLog = useCallback(async () => {
+  const loadLog = useCallback(async (page = 1) => {
     setLogLoading(true);
     try {
-      const res = await api.get('/reports/query-log');
+      const res = await api.get(`/reports/query-log?page=${page}&limit=${logPag.limit}`);
       setLogRows(res.data.data ?? []);
+      if (res.data.pagination) {
+        logPag.setTotal(res.data.pagination.total);
+      }
     } catch {
       setLogRows([]);
     } finally {
       setLogLoading(false);
     }
-  }, []);
+  }, [logPag.limit]);
 
   useEffect(() => {
     if (!isAdmin) return;
-    loadGaps();
-    loadLog();
-  }, [isAdmin, loadGaps, loadLog]);
+    loadGaps(gapsPag.page);
+  }, [isAdmin, gapsPag.page, loadGaps]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadLog(logPag.page);
+  }, [isAdmin, logPag.page, loadLog]);
 
   async function resolveGap(id: number) {
     await api.patch(`/reports/gaps/${id}/resolve`);
@@ -279,6 +293,17 @@ export default function GapsPage() {
                   ))}
                 </div>
               )}
+
+              <Pagination
+                page={gapsPag.page}
+                totalPages={gapsPag.totalPages}
+                hasNext={gapsPag.hasNext}
+                hasPrev={gapsPag.hasPrev}
+                onPrev={gapsPag.prevPage}
+                onNext={gapsPag.nextPage}
+                onGoTo={gapsPag.goToPage}
+                total={gapsPag.total}
+              />
             </div>
           )}
 
@@ -371,6 +396,17 @@ export default function GapsPage() {
                   </table>
                 </div>
               )}
+
+              <Pagination
+                page={logPag.page}
+                totalPages={logPag.totalPages}
+                hasNext={logPag.hasNext}
+                hasPrev={logPag.hasPrev}
+                onPrev={logPag.prevPage}
+                onNext={logPag.nextPage}
+                onGoTo={logPag.goToPage}
+                total={logPag.total}
+              />
             </div>
           )}
         </div>

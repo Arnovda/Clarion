@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
+import ApprovalBadge from './ApprovalBadge';
+import HistoryPanel from './HistoryPanel';
 
 interface Props {
   table: SourceTable;
@@ -119,6 +121,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
   if (table.id !== tbl.id) { setTbl(table); setCols(columns); }
 
   const [domainInput, setDomainInput] = useState('');
+  const [showTableHistory, setShowTableHistory] = useState(false);
+  const [showColHistory, setShowColHistory] = useState<number | null>(null);
 
   function addDomain(value: string) {
     const tag = value.trim().toLowerCase();
@@ -162,12 +166,6 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
     setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
   }
 
-  const badge = (draft: boolean) => (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${draft ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
-      {draft ? 'AI draft' : 'Confirmed'}
-    </span>
-  );
-
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
 
@@ -178,7 +176,14 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
             <h2 className="font-semibold text-slate-900">{tbl.display_name || tbl.table_name}</h2>
             <p className="text-xs text-slate-400 font-mono mt-0.5">{tbl.table_name}</p>
           </div>
-          {badge(tbl.ai_draft)}
+          <ApprovalBadge
+            entityType="table"
+            entityId={tbl.id}
+            status={tbl.approval_status}
+            aiDraft={tbl.ai_draft}
+            rejectionReason={tbl.rejection_reason}
+            onChanged={onSaved}
+          />
         </div>
 
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -260,8 +265,20 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           >
             {savingTable ? 'Saving…' : 'Confirm table'}
           </button>
+          <button
+            onClick={() => setShowTableHistory(!showTableHistory)}
+            className="px-3 py-1.5 text-sm text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+          >
+            {showTableHistory ? 'Hide History' : 'History'}
+          </button>
           {savedMsg && <span className="text-sm text-green-600">{savedMsg}</span>}
         </div>
+
+        {showTableHistory && (
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <HistoryPanel entityType="table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+          </div>
+        )}
 
         {/* Inline data preview */}
         <div className="mt-4 pt-4 border-t border-slate-100">
@@ -291,7 +308,14 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                     {col.is_dimension && <span className="text-xs text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">dimension</span>}
                     {col.is_measure   && <span className="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">measure</span>}
                   </div>
-                  {badge(col.ai_draft)}
+                  <ApprovalBadge
+                    entityType="column"
+                    entityId={col.id}
+                    status={col.approval_status}
+                    aiDraft={col.ai_draft}
+                    rejectionReason={col.rejection_reason}
+                    onChanged={onSaved}
+                  />
                 </div>
 
                 {/* Example values chips */}
@@ -345,13 +369,26 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                   />
                 </div>
 
-                <button
-                  onClick={() => saveColumn(col)}
-                  disabled={savingCol === col.id}
-                  className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-                >
-                  {savingCol === col.id ? 'Saving…' : 'Confirm column'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => saveColumn(col)}
+                    disabled={savingCol === col.id}
+                    className="px-3 py-1 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    {savingCol === col.id ? 'Saving…' : 'Confirm column'}
+                  </button>
+                  <button
+                    onClick={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
+                    className="px-2 py-1 text-xs text-slate-400 border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    {showColHistory === col.id ? 'Hide' : 'History'}
+                  </button>
+                </div>
+                {showColHistory === col.id && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <HistoryPanel entityType="column" entityId={col.id} entityName={col.display_name || col.column_name} />
+                  </div>
+                )}
               </div>
             );
           })}

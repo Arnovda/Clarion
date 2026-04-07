@@ -6,6 +6,7 @@ import { createConnector } from '../connectors/ConnectorFactory';
 import { generateReportNarrative } from '../ai/AIService';
 import { KpiResult } from '../ai/prompts/answerFormatterPrompt';
 import { getKpisByIds } from '../db/semanticGraph';
+import { parsePagination, paginatedResponse } from '../utils/paginate';
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     const kpiResults: KpiResult[] = await Promise.all(
       kpis.map(async (kpi) => {
         try {
-          const result = await sqliteConnector.executeQuery(kpi.formula_sql);
+          const result = await sqliteConnector.executeQuery(kpi.formula_sql as string);
           const value = result.rows[0] ? Object.values(result.rows[0])[0] : null;
           return {
             kpi_name: kpi.name as string,
@@ -69,24 +70,32 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
   }
 });
 
-// GET /api/reports/query-log?connectionId=1 — admin only (via role check in frontend)
+// GET /api/reports/query-log — admin only (via role check in frontend)
 router.get('/query-log', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
+    const [{ count: total }] = await semanticDb('query_log').count('* as count');
     const rows = await semanticDb('query_log')
       .orderBy('created_at', 'desc')
-      .limit(100);
-    res.json({ ok: true, data: rows });
+      .limit(limit)
+      .offset(offset);
+    res.json(paginatedResponse(rows, Number(total), page, limit));
   } catch (err) { next(err); }
 });
 
 // GET /api/reports/gaps — definition gaps for admin review
 router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rows = await semanticDb('definition_gaps')
-      .join('query_log', 'definition_gaps.query_log_id', 'query_log.id')
+    const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
+    const baseQuery = semanticDb('definition_gaps')
+      .join('query_log', 'definition_gaps.query_log_id', 'query_log.id');
+    const [{ count: total }] = await baseQuery.clone().count('* as count');
+    const rows = await baseQuery
       .select('definition_gaps.*', 'query_log.question_text')
-      .orderByRaw('definition_gaps.resolved ASC, definition_gaps.hit_count DESC, definition_gaps.last_hit_at DESC');
-    res.json({ ok: true, data: rows });
+      .orderByRaw('definition_gaps.resolved ASC, definition_gaps.hit_count DESC, definition_gaps.last_hit_at DESC')
+      .limit(limit)
+      .offset(offset);
+    res.json(paginatedResponse(rows, Number(total), page, limit));
   } catch (err) { next(err); }
 });
 

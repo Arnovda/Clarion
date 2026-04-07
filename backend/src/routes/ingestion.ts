@@ -134,6 +134,22 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
       .whereNotIn('table_name', tables)
       .delete();
 
+    // Build table_specs with watermark info for incremental loads
+    const existingRows = await semanticDb('ingested_tables')
+      .where({ connection_id: connectionId })
+      .whereIn('table_name', tables)
+      .select('table_name', 'load_mode', 'watermark_column', 'watermark_value');
+
+    const tableSpecs = existingRows.map((row: {
+      table_name: string; load_mode: string;
+      watermark_column: string | null; watermark_value: string | null;
+    }) => ({
+      table_name: row.table_name,
+      load_mode: row.load_mode ?? 'full',
+      watermark_column: row.watermark_column,
+      watermark_value: row.watermark_value,
+    }));
+
     // SSE streaming response
     const wantsStream = req.headers.accept?.includes('text/event-stream');
     if (wantsStream) {
@@ -149,34 +165,41 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
       try {
         emit({ phase: 'ingesting', message: `Ingesting ${tables.length} table(s)…` });
 
-        // Call ETL service
+        // Call ETL service (with watermark specs for incremental)
         const etlRes = await axios.post(`${ETL_URL}/ingest`, {
           source_type: conn.type,
           config: remapPathForDocker(config),
           connection_id: connectionId,
           tables,
+          table_specs: tableSpecs,
         }, { timeout: 600000 }); // 10 min timeout for large tables
 
         const results = etlRes.data.results ?? [];
         const warehousePath = remapWarehouseToHost(etlRes.data.warehouse_path);
 
-        // Update ingested_tables with results
+        // Update ingested_tables with results (including watermark)
         let doneCount = 0;
         for (const r of results as Array<{
           table_name: string; status: string;
           row_count?: number; file_size_bytes?: number;
           delta_path?: string; error?: string;
+          new_watermark?: string;
         }>) {
+          const updateData: Record<string, unknown> = {
+            status: r.status,
+            row_count: r.row_count ?? null,
+            file_size_bytes: r.file_size_bytes ?? null,
+            delta_path: r.delta_path ?? null,
+            error: r.error ?? null,
+            ingested_at: r.status === 'done' ? new Date().toISOString() : null,
+          };
+          // Update watermark value if ETL returned a new one
+          if (r.new_watermark) {
+            updateData.watermark_value = r.new_watermark;
+          }
           await semanticDb('ingested_tables')
             .where({ connection_id: connectionId, table_name: r.table_name })
-            .update({
-              status: r.status,
-              row_count: r.row_count ?? null,
-              file_size_bytes: r.file_size_bytes ?? null,
-              delta_path: r.delta_path ?? null,
-              error: r.error ?? null,
-              ingested_at: r.status === 'done' ? new Date().toISOString() : null,
-            });
+            .update(updateData);
 
           doneCount++;
           const pct = Math.round((doneCount / tables.length) * 100);
@@ -223,6 +246,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           config,
           connection_id: connectionId,
           tables,
+          table_specs: tableSpecs,
         }, { timeout: 600000 });
 
         const results = etlRes.data.results ?? [];
@@ -232,17 +256,22 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           table_name: string; status: string;
           row_count?: number; file_size_bytes?: number;
           delta_path?: string; error?: string;
+          new_watermark?: string;
         }>) {
+          const updateData: Record<string, unknown> = {
+            status: r.status,
+            row_count: r.row_count ?? null,
+            file_size_bytes: r.file_size_bytes ?? null,
+            delta_path: r.delta_path ?? null,
+            error: r.error ?? null,
+            ingested_at: r.status === 'done' ? new Date().toISOString() : null,
+          };
+          if (r.new_watermark) {
+            updateData.watermark_value = r.new_watermark;
+          }
           await semanticDb('ingested_tables')
             .where({ connection_id: connectionId, table_name: r.table_name })
-            .update({
-              status: r.status,
-              row_count: r.row_count ?? null,
-              file_size_bytes: r.file_size_bytes ?? null,
-              delta_path: r.delta_path ?? null,
-              error: r.error ?? null,
-              ingested_at: r.status === 'done' ? new Date().toISOString() : null,
-            });
+            .update(updateData);
         }
 
         const allDone = results.every((r: { status: string }) => r.status === 'done');
@@ -303,6 +332,77 @@ router.get('/status', requireAuth, async (req: Request, res: Response, next: Nex
         tables,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/ingestion/table-config
+// Body: { connectionId, tableName, load_mode, watermark_column }
+// Configure incremental vs full load per table
+// ---------------------------------------------------------------------------
+router.patch('/table-config', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, tableName, load_mode, watermark_column } = req.body as {
+      connectionId: number;
+      tableName: string;
+      load_mode?: 'full' | 'incremental';
+      watermark_column?: string | null;
+    };
+
+    if (!connectionId || !tableName) {
+      res.status(400).json({ ok: false, error: 'connectionId and tableName required' });
+      return;
+    }
+
+    const update: Record<string, unknown> = {};
+    if (load_mode !== undefined) update.load_mode = load_mode;
+    if (watermark_column !== undefined) update.watermark_column = watermark_column;
+
+    // If switching to full, clear the watermark value so next run does a full load
+    if (load_mode === 'full') {
+      update.watermark_value = null;
+    }
+
+    const count = await semanticDb('ingested_tables')
+      .where({ connection_id: connectionId, table_name: tableName })
+      .update(update);
+
+    if (count === 0) {
+      res.status(404).json({ ok: false, error: 'Table not found' });
+      return;
+    }
+
+    const row = await semanticDb('ingested_tables')
+      .where({ connection_id: connectionId, table_name: tableName })
+      .first();
+
+    res.json({ ok: true, data: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/ingestion/reset-watermark
+// Body: { connectionId, tableName }
+// Clears the watermark so the next incremental run re-ingests everything
+// ---------------------------------------------------------------------------
+router.post('/reset-watermark', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, tableName } = req.body as { connectionId: number; tableName: string };
+
+    if (!connectionId || !tableName) {
+      res.status(400).json({ ok: false, error: 'connectionId and tableName required' });
+      return;
+    }
+
+    await semanticDb('ingested_tables')
+      .where({ connection_id: connectionId, table_name: tableName })
+      .update({ watermark_value: null });
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

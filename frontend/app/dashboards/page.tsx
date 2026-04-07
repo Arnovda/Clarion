@@ -47,8 +47,23 @@ interface SavedDashboard {
   title: string;
   description: string;
   is_favorite: boolean;
+  is_shared: boolean;
+  shared_permission: string;
+  folder: string | null;
+  auto_refresh_seconds: number | null;
+  user_id: string;
+  is_owner: boolean;
+  permission: 'owner' | 'editor' | 'viewer';
   created_at: string;
   updated_at: string;
+}
+
+interface DashboardTemplate {
+  id: number;
+  name: string;
+  description: string;
+  category: string;
+  created_at: string;
 }
 
 interface WidgetData {
@@ -803,8 +818,19 @@ export default function DashboardsPage() {
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
+  const [products, setProducts] = useState<{ id: number; name: string; description: string; status: string }[]>([]);
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  const [showShared, setShowShared] = useState(false);
+  const [templates, setTemplates] = useState<DashboardTemplate[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [autoRefreshActive, setAutoRefreshActive] = useState(false);
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const dashboardGridRef = useRef<HTMLDivElement>(null);
 
   // ── Load saved dashboards ──────────────────────────────────────────────────
 
@@ -908,6 +934,7 @@ export default function DashboardsPage() {
         connectionId: connectionId,
         request: createInput.trim(),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+        ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
       });
       setRefinementQuestions(res.data.data.questions ?? []);
     } catch {
@@ -931,6 +958,7 @@ export default function DashboardsPage() {
         request: createInput.trim(),
         answers: answers?.filter((a) => a.trim()),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+        ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
       });
       const spec: DashboardSpec = res.data.data.spec;
       const defaults = buildDefaultFilters(spec.filters);
@@ -989,6 +1017,10 @@ export default function DashboardsPage() {
       setActiveId(id);
       setMode('viewing');
       setChatMessages([]);
+      setSettingsOpen(false);
+      // Sync auto-refresh from saved dashboard
+      const saved = dashboards.find((d) => d.id === id);
+      setAutoRefreshActive(!!(saved?.auto_refresh_seconds && saved.auto_refresh_seconds > 0));
       loadFilterOptions(spec.filters, connectionId);
       executeAllWidgets(spec, defaults, null, connectionId);
     } catch {
@@ -1087,7 +1119,7 @@ export default function DashboardsPage() {
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
-        const res = await api.post('/dashboards/refine-spec', { connectionId: connectionId, refinement: input, currentSpec });
+        const res = await api.post('/dashboards/refine-spec', { connectionId: connectionId, refinement: input, currentSpec, ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}) });
         const newSpec: DashboardSpec = res.data.data.spec;
         const defaults = buildDefaultFilters(newSpec.filters);
         setCurrentSpec(newSpec);
@@ -1142,6 +1174,14 @@ export default function DashboardsPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
+  // Close settings dropdown when clicking outside
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const handler = () => setSettingsOpen(false);
+    document.addEventListener('click', handler);
+    return () => document.removeEventListener('click', handler);
+  }, [settingsOpen]);
+
   // ── Helper: discard unsaved dashboard ────────────────────────────────────
 
   function discardDashboard() {
@@ -1154,10 +1194,136 @@ export default function DashboardsPage() {
     setChatMessages([]);
   }
 
+  // ── Load folders + templates ────────────────────────────────────────────
+
+  useEffect(() => {
+    api.get('/dashboards/folders').then((r) => setFolders(r.data.data ?? [])).catch(() => {});
+    api.get('/dashboards/templates/list').then((r) => setTemplates(r.data.data ?? [])).catch(() => {});
+    api.get('/products').then((r) => {
+      const prods = (r.data.data ?? []).filter((p: { status: string }) => ['approved', 'success'].includes(p.status));
+      setProducts(prods);
+    }).catch(() => {});
+  }, []);
+
+  // ── Auto-refresh effect ───────────────────────────────────────────────
+
+  useEffect(() => {
+    if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    if (!autoRefreshActive || !currentSpec) return;
+
+    const saved = dashboards.find((d) => d.id === activeId);
+    const interval = saved?.auto_refresh_seconds;
+    if (!interval || interval < 10) return;
+
+    autoRefreshRef.current = setInterval(() => {
+      if (currentSpec) {
+        executeAllWidgets(currentSpec, filterValues, crossFilter, connectionId);
+      }
+    }, interval * 1000);
+
+    return () => { if (autoRefreshRef.current) clearInterval(autoRefreshRef.current); };
+  }, [autoRefreshActive, activeId, currentSpec, filterValues, crossFilter, connectionId, dashboards, executeAllWidgets]);
+
+  // ── Duplicate dashboard ───────────────────────────────────────────────
+
+  async function duplicateDashboard(id: number) {
+    try {
+      await api.post(`/dashboards/${id}/duplicate`);
+      await loadDashboards();
+    } catch { /* ignore */ }
+  }
+
+  // ── Toggle sharing ────────────────────────────────────────────────────
+
+  async function toggleSharing(id: number) {
+    const d = dashboards.find((x) => x.id === id);
+    if (!d || !d.is_owner) return;
+    try {
+      await api.patch(`/dashboards/${id}`, { is_shared: !d.is_shared });
+      await loadDashboards();
+    } catch { /* ignore */ }
+  }
+
+  // ── Update shared permission ──────────────────────────────────────────
+
+  async function updateSharedPermission(id: number, perm: string) {
+    try {
+      await api.patch(`/dashboards/${id}`, { shared_permission: perm });
+      await loadDashboards();
+    } catch { /* ignore */ }
+  }
+
+  // ── Move to folder ────────────────────────────────────────────────────
+
+  async function moveToFolder(id: number, folder: string | null) {
+    try {
+      await api.patch(`/dashboards/${id}`, { folder });
+      await loadDashboards();
+      api.get('/dashboards/folders').then((r) => setFolders(r.data.data ?? [])).catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  // ── Set auto-refresh ──────────────────────────────────────────────────
+
+  async function setAutoRefresh(id: number, seconds: number | null) {
+    try {
+      await api.patch(`/dashboards/${id}`, { auto_refresh_seconds: seconds });
+      await loadDashboards();
+    } catch { /* ignore */ }
+  }
+
+  // ── PDF export (client-side) ──────────────────────────────────────────
+
+  async function exportPdf() {
+    if (!dashboardGridRef.current || !currentSpec) return;
+    // Dynamic import to avoid bundling html2canvas + jspdf for everyone
+    const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+      import('html2canvas'),
+      import('jspdf'),
+    ]);
+
+    const canvas = await html2canvas(dashboardGridRef.current, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#ffffff',
+    });
+
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF({
+      orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
+      unit: 'px',
+      format: [canvas.width, canvas.height],
+    });
+    pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+    pdf.save(`${currentSpec.title.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+  }
+
+  // ── Create from template ──────────────────────────────────────────────
+
+  async function createFromTemplate(templateId: number) {
+    try {
+      const res = await api.post('/dashboards/from-template', {
+        templateId,
+        connectionId,
+      });
+      const newId = res.data.data.id;
+      await loadDashboards();
+      openDashboard(newId);
+      setShowTemplates(false);
+    } catch { /* ignore */ }
+  }
+
   // ── Helper: partition dashboards ─────────────────────────────────────────
 
-  const favorites = dashboards.filter((d) => d.is_favorite);
-  const regular = dashboards.filter((d) => !d.is_favorite);
+  const visibleDashboards = dashboards.filter((d) => {
+    if (showShared && !d.is_shared && !d.is_owner) return false;
+    if (showShared && d.is_owner) return false; // show only others' shared
+    if (!showShared && !d.is_owner) return false; // my dashboards only
+    if (activeFolder !== null && d.folder !== activeFolder) return false;
+    return true;
+  });
+  const favorites = visibleDashboards.filter((d) => d.is_favorite);
+  const regular = visibleDashboards.filter((d) => !d.is_favorite);
 
   // ── Sidebar list item ─────────────────────────────────────────────────────
 
@@ -1173,26 +1339,53 @@ export default function DashboardsPage() {
         }`}
       >
         <div className="min-w-0">
-          <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700 dark:text-slate-200'}`}>
-            {d.title}
+          <div className="flex items-center gap-1">
+            <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700 dark:text-slate-200'}`}>
+              {d.title}
+            </p>
+            {d.is_shared && <span className="shrink-0 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">shared</span>}
+            {!d.is_owner && <span className="shrink-0 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">{d.permission}</span>}
+          </div>
+          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
+            {d.folder && <span className="text-slate-300 mr-1">{d.folder} /</span>}
+            {relTime(d.updated_at)}
           </p>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">{relTime(d.updated_at)}</p>
         </div>
         <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity mt-0.5">
-          <button
-            onClick={(e) => toggleFavorite(d.id, e)}
-            className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-amber-400 rounded"
-            title={d.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
-          >
-            {d.is_favorite ? '⭐' : '☆'}
-          </button>
-          <button
-            onClick={(e) => deleteDashboard(d.id, e)}
-            className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-red-500 rounded text-xs"
-            title="Delete"
-          >
-            ×
-          </button>
+          {d.is_owner && (
+            <>
+              <button
+                onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
+                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-blue-500 rounded text-xs"
+                title="Duplicate"
+              >
+                ⧉
+              </button>
+              <button
+                onClick={(e) => toggleFavorite(d.id, e)}
+                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-amber-400 rounded"
+                title={d.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
+              >
+                {d.is_favorite ? '⭐' : '☆'}
+              </button>
+              <button
+                onClick={(e) => deleteDashboard(d.id, e)}
+                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-red-500 rounded text-xs"
+                title="Delete"
+              >
+                ×
+              </button>
+            </>
+          )}
+          {!d.is_owner && (
+            <button
+              onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
+              className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-blue-500 rounded text-xs"
+              title="Duplicate to my dashboards"
+            >
+              ⧉
+            </button>
+          )}
         </div>
       </button>
     );
@@ -1344,6 +1537,50 @@ export default function DashboardsPage() {
             {createError && <p className="text-xs text-red-500 mt-1">{createError}</p>}
           </div>
 
+          {/* My / Shared toggle */}
+          <div className="px-2 pt-2 flex gap-1">
+            <button
+              onClick={() => { setShowShared(false); setActiveFolder(null); }}
+              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${!showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+            >
+              My
+            </button>
+            <button
+              onClick={() => { setShowShared(true); setActiveFolder(null); }}
+              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+            >
+              Shared
+            </button>
+            <button
+              onClick={() => setShowTemplates(true)}
+              className="flex-1 text-xs py-1 rounded-md font-medium text-slate-500 hover:bg-slate-100 transition-colors"
+              title="Browse templates"
+            >
+              Templates
+            </button>
+          </div>
+
+          {/* Folder filter */}
+          {!showShared && folders.length > 0 && (
+            <div className="px-2 pt-1.5 flex flex-wrap gap-1">
+              <button
+                onClick={() => setActiveFolder(null)}
+                className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === null ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+              >
+                All
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setActiveFolder(activeFolder === f ? null : f)}
+                  className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === f ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Dashboard list */}
           <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
             {favorites.length > 0 && (
@@ -1354,9 +1591,9 @@ export default function DashboardsPage() {
               </>
             )}
             {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
-            {dashboards.length === 0 && (
+            {visibleDashboards.length === 0 && (
               <p className="text-xs text-slate-400 text-center mt-4 px-2">
-                No saved dashboards yet
+                {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
               </p>
             )}
           </div>
@@ -1438,6 +1675,49 @@ export default function DashboardsPage() {
                     </div>
                   );
                 })()}
+
+                {/* Data product selector */}
+                {products.length > 0 && (
+                  <div className="mb-5">
+                    <p className="text-xs text-slate-500 mb-1.5 font-medium">Data product(s)</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setSelectedProductIds([])}
+                        className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium ${
+                          selectedProductIds.length === 0
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                        }`}
+                      >
+                        All products
+                      </button>
+                      {products.map((p) => (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedProductIds((prev) =>
+                              prev.includes(p.id)
+                                ? prev.filter((id) => id !== p.id)
+                                : [...prev, p.id],
+                            );
+                          }}
+                          className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium ${
+                            selectedProductIds.includes(p.id)
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'
+                          }`}
+                        >
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                    {selectedProductIds.length > 0 && (
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard will only use tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 <p className="text-sm text-slate-500 mb-5">How would you like to proceed?</p>
                 <div className="grid grid-cols-2 gap-3">
@@ -1574,6 +1854,120 @@ export default function DashboardsPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {/* Settings dropdown (share, folder, auto-refresh) — only for saved owned dashboards */}
+                  {activeId && !isUnsaved && (() => {
+                    const activeDash = dashboards.find((d) => d.id === activeId);
+                    if (!activeDash?.is_owner) return null;
+                    return (
+                      <div className="relative">
+                        <button
+                          onClick={() => setSettingsOpen(!settingsOpen)}
+                          className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
+                          title="Dashboard settings"
+                        >
+                          &#9881;
+                        </button>
+                        {settingsOpen && (
+                          <div className="absolute right-0 top-10 z-50 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl p-3 space-y-3"
+                               onClick={(e) => e.stopPropagation()}>
+                            {/* Sharing */}
+                            <div>
+                              <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+                                <input
+                                  type="checkbox"
+                                  checked={activeDash.is_shared}
+                                  onChange={() => toggleSharing(activeId)}
+                                  className="rounded border-slate-300"
+                                />
+                                Share with team
+                              </label>
+                              {activeDash.is_shared && (
+                                <select
+                                  value={activeDash.shared_permission}
+                                  onChange={(e) => updateSharedPermission(activeId, e.target.value)}
+                                  className="mt-1 w-full text-xs border border-slate-200 rounded-md px-2 py-1"
+                                >
+                                  <option value="viewer">Team can view</option>
+                                  <option value="editor">Team can edit</option>
+                                </select>
+                              )}
+                            </div>
+                            {/* Folder */}
+                            <div>
+                              <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Folder</label>
+                              <div className="flex gap-1">
+                                <input
+                                  type="text"
+                                  defaultValue={activeDash.folder ?? ''}
+                                  placeholder="Uncategorized"
+                                  onBlur={(e) => moveToFolder(activeId, e.target.value || null)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                  className="flex-1 text-xs border border-slate-200 rounded-md px-2 py-1"
+                                />
+                              </div>
+                            </div>
+                            {/* Auto-refresh */}
+                            <div>
+                              <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Auto-refresh</label>
+                              <select
+                                value={activeDash.auto_refresh_seconds ?? 0}
+                                onChange={(e) => {
+                                  const v = Number(e.target.value);
+                                  setAutoRefresh(activeId, v || null);
+                                  setAutoRefreshActive(v > 0);
+                                }}
+                                className="w-full text-xs border border-slate-200 rounded-md px-2 py-1"
+                              >
+                                <option value={0}>Off</option>
+                                <option value={30}>Every 30 seconds</option>
+                                <option value={60}>Every minute</option>
+                                <option value={300}>Every 5 minutes</option>
+                                <option value={600}>Every 10 minutes</option>
+                                <option value={1800}>Every 30 minutes</option>
+                              </select>
+                            </div>
+                            <button
+                              onClick={() => setSettingsOpen(false)}
+                              className="w-full text-xs text-slate-400 hover:text-slate-600 pt-1"
+                            >
+                              Close
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* PDF export */}
+                  {!isUnsaved && (
+                    <button
+                      onClick={exportPdf}
+                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
+                      title="Export as PDF"
+                    >
+                      PDF
+                    </button>
+                  )}
+
+                  {/* Duplicate */}
+                  {activeId && !isUnsaved && (
+                    <button
+                      onClick={() => duplicateDashboard(activeId)}
+                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
+                      title="Duplicate dashboard"
+                    >
+                      ⧉
+                    </button>
+                  )}
+
+                  {/* Auto-refresh indicator */}
+                  {autoRefreshActive && (
+                    <span className="px-2 py-1 text-[10px] bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-full font-medium flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                      Auto
+                    </span>
+                  )}
+
                   <button
                     onClick={() => setDarkMode((d) => !d)}
                     className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-base"
@@ -1654,7 +2048,7 @@ export default function DashboardsPage() {
 
               {/* Widget grid */}
               <div className="flex-1 overflow-y-auto">
-              <div className="grid gap-3 p-4" style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}>
+              <div ref={dashboardGridRef} className="grid gap-3 p-4" style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}>
                 {currentSpec.widgets.map((widget) => renderWidget(widget))}
               </div>
               </div>
@@ -1718,6 +2112,50 @@ export default function DashboardsPage() {
           )}
         </main>
       </div>
+
+      {/* Template gallery modal */}
+      {showTemplates && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Dashboard Templates</h2>
+              <button onClick={() => setShowTemplates(false)} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {templates.length === 0 ? (
+                <div className="text-center py-12">
+                  <div className="text-4xl mb-3">📋</div>
+                  <p className="text-sm text-slate-500">No templates available yet.</p>
+                  <p className="text-xs text-slate-400 mt-1">Admins can save dashboard specs as templates.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  {(() => {
+                    const categories = [...new Set(templates.map((t) => t.category))];
+                    return categories.map((cat) => (
+                      <div key={cat} className="col-span-2">
+                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{cat}</p>
+                        <div className="grid grid-cols-2 gap-3">
+                          {templates.filter((t) => t.category === cat).map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={() => createFromTemplate(t.id)}
+                              className="text-left p-4 border border-slate-200 hover:border-blue-400 rounded-xl transition-colors group"
+                            >
+                              <p className="text-sm font-semibold text-slate-700 group-hover:text-blue-700">{t.name}</p>
+                              {t.description && <p className="text-xs text-slate-500 mt-1">{t.description}</p>}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

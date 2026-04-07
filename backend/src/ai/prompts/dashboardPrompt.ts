@@ -118,8 +118,8 @@ NEVER use vertical_bar_chart for ranked categories — use bar_chart (horizontal
 
 kpi_card — headline number with optional delta. SQL must return ONE row.
   Required column: "value". Optional: "delta" (% change as number, e.g. 12.5 for +12.5%), "delta_label" (string, e.g. "vs last month").
-  Always try to compute delta against prior period using a subquery.
-  { "id": "w_revenue", "type": "kpi_card", "title": "Total Revenue", "sql": "SELECT ROUND(SUM(amount),2) as value, ROUND((SUM(amount) - prev.prev_val) / NULLIF(prev.prev_val,0) * 100, 1) as delta, 'vs prior month' as delta_label FROM orders, (SELECT ROUND(SUM(amount),2) as prev_val FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}') prev WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}'", "format": "currency", "colSpan": 1 }
+  Always try to compute delta against prior period using a subquery with INTERVAL for date math.
+  { "id": "w_revenue", "type": "kpi_card", "title": "Total Revenue", "sql": "WITH curr AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}'), prev AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= CAST('{{date_filter_from}}' AS DATE) - INTERVAL '1 year' AND order_date <= CAST('{{date_filter_to}}' AS DATE) - INTERVAL '1 year') SELECT curr.val as value, ROUND((curr.val - prev.val) / NULLIF(prev.val,0) * 100, 1) as delta, 'vs prior year period' as delta_label FROM curr, prev", "format": "currency", "colSpan": 1 }
 
 vertical_bar_chart — monthly/quarterly time series. SQL returns "label" (period string) and "value", ordered chronologically. Optional "target" column for a reference line.
   { "id": "w_monthly", "type": "vertical_bar_chart", "title": "Monthly Revenue — 2025 vs Prior Year", "sql": "SELECT strftime('%Y-%m', order_date) as label, ROUND(SUM(amount),2) as value FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}' GROUP BY 1 ORDER BY 1", "format": "currency", "colSpan": 2 }
@@ -217,7 +217,12 @@ const DASHBOARD_SQL_DUCKDB = `
 - Date filtering: date_column >= '2025-01-01'
 - Date math: current_date - INTERVAL '3 months', date_trunc('month', date_column)
 - Use ILIKE for case-insensitive text matching
-- Use extract(year from date_column), extract(month from date_column)`;
+- Use extract(year from date_column), extract(month from date_column)
+- CRITICAL for kpi_card prior-period delta: do NOT subtract date placeholders from each other. Instead use INTERVAL:
+  Current period: WHERE date_col >= '{{filter_from}}' AND date_col <= '{{filter_to}}'
+  Prior year:     WHERE date_col >= CAST('{{filter_from}}' AS DATE) - INTERVAL '1 year' AND date_col <= CAST('{{filter_to}}' AS DATE) - INTERVAL '1 year'
+  Prior month:    WHERE date_col >= CAST('{{filter_from}}' AS DATE) - INTERVAL '1 month' AND date_col <= CAST('{{filter_to}}' AS DATE) - INTERVAL '1 month'
+  NEVER use (date - date) arithmetic with placeholders. Always use explicit INTERVAL subtraction.`;
 
 export function getDashboardSystem(dialect: 'sqlite' | 'duckdb' = 'sqlite'): string {
   const sqlDialectRules = dialect === 'duckdb' ? DASHBOARD_SQL_DUCKDB : DASHBOARD_SQL_SQLITE;
