@@ -10,6 +10,7 @@
     "migrate:status": "node -r ts-node/register ./node_modules/knex/bin/cli.js --knexfile knexfile.ts migrate:status",
     "seed": "ts-node src/seed.ts",
     "seed:hr": "ts-node src/seed-hr.ts",
+    "seed:postgres": "ts-node src/seed-postgres.ts",
     "neo4j:migrate": "ts-node src/db/migrateSemanticToNeo4j.ts",
     "test": "vitest run",
     "test:watch": "vitest"
