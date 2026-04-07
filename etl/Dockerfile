@@ -2,9 +2,9 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system deps for pyarrow/deltalake
+# Install system deps for pyarrow/deltalake/psycopg2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ && \
+    gcc g++ libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

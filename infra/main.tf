@@ -354,7 +354,7 @@ resource "azurerm_container_app" "etl" {
 
     container {
       name   = "etl"
-      image  = "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"  # ETL not built yet
+      image  = "${azurerm_container_registry.main.login_server}/databridge-etl:v1"
       cpu    = 0.5
       memory = "1Gi"
 

@@ -3,6 +3,7 @@ import path from 'path';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
+import { decryptCredentials, isEncrypted } from '../utils/crypto';
 import axios from 'axios';
 
 const router = Router();
@@ -35,6 +36,25 @@ function remapPathForDocker(config: Record<string, unknown>): Record<string, unk
   return { ...config, filepath: `/sources/${filename}` };
 }
 
+/**
+ * Parse and decrypt the config stored in the connections table.
+ * Handles both encrypted strings and JSONB objects with an `encrypted` wrapper.
+ */
+function decryptConfig(raw: string | Record<string, unknown>): Record<string, unknown> {
+  if (typeof raw === 'object') {
+    // Wrapped encrypted config: { encrypted: "enc:..." }
+    if (raw.encrypted && typeof raw.encrypted === 'string' && isEncrypted(raw.encrypted)) {
+      return JSON.parse(decryptCredentials(raw.encrypted));
+    }
+    return raw;
+  }
+  // String config — check if encrypted
+  if (isEncrypted(raw)) {
+    return JSON.parse(decryptCredentials(raw));
+  }
+  return JSON.parse(raw);
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/ingestion/discover?connectionId=1
 // List all tables available in the source (with row counts / column counts)
@@ -53,7 +73,7 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
       return;
     }
 
-    const config = typeof conn.config === 'string' ? JSON.parse(conn.config) : conn.config;
+    const config = decryptConfig(conn.config);
 
     // Call the ETL service to discover tables — remap paths for Docker
     const etlRes = await axios.post(`${ETL_URL}/discover`, {
@@ -107,7 +127,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
       return;
     }
 
-    const config = typeof conn.config === 'string' ? JSON.parse(conn.config) : conn.config;
+    const config = decryptConfig(conn.config);
 
     // Mark connection as ingesting
     await semanticDb('connections').where({ id: connectionId }).update({
