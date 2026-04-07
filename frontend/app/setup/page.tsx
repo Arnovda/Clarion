@@ -356,7 +356,7 @@ function SlidePanel({
   connector: Connector;
   editConnection?: Connection;        // present → edit mode
   onClose: () => void;
-  onConnected: (id: number, name: string) => void;
+  onConnected: (id: number, name: string, type: string) => void;
   onUpdated: (conn: Connection) => void;
 }) {
   const isEdit = !!editConnection;
@@ -455,7 +455,7 @@ function SlidePanel({
           config: normalizedCfg,
           domains,
         });
-        onConnected(res.data.data.connectionId, name.trim());
+        onConnected(res.data.data.connectionId, name.trim(), connector.id);
       }
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
@@ -820,10 +820,15 @@ export default function SourcesPage() {
     setEditingConn(null);
   }
 
-  function handleConnected(id: number, name: string) {
+  function handleConnected(id: number, name: string, type: string) {
     closePanel();
-    // Show ingestion wizard first, then profile
-    setIngesting({ id, name });
+    // Only SQLite connections go through the ingestion wizard (DuckDB warehouse).
+    // Remote databases (postgres, mysql, sqlserver) are queried directly — skip to profiling.
+    if (type === 'sqlite') {
+      setIngesting({ id, name });
+    } else {
+      setProfiling({ id, name, startStream: true });
+    }
     api.get('/connections').then((res) => setConnections(res.data.data ?? []));
   }
 
