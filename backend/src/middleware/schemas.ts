@@ -58,7 +58,7 @@ export const resetPasswordSchema = z.object({
 
 export const testConnectionSchema = z.object({
   body: z.object({
-    type: z.enum(['sqlite', 'postgresql', 'mysql', 'mssql', 'duckdb']),
+    type: z.enum(['sqlite', 'postgres', 'postgresql', 'mysql', 'mssql', 'duckdb']),
     config: z.record(z.string(), z.unknown()),
   }),
 });
@@ -66,7 +66,7 @@ export const testConnectionSchema = z.object({
 export const createConnectionSchema = z.object({
   body: z.object({
     name: nonEmptyString,
-    type: z.enum(['sqlite', 'postgresql', 'mysql', 'mssql', 'duckdb']),
+    type: z.enum(['sqlite', 'postgres', 'postgresql', 'mysql', 'mssql', 'duckdb']),
     config: z.record(z.string(), z.unknown()),
     domains: z.array(z.string()).optional(),
   }),

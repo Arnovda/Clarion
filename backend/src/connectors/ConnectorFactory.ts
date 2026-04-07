@@ -35,7 +35,8 @@ function buildSourceConnector(type: string, config: Record<string, unknown>): Ba
     case 'sqlite':
       return new SqliteConnector(config.filepath as string);
 
-    case 'postgres': {
+    case 'postgres':
+    case 'postgresql': {
       const pgConfig: PostgresConnectionConfig = {
         host: (config.host as string) ?? 'localhost',
         port: Number(config.port) || 5432,
