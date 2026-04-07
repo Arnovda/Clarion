@@ -142,7 +142,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       // Create the appropriate source connector for profiling
       let connectorOverride;
       if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
-        connectorOverride = createConnector(connection);
+        connectorOverride = await createConnector(connection);
         await connectorOverride.connect();
       } else {
         // For non-SQLite connectors, we need to pass the connector to the profiler
@@ -164,7 +164,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
     try {
       let connectorOverride;
       if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
-        connectorOverride = createConnector(connection);
+        connectorOverride = await createConnector(connection);
       } else {
         connectorOverride = createSourceConnector(connection);
       }

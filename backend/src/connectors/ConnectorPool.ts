@@ -57,7 +57,7 @@ export async function getPooledConnector(conn: {
     }
   }
 
-  const connector = createConnector(conn);
+  const connector = await createConnector(conn);
   await connector.connect();
 
   pool.set(conn.id, {

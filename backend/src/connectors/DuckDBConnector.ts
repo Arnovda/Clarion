@@ -4,41 +4,71 @@ import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
 
 /**
- * DuckDBConnector — reads from Delta Lake tables on disk via DuckDB's delta_scan().
+ * DuckDBConnector — reads from Delta Lake tables via DuckDB's delta_scan().
  *
- * Each table lives at: {warehousePath}/{tableName}/ (a Delta Lake directory).
- * DuckDB is used as an in-process analytical engine — no server needed.
+ * Supports two storage modes:
+ * - local: reads from filesystem (warehousePath is a local directory)
+ * - azure: reads from Azure Blob Storage (warehousePath starts with "az://")
+ *
+ * When using Azure, the azure + delta extensions are loaded and an Azure secret
+ * is created using the AZURE_STORAGE_CONNECTION_STRING env var.
  */
 export class DuckDBConnector extends BaseConnector {
   private readonly warehousePath: string;
+  private readonly isAzure: boolean;
+  private readonly tableNames: string[];
   private db: Database | null = null;
 
-  constructor(warehousePath: string) {
+  /**
+   * @param warehousePath - Local path or az:// blob URI
+   * @param tableNames - Optional list of known table names (from ingested_tables DB).
+   *   Required for Azure mode since we can't scan blob directories.
+   *   For local mode, falls back to filesystem scanning if not provided.
+   */
+  constructor(warehousePath: string, tableNames?: string[]) {
     super();
-    this.warehousePath = path.resolve(warehousePath);
+    this.isAzure = warehousePath.startsWith('az://');
+    this.warehousePath = this.isAzure ? warehousePath : path.resolve(warehousePath);
+    this.tableNames = tableNames ?? [];
   }
 
   async connect(): Promise<void> {
-    if (!fs.existsSync(this.warehousePath)) {
+    if (!this.isAzure && !fs.existsSync(this.warehousePath)) {
       throw new Error(`Warehouse directory not found: ${this.warehousePath}`);
     }
-    // In-memory DuckDB instance — no state file needed
+
     this.db = await Database.create(':memory:');
-    // Load the Delta extension (bundled with duckdb-async)
-    // DuckDB auto-installs extensions on first use, but we install explicitly for clarity
     await this.db.exec('INSTALL delta; LOAD delta;');
+
+    if (this.isAzure) {
+      await this.db.exec('INSTALL azure; LOAD azure;');
+      const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
+      if (connStr) {
+        // Escape single quotes in connection string
+        const escaped = connStr.replace(/'/g, "''");
+        await this.db.exec(`
+          CREATE SECRET azure_secret (
+            TYPE AZURE,
+            CONNECTION_STRING '${escaped}'
+          );
+        `);
+      }
+    }
   }
 
   async testConnection(): Promise<{ ok: boolean; message: string }> {
     try {
-      if (!fs.existsSync(this.warehousePath)) {
+      if (!this.isAzure && !fs.existsSync(this.warehousePath)) {
         return { ok: false, message: `Warehouse directory not found: ${this.warehousePath}` };
       }
       const db = await Database.create(':memory:');
       await db.exec('INSTALL delta; LOAD delta;');
+      if (this.isAzure) {
+        await db.exec('INSTALL azure; LOAD azure;');
+      }
       await db.exec('SELECT 1');
       await db.close();
-      return { ok: true, message: 'DuckDB connection successful' };
+      return { ok: true, message: `DuckDB connection successful (${this.isAzure ? 'azure' : 'local'})` };
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       return { ok: false, message };
@@ -49,33 +79,16 @@ export class DuckDBConnector extends BaseConnector {
     const db = this.requireDb();
     const tables: TableInfo[] = [];
 
-    // List directories in the warehouse that have a _delta_log folder or .parquet files
-    const entries = fs.readdirSync(this.warehousePath, { withFileTypes: true });
-    const deltaTableDirs = entries
-      .filter((e) => {
-        if (!e.isDirectory()) return false;
-        // Delta Lake table
-        if (fs.existsSync(path.join(this.warehousePath, e.name, '_delta_log'))) return true;
-        // Parquet table (product layer)
-        const files = fs.readdirSync(path.join(this.warehousePath, e.name));
-        return files.some((f) => f.endsWith('.parquet'));
-      })
-      .map((e) => e.name);
+    // Get table names: from constructor arg or filesystem scan
+    const tableNames = this.getTableNames();
 
-    for (const tableName of deltaTableDirs) {
-      const deltaPath = path.join(this.warehousePath, tableName).replace(/\\/g, '/');
+    for (const tableName of tableNames) {
+      const deltaPath = this.tablePath(tableName);
 
       try {
-        // Create a view so we can query column info
         const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        const hasDeltaLog = fs.existsSync(path.join(this.warehousePath, tableName, '_delta_log'));
-        if (hasDeltaLog) {
-          await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${deltaPath}')`);
-        } else {
-          await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${deltaPath}/*.parquet')`);
-        }
+        await this.createDeltaView(db, viewName, deltaPath);
 
-        // Get column info via DESCRIBE
         const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
           column_name: string;
           column_type: string;
@@ -83,7 +96,6 @@ export class DuckDBConnector extends BaseConnector {
 
         const columns: ColumnInfo[] = [];
         for (const col of colRows) {
-          // Sample up to 5 distinct non-null values
           let sampleValues: unknown[] = [];
           try {
             const samples = await db.all(
@@ -108,15 +120,12 @@ export class DuckDBConnector extends BaseConnector {
         }
 
         tables.push({ tableName, columns });
-
-        // Clean up the temporary view
         await db.exec(`DROP VIEW IF EXISTS "${viewName}"`);
       } catch (err) {
         console.warn(`[DuckDBConnector] Failed to introspect table ${tableName}:`, err);
       }
     }
 
-    // Run FK detection from BaseConnector (heuristic layers)
     const { candidates: fkCandidates, classifications: tableClassifications } =
       await this.detectForeignKeys(tables);
 
@@ -125,14 +134,9 @@ export class DuckDBConnector extends BaseConnector {
 
   async executeQuery(sql: string): Promise<QueryResult> {
     const db = this.requireDb();
-
-    // Replace bare table names with delta_scan() calls.
-    // This is needed because DuckDB doesn't know about our Delta tables as native tables.
-    // We create temp views for all known Delta tables first.
     await this.ensureDeltaViews(db);
 
     const rawRows = await db.all(sql) as Record<string, unknown>[];
-    // DuckDB returns BigInt for integer columns — convert to Number for JS compatibility
     const rows = rawRows.map((row) => {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {
@@ -145,8 +149,6 @@ export class DuckDBConnector extends BaseConnector {
 
   disconnect(): void {
     if (this.db) {
-      // duckdb-async close() is async but disconnect() is sync in the interface.
-      // We close in the background — DuckDB in-memory instances clean up fast.
       this.db.close().catch(() => {});
       this.db = null;
     }
@@ -163,37 +165,71 @@ export class DuckDBConnector extends BaseConnector {
     return this.db;
   }
 
+  /** Build the full path/URI for a table within this warehouse. */
+  private tablePath(tableName: string): string {
+    if (this.isAzure) {
+      // az://warehouse/tenant_1/conn_4/orders
+      return `${this.warehousePath}/${tableName}`;
+    }
+    return path.join(this.warehousePath, tableName).replace(/\\/g, '/');
+  }
+
+  /** Get list of table names — from constructor or filesystem scan. */
+  private getTableNames(): string[] {
+    if (this.tableNames.length > 0) {
+      return this.tableNames;
+    }
+
+    // Fallback: scan local filesystem (only works in local mode)
+    if (this.isAzure) {
+      console.warn('[DuckDBConnector] Azure mode requires tableNames in constructor');
+      return [];
+    }
+
+    if (!fs.existsSync(this.warehousePath)) return [];
+
+    return fs.readdirSync(this.warehousePath, { withFileTypes: true })
+      .filter((e) => {
+        if (!e.isDirectory()) return false;
+        if (fs.existsSync(path.join(this.warehousePath, e.name, '_delta_log'))) return true;
+        const files = fs.readdirSync(path.join(this.warehousePath, e.name));
+        return files.some((f) => f.endsWith('.parquet'));
+      })
+      .map((e) => e.name);
+  }
+
+  /** Create a DuckDB view for a Delta or Parquet table. */
+  private async createDeltaView(db: Database, viewName: string, tablePath: string): Promise<void> {
+    if (this.isAzure) {
+      // Azure: always use delta_scan (ETL writes Delta format)
+      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${tablePath.replace(/'/g, "''")}');`);
+      return;
+    }
+
+    // Local: detect Delta vs Parquet
+    const localPath = tablePath.replace(/\\/g, '/');
+    const deltaLogPath = tablePath.replace(/\//g, path.sep) + path.sep + '_delta_log';
+
+    if (fs.existsSync(deltaLogPath)) {
+      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${localPath}');`);
+    } else {
+      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${localPath}/*.parquet');`);
+    }
+  }
+
   /**
-   * Creates DuckDB views for every Delta or Parquet table in the warehouse,
+   * Creates DuckDB views for every table in the warehouse,
    * so plain SQL queries like `SELECT * FROM orders` work transparently.
-   *
-   * Detection order:
-   * 1. Directory with _delta_log → delta_scan()
-   * 2. Directory with .parquet files → read_parquet(glob)
-   * 3. Skip
    */
   private async ensureDeltaViews(db: Database): Promise<void> {
-    const entries = fs.readdirSync(this.warehousePath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
+    const tableNames = this.getTableNames();
 
-      const dirPath = path.join(this.warehousePath, entry.name).replace(/\\/g, '/');
-      const deltaLogPath = path.join(this.warehousePath, entry.name, '_delta_log');
-
+    for (const tableName of tableNames) {
+      const tPath = this.tablePath(tableName);
       try {
-        if (fs.existsSync(deltaLogPath)) {
-          // Delta Lake table
-          await db.exec(`CREATE OR REPLACE VIEW "${entry.name}" AS SELECT * FROM delta_scan('${dirPath}')`);
-        } else {
-          // Check for Parquet files (product layer tables)
-          const files = fs.readdirSync(path.join(this.warehousePath, entry.name));
-          const hasParquet = files.some((f) => f.endsWith('.parquet'));
-          if (hasParquet) {
-            await db.exec(`CREATE OR REPLACE VIEW "${entry.name}" AS SELECT * FROM read_parquet('${dirPath}/*.parquet')`);
-          }
-        }
+        await this.createDeltaView(db, tableName, tPath);
       } catch (err) {
-        console.warn(`[DuckDBConnector] Failed to create view for ${entry.name}:`, err);
+        console.warn(`[DuckDBConnector] Failed to create view for ${tableName}:`, err);
       }
     }
   }

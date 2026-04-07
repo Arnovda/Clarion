@@ -74,8 +74,8 @@ async function executeSpecForValidation(
   if (!connection) return [];
 
   const connector = productPath
-    ? createProductConnector(productPath)
-    : createConnector(connection);
+    ? await createProductConnector(productPath, connection.id)
+    : await createConnector(connection);
   await connector.connect();
 
   const results: WidgetExecutionResult[] = [];
@@ -276,8 +276,8 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
     }
 
     const connector = productPath
-      ? createProductConnector(productPath)
-      : createConnector(connection);
+      ? await createProductConnector(productPath, connection.id)
+      : await createConnector(connection);
     await connector.connect();
 
     try {
@@ -326,8 +326,8 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
     }
 
     const connector = filterProductPath
-      ? createProductConnector(filterProductPath)
-      : createConnector(filterConn);
+      ? await createProductConnector(filterProductPath, filterConn.id)
+      : await createConnector(filterConn);
     await connector.connect();
 
     try {

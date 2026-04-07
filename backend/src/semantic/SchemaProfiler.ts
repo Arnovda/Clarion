@@ -52,7 +52,7 @@ export async function runSchemaProfiler(
     // Use the factory to create the right connector from the connection record
     const conn = await semanticDb('connections').where({ id: connectionId }).first();
     if (conn) {
-      connector = createConnector(conn);
+      connector = await createConnector(conn);
     } else if (filePath) {
       // Legacy fallback for SQLite filepath
       connector = new SqliteConnector(filePath);

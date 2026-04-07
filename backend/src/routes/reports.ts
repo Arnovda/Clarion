@@ -36,7 +36,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     // 2. Get source connection
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const sqliteConnector = createConnector(connection);
+    const sqliteConnector = await createConnector(connection);
     await sqliteConnector.connect();
 
     // 3. Execute all KPI queries in parallel

@@ -1,9 +1,11 @@
 """
 DataBridge ETL Service — FastAPI
 Reads source databases (SQLite, PostgreSQL, MySQL, SQL Server), writes Delta Lake tables.
+Supports both local filesystem and Azure Blob Storage for multi-tenant production.
 """
 
 import os
+import re
 import sqlite3
 import traceback
 from pathlib import Path
@@ -16,12 +18,31 @@ from deltalake import DeltaTable, write_deltalake
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="DataBridge ETL", version="0.2.0")
+app = FastAPI(title="DataBridge ETL", version="0.3.0")
 
-# Warehouse root — shared volume with Node.js backend
+# Warehouse config
 WAREHOUSE_ROOT = os.environ.get("WAREHOUSE_ROOT", "/warehouse")
+AZURE_CONN_STR = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+AZURE_CONTAINER = os.environ.get("AZURE_STORAGE_CONTAINER", "warehouse")
+
+# Detect blob mode: if Azure connection string is set and we're not in local dev
+USE_BLOB = bool(AZURE_CONN_STR) and os.environ.get("STORAGE_MODE", "auto") != "local"
 
 SUPPORTED_TYPES = {"sqlite", "postgres", "postgresql", "mysql", "sqlserver", "mssql"}
+
+
+def _parse_azure_conn_str(conn_str: str) -> dict:
+    """Parse Azure Storage connection string into account_name + account_key."""
+    parts = dict(part.split("=", 1) for part in conn_str.split(";") if "=" in part)
+    return {
+        "account_name": parts.get("AccountName", ""),
+        "account_key": parts.get("AccountKey", ""),
+    }
+
+
+def _azure_storage_options() -> dict:
+    """Return storage_options dict for deltalake Azure operations."""
+    return _parse_azure_conn_str(AZURE_CONN_STR)
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +55,7 @@ class DiscoverRequest(BaseModel):
 
 class TableIngestSpec(BaseModel):
     table_name: str
-    load_mode: str = "full"                   # 'full' | 'incremental'
+    load_mode: str = "full"
     watermark_column: Optional[str] = None
     watermark_value: Optional[str] = None
 
@@ -42,6 +63,7 @@ class IngestRequest(BaseModel):
     source_type: str
     config: dict
     connection_id: int
+    tenant_id: Optional[int] = None
     tables: list[str]
     table_specs: Optional[list[TableIngestSpec]] = None
 
@@ -56,7 +78,7 @@ class DiscoverResponse(BaseModel):
 
 class IngestTableResult(BaseModel):
     table_name: str
-    status: str  # 'done' | 'error'
+    status: str
     row_count: Optional[int] = None
     file_size_bytes: Optional[int] = None
     delta_path: Optional[str] = None
@@ -89,7 +111,6 @@ def _get_sqlite_conn(config: dict) -> sqlite3.Connection:
     return sqlite3.connect(filepath)
 
 def _get_pg_conn(config: dict):
-    """Create a psycopg2 connection to PostgreSQL."""
     import psycopg2
     host = config.get("host", "localhost")
     port = int(config.get("port", 5432))
@@ -97,18 +118,14 @@ def _get_pg_conn(config: dict):
     user = config.get("user")
     password = config.get("password")
     ssl = config.get("ssl", False)
-
     if not database:
         raise HTTPException(status_code=400, detail="config.database is required for postgres")
-
     kwargs = dict(host=host, port=port, dbname=database, user=user, password=password)
     if ssl:
         kwargs["sslmode"] = "require"
-
     return psycopg2.connect(**kwargs)
 
 def _get_mysql_conn(config: dict):
-    """Create a pymysql connection to MySQL."""
     import pymysql
     host = config.get("host", "localhost")
     port = int(config.get("port", 3306))
@@ -116,18 +133,14 @@ def _get_mysql_conn(config: dict):
     user = config.get("user")
     password = config.get("password")
     ssl = config.get("ssl", False)
-
     if not database:
         raise HTTPException(status_code=400, detail="config.database is required for mysql")
-
     kwargs = dict(host=host, port=port, database=database, user=user, password=password)
     if ssl:
         kwargs["ssl"] = {"ssl": True}
-
     return pymysql.connect(**kwargs)
 
 def _get_mssql_conn(config: dict):
-    """Create a pyodbc connection to SQL Server."""
     import pyodbc
     host = config.get("host", "localhost")
     port = int(config.get("port", 1433))
@@ -136,23 +149,9 @@ def _get_mssql_conn(config: dict):
     password = config.get("password")
     encrypt = config.get("encrypt", False)
     trust_cert = config.get("trustServerCertificate", False)
-
     if not database:
         raise HTTPException(status_code=400, detail="config.database is required for sqlserver")
-
-    # Try available ODBC drivers
-    driver = None
-    for d in ["ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server", "FreeTDS"]:
-        try:
-            pyodbc.connect(f"DRIVER={{{d}}};SERVER=test;", timeout=1)
-        except Exception:
-            pass
-        driver = d
-        break
-
-    if not driver:
-        driver = "ODBC Driver 18 for SQL Server"
-
+    driver = "ODBC Driver 18 for SQL Server"
     conn_str = (
         f"DRIVER={{{driver}}};"
         f"SERVER={host},{port};"
@@ -164,15 +163,12 @@ def _get_mssql_conn(config: dict):
         conn_str += "Encrypt=yes;"
     if trust_cert:
         conn_str += "TrustServerCertificate=yes;"
-
     return pyodbc.connect(conn_str)
 
 
 @contextmanager
 def get_source_connection(source_type: str, config: dict):
-    """Context manager that yields a DB-API connection for any supported source type."""
     _validate_source_type(source_type)
-
     if source_type == "sqlite":
         conn = _get_sqlite_conn(config)
     elif source_type in ("postgres", "postgresql"):
@@ -183,7 +179,6 @@ def get_source_connection(source_type: str, config: dict):
         conn = _get_mssql_conn(config)
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported source type: {source_type}")
-
     try:
         yield conn
     finally:
@@ -198,7 +193,6 @@ def _discover_sqlite(conn) -> list[TableDiscovery]:
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
     table_names = [row[0] for row in cursor.fetchall()]
-
     tables = []
     for tn in sorted(table_names):
         row_count = cursor.execute(f'SELECT COUNT(*) FROM "{tn}"').fetchone()[0]
@@ -206,18 +200,15 @@ def _discover_sqlite(conn) -> list[TableDiscovery]:
         tables.append(TableDiscovery(table_name=tn, row_count=row_count, column_count=col_count))
     return tables
 
-
 def _discover_postgres(conn, config: dict) -> list[TableDiscovery]:
     schema = config.get("schema", "public")
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT table_name
-        FROM information_schema.tables
+        SELECT table_name FROM information_schema.tables
         WHERE table_schema = %s AND table_type = 'BASE TABLE'
         ORDER BY table_name
     """, (schema,))
     table_names = [row[0] for row in cursor.fetchall()]
-
     tables = []
     for tn in table_names:
         cursor.execute(f'SELECT COUNT(*) FROM "{schema}"."{tn}"')
@@ -230,18 +221,15 @@ def _discover_postgres(conn, config: dict) -> list[TableDiscovery]:
         tables.append(TableDiscovery(table_name=tn, row_count=row_count, column_count=col_count))
     return tables
 
-
 def _discover_mysql(conn, config: dict) -> list[TableDiscovery]:
     database = config.get("database")
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT table_name
-        FROM information_schema.tables
+        SELECT table_name FROM information_schema.tables
         WHERE table_schema = %s AND table_type = 'BASE TABLE'
         ORDER BY table_name
     """, (database,))
     table_names = [row[0] for row in cursor.fetchall()]
-
     tables = []
     for tn in table_names:
         cursor.execute(f"SELECT COUNT(*) FROM `{tn}`")
@@ -254,18 +242,15 @@ def _discover_mysql(conn, config: dict) -> list[TableDiscovery]:
         tables.append(TableDiscovery(table_name=tn, row_count=row_count, column_count=col_count))
     return tables
 
-
 def _discover_mssql(conn, config: dict) -> list[TableDiscovery]:
     schema = config.get("schema", "dbo")
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT TABLE_NAME
-        FROM INFORMATION_SCHEMA.TABLES
+        SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
         WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
         ORDER BY TABLE_NAME
     """, (schema,))
     table_names = [row[0] for row in cursor.fetchall()]
-
     tables = []
     for tn in table_names:
         cursor.execute(f'SELECT COUNT(*) FROM [{schema}].[{tn}]')
@@ -280,11 +265,10 @@ def _discover_mssql(conn, config: dict) -> list[TableDiscovery]:
 
 
 # ---------------------------------------------------------------------------
-# Ingest helpers — read a table into a DataFrame
+# Ingest helpers
 # ---------------------------------------------------------------------------
 
 def _quote_table(source_type: str, table_name: str, config: dict) -> str:
-    """Return a properly quoted table reference for SQL queries."""
     if source_type == "sqlite":
         return f'"{table_name}"'
     elif source_type in ("postgres", "postgresql"):
@@ -297,7 +281,6 @@ def _quote_table(source_type: str, table_name: str, config: dict) -> str:
         return f"[{schema}].[{table_name}]"
     return f'"{table_name}"'
 
-
 def _quote_column(source_type: str, column_name: str) -> str:
     if source_type == "mysql":
         return f"`{column_name}`"
@@ -305,25 +288,20 @@ def _quote_column(source_type: str, column_name: str) -> str:
         return f"[{column_name}]"
     return f'"{column_name}"'
 
-
 def _param_placeholder(source_type: str) -> str:
-    """Return the parameter placeholder for the DB driver."""
     if source_type in ("postgres", "postgresql"):
         return "%s"
     elif source_type == "mysql":
         return "%s"
     elif source_type in ("sqlserver", "mssql"):
         return "?"
-    return "?"  # sqlite
-
+    return "?"
 
 def _read_table(conn, source_type: str, config: dict, table_name: str,
                 watermark_column: str = None, watermark_value: str = None) -> pd.DataFrame:
-    """Read a full or incremental table into a Pandas DataFrame."""
     table_ref = _quote_table(source_type, table_name, config)
     col_quote = _quote_column(source_type, watermark_column) if watermark_column else None
     placeholder = _param_placeholder(source_type)
-
     if watermark_column and watermark_value is not None:
         query = f"SELECT * FROM {table_ref} WHERE {col_quote} > {placeholder}"
         return pd.read_sql_query(query, conn, params=[watermark_value])
@@ -332,14 +310,45 @@ def _read_table(conn, source_type: str, config: dict, table_name: str,
 
 
 # ---------------------------------------------------------------------------
-# Common Delta write logic
+# Delta Lake path + write helpers (local or Azure Blob)
 # ---------------------------------------------------------------------------
 
-def _delta_path_for_table(connection_id: int, table_name: str) -> str:
+def _delta_path_for_table(tenant_id: Optional[int], connection_id: int, table_name: str) -> str:
+    """Return the Delta table path — local or az:// blob URI."""
+    if USE_BLOB:
+        tenant_prefix = f"tenant_{tenant_id}" if tenant_id else "tenant_0"
+        return f"az://{AZURE_CONTAINER}/{tenant_prefix}/conn_{connection_id}/{table_name}"
     return os.path.join(WAREHOUSE_ROOT, f"conn_{connection_id}", table_name)
 
 
+def _warehouse_path(tenant_id: Optional[int], connection_id: int) -> str:
+    """Return the warehouse base path for a connection."""
+    if USE_BLOB:
+        tenant_prefix = f"tenant_{tenant_id}" if tenant_id else "tenant_0"
+        return f"az://{AZURE_CONTAINER}/{tenant_prefix}/conn_{connection_id}"
+    return os.path.join(WAREHOUSE_ROOT, f"conn_{connection_id}")
+
+
+def _is_existing_delta(delta_path: str) -> bool:
+    """Check whether a Delta table already exists at the given path."""
+    if USE_BLOB:
+        try:
+            DeltaTable(delta_path, storage_options=_azure_storage_options())
+            return True
+        except Exception:
+            return False
+    return os.path.exists(os.path.join(delta_path, "_delta_log"))
+
+
 def _get_delta_dir_size(delta_path: str) -> int:
+    """Total size in bytes of all files under the delta directory."""
+    if USE_BLOB:
+        try:
+            dt = DeltaTable(delta_path, storage_options=_azure_storage_options())
+            # Approximate from file metadata
+            return sum(f.size for f in dt.get_add_actions().to_pandas().itertuples() if hasattr(f, 'size'))
+        except Exception:
+            return 0
     total = 0
     for dirpath, _dirnames, filenames in os.walk(delta_path):
         for f in filenames:
@@ -348,7 +357,7 @@ def _get_delta_dir_size(delta_path: str) -> int:
 
 
 def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int:
-    """Write a DataFrame to Delta Lake. Returns row count."""
+    """Write a DataFrame to Delta Lake (local or Azure Blob). Returns row count."""
     row_count = len(df)
 
     # Fix null-only columns
@@ -356,7 +365,9 @@ def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int
         if df[col].isna().all():
             df[col] = df[col].astype("str")
 
-    os.makedirs(delta_path, exist_ok=True)
+    # Local mode: ensure directory exists
+    if not USE_BLOB:
+        os.makedirs(delta_path, exist_ok=True)
 
     arrow_table = pa.Table.from_pandas(df, preserve_index=False)
 
@@ -371,12 +382,16 @@ def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int
         new_schema = pa.schema(new_fields)
         arrow_table = arrow_table.cast(new_schema)
 
-    if is_incremental and os.path.exists(os.path.join(delta_path, "_delta_log")):
-        write_deltalake(delta_path, arrow_table, mode="append")
-        dt = DeltaTable(delta_path)
+    storage_opts = _azure_storage_options() if USE_BLOB else None
+
+    if is_incremental and _is_existing_delta(delta_path):
+        write_deltalake(delta_path, arrow_table, mode="append",
+                        storage_options=storage_opts)
+        dt = DeltaTable(delta_path, storage_options=storage_opts)
         row_count = len(dt.to_pandas())
     else:
-        write_deltalake(delta_path, arrow_table, mode="overwrite", schema_mode="overwrite")
+        write_deltalake(delta_path, arrow_table, mode="overwrite",
+                        schema_mode="overwrite", storage_options=storage_opts)
 
     return row_count
 
@@ -387,7 +402,7 @@ def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "etl"}
+    return {"ok": True, "service": "etl", "storage": "blob" if USE_BLOB else "local"}
 
 
 @app.post("/discover", response_model=DiscoverResponse)
@@ -416,13 +431,16 @@ def discover_tables(req: DiscoverRequest):
 @app.post("/ingest", response_model=IngestResponse)
 def ingest_tables(req: IngestRequest):
     """Read selected tables from source, write as Delta Lake tables."""
+    import sys
     _validate_source_type(req.source_type)
 
-    warehouse_path = os.path.join(WAREHOUSE_ROOT, f"conn_{req.connection_id}")
-    os.makedirs(warehouse_path, exist_ok=True)
+    wh_path = _warehouse_path(req.tenant_id, req.connection_id)
+    if not USE_BLOB:
+        os.makedirs(wh_path, exist_ok=True)
+
+    print(f"[ingest] tenant={req.tenant_id}, conn={req.connection_id}, tables={len(req.tables)}, storage={'blob' if USE_BLOB else 'local'}, wh={wh_path}", file=sys.stderr, flush=True)
 
     results: list[IngestTableResult] = []
-
     spec_map: dict[str, TableIngestSpec] = {}
     if req.table_specs:
         for spec in req.table_specs:
@@ -446,20 +464,17 @@ def ingest_tables(req: IngestRequest):
                 )
 
                 row_count = len(df)
+                delta_path = _delta_path_for_table(req.tenant_id, req.connection_id, table_name)
 
                 # Incremental with 0 new rows — skip write
                 if is_incremental and row_count == 0:
-                    delta_path = _delta_path_for_table(req.connection_id, table_name)
                     results.append(IngestTableResult(
-                        table_name=table_name,
-                        status="done",
-                        row_count=0,
-                        file_size_bytes=_get_delta_dir_size(delta_path) if os.path.isdir(delta_path) else 0,
+                        table_name=table_name, status="done", row_count=0,
+                        file_size_bytes=_get_delta_dir_size(delta_path) if _is_existing_delta(delta_path) else 0,
                         delta_path=delta_path,
                     ))
                     continue
 
-                delta_path = _delta_path_for_table(req.connection_id, table_name)
                 row_count = _write_delta(df, delta_path, is_incremental)
 
                 # Compute new watermark
@@ -468,57 +483,50 @@ def ingest_tables(req: IngestRequest):
                     new_watermark = str(df[spec.watermark_column].max())
 
                 file_size = _get_delta_dir_size(delta_path)
+                print(f"[ingest]   {table_name}: {row_count} rows, {file_size} bytes → {delta_path}", file=sys.stderr, flush=True)
 
                 results.append(IngestTableResult(
-                    table_name=table_name,
-                    status="done",
-                    row_count=row_count,
-                    file_size_bytes=file_size,
-                    delta_path=delta_path,
+                    table_name=table_name, status="done", row_count=row_count,
+                    file_size_bytes=file_size, delta_path=delta_path,
                     new_watermark=new_watermark,
                 ))
 
             except Exception as e:
                 traceback.print_exc()
                 results.append(IngestTableResult(
-                    table_name=table_name,
-                    status="error",
-                    error=str(e),
+                    table_name=table_name, status="error", error=str(e),
                 ))
 
-    return IngestResponse(
-        ok=True,
-        warehouse_path=warehouse_path,
-        results=results,
-    )
+    return IngestResponse(ok=True, warehouse_path=wh_path, results=results)
 
 
 @app.get("/tables/{connection_id}")
-def list_ingested_tables(connection_id: int):
-    """List Delta tables that exist on disk for a connection."""
-    warehouse_path = os.path.join(WAREHOUSE_ROOT, f"conn_{connection_id}")
-    if not os.path.isdir(warehouse_path):
+def list_ingested_tables(connection_id: int, tenant_id: int = 0):
+    """List Delta tables that exist for a connection."""
+    wh_path = _warehouse_path(tenant_id or None, connection_id)
+
+    if USE_BLOB:
+        # In blob mode, we can't list directories easily — return empty
+        # The backend uses the ingested_tables DB table as source of truth
+        return {"ok": True, "tables": [], "storage": "blob", "warehouse_path": wh_path}
+
+    # Local mode: scan filesystem
+    if not os.path.isdir(wh_path):
         return {"ok": True, "tables": []}
 
     tables = []
-    for entry in sorted(os.listdir(warehouse_path)):
-        delta_path = os.path.join(warehouse_path, entry)
+    for entry in sorted(os.listdir(wh_path)):
+        delta_path = os.path.join(wh_path, entry)
         if os.path.isdir(delta_path) and os.path.exists(os.path.join(delta_path, "_delta_log")):
             try:
                 dt = DeltaTable(delta_path)
                 metadata = dt.metadata()
                 tables.append({
-                    "table_name": entry,
-                    "delta_path": delta_path,
-                    "num_files": len(dt.files()),
-                    "version": dt.version(),
+                    "table_name": entry, "delta_path": delta_path,
+                    "num_files": len(dt.files()), "version": dt.version(),
                     "description": metadata.description,
                 })
             except Exception:
-                tables.append({
-                    "table_name": entry,
-                    "delta_path": delta_path,
-                    "error": "Could not read Delta metadata",
-                })
+                tables.append({"table_name": entry, "delta_path": delta_path, "error": "Could not read Delta metadata"})
 
     return {"ok": True, "tables": tables}

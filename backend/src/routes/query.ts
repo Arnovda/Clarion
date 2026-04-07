@@ -175,7 +175,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       }
 
       // Execute against product layer DuckDB
-      const connector = createProductConnector(productWarehouse);
+      const connector = await createProductConnector(productWarehouse, connection.id);
       await connector.connect();
       let execRows: Record<string, unknown>[];
       try {
@@ -614,7 +614,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       ? JSON.parse(connection.config)
       : connection.config;
 
-    const entityCheckConnector = createConnector(connection);
+    const entityCheckConnector = await createConnector(connection);
     await entityCheckConnector.connect();
 
     // Extract every single-quoted string literal from the SQL
@@ -751,7 +751,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         inMemDb.close();
       }
     } else {
-      const queryConnector = createConnector(connection);
+      const queryConnector = await createConnector(connection);
       await queryConnector.connect();
       const queryResult = await queryConnector.executeQuery(nlResult.sql);
       queryConnector.disconnect();
@@ -878,7 +878,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       }
 
       emit({ type: 'phase', text: 'Running query on star schema…' });
-      const connector = createProductConnector(thinkProductWarehouse);
+      const connector = await createProductConnector(thinkProductWarehouse, connection.id);
       await connector.connect();
       let queryRows: Record<string, unknown>[];
       try {
@@ -1051,7 +1051,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 6. Entity pre-flight check ──────────────────────────────────────────
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    const entityCheckConnector = createConnector(connection);
+    const entityCheckConnector = await createConnector(connection);
     await entityCheckConnector.connect();
 
     const literalMatches = [...nlResult.sql.matchAll(/'([^']+)'/g)];
@@ -1120,7 +1120,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
     emit({ type: 'phase', text: 'Running your query…' });
-    const queryConnector = createConnector(connection);
+    const queryConnector = await createConnector(connection);
     await queryConnector.connect();
     const queryResult = await queryConnector.executeQuery(nlResult.sql);
     queryConnector.disconnect();
@@ -1238,7 +1238,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     // ── SQLite connection ──
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    sqliteConnector = createConnector(connection);
+    sqliteConnector = await createConnector(connection);
     await sqliteConnector.connect();
 
     // ── Build initial conversation ──

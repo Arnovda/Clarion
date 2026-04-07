@@ -198,16 +198,20 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         emit({ phase: 'ingesting', message: `Ingesting ${tables.length} table(s)…` });
 
         // Call ETL service (with watermark specs for incremental)
+        const tenantId = (req as unknown as { user?: { tenantId?: number } }).user?.tenantId;
         const etlRes = await axios.post(`${ETL_URL}/ingest`, {
           source_type: conn.type,
           config: remapPathForDocker(config),
           connection_id: connectionId,
+          tenant_id: tenantId ?? null,
           tables,
           table_specs: tableSpecs,
         }, { timeout: 600000 }); // 10 min timeout for large tables
 
         const results = etlRes.data.results ?? [];
-        const warehousePath = remapWarehouseToHost(etlRes.data.warehouse_path);
+        // Blob paths (az://...) don't need remapping; local paths do
+        const rawPath = etlRes.data.warehouse_path as string;
+        const warehousePath = rawPath.startsWith('az://') ? rawPath : remapWarehouseToHost(rawPath);
 
         // Update ingested_tables with results (including watermark)
         let doneCount = 0;
@@ -273,16 +277,19 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
     } else {
       // Synchronous fallback
       try {
+        const syncTenantId = (req as unknown as { user?: { tenantId?: number } }).user?.tenantId;
         const etlRes = await axios.post(`${ETL_URL}/ingest`, {
           source_type: conn.type,
-          config,
+          config: remapPathForDocker(config),
           connection_id: connectionId,
+          tenant_id: syncTenantId ?? null,
           tables,
           table_specs: tableSpecs,
         }, { timeout: 600000 });
 
         const results = etlRes.data.results ?? [];
-        const warehousePath = remapWarehouseToHost(etlRes.data.warehouse_path);
+        const rawSyncPath = etlRes.data.warehouse_path as string;
+        const warehousePath = rawSyncPath.startsWith('az://') ? rawSyncPath : remapWarehouseToHost(rawSyncPath);
 
         for (const r of results as Array<{
           table_name: string; status: string;

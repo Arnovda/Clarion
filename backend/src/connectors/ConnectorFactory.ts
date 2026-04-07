@@ -5,6 +5,7 @@ import { PostgresConnector, PostgresConnectionConfig } from './PostgresConnector
 import { MysqlConnector, MysqlConnectionConfig } from './MysqlConnector';
 import { MssqlConnector, MssqlConnectionConfig } from './MssqlConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
+import { semanticDb } from '../db/knex';
 
 interface ConnectionRow {
   id: number;
@@ -93,18 +94,30 @@ export const SUPPORTED_TYPES = ['sqlite', 'postgres', 'mysql', 'sqlserver'] as c
 export type ConnectorType = (typeof SUPPORTED_TYPES)[number];
 
 /**
+ * Fetch ingested table names for a connection from the DB.
+ * Used by DuckDBConnector in Azure mode (can't scan blob directories).
+ */
+async function getIngestedTableNames(connectionId: number): Promise<string[]> {
+  const rows = await semanticDb('ingested_tables')
+    .where({ connection_id: connectionId, status: 'done' })
+    .select('table_name');
+  return rows.map((r: { table_name: string }) => r.table_name);
+}
+
+/**
  * Creates the appropriate connector for a connection.
  *
  * - If the connection has been ingested (query_engine='duckdb' + warehouse_path set),
  *   returns a DuckDBConnector that reads from the Delta Lake warehouse.
  * - Otherwise, returns the original source connector.
  */
-export function createConnector(conn: ConnectionRow): BaseConnector {
+export async function createConnector(conn: ConnectionRow): Promise<BaseConnector> {
   const config = parseConfig(conn.config);
 
   // Use DuckDB if ingestion is complete
   if (conn.query_engine === 'duckdb' && conn.warehouse_path) {
-    return new DuckDBConnector(conn.warehouse_path);
+    const tableNames = await getIngestedTableNames(conn.id);
+    return new DuckDBConnector(conn.warehouse_path, tableNames);
   }
 
   return buildSourceConnector(conn.type, config);
@@ -122,8 +135,9 @@ export function createSourceConnector(conn: ConnectionRow): BaseConnector {
 /**
  * Creates a DuckDB connector pointing at the product layer warehouse.
  */
-export function createProductConnector(productWarehousePath: string): BaseConnector {
-  return new DuckDBConnector(productWarehousePath);
+export async function createProductConnector(productWarehousePath: string, connectionId: number): Promise<BaseConnector> {
+  const tableNames = await getIngestedTableNames(connectionId);
+  return new DuckDBConnector(productWarehousePath, tableNames);
 }
 
 /**

@@ -173,12 +173,6 @@ resource "azurerm_storage_container" "warehouse" {
   container_access_type = "private"
 }
 
-resource "azurerm_storage_share" "warehouse_data" {
-  name                 = "warehouse-data"
-  storage_account_name = azurerm_storage_account.warehouse.name
-  quota                = 10   # GB — increase if needed
-}
-
 resource "azurerm_storage_share" "neo4j_data" {
   name                 = "neo4j-data"
   storage_account_name = azurerm_storage_account.warehouse.name
@@ -235,16 +229,6 @@ resource "azurerm_container_app_environment" "main" {
   resource_group_name        = azurerm_resource_group.main.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   tags                       = var.tags
-}
-
-# Persistent storage for Delta Lake warehouse (shared between ETL + Backend)
-resource "azurerm_container_app_environment_storage" "warehouse_data" {
-  name                         = "warehousedata"
-  container_app_environment_id = azurerm_container_app_environment.main.id
-  account_name                 = azurerm_storage_account.warehouse.name
-  share_name                   = azurerm_storage_share.warehouse_data.name
-  access_key                   = azurerm_storage_account.warehouse.primary_access_key
-  access_mode                  = "ReadWrite"
 }
 
 # Persistent storage for Neo4j data
@@ -368,12 +352,6 @@ resource "azurerm_container_app" "etl" {
     min_replicas = 0
     max_replicas = 1
 
-    volume {
-      name         = "warehouse-data"
-      storage_name = azurerm_container_app_environment_storage.warehouse_data.name
-      storage_type = "AzureFile"
-    }
-
     container {
       name   = "etl"
       image  = "${azurerm_container_registry.main.login_server}/databridge-etl:main-latest"
@@ -388,10 +366,9 @@ resource "azurerm_container_app" "etl" {
         name        = "AZURE_STORAGE_CONNECTION_STRING"
         secret_name = "storage-connection-string"
       }
-
-      volume_mounts {
-        name = "warehouse-data"
-        path = "/warehouse"
+      env {
+        name  = "AZURE_STORAGE_CONTAINER"
+        value = "warehouse"
       }
 
       liveness_probe {
@@ -470,12 +447,6 @@ resource "azurerm_container_app" "backend" {
     min_replicas = 0
     max_replicas = 3
 
-    volume {
-      name         = "warehouse-data"
-      storage_name = azurerm_container_app_environment_storage.warehouse_data.name
-      storage_type = "AzureFile"
-    }
-
     container {
       name   = "backend"
       image  = "${azurerm_container_registry.main.login_server}/databridge-backend:main-latest"
@@ -553,10 +524,9 @@ resource "azurerm_container_app" "backend" {
         name  = "ETL_URL"
         value = "http://${azurerm_container_app.etl.name}"
       }
-
-      volume_mounts {
-        name = "warehouse-data"
-        path = "/warehouse"
+      env {
+        name  = "AZURE_STORAGE_CONTAINER"
+        value = "warehouse"
       }
 
       liveness_probe {

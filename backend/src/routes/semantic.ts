@@ -477,7 +477,7 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
     }
 
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
-    const connector = createConnector(connection);
+    const connector = await createConnector(connection);
     await connector.connect();
 
     try {
