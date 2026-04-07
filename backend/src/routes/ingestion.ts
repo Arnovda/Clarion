@@ -21,8 +21,11 @@ const ETL_URL = process.env.ETL_URL ?? 'http://localhost:8000';
  * Docker: /warehouse/conn_1  →  Host: <project>/warehouse/conn_1
  */
 function remapWarehouseToHost(dockerPath: string): string {
-  // The docker-compose maps ./warehouse → /warehouse
-  // So /warehouse/conn_1 becomes <project-root>/warehouse/conn_1
+  if (process.env.NODE_ENV === 'production') {
+    // In Azure both ETL and backend mount the same Azure Files share at /warehouse
+    return dockerPath;
+  }
+  // Local dev: docker-compose maps ./warehouse → /warehouse
   const relativePart = dockerPath.replace(/^\/warehouse\/?/, '');
   return path.resolve(__dirname, '../../../warehouse', relativePart);
 }
