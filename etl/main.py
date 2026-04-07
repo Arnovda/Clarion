@@ -393,6 +393,8 @@ def health():
 @app.post("/discover", response_model=DiscoverResponse)
 def discover_tables(req: DiscoverRequest):
     """List all tables in the source with row counts."""
+    import sys
+    print(f"[discover] source_type={req.source_type}, config keys={list(req.config.keys())}", file=sys.stderr, flush=True)
     _validate_source_type(req.source_type)
 
     with get_source_connection(req.source_type, req.config) as conn:
@@ -407,6 +409,7 @@ def discover_tables(req: DiscoverRequest):
         else:
             tables = []
 
+    print(f"[discover] found {len(tables)} tables", file=sys.stderr, flush=True)
     return DiscoverResponse(ok=True, tables=tables)
 
 

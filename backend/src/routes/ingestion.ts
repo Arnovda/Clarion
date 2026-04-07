@@ -74,12 +74,14 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
     }
 
     const config = decryptConfig(conn.config);
+    console.log(`[ingestion/discover] type=${conn.type}, configKeys=${Object.keys(config).join(',')}`);
 
     // Call the ETL service to discover tables — remap paths for Docker
-    const etlRes = await axios.post(`${ETL_URL}/discover`, {
+    const etlPayload = {
       source_type: conn.type,
       config: remapPathForDocker(config),
-    }, { timeout: 30000 });
+    };
+    const etlRes = await axios.post(`${ETL_URL}/discover`, etlPayload, { timeout: 30000 });
 
     if (!etlRes.data.ok) {
       res.status(500).json({ ok: false, error: 'ETL discover failed' });
@@ -100,8 +102,15 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
 
     res.json({ ok: true, data: tables });
   } catch (err) {
-    if (axios.isAxiosError(err) && err.code === 'ECONNREFUSED') {
-      res.status(503).json({ ok: false, error: 'ETL service is not running. Start it with: docker compose up -d etl' });
+    if (axios.isAxiosError(err)) {
+      if (err.code === 'ECONNREFUSED') {
+        res.status(503).json({ ok: false, error: 'ETL service is not running. Start it with: docker compose up -d etl' });
+        return;
+      }
+      // Forward ETL error details (e.g. 422 validation error)
+      const detail = err.response?.data?.detail ?? err.response?.data?.error ?? err.message;
+      console.error(`[ingestion/discover] ETL error ${err.response?.status}: ${JSON.stringify(detail)}`);
+      res.status(err.response?.status ?? 500).json({ ok: false, error: `ETL error: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` });
       return;
     }
     next(err);
