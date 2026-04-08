@@ -288,16 +288,11 @@ export async function runQualityProfileWithConnector(
   columnDefs?: Array<{ name: string; type: string }>,
   overrideBkColumn?: string,
 ): Promise<ProfileResult> {
-  // Row count
-  const rcResult = await connector.executeQuery(`SELECT COUNT(*) AS cnt FROM "${tableName}"`);
-  const rowCount = (rcResult.rows[0] as { cnt: number }).cnt;
-
   // Column definitions — use provided list, or introspect via DESCRIBE-style query
   let cols: Array<{ name: string; type: string }>;
   if (columnDefs && columnDefs.length > 0) {
     cols = columnDefs;
   } else {
-    // Fallback: read a row and infer columns
     const sampleResult = await connector.executeQuery(`SELECT * FROM "${tableName}" LIMIT 1`);
     if (sampleResult.rows.length > 0) {
       cols = Object.keys(sampleResult.rows[0] as object).map((k) => ({ name: k, type: 'TEXT' }));
@@ -306,106 +301,111 @@ export async function runQualityProfileWithConnector(
     }
   }
 
+  // ── Query 1: Batched stats — one SELECT computes row count + per-column stats ──
+  // Columns are chunked to avoid excessively long SQL for very wide tables.
+  const COL_BATCH_SIZE = 50;
+  const statsMap = new Map<string, {
+    nulls: number; distinct: number;
+    min: unknown; max: unknown;
+    avg: number | null; median: number | null;
+  }>();
+  let rowCount = 0;
+
+  for (let chunk = 0; chunk < cols.length; chunk += COL_BATCH_SIZE) {
+    const batch = cols.slice(chunk, chunk + COL_BATCH_SIZE);
+    const selectParts: string[] = ['COUNT(*) AS "__row_count"'];
+
+    for (const col of batch) {
+      const fn = col.name;
+      const q = `"${fn}"`;
+      selectParts.push(`SUM(CASE WHEN ${q} IS NULL THEN 1 ELSE 0 END) AS "${fn}__nulls"`);
+      selectParts.push(`COUNT(DISTINCT ${q}) AS "${fn}__distinct"`);
+      selectParts.push(`MIN(${q}) AS "${fn}__min"`);
+      selectParts.push(`MAX(${q}) AS "${fn}__max"`);
+      if (isNumeric(col.type)) {
+        selectParts.push(`AVG(${q}) AS "${fn}__avg"`);
+        selectParts.push(`PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${q}) AS "${fn}__median"`);
+      }
+    }
+
+    const sql = `SELECT ${selectParts.join(', ')} FROM "${tableName}"`;
+    const statsResult = await connector.executeQuery(sql);
+    const row = statsResult.rows[0] as Record<string, unknown>;
+
+    if (chunk === 0) {
+      rowCount = Number(row['__row_count'] ?? 0);
+    }
+
+    for (const col of batch) {
+      const fn = col.name;
+      statsMap.set(fn, {
+        nulls:    Number(row[`${fn}__nulls`] ?? 0),
+        distinct: Number(row[`${fn}__distinct`] ?? 0),
+        min:      row[`${fn}__min`] ?? null,
+        max:      row[`${fn}__max`] ?? null,
+        avg:      isNumeric(col.type) ? (row[`${fn}__avg`] != null ? Number(row[`${fn}__avg`]) : null) : null,
+        median:   isNumeric(col.type) ? (row[`${fn}__median`] != null ? Number(row[`${fn}__median`]) : null) : null,
+      });
+    }
+  }
+
+  // ── Query 2: Top values — UNION ALL of per-column GROUP BY ──
+  const TOP_BATCH_SIZE = 20;
+  const topMap = new Map<string, Array<{ value: string; count: number; pct: number }>>();
+
+  for (let chunk = 0; chunk < cols.length; chunk += TOP_BATCH_SIZE) {
+    const batch = cols.slice(chunk, chunk + TOP_BATCH_SIZE);
+    const unionParts: string[] = [];
+
+    for (const col of batch) {
+      const fn = col.name;
+      unionParts.push(
+        `SELECT * FROM (SELECT '${fn.replace(/'/g, "''")}' AS "__field", CAST("${fn}" AS VARCHAR) AS "__val", COUNT(*) AS "__cnt" FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY "${fn}" ORDER BY "__cnt" DESC LIMIT 5)`,
+      );
+    }
+
+    if (unionParts.length > 0) {
+      try {
+        const topResult = await connector.executeQuery(unionParts.join(' UNION ALL '));
+        for (const r of topResult.rows) {
+          const row = r as Record<string, unknown>;
+          const field = row['__field'] as string;
+          if (!topMap.has(field)) topMap.set(field, []);
+          topMap.get(field)!.push({
+            value: String(row['__val']),
+            count: Number(row['__cnt']),
+            pct: rowCount > 0 ? Number(row['__cnt']) / rowCount : 0,
+          });
+        }
+      } catch { /* skip — some columns may not cast to VARCHAR */ }
+    }
+  }
+
+  // ── Build FieldStat[] from batched results ──
   const fields: FieldStat[] = [];
 
   for (const col of cols) {
     const fn = col.name;
     const dataType = col.type || 'TEXT';
-    const numeric = isNumeric(dataType);
+    const stats = statsMap.get(fn);
+    const nullCount    = stats?.nulls ?? 0;
+    const distinctCount = stats?.distinct ?? 0;
+    const nullPct      = rowCount > 0 ? nullCount / rowCount : 0;
+    const distinctPct  = rowCount > 0 ? distinctCount / rowCount : 0;
+    const minValue     = stats?.min != null ? String(stats.min) : null;
+    const maxValue     = stats?.max != null ? String(stats.max) : null;
+    const meanValue    = stats?.avg ?? null;
+    const medianValue  = stats?.median ?? null;
+    const topValues    = topMap.get(fn) ?? [];
 
-    // Null count
-    const nullResult = await connector.executeQuery(
-      `SELECT COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NULL`,
-    );
-    const nullCount = (nullResult.rows[0] as { cnt: number }).cnt;
-    const nullPct = rowCount > 0 ? nullCount / rowCount : 0;
-
-    // Distinct count
-    const distResult = await connector.executeQuery(
-      `SELECT COUNT(DISTINCT "${fn}") AS cnt FROM "${tableName}"`,
-    );
-    const distinctCount = (distResult.rows[0] as { cnt: number }).cnt;
-    const distinctPct = rowCount > 0 ? distinctCount / rowCount : 0;
-
-    // Min / Max
-    let minValue: string | null = null;
-    let maxValue: string | null = null;
-    if (rowCount > 0) {
-      try {
-        const mmResult = await connector.executeQuery(
-          `SELECT MIN("${fn}") AS mn, MAX("${fn}") AS mx FROM "${tableName}"`,
-        );
-        const mm = mmResult.rows[0] as { mn: unknown; mx: unknown };
-        minValue = mm.mn != null ? String(mm.mn) : null;
-        maxValue = mm.mx != null ? String(mm.mx) : null;
-      } catch { /* skip */ }
-    }
-
-    // Mean / Median (numeric only)
-    let meanValue: number | null = null;
-    let medianValue: number | null = null;
-    if (numeric && rowCount > 0) {
-      try {
-        const avgResult = await connector.executeQuery(
-          `SELECT AVG("${fn}") AS avg FROM "${tableName}" WHERE "${fn}" IS NOT NULL`,
-        );
-        meanValue = (avgResult.rows[0] as { avg: number | null }).avg;
-
-        const nonNull = rowCount - nullCount;
-        if (nonNull > 0) {
-          const medResult = await connector.executeQuery(
-            `SELECT "${fn}" AS val FROM "${tableName}" WHERE "${fn}" IS NOT NULL ORDER BY "${fn}" LIMIT 1 OFFSET ${Math.floor(nonNull / 2)}`,
-          );
-          medianValue = medResult.rows.length > 0 ? ((medResult.rows[0] as { val: number }).val ?? null) : null;
-        }
-      } catch { /* skip */ }
-    }
-
-    // Top values
-    let topValues: Array<{ value: string; count: number; pct: number }> = [];
-    try {
-      const topResult = await connector.executeQuery(
-        `SELECT "${fn}" AS v, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY "${fn}" ORDER BY cnt DESC LIMIT 5`,
-      );
-      topValues = topResult.rows.map((r) => ({
-        value: String((r as { v: unknown }).v),
-        count: (r as { cnt: number }).cnt,
-        pct: rowCount > 0 ? (r as { cnt: number }).cnt / rowCount : 0,
-      }));
-    } catch { /* skip */ }
-
-    // Histogram
+    // Histogram — use top-values for low-cardinality categorical columns
     let histogram: Array<{ label: string; count: number }> = [];
-    if (numeric && minValue != null && maxValue != null && rowCount > 0) {
-      const mn = Number(minValue), mx = Number(maxValue);
-      if (!isNaN(mn) && !isNaN(mx) && mx > mn) {
-        const buckets = 10;
-        const bsize = (mx - mn) / buckets;
-        try {
-          const hResult = await connector.executeQuery(
-            `SELECT CAST(("${fn}" - ${mn}) / ${bsize} AS INT) AS b, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY b ORDER BY b`,
-          );
-          const hrows = hResult.rows as Array<{ b: number; cnt: number }>;
-          for (let i = 0; i < buckets; i++) {
-            const matched = hrows.filter((r) => (i === buckets - 1 ? r.b >= i : r.b === i));
-            histogram.push({
-              label: (mn + i * bsize).toFixed(1),
-              count: matched.reduce((s, r) => s + r.cnt, 0),
-            });
-          }
-        } catch { /* skip */ }
-      }
-    } else if (!numeric && distinctCount <= 20 && rowCount > 0) {
+    if (!isNumeric(dataType) && distinctCount <= 20 && rowCount > 0) {
       histogram = topValues.map((r) => ({ label: String(r.value).slice(0, 20), count: r.count }));
-    } else if (isDate(dataType) && rowCount > 0) {
-      try {
-        // DuckDB and SQLite both support strftime
-        const mResult = await connector.executeQuery(
-          `SELECT strftime('%Y-%m', "${fn}") AS m, COUNT(*) AS cnt FROM "${tableName}" WHERE "${fn}" IS NOT NULL GROUP BY m ORDER BY m DESC LIMIT 12`,
-        );
-        histogram = (mResult.rows as Array<{ m: string; cnt: number }>).reverse().map((r) => ({ label: r.m, count: r.cnt }));
-      } catch { /* skip */ }
     }
+    // Numeric histograms and date distributions skipped in batch mode —
+    // they would require additional per-column queries and provide marginal value
+    // during schema profiling. The quality panel can compute them on-demand.
 
     fields.push({
       field_name: fn, data_type: dataType,

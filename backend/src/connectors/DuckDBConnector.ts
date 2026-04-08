@@ -29,6 +29,7 @@ export class DuckDBConnector extends BaseConnector {
   private readonly isAzure: boolean;
   private readonly tableNames: string[];
   private db: Database | null = null;
+  private viewsCreated = false;
 
   /**
    * @param warehousePath - Local path or az:// blob URI
@@ -196,6 +197,7 @@ export class DuckDBConnector extends BaseConnector {
     if (this.db) {
       this.db.close().catch(() => {});
       this.db = null;
+      this.viewsCreated = false;
     }
   }
 
@@ -267,6 +269,7 @@ export class DuckDBConnector extends BaseConnector {
    * so plain SQL queries like `SELECT * FROM orders` work transparently.
    */
   private async ensureDeltaViews(db: Database): Promise<void> {
+    if (this.viewsCreated) return;
     const tableNames = this.getTableNames();
 
     for (const tableName of tableNames) {
@@ -277,5 +280,7 @@ export class DuckDBConnector extends BaseConnector {
         console.warn(`[DuckDBConnector] Failed to create view for ${tableName}:`, err);
       }
     }
+    this.viewsCreated = true;
+    console.log(`[DuckDBConnector] ${tableNames.length} views created (cached for reuse)`);
   }
 }
