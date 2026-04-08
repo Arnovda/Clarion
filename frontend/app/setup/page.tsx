@@ -684,10 +684,30 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
             } catch { /* skip unparseable */ }
           }
         }
-        // If stream ended without explicit done/error, mark as done
+        // Stream ended without explicit done/error — the connection was
+        // likely lost (container restart, network timeout). Poll DB status
+        // to find out what actually happened instead of assuming success.
         if (!finished && !error) {
-          setFinished(true);
-          setCurrentPhase('done');
+          try {
+            const statusRes = await fetch(
+              `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/connections/${connId}/profile/status`,
+              { headers: token ? { 'Authorization': `Bearer ${token}` } : {} },
+            );
+            const statusData = await statusRes.json();
+            const d = statusData?.data;
+            if (d?.profiling_status === 'done') {
+              setCurrentPhase('done');
+              setDoneMessage(d.profiling_message ?? 'Analysis complete');
+              setFinished(true);
+            } else if (d?.profiling_status === 'error') {
+              setError(d.profiling_message ?? 'Profiling failed');
+            } else {
+              // Still running — connection dropped, switch to polling mode
+              setError('Connection to server lost — refresh to check progress');
+            }
+          } catch {
+            setError('Connection to server lost');
+          }
         }
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
