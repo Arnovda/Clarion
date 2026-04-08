@@ -154,6 +154,46 @@ app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), asyn
 // Simple liveness probe — always 200 if the process is running
 app.get('/api/ping', (_req, res) => { res.json({ ok: true }); });
 
+// Temporary debug endpoint — test DuckDB + Azure Blob reading
+app.get('/api/debug/duckdb-blob', async (_req, res) => {
+  const steps: string[] = [];
+  try {
+    const { Database } = require('duckdb-async');
+    steps.push('duckdb-async imported');
+
+    const db = await Database.create(':memory:');
+    steps.push('in-memory db created');
+
+    try { await db.exec('LOAD delta;'); steps.push('delta loaded (pre-installed)'); }
+    catch { await db.exec('INSTALL delta; LOAD delta;'); steps.push('delta installed+loaded'); }
+
+    try { await db.exec('LOAD azure;'); steps.push('azure loaded (pre-installed)'); }
+    catch { await db.exec('INSTALL azure; LOAD azure;'); steps.push('azure installed+loaded'); }
+
+    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
+    steps.push(`AZURE_STORAGE_CONNECTION_STRING: ${connStr ? `set (${connStr.length} chars)` : 'NOT SET'}`);
+
+    if (connStr) {
+      const escaped = connStr.replace(/'/g, "''");
+      await db.exec(`CREATE SECRET azure_secret (TYPE AZURE, CONNECTION_STRING '${escaped}');`);
+      steps.push('azure secret created');
+    }
+
+    // Try to list blobs / read a table
+    const tablePath = _req.query.path as string || 'az://warehouse/tenant_2/conn_10/artikelen';
+    steps.push(`scanning: ${tablePath}`);
+
+    const result = await db.all(`SELECT count(*) as n FROM delta_scan('${tablePath}')`);
+    steps.push(`result: ${JSON.stringify(result)}`);
+
+    await db.close();
+    res.json({ ok: true, steps });
+  } catch (err) {
+    steps.push(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    res.json({ ok: false, steps, error: err instanceof Error ? err.stack : String(err) });
+  }
+});
+
 app.get('/api/health', async (_req, res) => {
   const checks: Record<string, string> = {};
   try {
