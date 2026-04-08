@@ -41,6 +41,10 @@ COPY knexfile.ts ./
 # We still need ts-node for knexfile.ts at migration time
 RUN npm install ts-node typescript
 
+# Point libcurl (used by DuckDB's azure extension) to system CA certificates
+ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
 # Pre-install DuckDB extensions so they don't need to download at runtime
 RUN node -e "\
 const duckdb = require('duckdb');\
