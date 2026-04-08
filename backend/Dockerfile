@@ -25,7 +25,8 @@ FROM node:20-slim AS production
 WORKDIR /app
 
 # Install runtime deps for native modules (better-sqlite3, duckdb)
-RUN apt-get update && apt-get install -y wget python3 make g++ && rm -rf /var/lib/apt/lists/*
+# ca-certificates is required for DuckDB's Azure extension (uses libcurl for HTTPS)
+RUN apt-get update && apt-get install -y wget python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Install only production deps
 COPY package.json package-lock.json ./

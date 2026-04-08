@@ -154,45 +154,6 @@ app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), asyn
 // Simple liveness probe — always 200 if the process is running
 app.get('/api/ping', (_req, res) => { res.json({ ok: true }); });
 
-// Temporary debug endpoint — test DuckDB + Azure Blob reading
-app.get('/api/debug/duckdb-blob', async (_req, res) => {
-  const steps: string[] = [];
-  try {
-    const { Database } = require('duckdb-async');
-    steps.push('duckdb-async imported');
-
-    const db = await Database.create(':memory:');
-    steps.push('in-memory db created');
-
-    try { await db.exec('LOAD delta;'); steps.push('delta loaded (pre-installed)'); }
-    catch { await db.exec('INSTALL delta; LOAD delta;'); steps.push('delta installed+loaded'); }
-
-    try { await db.exec('LOAD azure;'); steps.push('azure loaded (pre-installed)'); }
-    catch { await db.exec('INSTALL azure; LOAD azure;'); steps.push('azure installed+loaded'); }
-
-    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
-    steps.push(`AZURE_STORAGE_CONNECTION_STRING: ${connStr ? `set (${connStr.length} chars)` : 'NOT SET'}`);
-
-    if (connStr) {
-      const escaped = connStr.replace(/'/g, "''");
-      await db.exec(`CREATE SECRET azure_secret (TYPE AZURE, CONNECTION_STRING '${escaped}');`);
-      steps.push('azure secret created');
-    }
-
-    // Try to list blobs / read a table
-    const tablePath = _req.query.path as string || 'az://warehouse/tenant_2/conn_10/artikelen';
-    steps.push(`scanning: ${tablePath}`);
-
-    const result = await db.all(`SELECT count(*) as n FROM delta_scan('${tablePath}')`);
-    steps.push(`result: ${JSON.stringify(result)}`);
-
-    await db.close();
-    res.json({ ok: true, steps });
-  } catch (err) {
-    steps.push(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
-    res.json({ ok: false, steps, error: err instanceof Error ? err.stack : String(err) });
-  }
-});
 
 app.get('/api/health', async (_req, res) => {
   const checks: Record<string, string> = {};
@@ -220,20 +181,48 @@ if (!process.env.VITEST) {
     // Load scheduled transformations from DB into BullMQ
     loadSchedules().catch(err => console.error('Schedule loading error:', err));
 
-    // Stale ingestion cleanup — mark any ingestion stuck in 'running' for >30min as failed.
+    // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
+    (async () => {
+      try {
+        const { semanticDb } = await import('./db/knex');
+        const stale = await semanticDb('connections')
+          .where('profiling_status', 'running')
+          .update({
+            profiling_status: 'error',
+            profiling_phase: 'error',
+            profiling_message: 'Profiling was interrupted by a server restart',
+            profiling_progress: 0,
+          });
+        if (stale > 0) console.log(`[startup] Reset ${stale} stale profiling job(s)`);
+      } catch { /* non-fatal */ }
+    })();
+
+    // Stale ingestion/profiling cleanup — mark any stuck in 'running' for >30min as failed.
     // Runs every 5 minutes.
     setInterval(async () => {
       try {
         const { semanticDb } = await import('./db/knex');
         const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        const stale = await semanticDb('connections')
+        const staleIngestion = await semanticDb('connections')
           .where('ingestion_status', 'running')
           .where('created_at', '<', thirtyMinAgo)
           .update({
             ingestion_status: 'error',
             ingestion_error: 'Ingestion timed out (>30 minutes)',
           });
-        if (stale > 0) console.log(`[cleanup] Marked ${stale} stale ingestion(s) as failed`);
+        if (staleIngestion > 0) console.log(`[cleanup] Marked ${staleIngestion} stale ingestion(s) as failed`);
+
+        const staleProfiling = await semanticDb('connections')
+          .where('profiling_status', 'running')
+          .whereNotNull('profiling_started_at')
+          .whereRaw("profiling_started_at < NOW() - INTERVAL '30 minutes'")
+          .update({
+            profiling_status: 'error',
+            profiling_phase: 'error',
+            profiling_message: 'Profiling timed out (>30 minutes)',
+            profiling_progress: 0,
+          });
+        if (staleProfiling > 0) console.log(`[cleanup] Marked ${staleProfiling} stale profiling job(s) as failed`);
       } catch { /* non-fatal */ }
     }, 5 * 60 * 1000);
   });
