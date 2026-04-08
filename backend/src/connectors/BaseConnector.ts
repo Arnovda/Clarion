@@ -303,18 +303,28 @@ export abstract class BaseConnector {
     console.log(`[FK] Layer 2: ${layer2Added} name-pattern match(es)${layer2Added ? ': ' + candidates.slice(preLayer2).map(c => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}`).join(', ') : ''}`);
 
     // ── Layer 3: Value overlap verification ──────────────────────────────────
+    // Time-boxed: 10s per query, 2 min total budget for Layer 3+4
+    const FK_QUERY_TIMEOUT = 10_000;
+    const FK_TOTAL_BUDGET  = 120_000; // 2 minutes for all overlap checks
+    const fkBudgetStart = Date.now();
+    const fkTimedOut = () => Date.now() - fkBudgetStart > FK_TOTAL_BUDGET;
+
     const toVerify = candidates.filter(c => c.overlapRatio === undefined).length;
     console.log(`[FK] Layer 3: verifying ${toVerify} candidate(s) with value overlap JOINs…`);
-    let verified = 0, killed = 0;
+    let verified = 0, killed = 0, skipped = 0;
     for (const c of [...candidates]) {
       if (c.overlapRatio !== undefined) continue;
+      if (fkTimedOut()) { skipped++; continue; }
       try {
-        const result = await this.executeQuery(
-          `SELECT COUNT(DISTINCT f.v) as matched,
-                  (SELECT COUNT(DISTINCT "${c.fromColumn}") FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL) as total
-           FROM (SELECT DISTINCT "${c.fromColumn}" as v FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL ORDER BY "${c.fromColumn}" LIMIT 500) f
-           INNER JOIN "${c.toTable}" t ON CAST(f.v AS TEXT) = CAST(t."${c.toColumn}" AS TEXT)`,
-        );
+        const result = await Promise.race([
+          this.executeQuery(
+            `SELECT COUNT(DISTINCT f.v) as matched,
+                    (SELECT COUNT(DISTINCT "${c.fromColumn}") FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL) as total
+             FROM (SELECT DISTINCT "${c.fromColumn}" as v FROM "${c.fromTable}" WHERE "${c.fromColumn}" IS NOT NULL ORDER BY "${c.fromColumn}" LIMIT 500) f
+             INNER JOIN "${c.toTable}" t ON CAST(f.v AS TEXT) = CAST(t."${c.toColumn}" AS TEXT)`,
+          ),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('FK query timeout')), FK_QUERY_TIMEOUT)),
+        ]);
         const row = result.rows[0] as { matched: number; total: number } | undefined;
         if (row && row.total > 0) {
           c.overlapRatio = row.matched / row.total;
@@ -327,20 +337,26 @@ export abstract class BaseConnector {
           c.confidence = 0.1; c.overlapRatio = 0; killed++;
           console.log(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: no overlap → killed`);
         }
-      } catch { /* type mismatch etc. */ }
+      } catch { /* type mismatch or timeout */ }
     }
-    console.log(`[FK] Layer 3: ${verified} verified, ${killed} killed`);
+    console.log(`[FK] Layer 3: ${verified} verified, ${killed} killed${skipped ? `, ${skipped} skipped (budget)` : ''}`);
 
     // ── Layer 4: Value overlap discovery (fact key columns → dimension PKs) ──
     // Only check fact/bridge tables against dimension/unknown tables
-    console.log(`[FK] Layer 4: scanning fact key columns against dimension PKs…`);
+    if (fkTimedOut()) {
+      console.log(`[FK] Layer 4: skipped (time budget exhausted)`);
+    } else {
+      console.log(`[FK] Layer 4: scanning fact key columns against dimension PKs…`);
+    }
     const preLayer4 = candidates.length;
     const factTables = classifications.filter((c) => c.role === 'fact' || c.role === 'bridge');
     const dimTables  = classifications.filter((c) => c.role === 'dimension' || c.role === 'unknown');
 
     for (const factClass of factTables) {
+      if (fkTimedOut()) break;
       const factTable = tables.find((t) => t.tableName === factClass.tableName)!;
       for (const fromCol of factTable.columns) {
+        if (fkTimedOut()) break;
         const cn = fromCol.name.toLowerCase();
         if (META_COLUMNS.has(cn)) continue;
         if (MEASURE_PATTERNS.test(cn)) continue;
@@ -349,6 +365,7 @@ export abstract class BaseConnector {
         if (!isKeyLike) continue;
 
         for (const dimClass of dimTables) {
+          if (fkTimedOut()) break;
           if (dimClass.tableName === factClass.tableName) continue;
           const dimTable = tables.find((t) => t.tableName === dimClass.tableName)!;
 
@@ -358,17 +375,21 @@ export abstract class BaseConnector {
           );
 
           for (const toCol of targetCols) {
+            if (fkTimedOut()) break;
             const key = `${factClass.tableName}.${fromCol.name}→${dimClass.tableName}.${toCol.name}`;
             if (seen.has(key)) continue;
 
             try {
-              const result = await this.executeQuery(
-                `SELECT COUNT(DISTINCT f.v) as matched,
-                        (SELECT COUNT(DISTINCT "${fromCol.name}") FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL) as total,
-                        (SELECT COUNT(*) FROM "${dimClass.tableName}") as target_rows
-                 FROM (SELECT DISTINCT "${fromCol.name}" as v FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL ORDER BY "${fromCol.name}" LIMIT 500) f
-                 INNER JOIN "${dimClass.tableName}" t ON CAST(f.v AS TEXT) = CAST(t."${toCol.name}" AS TEXT)`,
-              );
+              const result = await Promise.race([
+                this.executeQuery(
+                  `SELECT COUNT(DISTINCT f.v) as matched,
+                          (SELECT COUNT(DISTINCT "${fromCol.name}") FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL) as total,
+                          (SELECT COUNT(*) FROM "${dimClass.tableName}") as target_rows
+                   FROM (SELECT DISTINCT "${fromCol.name}" as v FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL ORDER BY "${fromCol.name}" LIMIT 500) f
+                   INNER JOIN "${dimClass.tableName}" t ON CAST(f.v AS TEXT) = CAST(t."${toCol.name}" AS TEXT)`,
+                ),
+                new Promise<never>((_, rej) => setTimeout(() => rej(new Error('FK query timeout')), FK_QUERY_TIMEOUT)),
+              ]);
               const row = result.rows[0] as { matched: number; total: number; target_rows: number } | undefined;
               if (row && row.total > 0 && row.matched > 0) {
                 const ratio = row.matched / row.total;
@@ -383,13 +404,14 @@ export abstract class BaseConnector {
                   });
                 }
               }
-            } catch { /* skip */ }
+            } catch { /* skip — timeout or type mismatch */ }
           }
         }
       }
     }
     const layer4Added = candidates.length - preLayer4;
-    console.log(`[FK] Layer 4: ${layer4Added} new FK(s) discovered`);
+    const fkElapsed = Math.round((Date.now() - fkBudgetStart) / 1000);
+    console.log(`[FK] Layer 4: ${layer4Added} new FK(s) discovered (${fkElapsed}s elapsed)`);
 
     // Drop candidates with very low confidence
     const final = candidates.filter((c) => c.confidence >= 0.3);
