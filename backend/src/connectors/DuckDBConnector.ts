@@ -3,6 +3,17 @@ import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
 
+/** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 /**
  * DuckDBConnector — reads from Delta Lake tables via DuckDB's delta_scan().
  *
@@ -53,6 +64,11 @@ export class DuckDBConnector extends BaseConnector {
       } catch {
         await this.db.exec('INSTALL azure; LOAD azure;');
       }
+
+      // Use curl transport — avoids SSL CA cert path issues in Docker containers
+      // where DuckDB's default transport expects RHEL cert paths
+      await this.db.exec("SET azure_transport_option_type = 'curl';");
+
       const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
       if (connStr) {
         // Escape single quotes in connection string
@@ -78,6 +94,7 @@ export class DuckDBConnector extends BaseConnector {
       await db.exec('INSTALL delta; LOAD delta;');
       if (this.isAzure) {
         await db.exec('INSTALL azure; LOAD azure;');
+        await db.exec("SET azure_transport_option_type = 'curl';");
       }
       await db.exec('SELECT 1');
       await db.close();
@@ -95,12 +112,19 @@ export class DuckDBConnector extends BaseConnector {
     // Get table names: from constructor arg or filesystem scan
     const tableNames = this.getTableNames();
 
+    // Timeout per table: 60s for Azure (network I/O), 30s for local
+    const perTableTimeout = this.isAzure ? 60_000 : 30_000;
+
     for (const tableName of tableNames) {
       const deltaPath = this.tablePath(tableName);
 
       try {
         const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        await this.createDeltaView(db, viewName, deltaPath);
+        await withTimeout(
+          this.createDeltaView(db, viewName, deltaPath),
+          perTableTimeout,
+          `createDeltaView(${tableName})`,
+        );
 
         const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
           column_name: string;
@@ -111,11 +135,15 @@ export class DuckDBConnector extends BaseConnector {
         for (const col of colRows) {
           let sampleValues: unknown[] = [];
           try {
-            const samples = await db.all(
-              `SELECT DISTINCT "${col.column_name}" AS val
-               FROM "${viewName}"
-               WHERE "${col.column_name}" IS NOT NULL
-               LIMIT 5`,
+            const samples = await withTimeout(
+              db.all(
+                `SELECT DISTINCT "${col.column_name}" AS val
+                 FROM "${viewName}"
+                 WHERE "${col.column_name}" IS NOT NULL
+                 LIMIT 5`,
+              ),
+              perTableTimeout,
+              `sample ${tableName}.${col.column_name}`,
             );
             sampleValues = samples.map((r: { val: unknown }) => {
               const v = (r as { val: unknown }).val;

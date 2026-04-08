@@ -183,14 +183,19 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
     try {
       let connectorOverride;
       if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
+        console.log(`[Profile] Connection ${connectionId}: using DuckDB connector (warehouse: ${connection.warehouse_path})`);
         connectorOverride = await createConnector(connection);
         await connectorOverride.connect();
+        console.log(`[Profile] Connection ${connectionId}: DuckDB connected successfully`);
       } else {
+        console.log(`[Profile] Connection ${connectionId}: using source connector (type: ${connection.type})`);
         connectorOverride = createSourceConnector(connection);
         await connectorOverride.connect();
+        console.log(`[Profile] Connection ${connectionId}: source connector connected`);
       }
 
       const result = await runSchemaProfiler(connection.id, null, (p) => {
+        console.log(`[Profile] Connection ${connectionId}: ${p.phase} — ${p.message}`);
         emit(p);
         persistProgress(p);
       }, connectorOverride);

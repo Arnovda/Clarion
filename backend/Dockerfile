@@ -25,8 +25,9 @@ FROM node:20-slim AS production
 WORKDIR /app
 
 # Install runtime deps for native modules (better-sqlite3, duckdb)
-# ca-certificates is required for DuckDB's Azure extension (uses libcurl for HTTPS)
-RUN apt-get update && apt-get install -y wget python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
+# ca-certificates: SSL certs for DuckDB's Azure extension
+# libcurl4-openssl-dev: required when azure_transport_option_type = 'curl'
+RUN apt-get update && apt-get install -y wget python3 make g++ ca-certificates libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 
 # Install only production deps
 COPY package.json package-lock.json ./
@@ -41,7 +42,12 @@ COPY knexfile.ts ./
 # We still need ts-node for knexfile.ts at migration time
 RUN npm install ts-node typescript
 
-# Point libcurl (used by DuckDB's azure extension) to system CA certificates
+# DuckDB's Azure extension is compiled on RHEL and looks for CA certs at
+# /etc/pki/tls/certs/ca-bundle.crt. On Debian-based images (node:20-slim)
+# the certs live at /etc/ssl/certs/ca-certificates.crt. Create a symlink
+# so the extension finds them. Also set CURL_CA_BUNDLE as a fallback.
+RUN mkdir -p /etc/pki/tls/certs && \
+    ln -s /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
