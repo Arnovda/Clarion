@@ -205,6 +205,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
+      console.error(`[Profile] Connection ${connectionId} profiling failed:`, err);
       emit({ phase: 'error', message: errMsg });
       await semanticDb('connections').where({ id: connectionId }).update({
         profiling_status: 'error', profiling_phase: 'error',

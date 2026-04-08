@@ -40,6 +40,16 @@ COPY knexfile.ts ./
 # We still need ts-node for knexfile.ts at migration time
 RUN npm install ts-node typescript
 
+# Pre-install DuckDB extensions so they don't need to download at runtime
+RUN node -e "\
+const duckdb = require('duckdb');\
+const db = new duckdb.Database(':memory:');\
+db.exec('INSTALL delta; INSTALL azure;', (err) => {\
+  if (err) { console.error('Extension install failed:', err); process.exit(1); }\
+  console.log('DuckDB extensions installed (delta, azure)');\
+  db.close(() => process.exit(0));\
+});"
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1

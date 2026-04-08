@@ -38,10 +38,21 @@ export class DuckDBConnector extends BaseConnector {
     }
 
     this.db = await Database.create(':memory:');
-    await this.db.exec('INSTALL delta; LOAD delta;');
+
+    // Use LOAD (not INSTALL+LOAD) if extensions are pre-installed in Docker image.
+    // Fall back to INSTALL+LOAD for local dev.
+    try {
+      await this.db.exec('LOAD delta;');
+    } catch {
+      await this.db.exec('INSTALL delta; LOAD delta;');
+    }
 
     if (this.isAzure) {
-      await this.db.exec('INSTALL azure; LOAD azure;');
+      try {
+        await this.db.exec('LOAD azure;');
+      } catch {
+        await this.db.exec('INSTALL azure; LOAD azure;');
+      }
       const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
       if (connStr) {
         // Escape single quotes in connection string
@@ -52,6 +63,8 @@ export class DuckDBConnector extends BaseConnector {
             CONNECTION_STRING '${escaped}'
           );
         `);
+      } else {
+        console.warn('[DuckDBConnector] AZURE_STORAGE_CONNECTION_STRING not set — blob reads will fail');
       }
     }
   }
