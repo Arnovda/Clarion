@@ -115,16 +115,20 @@ export class DuckDBConnector extends BaseConnector {
     // Timeout per table: 60s for Azure (network I/O), 30s for local
     const perTableTimeout = this.isAzure ? 60_000 : 30_000;
 
-    for (const tableName of tableNames) {
+    for (let ti = 0; ti < tableNames.length; ti++) {
+      const tableName = tableNames[ti];
       const deltaPath = this.tablePath(tableName);
 
       try {
+        console.log(`[DuckDBConnector] introspecting table ${ti + 1}/${tableNames.length}: ${tableName} (${deltaPath})`);
         const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+        const viewStart = Date.now();
         await withTimeout(
           this.createDeltaView(db, viewName, deltaPath),
           perTableTimeout,
           `createDeltaView(${tableName})`,
         );
+        console.log(`[DuckDBConnector] view created for ${tableName} in ${Date.now() - viewStart}ms`);
 
         const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
           column_name: string;
