@@ -52,16 +52,25 @@ export default function HealthPage() {
     try {
       const [tablesRes, connsRes] = await Promise.all([
         api.get('/quality/tables'),
-        api.get('/connections'),
+        api.get('/connections').catch(() => ({ data: { data: [] } })),
       ]);
-      setTables(tablesRes.data.data ?? []);
-      const conns = (connsRes.data.data ?? []) as Connection[];
-      setConnections(conns);
-      if (!selectedConnId && conns.length > 0) setSelectedConnId(conns[0].id);
-    } catch {} finally { setLoading(false); }
-  }, [selectedConnId]);
+      const allTables = (tablesRes.data.data ?? []) as TableHealth[];
+      setTables(allTables);
 
-  useEffect(() => { loadData(); }, []);
+      // Build connections from API or derive from tables
+      let conns = (connsRes.data.data ?? []) as Connection[];
+      if (conns.length === 0 && allTables.length > 0) {
+        // Derive unique connections from table data
+        const connIds = [...new Set(allTables.filter(t => (t.layer ?? 'source') === 'source').map(t => t.connection_id))];
+        conns = connIds.map(id => ({ id, name: `Connection ${id}` }));
+      }
+      setConnections(conns);
+      // Auto-expand first connection
+      if (conns.length > 0) setSelectedConnId(conns[0].id);
+    } catch {} finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
 
   const filteredTables = selectedConnId
     ? tables.filter((t) => t.connection_id === selectedConnId)
@@ -89,7 +98,7 @@ export default function HealthPage() {
       {/* Sources section */}
       <div className="text-label-md text-on-surface-variant/50 font-semibold uppercase tracking-wider px-2 pt-3">Sources</div>
       {connections.map((conn) => {
-        const connTables = tables.filter((t) => t.connection_id === conn.id && t.layer === 'source');
+        const connTables = tables.filter((t) => t.connection_id === conn.id && (t.layer ?? 'source') === 'source');
         if (connTables.length === 0) return null;
         const connAvg = connTables.filter((t) => t.overall_score !== null);
         const avg = connAvg.length > 0 ? Math.round((connAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / connAvg.length) * 100) : null;
