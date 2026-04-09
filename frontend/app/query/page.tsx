@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import Nav from '@/components/Nav';
+import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { getToken, getTokenPayload } from '@/lib/auth';
 import {
@@ -1711,120 +1711,175 @@ export default function QueryPage() {
 
   // ── Render ──
 
-  return (
-    <div className="flex flex-col bg-slate-50" style={{ height: '100vh', overflow: 'hidden' }}>
-      <Nav />
+  const sidebarContent = (
+    <div className="flex flex-col h-full">
+      <div className="flex-shrink-0 p-3 space-y-2">
+        <button onClick={startNewConversation}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 gradient-primary text-white text-body-sm font-semibold rounded-xl hover:opacity-90 transition-opacity">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+          New chat
+        </button>
+        <button onClick={() => setStarFilter((f) => !f)}
+          className={`w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-label-md font-medium rounded-lg transition-colors ${
+            starFilter ? 'bg-amber-500/10 text-amber-600' : 'text-on-surface-variant hover:bg-surface-container'
+          }`}>
+          <span>{starFilter ? '★' : '☆'}</span>
+          {starFilter ? 'Showing starred' : 'Show starred'}
+        </button>
+      </div>
 
-      <div className="flex flex-1 min-h-0">
-        <ChatSidebar
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={selectConversation}
-          onNew={startNewConversation}
-          onDelete={deleteConversation}
-          onStar={toggleStar}
-          starFilter={starFilter}
-          onToggleStarFilter={() => setStarFilter((f) => !f)}
-        />
-
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Header */}
-          <div className="flex-shrink-0 bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-3 flex-wrap">
-              <div>
-                <h1 className="text-base font-bold text-slate-900">Ask your data</h1>
-                <p className="text-xs text-slate-400 mt-0.5">Plain-English questions → instant answers</p>
+      <div className="flex-1 overflow-y-auto scrollbar-thin py-1">
+        {conversations.length === 0 && (
+          <p className="text-center text-label-sm text-on-surface-variant/50 mt-8 px-4 leading-relaxed">
+            {starFilter ? 'No starred conversations' : 'Your conversations will appear here'}
+          </p>
+        )}
+        {conversations.map((conv) => (
+          <div key={conv.id}
+            className={`group relative flex items-start gap-2 px-3 py-2.5 cursor-pointer transition-all ${
+              conv.id === activeId
+                ? 'bg-surface-container-highest border-l-2 border-cyan-400'
+                : 'border-l-2 border-transparent hover:bg-surface-container'
+            }`}
+            onClick={() => selectConversation(conv.id)}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-1">
+                {conv.starred && <span className="text-amber-400 text-label-sm flex-shrink-0">★</span>}
+                <p className={`text-body-sm font-medium truncate leading-snug ${
+                  conv.id === activeId ? 'text-on-surface' : 'text-on-surface-variant'
+                }`}>
+                  {conv.title}
+                </p>
               </div>
+              <p className="text-label-sm text-on-surface-variant/50 mt-0.5">
+                {(() => {
+                  const d = Date.now() - new Date(conv.updatedAt).getTime();
+                  const m = Math.floor(d / 60000); const h = Math.floor(d / 3600000); const dy = Math.floor(d / 86400000);
+                  if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`; if (h < 24) return `${h}h ago`; return `${dy}d ago`;
+                })()}
+              </p>
             </div>
-            <div className="flex items-center gap-4">
-              {isAdmin && (
-                <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
-                  <div onClick={() => setShowSql((s) => !s)}
-                    className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showSql ? 'bg-blue-500' : 'bg-slate-300'}`}>
-                    <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${showSql ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                  </div>
-                  Show SQL
-                </label>
-              )}
-              {messages.length > 0 && (
-                <button onClick={() => {
-                  if (activeId && activeId > 0) {
-                    api.delete(`/conversations/${activeId}`).catch(() => {});
-                    setConversations((prev) => prev.filter((c) => c.id !== activeId));
-                  }
-                  setActiveId(null);
-                  setMessages([]);
-                  setRepairState(null);
-                }}
-                  className="text-xs text-slate-400 hover:text-slate-700 transition-colors">
-                  Clear chat
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Messages */}
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <div className="max-w-2xl mx-auto w-full px-4 py-6">
-              {messages.length === 0 && !loading ? (
-                <EmptyState onStarter={send} />
-              ) : (
-                <div className="space-y-4">
-                  {messages.map((m) => (
-                    <div key={m.id}>
-                      <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} />
-                      {/* Ephemeral thinking panel — shown after the message being repaired */}
-                      {repairState?.forMessageId === m.id && (
-                        <div className="mt-3">
-                          <ThinkingPanel repair={repairState} onClarify={handleClarify} />
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {loading && (
-                    <ThinkingBubble
-                      phase={thinkingPhase}
-                      liveText={thinkingText}
-                      sql={thinkingSql}
-                      confidence={thinkingConf}
-                    />
-                  )}
-                  <div ref={bottomRef} />
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Input */}
-          <div className="flex-shrink-0 bg-white border-t border-slate-200 px-4 py-3">
-            <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2">
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="e.g. What were my top 5 customers last month?"
-                disabled={loading}
-                autoComplete="off"
-                className="flex-1 border border-slate-300 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
-              />
-              <button type="submit" disabled={loading || !input.trim()}
-                className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 active:bg-blue-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2">
-                {loading ? (
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                  </svg>
-                ) : (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
-                )}
-                {loading ? 'Thinking' : 'Ask'}
+            <div className="flex-shrink-0 flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-all mt-0.5">
+              <button onClick={(e) => { e.stopPropagation(); toggleStar(conv.id); }}
+                className="p-0.5 rounded text-on-surface-variant/30 hover:text-amber-400 transition-colors"
+                title={conv.starred ? 'Unstar' : 'Star'}>
+                <span className="text-label-sm">{conv.starred ? '★' : '☆'}</span>
               </button>
-            </form>
+              <button onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
+                className="p-0.5 rounded text-on-surface-variant/30 hover:text-error transition-colors" title="Delete">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
-        </div>
+        ))}
       </div>
     </div>
+  );
+
+  return (
+    <AppShell
+      title="Ask your Data"
+      showSearch={false}
+      contextPanel={sidebarContent}
+    >
+      <div className="flex flex-col h-full">
+        {/* Sub-header: source selector + show SQL toggle */}
+        <div className="flex-shrink-0 px-6 py-2 flex items-center justify-between ghost-border-b">
+          <div className="flex items-center gap-3">
+            {sources.length > 1 && (
+              <SourceSelector sources={sources} selectedId={selectedSource} onChange={(id) => { setSelectedSource(id); localStorage.setItem('databridge_query_source', id); }} />
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+            {isAdmin && (
+              <label className="flex items-center gap-2 text-label-md text-on-surface-variant cursor-pointer select-none">
+                <div onClick={() => setShowSql((s) => !s)}
+                  className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showSql ? 'bg-cyan-500' : 'bg-outline-variant'}`}>
+                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${showSql ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </div>
+                Show SQL
+              </label>
+            )}
+            {messages.length > 0 && (
+              <button onClick={() => {
+                if (activeId && activeId > 0) {
+                  api.delete(`/conversations/${activeId}`).catch(() => {});
+                  setConversations((prev) => prev.filter((c) => c.id !== activeId));
+                }
+                setActiveId(null); setMessages([]); setRepairState(null);
+              }}
+                className="text-label-md text-on-surface-variant hover:text-on-surface transition-colors">
+                Clear chat
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div className="max-w-2xl mx-auto w-full px-4 py-6">
+            {messages.length === 0 && !loading ? (
+              <EmptyState onStarter={send} />
+            ) : (
+              <div className="space-y-4">
+                {messages.map((m) => (
+                  <div key={m.id}>
+                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} />
+                    {repairState?.forMessageId === m.id && (
+                      <div className="mt-3">
+                        <ThinkingPanel repair={repairState} onClarify={handleClarify} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {loading && (
+                  <ThinkingBubble
+                    phase={thinkingPhase}
+                    liveText={thinkingText}
+                    sql={thinkingSql}
+                    confidence={thinkingConf}
+                  />
+                )}
+                <div ref={bottomRef} />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Input */}
+        <div className="flex-shrink-0 px-4 py-3 ghost-border-t bg-surface">
+          <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2">
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="e.g. What were my top 5 customers last month?"
+              disabled={loading}
+              autoComplete="off"
+              className="flex-1 rounded-xl px-4 py-2.5 text-body-md bg-surface-container-lowest text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:shadow-glow-teal disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            />
+            <button type="submit" disabled={loading || !input.trim()}
+              className="px-5 py-2.5 gradient-primary text-on-primary rounded-xl text-title-md hover:opacity-90 active:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-2">
+              {loading ? (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                </svg>
+              )}
+              {loading ? 'Thinking' : 'Ask'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </AppShell>
   );
 }

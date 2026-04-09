@@ -25,12 +25,12 @@ export default function LoginPage() {
         try {
           const connRes = await api.get('/connections');
           const hasConnections = (connRes.data.data?.length ?? 0) > 0;
-          router.push(hasConnections ? '/ask' : '/connect');
+          router.push(hasConnections ? '/query' : '/setup');
         } catch {
-          router.push('/connect');
+          router.push('/setup');
         }
       } else {
-        router.push('/ask');
+        router.push('/query');
       }
     } catch {
       setError('Invalid email or password.');
