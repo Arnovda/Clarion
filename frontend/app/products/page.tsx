@@ -7,7 +7,6 @@ import { getToken } from '@/lib/auth';
 import dynamic from 'next/dynamic';
 import SchedulePanel from '@/components/SchedulePanel';
 
-const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
@@ -27,6 +26,8 @@ interface DataProduct {
   created_at: string;
   star_schema_count?: number;
 }
+
+interface DepEdge { dependent_product_id: number; source_product_id: number; }
 
 interface StarSchema {
   id: number;
@@ -60,11 +61,12 @@ interface ProductTable {
   table_role: string;
   transformation_sql: string | null;
   transformation_status: string;
+  is_shared_dimension: boolean;
   dag_order: number;
   row_count: number | null;
   last_run_at: string | null;
   last_run_error: string | null;
-  load_mode: string; // 'full' | 'incremental'
+  load_mode: string;
   quality_checks?: QualityCheck[];
 }
 
@@ -108,1280 +110,6 @@ interface SourceTable {
   connection_id: number;
 }
 
-type MainTab = 'products' | 'schema-viewer' | 'lineage' | 'transformations' | 'kpis';
-
-interface SkeletonTable {
-  name: string;
-  role: string;
-  description?: string;
-  columns?: { name: string; role: string; type: string }[];
-}
-
-// ---------------------------------------------------------------------------
-// Status badge helper
-// ---------------------------------------------------------------------------
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    draft: 'bg-slate-100 text-slate-600',
-    designing: 'bg-blue-100 text-blue-700',
-    approved: 'bg-green-100 text-green-700',
-    running: 'bg-amber-100 text-amber-700',
-    success: 'bg-emerald-100 text-emerald-700',
-    error: 'bg-red-100 text-red-700',
-  };
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[status] ?? 'bg-slate-100 text-slate-600'}`}>
-      {status}
-    </span>
-  );
-}
-
-function RoleBadge({ role }: { role: string }) {
-  const colors: Record<string, string> = {
-    fact: 'bg-purple-100 text-purple-700',
-    dimension: 'bg-blue-100 text-blue-700',
-    bridge: 'bg-amber-100 text-amber-700',
-    junk: 'bg-slate-100 text-slate-600',
-  };
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[role] ?? 'bg-slate-100 text-slate-600'}`}>
-      {role}
-    </span>
-  );
-}
-
-function ColumnRoleBadge({ role }: { role: string | null }) {
-  if (!role) return null;
-  const colors: Record<string, string> = {
-    surrogate_key: 'bg-yellow-100 text-yellow-800',
-    natural_key: 'bg-orange-100 text-orange-700',
-    foreign_key: 'bg-purple-100 text-purple-700',
-    measure: 'bg-green-100 text-green-700',
-    attribute: 'bg-blue-100 text-blue-700',
-    degenerate_dimension: 'bg-slate-100 text-slate-600',
-  };
-  const label = role.replace(/_/g, ' ');
-  return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${colors[role] ?? 'bg-slate-100 text-slate-600'}`}>
-      {label}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Main page
-// ---------------------------------------------------------------------------
-
-export default function ProductSemanticsPage() {
-  const [tab, setTab] = useState<MainTab>('products');
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [products, setProducts] = useState<DataProduct[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<FullDataProduct | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  // Create dialog state
-  const [showCreate, setShowCreate] = useState(false);
-  const [createName, setCreateName] = useState('');
-  const [createDesc, setCreateDesc] = useState('');
-  const [createConnId, setCreateConnId] = useState<number | null>(null);
-  const [availableSources, setAvailableSources] = useState<SourceTable[]>([]);
-  const [selectedSources, setSelectedSources] = useState<Set<number>>(new Set());
-  const [creating, setCreating] = useState(false);
-
-  // Design state
-  const [designing, setDesigning] = useState(false);
-  const [designPhase, setDesignPhase] = useState('');
-  const [designThinking, setDesignThinking] = useState('');
-  const [designSqlThinking, setDesignSqlThinking] = useState('');
-  const [skeletonTables, setSkeletonTables] = useState<SkeletonTable[]>([]);
-  const [showThinking, setShowThinking] = useState(true);
-  const thinkingRef = useRef<HTMLDivElement>(null);
-
-  // Expanded tree state
-  const [expandedSchemas, setExpandedSchemas] = useState<Set<number>>(new Set());
-  const [expandedTables, setExpandedTables] = useState<Set<number>>(new Set());
-  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
-
-  // ----------- Load data -----------
-  const loadProducts = useCallback(async () => {
-    try {
-      const res = await api.get('/products');
-      setProducts(res.data.data ?? []);
-    } catch { /* ignore */ }
-    setLoading(false);
-  }, []);
-
-  const loadConnections = useCallback(async () => {
-    try {
-      const res = await api.get('/connections');
-      setConnections(res.data.data ?? []);
-    } catch { /* ignore */ }
-  }, []);
-
-  useEffect(() => {
-    loadProducts();
-    loadConnections();
-  }, [loadProducts, loadConnections]);
-
-  const loadFullProduct = useCallback(async (id: number) => {
-    try {
-      const res = await api.get(`/products/${id}`);
-      setSelectedProduct(res.data.data ?? null);
-    } catch { /* ignore */ }
-  }, []);
-
-  // ----------- Create data product -----------
-  const handleConnectionSelect = async (connId: number) => {
-    setCreateConnId(connId);
-    setSelectedSources(new Set());
-    try {
-      const res = await api.get(`/semantic/tables?connectionId=${connId}`);
-      setAvailableSources(res.data.data ?? []);
-    } catch {
-      setAvailableSources([]);
-    }
-  };
-
-  const toggleSource = (id: number) => {
-    setSelectedSources((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const selectAllSources = () => {
-    setSelectedSources(new Set(availableSources.map((s) => s.id)));
-  };
-
-  const handleCreate = async () => {
-    if (!createName.trim() || !createConnId || selectedSources.size === 0) return;
-    setCreating(true);
-    try {
-      const sourceTables = availableSources
-        .filter((s) => selectedSources.has(s.id))
-        .map((s) => ({ sourceTableId: s.id, tableName: s.table_name }));
-
-      await api.post('/products', {
-        name: createName,
-        description: createDesc,
-        connectionId: createConnId,
-        sourceTables,
-      });
-
-      setShowCreate(false);
-      setCreateName('');
-      setCreateDesc('');
-      setCreateConnId(null);
-      setSelectedSources(new Set());
-      await loadProducts();
-    } catch { /* ignore */ }
-    setCreating(false);
-  };
-
-  // ----------- AI Design (SSE streaming with live thinking) -----------
-  const handleDesign = async (productId: number) => {
-    setDesigning(true);
-    setDesignPhase('Connecting...');
-    setDesignThinking('');
-    setDesignSqlThinking('');
-    setSkeletonTables([]);
-    setShowThinking(true);
-
-    try {
-      const token = getToken();
-      const response = await fetch(`${BACKEND_URL}/api/products/${productId}/design-stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      });
-
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
-
-        const lines = buffer.split('\n');
-        buffer = done ? '' : (lines.pop() ?? '');
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let event: Record<string, unknown>;
-          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; }
-          catch { continue; }
-
-          const type = event.type as string;
-
-          if (type === 'phase') {
-            setDesignPhase(event.text as string);
-          } else if (type === 'thinking') {
-            setDesignThinking((prev) => prev + (event.text as string));
-            // Auto-scroll thinking panel
-            setTimeout(() => {
-              if (thinkingRef.current) {
-                thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
-              }
-            }, 10);
-          } else if (type === 'sql_thinking') {
-            setDesignSqlThinking((prev) => prev + (event.text as string));
-            setTimeout(() => {
-              if (thinkingRef.current) {
-                thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
-              }
-            }, 10);
-          } else if (type === 'table_saved') {
-            const tbl = event.table as SkeletonTable;
-            setSkeletonTables((prev) => [...prev, tbl]);
-          } else if (type === 'design_complete') {
-            setDesignPhase('Star schema design complete! Generating SQL...');
-          } else if (type === 'sql_complete') {
-            setDesignPhase('Done! Star schema designed + SQL generated.');
-          } else if (type === 'sql_error') {
-            setDesignPhase('Design complete. SQL generation failed — retry from Transformations tab.');
-          } else if (type === 'error') {
-            setDesignPhase(`Error: ${event.message as string}`);
-          } else if (type === 'done') {
-            await loadProducts();
-            await loadFullProduct(productId);
-          }
-        }
-
-        if (done) break;
-      }
-    } catch {
-      setDesignPhase('Design failed. Please try again.');
-    }
-    setTimeout(() => setDesigning(false), 3000);
-  };
-
-  // ----------- Delete -----------
-  const handleDelete = async (id: number) => {
-    if (!confirm('Delete this data product and all its star schemas?')) return;
-    try {
-      await api.delete(`/products/${id}`);
-      if (selectedProduct?.id === id) setSelectedProduct(null);
-      await loadProducts();
-    } catch { /* ignore */ }
-  };
-
-  // ----------- Generate SQL (manual fallback) -----------
-  const [generatingSql, setGeneratingSql] = useState(false);
-  const handleGenerateSql = async (productId: number) => {
-    setGeneratingSql(true);
-    try {
-      await api.post(`/products/${productId}/generate-sql`);
-      await loadFullProduct(productId);
-    } catch { /* ignore */ }
-    setGeneratingSql(false);
-  };
-
-  // ----------- Transformation controls -----------
-  const [runningAll, setRunningAll] = useState(false);
-  const [runningTableId, setRunningTableId] = useState<number | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
-
-  const handleRunTable = async (tableId: number) => {
-    setRunningTableId(tableId);
-    setRunError(null);
-    try {
-      await api.post(`/products/tables/${tableId}/run`);
-      if (selectedProduct) await loadFullProduct(selectedProduct.id);
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Transformation failed';
-      setRunError(msg);
-    }
-    setRunningTableId(null);
-  };
-
-  const handleRunAll = async (productId: number, fullRefresh = false) => {
-    setRunningAll(true);
-    setRunError(null);
-    try {
-      const endpoint = fullRefresh ? `/products/${productId}/run-full` : `/products/${productId}/run`;
-      const res = await api.post(endpoint);
-      // Track which tables completed with errors
-      const results = res.data?.data;
-      if (Array.isArray(results)) {
-        const failed = results.filter((r: { status: string }) => r.status === 'error');
-        if (failed.length > 0) {
-          setRunError(`${failed.length} table(s) failed. Check individual tables for details.`);
-        }
-      }
-      await loadFullProduct(productId);
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Transformation run failed';
-      setRunError(msg);
-    }
-    setRunningAll(false);
-  };
-
-  const handleApproveTable = async (tableId: number) => {
-    try {
-      await api.put(`/products/tables/${tableId}/approve`);
-      if (selectedProduct) await loadFullProduct(selectedProduct.id);
-    } catch { /* ignore */ }
-  };
-
-  // ----------- Tree helpers -----------
-  const toggleSchema = (id: number) => {
-    setExpandedSchemas((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const toggleTable = (id: number) => {
-    setExpandedTables((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // Get the selected table object
-  const selectedTable = selectedProduct?.star_schemas
-    .flatMap((s) => s.tables)
-    .find((t) => t.id === selectedTableId) ?? null;
-
-  // ----------- Tab definitions -----------
-  const tabs: { key: MainTab; label: string }[] = [
-    { key: 'products', label: 'Data Products' },
-    { key: 'schema-viewer', label: 'Star Schema' },
-    { key: 'lineage', label: 'Source-to-Target' },
-    { key: 'transformations', label: 'Transformations' },
-    { key: 'kpis', label: 'KPIs' },
-  ];
-
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <Nav />
-
-      {/* Tab bar */}
-      <div className="bg-white border-b border-slate-200 px-6">
-        <div className="flex gap-1 -mb-px">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                tab === t.key
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex h-[calc(100vh-105px)]">
-        {/* ── Left sidebar: product tree ──────────────────────────────────── */}
-        <div className="w-72 border-r border-slate-200 bg-white overflow-y-auto flex-shrink-0">
-          <div className="p-3 border-b border-slate-100 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Products</span>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
-            >
-              + New
-            </button>
-          </div>
-
-          {loading && <p className="p-4 text-sm text-slate-400">Loading...</p>}
-
-          {products.map((p) => (
-            <div key={p.id}>
-              {/* Product row */}
-              <button
-                onClick={() => {
-                  if (selectedProduct?.id !== p.id) loadFullProduct(p.id);
-                  else setSelectedProduct(null);
-                }}
-                className={`w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-slate-50 border-b border-slate-50 ${
-                  selectedProduct?.id === p.id ? 'bg-blue-50' : ''
-                }`}
-              >
-                <span className="text-sm font-medium text-slate-800 truncate flex-1">{p.name}</span>
-                <StatusBadge status={p.status} />
-              </button>
-
-              {/* Expanded: star schemas + tables */}
-              {selectedProduct?.id === p.id && selectedProduct.star_schemas.map((schema) => (
-                <div key={schema.id} className="ml-3">
-                  <button
-                    onClick={() => toggleSchema(schema.id)}
-                    className="w-full text-left px-2 py-1.5 flex items-center gap-1 hover:bg-slate-50 text-xs"
-                  >
-                    <span className="text-slate-400">{expandedSchemas.has(schema.id) ? '\u25BC' : '\u25B6'}</span>
-                    <span className="font-medium text-slate-700 truncate">{schema.name}</span>
-                  </button>
-
-                  {expandedSchemas.has(schema.id) && schema.tables.map((tbl) => (
-                    <div key={tbl.id} className="ml-4">
-                      <button
-                        onClick={() => {
-                          setSelectedTableId(tbl.id);
-                          toggleTable(tbl.id);
-                        }}
-                        className={`w-full text-left px-2 py-1 flex items-center gap-1.5 hover:bg-slate-50 text-xs ${
-                          selectedTableId === tbl.id ? 'bg-blue-50 text-blue-700' : 'text-slate-600'
-                        }`}
-                      >
-                        <RoleBadge role={tbl.table_role} />
-                        <span className="truncate">{tbl.table_name}</span>
-                      </button>
-
-                      {expandedTables.has(tbl.id) && tbl.columns.map((col) => (
-                        <div
-                          key={col.id}
-                          className="ml-6 px-2 py-0.5 text-[11px] text-slate-500 flex items-center gap-1"
-                        >
-                          <ColumnRoleBadge role={col.column_role} />
-                          <span className="truncate">{col.column_name}</span>
-                          <span className="text-slate-300 ml-auto">{col.data_type}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-
-        {/* ── Main content area ──────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto p-6">
-
-          {/* === Data Products tab === */}
-          {tab === 'products' && (
-            <div>
-              {!selectedProduct ? (
-                <div className="text-center py-16 text-slate-400">
-                  <p className="text-lg font-medium">Select a data product or create a new one</p>
-                  <p className="text-sm mt-1">Data products organize your source data into Kimball star schemas</p>
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {/* Header */}
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h2 className="text-xl font-bold text-slate-900">{selectedProduct.name}</h2>
-                      <p className="text-sm text-slate-500 mt-1">{selectedProduct.description || 'No description'}</p>
-                      <div className="flex items-center gap-3 mt-2">
-                        <StatusBadge status={selectedProduct.status} />
-                        <span className="text-xs text-slate-400">
-                          {selectedProduct.star_schemas.length} star schema(s) ·{' '}
-                          {selectedProduct.star_schemas.reduce((n, s) => n + s.tables.length, 0)} tables
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      {(selectedProduct.status === 'draft' || (selectedProduct.status === 'designing' && !designing)) && (
-                        <button
-                          onClick={() => handleDesign(selectedProduct.id)}
-                          disabled={designing}
-                          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-                        >
-                          {designing && <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-                          {designing ? 'Designing...' : 'AI Design Star Schema'}
-                        </button>
-                      )}
-                      {selectedProduct.status === 'approved' && selectedProduct.star_schemas.some((s) =>
-                        s.tables.some((t) => !t.transformation_sql),
-                      ) && (
-                        <button
-                          onClick={() => handleGenerateSql(selectedProduct.id)}
-                          disabled={generatingSql}
-                          className="px-4 py-2 bg-amber-600 text-white text-sm rounded-lg hover:bg-amber-700 disabled:opacity-50"
-                        >
-                          {generatingSql ? 'Generating SQL...' : 'Generate SQL'}
-                        </button>
-                      )}
-                      {selectedProduct.status === 'approved' && selectedProduct.star_schemas.some((s) =>
-                        s.tables.some((t) => t.transformation_sql),
-                      ) && (
-                        <>
-                          <button
-                            onClick={() => handleRunAll(selectedProduct.id)}
-                            disabled={runningAll}
-                            className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                          >
-                            {runningAll ? 'Running...' : 'Run All'}
-                          </button>
-                          <button
-                            onClick={() => handleRunAll(selectedProduct.id, true)}
-                            disabled={runningAll}
-                            className="px-3 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
-                            title="Ignore incremental settings and do a full overwrite for all tables"
-                          >
-                            Full Refresh
-                          </button>
-                        </>
-                      )}
-                      <button
-                        onClick={() => handleDelete(selectedProduct.id)}
-                        className="px-3 py-2 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Schedule panel — visible for approved products */}
-                  {selectedProduct.status === 'approved' && (
-                    <SchedulePanel productId={selectedProduct.id} />
-                  )}
-
-                  {/* ── Live design panel (visible while designing) ──────── */}
-                  {designing && (
-                    <div className="space-y-4">
-                      {/* Phase indicator */}
-                      <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
-                        <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                        <span className="text-sm font-medium text-blue-700">{designPhase}</span>
-                      </div>
-
-                      {/* Thinking panel */}
-                      {(designThinking || designSqlThinking) && (
-                        <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
-                          <button
-                            onClick={() => setShowThinking((v) => !v)}
-                            className="w-full px-4 py-2 flex items-center justify-between text-xs font-semibold text-slate-400 hover:bg-slate-800"
-                          >
-                            <span>AI Reasoning {designSqlThinking ? '(SQL Generation)' : '(Schema Design)'}</span>
-                            <span>{showThinking ? '\u25BC' : '\u25B6'}</span>
-                          </button>
-                          {showThinking && (
-                            <div
-                              ref={thinkingRef}
-                              className="px-4 pb-3 max-h-64 overflow-y-auto"
-                            >
-                              <pre className="text-xs text-emerald-400 font-mono whitespace-pre-wrap leading-relaxed">
-                                {designSqlThinking || designThinking}
-                              </pre>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Skeleton preview — tables appear as they're saved */}
-                      {skeletonTables.length > 0 && (
-                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                          <div className="px-5 py-3 border-b border-slate-100">
-                            <h3 className="font-semibold text-slate-800">Designed Tables</h3>
-                            <p className="text-xs text-slate-400">{skeletonTables.length} table(s) created</p>
-                          </div>
-                          <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {skeletonTables.map((tbl, i) => (
-                              <div
-                                key={i}
-                                className={`border-2 rounded-lg p-3 animate-fadeIn ${
-                                  tbl.role === 'fact'
-                                    ? 'border-purple-200 bg-purple-50'
-                                    : 'border-blue-200 bg-blue-50'
-                                }`}
-                              >
-                                <div className="flex items-center gap-2 mb-2">
-                                  <RoleBadge role={tbl.role} />
-                                  <span className="text-sm font-semibold">{tbl.name}</span>
-                                </div>
-                                {tbl.description && (
-                                  <p className="text-xs text-slate-600 mb-2 line-clamp-2">{tbl.description}</p>
-                                )}
-                                {tbl.columns && tbl.columns.slice(0, 6).map((col, ci) => (
-                                  <div key={ci} className="text-[11px] py-0.5 flex items-center gap-1 text-slate-600">
-                                    <ColumnRoleBadge role={col.role} />
-                                    <span>{col.name}</span>
-                                    <span className="text-slate-300 ml-auto">{col.type}</span>
-                                  </div>
-                                ))}
-                                {tbl.columns && tbl.columns.length > 6 && (
-                                  <p className="text-[10px] text-slate-400 mt-1">+{tbl.columns.length - 6} more columns</p>
-                                )}
-                              </div>
-                            ))}
-                            {/* Skeleton placeholder cards for tables not yet arrived */}
-                            {skeletonTables.length < 3 && Array.from({ length: 3 - skeletonTables.length }).map((_, i) => (
-                              <div key={`skel-${i}`} className="border-2 border-dashed border-slate-200 rounded-lg p-3 animate-pulse">
-                                <div className="h-4 bg-slate-200 rounded w-24 mb-3" />
-                                <div className="space-y-1.5">
-                                  <div className="h-3 bg-slate-100 rounded w-32" />
-                                  <div className="h-3 bg-slate-100 rounded w-28" />
-                                  <div className="h-3 bg-slate-100 rounded w-36" />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Star schemas */}
-                  {!designing && selectedProduct.star_schemas.length === 0 ? (
-                    <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
-                      <p className="text-slate-500">No star schemas yet. Click &quot;AI Design Star Schema&quot; to generate one.</p>
-                    </div>
-                  ) : !designing ? (
-                    selectedProduct.star_schemas.map((schema) => (
-                      <div key={schema.id} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                        <div className="px-5 py-4 border-b border-slate-100">
-                          <h3 className="font-semibold text-slate-800">{schema.name}</h3>
-                          {schema.grain && (
-                            <p className="text-xs text-slate-500 mt-1">Grain: {schema.grain}</p>
-                          )}
-                          <p className="text-xs text-slate-400 mt-0.5">
-                            Type: {schema.fact_table_type} · {schema.tables.length} tables
-                          </p>
-                        </div>
-
-                        {/* Tables grid */}
-                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                          {schema.tables
-                            .sort((a, b) => a.dag_order - b.dag_order || a.table_name.localeCompare(b.table_name))
-                            .map((tbl) => (
-                              <div
-                                key={tbl.id}
-                                onClick={() => { setSelectedTableId(tbl.id); setTab('transformations'); }}
-                                className="border border-slate-200 rounded-lg p-3 hover:border-blue-300 hover:bg-blue-50/30 cursor-pointer transition-colors"
-                              >
-                                <div className="flex items-center gap-2 mb-2">
-                                  <RoleBadge role={tbl.table_role} />
-                                  <span className="text-sm font-medium text-slate-800">{tbl.table_name}</span>
-                                </div>
-                                <p className="text-xs text-slate-500 line-clamp-2">{tbl.description || 'No description'}</p>
-                                <div className="flex items-center gap-2 mt-2">
-                                  <StatusBadge status={tbl.transformation_status} />
-                                  {tbl.row_count !== null && (
-                                    <span className="text-[10px] text-slate-400">{tbl.row_count.toLocaleString()} rows</span>
-                                  )}
-                                </div>
-                              </div>
-                            ))}
-                        </div>
-                      </div>
-                    ))
-                  ) : null}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* === Star Schema Viewer tab === */}
-          {tab === 'schema-viewer' && (
-            <SchemaViewer product={selectedProduct} />
-          )}
-
-          {/* === Source-to-Target Lineage tab === */}
-          {tab === 'lineage' && (
-            <LineageView product={selectedProduct} />
-          )}
-
-          {/* === Transformations tab === */}
-          {tab === 'transformations' && (
-            <TransformationsView
-              product={selectedProduct}
-              selectedTableId={selectedTableId}
-              onSelectTable={setSelectedTableId}
-              onApprove={handleApproveTable}
-              onRun={handleRunTable}
-              onRunAll={selectedProduct ? () => handleRunAll(selectedProduct.id) : undefined}
-              onRefresh={selectedProduct ? () => loadFullProduct(selectedProduct.id) : undefined}
-              runningAll={runningAll}
-              runningTableId={runningTableId}
-              onGenerateSql={selectedProduct ? () => handleGenerateSql(selectedProduct.id) : undefined}
-              generatingSql={generatingSql}
-              runError={runError}
-              onDismissError={() => setRunError(null)}
-            />
-          )}
-
-          {/* === KPIs tab === */}
-          {tab === 'kpis' && (
-            <KpisView product={selectedProduct} onRefresh={selectedProduct ? () => loadFullProduct(selectedProduct.id) : undefined} />
-          )}
-        </div>
-      </div>
-
-      {/* ── Create dialog ──────────────────────────────────────────────── */}
-      {showCreate && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6 max-h-[80vh] overflow-y-auto">
-            <h3 className="text-lg font-bold text-slate-900 mb-4">New Data Product</h3>
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
-            <input
-              value={createName}
-              onChange={(e) => setCreateName(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-              placeholder="e.g. Finance, Sales, HR"
-            />
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
-            <textarea
-              value={createDesc}
-              onChange={(e) => setCreateDesc(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-              rows={2}
-              placeholder="What business domain does this data product cover?"
-            />
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Source Connection</label>
-            <select
-              value={createConnId ?? ''}
-              onChange={(e) => handleConnectionSelect(Number(e.target.value))}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-            >
-              <option value="">Select a connection...</option>
-              {connections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-
-            {createConnId && (
-              <>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium text-slate-700">Source Tables</label>
-                  <button onClick={selectAllSources} className="text-xs text-blue-600 hover:underline">
-                    Select all
-                  </button>
-                </div>
-                <div className="border border-slate-200 rounded-lg max-h-48 overflow-y-auto">
-                  {availableSources.map((s) => (
-                    <label key={s.id} className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedSources.has(s.id)}
-                        onChange={() => toggleSource(s.id)}
-                        className="rounded border-slate-300"
-                      />
-                      <span className="text-sm text-slate-700">{s.table_name}</span>
-                      {s.display_name && s.display_name !== s.table_name && (
-                        <span className="text-xs text-slate-400">({s.display_name})</span>
-                      )}
-                    </label>
-                  ))}
-                  {availableSources.length === 0 && (
-                    <p className="p-3 text-sm text-slate-400">No tables found for this connection</p>
-                  )}
-                </div>
-              </>
-            )}
-
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setShowCreate(false)}
-                className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreate}
-                disabled={!createName.trim() || !createConnId || selectedSources.size === 0 || creating}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {creating ? 'Creating...' : 'Create Data Product'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Star Schema Viewer — uses ReactFlow (same style as source semantic relations)
-// ---------------------------------------------------------------------------
-
-function SchemaViewer({ product }: { product: FullDataProduct | null }) {
-  if (!product) return <p className="text-center py-16 text-slate-400">Select a data product to view its star schema</p>;
-  if (product.star_schemas.length === 0) return <p className="text-center py-16 text-slate-400">No star schemas designed yet</p>;
-
-  return (
-    <div className="space-y-8">
-      {product.star_schemas.map((schema) => (
-        <StarSchemaFlow key={schema.id} schema={schema} />
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Lineage View — ReactFlow-based (same style as source semantic relations)
-// ---------------------------------------------------------------------------
-
-function LineageView({ product }: { product: FullDataProduct | null }) {
-  const [viewMode, setViewMode] = useState<'flow' | 'table'>('flow');
-  const [selectedCol, setSelectedCol] = useState<{ table: string; column: string; side: 'source' | 'product' } | null>(null);
-
-  if (!product) return <p className="text-center py-16 text-slate-400">Select a data product to view lineage</p>;
-
-  const allColumns = product.star_schemas.flatMap((s) =>
-    s.tables.flatMap((t) =>
-      t.columns.map((c) => ({ ...c, tableName: t.table_name, tableRole: t.table_role })),
-    ),
-  );
-
-  const columnsWithLineage = allColumns.filter((c) => c.lineage && c.lineage.length > 0);
-
-  // Build source → product column mapping
-  const sourceToProduct = new Map<string, { productTable: string; productCol: string; transform: string }[]>();
-  const productToSource = new Map<string, { sourceTable: string; sourceCol: string; transform: string }[]>();
-
-  columnsWithLineage.forEach((c) => {
-    c.lineage!.forEach((l) => {
-      const sKey = `${l.source_table_name}.${l.source_column_name}`;
-      const pKey = `${c.tableName}.${c.column_name}`;
-      if (!sourceToProduct.has(sKey)) sourceToProduct.set(sKey, []);
-      sourceToProduct.get(sKey)!.push({ productTable: c.tableName, productCol: c.column_name, transform: l.transformation_description ?? '' });
-      if (!productToSource.has(pKey)) productToSource.set(pKey, []);
-      productToSource.get(pKey)!.push({ sourceTable: l.source_table_name, sourceCol: l.source_column_name, transform: l.transformation_description ?? '' });
-    });
-  });
-
-  // Collect unique source tables and their columns
-  const sourceTableMap = new Map<string, Set<string>>();
-  columnsWithLineage.forEach((c) =>
-    c.lineage!.forEach((l) => {
-      if (!sourceTableMap.has(l.source_table_name)) sourceTableMap.set(l.source_table_name, new Set());
-      sourceTableMap.get(l.source_table_name)!.add(l.source_column_name);
-    }),
-  );
-  const sourceTables = Array.from(sourceTableMap.entries()).sort(([a], [b]) => a.localeCompare(b));
-
-  // Get highlighted columns based on selection
-  const highlightedSourceCols = new Set<string>();
-  const highlightedProductCols = new Set<string>();
-
-  if (selectedCol) {
-    if (selectedCol.side === 'source') {
-      const key = `${selectedCol.table}.${selectedCol.column}`;
-      highlightedSourceCols.add(key);
-      (sourceToProduct.get(key) ?? []).forEach((p) => highlightedProductCols.add(`${p.productTable}.${p.productCol}`));
-    } else {
-      const key = `${selectedCol.table}.${selectedCol.column}`;
-      highlightedProductCols.add(key);
-      (productToSource.get(key) ?? []).forEach((s) => highlightedSourceCols.add(`${s.sourceTable}.${s.sourceCol}`));
-    }
-  }
-
-  // Table-level: which source tables feed which product tables
-  const sourceToProductTables = new Map<string, Set<string>>();
-  columnsWithLineage.forEach((c) =>
-    c.lineage!.forEach((l) => {
-      if (!sourceToProductTables.has(l.source_table_name)) sourceToProductTables.set(l.source_table_name, new Set());
-      sourceToProductTables.get(l.source_table_name)!.add(c.tableName);
-    }),
-  );
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold text-slate-800">Source-to-Target Lineage</h2>
-        <div className="flex bg-slate-100 rounded-lg p-0.5">
-          <button
-            onClick={() => { setViewMode('flow'); setSelectedCol(null); }}
-            className={`px-3 py-1 text-xs rounded-md ${viewMode === 'flow' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}
-          >
-            Flow Diagram
-          </button>
-          <button
-            onClick={() => { setViewMode('table'); setSelectedCol(null); }}
-            className={`px-3 py-1 text-xs rounded-md ${viewMode === 'table' ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}
-          >
-            Table Mapping
-          </button>
-        </div>
-      </div>
-
-      {selectedCol && (
-        <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 flex items-center justify-between animate-fadeIn">
-          <div className="text-xs text-blue-700">
-            <span className="font-semibold">{selectedCol.table}.{selectedCol.column}</span>
-            {selectedCol.side === 'source' ? (
-              <span className="ml-2 text-blue-500">&#8594; feeds {highlightedProductCols.size} product column(s)</span>
-            ) : (
-              <span className="ml-2 text-blue-500">&#8592; sourced from {highlightedSourceCols.size} source column(s)</span>
-            )}
-          </div>
-          <button onClick={() => setSelectedCol(null)} className="text-xs text-blue-500 hover:text-blue-700">Clear</button>
-        </div>
-      )}
-
-      {viewMode === 'flow' ? (
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <LineageFlow data={{ tables: product.star_schemas.flatMap((s) => s.tables) }} />
-        </div>
-      ) : (
-        /* ── Table mapping view ─── */
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Product Table</th>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Product Column</th>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Role</th>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Source Table</th>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Source Column</th>
-                <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Transformation</th>
-              </tr>
-            </thead>
-            <tbody>
-              {columnsWithLineage.map((col) =>
-                col.lineage!.map((l, li) => {
-                  const pKey = `${col.tableName}.${col.column_name}`;
-                  const sKey = `${l.source_table_name}.${l.source_column_name}`;
-                  const isActive = highlightedProductCols.has(pKey) || highlightedSourceCols.has(sKey);
-                  return (
-                    <tr
-                      key={`${col.id}-${li}`}
-                      onClick={() => setSelectedCol({ table: col.tableName, column: col.column_name, side: 'product' })}
-                      className={`border-t border-slate-100 cursor-pointer transition-colors ${
-                        isActive ? 'bg-blue-50' : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <td className="px-4 py-2 font-medium text-slate-700">{col.tableName}</td>
-                      <td className="px-4 py-2 text-slate-600">{col.column_name}</td>
-                      <td className="px-4 py-2"><ColumnRoleBadge role={col.column_role} /></td>
-                      <td className="px-4 py-2 text-slate-600">{l.source_table_name}</td>
-                      <td className="px-4 py-2 text-slate-600">{l.source_column_name}</td>
-                      <td className="px-4 py-2 text-xs text-slate-500">{l.transformation_description}</td>
-                    </tr>
-                  );
-                }),
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Transformations View component
-// ---------------------------------------------------------------------------
-
-function TransformationsView({
-  product,
-  selectedTableId,
-  onSelectTable,
-  onApprove,
-  onRun,
-  onRunAll,
-  onRefresh,
-  runningAll,
-  runningTableId,
-  onGenerateSql,
-  generatingSql,
-  runError,
-  onDismissError,
-}: {
-  product: FullDataProduct | null;
-  selectedTableId: number | null;
-  onSelectTable: (id: number) => void;
-  onApprove: (id: number) => Promise<void>;
-  onRun: (id: number) => Promise<void>;
-  onRunAll?: () => Promise<void>;
-  onRefresh?: () => Promise<void>;
-  runningAll?: boolean;
-  runningTableId?: number | null;
-  onGenerateSql?: () => Promise<void>;
-  generatingSql?: boolean;
-  runError?: string | null;
-  onDismissError?: () => void;
-}) {
-  const [editingSql, setEditingSql] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  if (!product) {
-    return <p className="text-center py-16 text-slate-400">Select a data product to manage transformations</p>;
-  }
-
-  const allTables = product.star_schemas
-    .flatMap((s) => s.tables)
-    .sort((a, b) => a.dag_order - b.dag_order || a.table_name.localeCompare(b.table_name));
-
-  const selected = allTables.find((t) => t.id === selectedTableId) ?? allTables[0] ?? null;
-
-  const handleSaveSql = async () => {
-    if (!selected || editingSql === null) return;
-    setSaving(true);
-    try {
-      await api.put(`/products/tables/${selected.id}/sql`, { sql: editingSql });
-      setEditingSql(null);
-      onRefresh?.();
-    } catch { /* ignore */ }
-    setSaving(false);
-  };
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold text-slate-800">Transformations</h2>
-        <div className="flex gap-2">
-          {onGenerateSql && allTables.some((t) => !t.transformation_sql) && (
-            <button
-              onClick={onGenerateSql}
-              disabled={generatingSql}
-              className="px-4 py-2 bg-amber-600 text-white text-sm rounded-lg hover:bg-amber-700 disabled:opacity-50"
-            >
-              {generatingSql ? 'Generating SQL...' : 'Generate SQL'}
-            </button>
-          )}
-          {onRunAll && allTables.some((t) => t.transformation_sql) && (
-            <button
-              onClick={onRunAll}
-              disabled={runningAll}
-              className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2"
-            >
-              {runningAll && (
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                </svg>
-              )}
-              {runningAll ? 'Running All...' : 'Run All'}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Error banner */}
-      {runError && (
-        <div className="mb-4 flex items-center justify-between bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
-          <span>{runError}</span>
-          <button onClick={onDismissError} className="text-red-400 hover:text-red-600 ml-4">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-      )}
-
-      {/* Running All progress banner */}
-      {runningAll && (
-        <div className="mb-4 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-center gap-3">
-          <svg className="w-5 h-5 text-emerald-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-          </svg>
-          <div>
-            <p className="text-sm font-medium text-emerald-800">Running all transformations...</p>
-            <p className="text-xs text-emerald-600 mt-0.5">Processing {allTables.filter((t) => t.transformation_sql).length} tables in DAG order. This may take a moment.</p>
-          </div>
-        </div>
-      )}
-
-      <div className="flex gap-4">
-        {/* Table list */}
-        <div className="w-56 flex-shrink-0">
-          {allTables.map((tbl) => {
-            const hasFailedCheck = tbl.quality_checks?.some((c) => c.status === 'fail');
-            const hasChecks = tbl.quality_checks && tbl.quality_checks.length > 0;
-            const allPass = hasChecks && tbl.quality_checks!.every((c) => c.status === 'pass' || c.status === 'skip');
-            const isRunning = runningTableId === tbl.id || (runningAll && !!tbl.transformation_sql);
-            return (
-              <button
-                key={tbl.id}
-                onClick={() => { onSelectTable(tbl.id); setEditingSql(null); }}
-                className={`w-full text-left px-3 py-2 rounded-lg mb-1 text-sm flex items-center gap-2 transition-all ${
-                  selected?.id === tbl.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-600'
-                } ${isRunning ? 'bg-emerald-50 border border-emerald-200' : ''}`}
-              >
-                {isRunning ? (
-                  <svg className="w-3.5 h-3.5 text-emerald-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                  </svg>
-                ) : (
-                  <RoleBadge role={tbl.table_role} />
-                )}
-                <span className="truncate flex-1">{tbl.table_name}</span>
-                {hasFailedCheck && !isRunning && <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" title="Quality check failed" />}
-                {allPass && !isRunning && <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" title="Quality checks passed" />}
-                {!isRunning && <StatusBadge status={tbl.transformation_status} />}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* SQL editor */}
-        {selected && (
-          <div className="flex-1">
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-              <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-                <div>
-                  <h3 className="font-semibold text-slate-800">{selected.table_name}</h3>
-                  <p className="text-xs text-slate-500">{selected.description}</p>
-                </div>
-                <div className="flex gap-2">
-                  {selected.transformation_status === 'draft' && (
-                    <button
-                      onClick={() => onApprove(selected.id)}
-                      className="px-3 py-1.5 text-xs bg-green-600 text-white rounded-lg hover:bg-green-700"
-                    >
-                      Approve
-                    </button>
-                  )}
-                  {(selected.transformation_status === 'approved' || selected.transformation_status === 'success' || selected.transformation_status === 'error') && (
-                    <>
-                      <select
-                        value={selected.load_mode ?? 'full'}
-                        onChange={async (e) => {
-                          try {
-                            await api.patch(`/products/tables/${selected.id}/load-mode`, { load_mode: e.target.value });
-                            onRefresh();
-                          } catch { /* ignore */ }
-                        }}
-                        className="px-2 py-1 text-xs border border-slate-200 rounded-lg bg-white text-slate-600"
-                        title="Load mode: full overwrites all data, incremental merges new rows"
-                      >
-                        <option value="full">Full refresh</option>
-                        <option value="incremental">Incremental</option>
-                      </select>
-                      <button
-                        onClick={() => onRun(selected.id)}
-                        disabled={runningTableId === selected.id || runningAll}
-                        className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
-                      >
-                        {(runningTableId === selected.id || runningAll) && (
-                          <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
-                          </svg>
-                        )}
-                        {runningTableId === selected.id ? 'Running...' : runningAll ? 'Running...' : 'Run'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="p-4">
-                {editingSql !== null ? (
-                  <div>
-                    <textarea
-                      value={editingSql}
-                      onChange={(e) => setEditingSql(e.target.value)}
-                      rows={Math.max(10, (editingSql ?? '').split('\n').length + 2)}
-                      className="w-full font-mono text-sm border border-slate-300 rounded-lg p-3 bg-slate-50 resize-y"
-                    />
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        onClick={handleSaveSql}
-                        disabled={saving}
-                        className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        {saving ? 'Saving...' : 'Save'}
-                      </button>
-                      <button
-                        onClick={() => setEditingSql(null)}
-                        className="px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <pre className="text-sm font-mono bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
-                      {selected.transformation_sql || 'No SQL generated yet'}
-                    </pre>
-                    {selected.transformation_sql && (
-                      <button
-                        onClick={() => setEditingSql(selected.transformation_sql!)}
-                        className="mt-2 text-xs text-blue-600 hover:underline"
-                      >
-                        Edit SQL
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Run info */}
-              {(selected.last_run_at || selected.last_run_error) && (
-                <div className="px-4 py-3 border-t border-slate-100 bg-slate-50">
-                  {selected.last_run_at && (
-                    <p className="text-xs text-slate-500">
-                      Last run: {new Date(selected.last_run_at).toLocaleString()}
-                      {selected.row_count !== null && ` · ${selected.row_count.toLocaleString()} rows`}
-                    </p>
-                  )}
-                  {selected.last_run_error && (
-                    <p className="text-xs text-red-600 mt-1">{selected.last_run_error}</p>
-                  )}
-                </div>
-              )}
-
-              {/* Quality checks */}
-              {selected.quality_checks && selected.quality_checks.length > 0 && (
-                <div className="px-4 py-3 border-t border-slate-100">
-                  <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Quality Checks</h4>
-                  <div className="space-y-2">
-                    {selected.quality_checks.map((chk) => {
-                      const bkCols: string[] = typeof chk.bk_columns === 'string' ? JSON.parse(chk.bk_columns) : chk.bk_columns;
-                      const samples: Record<string, unknown>[] = typeof chk.sample_duplicates === 'string' ? JSON.parse(chk.sample_duplicates) : chk.sample_duplicates;
-                      const statusColor = chk.status === 'pass' ? 'bg-green-100 text-green-700'
-                        : chk.status === 'fail' ? 'bg-red-100 text-red-700'
-                        : chk.status === 'skip' ? 'bg-slate-100 text-slate-500'
-                        : 'bg-amber-100 text-amber-700';
-                      const label = chk.check_type === 'bk_uniqueness' ? 'BK Uniqueness' : 'Fan-out Detection';
-                      return (
-                        <div key={chk.id} className="bg-white border border-slate-200 rounded-lg p-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-slate-700">{label}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor}`}>
-                              {chk.status.toUpperCase()}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-500 mt-1">{chk.message}</p>
-                          {bkCols.length > 0 && (
-                            <p className="text-xs text-slate-400 mt-1">
-                              BK columns: {bkCols.join(', ')}
-                            </p>
-                          )}
-                          {chk.status === 'fail' && samples.length > 0 && (
-                            <details className="mt-2">
-                              <summary className="text-xs text-red-600 cursor-pointer hover:underline">
-                                {samples.length} sample duplicate(s)
-                              </summary>
-                              <pre className="text-xs font-mono bg-red-50 rounded p-2 mt-1 overflow-x-auto max-h-40 overflow-y-auto">
-                                {JSON.stringify(samples, null, 2)}
-                              </pre>
-                            </details>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// KPIs View component
-// ---------------------------------------------------------------------------
-
 interface ProductKpi {
   id: number;
   data_product_id: number;
@@ -1393,60 +121,1569 @@ interface ProductKpi {
   owner_name: string | null;
 }
 
-function KpisView({ product, onRefresh }: { product: FullDataProduct | null; onRefresh?: () => void }) {
+interface DataProductProposal {
+  rationale: string;
+  shared_dimensions: Array<{ table_name: string; owner_product_name: string }>;
+  data_products: Array<{
+    name: string;
+    description: string;
+    build_order: number;
+    depends_on: Array<{ source_product_name: string; shared_table_names: string[] }>;
+    star_schemas: Array<{
+      name: string;
+      description: string;
+      grain: string;
+      tables: Array<{
+        table_name: string;
+        display_name: string;
+        table_role: string;
+        is_shared_dimension: boolean;
+        source_tables: string[];
+        transformation_sql: string;
+        columns: Array<{ column_name: string; data_type: string; column_role: string }>;
+      }>;
+    }>;
+  }>;
+}
+
+interface SkeletonTable { name: string; role: string; description?: string; }
+
+// ---------------------------------------------------------------------------
+// Small reusable components
+// ---------------------------------------------------------------------------
+
+function StatusDot({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    draft: 'bg-slate-300',
+    designing: 'bg-blue-400 animate-pulse',
+    approved: 'bg-amber-400',
+    running: 'bg-blue-500 animate-pulse',
+    success: 'bg-emerald-500',
+    error: 'bg-red-500',
+  };
+  return <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${map[status] ?? 'bg-slate-300'}`} />;
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    draft: 'bg-slate-100 text-slate-500',
+    designing: 'bg-blue-100 text-blue-700',
+    approved: 'bg-amber-100 text-amber-700',
+    running: 'bg-blue-100 text-blue-700',
+    success: 'bg-emerald-100 text-emerald-700',
+    error: 'bg-red-100 text-red-700',
+  };
+  const label: Record<string, string> = {
+    draft: 'Draft', designing: 'Designing…', approved: 'Ready to build',
+    running: 'Building…', success: 'Built', error: 'Error',
+  };
+  return (
+    <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${colors[status] ?? 'bg-slate-100 text-slate-500'}`}>
+      {label[status] ?? status}
+    </span>
+  );
+}
+
+function RolePill({ role, shared }: { role: string; shared?: boolean }) {
+  const base = role === 'fact'
+    ? 'bg-purple-100 text-purple-700 border-purple-200'
+    : role === 'dimension'
+      ? shared ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-sky-100 text-sky-700 border-sky-200'
+      : 'bg-slate-100 text-slate-600 border-slate-200';
+  const label = role === 'fact'
+    ? '⚡ Activity'
+    : role === 'dimension'
+      ? shared ? '⟳ Shared' : '📋 Reference'
+      : role;
+  return (
+    <span className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded border ${base}`}>
+      {label}
+    </span>
+  );
+}
+
+/** Strip dim_/fact_ prefix and convert snake_case → Title Case if no display_name is set */
+function friendlyName(tbl: { table_name: string; display_name?: string | null }): string {
+  if (tbl.display_name) return tbl.display_name;
+  return tbl.table_name
+    .replace(/^(fact_|dim_|bridge_|junk_)/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+export default function ProductsPage() {
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [products, setProducts] = useState<DataProduct[]>([]);
+  const [depGraph, setDepGraph] = useState<DepEdge[]>([]);
+  const [selectedProduct, setSelectedProduct] = useState<FullDataProduct | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Topic view — full product details + KPIs loaded for the simple card grid
+  const [allProductDetails, setAllProductDetails] = useState<Map<number, FullDataProduct>>(new Map());
+  const [allProductKpis, setAllProductKpis] = useState<Map<number, ProductKpi[]>>(new Map());
+  const [loadingTopics, setLoadingTopics] = useState(false);
+
+  // Create dialog
+  const [showCreate, setShowCreate] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createDesc, setCreateDesc] = useState('');
+  const [createConnId, setCreateConnId] = useState<number | null>(null);
+  const [availableSources, setAvailableSources] = useState<SourceTable[]>([]);
+  const [selectedSources, setSelectedSources] = useState<Set<number>>(new Set());
+  const [creating, setCreating] = useState(false);
+
+  // Auto-design
+  const [showAutoDesign, setShowAutoDesign] = useState(false);
+  const [autoDesignConnId, setAutoDesignConnId] = useState<number | null>(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposal, setProposal] = useState<DataProductProposal | null>(null);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  const [building, setBuilding] = useState(false);
+  const [buildResults, setBuildResults] = useState<Array<{ name: string; id: number; status: string }> | null>(null);
+
+  // Design (SSE)
+  const [designing, setDesigning] = useState(false);
+  const [designPhase, setDesignPhase] = useState('');
+  const [designThinking, setDesignThinking] = useState('');
+  const [designSqlThinking, setDesignSqlThinking] = useState('');
+  const [skeletonTables, setSkeletonTables] = useState<SkeletonTable[]>([]);
+  const [showThinking, setShowThinking] = useState(false);
+  const thinkingRef = useRef<HTMLDivElement>(null);
+
+  // Build / run
+  const [runningAll, setRunningAll] = useState(false);
+  const [runningTableId, setRunningTableId] = useState<number | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  // Advanced SQL editor (admin)
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
+  const [editingSql, setEditingSql] = useState<string | null>(null);
+  const [savingSql, setSavingSql] = useState(false);
+  const [generatingSql, setGeneratingSql] = useState(false);
+
+  // Lineage view toggle
+  const [showLineage, setShowLineage] = useState(false);
+
+  // Simple vs advanced view
+  const [showAdvancedView, setShowAdvancedView] = useState(false);
+
+  // Full auto-build (propose + design + build, no user decisions)
+  const [autoBuilding, setAutoBuilding] = useState(false);
+  const [autoBuildLog, setAutoBuildLog] = useState<LogEntry[]>([]);
+  const autoBuildLogRef = useRef<LogEntry[]>([]);
+  const autoBuildScrollRef = useRef<HTMLDivElement>(null);
+
+  const pushLog = (msg: string, status: LogEntry['status'] = 'info', indent = false) => {
+    const entry: LogEntry = { id: Date.now() + Math.random(), msg, status, indent };
+    autoBuildLogRef.current = [...autoBuildLogRef.current, entry];
+    setAutoBuildLog([...autoBuildLogRef.current]);
+    setTimeout(() => { if (autoBuildScrollRef.current) autoBuildScrollRef.current.scrollTop = autoBuildScrollRef.current.scrollHeight; }, 20);
+  };
+
+  const updateLastLog = (msg: string, status: LogEntry['status']) => {
+    const logs = [...autoBuildLogRef.current];
+    if (logs.length > 0) { logs[logs.length - 1] = { ...logs[logs.length - 1], msg, status }; }
+    autoBuildLogRef.current = logs;
+    setAutoBuildLog([...logs]);
+  };
+
+  // Run design-stream as a promise — resolves when the SSE 'done' event arrives
+  const runDesignStream = (productId: number, onPhase: (p: string) => void): Promise<void> =>
+    new Promise(async (resolve) => {
+      try {
+        const token = getToken();
+        const response = await fetch(`${BACKEND_URL}/api/products/${productId}/design-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (value) buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split('\n');
+          buffer = done ? '' : (lines.pop() ?? '');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            let ev: Record<string, unknown>;
+            try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+            if (ev.type === 'phase') onPhase(ev.text as string);
+            if (ev.type === 'done' || ev.type === 'error') { resolve(); return; }
+          }
+          if (done) { resolve(); break; }
+        }
+      } catch { resolve(); }
+    });
+
+  const handleFullAutoBuild = async (connId: number) => {
+    setAutoBuilding(true);
+    autoBuildLogRef.current = [];
+    setAutoBuildLog([]);
+
+    try {
+      // Step 1 — propose
+      pushLog('Analysing your source system…', 'running');
+      const proposeRes = await api.post('/products/propose', { connectionId: connId });
+      const prop: DataProductProposal = proposeRes.data.data;
+      updateLastLog(`Found ${prop.data_products.length} topics · ${prop.shared_dimensions.length} shared dimensions`, 'success');
+
+      // Step 2 — create product structure
+      pushLog('Creating product structure in database…', 'running');
+      const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: prop });
+      const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
+      updateLastLog(`Created ${created.length} products`, 'success');
+      await loadProducts();
+      await loadDepGraph();
+
+      // Step 3 — design + build in waves (group by build_order so same-level products run in parallel)
+      const byOrder = new Map<number, Array<{ name: string; id: number }>>();
+      for (const meta of created) {
+        const order = prop.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
+        const group = byOrder.get(order) ?? [];
+        group.push(meta);
+        byOrder.set(order, group);
+      }
+      const waves = [...byOrder.entries()].sort(([a], [b]) => a - b);
+
+      for (const [, wave] of waves) {
+        const isFoundationWave = wave.every(
+          (m) => (prop.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
+        );
+        const waveNames = wave.map((m) => m.name).join(', ');
+        pushLog(
+          `${isFoundationWave ? '🔷' : '📊'} ${waveNames}${wave.length > 1 ? ` (${wave.length} in parallel)` : ''}`,
+          'info'
+        );
+        pushLog('  Designing…', 'running', true);
+
+        // Design all products in this wave concurrently
+        await Promise.all(wave.map((meta) => runDesignStream(meta.id, () => {})));
+        updateLastLog('  Star schemas + SQL generated', 'success');
+
+        await loadProducts();
+
+        // Build all products in this wave concurrently
+        pushLog('  Building tables…', 'running', true);
+        const buildResults2 = await Promise.allSettled(
+          wave.map(async (meta) => {
+            const runRes = await api.post(`/products/${meta.id}/run`);
+            const results: Array<{ row_count?: number; status: string }> = runRes.data?.data ?? [];
+            const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
+            return { meta, results, rows };
+          })
+        );
+        const totalRows2 = buildResults2.reduce(
+          (s, r) => s + (r.status === 'fulfilled' ? r.value.rows : 0), 0
+        );
+        const failed = buildResults2.filter((r) => r.status === 'rejected').length;
+        updateLastLog(
+          failed
+            ? `  ${failed} topic(s) failed — open details to retry`
+            : `  Built — ${totalRows2.toLocaleString()} rows`,
+          failed ? 'error' : 'success'
+        );
+        await loadProducts();
+      }
+
+      pushLog('✓ All done! Your data is ready to query.', 'success');
+      await loadDepGraph();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? (err instanceof Error ? err.message : 'Unknown error');
+      pushLog(`Failed: ${msg}`, 'error');
+    }
+
+    setAutoBuilding(false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Data loading
+  // ---------------------------------------------------------------------------
+
+  const loadProducts = useCallback(async () => {
+    try {
+      const res = await api.get('/products');
+      setProducts(res.data.data ?? []);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  const loadDepGraph = useCallback(async () => {
+    try {
+      const res = await api.get('/products/dependency-graph');
+      setDepGraph(res.data.data ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadConnections = useCallback(async () => {
+    try {
+      const res = await api.get('/connections');
+      setConnections(res.data.data ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadFullProduct = useCallback(async (id: number) => {
+    try {
+      const res = await api.get(`/products/${id}`);
+      setSelectedProduct(res.data.data ?? null);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    loadProducts();
+    loadDepGraph();
+    loadConnections();
+  }, [loadProducts, loadDepGraph, loadConnections]);
+
+  // Auto-select connection when there is only one
+  useEffect(() => {
+    if (connections.length === 1) setAutoDesignConnId(connections[0].id);
+  }, [connections]);
+
+  // Load full product details + KPIs for the topic card grid
+  const loadAllTopics = useCallback(async (ids: number[]) => {
+    if (!ids.length) return;
+    setLoadingTopics(true);
+    try {
+      const pairs = await Promise.all(ids.map(async (id) => {
+        const [pRes, kRes] = await Promise.all([
+          api.get(`/products/${id}`),
+          api.get(`/products/${id}/kpis`),
+        ]);
+        return { product: pRes.data.data as FullDataProduct, kpis: (kRes.data.data ?? []) as ProductKpi[] };
+      }));
+      const detailMap = new Map<number, FullDataProduct>();
+      const kpiMap = new Map<number, ProductKpi[]>();
+      pairs.forEach(({ product, kpis }) => { if (product) { detailMap.set(product.id, product); kpiMap.set(product.id, kpis); } });
+      setAllProductDetails(detailMap);
+      setAllProductKpis(kpiMap);
+    } catch { /* ignore */ }
+    setLoadingTopics(false);
+  }, []);
+
+  useEffect(() => {
+    if (products.length > 0 && !showAdvancedView) loadAllTopics(products.map((p) => p.id));
+  }, [products, showAdvancedView, loadAllTopics]);
+
+  // Rebuild all existing products in dependency order (foundations first)
+  const handleRebuildAll = async () => {
+    setAutoBuilding(true);
+    autoBuildLogRef.current = [];
+    setAutoBuildLog([]);
+    try {
+      pushLog('Rebuilding your data warehouse…', 'running');
+      await loadProducts();
+      await loadDepGraph();
+      const fIds = new Set(depGraph.map((d) => d.source_product_id));
+      const sorted = [...products].sort((a, b) => {
+        if (fIds.has(a.id) && !fIds.has(b.id)) return -1;
+        if (!fIds.has(a.id) && fIds.has(b.id)) return 1;
+        return 0;
+      });
+      for (const p of sorted) {
+        pushLog(`${fIds.has(p.id) ? '🔷' : '📊'} ${p.name}`, 'info');
+        pushLog('  Building tables…', 'running', true);
+        try {
+          const res = await api.post(`/products/${p.id}/run`);
+          const results: Array<{ row_count?: number }> = res.data?.data ?? [];
+          const rows = results.reduce((s, r) => s + (r.row_count ?? 0), 0);
+          updateLastLog(`  Built — ${rows.toLocaleString()} rows`, 'success');
+        } catch { updateLastLog('  Build failed', 'error'); }
+      }
+      pushLog('✓ Rebuild complete.', 'success');
+      await loadProducts();
+    } catch (err: unknown) {
+      pushLog(`Failed: ${(err instanceof Error ? err.message : 'Unknown error')}`, 'error');
+    }
+    setAutoBuilding(false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Derived: classify products as Foundations vs Domain
+  // Foundation = appears as a source (dependency) for another product
+  // ---------------------------------------------------------------------------
+
+  const foundationIds = new Set(depGraph.map((d) => d.source_product_id));
+  const foundations = products.filter((p) => foundationIds.has(p.id));
+  const domainProducts = products.filter((p) => !foundationIds.has(p.id));
+
+  // Dependencies for selected product
+  const selectedDeps = selectedProduct
+    ? depGraph
+        .filter((d) => d.dependent_product_id === selectedProduct.id)
+        .map((d) => ({
+          edge: d,
+          product: products.find((p) => p.id === d.source_product_id),
+        }))
+    : [];
+  const allDepsReady = selectedDeps.every((d) => ['approved', 'success'].includes(d.product?.status ?? ''));
+
+  // ---------------------------------------------------------------------------
+  // Auto-design
+  // ---------------------------------------------------------------------------
+
+  const handlePropose = async () => {
+    if (!autoDesignConnId) return;
+    setProposing(true); setProposal(null); setProposeError(null); setBuildResults(null);
+    try {
+      const res = await api.post('/products/propose', { connectionId: autoDesignConnId });
+      setProposal(res.data.data);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Something went wrong. Please try again.';
+      setProposeError(msg);
+    }
+    setProposing(false);
+  };
+
+  const handleBuildProposed = async () => {
+    if (!proposal || !autoDesignConnId) return;
+    setBuilding(true);
+    try {
+      const res = await api.post('/products/build-proposed', { connectionId: autoDesignConnId, proposal });
+      setBuildResults(res.data.data?.products ?? []);
+      await loadProducts();
+      await loadDepGraph();
+    } catch { /* ignore */ }
+    setBuilding(false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Create data product manually
+  // ---------------------------------------------------------------------------
+
+  const handleConnectionSelect = async (connId: number) => {
+    setCreateConnId(connId); setSelectedSources(new Set());
+    try {
+      const res = await api.get(`/semantic/tables?connectionId=${connId}`);
+      setAvailableSources(res.data.data ?? []);
+    } catch { setAvailableSources([]); }
+  };
+
+  const handleCreate = async () => {
+    if (!createName.trim() || !createConnId || selectedSources.size === 0) return;
+    setCreating(true);
+    try {
+      const sourceTables = availableSources
+        .filter((s) => selectedSources.has(s.id))
+        .map((s) => ({ sourceTableId: s.id, tableName: s.table_name }));
+      await api.post('/products', { name: createName, description: createDesc, connectionId: createConnId, sourceTables });
+      setShowCreate(false); setCreateName(''); setCreateDesc(''); setCreateConnId(null); setSelectedSources(new Set());
+      await loadProducts(); await loadDepGraph();
+    } catch { /* ignore */ }
+    setCreating(false);
+  };
+
+  // ---------------------------------------------------------------------------
+  // AI Design (SSE streaming)
+  // ---------------------------------------------------------------------------
+
+  const handleDesign = async (productId: number) => {
+    setDesigning(true); setDesignPhase('Connecting…'); setDesignThinking('');
+    setDesignSqlThinking(''); setSkeletonTables([]); setShowThinking(false);
+    try {
+      const token = getToken();
+      const response = await fetch(`${BACKEND_URL}/api/products/${productId}/design-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) buffer += decoder.decode(value, { stream: !done });
+        const lines = buffer.split('\n');
+        buffer = done ? '' : (lines.pop() ?? '');
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
+          const type = event.type as string;
+          if (type === 'phase') setDesignPhase(event.text as string);
+          else if (type === 'thinking') {
+            setDesignThinking((p) => p + (event.text as string));
+            setTimeout(() => { if (thinkingRef.current) thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight; }, 10);
+          } else if (type === 'sql_thinking') {
+            setDesignSqlThinking((p) => p + (event.text as string));
+          } else if (type === 'table_saved') {
+            setSkeletonTables((p) => [...p, event.table as SkeletonTable]);
+          } else if (type === 'design_complete') {
+            setDesignPhase('Star schema designed — generating SQL…');
+          } else if (type === 'sql_complete') {
+            setDesignPhase('Done! Schema designed and SQL generated.');
+          } else if (type === 'sql_error') {
+            setDesignPhase('Design complete. SQL generation failed — use Advanced to retry.');
+          } else if (type === 'error') {
+            setDesignPhase(`Error: ${event.message as string}`);
+          } else if (type === 'done') {
+            await loadProducts(); await loadFullProduct(productId); await loadDepGraph();
+          }
+        }
+        if (done) break;
+      }
+    } catch { setDesignPhase('Design failed. Please try again.'); }
+    setTimeout(() => setDesigning(false), 3000);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Build / run
+  // ---------------------------------------------------------------------------
+
+  const handleRunAll = async (productId: number, fullRefresh = false) => {
+    setRunningAll(true); setRunError(null);
+    try {
+      const endpoint = fullRefresh ? `/products/${productId}/run-full` : `/products/${productId}/run`;
+      const res = await api.post(endpoint);
+      const results = res.data?.data;
+      if (Array.isArray(results)) {
+        const failed = results.filter((r: { status: string }) => r.status === 'error');
+        if (failed.length > 0) setRunError(`${failed.length} table(s) failed.`);
+      }
+      await loadFullProduct(productId);
+    } catch (err: unknown) {
+      setRunError((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Build failed');
+    }
+    setRunningAll(false);
+  };
+
+  const handleRunTable = async (tableId: number) => {
+    setRunningTableId(tableId); setRunError(null);
+    try {
+      await api.post(`/products/tables/${tableId}/run`);
+      if (selectedProduct) await loadFullProduct(selectedProduct.id);
+    } catch (err: unknown) {
+      setRunError((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed');
+    }
+    setRunningTableId(null);
+  };
+
+  const handleApproveTable = async (tableId: number) => {
+    try {
+      await api.put(`/products/tables/${tableId}/approve`);
+      if (selectedProduct) await loadFullProduct(selectedProduct.id);
+    } catch { /* ignore */ }
+  };
+
+  const handleGenerateSql = async (productId: number) => {
+    setGeneratingSql(true);
+    try {
+      await api.post(`/products/${productId}/generate-sql`);
+      await loadFullProduct(productId);
+    } catch { /* ignore */ }
+    setGeneratingSql(false);
+  };
+
+  const handleSaveSql = async (tableId: number, sql: string) => {
+    setSavingSql(true);
+    try {
+      await api.put(`/products/tables/${tableId}`, { transformation_sql: sql });
+      setEditingSql(null);
+      if (selectedProduct) await loadFullProduct(selectedProduct.id);
+    } catch { /* ignore */ }
+    setSavingSql(false);
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Delete this data product and all its schemas?')) return;
+    try {
+      await api.delete(`/products/${id}`);
+      if (selectedProduct?.id === id) setSelectedProduct(null);
+      await loadProducts(); await loadDepGraph();
+    } catch { /* ignore */ }
+  };
+
+  const handleSelectProduct = (p: DataProduct) => {
+    if (selectedProduct?.id === p.id) { setSelectedProduct(null); return; }
+    setShowAdvanced(false); setSelectedTableId(null); setEditingSql(null); setRunError(null);
+    loadFullProduct(p.id);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Derived helpers for selected product
+  // ---------------------------------------------------------------------------
+
+  const allTables = selectedProduct?.star_schemas.flatMap((s) => s.tables) ?? [];
+  const hasSql = allTables.some((t) => t.transformation_sql);
+  const isBuilt = ['success', 'approved'].includes(selectedProduct?.status ?? '') && hasSql;
+  const totalRows = allTables.reduce((sum, t) => sum + (t.row_count ?? 0), 0);
+  const builtTables = allTables.filter((t) => t.transformation_status === 'success').length;
+  const selectedTable = allTables.find((t) => t.id === selectedTableId) ?? null;
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
+  // Derived warehouse stats (for the simple hero)
+  const hasErrors = products.some((p) => p.status === 'error');
+  const buildDone = autoBuildLog.some((l) => l.msg.startsWith('✓ All done') || l.msg.startsWith('✓ Rebuild'));
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <Nav />
+
+      {/* ── SIMPLE VIEW (default) ──────────────────────────────────────────── */}
+      {!showAdvancedView && (
+        <div className={`px-6 py-8 ${products.length > 0 && !autoBuilding && !buildDone ? 'max-w-5xl mx-auto' : 'flex flex-col items-center justify-center min-h-[calc(100vh-56px)]'}`}>
+          <div className={products.length > 0 && !autoBuilding && !buildDone ? 'w-full' : 'w-full max-w-lg'}>
+
+            {/* Building — live log */}
+            {(autoBuilding || buildDone) ? (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-3">
+                  {autoBuilding
+                    ? <><div className="w-4 h-4 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" /><span className="font-semibold text-slate-800">Building your data warehouse…</span></>
+                    : <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
+                  }
+                </div>
+                <div
+                  ref={autoBuildScrollRef}
+                  className="bg-slate-900 font-mono text-xs p-5 max-h-96 overflow-y-auto space-y-1.5"
+                >
+                  {autoBuildLog.map((entry) => (
+                    <div key={entry.id} className={`flex items-start gap-2 ${entry.indent ? 'pl-4' : ''}`}>
+                      <span className="flex-shrink-0 mt-px w-3 text-center">
+                        {entry.status === 'running' && <span className="inline-block w-2.5 h-2.5 border border-violet-400 border-t-transparent rounded-full animate-spin" />}
+                        {entry.status === 'success' && <span className="text-emerald-400">✓</span>}
+                        {entry.status === 'error'   && <span className="text-red-400">✗</span>}
+                        {entry.status === 'info'    && <span className="text-slate-600">·</span>}
+                      </span>
+                      <span className={
+                        entry.status === 'success' ? 'text-emerald-400' :
+                        entry.status === 'error'   ? 'text-red-400' :
+                        entry.status === 'running' ? 'text-violet-300' :
+                        entry.msg.startsWith('🔷') || entry.msg.startsWith('📊') ? 'text-amber-300 font-bold' :
+                        'text-slate-400'
+                      }>{entry.msg}</span>
+                    </div>
+                  ))}
+                </div>
+                {buildDone && !autoBuilding && (
+                  <div className="px-6 py-4 flex gap-3">
+                    <a
+                      href="/query"
+                      className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 text-center"
+                    >
+                      Start asking questions →
+                    </a>
+                    <button
+                      onClick={() => setShowAdvancedView(true)}
+                      className="px-4 py-2.5 text-sm text-slate-500 border border-slate-200 rounded-xl hover:bg-slate-50"
+                    >
+                      View details
+                    </button>
+                  </div>
+                )}
+              </div>
+
+            /* Warehouse exists — show topic cards */
+            ) : products.length > 0 ? (
+              <TopicsView
+                domainProducts={domainProducts}
+                foundationProducts={foundations}
+                allDetails={allProductDetails}
+                allKpis={allProductKpis}
+                loading={loadingTopics}
+                hasErrors={hasErrors}
+                autoDesignConnId={autoDesignConnId}
+                onRebuildAll={handleRebuildAll}
+                onShowAdvanced={() => setShowAdvancedView(true)}
+              />
+
+            /* No products yet */
+            ) : (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-8 py-10 text-center border-b border-slate-100">
+                  <div className="w-16 h-16 bg-violet-100 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-5">
+                    🏗️
+                  </div>
+                  <h2 className="text-2xl font-bold text-slate-900 mb-2">Prepare your data</h2>
+                  <p className="text-sm text-slate-400 leading-relaxed max-w-sm mx-auto">
+                    Claude will analyse your source system, design a clean analytics model, and build it — automatically.
+                  </p>
+                </div>
+
+                <div className="px-6 py-5 space-y-3">
+                  {/* Connection picker — only shown when multiple connections */}
+                  {connections.length > 1 && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-500 mb-1.5">Source system</label>
+                      <select
+                        value={autoDesignConnId ?? ''}
+                        onChange={(e) => setAutoDesignConnId(Number(e.target.value))}
+                        className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+                      >
+                        <option value="">Select a connection…</option>
+                        {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {connections.length === 0 && !loading && (
+                    <div className="text-center py-2">
+                      <p className="text-sm text-slate-400 mb-3">No data sources connected yet.</p>
+                      <a href="/setup" className="text-sm text-blue-600 hover:underline font-medium">Connect a source →</a>
+                    </div>
+                  )}
+
+                  {connections.length > 0 && (
+                    <button
+                      onClick={() => { if (autoDesignConnId) handleFullAutoBuild(autoDesignConnId); }}
+                      disabled={!autoDesignConnId || loading}
+                      className="w-full py-3.5 bg-violet-600 text-white font-bold text-base rounded-xl hover:bg-violet-700 disabled:opacity-40 transition-colors"
+                    >
+                      ⚡ Prepare my data
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => setShowAdvancedView(true)}
+                    className="w-full py-2 text-xs text-slate-400 hover:text-slate-600"
+                  >
+                    Advanced — manage products manually
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── ADVANCED VIEW ──────────────────────────────────────────────────── */}
+      {showAdvancedView && (
+      <div className="flex h-[calc(100vh-56px)]">
+        {/* ── Sidebar ─────────────────────────────────────────────────────── */}
+        <aside className="w-64 border-r border-slate-200 bg-white flex flex-col flex-shrink-0">
+          {/* Buttons */}
+          <div className="p-3 border-b border-slate-100 space-y-1.5">
+            <button
+              onClick={() => setShowAdvancedView(false)}
+              className="w-full text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1 px-1 py-0.5"
+            >
+              ← Back to overview
+            </button>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => { setShowAutoDesign(true); setProposal(null); setBuildResults(null); }}
+                className="flex-1 text-xs bg-violet-600 text-white px-2 py-1.5 rounded-lg hover:bg-violet-700 font-medium"
+              >
+                ✦ Auto-design
+              </button>
+              <button
+                onClick={() => setShowCreate(true)}
+                className="text-xs bg-slate-800 text-white px-2 py-1.5 rounded-lg hover:bg-slate-900 font-medium"
+              >
+                + New
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto">
+            {loading && <p className="p-4 text-xs text-slate-400">Loading…</p>}
+
+            {/* Foundations section */}
+            {foundations.length > 0 && (
+              <div>
+                <div className="px-3 pt-4 pb-1.5 flex items-center gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-amber-600">Foundations</span>
+                  <span className="text-[10px] text-slate-400">shared dims</span>
+                </div>
+                {foundations.map((p) => (
+                  <SidebarItem
+                    key={p.id}
+                    product={p}
+                    selected={selectedProduct?.id === p.id}
+                    onClick={() => handleSelectProduct(p)}
+                    icon="🔷"
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Domain products section */}
+            <div>
+              <div className="px-3 pt-4 pb-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  {foundations.length > 0 ? 'Domain Products' : 'Data Products'}
+                </span>
+              </div>
+              {domainProducts.map((p) => {
+                const myDeps = depGraph.filter((d) => d.dependent_product_id === p.id);
+                const depsReady = myDeps.every((d) => ['approved', 'success'].includes(products.find((q) => q.id === d.source_product_id)?.status ?? ''));
+                return (
+                  <SidebarItem
+                    key={p.id}
+                    product={p}
+                    selected={selectedProduct?.id === p.id}
+                    onClick={() => handleSelectProduct(p)}
+                    icon="📊"
+                    warning={myDeps.length > 0 && !depsReady ? 'Foundations not ready' : undefined}
+                  />
+                );
+              })}
+
+              {!loading && products.length === 0 && (
+                <p className="px-4 py-6 text-xs text-slate-400 text-center">
+                  No data products yet.<br />Use Auto-design or + New.
+                </p>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        {/* ── Main content ─────────────────────────────────────────────────── */}
+        <main className="flex-1 overflow-y-auto">
+          {!selectedProduct && !designing ? (
+            <div className="flex flex-col items-center justify-center h-full text-center p-8">
+              <div className="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center text-3xl mb-4">📦</div>
+              <h2 className="text-lg font-semibold text-slate-700">Select a data product</h2>
+              <p className="text-sm text-slate-400 mt-1 max-w-sm">
+                Select a topic to see its activity tables, reference data, and build status.
+              </p>
+              <button
+                onClick={() => { setShowAutoDesign(true); setProposal(null); setBuildResults(null); }}
+                className="mt-6 px-5 py-2.5 bg-violet-600 text-white text-sm rounded-xl font-medium hover:bg-violet-700"
+              >
+                ✦ Auto-design from source system
+              </button>
+            </div>
+          ) : selectedProduct && (
+            <div className="max-w-4xl mx-auto px-6 py-6 space-y-5">
+
+              {/* ── 1. OVERVIEW CARD ─────────────────────────────────────── */}
+              <div className="bg-white rounded-2xl border border-slate-200 p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-1">
+                      <h1 className="text-xl font-bold text-slate-900 truncate">{selectedProduct.name}</h1>
+                      <StatusBadge status={selectedProduct.status} />
+                      {foundationIds.has(selectedProduct.id) && (
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                          Foundation
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm text-slate-500">
+                      {selectedProduct.description || 'No description — edit to add one'}
+                    </p>
+                    {isBuilt && (
+                      <div className="flex gap-4 mt-3 text-xs text-slate-400">
+                        <span>{builtTables}/{allTables.length} tables built</span>
+                        {totalRows > 0 && <span>{totalRows.toLocaleString()} total rows</span>}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 flex-shrink-0 items-end">
+                    {/* Primary action */}
+                    {(selectedProduct.status === 'draft' || selectedProduct.status === 'designing') && !designing && (
+                      <button
+                        onClick={() => handleDesign(selectedProduct.id)}
+                        disabled={designing}
+                        className="px-4 py-2 bg-blue-600 text-white text-sm rounded-xl hover:bg-blue-700 font-medium flex items-center gap-2"
+                      >
+                        <span>✨</span> AI Design
+                      </button>
+                    )}
+                    {selectedProduct.status === 'approved' && hasSql && (
+                      <button
+                        onClick={() => handleRunAll(selectedProduct.id)}
+                        disabled={runningAll || !allDepsReady}
+                        className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-xl hover:bg-emerald-700 font-medium disabled:opacity-40 flex items-center gap-2"
+                        title={!allDepsReady ? 'Build foundation products first' : undefined}
+                      >
+                        {runningAll
+                          ? <><span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Building…</>
+                          : '▶ Build'}
+                      </button>
+                    )}
+                    {selectedProduct.status === 'success' && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleRunAll(selectedProduct.id)}
+                          disabled={runningAll}
+                          className="px-3 py-1.5 bg-emerald-600 text-white text-xs rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          {runningAll ? 'Rebuilding…' : '↺ Rebuild'}
+                        </button>
+                        <button
+                          onClick={() => handleRunAll(selectedProduct.id, true)}
+                          disabled={runningAll}
+                          className="px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          Full Refresh
+                        </button>
+                      </div>
+                    )}
+                    {selectedProduct.status === 'error' && (
+                      <button
+                        onClick={() => handleDesign(selectedProduct.id)}
+                        className="px-4 py-2 bg-red-600 text-white text-sm rounded-xl hover:bg-red-700 font-medium"
+                      >
+                        Retry Design
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDelete(selectedProduct.id)}
+                      className="text-xs text-red-500 hover:text-red-700 px-2 py-1"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── 2. FOUNDATION DEPENDENCIES ───────────────────────────── */}
+              {selectedDeps.length > 0 && (
+                <div className={`rounded-2xl border p-5 ${allDepsReady ? 'bg-white border-slate-200' : 'bg-amber-50 border-amber-200'}`}>
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">
+                    Requires these foundations first
+                  </p>
+                  <div className="flex flex-wrap gap-3">
+                    {selectedDeps.map(({ product: dep }) => {
+                      if (!dep) return null;
+                      const ready = ['approved', 'success'].includes(dep.status);
+                      return (
+                        <div
+                          key={dep.id}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm cursor-pointer transition-colors ${
+                            ready
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                              : 'bg-amber-100 border-amber-300 text-amber-900'
+                          }`}
+                          onClick={() => handleSelectProduct(dep)}
+                          title={ready ? 'Ready' : 'Not built yet — click to open'}
+                        >
+                          <StatusDot status={dep.status} />
+                          <span className="font-medium">{dep.name}</span>
+                          {!ready && <span className="text-[10px] text-amber-600 font-semibold">Build first →</span>}
+                          {ready && <span className="text-[10px] text-emerald-600">✓</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {!allDepsReady && (
+                    <p className="mt-3 text-xs text-amber-700">
+                      Build the highlighted reference topics first — activity tables need the shared reference data to exist before they can link to it.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* ── 3. AI DESIGN PROGRESS ────────────────────────────────── */}
+              {designing && (
+                <div className="bg-white rounded-2xl border border-blue-200 p-5 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                    <span className="text-sm font-medium text-blue-700">{designPhase}</span>
+                  </div>
+
+                  {(designThinking || designSqlThinking) && (
+                    <div className="bg-slate-900 rounded-xl overflow-hidden">
+                      <button
+                        onClick={() => setShowThinking((v) => !v)}
+                        className="w-full px-4 py-2 flex items-center justify-between text-xs text-slate-400 hover:bg-slate-800"
+                      >
+                        <span>AI reasoning {showThinking ? '(click to collapse)' : '(click to expand)'}</span>
+                        <span>{showThinking ? '▲' : '▼'}</span>
+                      </button>
+                      {showThinking && (
+                        <div ref={thinkingRef} className="px-4 pb-3 max-h-48 overflow-y-auto">
+                          <pre className="text-xs text-emerald-400 font-mono whitespace-pre-wrap leading-relaxed">
+                            {designSqlThinking || designThinking}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {skeletonTables.length > 0 && (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      {skeletonTables.map((tbl, i) => (
+                        <div
+                          key={i}
+                          className={`rounded-xl border-2 p-3 ${tbl.role === 'fact' ? 'border-purple-200 bg-purple-50' : 'border-sky-200 bg-sky-50'}`}
+                        >
+                          <RolePill role={tbl.role} />
+                          <p className="text-sm font-semibold text-slate-800 mt-1.5">
+                            {tbl.description || tbl.name
+                              .replace(/^(fact_|dim_|bridge_|junk_)/, '')
+                              .replace(/_/g, ' ')
+                              .replace(/\b\w/g, (c: string) => c.toUpperCase())}
+                          </p>
+                          {tbl.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{tbl.description}</p>}
+                        </div>
+                      ))}
+                      {skeletonTables.length < 3 && Array.from({ length: 3 - skeletonTables.length }).map((_, i) => (
+                        <div key={`sk-${i}`} className="rounded-xl border-2 border-dashed border-slate-200 p-3 animate-pulse">
+                          <div className="h-4 bg-slate-200 rounded w-16 mb-2" />
+                          <div className="h-3 bg-slate-100 rounded w-24" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── 4. STAR SCHEMA (visual + table overview) ─────────────── */}
+              {!designing && selectedProduct.star_schemas.length > 0 && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-semibold text-slate-800">What&apos;s inside</h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {allTables.filter((t) => t.table_role === 'fact').length} activity table(s) ·{' '}
+                        {allTables.filter((t) => t.table_role === 'dimension').length} reference table(s)
+                        {allTables.some((t) => t.is_shared_dimension) && ' · includes shared reference data'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setShowLineage((v) => !v)}
+                      className="text-xs text-slate-500 border border-slate-200 rounded-lg px-2.5 py-1 hover:bg-slate-50"
+                    >
+                      {showLineage ? '← Star diagram' : 'Source lineage →'}
+                    </button>
+                  </div>
+
+                  {showLineage ? (
+                    <div className="h-96">
+                      <LineageFlow product={selectedProduct} />
+                    </div>
+                  ) : (
+                    <div className="p-5 space-y-4">
+                      {selectedProduct.star_schemas.map((schema) => (
+                        <StarVisual
+                          key={schema.id}
+                          schema={schema}
+                          onClickTable={(id) => { setSelectedTableId(id); setShowAdvanced(true); }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── Empty state after design ──────────────────────────────── */}
+              {!designing && selectedProduct.star_schemas.length === 0 && (
+                <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-10 text-center">
+                  <p className="text-slate-400 text-sm">No schema designed yet.</p>
+                  <p className="text-slate-300 text-xs mt-1">Click AI Design above to generate the star schema.</p>
+                </div>
+              )}
+
+              {/* ── 5. BUILD STATUS ──────────────────────────────────────── */}
+              {!designing && hasSql && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                    <div>
+                      <h2 className="font-semibold text-slate-800">Build status</h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {builtTables} of {allTables.filter(t => t.transformation_sql).length} tables built
+                        {totalRows > 0 && ` · ${totalRows.toLocaleString()} rows`}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setShowAdvanced((v) => !v)}
+                      className="text-xs text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg px-2 py-1"
+                    >
+                      {showAdvanced ? 'Hide advanced' : '⚙ Advanced SQL'}
+                    </button>
+                  </div>
+
+                  {runError && (
+                    <div className="mx-5 mt-4 flex items-center justify-between bg-red-50 border border-red-200 rounded-xl px-4 py-2.5 text-sm text-red-700">
+                      <span>{runError}</span>
+                      <button onClick={() => setRunError(null)} className="ml-3 text-red-400 hover:text-red-600">✕</button>
+                    </div>
+                  )}
+
+                  {/* Table status rows */}
+                  <div className="divide-y divide-slate-50 px-2 py-2">
+                    {allTables
+                      .sort((a, b) => a.dag_order - b.dag_order || a.table_name.localeCompare(b.table_name))
+                      .filter((t) => t.transformation_sql || t.is_shared_dimension)
+                      .map((tbl) => {
+                        const isRunningThis = runningTableId === tbl.id || (runningAll && !!tbl.transformation_sql && !tbl.is_shared_dimension);
+                        return (
+                          <div key={tbl.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-slate-50">
+                            <RolePill role={tbl.table_role} shared={tbl.is_shared_dimension} />
+                            <span className="text-sm text-slate-700 flex-1">{friendlyName(tbl)}</span>
+                            {tbl.row_count !== null && (
+                              <span className="text-xs text-slate-400">{tbl.row_count.toLocaleString()} rows</span>
+                            )}
+                            {tbl.last_run_error && !isRunningThis && (
+                              <span className="text-[10px] text-red-500 max-w-[120px] truncate" title={tbl.last_run_error}>
+                                {tbl.last_run_error}
+                              </span>
+                            )}
+                            {isRunningThis
+                              ? <span className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                              : tbl.is_shared_dimension
+                                ? <span className="text-[10px] text-amber-600">shared reference</span>
+                                : <StatusDot status={tbl.transformation_status} />
+                            }
+                            {!tbl.is_shared_dimension && !runningAll && tbl.transformation_sql && (
+                              <button
+                                onClick={() => handleRunTable(tbl.id)}
+                                disabled={!!runningTableId}
+                                className="text-[10px] px-2 py-1 text-slate-500 border border-slate-200 rounded hover:bg-slate-100 disabled:opacity-40"
+                              >
+                                Run
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+
+                  {/* Advanced SQL editor */}
+                  {showAdvanced && (
+                    <AdvancedSqlEditor
+                      tables={allTables}
+                      selectedTableId={selectedTableId}
+                      editingSql={editingSql}
+                      savingSql={savingSql}
+                      generatingSql={generatingSql}
+                      onSelectTable={(id) => { setSelectedTableId(id); setEditingSql(null); }}
+                      onEditSql={setEditingSql}
+                      onSaveSql={handleSaveSql}
+                      onApprove={handleApproveTable}
+                      onGenerateSql={selectedProduct ? () => handleGenerateSql(selectedProduct.id) : undefined}
+                      onLoadMode={async (tableId, mode) => {
+                        try {
+                          await api.patch(`/products/tables/${tableId}/load-mode`, { load_mode: mode });
+                          if (selectedProduct) await loadFullProduct(selectedProduct.id);
+                        } catch { /* ignore */ }
+                      }}
+                    />
+                  )}
+
+                  {/* Schedule (approved/success products) */}
+                  {['approved', 'success'].includes(selectedProduct.status) && (
+                    <div className="px-5 pb-5 pt-2">
+                      <SchedulePanel productId={selectedProduct.id} />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* ── 6. BUSINESS METRICS (KPIs) ───────────────────────────── */}
+              {!designing && selectedProduct.star_schemas.length > 0 && (
+                <KpisSection product={selectedProduct} onRefresh={() => loadFullProduct(selectedProduct.id)} />
+              )}
+
+            </div>
+          )}
+        </main>
+      </div>
+      )} {/* end showAdvancedView */}
+
+      {/* ── Auto-design modal ────────────────────────────────────────────── */}
+      {showAutoDesign && (
+        <AutoDesignModal
+          connections={connections}
+          connId={autoDesignConnId}
+          onConnId={(id) => { setAutoDesignConnId(id); setProposal(null); setBuildResults(null); }}
+          proposing={proposing}
+          proposal={proposal}
+          proposeError={proposeError}
+          building={building}
+          buildResults={buildResults}
+          onPropose={handlePropose}
+          onBuild={handleBuildProposed}
+          autoBuilding={autoBuilding}
+          autoBuildLog={autoBuildLog}
+          autoBuildScrollRef={autoBuildScrollRef}
+          onFullBuild={handleFullAutoBuild}
+          onClose={() => { if (!autoBuilding) setShowAutoDesign(false); }}
+        />
+      )}
+
+      {/* ── Create modal ─────────────────────────────────────────────────── */}
+      {showCreate && (
+        <CreateModal
+          connections={connections}
+          connId={createConnId}
+          name={createName}
+          desc={createDesc}
+          availableSources={availableSources}
+          selectedSources={selectedSources}
+          creating={creating}
+          onConnId={handleConnectionSelect}
+          onName={setCreateName}
+          onDesc={setCreateDesc}
+          onToggleSource={(id) => setSelectedSources((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; })}
+          onSelectAll={() => setSelectedSources(new Set(availableSources.map((s) => s.id)))}
+          onCreate={handleCreate}
+          onClose={() => setShowCreate(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// StarVisual — clean Kimball star diagram (no ReactFlow, no clutter)
+// ---------------------------------------------------------------------------
+
+interface SchemaWithTables {
+  id: number;
+  name: string;
+  grain: string | null;
+  fact_table_type: string;
+  tables: ProductTable[];
+}
+
+function StarVisual({
+  schema,
+  onClickTable,
+}: {
+  schema: SchemaWithTables;
+  onClickTable: (id: number) => void;
+}) {
+  const facts = schema.tables.filter((t) => t.table_role === 'fact');
+  const dims = schema.tables.filter((t) => t.table_role === 'dimension' || t.table_role === 'junk' || t.table_role === 'bridge');
+
+  // Split dims into two halves so they flank the fact table(s)
+  const half = Math.ceil(dims.length / 2);
+  const leftDims = dims.slice(0, half);
+  const rightDims = dims.slice(half);
+
+  return (
+    <div className="select-none">
+      {/* Schema grain label */}
+      {schema.grain && (
+        <p className="text-xs text-slate-400 mb-4 italic">
+          <span className="font-semibold text-slate-500">Grain:</span> {schema.grain}
+        </p>
+      )}
+
+      <div className="flex items-center gap-3">
+        {/* Left dimensions */}
+        {leftDims.length > 0 && (
+          <div className="flex flex-col gap-2 flex-shrink-0" style={{ minWidth: 160 }}>
+            {leftDims.map((dim) => (
+              <DimChip key={dim.id} table={dim} onClick={() => onClickTable(dim.id)} />
+            ))}
+          </div>
+        )}
+
+        {/* Connectors left → fact */}
+        {leftDims.length > 0 && (
+          <div className="flex flex-col justify-center flex-shrink-0" style={{ width: 32 }}>
+            {leftDims.map((_, i) => (
+              <div key={i} className="flex items-center" style={{ height: 36, marginBottom: i < leftDims.length - 1 ? 8 : 0 }}>
+                <div className="flex-1 border-t-2 border-dashed border-slate-200" />
+                <div className="w-0 h-0 border-t-4 border-b-4 border-l-6 border-transparent border-l-slate-300" style={{ borderLeftWidth: 6 }} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Fact table(s) */}
+        <div className="flex flex-col gap-2 flex-1">
+          {facts.length === 0 ? (
+            <div className="rounded-xl border-2 border-dashed border-slate-200 p-4 text-center text-xs text-slate-400">
+              No activity data designed yet
+            </div>
+          ) : (
+            facts.map((fact) => (
+              <button
+                key={fact.id}
+                onClick={() => onClickTable(fact.id)}
+                className="w-full text-left rounded-xl bg-gradient-to-br from-purple-600 to-purple-700 text-white p-4 hover:from-purple-700 hover:to-purple-800 transition-colors shadow-sm"
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">⚡ Activity</span>
+                  <StatusDot status={fact.transformation_status} />
+                </div>
+                <p className="font-semibold text-base leading-tight">{fact.display_name || fact.table_name}</p>
+                {fact.description && (
+                  <p className="text-xs opacity-70 mt-1.5 leading-relaxed line-clamp-2">{fact.description}</p>
+                )}
+                {fact.row_count !== null && (
+                  <p className="text-xs opacity-50 mt-2">{fact.row_count.toLocaleString()} rows</p>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+
+        {/* Connectors fact → right */}
+        {rightDims.length > 0 && (
+          <div className="flex flex-col justify-center flex-shrink-0" style={{ width: 32 }}>
+            {rightDims.map((_, i) => (
+              <div key={i} className="flex items-center" style={{ height: 36, marginBottom: i < rightDims.length - 1 ? 8 : 0 }}>
+                <div className="w-0 h-0 border-t-4 border-b-4 border-r-6 border-transparent border-r-slate-300" style={{ borderRightWidth: 6 }} />
+                <div className="flex-1 border-t-2 border-dashed border-slate-200" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Right dimensions */}
+        {rightDims.length > 0 && (
+          <div className="flex flex-col gap-2 flex-shrink-0" style={{ minWidth: 160 }}>
+            {rightDims.map((dim) => (
+              <DimChip key={dim.id} table={dim} onClick={() => onClickTable(dim.id)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-5 pt-4 border-t border-slate-100">
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+          <span className="w-3 h-3 rounded bg-purple-600" />
+          ⚡ Activity (transactions &amp; events)
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+          <span className="w-3 h-3 rounded bg-sky-200 border border-sky-300" />
+          📋 Reference (descriptive data)
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+          <span className="w-3 h-3 rounded bg-amber-200 border border-amber-300" />
+          ⟳ Shared reference
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 ml-auto">
+          <StatusDot status="success" /> Built
+          <StatusDot status="draft" /> Not built
+          <StatusDot status="error" /> Error
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DimChip({ table, onClick }: { table: ProductTable; onClick: () => void }) {
+  const isShared = table.is_shared_dimension;
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left rounded-lg border-2 px-3 py-2 transition-colors group ${
+        isShared
+          ? 'bg-amber-50 border-amber-200 hover:border-amber-400'
+          : 'bg-sky-50 border-sky-200 hover:border-sky-400'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {isShared && <span className="text-amber-500 text-xs flex-shrink-0" title="Shared reference data">⟳</span>}
+          <span className={`text-xs font-medium truncate ${isShared ? 'text-amber-800' : 'text-sky-800'}`}>
+            {friendlyName(table)}
+          </span>
+        </div>
+        <StatusDot status={isShared ? 'success' : table.transformation_status} />
+      </div>
+      {isShared && (
+        <p className="text-[9px] text-amber-500 mt-0.5">⟳ shared reference data</p>
+      )}
+      {table.row_count !== null && !isShared && (
+        <p className="text-[9px] text-slate-400 mt-0.5">{table.row_count.toLocaleString()} rows</p>
+      )}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar item
+// ---------------------------------------------------------------------------
+
+function SidebarItem({
+  product, selected, onClick, icon, warning,
+}: {
+  product: DataProduct;
+  selected: boolean;
+  onClick: () => void;
+  icon: string;
+  warning?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-3 py-2.5 flex items-center gap-2.5 hover:bg-slate-50 transition-colors ${selected ? 'bg-blue-50 border-r-2 border-blue-500' : ''}`}
+    >
+      <span className="text-base leading-none flex-shrink-0">{icon}</span>
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-medium truncate ${selected ? 'text-blue-700' : 'text-slate-800'}`}>{product.name}</p>
+        {warning && <p className="text-[10px] text-amber-600 truncate">{warning}</p>}
+      </div>
+      <StatusDot status={product.status} />
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Advanced SQL editor (admin tool, hidden by default)
+// ---------------------------------------------------------------------------
+
+function AdvancedSqlEditor({
+  tables, selectedTableId, editingSql, savingSql, generatingSql,
+  onSelectTable, onEditSql, onSaveSql, onApprove, onGenerateSql, onLoadMode,
+}: {
+  tables: ProductTable[];
+  selectedTableId: number | null;
+  editingSql: string | null;
+  savingSql: boolean;
+  generatingSql: boolean;
+  onSelectTable: (id: number) => void;
+  onEditSql: (sql: string) => void;
+  onSaveSql: (tableId: number, sql: string) => void;
+  onApprove: (tableId: number) => void;
+  onGenerateSql?: () => void;
+  onLoadMode: (tableId: number, mode: string) => void;
+}) {
+  const selected = tables.find((t) => t.id === selectedTableId) ?? null;
+
+  return (
+    <div className="border-t border-slate-100 bg-slate-50 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">SQL Editor</p>
+        {onGenerateSql && (
+          <button
+            onClick={onGenerateSql}
+            disabled={generatingSql}
+            className="text-xs px-2 py-1 bg-amber-100 text-amber-700 rounded hover:bg-amber-200 disabled:opacity-50"
+          >
+            {generatingSql ? 'Generating…' : '↺ Regenerate SQL'}
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-3">
+        {/* Table selector */}
+        <div className="w-44 flex-shrink-0 space-y-1">
+          {tables.map((tbl) => (
+            <button
+              key={tbl.id}
+              onClick={() => onSelectTable(tbl.id)}
+              className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 transition-colors ${
+                selectedTableId === tbl.id ? 'bg-blue-100 text-blue-700' : 'hover:bg-slate-100 text-slate-600'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                tbl.transformation_status === 'success' ? 'bg-emerald-500' :
+                tbl.transformation_status === 'error' ? 'bg-red-500' :
+                tbl.transformation_status === 'approved' ? 'bg-amber-400' : 'bg-slate-300'
+              }`} />
+              <span className="truncate font-mono">{tbl.table_name}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* SQL panel */}
+        {selected ? (
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex gap-2">
+                <span className="text-xs text-slate-500 font-mono">{selected.table_name}</span>
+                <select
+                  value={selected.load_mode ?? 'full'}
+                  onChange={(e) => onLoadMode(selected.id, e.target.value)}
+                  className="text-xs border border-slate-200 rounded px-1.5 py-0.5 bg-white text-slate-500"
+                >
+                  <option value="full">Full refresh</option>
+                  <option value="incremental">Incremental</option>
+                </select>
+              </div>
+              <div className="flex gap-1.5">
+                {selected.transformation_status === 'draft' && (
+                  <button
+                    onClick={() => onApprove(selected.id)}
+                    className="text-xs px-2.5 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+                  >
+                    Approve
+                  </button>
+                )}
+                {editingSql !== null ? (
+                  <>
+                    <button
+                      onClick={() => onSaveSql(selected.id, editingSql)}
+                      disabled={savingSql}
+                      className="text-xs px-2.5 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {savingSql ? 'Saving…' : 'Save'}
+                    </button>
+                    <button onClick={() => onEditSql(selected.transformation_sql ?? '')} className="text-xs px-2 py-1 text-slate-500 border border-slate-200 rounded hover:bg-slate-100">
+                      Cancel
+                    </button>
+                  </>
+                ) : selected.transformation_sql ? (
+                  <button onClick={() => onEditSql(selected.transformation_sql!)} className="text-xs px-2 py-1 text-slate-600 border border-slate-200 rounded hover:bg-slate-100">
+                    Edit SQL
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            {selected.is_shared_dimension ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-700">
+                ⟳ This is shared reference data owned by another topic. Its SQL is managed there.
+              </div>
+            ) : editingSql !== null ? (
+              <textarea
+                value={editingSql}
+                onChange={(e) => onEditSql(e.target.value)}
+                className="w-full h-48 font-mono text-xs border border-slate-300 rounded-lg p-3 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            ) : selected.transformation_sql ? (
+              <pre className="text-xs font-mono bg-slate-900 text-emerald-400 rounded-lg p-3 overflow-auto max-h-48 leading-relaxed">
+                {selected.transformation_sql}
+              </pre>
+            ) : (
+              <div className="bg-white border border-dashed border-slate-300 rounded-lg p-4 text-center text-xs text-slate-400">
+                No SQL generated yet
+              </div>
+            )}
+
+            {selected.last_run_error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-600 font-mono">
+                {selected.last_run_error}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-xs text-slate-400">
+            Select a table to view its SQL
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// KPIs section
+// ---------------------------------------------------------------------------
+
+function KpisSection({ product, onRefresh }: { product: FullDataProduct; onRefresh: () => void }) {
   const [kpis, setKpis] = useState<ProductKpi[]>([]);
-  const [loadingKpis, setLoadingKpis] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [editingKpi, setEditingKpi] = useState<ProductKpi | null>(null);
-
-  // Form state
   const [formName, setFormName] = useState('');
   const [formDesc, setFormDesc] = useState('');
   const [formPlainText, setFormPlainText] = useState('');
   const [formSql, setFormSql] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const loadKpis = useCallback(async () => {
-    if (!product) return;
-    setLoadingKpis(true);
-    try {
-      const res = await api.get(`/products/${product.id}/kpis`);
-      setKpis(res.data.data ?? []);
-    } catch { /* ignore */ }
-    setLoadingKpis(false);
-  }, [product]);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { const res = await api.get(`/products/${product.id}/kpis`); setKpis(res.data.data ?? []); } catch { /* ignore */ }
+    setLoading(false);
+  }, [product.id]);
 
-  useEffect(() => { loadKpis(); }, [loadKpis]);
+  useEffect(() => { load(); }, [load]);
 
-  if (!product) {
-    return <p className="text-center py-16 text-slate-400">Select a data product to manage KPIs</p>;
-  }
+  const reset = () => { setFormName(''); setFormDesc(''); setFormPlainText(''); setFormSql(''); setEditingKpi(null); setShowAdd(false); };
 
-  if (product.star_schemas.length === 0) {
-    return (
-      <div className="text-center py-16 text-slate-400">
-        <p className="text-lg font-medium">No star schema designed yet</p>
-        <p className="text-sm mt-1">Design a star schema first to define KPIs against your product tables.</p>
-      </div>
-    );
-  }
-
-  const resetForm = () => {
-    setFormName('');
-    setFormDesc('');
-    setFormPlainText('');
-    setFormSql('');
-    setEditingKpi(null);
-    setShowAdd(false);
-  };
-
-  const openEdit = (kpi: ProductKpi) => {
-    setEditingKpi(kpi);
-    setFormName(kpi.name);
-    setFormDesc(kpi.description ?? '');
-    setFormPlainText(kpi.formula_plain_text ?? '');
-    setFormSql(kpi.formula_sql ?? '');
-    setShowAdd(true);
+  const openEdit = (k: ProductKpi) => {
+    setEditingKpi(k); setFormName(k.name); setFormDesc(k.description ?? '');
+    setFormPlainText(k.formula_plain_text ?? ''); setFormSql(k.formula_sql ?? ''); setShowAdd(true);
   };
 
   const handleSave = async () => {
@@ -1454,195 +1691,673 @@ function KpisView({ product, onRefresh }: { product: FullDataProduct | null; onR
     setSaving(true);
     try {
       if (editingKpi) {
-        await api.put(`/products/kpis/${editingKpi.id}`, {
-          name: formName,
-          description: formDesc || null,
-          formula_plain_text: formPlainText || null,
-          formula_sql: formSql || null,
-          ai_draft: false,
-        });
+        await api.put(`/products/kpis/${editingKpi.id}`, { name: formName, description: formDesc || null, formula_plain_text: formPlainText || null, formula_sql: formSql || null, ai_draft: false });
       } else {
-        await api.post(`/products/${product.id}/kpis`, {
-          name: formName,
-          description: formDesc || undefined,
-          formulaPlainText: formPlainText || undefined,
-          formulaSql: formSql || undefined,
-        });
+        await api.post(`/products/${product.id}/kpis`, { name: formName, description: formDesc || undefined, formulaPlainText: formPlainText || undefined, formulaSql: formSql || undefined });
       }
-      resetForm();
-      await loadKpis();
-      onRefresh?.();
+      reset(); await load(); onRefresh();
     } catch { /* ignore */ }
     setSaving(false);
   };
 
-  const handleDelete = async (kpiId: number) => {
-    if (!confirm('Delete this KPI?')) return;
-    try {
-      await api.delete(`/products/kpis/${kpiId}`);
-      await loadKpis();
-      onRefresh?.();
-    } catch { /* ignore */ }
+  const handleDelete = async (id: number) => {
+    if (!confirm('Delete this metric?')) return;
+    try { await api.delete(`/products/kpis/${id}`); await load(); onRefresh(); } catch { /* ignore */ }
   };
 
-  const handleApprove = async (kpi: ProductKpi) => {
-    try {
-      await api.put(`/products/kpis/${kpi.id}`, { ai_draft: false });
-      await loadKpis();
-    } catch { /* ignore */ }
+  const handleApprove = async (k: ProductKpi) => {
+    try { await api.put(`/products/kpis/${k.id}`, { ai_draft: false }); await load(); } catch { /* ignore */ }
   };
 
-  // Product table names for reference in KPI formulas
   const tableNames = product.star_schemas.flatMap((s) => s.tables.map((t) => t.table_name));
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-bold text-slate-800">KPIs</h2>
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-slate-800">Business Metrics</h2>
+          <p className="text-xs text-slate-400 mt-0.5">KPIs and measures for this data product</p>
+        </div>
         <button
-          onClick={() => { resetForm(); setShowAdd(true); }}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+          onClick={() => { reset(); setShowAdd(true); }}
+          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
         >
-          + Add KPI
+          + Add metric
         </button>
       </div>
 
-      {/* Available tables reference */}
-      <div className="mb-4 bg-slate-50 rounded-lg px-4 py-2 text-xs text-slate-500">
-        <span className="font-semibold">Available tables: </span>
-        {tableNames.join(', ')}
-      </div>
+      {loading && <p className="p-5 text-xs text-slate-400">Loading metrics…</p>}
 
-      {loadingKpis && <p className="text-sm text-slate-400">Loading KPIs...</p>}
-
-      {/* KPI cards */}
-      {kpis.length === 0 && !loadingKpis && (
-        <div className="bg-white rounded-xl border border-slate-200 p-8 text-center">
-          <p className="text-slate-500">No KPIs defined yet.</p>
-          <p className="text-sm text-slate-400 mt-1">KPIs proposed by the AI during design will appear here automatically.</p>
+      {!loading && kpis.length === 0 && (
+        <div className="p-8 text-center">
+          <p className="text-slate-400 text-sm">No metrics defined yet.</p>
+          <p className="text-xs text-slate-300 mt-1">Metrics proposed by AI during design will appear here automatically.</p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-5">
         {kpis.map((kpi) => (
-          <div key={kpi.id} className="bg-white rounded-xl border border-slate-200 p-4">
+          <div key={kpi.id} className="rounded-xl border border-slate-200 p-4">
             <div className="flex items-start justify-between mb-2">
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-slate-800">{kpi.name}</h3>
+                <h3 className="font-semibold text-slate-800 text-sm">{kpi.name}</h3>
                 {kpi.ai_draft && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">AI Draft</span>
+                  <span className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">AI Draft</span>
                 )}
               </div>
               <div className="flex gap-1">
                 {kpi.ai_draft && (
-                  <button
-                    onClick={() => handleApprove(kpi)}
-                    className="text-[10px] px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200"
-                  >
-                    Approve
-                  </button>
+                  <button onClick={() => handleApprove(kpi)} className="text-[10px] px-2 py-1 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200">Approve</button>
                 )}
-                <button
-                  onClick={() => openEdit(kpi)}
-                  className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => handleDelete(kpi.id)}
-                  className="text-[10px] px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100"
-                >
-                  Delete
-                </button>
+                <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200">Edit</button>
+                <button onClick={() => handleDelete(kpi.id)} className="text-[10px] px-2 py-1 bg-red-50 text-red-500 rounded hover:bg-red-100">✕</button>
               </div>
             </div>
-
-            {kpi.description && (
-              <p className="text-sm text-slate-600 mb-2">{kpi.description}</p>
-            )}
-
+            {kpi.description && <p className="text-xs text-slate-500 mb-2">{kpi.description}</p>}
             {kpi.formula_plain_text && (
-              <div className="mb-2">
-                <p className="text-[10px] font-semibold text-slate-400 uppercase">Business Definition</p>
-                <p className="text-sm text-slate-700">{kpi.formula_plain_text}</p>
-              </div>
+              <p className="text-xs text-slate-600 bg-slate-50 rounded px-2 py-1.5 mb-1">{kpi.formula_plain_text}</p>
             )}
-
             {kpi.formula_sql && (
-              <div>
-                <p className="text-[10px] font-semibold text-slate-400 uppercase">SQL Formula</p>
-                <pre className="text-xs font-mono bg-slate-50 border border-slate-200 rounded px-2 py-1 mt-0.5 overflow-x-auto">
-                  {kpi.formula_sql}
-                </pre>
-              </div>
+              <pre className="text-[10px] font-mono bg-slate-900 text-emerald-400 rounded px-2 py-1.5 overflow-x-auto">{kpi.formula_sql}</pre>
             )}
           </div>
         ))}
       </div>
 
-      {/* Add/Edit KPI dialog */}
       {showAdd && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
-            <h3 className="text-lg font-bold text-slate-900 mb-4">
-              {editingKpi ? 'Edit KPI' : 'New KPI'}
-            </h3>
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
-            <input
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-              placeholder="e.g. Gross Margin, Revenue per Customer"
-            />
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
-            <textarea
-              value={formDesc}
-              onChange={(e) => setFormDesc(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-              rows={2}
-              placeholder="What does this KPI measure?"
-            />
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">Business Definition</label>
-            <input
-              value={formPlainText}
-              onChange={(e) => setFormPlainText(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3"
-              placeholder="e.g. Revenue minus cost of goods sold"
-            />
-
-            <label className="block text-sm font-medium text-slate-700 mb-1">SQL Formula</label>
-            <textarea
-              value={formSql}
-              onChange={(e) => setFormSql(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono mb-3"
-              rows={3}
-              placeholder="e.g. SUM(f.revenue) - SUM(f.cogs)"
-            />
-
-            <div className="bg-slate-50 rounded-lg px-3 py-2 mb-4 text-xs text-slate-500">
-              <span className="font-semibold">Available tables: </span>
-              {tableNames.join(', ')}
-            </div>
-
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
+            <h3 className="text-base font-bold text-slate-900 mb-4">{editingKpi ? 'Edit metric' : 'New metric'}</h3>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Name</label>
+            <input value={formName} onChange={(e) => setFormName(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" placeholder="e.g. Gross Margin, Revenue per Customer" />
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Description</label>
+            <textarea value={formDesc} onChange={(e) => setFormDesc(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" rows={2} placeholder="What does this metric measure?" />
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Business definition (plain English)</label>
+            <input value={formPlainText} onChange={(e) => setFormPlainText(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" placeholder="e.g. Revenue minus cost of goods sold" />
+            <label className="block text-xs font-semibold text-slate-600 mb-1">SQL formula</label>
+            <textarea value={formSql} onChange={(e) => setFormSql(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono mb-3" rows={3} placeholder="e.g. SUM(f.revenue) - SUM(f.cogs)" />
+            <p className="text-[10px] text-slate-400 mb-4">Available tables: {tableNames.join(', ')}</p>
             <div className="flex justify-end gap-2">
-              <button
-                onClick={resetForm}
-                className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={!formName.trim() || saving}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {saving ? 'Saving...' : editingKpi ? 'Update KPI' : 'Create KPI'}
+              <button onClick={reset} className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">Cancel</button>
+              <button onClick={handleSave} disabled={!formName.trim() || saving} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                {saving ? 'Saving…' : editingKpi ? 'Update' : 'Create'}
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Auto-design modal
+// ---------------------------------------------------------------------------
+
+interface LogEntry { id: number; msg: string; status: 'info' | 'success' | 'error' | 'running'; indent: boolean; }
+
+function AutoDesignModal({
+  connections, connId, onConnId, proposing, proposal, proposeError, building, buildResults,
+  onPropose, onBuild, autoBuilding, autoBuildLog, autoBuildScrollRef, onFullBuild, onClose,
+}: {
+  connections: Connection[];
+  connId: number | null;
+  onConnId: (id: number) => void;
+  proposing: boolean;
+  proposal: DataProductProposal | null;
+  proposeError: string | null;
+  building: boolean;
+  buildResults: Array<{ name: string; id: number; status: string }> | null;
+  onPropose: () => void;
+  onBuild: () => void;
+  autoBuilding: boolean;
+  autoBuildLog: LogEntry[];
+  autoBuildScrollRef: React.RefObject<HTMLDivElement>;
+  onFullBuild: (connId: number) => void;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<'choose' | 'auto' | 'review'>('choose');
+  const busy = autoBuilding || proposing || building;
+  const done = autoBuildLog.some((l) => l.msg.startsWith('✓ All done'));
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3">
+            {mode !== 'choose' && !busy && (
+              <button onClick={() => setMode('choose')} className="text-slate-400 hover:text-slate-600 text-sm">←</button>
+            )}
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">✦ Build your data warehouse</h3>
+              <p className="text-sm text-slate-400 mt-0.5">
+                {mode === 'choose' && 'Claude designs and builds everything from your source system.'}
+                {mode === 'auto' && (autoBuilding ? 'Building your warehouse — this takes a few minutes…' : done ? 'Your data warehouse is ready.' : 'Full auto-build')}
+                {mode === 'review' && 'Review the proposal before building.'}
+              </p>
+            </div>
+          </div>
+          {!busy && <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-2xl leading-none">×</button>}
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-4">
+
+          {/* Connection selector — always visible */}
+          {(mode === 'choose' || (mode !== 'auto' || !autoBuilding)) && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">Source system</label>
+              <select
+                value={connId ?? ''}
+                onChange={(e) => onConnId(Number(e.target.value))}
+                disabled={busy}
+                className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 disabled:opacity-60"
+              >
+                <option value="">Select a connection…</option>
+                {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          {/* ── MODE: CHOOSE ─────────────────────────────────────────────── */}
+          {mode === 'choose' && (
+            <div className="space-y-3 pt-1">
+              {/* Full auto-build — primary */}
+              <button
+                disabled={!connId}
+                onClick={() => { setMode('auto'); onFullBuild(connId!); }}
+                className="w-full text-left rounded-2xl border-2 border-violet-300 bg-violet-50 hover:border-violet-500 hover:bg-violet-100 disabled:opacity-40 disabled:pointer-events-none transition-colors p-5 group"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-105 transition-transform">
+                    ⚡
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-900 text-base">Build everything automatically</p>
+                    <p className="text-sm text-slate-500 mt-1">
+                      Claude designs all data products, generates transformation SQL, and builds the warehouse — in the right order, automatically. No decisions needed.
+                    </p>
+                    <p className="text-xs text-violet-600 font-medium mt-2">Recommended · takes ~5–10 minutes</p>
+                  </div>
+                </div>
+              </button>
+
+              {/* Review first — secondary */}
+              <button
+                disabled={!connId}
+                onClick={() => { setMode('review'); onPropose(); }}
+                className="w-full text-left rounded-2xl border-2 border-slate-200 bg-white hover:border-slate-300 disabled:opacity-40 disabled:pointer-events-none transition-colors p-5"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center text-xl flex-shrink-0">
+                    🔍
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-800 text-base">Review proposal first</p>
+                    <p className="text-sm text-slate-400 mt-1">
+                      See exactly what Claude will build — topics, reference tables, activity tables — before committing. Good for advanced users.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </div>
+          )}
+
+          {/* ── MODE: AUTO-BUILD ─────────────────────────────────────────── */}
+          {mode === 'auto' && (
+            <div>
+              <div
+                ref={autoBuildScrollRef}
+                className="bg-slate-900 rounded-2xl p-4 font-mono text-xs space-y-1.5 max-h-96 overflow-y-auto"
+              >
+                {autoBuildLog.length === 0 && (
+                  <span className="text-slate-500">Initialising…</span>
+                )}
+                {autoBuildLog.map((entry) => (
+                  <div key={entry.id} className={`flex items-start gap-2 ${entry.indent ? 'pl-4' : ''}`}>
+                    <span className="flex-shrink-0 mt-px">
+                      {entry.status === 'running' && <span className="inline-block w-3 h-3 border border-violet-400 border-t-transparent rounded-full animate-spin" />}
+                      {entry.status === 'success' && <span className="text-emerald-400">✓</span>}
+                      {entry.status === 'error' && <span className="text-red-400">✗</span>}
+                      {entry.status === 'info' && <span className="text-slate-500">·</span>}
+                    </span>
+                    <span className={
+                      entry.status === 'success' ? 'text-emerald-400' :
+                      entry.status === 'error' ? 'text-red-400' :
+                      entry.status === 'running' ? 'text-violet-300' :
+                      entry.msg.startsWith('🔷') || entry.msg.startsWith('📊') ? 'text-amber-300 font-bold' :
+                      'text-slate-300'
+                    }>
+                      {entry.msg}
+                    </span>
+                  </div>
+                ))}
+                {autoBuilding && (
+                  <div className="flex items-center gap-2 text-slate-500 pt-1">
+                    <span className="inline-block w-3 h-3 border border-slate-500 border-t-transparent rounded-full animate-spin" />
+                    <span>Working…</span>
+                  </div>
+                )}
+              </div>
+
+              {done && (
+                <div className="mt-4 bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-sm text-emerald-700 font-medium text-center">
+                  Your data warehouse is ready. Go to <strong>Ask</strong> to start querying it.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── MODE: REVIEW ─────────────────────────────────────────────── */}
+          {mode === 'review' && (
+            <div className="space-y-4">
+              {proposing && (
+                <div className="flex items-center gap-3 py-4 text-slate-500 text-sm">
+                  <span className="w-4 h-4 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+                  Claude is analysing your source schema…
+                </div>
+              )}
+
+              {proposeError && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700">{proposeError}</div>
+              )}
+
+              {proposal && !buildResults && (
+                <div className="space-y-4">
+                  <div className="bg-violet-50 border border-violet-100 rounded-xl p-4 text-sm text-slate-600 italic">{proposal.rationale}</div>
+
+                  {proposal.shared_dimensions.length > 0 && (
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-wider text-amber-600 mb-2">⟳ Shared reference data (built once, used everywhere)</p>
+                      <div className="flex flex-wrap gap-2">
+                        {proposal.shared_dimensions.map((sd) => {
+                          const friendly = sd.table_name
+                            .replace(/^(dim_|fact_)/, '')
+                            .replace(/_/g, ' ')
+                            .replace(/\b\w/g, (c) => c.toUpperCase());
+                          return (
+                            <span key={sd.table_name} className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-full px-3 py-1">
+                              {friendly} <span className="text-amber-500">↔ {sd.owner_product_name}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{proposal.data_products.length} topics</p>
+                    {[...proposal.data_products].sort((a, b) => a.build_order - b.build_order).map((dp) => {
+                      const allTbls = dp.star_schemas.flatMap((ss) => ss.tables);
+                      return (
+                        <div key={dp.name} className="border border-slate-200 rounded-xl p-4">
+                          <div className="flex items-start gap-3">
+                            <span className="text-[10px] bg-slate-100 text-slate-500 rounded px-1.5 py-0.5 font-mono flex-shrink-0 mt-0.5">#{dp.build_order}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-slate-900 text-sm">{dp.name}</p>
+                              <p className="text-xs text-slate-500">{dp.description}</p>
+                              {dp.depends_on.length > 0 && (
+                                <p className="text-xs text-violet-600 mt-1">Uses reference data from: {dp.depends_on.map((d) => d.source_product_name).join(', ')}</p>
+                              )}
+                            </div>
+                            <div className="flex gap-1 flex-shrink-0">
+                              <span className="text-[10px] bg-purple-100 text-purple-700 rounded px-2 py-0.5">⚡ {allTbls.filter((t) => t.table_role === 'fact').length} activity</span>
+                              <span className="text-[10px] bg-sky-100 text-sky-700 rounded px-2 py-0.5">📋 {allTbls.filter((t) => t.table_role === 'dimension').length} reference</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {buildResults && (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-emerald-700">✓ {buildResults.length} products created as drafts</p>
+                  {buildResults.map((r) => (
+                    <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-sm">
+                      <span className="text-emerald-500">✓</span>
+                      <span className="font-medium text-slate-800">{r.name}</span>
+                    </div>
+                  ))}
+                  <p className="text-xs text-slate-500 pt-1">Products created. Select each in the sidebar and click <strong>AI Design</strong> to generate SQL, foundations first.</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-100 flex justify-between items-center flex-shrink-0">
+          <button
+            onClick={onClose}
+            disabled={autoBuilding}
+            className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 disabled:opacity-40"
+          >
+            {done ? 'Close' : 'Cancel'}
+          </button>
+
+          {mode === 'review' && proposal && !buildResults && (
+            <button
+              onClick={onBuild}
+              disabled={building}
+              className="px-5 py-2 bg-violet-600 text-white text-sm rounded-xl hover:bg-violet-700 disabled:opacity-50 flex items-center gap-2 font-medium"
+            >
+              {building && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {building ? 'Creating…' : `Create ${proposal.data_products.length} products`}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Create modal
+// ---------------------------------------------------------------------------
+
+function CreateModal({
+  connections, connId, name, desc, availableSources, selectedSources, creating,
+  onConnId, onName, onDesc, onToggleSource, onSelectAll, onCreate, onClose,
+}: {
+  connections: Connection[];
+  connId: number | null;
+  name: string;
+  desc: string;
+  availableSources: SourceTable[];
+  selectedSources: Set<number>;
+  creating: boolean;
+  onConnId: (id: number) => void;
+  onName: (v: string) => void;
+  onDesc: (v: string) => void;
+  onToggleSource: (id: number) => void;
+  onSelectAll: () => void;
+  onCreate: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 max-h-[85vh] overflow-y-auto">
+        <h3 className="text-base font-bold text-slate-900 mb-4">New data product</h3>
+        <label className="block text-xs font-semibold text-slate-600 mb-1">Name</label>
+        <input value={name} onChange={(e) => onName(e.target.value)} className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3" placeholder="e.g. Sales, Finance, HR" />
+        <label className="block text-xs font-semibold text-slate-600 mb-1">Description</label>
+        <textarea value={desc} onChange={(e) => onDesc(e.target.value)} className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3" rows={2} placeholder="What business domain does this cover?" />
+        <label className="block text-xs font-semibold text-slate-600 mb-1">Source connection</label>
+        <select value={connId ?? ''} onChange={(e) => onConnId(Number(e.target.value))} className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3">
+          <option value="">Select a connection…</option>
+          {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        {connId && (
+          <>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-semibold text-slate-600">Source tables</label>
+              <button onClick={onSelectAll} className="text-xs text-blue-600 hover:underline">Select all</button>
+            </div>
+            <div className="border border-slate-200 rounded-xl max-h-44 overflow-y-auto">
+              {availableSources.map((s) => (
+                <label key={s.id} className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 cursor-pointer">
+                  <input type="checkbox" checked={selectedSources.has(s.id)} onChange={() => onToggleSource(s.id)} className="rounded border-slate-300" />
+                  <span className="text-sm text-slate-700 font-mono">{s.table_name}</span>
+                </label>
+              ))}
+              {availableSources.length === 0 && <p className="p-3 text-xs text-slate-400">No tables found</p>}
+            </div>
+          </>
+        )}
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">Cancel</button>
+          <button
+            onClick={onCreate}
+            disabled={!name.trim() || !connId || selectedSources.size === 0 || creating}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50"
+          >
+            {creating ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Topic cards — "What can I ask about?" simple view
+// ---------------------------------------------------------------------------
+
+function productIcon(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes('sales') || n.includes('revenue') || n.includes('order')) return '💰';
+  if (n.includes('customer') || n.includes('client') || n.includes('crm')) return '👥';
+  if (n.includes('product') || n.includes('article') || n.includes('item') || n.includes('catalogue')) return '📦';
+  if (n.includes('supplier') || n.includes('vendor') || n.includes('purchas')) return '🏭';
+  if (n.includes('hr') || n.includes('employee') || n.includes('staff') || n.includes('payroll') || n.includes('people')) return '🧑‍💼';
+  if (n.includes('finance') || n.includes('accounting') || n.includes('budget') || n.includes('cost')) return '📊';
+  if (n.includes('inventory') || n.includes('stock') || n.includes('warehouse') || n.includes('logistic')) return '🏪';
+  if (n.includes('market') || n.includes('campaign') || n.includes('lead')) return '📣';
+  if (n.includes('delivery') || n.includes('ship') || n.includes('transport')) return '🚚';
+  if (n.includes('project') || n.includes('task') || n.includes('time') || n.includes('hour')) return '📋';
+  return '📈';
+}
+
+function cleanTopicName(name: string): string {
+  return name
+    .replace(/\s+(Analytics|360|Domain|Product|Data Product|Kimball)$/i, '')
+    .trim();
+}
+
+function TopicCard({
+  product,
+  detail,
+  kpis,
+}: {
+  product: DataProduct;
+  detail: FullDataProduct | undefined;
+  kpis: ProductKpi[];
+}) {
+  const icon = productIcon(product.name);
+  const name = cleanTopicName(product.name);
+  const isBuilt = product.status === 'success';
+  const isError = product.status === 'error';
+
+  const factRows = detail
+    ? detail.star_schemas
+        .flatMap((s) => s.tables)
+        .filter((t) => t.table_role === 'fact')
+        .reduce((sum, t) => sum + (t.row_count ?? 0), 0)
+    : 0;
+
+  const visibleKpis = kpis.slice(0, 5);
+
+  return (
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col transition-shadow hover:shadow-md ${
+      isError ? 'border-red-200' : 'border-slate-200'
+    } ${!isBuilt && !isError ? 'opacity-70' : ''}`}>
+      {/* Card header */}
+      <div className="px-5 py-5 flex items-start gap-4 border-b border-slate-100">
+        <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl flex-shrink-0">
+          {icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold text-slate-900 text-base leading-tight">{name}</h3>
+            {isError && (
+              <span className="text-[10px] font-semibold bg-red-100 text-red-600 px-2 py-0.5 rounded-full">needs attention</span>
+            )}
+            {!isBuilt && !isError && (
+              <span className="text-[10px] font-semibold bg-amber-100 text-amber-600 px-2 py-0.5 rounded-full">not built yet</span>
+            )}
+          </div>
+          {product.description && (
+            <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{product.description}</p>
+          )}
+          {isBuilt && factRows > 0 && (
+            <p className="text-xs text-slate-400 mt-1.5">{factRows.toLocaleString()} records</p>
+          )}
+        </div>
+      </div>
+
+      {/* KPI hints */}
+      <div className="px-5 py-4 flex-1">
+        {visibleKpis.length > 0 ? (
+          <>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2.5">What you can ask</p>
+            <ul className="space-y-1.5">
+              {visibleKpis.map((k) => (
+                <li key={k.id} className="flex items-start gap-2 text-xs text-slate-600">
+                  <span className="text-slate-300 mt-0.5 flex-shrink-0">›</span>
+                  <span className="line-clamp-1">{k.name}</span>
+                </li>
+              ))}
+              {kpis.length > 5 && (
+                <li className="text-[10px] text-slate-400 pl-4">+{kpis.length - 5} more metrics</li>
+              )}
+            </ul>
+          </>
+        ) : isBuilt ? (
+          <p className="text-xs text-slate-400 italic">No metrics defined yet — add some in the details view.</p>
+        ) : (
+          <p className="text-xs text-slate-400 italic">Build this topic to unlock analytics.</p>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+        {isBuilt ? (
+          <a
+            href="/query"
+            className="text-sm font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+          >
+            Ask questions <span aria-hidden>→</span>
+          </a>
+        ) : (
+          <span className="text-xs text-slate-400">
+            {product.status === 'draft'
+              ? 'Not yet designed'
+              : product.status === 'approved'
+              ? 'Ready to build'
+              : product.status}
+          </span>
+        )}
+        <span className="text-[10px] text-slate-300">
+          {detail
+            ? `${detail.star_schemas.flatMap((s) => s.tables).length} tables`
+            : '…'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function TopicsView({
+  domainProducts,
+  foundationProducts,
+  allDetails,
+  allKpis,
+  loading,
+  hasErrors,
+  autoDesignConnId,
+  onRebuildAll,
+  onShowAdvanced,
+}: {
+  domainProducts: DataProduct[];
+  foundationProducts: DataProduct[];
+  allDetails: Map<number, FullDataProduct>;
+  allKpis: Map<number, ProductKpi[]>;
+  loading: boolean;
+  hasErrors: boolean;
+  autoDesignConnId: number | null;
+  onRebuildAll: () => void;
+  onShowAdvanced: () => void;
+}) {
+  const allProducts = [...domainProducts, ...foundationProducts];
+  const builtCount = allProducts.filter((p) => p.status === 'success').length;
+
+  return (
+    <div className="space-y-6">
+      {/* Page header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">
+            {hasErrors ? 'Some topics need attention' : 'What would you like to explore?'}
+          </h1>
+          <p className="text-sm text-slate-400 mt-0.5">
+            {builtCount} of {allProducts.length} topic{allProducts.length !== 1 ? 's' : ''} ready to query
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {autoDesignConnId && (
+            <button
+              onClick={onRebuildAll}
+              className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50 flex items-center gap-1.5"
+            >
+              ↺ Rebuild
+            </button>
+          )}
+          <button
+            onClick={onShowAdvanced}
+            className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50"
+          >
+            Details →
+          </button>
+        </div>
+      </div>
+
+      {/* Loading skeleton */}
+      {loading && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {allProducts.map((p) => (
+            <div key={p.id} className="bg-white rounded-2xl border border-slate-200 h-56 animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {/* Domain product cards */}
+      {!loading && domainProducts.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {domainProducts.map((p) => (
+            <TopicCard
+              key={p.id}
+              product={p}
+              detail={allDetails.get(p.id)}
+              kpis={allKpis.get(p.id) ?? []}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Foundation / reference data chips */}
+      {!loading && foundationProducts.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mr-1">Reference data</span>
+          {foundationProducts.map((p) => (
+            <span
+              key={p.id}
+              className={`inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border ${
+                p.status === 'success'
+                  ? 'bg-amber-50 border-amber-200 text-amber-700'
+                  : 'bg-slate-100 border-slate-200 text-slate-500'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${p.status === 'success' ? 'bg-amber-400' : 'bg-slate-300'}`} />
+              {cleanTopicName(p.name)}
+            </span>
+          ))}
+          <span className="text-[10px] text-slate-300 ml-1">Shared dimensions used across topics</span>
+        </div>
+      )}
+
+      {/* CTA */}
+      {!loading && builtCount > 0 && (
+        <div className="pt-1">
+          <a
+            href="/query"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors"
+          >
+            Start asking questions →
+          </a>
         </div>
       )}
     </div>

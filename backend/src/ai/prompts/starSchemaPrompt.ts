@@ -220,14 +220,19 @@ For dim_date: lineage is "Generated — calendar spine"
 
 ━━━ NAMING CONVENTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-- Fact tables: fact_{business_process} (e.g., fact_sales, fact_payments)
-- Dimension tables: dim_{entity} (e.g., dim_customer, dim_product)
+- Fact tables: table_name uses fact_{business_process} (e.g., fact_sales, fact_payments) — internal warehouse name
+- Dimension tables: table_name uses dim_{entity} (e.g., dim_customer, dim_product) — internal warehouse name
 - Junk dimensions: dim_{fact_name}_junk
 - Bridge tables: bridge_{relationship}
 - Surrogate keys: {entity}_key
 - Foreign keys: match the target dimension's surrogate key name exactly
 - Measures: descriptive snake_case (total_amount, quantity, unit_price)
 - Attributes: descriptive snake_case (company_name, city, postal_code)
+
+DISPLAY NAME RULES (shown to business users — these are critical):
+- display_name MUST NEVER start with "dim_", "fact_", "dim", "fact", or contain underscores
+- Use plain business language: "Customer" not "dim_customer", "Sales Orders" not "fact_sales"
+- Column display_names likewise: "Revenue" not "total_revenue", "Order Date" not "order_date_key"
 
 ━━━ OUTPUT FORMAT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

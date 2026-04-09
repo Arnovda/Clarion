@@ -211,6 +211,19 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/products/dependency-graph — All dependency edges for this tenant
+// Must be before /:id routes to avoid being captured by the param handler
+// ---------------------------------------------------------------------------
+
+router.get('/dependency-graph', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const deps = await semanticDb('data_product_dependencies')
+      .select('dependent_product_id', 'source_product_id');
+    res.json({ ok: true, data: deps });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/products/:id/sources — Source tables assigned to this data product
 // ---------------------------------------------------------------------------
 
@@ -282,6 +295,54 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
+    // ── Load shared dimensions from dependency products ───────────────────
+    // These are conformed dims already designed in other products.
+    // We inject their schemas so the AI knows NOT to redesign them and can
+    // write correct JOIN SQL referencing the right surrogate key columns.
+    let sharedDimsContext = '';
+    try {
+      const deps = await semanticDb('data_product_dependencies as dpd')
+        .join('data_products as dp', 'dpd.source_product_id', 'dp.id')
+        .where('dpd.dependent_product_id', product.id)
+        .select('dpd.source_product_id', 'dp.name as source_product_name');
+
+      if (deps.length > 0) {
+        const sharedDimBlocks: string[] = [];
+        for (const dep of deps) {
+          const sharedTables = await semanticDb('product_tables as pt')
+            .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+            .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': true })
+            .whereNotNull('pt.transformation_sql')
+            .select('pt.id', 'pt.table_name', 'pt.display_name', 'pt.description');
+
+          for (const tbl of sharedTables) {
+            const cols = await semanticDb('product_columns')
+              .where({ product_table_id: tbl.id })
+              .orderBy('sort_order')
+              .select('column_name', 'data_type', 'column_role', 'description');
+
+            const colLines = cols.map((c: { column_name: string; data_type: string; column_role: string; description: string }) =>
+              `    ${c.column_name} (${c.data_type}) [${c.column_role}]: ${c.description ?? ''}`
+            ).join('\n');
+
+            sharedDimBlocks.push(
+              `Shared dimension from "${dep.source_product_name}" (already built — reference only, do NOT redesign):\n` +
+              `Table: ${tbl.table_name} — ${tbl.description ?? tbl.display_name}\n  Columns:\n${colLines}`
+            );
+          }
+        }
+        if (sharedDimBlocks.length > 0) {
+          sharedDimsContext = sharedDimBlocks.join('\n\n');
+        }
+      }
+    } catch (depErr) {
+      console.warn('[products/design-stream] Could not load dependency dims:', depErr);
+    }
+
+    const fullSourceContext = sharedDimsContext
+      ? `${sourceContext}\n\n━━━ CONFORMED DIMENSIONS (owned by other products — JOIN to these, do NOT rebuild) ━━━\n\n${sharedDimsContext}`
+      : sourceContext;
+
     emit({ type: 'phase', text: 'Designing star schema with AI...' });
 
     // ── Phase 1: Streaming star schema design ─────────────────────────────
@@ -290,7 +351,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     const design = await generateStarSchemaDesignStreaming(
       product.name,
       product.description ?? '',
-      sourceContext,
+      fullSourceContext,
       (type, delta) => {
         if (type === 'thinking') {
           emit({ type: 'thinking', text: delta });
@@ -453,7 +514,10 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
           })),
       }));
 
-      const sqlSourceContext = sources.map((s: { table_name: string }) => s.table_name).join(', ');
+      const rawTableNames = sources.map((s: { table_name: string }) => s.table_name).join(', ');
+      const sqlSourceContext = sharedDimsContext
+        ? `${rawTableNames}\n\n━━━ CONFORMED DIMENSIONS (pre-built views — JOIN directly by table name) ━━━\n\n${sharedDimsContext}`
+        : rawTableNames;
       const sqlResult = await generateTransformationSqlStreaming(
         JSON.stringify(schemaJsonForSql),
         sqlSourceContext,
@@ -1010,6 +1074,204 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
     const results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
 
     res.json({ ok: true, data: results });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/propose — AI auto-proposes all data products for a connection
+// ---------------------------------------------------------------------------
+
+router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId } = req.body as { connectionId: number };
+    if (!connectionId) { res.status(400).json({ ok: false, error: 'connectionId required' }); return; }
+
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+
+    // Gather semantic context from Postgres + Neo4j
+    const sourceTables = await semanticDb('source_tables as st')
+      .where({ 'st.connection_id': connectionId, 'st.is_active': true })
+      .select('st.*');
+
+    const tableContexts = await Promise.all(sourceTables.map(async (t: Record<string, unknown>) => {
+      const columns = await semanticDb('source_columns')
+        .where({ table_id: t.id })
+        .select('id', 'column_name', 'data_type', 'description', 'is_dimension', 'is_measure', 'example_values');
+
+      // Derive FK info from table_relationships (from_column_id → to source_tables)
+      const fkRels = await semanticDb('table_relationships as tr')
+        .join('source_tables as st2', 'tr.to_table_id', 'st2.id')
+        .where({ 'tr.from_table_id': t.id })
+        .select('tr.from_column_id', 'st2.table_name as to_table_name', 'tr.relationship_type');
+
+      const fkByColId = new Map(fkRels.map((r: Record<string, unknown>) => [r.from_column_id, r]));
+
+      // Heuristic: column named 'id' or matching business_key_column is PK
+      const bkCol = t.business_key_column as string | null;
+
+      return {
+        table_name: t.table_name as string,
+        display_name: (t.display_name as string) || (t.table_name as string),
+        description: (t.description as string) || '',
+        domain: Array.isArray(t.domains) ? (t.domains as string[]).join(', ') : '',
+        columns: columns.map((c: Record<string, unknown>) => {
+          const fk = fkByColId.get(c.id);
+          const isPk = c.column_name === 'id' || c.column_name === bkCol;
+          return {
+            column_name: c.column_name as string,
+            data_type: (c.data_type as string) || 'TEXT',
+            description: (c.description as string) || '',
+            is_primary_key: isPk,
+            is_foreign_key: !!fk,
+            fk_references: fk ? (fk as Record<string, unknown>).to_table_name as string : undefined,
+          };
+        }),
+        relationships: fkRels.map((r: Record<string, unknown>) => ({
+          to_table: r.to_table_name as string,
+          via_column: String(r.from_column_id),
+          type: (r.relationship_type as string) || 'many_to_one',
+        })),
+      };
+    }));
+
+    // Existing products (so Claude doesn't recreate them)
+    const existingProducts = await semanticDb('data_products').where({ connection_id: connectionId });
+    const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
+      const sharedTables = await semanticDb('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': true })
+        .pluck('pt.table_name');
+      return { name: p.name as string, shared_dimension_tables: sharedTables };
+    }));
+
+    const { proposeDataProducts } = await import('../ai/AIService');
+    const proposal = await proposeDataProducts(tableContexts, existingWithDims, connection.name as string);
+
+    res.json({ ok: true, data: proposal });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/build-proposed — persist + queue a full proposal
+// ---------------------------------------------------------------------------
+
+router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, proposal } = req.body as {
+      connectionId: number;
+      proposal: import('../ai/prompts/dataProductProposalPrompt').DataProductProposal;
+    };
+    if (!connectionId || !proposal) { res.status(400).json({ ok: false, error: 'connectionId and proposal required' }); return; }
+
+    const tenantId = req.user?.tenantId;
+
+    // Sort products by build_order so owners are created before dependents
+    const sorted = [...proposal.data_products].sort((a, b) => a.build_order - b.build_order);
+
+    // Map product name → DB id (populated as we insert)
+    const productIdByName = new Map<string, number>();
+
+    const results: Array<{ name: string; id: number; status: string }> = [];
+
+    for (const dp of sorted) {
+      // Create data_product row
+      const [productId] = await semanticDb('data_products').insert({
+        connection_id: connectionId,
+        name: dp.name,
+        description: dp.description,
+        status: 'draft',
+        created_by: req.user?.email || 'ai',
+        tenant_id: tenantId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).returning('id');
+
+      const pid = typeof productId === 'object' ? (productId as { id: number }).id : productId;
+      productIdByName.set(dp.name, pid);
+
+      // Record dependencies
+      for (const dep of dp.depends_on) {
+        const sourceId = productIdByName.get(dep.source_product_name);
+        if (sourceId) {
+          await semanticDb('data_product_dependencies').insert({
+            dependent_product_id: pid,
+            source_product_id: sourceId,
+            tenant_id: tenantId,
+          }).onConflict(['dependent_product_id', 'source_product_id']).ignore();
+        }
+      }
+
+      // Create star schemas + tables
+      for (const ss of dp.star_schemas) {
+        const [schemaId] = await semanticDb('star_schemas').insert({
+          data_product_id: pid,
+          name: ss.name,
+          description: ss.description,
+          grain: ss.grain,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).returning('id');
+        const ssid = typeof schemaId === 'object' ? (schemaId as { id: number }).id : schemaId;
+
+        for (const tbl of ss.tables) {
+          await semanticDb('product_tables').insert({
+            star_schema_id: ssid,
+            table_name: tbl.table_name,
+            display_name: tbl.display_name,
+            description: tbl.description,
+            table_role: tbl.table_role,
+            is_shared_dimension: tbl.is_shared_dimension,
+            transformation_sql: null,          // generated later via AI Design
+            transformation_status: 'draft',
+            dag_order: tbl.dag_order,
+            load_mode: 'full',
+            ai_draft: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Populate data_product_sources so AI Design Star Schema can find source table context
+      const allSourceTableNames = new Set<string>();
+      for (const ss of dp.star_schemas) {
+        for (const tbl of ss.tables) {
+          for (const src of tbl.source_tables) {
+            allSourceTableNames.add(src);
+          }
+        }
+      }
+      if (allSourceTableNames.size > 0) {
+        const sourceTblRows = await semanticDb('source_tables')
+          .where({ connection_id: connectionId })
+          .whereIn('table_name', [...allSourceTableNames])
+          .select('id', 'table_name');
+        if (sourceTblRows.length > 0) {
+          await semanticDb('data_product_sources').insert(
+            sourceTblRows.map((r: { id: number; table_name: string }) => ({
+              data_product_id: pid,
+              source_table_id: r.id,
+              table_name: r.table_name,
+            }))
+          );
+        }
+      }
+
+      results.push({ name: dp.name, id: pid, status: 'created' });
+    }
+
+    // Queue transformations in build_order (one job per product)
+    try {
+      const { enqueueTransformation } = await import('../jobs/queues');
+      for (const r of results) {
+        await enqueueTransformation({ productId: r.id, tenantId });
+      }
+    } catch {
+      // Redis not available — caller can trigger manually
+    }
+
+    res.json({ ok: true, data: { products: results } });
   } catch (err) { next(err); }
 });
 

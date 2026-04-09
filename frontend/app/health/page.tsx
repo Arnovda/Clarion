@@ -46,6 +46,8 @@ export default function HealthPage() {
   const [selectedConnId, setSelectedConnId] = useState<number | null>(null);
   const [selectedTable, setSelectedTable] = useState<{ connId: number; tableName: string; productTableId?: number | null } | null>(null);
   const [activePill, setActivePill] = useState('overview');
+  const [profilingKey, setProfilingKey] = useState<string | null>(null); // e.g. "conn-22" or "product-Sales"
+  const [profilingProgress, setProfilingProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -71,6 +73,39 @@ export default function HealthPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Profile all source tables in a connection
+  const profileAllSource = useCallback(async (connId: number, sourceTables: TableHealth[], e: React.MouseEvent) => {
+    e.stopPropagation();
+    const key = `conn-${connId}`;
+    setProfilingKey(key);
+    setProfilingProgress({ done: 0, total: sourceTables.length });
+    for (let i = 0; i < sourceTables.length; i++) {
+      const t = sourceTables[i];
+      try {
+        await api.post(`/quality/${t.connection_id}/${encodeURIComponent(t.table_name)}/profile`);
+      } catch { /* continue on error */ }
+      setProfilingProgress({ done: i + 1, total: sourceTables.length });
+    }
+    setProfilingKey(null);
+    await loadData();
+  }, [loadData]);
+
+  // Profile all product tables in a product group (ptables is already deduplicated by table_name)
+  const profileAllProduct = useCallback(async (productName: string, ptables: TableHealth[], e: React.MouseEvent) => {
+    e.stopPropagation();
+    const key = `product-${productName}`;
+    setProfilingKey(key);
+    setProfilingProgress({ done: 0, total: ptables.length });
+    for (let i = 0; i < ptables.length; i++) {
+      const t = ptables[i];
+      if (t.product_table_id == null) { setProfilingProgress({ done: i + 1, total: ptables.length }); continue; }
+      try { await api.post(`/quality/product/${t.product_table_id}/profile`); } catch { /* continue */ }
+      setProfilingProgress({ done: i + 1, total: ptables.length });
+    }
+    setProfilingKey(null);
+    await loadData();
+  }, [loadData]);
 
   const filteredTables = selectedConnId
     ? tables.filter((t) => t.connection_id === selectedConnId)
@@ -152,7 +187,17 @@ export default function HealthPage() {
         return (<>
           <div className="text-label-md text-on-surface-variant/50 font-semibold uppercase tracking-wider px-2 pt-3">Products</div>
           {productNames.map((pn) => {
-            const ptables = productTables.filter((t) => t.product_name === pn);
+            const allPtables = productTables.filter((t) => t.product_name === pn);
+            // Deduplicate by table_name — prefer the entry that has profiling data
+            const seenNames = new Map<string, TableHealth>();
+            for (const t of allPtables) {
+              const existing = seenNames.get(t.table_name);
+              if (!existing || (t.overall_score !== null && existing.overall_score === null)) {
+                seenNames.set(t.table_name, t);
+              }
+            }
+            const ptables = Array.from(seenNames.values())
+              .sort((a, b) => (a.table_role === 'fact' ? -1 : 1) - (b.table_role === 'fact' ? -1 : 1) || a.table_name.localeCompare(b.table_name));
             const ptAvg = ptables.filter((t) => t.overall_score !== null);
             const avg = ptAvg.length > 0 ? Math.round((ptAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / ptAvg.length) * 100) : null;
             const isExpanded = selectedConnId === -ptables[0]?.id; // use negative id as product group key
@@ -218,19 +263,61 @@ export default function HealthPage() {
       ) : activePill === 'overview' ? (
         <div className="p-6 space-y-6 max-w-5xl">
           {/* Hero score */}
-          <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-8 flex items-center gap-8">
-            <div className="w-24 h-24 rounded-full border-4 flex items-center justify-center flex-shrink-0"
-              style={{ borderColor: avgScore >= 90 ? '#f59e0b' : avgScore >= 70 ? '#d97706' : '#ba1a1a' }}>
-              <span className="font-headline text-display-md font-bold text-on-surface">{avgScore}</span>
-            </div>
-            <div>
-              <h2 className="font-headline text-headline-md font-bold text-on-surface">Overall Health Score</h2>
-              <p className="text-body-md text-on-surface-variant mt-1">
-                {profiledTables.length} of {filteredTables.length} tables profiled across{' '}
-                {connections.find((c) => c.id === selectedConnId)?.name ?? 'all connections'}
-              </p>
-            </div>
-          </div>
+          {(() => {
+            // Determine what's selected and which profile action to show
+            const selectedConn = connections.find((c) => c.id === selectedConnId);
+            const selectedProduct = (() => {
+              if (selectedConnId == null || selectedConnId > 0) return null;
+              const ptables = tables.filter((t) => t.layer === 'product');
+              // selectedConnId is negative product group key
+              const matchTable = ptables.find((t) => -t.id === selectedConnId);
+              return matchTable ? ptables.filter((t) => t.product_name === matchTable.product_name) : null;
+            })();
+            const selectedProductName = selectedProduct?.[0]?.product_name ?? null;
+            const sourceTables = filteredTables.filter((t) => (t.layer ?? 'source') === 'source');
+            const isProfilingThis = profilingKey === (selectedConn ? `conn-${selectedConn.id}` : selectedProductName ? `product-${selectedProductName}` : null);
+            return (
+              <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-8 flex items-center gap-8">
+                <div className="w-24 h-24 rounded-full border-4 flex items-center justify-center flex-shrink-0"
+                  style={{ borderColor: avgScore >= 90 ? '#f59e0b' : avgScore >= 70 ? '#d97706' : '#ba1a1a' }}>
+                  <span className="font-headline text-display-md font-bold text-on-surface">{avgScore}</span>
+                </div>
+                <div className="flex-1">
+                  <h2 className="font-headline text-headline-md font-bold text-on-surface">Overall Health Score</h2>
+                  <p className="text-body-md text-on-surface-variant mt-1">
+                    {profiledTables.length} of {filteredTables.length} tables profiled across{' '}
+                    {selectedConn?.name ?? selectedProductName ?? 'all connections'}
+                  </p>
+                </div>
+                {/* Profile all button — only shown when a specific source or product is selected */}
+                {(selectedConn || selectedProductName) && (
+                  <div className="flex-shrink-0">
+                    {isProfilingThis ? (
+                      <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-50 text-cyan-700 text-label-md font-medium">
+                        <span className="w-4 h-4 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
+                        Profiling {profilingProgress.done}/{profilingProgress.total}…
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          if (selectedConn) {
+                            profileAllSource(selectedConn.id, sourceTables, e);
+                          } else if (selectedProductName && selectedProduct) {
+                            profileAllProduct(selectedProductName, selectedProduct, e);
+                          }
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-on-primary text-label-md font-medium hover:bg-primary/90 transition-colors shadow-sm">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
+                        </svg>
+                        Profile all {filteredTables.length} tables
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Table quality grid */}
           <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">

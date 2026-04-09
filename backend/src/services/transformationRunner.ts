@@ -97,6 +97,48 @@ async function createScanView(db: Database, viewName: string, scanPath: string, 
 }
 
 /**
+ * Loads shared dimension Parquet files from dependency products as DuckDB views.
+ * This allows fact tables to JOIN to conformed dims without rebuilding them.
+ */
+async function loadDependencyDimensions(
+  db: Database,
+  productId: number,
+  productDir: string,
+  useAzure: boolean,
+): Promise<void> {
+  // Find all products this product depends on
+  const deps = await semanticDb('data_product_dependencies as dpd')
+    .join('data_products as dp', 'dpd.source_product_id', 'dp.id')
+    .where('dpd.dependent_product_id', productId)
+    .select('dpd.source_product_id', 'dp.name as source_product_name', 'dp.connection_id');
+
+  for (const dep of deps) {
+    // Find the shared dimension tables in the source product
+    const sharedTables = await semanticDb('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': true })
+      .select('pt.table_name', 'pt.delta_path');
+
+    const sourceConn = await semanticDb('connections').where({ id: dep.connection_id }).first();
+    const sourceWarehouse = sourceConn?.warehouse_path;
+    if (!sourceWarehouse) continue;
+
+    const sourceSlug = (dep.source_product_name as string).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const sourceProductDir = productBasePath(sourceWarehouse, sourceSlug);
+
+    for (const tbl of sharedTables) {
+      const tblPath = (tbl.delta_path as string) || productTablePath(sourceProductDir, tbl.table_name as string);
+      try {
+        await createScanView(db, tbl.table_name as string, useAzure ? tblPath : tblPath.replace(/\\/g, '/'), useAzure);
+        console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${tbl.table_name}`);
+      } catch {
+        console.warn(`  [dep] could not load ${dep.source_product_name}.${tbl.table_name} — skipping`);
+      }
+    }
+  }
+}
+
+/**
  * Runs transformations for a data product's tables, respecting DAG order.
  */
 export async function runProductTransformation(
@@ -162,6 +204,9 @@ export async function runProductTransformation(
         await createScanView(db, it.table_name, hostPath.replace(/\\/g, '/'), false);
       }
     }
+
+    // Load shared dimensions from dependency products (conformed dims)
+    await loadDependencyDimensions(db, product.id, productDir, useAzure);
 
     // Pre-load existing product tables
     const allProductTables = await semanticDb.transaction(async (trx) => {

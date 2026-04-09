@@ -58,6 +58,13 @@ import {
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
+import {
+  DATA_PRODUCT_PROPOSAL_SYSTEM,
+  buildDataProductProposalUser,
+  DataProductProposal,
+  SourceTableContext,
+  ExistingDataProduct,
+} from './prompts/dataProductProposalPrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -703,4 +710,26 @@ export async function editColumnExpression(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Data Product Proposal — auto-design all conformed products from a source
+// ---------------------------------------------------------------------------
+
+export async function proposeDataProducts(
+  sourceTables: SourceTableContext[],
+  existingProducts: ExistingDataProduct[],
+  connectionName: string,
+): Promise<DataProductProposal> {
+  const raw = await callClaude(
+    DATA_PRODUCT_PROPOSAL_SYSTEM,
+    buildDataProductProposalUser(sourceTables, existingProducts, connectionName),
+    8192,
+    'propose_data_products',
+  );
+
+  // Strip markdown fences if present
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  const proposal: DataProductProposal = JSON.parse(cleaned);
+  return proposal;
 }
