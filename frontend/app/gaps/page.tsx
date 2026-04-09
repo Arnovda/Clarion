@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import Nav from '@/components/Nav';
+import AppShell from '@/components/layout/AppShell';
 import Pagination from '@/components/Pagination';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
@@ -34,86 +34,40 @@ interface QueryLogRow {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return 'just now';
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay}d ago`;
+  const d = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(d / 60000); const h = Math.floor(d / 3600000); const dy = Math.floor(d / 86400000);
+  if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`; if (h < 24) return `${h}h ago`; return `${dy}d ago`;
 }
 
 function formatSql(sql: string): string {
-  const keywords = ['SELECT', 'FROM', 'LEFT JOIN', 'JOIN', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT'];
+  const kws = ['SELECT', 'FROM', 'LEFT JOIN', 'JOIN', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT'];
   let result = sql;
-  for (const kw of keywords) {
-    const re = new RegExp(`\\b${kw}\\b`, 'gi');
-    result = result.replace(re, `\n${kw}`);
-  }
+  for (const kw of kws) result = result.replace(new RegExp(`\\b${kw}\\b`, 'gi'), `\n${kw}`);
   return result.trim();
 }
 
 function ConfidenceBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
-  if (pct >= 85) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-800">
-        {pct}%
-      </span>
-    );
-  }
-  if (pct >= 70) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">
-        {pct}%
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-800">
-      {pct}%
-    </span>
-  );
+  const cls = pct >= 85 ? 'bg-amber-500/10 text-amber-700' : pct >= 70 ? 'bg-amber-500/10 text-amber-600' : 'bg-error/10 text-error';
+  return <span className={`text-label-md px-2 py-0.5 rounded-pill font-semibold ${cls}`}>{pct}%</span>;
 }
 
 function StatusBadge({ row }: { row: QueryLogRow }) {
-  if (row.was_flagged) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">
-        Flagged
-      </span>
-    );
-  }
-  if (row.executed) {
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700">
-        Executed
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-700">
-      Blocked
-    </span>
-  );
+  if (row.was_flagged) return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-error/10 text-error">Flagged</span>;
+  if (row.executed) return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-green-100 text-green-700">Executed</span>;
+  return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-amber-100 text-amber-700">Blocked</span>;
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function GapsPage() {
   const role = getTokenPayload()?.role;
-  const isAdmin = role === 'admin';
+  const isAdminUser = role === 'admin';
 
-  const [activeTab, setActiveTab] = useState<'gaps' | 'log'>('gaps');
-
-  // Gaps state + pagination
+  const [activePill, setActivePill] = useState('gaps');
   const [gaps, setGaps] = useState<Gap[]>([]);
   const [gapsLoading, setGapsLoading] = useState(true);
   const gapsPag = usePagination(50);
-
-  // Query log state + pagination
   const [logRows, setLogRows] = useState<QueryLogRow[]>([]);
   const [logLoading, setLogLoading] = useState(true);
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
@@ -124,14 +78,8 @@ export default function GapsPage() {
     try {
       const res = await api.get(`/reports/gaps?page=${page}&limit=${gapsPag.limit}`);
       setGaps(res.data.data ?? []);
-      if (res.data.pagination) {
-        gapsPag.setTotal(res.data.pagination.total);
-      }
-    } catch {
-      setGaps([]);
-    } finally {
-      setGapsLoading(false);
-    }
+      if (res.data.pagination) gapsPag.setTotal(res.data.pagination.total);
+    } catch { setGaps([]); } finally { setGapsLoading(false); }
   }, [gapsPag.limit]);
 
   const loadLog = useCallback(async (page = 1) => {
@@ -139,278 +87,175 @@ export default function GapsPage() {
     try {
       const res = await api.get(`/reports/query-log?page=${page}&limit=${logPag.limit}`);
       setLogRows(res.data.data ?? []);
-      if (res.data.pagination) {
-        logPag.setTotal(res.data.pagination.total);
-      }
-    } catch {
-      setLogRows([]);
-    } finally {
-      setLogLoading(false);
-    }
+      if (res.data.pagination) logPag.setTotal(res.data.pagination.total);
+    } catch { setLogRows([]); } finally { setLogLoading(false); }
   }, [logPag.limit]);
 
-  useEffect(() => {
-    if (!isAdmin) return;
-    loadGaps(gapsPag.page);
-  }, [isAdmin, gapsPag.page, loadGaps]);
+  useEffect(() => { if (isAdminUser) loadGaps(gapsPag.page); }, [isAdminUser, gapsPag.page, loadGaps]);
+  useEffect(() => { if (isAdminUser) loadLog(logPag.page); }, [isAdminUser, logPag.page, loadLog]);
 
-  useEffect(() => {
-    if (!isAdmin) return;
-    loadLog(logPag.page);
-  }, [isAdmin, logPag.page, loadLog]);
-
-  async function resolveGap(id: number) {
-    await api.patch(`/reports/gaps/${id}/resolve`);
-    await loadGaps();
-  }
-
-  function toggleRow(id: number) {
-    setExpandedRow((prev) => (prev === id ? null : id));
-  }
-
-  if (!isAdmin) {
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <Nav />
-        <div className="max-w-4xl mx-auto pt-16 px-4 text-center">
-          <div className="bg-white rounded-xl border border-slate-200 p-12 inline-block">
-            <p className="text-2xl font-bold text-slate-800 mb-2">Access denied</p>
-            <p className="text-slate-500 text-sm">This page is only available to EpicData admins.</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  async function resolveGap(id: number) { await api.patch(`/reports/gaps/${id}/resolve`); await loadGaps(); }
 
   const unresolvedCount = gaps.filter((g) => !g.resolved).length;
-
-  // Log stats
   const totalLog = logRows.length;
   const executedLog = logRows.filter((r) => r.executed).length;
   const flaggedLog = logRows.filter((r) => r.was_flagged).length;
-  const avgConfidence =
-    totalLog > 0
-      ? Math.round((logRows.reduce((sum, r) => sum + (r.confidence_score ?? 0), 0) / totalLog) * 100)
-      : 0;
+  const avgConf = totalLog > 0 ? Math.round((logRows.reduce((s, r) => s + (r.confidence_score ?? 0), 0) / totalLog) * 100) : 0;
 
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <Nav />
-
-      <div className="max-w-4xl mx-auto pt-8 px-4 pb-16">
-        <h1 className="text-2xl font-bold text-slate-900 mb-1">Admin — Gaps &amp; Log</h1>
-        <p className="text-slate-500 text-sm mb-6">
-          Review questions the AI couldn&apos;t answer confidently and inspect all query history.
-        </p>
-
-        {/* Tab bar */}
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="flex border-b border-slate-200">
-            <button
-              onClick={() => setActiveTab('gaps')}
-              className={`flex items-center gap-2 px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'gaps'
-                  ? 'border-b-2 border-blue-600 text-blue-600 bg-white'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Definition Gaps
-              {unresolvedCount > 0 && (
-                <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-500 text-white text-xs font-bold">
-                  {unresolvedCount}
-                </span>
-              )}
-            </button>
-            <button
-              onClick={() => setActiveTab('log')}
-              className={`px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === 'log'
-                  ? 'border-b-2 border-blue-600 text-blue-600 bg-white'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              Query Log
-            </button>
+  const contextPanel = (
+    <div className="p-4 space-y-6">
+      <div>
+        <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider mb-3">Summary</div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-2">
+            <span className="text-body-sm text-on-surface-variant">Open gaps</span>
+            <span className={`text-body-sm font-bold ${unresolvedCount > 0 ? 'text-error' : 'text-on-surface'}`}>{unresolvedCount}</span>
           </div>
-
-          {/* ── Tab 1: Definition Gaps ── */}
-          {activeTab === 'gaps' && (
-            <div className="p-6">
-              {gapsLoading && (
-                <p className="text-sm text-slate-400 text-center py-8">Loading…</p>
-              )}
-
-              {!gapsLoading && gaps.length === 0 && (
-                <div className="text-center text-slate-400 text-sm py-12">
-                  No definition gaps yet. Keep an eye on this page as users start asking questions.
-                </div>
-              )}
-
-              {!gapsLoading && gaps.length > 0 && (
-                <div className="space-y-3">
-                  {gaps.map((g) => (
-                    <div
-                      key={g.id}
-                      className={`rounded-lg border p-4 transition-opacity ${
-                        g.resolved
-                          ? 'border-slate-100 bg-slate-50 opacity-50'
-                          : 'border-slate-200 bg-white'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-bold text-slate-800 leading-snug">
-                            &ldquo;{g.question_text}&rdquo;
-                          </p>
-                          <p className="text-sm text-slate-500 mt-1">{g.gap_description}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            {g.hit_count > 1 && (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">
-                                blocked {g.hit_count} questions
-                              </span>
-                            )}
-                            <p className="text-xs text-slate-400">
-                              {new Date(g.created_at).toLocaleDateString('nl-BE')}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="shrink-0">
-                          {!g.resolved ? (
-                            <button
-                              onClick={() => resolveGap(g.id)}
-                              className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors whitespace-nowrap"
-                            >
-                              Mark resolved
-                            </button>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-700">
-                              ✓ Resolved
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <Pagination
-                page={gapsPag.page}
-                totalPages={gapsPag.totalPages}
-                hasNext={gapsPag.hasNext}
-                hasPrev={gapsPag.hasPrev}
-                onPrev={gapsPag.prevPage}
-                onNext={gapsPag.nextPage}
-                onGoTo={gapsPag.goToPage}
-                total={gapsPag.total}
-              />
-            </div>
-          )}
-
-          {/* ── Tab 2: Query Log ── */}
-          {activeTab === 'log' && (
-            <div className="p-6">
-              {/* Stat bar */}
-              {!logLoading && totalLog > 0 && (
-                <div className="flex gap-6 mb-5 text-sm">
-                  <div>
-                    <span className="text-slate-400">Total</span>{' '}
-                    <span className="font-semibold text-slate-800">{totalLog}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Executed</span>{' '}
-                    <span className="font-semibold text-green-700">{executedLog}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Flagged</span>{' '}
-                    <span className="font-semibold text-red-600">{flaggedLog}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400">Avg confidence</span>{' '}
-                    <span className="font-semibold text-slate-800">{avgConfidence}%</span>
-                  </div>
-                </div>
-              )}
-
-              {logLoading && (
-                <p className="text-sm text-slate-400 text-center py-8">Loading…</p>
-              )}
-
-              {!logLoading && logRows.length === 0 && (
-                <div className="text-center text-slate-400 text-sm py-12">
-                  No queries logged yet.
-                </div>
-              )}
-
-              {!logLoading && logRows.length > 0 && (
-                <div className="overflow-x-auto rounded-lg border border-slate-200">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                        <th className="px-4 py-3">Question</th>
-                        <th className="px-4 py-3 whitespace-nowrap">Confidence</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3 whitespace-nowrap">When</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {logRows.map((row) => (
-                        <>
-                          <tr
-                            key={row.id}
-                            onClick={() => toggleRow(row.id)}
-                            className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
-                          >
-                            <td className="px-4 py-3 text-slate-800 max-w-xs truncate">
-                              {row.question_text}
-                            </td>
-                            <td className="px-4 py-3">
-                              <ConfidenceBadge score={row.confidence_score ?? 0} />
-                            </td>
-                            <td className="px-4 py-3">
-                              <StatusBadge row={row} />
-                            </td>
-                            <td className="px-4 py-3 text-slate-500 whitespace-nowrap">
-                              {relativeTime(row.created_at)}
-                            </td>
-                          </tr>
-                          {expandedRow === row.id && (
-                            <tr key={`${row.id}-expanded`} className="bg-slate-950">
-                              <td colSpan={4} className="px-4 py-4">
-                                <pre className="bg-slate-900 rounded-lg p-4 text-green-400 font-mono text-xs overflow-x-auto whitespace-pre-wrap break-words">
-                                  {row.generated_sql
-                                    ? formatSql(row.generated_sql)
-                                    : '-- No SQL generated'}
-                                </pre>
-                                {row.flag_reason && (
-                                  <p className="mt-2 text-xs text-red-400 font-medium">
-                                    Flag reason: {row.flag_reason}
-                                  </p>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              <Pagination
-                page={logPag.page}
-                totalPages={logPag.totalPages}
-                hasNext={logPag.hasNext}
-                hasPrev={logPag.hasPrev}
-                onPrev={logPag.prevPage}
-                onNext={logPag.nextPage}
-                onGoTo={logPag.goToPage}
-                total={logPag.total}
-              />
-            </div>
-          )}
+          <div className="flex items-center justify-between px-2">
+            <span className="text-body-sm text-on-surface-variant">Queries logged</span>
+            <span className="text-body-sm font-bold text-on-surface">{logPag.total}</span>
+          </div>
+          <div className="flex items-center justify-between px-2">
+            <span className="text-body-sm text-on-surface-variant">Avg confidence</span>
+            <span className="text-body-sm font-bold text-on-surface">{avgConf}%</span>
+          </div>
         </div>
       </div>
     </div>
+  );
+
+  return (
+    <AppShell
+      title="Review Queue"
+      subtitle="Questions the AI couldn't answer and query history"
+      contextPanel={contextPanel}
+      pills={[
+        { key: 'gaps', label: `Gaps${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}` },
+        { key: 'log', label: 'Query Log' },
+      ]}
+      activePill={activePill}
+      onPillChange={setActivePill}
+    >
+      {activePill === 'gaps' ? (
+        <div className="p-6 max-w-4xl">
+          {gapsLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
+
+          {!gapsLoading && gaps.length === 0 && (
+            <div className="text-center text-on-surface-variant text-body-md py-16">
+              No definition gaps yet. They'll appear here as users ask questions.
+            </div>
+          )}
+
+          {!gapsLoading && gaps.length > 0 && (
+            <div className="space-y-3">
+              {gaps.map((g) => (
+                <div key={g.id}
+                  className={`rounded-2xl p-5 transition-opacity ${
+                    g.resolved ? 'bg-surface-container-low opacity-50' : 'bg-surface-container-lowest shadow-ambient'
+                  }`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-body-md font-semibold text-on-surface leading-snug">&ldquo;{g.question_text}&rdquo;</p>
+                      <p className="text-body-sm text-on-surface-variant mt-1">{g.gap_description}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        {g.hit_count > 1 && (
+                          <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-primary/10 text-primary">
+                            blocked {g.hit_count} questions
+                          </span>
+                        )}
+                        <span className="text-label-sm text-on-surface-variant/50">{new Date(g.created_at).toLocaleDateString('nl-BE')}</span>
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      {!g.resolved ? (
+                        <button onClick={() => resolveGap(g.id)}
+                          className="px-3.5 py-1.5 text-label-lg font-semibold bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors">
+                          Mark resolved
+                        </button>
+                      ) : (
+                        <span className="text-label-md px-2.5 py-1 rounded-pill font-semibold bg-green-100 text-green-700">Resolved</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="mt-4">
+            <Pagination page={gapsPag.page} totalPages={gapsPag.totalPages} hasNext={gapsPag.hasNext}
+              hasPrev={gapsPag.hasPrev} onPrev={gapsPag.prevPage} onNext={gapsPag.nextPage}
+              onGoTo={gapsPag.goToPage} total={gapsPag.total} />
+          </div>
+        </div>
+      ) : (
+        <div className="p-6 max-w-5xl">
+          {/* Stats bar */}
+          {!logLoading && totalLog > 0 && (
+            <div className="flex gap-6 mb-5">
+              {[
+                { label: 'Total', value: totalLog, cls: 'text-on-surface' },
+                { label: 'Executed', value: executedLog, cls: 'text-green-700' },
+                { label: 'Flagged', value: flaggedLog, cls: 'text-error' },
+                { label: 'Avg confidence', value: `${avgConf}%`, cls: 'text-on-surface' },
+              ].map((s) => (
+                <div key={s.label} className="text-body-sm">
+                  <span className="text-on-surface-variant">{s.label} </span>
+                  <span className={`font-bold ${s.cls}`}>{s.value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {logLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
+          {!logLoading && logRows.length === 0 && (
+            <div className="text-center text-on-surface-variant text-body-md py-16">No queries logged yet.</div>
+          )}
+
+          {!logLoading && logRows.length > 0 && (
+            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">
+              <table className="w-full text-body-sm">
+                <thead>
+                  <tr className="bg-surface-container-low">
+                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Question</th>
+                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Confidence</th>
+                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Status</th>
+                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {logRows.map((row) => (
+                    <tr key={row.id} onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
+                      className="border-t border-outline-variant/10 hover:bg-surface-container-low cursor-pointer transition-colors">
+                      <td className="px-5 py-3 text-on-surface max-w-xs truncate">{row.question_text}</td>
+                      <td className="px-5 py-3"><ConfidenceBadge score={row.confidence_score ?? 0} /></td>
+                      <td className="px-5 py-3"><StatusBadge row={row} /></td>
+                      <td className="px-5 py-3 text-on-surface-variant">{relativeTime(row.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              {expandedRow && (() => {
+                const row = logRows.find((r) => r.id === expandedRow);
+                if (!row) return null;
+                return (
+                  <div className="bg-inverse-surface p-5">
+                    <pre className="text-green-400 font-mono text-label-md overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                      {row.generated_sql ? formatSql(row.generated_sql) : '-- No SQL generated'}
+                    </pre>
+                    {row.flag_reason && <p className="mt-2 text-label-md text-error font-medium">Flag: {row.flag_reason}</p>}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+          <div className="mt-4">
+            <Pagination page={logPag.page} totalPages={logPag.totalPages} hasNext={logPag.hasNext}
+              hasPrev={logPag.hasPrev} onPrev={logPag.prevPage} onNext={logPag.nextPage}
+              onGoTo={logPag.goToPage} total={logPag.total} />
+          </div>
+        </div>
+      )}
+    </AppShell>
   );
 }

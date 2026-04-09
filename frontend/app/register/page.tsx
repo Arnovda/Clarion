@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { setToken } from '@/lib/auth';
+import AuthLayout from '@/components/layout/AuthLayout';
+
+const inputCls = "w-full px-3.5 py-2.5 rounded-xl text-body-md bg-surface-container-low text-on-surface placeholder:text-on-surface-variant/40 border-b-2 border-transparent focus:border-primary focus:outline-none transition-colors";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -20,25 +22,12 @@ export default function RegisterPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-
-    if (password !== confirmPassword) {
-      setError('Passwords do not match.');
-      return;
-    }
-
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
+    if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
 
     setLoading(true);
     try {
-      const res = await api.post('/auth/register', {
-        companyName,
-        email,
-        password,
-        displayName,
-      });
+      const res = await api.post('/auth/register', { companyName, email, password, displayName });
       setToken(res.data.data.token);
       router.push('/setup');
     } catch (err: unknown) {
@@ -50,83 +39,58 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <Image src="/logo.svg" alt="DataBridge" width={180} height={40} priority className="mx-auto" />
-          <p className="text-slate-500 mt-2 text-sm">Create your account</p>
+    <AuthLayout subtitle="Create your account">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-label-lg text-on-surface mb-1.5">Company name</label>
+          <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="Acme BV" className={inputCls} required />
+        </div>
+        <div>
+          <label className="block text-label-lg text-on-surface mb-1.5">Your name</label>
+          <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Jan Janssens" className={inputCls} required />
+        </div>
+        <div>
+          <label className="block text-label-lg text-on-surface mb-1.5">Email</label>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com" className={inputCls} required />
+        </div>
+        <div>
+          <label className="block text-label-lg text-on-surface mb-1.5">Password</label>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            placeholder="Minimum 8 characters" className={inputCls} required />
+        </div>
+        <div>
+          <label className="block text-label-lg text-on-surface mb-1.5">Confirm password</label>
+          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
+            className={inputCls} required />
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-sm border border-slate-200 p-8 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Company name</label>
-            <input
-              type="text"
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="Acme BV"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
+        {error && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-error-container/30 text-error text-body-sm">
+            <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            {error}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Your name</label>
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Jan Janssens"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Minimum 8 characters"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Confirm password</label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              required
-            />
-          </div>
-          {error && <p className="text-red-600 text-sm">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-blue-600 text-white rounded-lg px-4 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {loading ? 'Creating account...' : 'Create account'}
-          </button>
+        )}
 
-          <p className="text-center text-xs text-slate-500 pt-1">
-            Already have an account?{' '}
-            <Link href="/" className="text-blue-600 hover:underline">Sign in</Link>
-          </p>
-        </form>
-      </div>
-    </div>
+        <button type="submit" disabled={loading}
+          className="w-full py-3 rounded-xl text-title-md gradient-primary text-on-primary hover:opacity-90 disabled:opacity-50 transition-all shadow-glow-primary">
+          {loading ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Creating account...
+            </span>
+          ) : 'Create account'}
+        </button>
+
+        <p className="text-center text-label-md text-on-surface-variant pt-1">
+          Already have an account?{' '}
+          <Link href="/" className="text-secondary font-semibold hover:text-primary transition-colors">Sign in</Link>
+        </p>
+      </form>
+    </AuthLayout>
   );
 }
