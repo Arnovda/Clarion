@@ -87,14 +87,14 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { key: 'ask',        href: '/ask',        label: 'Ask',            icon: IconChat,      roles: ['admin', 'analyst', 'viewer'] },
+  { key: 'ask',        href: '/query',      label: 'Ask',            icon: IconChat,      roles: ['admin', 'analyst', 'viewer'] },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',     icon: IconDashboard, roles: ['admin', 'analyst', 'viewer'] },
-  { key: 'dictionary', href: '/dictionary', label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'] },
+  { key: 'dictionary', href: '/semantic',   label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'] },
   { key: 'health',     href: '/health',     label: 'Data Health',    icon: IconHeart,     roles: ['admin', 'analyst'] },
   { key: 'products',   href: '/products',   label: 'Data Products',  icon: IconStar,      roles: ['admin'] },
-  { key: 'connect',    href: '/connect',    label: 'Connect',        icon: IconPlug,      roles: ['admin'] },
-  { key: 'review',     href: '/review',     label: 'Review Queue',   icon: IconInbox,     roles: ['admin'] },
-  { key: 'team',       href: '/team',       label: 'Team',           icon: IconUsers,      roles: ['admin'] },
+  { key: 'connect',    href: '/setup',      label: 'Connect',        icon: IconPlug,      roles: ['admin'] },
+  { key: 'review',     href: '/gaps',       label: 'Review Queue',   icon: IconInbox,     roles: ['admin'] },
+  { key: 'team',       href: '/users',      label: 'Team',           icon: IconUsers,      roles: ['admin'] },
 ];
 
 /* ── Component ───────────────────────────────────────────────────────── */
@@ -113,8 +113,19 @@ export default function IconRail() {
 
   const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role as 'admin' | 'analyst' | 'viewer'));
 
+  // Match both old and new URLs during migration
+  const ROUTE_ALIASES: Record<string, string[]> = {
+    '/query':    ['/query', '/ask'],
+    '/semantic': ['/semantic', '/dictionary'],
+    '/setup':    ['/setup', '/connect'],
+    '/gaps':     ['/gaps', '/review'],
+    '/users':    ['/users', '/team'],
+    '/health':   ['/health'],
+  };
+
   function isActive(href: string) {
-    return pathname === href || pathname.startsWith(href + '/');
+    const aliases = ROUTE_ALIASES[href] ?? [href];
+    return aliases.some((a) => pathname === a || pathname.startsWith(a + '/'));
   }
 
   function logout() {
