@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import AppShell from '@/components/layout/AppShell';
+import Nav from '@/components/Nav';
 import DatabaseTree from '@/components/semantic/DatabaseTree';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
@@ -233,7 +233,8 @@ function SemanticInner() {
   );
 
   return (
-    <AppShell title="Data Dictionary" subtitle="Definitions, relationships, quality and KPIs">
+    <div className="flex flex-col bg-slate-50" style={{ height: '100vh', overflow: 'hidden' }}>
+      <Nav />
 
       {/* Tab bar */}
       <div className="bg-white border-b border-slate-200 px-4 flex items-center gap-0 flex-shrink-0">
@@ -433,14 +434,14 @@ function SemanticInner() {
           }}
         />
       )}
-    </AppShell>
+    </div>
   );
 }
 
 export default function SemanticPage() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen bg-surface flex items-center justify-center text-on-surface-variant">Loading…</div>
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-400">Loading…</div>
     }>
       <SemanticInner />
     </Suspense>

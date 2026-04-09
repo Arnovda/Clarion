@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import AppShell from '@/components/layout/AppShell';
+import Nav from '@/components/Nav';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import {
@@ -121,7 +121,8 @@ export default function ReportsPage() {
   const chartHeight = Math.min(numericResults.length * 60 + 48, 300);
 
   return (
-    <AppShell title="Reports" subtitle="KPI reports with AI-generated executive summaries">
+    <div className="min-h-screen bg-slate-50">
+      <Nav />
 
       <div className="max-w-6xl mx-auto pt-8 px-4 pb-12">
         <h1 className="text-2xl font-bold text-slate-900 mb-6">Report builder</h1>
@@ -341,6 +342,6 @@ export default function ReportsPage() {
           </div>
         </div>
       </div>
-    </AppShell>
+    </div>
   );
 }

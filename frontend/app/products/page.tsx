@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import AppShell from '@/components/layout/AppShell';
+import Nav from '@/components/Nav';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import dynamic from 'next/dynamic';
@@ -463,7 +463,8 @@ export default function ProductSemanticsPage() {
   ];
 
   return (
-    <AppShell title="Data Products" subtitle="Star schema design, lineage and transformations">
+    <div className="min-h-screen bg-slate-50">
+      <Nav />
 
       {/* Tab bar */}
       <div className="bg-white border-b border-slate-200 px-6">
@@ -1644,6 +1645,6 @@ function KpisView({ product, onRefresh }: { product: FullDataProduct | null; onR
           </div>
         </div>
       )}
-    </AppShell>
+    </div>
   );
 }
