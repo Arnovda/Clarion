@@ -337,7 +337,7 @@ export default function ProductsPage() {
       pushLog('Creating product structure in database…', 'running');
       const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: prop });
       const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
-      updateLastLog(`Created ${created.length} products`, 'success');
+      updateLastLog(`Created ${created.length} topics`, 'success');
       await loadProducts();
       await loadDepGraph();
 
@@ -355,7 +355,7 @@ export default function ProductsPage() {
         const isFoundationWave = wave.every(
           (m) => (prop.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
         );
-        const waveNames = wave.map((m) => m.name).join(', ');
+        const waveNames = wave.map((m) => cleanTopicName(m.name)).join(', ');
         pushLog(
           `${isFoundationWave ? '🔷' : '📊'} ${waveNames}${wave.length > 1 ? ` (${wave.length} in parallel)` : ''}`,
           'info'
