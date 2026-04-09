@@ -10,6 +10,10 @@ interface TableHealth {
   connection_id: number;
   table_name: string;
   display_name: string | null;
+  layer: 'source' | 'product';
+  product_name: string | null;
+  product_table_id: number | null;
+  table_role: string | null;
   profiled_at: string | null;
   overall_score: number | null;
   row_count: number | null;
@@ -40,7 +44,7 @@ export default function HealthPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedConnId, setSelectedConnId] = useState<number | null>(null);
-  const [selectedTable, setSelectedTable] = useState<{ connId: number; tableName: string } | null>(null);
+  const [selectedTable, setSelectedTable] = useState<{ connId: number; tableName: string; productTableId?: number | null } | null>(null);
   const [activePill, setActivePill] = useState('overview');
 
   const loadData = useCallback(async () => {
@@ -85,7 +89,7 @@ export default function HealthPage() {
       {/* Sources section */}
       <div className="text-label-md text-on-surface-variant/50 font-semibold uppercase tracking-wider px-2 pt-3">Sources</div>
       {connections.map((conn) => {
-        const connTables = tables.filter((t) => t.connection_id === conn.id);
+        const connTables = tables.filter((t) => t.connection_id === conn.id && t.layer === 'source');
         if (connTables.length === 0) return null;
         const connAvg = connTables.filter((t) => t.overall_score !== null);
         const avg = connAvg.length > 0 ? Math.round((connAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / connAvg.length) * 100) : null;
@@ -131,7 +135,54 @@ export default function HealthPage() {
         );
       })}
 
-      {/* TODO: Products section — add when product quality data is available */}
+      {/* Products section */}
+      {(() => {
+        const productTables = tables.filter((t) => t.layer === 'product');
+        const productNames = [...new Set(productTables.map((t) => t.product_name).filter(Boolean))] as string[];
+        if (productNames.length === 0) return null;
+        return (<>
+          <div className="text-label-md text-on-surface-variant/50 font-semibold uppercase tracking-wider px-2 pt-3">Products</div>
+          {productNames.map((pn) => {
+            const ptables = productTables.filter((t) => t.product_name === pn);
+            const ptAvg = ptables.filter((t) => t.overall_score !== null);
+            const avg = ptAvg.length > 0 ? Math.round((ptAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / ptAvg.length) * 100) : null;
+            const isExpanded = selectedConnId === -ptables[0]?.id; // use negative id as product group key
+            return (
+              <div key={pn}>
+                <button
+                  onClick={() => { setSelectedConnId(isExpanded ? null : -ptables[0]?.id); setSelectedTable(null); setActivePill('overview'); }}
+                  className={`w-full text-left px-3 py-2 rounded-lg text-body-sm flex items-center justify-between transition-colors ${
+                    isExpanded ? 'bg-surface-container-highest text-on-surface font-semibold' : 'text-on-surface-variant hover:bg-surface-container font-medium'
+                  }`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-label-sm">⭐</span>
+                    <span className="truncate">{pn}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {avg !== null && <span className="text-label-sm text-on-surface-variant/50">{avg}%</span>}
+                    <span className="text-label-sm text-on-surface-variant/30">{isExpanded ? '▾' : '▸'}</span>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="ml-3 mt-1 space-y-0.5 mb-2">
+                    {ptables.map((t) => (
+                      <button key={t.id}
+                        onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, productTableId: t.product_table_id }); setActivePill('detail'); }}
+                        className={`w-full text-left px-3 py-1.5 rounded-lg text-body-sm flex items-center gap-2 transition-colors ${
+                          selectedTable?.tableName === t.table_name ? 'bg-surface-container-highest text-on-surface font-medium' : 'text-on-surface-variant hover:bg-surface-container'
+                        }`}>
+                        <ScoreDot score={t.overall_score} />
+                        <span className="truncate">{t.table_name}</span>
+                        <span className="text-label-sm text-on-surface-variant/30 ml-auto">{t.table_role === 'fact' ? 'F' : 'D'}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </>);
+      })()}
 
       {tables.length === 0 && !loading && (
         <p className="text-label-sm text-on-surface-variant/40 px-3 py-4">No tables profiled yet</p>
