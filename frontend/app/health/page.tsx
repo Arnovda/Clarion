@@ -69,36 +69,70 @@ export default function HealthPage() {
     : 0;
 
   const contextPanel = (
-    <div className="p-4 space-y-4">
-      {/* Tables grouped by source connection */}
+    <div className="p-4 space-y-2">
+      {/* "All" option */}
+      <button
+        onClick={() => { setSelectedConnId(null); setSelectedTable(null); setActivePill('overview'); }}
+        className={`w-full text-left px-3 py-2 rounded-lg text-body-sm font-medium transition-colors ${
+          selectedConnId === null
+            ? 'bg-surface-container-highest text-on-surface'
+            : 'text-on-surface-variant hover:bg-surface-container'
+        }`}>
+        All sources
+        <span className="text-on-surface-variant/40 ml-1">({tables.length})</span>
+      </button>
+
+      {/* Sources section */}
+      <div className="text-label-md text-on-surface-variant/50 font-semibold uppercase tracking-wider px-2 pt-3">Sources</div>
       {connections.map((conn) => {
         const connTables = tables.filter((t) => t.connection_id === conn.id);
         if (connTables.length === 0) return null;
         const connAvg = connTables.filter((t) => t.overall_score !== null);
         const avg = connAvg.length > 0 ? Math.round((connAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / connAvg.length) * 100) : null;
+        const isSelected = selectedConnId === conn.id;
         return (
           <div key={conn.id}>
-            <div className="flex items-center justify-between px-2 mb-1">
-              <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider">{conn.name}</div>
-              {avg !== null && <span className="text-label-sm text-on-surface-variant/50">{avg}%</span>}
-            </div>
-            <div className="space-y-0.5 mb-4">
-              {connTables.map((t) => (
-                <button key={t.id}
-                  onClick={() => { setSelectedConnId(conn.id); setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
-                  className={`w-full text-left px-3 py-1.5 rounded-lg text-body-sm flex items-center gap-2 transition-colors ${
-                    selectedTable?.tableName === t.table_name && selectedTable?.connId === t.connection_id
-                      ? 'bg-surface-container-highest text-on-surface font-medium'
-                      : 'text-on-surface-variant hover:bg-surface-container'
-                  }`}>
-                  <ScoreDot score={t.overall_score} />
-                  <span className="truncate">{t.display_name || t.table_name}</span>
-                </button>
-              ))}
-            </div>
+            {/* Clickable connection header */}
+            <button
+              onClick={() => { setSelectedConnId(isSelected ? null : conn.id); setSelectedTable(null); setActivePill('overview'); }}
+              className={`w-full text-left px-3 py-2 rounded-lg text-body-sm flex items-center justify-between transition-colors ${
+                isSelected
+                  ? 'bg-surface-container-highest text-on-surface font-semibold'
+                  : 'text-on-surface-variant hover:bg-surface-container font-medium'
+              }`}>
+              <div className="flex items-center gap-2">
+                <ScoreDot score={avg !== null ? avg / 100 : null} />
+                <span className="truncate">{conn.name}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {avg !== null && <span className="text-label-sm text-on-surface-variant/50">{avg}%</span>}
+                <span className="text-label-sm text-on-surface-variant/30">{isSelected ? '▾' : '▸'}</span>
+              </div>
+            </button>
+
+            {/* Expandable table list — only shown when connection is selected */}
+            {isSelected && (
+              <div className="ml-3 mt-1 space-y-0.5 mb-2">
+                {connTables.map((t) => (
+                  <button key={t.id}
+                    onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
+                    className={`w-full text-left px-3 py-1.5 rounded-lg text-body-sm flex items-center gap-2 transition-colors ${
+                      selectedTable?.tableName === t.table_name && selectedTable?.connId === t.connection_id
+                        ? 'bg-surface-container-highest text-on-surface font-medium'
+                        : 'text-on-surface-variant hover:bg-surface-container'
+                    }`}>
+                    <ScoreDot score={t.overall_score} />
+                    <span className="truncate">{t.display_name || t.table_name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         );
       })}
+
+      {/* TODO: Products section — add when product quality data is available */}
+
       {tables.length === 0 && !loading && (
         <p className="text-label-sm text-on-surface-variant/40 px-3 py-4">No tables profiled yet</p>
       )}
