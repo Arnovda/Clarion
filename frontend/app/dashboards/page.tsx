@@ -2161,7 +2161,7 @@ export default function DashboardsPage() {
           </div>
         </div>
       )}
-    </div>
+      </div>
     </AppShell>
   );
 }
