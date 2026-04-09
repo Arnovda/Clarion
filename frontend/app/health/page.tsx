@@ -70,45 +70,38 @@ export default function HealthPage() {
 
   const contextPanel = (
     <div className="p-4 space-y-4">
-      {/* Connection filter */}
-      {connections.length > 1 && (
-        <div>
-          <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider mb-2">Connection</div>
-          {connections.map((c) => (
-            <button key={c.id}
-              onClick={() => { setSelectedConnId(c.id); setSelectedTable(null); setActivePill('overview'); }}
-              className={`w-full text-left px-3 py-2 rounded-lg text-body-sm transition-colors ${
-                selectedConnId === c.id ? 'bg-surface-container-highest text-on-surface font-semibold' : 'text-on-surface-variant hover:bg-surface-container'
-              }`}>
-              {c.name}
-            </button>
-          ))}
-        </div>
+      {/* Tables grouped by source connection */}
+      {connections.map((conn) => {
+        const connTables = tables.filter((t) => t.connection_id === conn.id);
+        if (connTables.length === 0) return null;
+        const connAvg = connTables.filter((t) => t.overall_score !== null);
+        const avg = connAvg.length > 0 ? Math.round((connAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / connAvg.length) * 100) : null;
+        return (
+          <div key={conn.id}>
+            <div className="flex items-center justify-between px-2 mb-1">
+              <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider">{conn.name}</div>
+              {avg !== null && <span className="text-label-sm text-on-surface-variant/50">{avg}%</span>}
+            </div>
+            <div className="space-y-0.5 mb-4">
+              {connTables.map((t) => (
+                <button key={t.id}
+                  onClick={() => { setSelectedConnId(conn.id); setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
+                  className={`w-full text-left px-3 py-1.5 rounded-lg text-body-sm flex items-center gap-2 transition-colors ${
+                    selectedTable?.tableName === t.table_name && selectedTable?.connId === t.connection_id
+                      ? 'bg-surface-container-highest text-on-surface font-medium'
+                      : 'text-on-surface-variant hover:bg-surface-container'
+                  }`}>
+                  <ScoreDot score={t.overall_score} />
+                  <span className="truncate">{t.display_name || t.table_name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      {tables.length === 0 && !loading && (
+        <p className="text-label-sm text-on-surface-variant/40 px-3 py-4">No tables profiled yet</p>
       )}
-
-      {/* Table list */}
-      <div>
-        <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider mb-2">
-          Tables ({filteredTables.length})
-        </div>
-        <div className="space-y-0.5">
-          {filteredTables.map((t) => (
-            <button key={t.id}
-              onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
-              className={`w-full text-left px-3 py-2 rounded-lg text-body-sm flex items-center gap-2 transition-colors ${
-                selectedTable?.tableName === t.table_name
-                  ? 'bg-surface-container-highest text-on-surface font-medium'
-                  : 'text-on-surface-variant hover:bg-surface-container'
-              }`}>
-              <ScoreDot score={t.overall_score} />
-              <span className="truncate">{t.display_name || t.table_name}</span>
-            </button>
-          ))}
-          {filteredTables.length === 0 && !loading && (
-            <p className="text-label-sm text-on-surface-variant/40 px-3 py-4">No tables profiled yet</p>
-          )}
-        </div>
-      </div>
     </div>
   );
 
