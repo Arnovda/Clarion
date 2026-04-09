@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import Nav from '@/components/Nav';
+import AppShell from '@/components/layout/AppShell';
 import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 
@@ -918,24 +918,60 @@ export default function SourcesPage() {
     // No-op — SSE banner handles completion internally
   }
 
+  const contextPanel = (
+    <div className="p-4 space-y-4">
+      <button
+        onClick={() => { setEditingConn(null); setPanelConnector(CONNECTORS[0]); }}
+        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 gradient-primary text-white text-body-sm font-semibold rounded-xl hover:opacity-90 transition-opacity"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+        </svg>
+        New Source
+      </button>
+      <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider">Connected</div>
+      {connections.map((conn) => {
+        const connector = connectorForType(conn.type);
+        return (
+          <div key={conn.id} className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-surface-container transition-colors cursor-pointer"
+            onClick={() => openEdit(conn)}>
+            <div className={`w-7 h-7 rounded-lg ${connector?.color ?? 'bg-surface-container'} text-white flex items-center justify-center text-label-sm font-bold`}>
+              {connector?.iconLetter ?? '?'}
+            </div>
+            <div className="min-w-0">
+              <p className="text-body-sm font-medium text-on-surface truncate">{conn.name}</p>
+              <p className="text-label-sm text-on-surface-variant/50">{conn.type}</p>
+            </div>
+          </div>
+        );
+      })}
+      {connections.length === 0 && !loading && (
+        <p className="text-label-sm text-on-surface-variant/40 px-2">No sources yet</p>
+      )}
+    </div>
+  );
+
   return (
-    <div className="min-h-screen bg-slate-50">
-      <Nav />
+    <AppShell
+      title="Connect"
+      subtitle={`${connections.length} source${connections.length !== 1 ? 's' : ''} connected`}
+      contextPanel={contextPanel}
+      pills={[{ key: 'sources', label: 'Sources' }, { key: 'ingestion', label: 'Ingestion' }]}
+      activePill={ingesting ? 'ingestion' : 'sources'}
+      onPillChange={() => {}}
+    >
+      <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
 
-      <div className="max-w-4xl mx-auto px-6 py-10 space-y-10">
-
-        {/* Ingestion wizard — pick tables & ingest before profiling */}
+        {/* Ingestion wizard */}
         {ingesting && !profiling && (
           <IngestionWizard
             connectionId={ingesting.id}
             connectionName={ingesting.name}
             onIngestionDone={() => {
-              // After ingestion, start profiling
               setProfiling({ id: ingesting.id, name: ingesting.name, startStream: true });
               setIngesting(null);
             }}
             onSkip={() => {
-              // Skip ingestion, go straight to profiling (uses original source)
               setProfiling({ id: ingesting.id, name: ingesting.name, startStream: true });
               setIngesting(null);
             }}
@@ -955,18 +991,17 @@ export default function SourcesPage() {
         {/* Connected Sources */}
         <section>
           <div className="flex items-baseline gap-3 mb-4">
-            <h2 className="text-lg font-semibold text-slate-900">Connected Sources</h2>
-            <span className="text-sm text-slate-400">{connections.length} source{connections.length !== 1 ? 's' : ''}</span>
+            <h2 className="font-headline text-headline-sm font-bold text-on-surface">Connected Sources</h2>
           </div>
 
           {loading ? (
-            <div className="bg-white rounded-xl border border-slate-200 p-8 flex items-center justify-center">
-              <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-8 flex items-center justify-center">
+              <div className="w-5 h-5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
             </div>
           ) : connections.length === 0 ? (
-            <div className="bg-white rounded-xl border border-dashed border-slate-300 p-8 text-center">
-              <p className="text-slate-400 text-sm">No sources connected yet.</p>
-              <p className="text-slate-400 text-xs mt-1">Choose a connector below to get started.</p>
+            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-8 text-center">
+              <p className="text-on-surface-variant text-body-md">No sources connected yet.</p>
+              <p className="text-on-surface-variant/50 text-body-sm mt-1">Choose a connector below to get started.</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -988,8 +1023,8 @@ export default function SourcesPage() {
         {/* Add a Source */}
         <section>
           <div className="mb-4">
-            <h2 className="text-lg font-semibold text-slate-900">Add a Source</h2>
-            <p className="text-sm text-slate-500 mt-0.5">Choose a connector to bring in your data. More connectors are coming soon.</p>
+            <h2 className="font-headline text-headline-sm font-bold text-on-surface">Add a Source</h2>
+            <p className="text-body-sm text-on-surface-variant mt-1">Choose a connector to bring in your data.</p>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
@@ -1002,7 +1037,6 @@ export default function SourcesPage() {
             ))}
           </div>
         </section>
-
       </div>
 
       {/* Slide-in panel (create or edit) */}
@@ -1015,6 +1049,6 @@ export default function SourcesPage() {
           onUpdated={handleUpdated}
         />
       )}
-    </div>
+    </AppShell>
   );
 }
