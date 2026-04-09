@@ -19,7 +19,8 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
-import { runQualityProfile } from '../quality/QualityProfiler';
+import { runQualityProfile, runQualityProfileWithConnector } from '../quality/QualityProfiler';
+import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
 
@@ -286,18 +287,23 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
 router.get('/tables', requireAuth, async (req, res, next) => {
   try {
     const connId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
-    const query = semanticDb('source_tables').where({ is_active: true });
-    if (connId) query.where({ connection_id: connId });
-    const tables = await query.select('id', 'connection_id', 'table_name', 'display_name');
 
-    // Attach latest profile stub for each table
-    const result = await Promise.all(
-      (tables as { id: number; connection_id: number; table_name: string; display_name: string }[]).map(async (t) => {
+    // 1. Source tables
+    const srcQuery = semanticDb('source_tables').where({ is_active: true });
+    if (connId) srcQuery.where({ connection_id: connId });
+    const srcTables = await srcQuery.select('id', 'connection_id', 'table_name', 'display_name');
+
+    const sourceResult = await Promise.all(
+      (srcTables as { id: number; connection_id: number; table_name: string; display_name: string }[]).map(async (t) => {
         const latest = await semanticDb('dataset_profiles')
           .where({ connection_id: t.connection_id, table_name: t.table_name })
           .orderBy('profiled_at', 'desc').first();
         return {
           ...t,
+          layer:          'source' as const,
+          product_name:   null as string | null,
+          product_table_id: null as number | null,
+          table_role:     null as string | null,
           profiled_at:    latest?.profiled_at ?? null,
           overall_score:  latest?.overall_score ?? null,
           row_count:      latest?.row_count ?? null,
@@ -305,8 +311,97 @@ router.get('/tables', requireAuth, async (req, res, next) => {
         };
       }),
     );
-    res.json({ ok: true, data: result });
+
+    // 2. Product tables (from star schemas)
+    const ptQuery = semanticDb('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where('dp.status', 'success');
+    if (connId) ptQuery.where('dp.connection_id', connId);
+    const productTables = await ptQuery.select(
+      'pt.id as pt_id', 'pt.table_name', 'pt.table_role', 'pt.row_count as pt_row_count',
+      'dp.id as dp_id', 'dp.name as product_name', 'dp.connection_id',
+    );
+
+    const productResult = await Promise.all(
+      (productTables as {
+        pt_id: number; table_name: string; table_role: string; pt_row_count: number | null;
+        dp_id: number; product_name: string; connection_id: number;
+      }[]).map(async (t) => {
+        const latest = await semanticDb('dataset_profiles')
+          .where({ connection_id: t.connection_id, table_name: t.table_name })
+          .orderBy('profiled_at', 'desc').first();
+        return {
+          id:               t.pt_id,
+          connection_id:    t.connection_id,
+          table_name:       t.table_name,
+          display_name:     t.table_name.replace(/_/g, ' '),
+          layer:            'product' as const,
+          product_name:     t.product_name,
+          product_table_id: t.pt_id,
+          table_role:       t.table_role,
+          profiled_at:      latest?.profiled_at ?? null,
+          overall_score:    latest?.overall_score ?? null,
+          row_count:        latest?.row_count ?? t.pt_row_count ?? null,
+          rag:              ragStatus(latest?.overall_score ?? null),
+        };
+      }),
+    );
+
+    res.json({ ok: true, data: [...sourceResult, ...productResult] });
   } catch (err) { next(err); }
+});
+
+// POST /api/quality/product/:productTableId/profile — trigger quality profiling for a product table
+router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ptId = Number(req.params.productTableId);
+
+    // Look up the chain: product_table → star_schema → data_product → connection
+    const pt = await semanticDb('product_tables').where({ id: ptId }).first();
+    if (!pt) { res.status(404).json({ ok: false, error: 'Product table not found' }); return; }
+
+    const ss = await semanticDb('star_schemas').where({ id: pt.star_schema_id }).first();
+    const dp = await semanticDb('data_products').where({ id: ss.data_product_id }).first();
+    const conn = await semanticDb('connections').where({ id: dp.connection_id }).first();
+    if (!conn) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+
+    // Build product warehouse path (same logic as transformationRunner)
+    const productSlug = dp.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const warehousePath = conn.warehouse_path ?? `./warehouse/conn_${conn.id}`;
+    let productDir: string;
+    if (warehousePath.startsWith('az://')) {
+      const parts = warehousePath.replace(/\/conn_\d+$/, '');
+      productDir = `${parts}/products/${productSlug}`;
+    } else {
+      productDir = require('path').resolve('./warehouse/product', productSlug);
+    }
+
+    // Create DuckDB connector pointing at product warehouse
+    const connector = new DuckDBConnector(productDir, [pt.table_name]);
+    await connector.connect();
+
+    // Get column definitions
+    const columns = await semanticDb('product_columns')
+      .where({ product_table_id: ptId })
+      .select('column_name', 'data_type');
+    const columnDefs = (columns as { column_name: string; data_type: string }[])
+      .map((c) => ({ name: c.column_name, type: c.data_type || 'TEXT' }));
+
+    // Run quality profiling
+    const result = await runQualityProfileWithConnector(
+      dp.connection_id,
+      pt.table_name,
+      connector,
+      columnDefs.length > 0 ? columnDefs : undefined,
+    );
+
+    connector.disconnect();
+
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // GET /api/quality/:connId/:table/summary
