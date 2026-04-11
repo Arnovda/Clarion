@@ -1187,6 +1187,83 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/products/propose-single — propose exactly one data product
+// from a free-text user description. No streaming — returns JSON directly.
+// ---------------------------------------------------------------------------
+
+router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const { connectionId, description } = req.body as { connectionId: number; description: string };
+    if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
+    if (!description || !description.trim()) return res.status(400).json({ error: 'description required' });
+
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) return res.status(404).json({ error: 'Connection not found' });
+
+    const sourceTables = await semanticDb('source_tables as st')
+      .where({ 'st.connection_id': connectionId, 'st.is_active': true })
+      .select('st.*');
+
+    const tableContexts = await Promise.all(sourceTables.map(async (t: Record<string, unknown>) => {
+      const columns = await semanticDb('source_columns')
+        .where({ table_id: t.id })
+        .select('id', 'column_name', 'data_type', 'description', 'is_dimension', 'is_measure');
+      const fkRels = await semanticDb('table_relationships as tr')
+        .join('source_tables as st2', 'tr.to_table_id', 'st2.id')
+        .where({ 'tr.from_table_id': t.id })
+        .select('tr.from_column_id', 'st2.table_name as to_table_name', 'tr.relationship_type');
+      const fkByColId = new Map(fkRels.map((r: Record<string, unknown>) => [r.from_column_id, r]));
+      const bkCol = t.business_key_column as string | null;
+      return {
+        table_name: t.table_name as string,
+        display_name: (t.display_name as string) || (t.table_name as string),
+        description: (t.description as string) || '',
+        domain: Array.isArray(t.domains) ? (t.domains as string[]).join(', ') : '',
+        columns: columns.map((c: Record<string, unknown>) => {
+          const fk = fkByColId.get(c.id);
+          return {
+            column_name: c.column_name as string,
+            data_type: (c.data_type as string) || 'TEXT',
+            description: (c.description as string) || '',
+            is_primary_key: c.column_name === 'id' || c.column_name === bkCol,
+            is_foreign_key: !!fk,
+            fk_references: fk ? (fk as Record<string, unknown>).to_table_name as string : undefined,
+          };
+        }),
+        relationships: fkRels.map((r: Record<string, unknown>) => ({
+          to_table: r.to_table_name as string,
+          via_column: String(r.from_column_id),
+          type: (r.relationship_type as string) || 'many_to_one',
+        })),
+      };
+    }));
+
+    const existingProducts = await semanticDb('data_products').where({ connection_id: connectionId });
+    const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
+      const sharedTables = await semanticDb('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': true })
+        .pluck('pt.table_name');
+      return { name: p.name as string, shared_dimension_tables: sharedTables };
+    }));
+
+    const { proposeSingleDataProduct } = await import('../ai/AIService');
+
+    const proposal = await proposeSingleDataProduct(
+      tableContexts,
+      existingWithDims,
+      connection.name as string,
+      description.trim().slice(0, 500),
+    );
+
+    return res.json({ ok: true, data: proposal });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to propose data product';
+    return res.status(500).json({ error: msg });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/propose-stream — SSE streaming version of /propose
 // Streams Claude's thinking tokens live so the browser shows progress immediately.
 // ---------------------------------------------------------------------------

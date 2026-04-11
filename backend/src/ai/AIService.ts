@@ -63,6 +63,7 @@ import {
 import {
   DATA_PRODUCT_PROPOSAL_SYSTEM,
   buildDataProductProposalUser,
+  buildSingleDataProductProposalUser,
   DataProductProposal,
   SourceTableContext,
   ExistingDataProduct,
@@ -802,4 +803,24 @@ export async function repairTransformationSql(
   const raw = msg.content.find((b) => b.type === 'text')?.text ?? '';
   // Strip any accidental markdown code fences
   return raw.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+}
+
+// ---------------------------------------------------------------------------
+// Propose a SINGLE data product from a free-text business description
+// ---------------------------------------------------------------------------
+
+export async function proposeSingleDataProduct(
+  sourceTables: SourceTableContext[],
+  existingProducts: ExistingDataProduct[],
+  connectionName: string,
+  userDescription: string,
+): Promise<DataProductProposal> {
+  const raw = await callClaude(
+    DATA_PRODUCT_PROPOSAL_SYSTEM,
+    buildSingleDataProductProposalUser(sourceTables, existingProducts, connectionName, userDescription),
+    8000,
+    'propose_single_data_product',
+  );
+  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  return JSON.parse(cleaned) as DataProductProposal;
 }

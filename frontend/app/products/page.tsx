@@ -713,6 +713,94 @@ export default function ProductsPage() {
     setAutoBuilding(false);
   };
 
+  const handleSingleTopicBuild = async (connId: number, description: string) => {
+    setReasoningFull('');
+    setShowReasoning(false);
+    setAutoBuilding(true);
+    autoBuildLogRef.current = [];
+    setAutoBuildLog([]);
+    setBuildElapsed(0);
+    const timerRef = setInterval(() => setBuildElapsed((s) => s + 1), 1000);
+
+    const abortCtrl = new AbortController();
+    abortRef.current = abortCtrl;
+
+    try {
+      pushLog(`Asking Claude to design "${description.slice(0, 60)}${description.length > 60 ? '…' : ''}"…`, 'running', false, 'single-propose');
+
+      const res = await api.post('/products/propose-single', { connectionId: connId, description });
+      const proposal: DataProductProposal = res.data.data;
+
+      if (!proposal?.data_products?.length) {
+        throw new Error('Claude could not design a product for that description.');
+      }
+
+      updateLogByKey('single-propose', `Planned: ${proposal.data_products[0].name}`, 'success');
+      if (proposal.rationale) pushLog(`💬 ${proposal.rationale}`, 'info');
+
+      // Build via existing pipeline
+      const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal });
+      const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
+      if (!created.length) throw new Error('No products were created.');
+
+      await loadProducts();
+      await loadDepGraph();
+
+      const meta = created[0];
+      const key = `design-${meta.id}`;
+      pushLog(`  ${cleanTopicName(meta.name)}  ·  asking Claude to design…`, 'running', true, key);
+
+      await runDesignStream(
+        meta.id,
+        (phase) => {
+          const lastPhase = phase
+            .replace('Designing star schema with AI...', 'Claude is designing the schema…')
+            .replace('Generating transformation SQL...', 'Generating SQL…')
+            .replace('Done!', '✓ Done');
+          updateLogByKey(key, `  ${cleanTopicName(meta.name)}  ·  ${lastPhase}`, 'running');
+        },
+        (chunk) => setReasoningFull((prev) => prev + chunk),
+        abortCtrl.signal,
+      );
+
+      updateLogByKey(key, `  ${cleanTopicName(meta.name)}  ·  ✓ Schema + SQL ready`, 'success');
+      await loadProducts();
+
+      const buildKey = `build-${meta.id}`;
+      pushLog(`  ${cleanTopicName(meta.name)}  ·  loading data…`, 'running', true, buildKey);
+
+      const runRes = await api.post(`/products/${meta.id}/run`);
+      const results: Array<{ row_count?: number; status: string; error?: string }> = runRes.data?.data ?? [];
+      const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
+      const failed = results.filter((r) => r.status === 'error');
+      if (failed.length > 0) {
+        const errMsg = failed.map((r) => r.error ?? 'failed').join('; ').slice(0, 120);
+        updateLogByKey(buildKey, `  ${cleanTopicName(meta.name)}  ·  ⚠ ${failed.length} table(s) failed`, 'error', errMsg);
+      } else {
+        updateLogByKey(buildKey, `  ${cleanTopicName(meta.name)}  ·  ✓ ${rows.toLocaleString()} rows loaded`, 'success');
+      }
+
+      pushLog('✓ Done! Your new topic is ready.', 'success');
+      await loadProducts();
+      await loadAllTopics(created.map((c) => c.id));
+      await loadDepGraph();
+    } catch (err: unknown) {
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
+      if (isAbort) {
+        pushLog('⛔ Cancelled.', 'error');
+      } else {
+        const msg =
+          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          (err instanceof Error ? err.message : 'Unknown error');
+        pushLog(`✗ Failed: ${msg}`, 'error');
+      }
+    }
+
+    clearInterval(timerRef);
+    abortRef.current = null;
+    setAutoBuilding(false);
+  };
+
   // ---------------------------------------------------------------------------
   // Derived: classify products as Foundations vs Domain
   // Foundation = appears as a source (dependency) for another product
@@ -1042,9 +1130,21 @@ export default function ProductsPage() {
                 allKpis={allProductKpis}
                 loading={loadingTopics}
                 hasErrors={hasErrors}
-                autoDesignConnId={autoDesignConnId}
+                connections={connections}
+                builtConnectionIds={new Set(products.map((p) => p.connection_id))}
                 onRebuildAll={handleRebuildAll}
                 onShowAdvanced={() => setShowAdvancedView(true)}
+                onRebuildTopic={async (productId) => {
+                  await api.post(`/products/${productId}/run`);
+                  await loadProducts();
+                  await loadAllTopics([productId]);
+                }}
+                onRequestTopic={(connId, description) => {
+                  handleSingleTopicBuild(connId, description);
+                }}
+                onAddSource={(connId) => {
+                  handleFullAutoBuild(connId);
+                }}
               />
 
             /* No products yet */
@@ -1404,7 +1504,23 @@ export default function ProductsPage() {
 
                   {showLineage ? (
                     <div className="h-96">
-                      <LineageFlow product={selectedProduct} />
+                      <LineageFlow data={{
+                        tables: selectedProduct.star_schemas.flatMap((s) =>
+                          s.tables.map((t) => ({
+                            id: t.id,
+                            table_name: t.table_name,
+                            display_name: t.display_name,
+                            table_role: t.table_role,
+                            columns: (t.columns ?? []).map((c) => ({
+                              id: c.id,
+                              column_name: c.column_name,
+                              data_type: c.data_type,
+                              column_role: c.column_role,
+                              lineage: c.lineage ?? [],
+                            })),
+                          }))
+                        ),
+                      }} />
                     </div>
                   ) : (
                     <div className="p-5 space-y-4">
@@ -2401,15 +2517,322 @@ function cleanTopicName(name: string): string {
     .trim();
 }
 
-function TopicCard({
+// ---------------------------------------------------------------------------
+// TopicSqlModal — shows transformation SQL for all tables in a product
+// ---------------------------------------------------------------------------
+function TopicSqlModal({
+  detail,
+  onClose,
+}: {
+  detail: FullDataProduct;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState<number | null>(null);
+  const allTables = detail.star_schemas.flatMap((s) => s.tables);
+
+  const handleCopy = (tableId: number, sql: string) => {
+    try {
+      navigator.clipboard.writeText(sql);
+    } catch {
+      const el = document.createElement('textarea');
+      el.value = sql;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+    }
+    setCopied(tableId);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/50" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="font-bold text-slate-900">Transformation SQL</h2>
+            <p className="text-xs text-slate-400 mt-0.5">{allTables.length} table{allTables.length !== 1 ? 's' : ''} · DuckDB</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {allTables.map((tbl) => (
+            <div key={tbl.id} className="border-b border-slate-100 last:border-0">
+              <div className="px-6 py-3 flex items-center gap-3 bg-slate-50">
+                <RolePill role={tbl.table_role} shared={tbl.is_shared_dimension} />
+                <span className="font-mono text-sm font-semibold text-slate-700">{tbl.table_name}</span>
+                {tbl.transformation_sql && (
+                  <button
+                    onClick={() => handleCopy(tbl.id, tbl.transformation_sql!)}
+                    className="ml-auto text-xs text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg px-2 py-0.5"
+                  >
+                    {copied === tbl.id ? '✓ Copied' : 'Copy'}
+                  </button>
+                )}
+              </div>
+              {tbl.transformation_sql ? (
+                <pre className="px-6 py-4 text-[11px] font-mono text-slate-600 overflow-x-auto leading-relaxed bg-white whitespace-pre-wrap">{tbl.transformation_sql}</pre>
+              ) : tbl.is_shared_dimension ? (
+                <p className="px-6 py-4 text-xs text-amber-600 italic">Shared reference table — SQL lives in the owning topic.</p>
+              ) : (
+                <p className="px-6 py-4 text-xs text-slate-400 italic">No SQL generated yet.</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TopicSlideOver — right-side panel showing full product details on card click
+// ---------------------------------------------------------------------------
+function TopicSlideOver({
   product,
   detail,
   kpis,
+  onClose,
+  onRebuild,
 }: {
   product: DataProduct;
   detail: FullDataProduct | undefined;
   kpis: ProductKpi[];
+  onClose: () => void;
+  onRebuild: (productId: number) => void;
 }) {
+  const [expandedSql, setExpandedSql] = useState<Set<number>>(new Set());
+  const [copied, setCopied] = useState<number | null>(null);
+  const name = cleanTopicName(product.name);
+  const allTables = detail?.star_schemas.flatMap((s) => s.tables) ?? [];
+
+  const handleCopy = (tableId: number, sql: string) => {
+    try {
+      navigator.clipboard.writeText(sql);
+    } catch {
+      const el = document.createElement('textarea');
+      el.value = sql;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+    }
+    setCopied(tableId);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  const toggleSql = (tableId: number) => {
+    setExpandedSql((prev) => {
+      const next = new Set(prev);
+      next.has(tableId) ? next.delete(tableId) : next.add(tableId);
+      return next;
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end">
+      <div className="absolute inset-0 bg-slate-900/30" onClick={onClose} />
+      <div className="relative w-[480px] max-w-full bg-white shadow-2xl flex flex-col overflow-hidden animate-slide-in-right">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-slate-100 flex items-start gap-4 flex-shrink-0">
+          <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-xl flex-shrink-0">
+            {productIcon(product.name)}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="font-bold text-slate-900 text-lg leading-tight">{name}</h2>
+            {product.description && (
+              <p className="text-sm text-slate-500 mt-0.5 leading-relaxed line-clamp-2">{product.description}</p>
+            )}
+            <div className="mt-2">
+              <StatusBadge status={product.status} />
+            </div>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-xl leading-none flex-shrink-0">✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {/* Tables section */}
+          {allTables.length > 0 && (
+            <div className="px-6 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-3">Tables</p>
+              <div className="space-y-2">
+                {allTables
+                  .sort((a, b) => a.dag_order - b.dag_order)
+                  .map((tbl) => (
+                  <div key={tbl.id} className="rounded-xl border border-slate-100 overflow-hidden">
+                    <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50">
+                      <RolePill role={tbl.table_role} shared={tbl.is_shared_dimension} />
+                      <span className="font-mono text-xs text-slate-700 flex-1 truncate">{tbl.table_name}</span>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {tbl.row_count !== null && (
+                          <span className="text-[10px] text-slate-400">{tbl.row_count.toLocaleString()} rows</span>
+                        )}
+                        <StatusDot status={tbl.transformation_status} />
+                        {tbl.transformation_sql && (
+                          <button
+                            onClick={() => toggleSql(tbl.id)}
+                            className="text-[10px] text-slate-500 hover:text-slate-700 border border-slate-200 rounded px-1.5 py-0.5 font-mono"
+                          >
+                            {expandedSql.has(tbl.id) ? 'hide' : 'SQL'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {tbl.last_run_error && (
+                      <div className="px-4 py-1.5 bg-red-50 text-[10px] text-red-600 truncate">{tbl.last_run_error}</div>
+                    )}
+                    {expandedSql.has(tbl.id) && tbl.transformation_sql && (
+                      <div className="relative">
+                        <pre className="px-4 py-3 text-[10px] font-mono text-slate-600 overflow-x-auto bg-white leading-relaxed whitespace-pre-wrap max-h-48">{tbl.transformation_sql}</pre>
+                        <button
+                          onClick={() => handleCopy(tbl.id, tbl.transformation_sql!)}
+                          className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-slate-600 bg-white border border-slate-200 rounded px-1.5 py-0.5"
+                        >
+                          {copied === tbl.id ? '✓' : 'Copy'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Loading state */}
+          {!detail && (
+            <div className="px-6 py-8 text-center">
+              <div className="w-5 h-5 border-2 border-violet-400 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              <p className="text-sm text-slate-400">Loading details…</p>
+            </div>
+          )}
+
+          {/* KPIs section */}
+          {kpis.length > 0 && (
+            <div className="px-6 py-4 border-t border-slate-100">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-3">What you can ask</p>
+              <ul className="space-y-1.5">
+                {kpis.map((k) => (
+                  <li key={k.id} className="flex items-start gap-2 text-sm text-slate-600">
+                    <span className="text-slate-300 mt-0.5 flex-shrink-0">›</span>
+                    <span>{k.name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div className="px-6 py-4 border-t border-slate-100 flex gap-3 flex-shrink-0">
+          <a
+            href="/query"
+            className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 text-center"
+          >
+            Ask questions →
+          </a>
+          <button
+            onClick={() => onRebuild(product.id)}
+            className="px-4 py-2.5 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50"
+          >
+            ↺ Rebuild
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RequestTopicModal — free-text prompt to request a single new data product
+// ---------------------------------------------------------------------------
+function RequestTopicModal({
+  connections,
+  defaultConnId,
+  onClose,
+  onRequest,
+}: {
+  connections: Connection[];
+  defaultConnId: number | null;
+  onClose: () => void;
+  onRequest: (connId: number, description: string) => void;
+}) {
+  const [connId, setConnId] = useState<number | null>(defaultConnId ?? (connections.length === 1 ? connections[0].id : null));
+  const [description, setDescription] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!connId || !description.trim()) return;
+    setLoading(true);
+    onRequest(connId, description.trim());
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/50" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="px-6 py-5 border-b border-slate-100">
+          <h2 className="font-bold text-slate-900 text-lg">Request a new topic</h2>
+          <p className="text-sm text-slate-400 mt-1">Describe the business area you want to analyse. Claude will design and build it.</p>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {connections.length > 1 && (
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 mb-1.5">Source system</label>
+              <select
+                value={connId ?? ''}
+                onChange={(e) => setConnId(Number(e.target.value))}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+              >
+                <option value="">Select a connection…</option>
+                {connections.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1.5">What do you want to analyse?</label>
+            <textarea
+              rows={4}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g. customer complaints and resolution times, or supplier delivery performance, or employee overtime by department…"
+              className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-violet-400 leading-relaxed"
+            />
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+          <button
+            onClick={onClose}
+            className="px-4 py-2.5 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!connId || !description.trim() || loading}
+            className="flex-1 py-2.5 bg-violet-600 text-white text-sm font-semibold rounded-xl hover:bg-violet-700 disabled:opacity-40 transition-colors"
+          >
+            {loading ? 'Starting…' : 'Let Claude design it →'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TopicCard({
+  product,
+  detail,
+  kpis,
+  onClick,
+}: {
+  product: DataProduct;
+  detail: FullDataProduct | undefined;
+  kpis: ProductKpi[];
+  onClick: () => void;
+}) {
+  const [showSql, setShowSql] = useState(false);
   const icon = productIcon(product.name);
   const name = cleanTopicName(product.name);
   const isBuilt = product.status === 'success';
@@ -2425,82 +2848,102 @@ function TopicCard({
   const visibleKpis = kpis.slice(0, 5);
 
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col transition-shadow hover:shadow-md ${
-      isError ? 'border-red-200' : 'border-slate-200'
-    } ${!isBuilt && !isError ? 'opacity-70' : ''}`}>
-      {/* Card header */}
-      <div className="px-5 py-5 flex items-start gap-4 border-b border-slate-100">
-        <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl flex-shrink-0">
-          {icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-bold text-slate-900 text-base leading-tight">{name}</h3>
-            {isError && (
-              <span className="text-[10px] font-semibold bg-red-100 text-red-600 px-2 py-0.5 rounded-full">needs attention</span>
+    <>
+      <div
+        onClick={onClick}
+        className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col transition-shadow hover:shadow-md cursor-pointer ${
+          isError ? 'border-red-200' : 'border-slate-200'
+        } ${!isBuilt && !isError ? 'opacity-70' : ''}`}
+      >
+        {/* Card header */}
+        <div className="px-5 py-5 flex items-start gap-4 border-b border-slate-100">
+          <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl flex-shrink-0">
+            {icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-slate-900 text-base leading-tight">{name}</h3>
+              {isError && (
+                <span className="text-[10px] font-semibold bg-red-100 text-red-600 px-2 py-0.5 rounded-full">needs attention</span>
+              )}
+              {!isBuilt && !isError && (
+                <span className="text-[10px] font-semibold bg-amber-100 text-amber-600 px-2 py-0.5 rounded-full">not built yet</span>
+              )}
+            </div>
+            {product.description && (
+              <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{product.description}</p>
             )}
-            {!isBuilt && !isError && (
-              <span className="text-[10px] font-semibold bg-amber-100 text-amber-600 px-2 py-0.5 rounded-full">not built yet</span>
+            {isBuilt && factRows > 0 && (
+              <p className="text-xs text-slate-400 mt-1.5">{factRows.toLocaleString()} records</p>
             )}
           </div>
-          {product.description && (
-            <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{product.description}</p>
+        </div>
+
+        {/* KPI hints */}
+        <div className="px-5 py-4 flex-1">
+          {visibleKpis.length > 0 ? (
+            <>
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2.5">What you can ask</p>
+              <ul className="space-y-1.5">
+                {visibleKpis.map((k) => (
+                  <li key={k.id} className="flex items-start gap-2 text-xs text-slate-600">
+                    <span className="text-slate-300 mt-0.5 flex-shrink-0">›</span>
+                    <span className="line-clamp-1">{k.name}</span>
+                  </li>
+                ))}
+                {kpis.length > 5 && (
+                  <li className="text-[10px] text-slate-400 pl-4">+{kpis.length - 5} more metrics</li>
+                )}
+              </ul>
+            </>
+          ) : isBuilt ? (
+            <p className="text-xs text-slate-400 italic">No metrics defined yet — add some in the details view.</p>
+          ) : (
+            <p className="text-xs text-slate-400 italic">Build this topic to unlock analytics.</p>
           )}
-          {isBuilt && factRows > 0 && (
-            <p className="text-xs text-slate-400 mt-1.5">{factRows.toLocaleString()} records</p>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
+          {isBuilt ? (
+            <a
+              href="/query"
+              onClick={(e) => e.stopPropagation()}
+              className="text-sm font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+            >
+              Ask questions <span aria-hidden>→</span>
+            </a>
+          ) : (
+            <span className="text-xs text-slate-400">
+              {product.status === 'draft'
+                ? 'Not yet designed'
+                : product.status === 'approved'
+                ? 'Ready to build'
+                : product.status}
+            </span>
           )}
+          <div className="flex items-center gap-2">
+            {detail && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowSql(true); }}
+                className="text-[10px] font-mono text-slate-500 hover:text-slate-700 border border-slate-200 rounded px-2 py-0.5"
+              >
+                {'<>'} SQL
+              </button>
+            )}
+            <span className="text-[10px] text-slate-300">
+              {detail
+                ? `${detail.star_schemas.flatMap((s) => s.tables).length} tables`
+                : '…'}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* KPI hints */}
-      <div className="px-5 py-4 flex-1">
-        {visibleKpis.length > 0 ? (
-          <>
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2.5">What you can ask</p>
-            <ul className="space-y-1.5">
-              {visibleKpis.map((k) => (
-                <li key={k.id} className="flex items-start gap-2 text-xs text-slate-600">
-                  <span className="text-slate-300 mt-0.5 flex-shrink-0">›</span>
-                  <span className="line-clamp-1">{k.name}</span>
-                </li>
-              ))}
-              {kpis.length > 5 && (
-                <li className="text-[10px] text-slate-400 pl-4">+{kpis.length - 5} more metrics</li>
-              )}
-            </ul>
-          </>
-        ) : isBuilt ? (
-          <p className="text-xs text-slate-400 italic">No metrics defined yet — add some in the details view.</p>
-        ) : (
-          <p className="text-xs text-slate-400 italic">Build this topic to unlock analytics.</p>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/50 flex items-center justify-between">
-        {isBuilt ? (
-          <a
-            href="/query"
-            className="text-sm font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
-          >
-            Ask questions <span aria-hidden>→</span>
-          </a>
-        ) : (
-          <span className="text-xs text-slate-400">
-            {product.status === 'draft'
-              ? 'Not yet designed'
-              : product.status === 'approved'
-              ? 'Ready to build'
-              : product.status}
-          </span>
-        )}
-        <span className="text-[10px] text-slate-300">
-          {detail
-            ? `${detail.star_schemas.flatMap((s) => s.tables).length} tables`
-            : '…'}
-        </span>
-      </div>
-    </div>
+      {showSql && detail && (
+        <TopicSqlModal detail={detail} onClose={() => setShowSql(false)} />
+      )}
+    </>
   );
 }
 
@@ -2511,9 +2954,13 @@ function TopicsView({
   allKpis,
   loading,
   hasErrors,
-  autoDesignConnId,
+  connections,
+  builtConnectionIds,
   onRebuildAll,
   onShowAdvanced,
+  onRebuildTopic,
+  onRequestTopic,
+  onAddSource,
 }: {
   domainProducts: DataProduct[];
   foundationProducts: DataProduct[];
@@ -2521,9 +2968,13 @@ function TopicsView({
   allKpis: Map<number, ProductKpi[]>;
   loading: boolean;
   hasErrors: boolean;
-  autoDesignConnId: number | null;
+  connections: Connection[];
+  builtConnectionIds: Set<number>;
   onRebuildAll: () => void;
   onShowAdvanced: () => void;
+  onRebuildTopic: (productId: number) => void;
+  onRequestTopic: (connId: number, description: string) => void;
+  onAddSource: (connId: number) => void;
 }) {
   // Hide the Calendar topic (pure dim_date infrastructure — not a user-facing topic)
   const isCalendar = (p: DataProduct) => p.name === 'Calendar';
@@ -2531,6 +2982,16 @@ function TopicsView({
   const visibleFoundationProducts = foundationProducts.filter((p) => !isCalendar(p));
   const allProducts = [...visibleDomainProducts, ...visibleFoundationProducts];
   const builtCount = allProducts.filter((p) => p.status === 'success').length;
+
+  // Slide-over state
+  const [selectedTopicId, setSelectedTopicId] = useState<number | null>(null);
+  const [showRequestTopic, setShowRequestTopic] = useState(false);
+
+  // Unbuilt connections (connections that have no products yet)
+  const unbuiltConnections = connections.filter((c) => !builtConnectionIds.has(c.id));
+  const [showAddSourcePicker, setShowAddSourcePicker] = useState(false);
+
+  const selectedTopicProduct = selectedTopicId != null ? allProducts.find((p) => p.id === selectedTopicId) ?? null : null;
 
   return (
     <div className="space-y-6">
@@ -2545,14 +3006,50 @@ function TopicsView({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {autoDesignConnId && (
-            <button
-              onClick={onRebuildAll}
-              className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50 flex items-center gap-1.5"
-            >
-              ↺ Rebuild
-            </button>
+          <button
+            onClick={() => setShowRequestTopic(true)}
+            className="text-sm bg-violet-600 text-white font-semibold rounded-xl px-3 py-2 hover:bg-violet-700 flex items-center gap-1.5"
+          >
+            ＋ Request a topic
+          </button>
+          {unbuiltConnections.length > 0 && (
+            unbuiltConnections.length === 1 ? (
+              <button
+                onClick={() => onAddSource(unbuiltConnections[0].id)}
+                className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50 flex items-center gap-1.5"
+              >
+                + {unbuiltConnections[0].name}
+              </button>
+            ) : (
+              <div className="relative">
+                <button
+                  onClick={() => setShowAddSourcePicker((v) => !v)}
+                  className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50"
+                >
+                  + Add source ▾
+                </button>
+                {showAddSourcePicker && (
+                  <div className="absolute right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-10 min-w-[180px]">
+                    {unbuiltConnections.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => { setShowAddSourcePicker(false); onAddSource(c.id); }}
+                        className="w-full text-left px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 first:rounded-t-xl last:rounded-b-xl"
+                      >
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
           )}
+          <button
+            onClick={onRebuildAll}
+            className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50 flex items-center gap-1.5"
+          >
+            ↺ Rebuild
+          </button>
           <button
             onClick={onShowAdvanced}
             className="text-sm text-slate-600 border border-slate-200 rounded-xl px-3 py-2 hover:bg-slate-50"
@@ -2580,6 +3077,7 @@ function TopicsView({
               product={p}
               detail={allDetails.get(p.id)}
               kpis={allKpis.get(p.id) ?? []}
+              onClick={() => setSelectedTopicId(p.id)}
             />
           ))}
         </div>
@@ -2616,6 +3114,27 @@ function TopicsView({
             Start asking questions →
           </a>
         </div>
+      )}
+
+      {/* Slide-over panel */}
+      {selectedTopicProduct && (
+        <TopicSlideOver
+          product={selectedTopicProduct}
+          detail={allDetails.get(selectedTopicProduct.id)}
+          kpis={allKpis.get(selectedTopicProduct.id) ?? []}
+          onClose={() => setSelectedTopicId(null)}
+          onRebuild={(id) => { onRebuildTopic(id); setSelectedTopicId(null); }}
+        />
+      )}
+
+      {/* Request topic modal */}
+      {showRequestTopic && (
+        <RequestTopicModal
+          connections={connections}
+          defaultConnId={connections.length === 1 ? connections[0].id : null}
+          onClose={() => setShowRequestTopic(false)}
+          onRequest={(connId, desc) => { onRequestTopic(connId, desc); setShowRequestTopic(false); }}
+        />
       )}
     </div>
   );

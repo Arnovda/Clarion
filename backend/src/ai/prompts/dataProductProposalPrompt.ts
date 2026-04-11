@@ -216,3 +216,52 @@ ${tablesSummary}
 
 Return only the JSON proposal.`;
 }
+
+// ---------------------------------------------------------------------------
+// Single-topic proposal — user describes one business topic they want
+// ---------------------------------------------------------------------------
+
+export function buildSingleDataProductProposalUser(
+  sourceTables: SourceTableContext[],
+  existingProducts: ExistingDataProduct[],
+  connectionName: string,
+  userDescription: string,
+): string {
+  const tablesSummary = sourceTables.map((t) => {
+    const fkCols = t.columns.filter((c) => c.is_foreign_key);
+    const pkCols = t.columns.filter((c) => c.is_primary_key);
+    const fkStr = fkCols.map((c) => `${c.column_name}→${c.fk_references ?? '?'}`).join(', ');
+    const rels = t.relationships.map((r) => r.to_table).join(', ');
+    const parts = [
+      `${t.table_name}${t.domain ? ` [${t.domain}]` : ''}`,
+      t.description ? `"${t.description}"` : '',
+      pkCols.length ? `PK: ${pkCols.map((c) => c.column_name).join(', ')}` : '',
+      fkStr ? `FK: ${fkStr}` : '',
+      rels ? `links to: ${rels}` : '',
+    ].filter(Boolean);
+    return parts.join(' | ');
+  }).join('\n');
+
+  const existingSection = existingProducts.length > 0
+    ? `Already built (do NOT recreate these, but you MAY reference their shared dimensions in depends_on):\n${existingProducts.map((p) =>
+        `- ${p.name} (shared dims: ${p.shared_dimension_tables.join(', ') || 'none'})`,
+      ).join('\n')}\n\n`
+    : '';
+
+  return `Design EXACTLY ONE new data product for this business topic:
+
+"${userDescription.slice(0, 500)}"
+
+Source system: ${connectionName}
+
+${existingSection}Source schema (${sourceTables.length} tables):
+
+${tablesSummary}
+
+Rules:
+- Return ONLY ONE entry in data_products — no more
+- Pick the source tables that are most relevant to the requested topic
+- If a shared dimension (e.g. dim_customer) already exists in an existing product, reference it in depends_on instead of redefining it
+- Follow all naming and architecture rules from your system prompt
+- Return only valid JSON`;
+}
