@@ -275,25 +275,40 @@ export default function ProductsPage() {
   // Full auto-build (propose + design + build, no user decisions)
   const [autoBuilding, setAutoBuilding] = useState(false);
   const [autoBuildLog, setAutoBuildLog] = useState<LogEntry[]>([]);
+  const [buildElapsed, setBuildElapsed] = useState(0);
   const autoBuildLogRef = useRef<LogEntry[]>([]);
   const autoBuildScrollRef = useRef<HTMLDivElement>(null);
 
-  const pushLog = (msg: string, status: LogEntry['status'] = 'info', indent = false) => {
-    const entry: LogEntry = { id: Date.now() + Math.random(), msg, status, indent };
+  const pushLog = (msg: string, status: LogEntry['status'] = 'info', indent = false, key?: string) => {
+    const entry: LogEntry = { id: Date.now() + Math.random(), key, msg, status, indent };
     autoBuildLogRef.current = [...autoBuildLogRef.current, entry];
     setAutoBuildLog([...autoBuildLogRef.current]);
     setTimeout(() => { if (autoBuildScrollRef.current) autoBuildScrollRef.current.scrollTop = autoBuildScrollRef.current.scrollHeight; }, 20);
+    return entry.id;
   };
 
   const updateLastLog = (msg: string, status: LogEntry['status']) => {
     const logs = [...autoBuildLogRef.current];
-    if (logs.length > 0) { logs[logs.length - 1] = { ...logs[logs.length - 1], msg, status }; }
+    if (logs.length > 0) { logs[logs.length - 1] = { ...logs[logs.length - 1], msg, status, sub: undefined }; }
     autoBuildLogRef.current = logs;
     setAutoBuildLog([...logs]);
   };
 
-  // Run design-stream as a promise — resolves when the SSE 'done' event arrives
-  const runDesignStream = (productId: number, onPhase: (p: string) => void): Promise<void> =>
+  // Update a specific log line by its key (for per-topic in-place updates)
+  const updateLogByKey = (key: string, msg: string, status: LogEntry['status'], sub?: string) => {
+    const logs = autoBuildLogRef.current.map((e) =>
+      e.key === key ? { ...e, msg, status, sub: sub ?? e.sub } : e
+    );
+    autoBuildLogRef.current = logs;
+    setAutoBuildLog([...logs]);
+  };
+
+  // Run design-stream — resolves on 'done', calls onPhase + onThinking live
+  const runDesignStream = (
+    productId: number,
+    onPhase: (p: string) => void,
+    onThinking?: (t: string) => void,
+  ): Promise<void> =>
     new Promise(async (resolve) => {
       try {
         const token = getToken();
@@ -314,6 +329,7 @@ export default function ProductsPage() {
             let ev: Record<string, unknown>;
             try { ev = JSON.parse(line.slice(6)); } catch { continue; }
             if (ev.type === 'phase') onPhase(ev.text as string);
+            if (ev.type === 'thinking' && onThinking) onThinking(ev.text as string);
             if (ev.type === 'done' || ev.type === 'error') { resolve(); return; }
           }
           if (done) { resolve(); break; }
@@ -325,23 +341,33 @@ export default function ProductsPage() {
     setAutoBuilding(true);
     autoBuildLogRef.current = [];
     setAutoBuildLog([]);
+    setBuildElapsed(0);
+    const timerRef = setInterval(() => setBuildElapsed((s) => s + 1), 1000);
 
     try {
-      // Step 1 — propose
-      pushLog('Analysing your source system…', 'running');
+      // Step 1 — propose (Claude analyses the schema)
+      pushLog('Asking Claude to analyse your source system…', 'running');
       const proposeRes = await api.post('/products/propose', { connectionId: connId });
       const prop: DataProductProposal = proposeRes.data.data;
-      updateLastLog(`Found ${prop.data_products.length} topics · ${prop.shared_dimensions.length} shared dimensions`, 'success');
+      updateLastLog(
+        `Planned ${prop.data_products.length} topics · ${prop.shared_dimensions.length} shared reference tables`,
+        'success'
+      );
 
-      // Step 2 — create product structure
-      pushLog('Creating product structure in database…', 'running');
+      // Show what Claude decided
+      if (prop.rationale) {
+        pushLog(`💬 ${prop.rationale}`, 'info');
+      }
+
+      // Step 2 — create records
+      pushLog('Setting up topics in database…', 'running');
       const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: prop });
       const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
       updateLastLog(`Created ${created.length} topics`, 'success');
       await loadProducts();
       await loadDepGraph();
 
-      // Step 3 — design + build in waves (group by build_order so same-level products run in parallel)
+      // Step 3 — group by build_order → waves
       const byOrder = new Map<number, Array<{ name: string; id: number }>>();
       for (const meta of created) {
         const order = prop.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
@@ -351,43 +377,82 @@ export default function ProductsPage() {
       }
       const waves = [...byOrder.entries()].sort(([a], [b]) => a - b);
 
-      for (const [, wave] of waves) {
+      for (const [waveIdx, wave] of waves) {
         const isFoundationWave = wave.every(
           (m) => (prop.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
         );
-        const waveNames = wave.map((m) => cleanTopicName(m.name)).join(', ');
         pushLog(
-          `${isFoundationWave ? '🔷' : '📊'} ${waveNames}${wave.length > 1 ? ` (${wave.length} in parallel)` : ''}`,
+          `─── ${isFoundationWave ? '🔷 Reference data' : `📊 Wave ${waveIdx}`}${wave.length > 1 ? ` (${wave.length} topics in parallel)` : ''}`,
           'info'
         );
-        pushLog('  Designing…', 'running', true);
 
-        // Design all products in this wave concurrently
-        await Promise.all(wave.map((meta) => runDesignStream(meta.id, () => {})));
-        updateLastLog('  Star schemas + SQL generated', 'success');
+        // ── Design phase: one log line per topic, updated live ────────────────
+        for (const meta of wave) {
+          pushLog(`  ${cleanTopicName(meta.name)}  ·  asking Claude to design…`, 'running', true, `design-${meta.id}`);
+        }
+
+        // Accumulate a brief excerpt from Claude's thinking per topic
+        const thinkingExcerpts = new Map<number, string>();
+
+        await Promise.all(wave.map((meta) => {
+          const key = `design-${meta.id}`;
+          const name = cleanTopicName(meta.name);
+          let lastPhase = '';
+
+          return runDesignStream(
+            meta.id,
+            (phase) => {
+              // Convert technical phase text to friendly language
+              lastPhase = phase
+                .replace('Reading', 'Reading source data —')
+                .replace('source tables...', 'tables')
+                .replace('Designing star schema with AI...', 'Claude is designing the schema…')
+                .replace('Saving star schema design...', 'Saving design…')
+                .replace('Generating transformation SQL...', 'Generating SQL…')
+                .replace('Done!', '✓ Done');
+              const excerpt = thinkingExcerpts.get(meta.id);
+              updateLogByKey(key, `  ${name}  ·  ${lastPhase}`, 'running', excerpt ? `"${excerpt}"` : undefined);
+            },
+            (chunk) => {
+              // Keep a short rolling excerpt of Claude's reasoning (first 120 chars)
+              const current = thinkingExcerpts.get(meta.id) ?? '';
+              if (current.length < 120) {
+                const next = (current + chunk).slice(0, 120).replace(/\n/g, ' ');
+                thinkingExcerpts.set(meta.id, next);
+              }
+            }
+          ).then(() => {
+            updateLogByKey(key, `  ${name}  ·  ✓ Schema + SQL ready`, 'success');
+          });
+        }));
 
         await loadProducts();
 
-        // Build all products in this wave concurrently
-        pushLog('  Building tables…', 'running', true);
-        const buildResults2 = await Promise.allSettled(
+        // ── Build phase: one log line per topic, updated on completion ────────
+        for (const meta of wave) {
+          pushLog(`  ${cleanTopicName(meta.name)}  ·  loading data…`, 'running', true, `build-${meta.id}`);
+        }
+
+        await Promise.allSettled(
           wave.map(async (meta) => {
-            const runRes = await api.post(`/products/${meta.id}/run`);
-            const results: Array<{ row_count?: number; status: string }> = runRes.data?.data ?? [];
-            const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
-            return { meta, results, rows };
+            const key = `build-${meta.id}`;
+            const name = cleanTopicName(meta.name);
+            try {
+              const runRes = await api.post(`/products/${meta.id}/run`);
+              const results: Array<{ row_count?: number; status: string }> = runRes.data?.data ?? [];
+              const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
+              const failed = results.filter((r) => r.status === 'error').length;
+              if (failed > 0) {
+                updateLogByKey(key, `  ${name}  ·  ⚠ ${failed} table(s) failed`, 'error');
+              } else {
+                updateLogByKey(key, `  ${name}  ·  ✓ ${rows.toLocaleString()} rows loaded`, 'success');
+              }
+            } catch {
+              updateLogByKey(key, `  ${name}  ·  ✗ build failed`, 'error');
+            }
           })
         );
-        const totalRows2 = buildResults2.reduce(
-          (s, r) => s + (r.status === 'fulfilled' ? r.value.rows : 0), 0
-        );
-        const failed = buildResults2.filter((r) => r.status === 'rejected').length;
-        updateLastLog(
-          failed
-            ? `  ${failed} topic(s) failed — open details to retry`
-            : `  Built — ${totalRows2.toLocaleString()} rows`,
-          failed ? 'error' : 'success'
-        );
+
         await loadProducts();
       }
 
@@ -398,6 +463,7 @@ export default function ProductsPage() {
       pushLog(`Failed: ${msg}`, 'error');
     }
 
+    clearInterval(timerRef);
     setAutoBuilding(false);
   };
 
@@ -734,31 +800,46 @@ export default function ProductsPage() {
             {/* Building — live log */}
             {(autoBuilding || buildDone) ? (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-3">
-                  {autoBuilding
-                    ? <><div className="w-4 h-4 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" /><span className="font-semibold text-slate-800">Building your data warehouse…</span></>
-                    : <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
-                  }
+                <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    {autoBuilding
+                      ? <><div className="w-4 h-4 rounded-full border-2 border-violet-500 border-t-transparent animate-spin flex-shrink-0" /><span className="font-semibold text-slate-800">Building your data warehouse…</span></>
+                      : <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
+                    }
+                  </div>
+                  {(autoBuilding || buildDone) && (
+                    <span className="text-xs text-slate-400 font-mono flex-shrink-0">
+                      {Math.floor(buildElapsed / 60) > 0 ? `${Math.floor(buildElapsed / 60)}m ` : ''}{buildElapsed % 60}s
+                    </span>
+                  )}
                 </div>
                 <div
                   ref={autoBuildScrollRef}
-                  className="bg-slate-900 font-mono text-xs p-5 max-h-96 overflow-y-auto space-y-1.5"
+                  className="bg-slate-900 font-mono text-xs p-5 max-h-[28rem] overflow-y-auto space-y-1"
                 >
                   {autoBuildLog.map((entry) => (
-                    <div key={entry.id} className={`flex items-start gap-2 ${entry.indent ? 'pl-4' : ''}`}>
-                      <span className="flex-shrink-0 mt-px w-3 text-center">
-                        {entry.status === 'running' && <span className="inline-block w-2.5 h-2.5 border border-violet-400 border-t-transparent rounded-full animate-spin" />}
-                        {entry.status === 'success' && <span className="text-emerald-400">✓</span>}
-                        {entry.status === 'error'   && <span className="text-red-400">✗</span>}
-                        {entry.status === 'info'    && <span className="text-slate-600">·</span>}
-                      </span>
-                      <span className={
-                        entry.status === 'success' ? 'text-emerald-400' :
-                        entry.status === 'error'   ? 'text-red-400' :
-                        entry.status === 'running' ? 'text-violet-300' :
-                        entry.msg.startsWith('🔷') || entry.msg.startsWith('📊') ? 'text-amber-300 font-bold' :
-                        'text-slate-400'
-                      }>{entry.msg}</span>
+                    <div key={entry.id} className={entry.indent ? 'pl-3' : ''}>
+                      <div className="flex items-start gap-2">
+                        <span className="flex-shrink-0 mt-px w-3 text-center">
+                          {entry.status === 'running' && <span className="inline-block w-2.5 h-2.5 border border-violet-400 border-t-transparent rounded-full animate-spin" />}
+                          {entry.status === 'success' && <span className="text-emerald-400">✓</span>}
+                          {entry.status === 'error'   && <span className="text-red-400">✗</span>}
+                          {entry.status === 'info'    && <span className="text-slate-600">·</span>}
+                        </span>
+                        <span className={
+                          entry.status === 'success' ? 'text-emerald-400' :
+                          entry.status === 'error'   ? 'text-red-400' :
+                          entry.status === 'running' ? 'text-violet-300' :
+                          entry.msg.startsWith('─') ? 'text-amber-300 font-bold' :
+                          entry.msg.startsWith('💬') ? 'text-slate-400 italic' :
+                          'text-slate-400'
+                        }>{entry.msg}</span>
+                      </div>
+                      {entry.sub && entry.status === 'running' && (
+                        <div className="pl-5 mt-0.5">
+                          <span className="text-[10px] text-slate-600 italic line-clamp-1">{entry.sub}</span>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1794,7 +1875,7 @@ function KpisSection({ product, onRefresh }: { product: FullDataProduct; onRefre
 // Auto-design modal
 // ---------------------------------------------------------------------------
 
-interface LogEntry { id: number; msg: string; status: 'info' | 'success' | 'error' | 'running'; indent: boolean; }
+interface LogEntry { id: number; key?: string; msg: string; sub?: string; status: 'info' | 'success' | 'error' | 'running'; indent: boolean; }
 
 function AutoDesignModal({
   connections, connId, onConnId, proposing, proposal, proposeError, building, buildResults,
