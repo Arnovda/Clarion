@@ -1018,7 +1018,9 @@ export default function ProductsPage() {
 
   // Derived warehouse stats (for the simple hero) — exclude infrastructure (Calendar)
   const hasErrors = products.some((p) => p.status === 'error' && p.name !== 'Calendar');
-  const buildDone = autoBuildLog.some((l) => l.msg.startsWith('✓ All done') || l.msg.startsWith('✓ Rebuild'));
+  // Keep terminal visible after any completed build (success OR error) — never hide the log
+  const buildDone = autoBuildLog.length > 0 && !autoBuilding;
+  const buildSuccess = autoBuildLog.some((l) => l.msg.startsWith('✓ All done') || l.msg.startsWith('✓ Rebuild'));
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1036,7 +1038,9 @@ export default function ProductsPage() {
                   <div className="flex items-center gap-3">
                     {autoBuilding
                       ? <><div className="w-4 h-4 rounded-full border-2 border-violet-500 border-t-transparent animate-spin flex-shrink-0" /><span className="font-semibold text-slate-800">Building your data warehouse…</span></>
-                      : <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
+                      : buildSuccess
+                        ? <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
+                        : <><span className="text-red-500 text-lg">✗</span><span className="font-semibold text-slate-800">Build failed — see log below</span></>
                     }
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">
@@ -1105,12 +1109,26 @@ export default function ProductsPage() {
                 )}
                 {buildDone && !autoBuilding && (
                   <div className="px-6 py-4 flex gap-3">
-                    <a
-                      href="/query"
-                      className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 text-center"
-                    >
-                      Start asking questions →
-                    </a>
+                    {buildSuccess ? (
+                      <a
+                        href="/query"
+                        className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 text-center"
+                      >
+                        Start asking questions →
+                      </a>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          autoBuildLogRef.current = [];
+                          setAutoBuildLog([]);
+                          const connId = autoDesignConnId ?? (connections.length === 1 ? connections[0].id : null);
+                          if (connId) handleFullAutoBuild(connId);
+                        }}
+                        className="flex-1 py-2.5 bg-violet-600 text-white text-sm font-semibold rounded-xl hover:bg-violet-700 text-center"
+                      >
+                        ↺ Try again
+                      </button>
+                    )}
                     <button
                       onClick={() => setShowAdvancedView(true)}
                       className="px-4 py-2.5 text-sm text-slate-500 border border-slate-200 rounded-xl hover:bg-slate-50"
