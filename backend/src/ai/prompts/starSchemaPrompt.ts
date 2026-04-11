@@ -182,24 +182,24 @@ For many-to-many relationships between fact and dimension, a bridge table is req
 
 ## 5. Denormalization of Classification / Lookup Tables — NON-NEGOTIABLE
 
-Source schemas often have small lookup tables that classify a primary entity. Examples:
-- customer_groups table -> classifies customers (group name, discount tier, credit limit)
-- product_categories table -> classifies products (category name, department)
-- payment_terms table -> classifies customers or invoices (term name, days due)
-- employee_grades table -> classifies employees (grade, band, salary range)
+Any source table that is purely a lookup / classification for another entity MUST have ALL its columns folded directly into that entity's dimension. Never create a separate dimension for it.
 
-MANDATORY RULE: If a source lookup table exclusively provides descriptive attributes for a primary entity (customer, product, employee) and has no business events of its own, you MUST flatten its columns directly into that entity's dimension. Do NOT create a separate dimension for it.
+This applies universally across all entity types:
 
-CORRECT — fold customer_groups into dim_customer:
-  dim_customer columns: customer_key, customer_id, company_name, customer_group_name, customer_group_code, discount_pct, city, ...
+  WRONG -> CORRECT
+  customer_groups + customers  ->  all group columns (name, code, discount_pct) go into dim_customer
+  product_categories + products  ->  all category columns (name, department, tax_rate) go into dim_product
+  payment_terms + customers/invoices  ->  term_name, days_due, discount_pct go into dim_customer or degenerate on fact
+  employee_grades + employees  ->  grade_name, band, salary_range go into dim_employee
+  unit_of_measure + products  ->  uom_code, uom_description go into dim_product
+  country_codes + addresses  ->  country_name, region go into the dimension that owns the address
+  order_statuses + orders  ->  status_label, is_closed go into dim_order or as degenerate dimension on fact
+  warehouse_zones + inventory  ->  zone_name, zone_type go into dim_location
+  account_types + accounts  ->  type_name, type_code go into dim_account
 
-WRONG — two separate dimensions (this is snowflaking or an unnecessary outrigger):
-  dim_customer: customer_key, customer_id, company_name, customer_group_key, ...
-  dim_customer_group: customer_group_key, group_name, ...
+The decision test (applies to ANY lookup table): "Does a business user ever analyse this classification independently, without the parent entity?" If no — flatten it.
 
-The test: ask "would a business user ever filter a dashboard by customer_group WITHOUT also needing customer?" If the classification only makes sense in the context of the parent entity, flatten all its columns into the parent dimension.
-
-The only exception: if the lookup table entity has its own independent facts referencing it directly (e.g., you track purchase_order_lines by supplier_category independently of supplier), then a separate dimension is warranted.
+The only exception: if the lookup entity has its own independent facts in the source system (e.g., supplier_categories have their own contracts or performance records tracked separately from suppliers), a separate dimension is justified.
 
 ## 5. Domain Reference Patterns
 
