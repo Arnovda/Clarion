@@ -253,6 +253,9 @@ export default function ProductsPage() {
   const [skeletonTables, setSkeletonTables] = useState<SkeletonTable[]>([]);
   const [showThinking, setShowThinking] = useState(false);
   const thinkingRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const [reasoningFull, setReasoningFull] = useState('');
+  const [showReasoning, setShowReasoning] = useState(false);
 
   // Build / run
   const [runningAll, setRunningAll] = useState(false);
@@ -303,19 +306,25 @@ export default function ProductsPage() {
     setAutoBuildLog([...logs]);
   };
 
-  // Run design-stream — resolves on 'done', calls onPhase + onThinking live
+  // Run design-stream — resolves on 'done', rejects on error/abort/timeout
   const runDesignStream = (
     productId: number,
     onPhase: (p: string) => void,
     onThinking?: (t: string) => void,
+    signal?: AbortSignal,
   ): Promise<void> =>
-    new Promise(async (resolve) => {
+    new Promise(async (resolve, reject) => {
       try {
         const token = getToken();
         const response = await fetch(`${BACKEND_URL}/api/products/${productId}/design-stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          signal,
         });
+        if (!response.ok) {
+          reject(new Error(`HTTP ${response.status}: ${response.statusText}`));
+          return;
+        }
         const reader = response.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -329,16 +338,21 @@ export default function ProductsPage() {
             let ev: Record<string, unknown>;
             try { ev = JSON.parse(line.slice(6)); } catch { continue; }
             if (ev.type === 'phase') onPhase(ev.text as string);
-            if (ev.type === 'thinking' && onThinking) onThinking(ev.text as string);
-            if (ev.type === 'done' || ev.type === 'error') { resolve(); return; }
+            if (ev.type === 'thinking') {
+              const chunk = ev.text as string;
+              if (onThinking) onThinking(chunk);
+              setReasoningFull((prev) => prev + chunk);
+            }
+            if (ev.type === 'done') { resolve(); return; }
+            if (ev.type === 'error') { reject(new Error((ev.message as string) ?? 'Design failed')); return; }
           }
           if (done) { resolve(); break; }
         }
-      } catch { resolve(); }
+      } catch (e) { reject(e); }
     });
 
   // Stream the propose step — returns the proposal once Claude is done
-  const runProposeStream = (connId: number): Promise<DataProductProposal> =>
+  const runProposeStream = (connId: number, signal?: AbortSignal): Promise<DataProductProposal> =>
     new Promise(async (resolve, reject) => {
       pushLog('Claude is analysing your source system…', 'running', false, 'propose');
       let thinkingExcerpt = '';
@@ -347,6 +361,7 @@ export default function ProductsPage() {
         const response = await fetch(`${BACKEND_URL}/api/products/propose-stream`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          signal,
           body: JSON.stringify({ connectionId: connId }),
         });
         const reader = response.body!.getReader();
@@ -365,9 +380,11 @@ export default function ProductsPage() {
               updateLogByKey('propose', `Claude is analysing your source system — ${ev.text as string}`, 'running');
             }
             if (ev.type === 'thinking') {
+              const chunk = ev.text as string;
+              setReasoningFull((prev) => prev + chunk);
               // Accumulate first 150 chars of reasoning as a subtitle
               if (thinkingExcerpt.length < 150) {
-                thinkingExcerpt = (thinkingExcerpt + (ev.text as string)).slice(0, 150).replace(/\n/g, ' ');
+                thinkingExcerpt = (thinkingExcerpt + chunk).slice(0, 150).replace(/\n/g, ' ');
                 updateLogByKey('propose', 'Claude is analysing your source system…', 'running', `"${thinkingExcerpt}…"`);
               }
             }
@@ -383,29 +400,51 @@ export default function ProductsPage() {
       } catch (e) { reject(e); }
     });
 
+  const handleCancelBuild = () => {
+    abortRef.current?.abort();
+  };
+
   const handleFullAutoBuild = async (connId: number) => {
+    // Reset state
+    setReasoningFull('');
+    setShowReasoning(false);
     setAutoBuilding(true);
     autoBuildLogRef.current = [];
     setAutoBuildLog([]);
     setBuildElapsed(0);
     const timerRef = setInterval(() => setBuildElapsed((s) => s + 1), 1000);
 
+    // Create abort controller for cancellation
+    const abortCtrl = new AbortController();
+    abortRef.current = abortCtrl;
+
     try {
       // Step 1 — propose with live streaming
-      const prop = await runProposeStream(connId);
-      updateLastLog(
-        `Planned ${prop.data_products.length} topics · ${prop.shared_dimensions.length} shared reference tables`,
-        'success'
+      const prop = await runProposeStream(connId, abortCtrl.signal);
+
+      // Fix wave ordering: all foundation topics (no deps) → wave 1, rest → wave 2
+      const fixedProp = {
+        ...prop,
+        data_products: prop.data_products.map((dp) => ({
+          ...dp,
+          build_order: dp.depends_on.length === 0 ? 1 : 2,
+        })),
+      };
+
+      updateLogByKey(
+        'propose',
+        `Planned ${fixedProp.data_products.length} topics · ${fixedProp.shared_dimensions.length} shared reference tables`,
+        'success',
       );
 
       // Show what Claude decided
-      if (prop.rationale) {
-        pushLog(`💬 ${prop.rationale}`, 'info');
+      if (fixedProp.rationale) {
+        pushLog(`💬 ${fixedProp.rationale}`, 'info');
       }
 
       // Step 2 — create records
       pushLog('Setting up topics in database…', 'running');
-      const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: prop });
+      const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: fixedProp });
       const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
       updateLastLog(`Created ${created.length} topics`, 'success');
       await loadProducts();
@@ -414,40 +453,52 @@ export default function ProductsPage() {
       // Step 3 — group by build_order → waves
       const byOrder = new Map<number, Array<{ name: string; id: number }>>();
       for (const meta of created) {
-        const order = prop.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
+        const order = fixedProp.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
         const group = byOrder.get(order) ?? [];
         group.push(meta);
         byOrder.set(order, group);
       }
       const waves = [...byOrder.entries()].sort(([a], [b]) => a - b);
 
-      for (const [waveIdx, wave] of waves) {
+      for (const [, wave] of waves) {
         const isFoundationWave = wave.every(
-          (m) => (prop.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
+          (m) => (fixedProp.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
         );
-        pushLog(
-          `─── ${isFoundationWave ? '🔷 Reference data' : `📊 Wave ${waveIdx}`}${wave.length > 1 ? ` (${wave.length} topics in parallel)` : ''}`,
-          'info'
-        );
+        // Filter out Calendar from visible wave logging (it's infrastructure)
+        const visibleWave = wave.filter((m) => m.name !== 'Calendar');
+        if (visibleWave.length === 0) {
+          // Calendar-only wave — still build it, just don't show a wave header
+        } else {
+          pushLog(
+            `─── ${isFoundationWave ? '🔷 Reference data' : `📊 Analytics data`}${visibleWave.length > 1 ? ` (${visibleWave.length} topics in parallel)` : ''}`,
+            'info'
+          );
+        }
 
         // ── Design phase: one log line per topic, updated live ────────────────
         for (const meta of wave) {
-          pushLog(`  ${cleanTopicName(meta.name)}  ·  asking Claude to design…`, 'running', true, `design-${meta.id}`);
+          const displayName = meta.name === 'Calendar' ? null : cleanTopicName(meta.name);
+          if (displayName) {
+            pushLog(`  ${displayName}  ·  asking Claude to design…`, 'running', true, `design-${meta.id}`);
+          }
         }
 
         // Accumulate a brief excerpt from Claude's thinking per topic
         const thinkingExcerpts = new Map<number, string>();
 
+        // 3-minute timeout per topic
+        const TOPIC_TIMEOUT_MS = 3 * 60 * 1000;
+
         await Promise.all(wave.map((meta) => {
           const key = `design-${meta.id}`;
           const name = cleanTopicName(meta.name);
-          let lastPhase = '';
+          const isCalendar = meta.name === 'Calendar';
 
-          return runDesignStream(
+          const designPromise = runDesignStream(
             meta.id,
             (phase) => {
-              // Convert technical phase text to friendly language
-              lastPhase = phase
+              if (isCalendar) return; // Silent for Calendar
+              const lastPhase = phase
                 .replace('Reading', 'Reading source data —')
                 .replace('source tables...', 'tables')
                 .replace('Designing star schema with AI...', 'Claude is designing the schema…')
@@ -464,35 +515,66 @@ export default function ProductsPage() {
                 const next = (current + chunk).slice(0, 120).replace(/\n/g, ' ');
                 thinkingExcerpts.set(meta.id, next);
               }
-            }
-          ).then(() => {
-            updateLogByKey(key, `  ${name}  ·  ✓ Schema + SQL ready`, 'success');
+            },
+            abortCtrl.signal,
+          );
+
+          const timeoutHandle = { ref: 0 as unknown as ReturnType<typeof setTimeout> };
+          const timeoutPromise = new Promise<void>((_, rej) => {
+            timeoutHandle.ref = setTimeout(() => rej(new Error('Timed out after 3 minutes')), TOPIC_TIMEOUT_MS);
           });
+
+          return Promise.race([designPromise, timeoutPromise])
+            .then(() => {
+              clearTimeout(timeoutHandle.ref);
+              if (!isCalendar) updateLogByKey(key, `  ${name}  ·  ✓ Schema + SQL ready`, 'success');
+            })
+            .catch((err: unknown) => {
+              clearTimeout(timeoutHandle.ref);
+              if (isCalendar) return; // Calendar failures are silent — it's infrastructure
+              const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
+              if (!isAbort) {
+                const msg = err instanceof Error ? err.message : 'Design failed';
+                updateLogByKey(key, `  ${name}  ·  ✗ ${msg}`, 'error');
+              }
+            });
         }));
 
         await loadProducts();
 
         // ── Build phase: one log line per topic, updated on completion ────────
         for (const meta of wave) {
-          pushLog(`  ${cleanTopicName(meta.name)}  ·  loading data…`, 'running', true, `build-${meta.id}`);
+          if (meta.name !== 'Calendar') {
+            pushLog(`  ${cleanTopicName(meta.name)}  ·  loading data…`, 'running', true, `build-${meta.id}`);
+          }
         }
 
         await Promise.allSettled(
           wave.map(async (meta) => {
             const key = `build-${meta.id}`;
             const name = cleanTopicName(meta.name);
+            const isCalendar = meta.name === 'Calendar';
             try {
+              // Check if aborted before building
+              if (abortCtrl.signal.aborted) return;
               const runRes = await api.post(`/products/${meta.id}/run`);
-              const results: Array<{ row_count?: number; status: string }> = runRes.data?.data ?? [];
+              const results: Array<{ row_count?: number; status: string; error?: string }> = runRes.data?.data ?? [];
               const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
-              const failed = results.filter((r) => r.status === 'error').length;
-              if (failed > 0) {
-                updateLogByKey(key, `  ${name}  ·  ⚠ ${failed} table(s) failed`, 'error');
-              } else {
-                updateLogByKey(key, `  ${name}  ·  ✓ ${rows.toLocaleString()} rows loaded`, 'success');
+              const failedTables = results.filter((r) => r.status === 'error');
+              if (!isCalendar) {
+                if (failedTables.length > 0) {
+                  const errDetails = failedTables.map((r) => r.error ?? 'failed').join('; ').slice(0, 120);
+                  updateLogByKey(key, `  ${name}  ·  ⚠ ${failedTables.length} table(s) failed`, 'error', `${errDetails}`);
+                } else {
+                  updateLogByKey(key, `  ${name}  ·  ✓ ${rows.toLocaleString()} rows loaded`, 'success');
+                }
               }
-            } catch {
-              updateLogByKey(key, `  ${name}  ·  ✗ build failed`, 'error');
+            } catch (err: unknown) {
+              if (isCalendar) return;
+              const msg =
+                (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+                (err instanceof Error ? err.message : 'Build failed');
+              updateLogByKey(key, `  ${name}  ·  ✗ ${msg.slice(0, 100)}`, 'error');
             }
           })
         );
@@ -500,14 +582,24 @@ export default function ProductsPage() {
         await loadProducts();
       }
 
-      pushLog('✓ All done! Your data is ready to query.', 'success');
-      await loadDepGraph();
+      if (!abortCtrl.signal.aborted) {
+        pushLog('✓ All done! Your data is ready to query.', 'success');
+        await loadDepGraph();
+      }
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? (err instanceof Error ? err.message : 'Unknown error');
-      pushLog(`Failed: ${msg}`, 'error');
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
+      if (isAbort) {
+        pushLog('⛔ Build cancelled.', 'error');
+      } else {
+        const msg =
+          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          (err instanceof Error ? err.message : 'Unknown error');
+        pushLog(`✗ Failed: ${msg}`, 'error');
+      }
     }
 
     clearInterval(timerRef);
+    abortRef.current = null;
     setAutoBuilding(false);
   };
 
@@ -596,14 +688,24 @@ export default function ProductsPage() {
         return 0;
       });
       for (const p of sorted) {
-        pushLog(`${fIds.has(p.id) ? '🔷' : '📊'} ${p.name}`, 'info');
+        if (p.name === 'Calendar') continue; // infrastructure — built silently
+        pushLog(`${fIds.has(p.id) ? '🔷' : '📊'} ${cleanTopicName(p.name)}`, 'info');
         pushLog('  Building tables…', 'running', true);
         try {
           const res = await api.post(`/products/${p.id}/run`);
-          const results: Array<{ row_count?: number }> = res.data?.data ?? [];
+          const results: Array<{ row_count?: number; status: string; error?: string }> = res.data?.data ?? [];
           const rows = results.reduce((s, r) => s + (r.row_count ?? 0), 0);
-          updateLastLog(`  Built — ${rows.toLocaleString()} rows`, 'success');
-        } catch { updateLastLog('  Build failed', 'error'); }
+          const failed = results.filter((r) => r.status === 'error');
+          if (failed.length > 0) {
+            const errMsg = failed.map((r) => r.error ?? 'failed').join('; ').slice(0, 100);
+            updateLastLog(`  ⚠ ${failed.length} table(s) failed: ${errMsg}`, 'error');
+          } else {
+            updateLastLog(`  Built — ${rows.toLocaleString()} rows`, 'success');
+          }
+        } catch (err: unknown) {
+          const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? (err instanceof Error ? err.message : 'Build failed');
+          updateLastLog(`  ✗ ${msg.slice(0, 100)}`, 'error');
+        }
       }
       pushLog('✓ Rebuild complete.', 'success');
       await loadProducts();
@@ -828,8 +930,8 @@ export default function ProductsPage() {
   // Render
   // ---------------------------------------------------------------------------
 
-  // Derived warehouse stats (for the simple hero)
-  const hasErrors = products.some((p) => p.status === 'error');
+  // Derived warehouse stats (for the simple hero) — exclude infrastructure (Calendar)
+  const hasErrors = products.some((p) => p.status === 'error' && p.name !== 'Calendar');
   const buildDone = autoBuildLog.some((l) => l.msg.startsWith('✓ All done') || l.msg.startsWith('✓ Rebuild'));
 
   return (
@@ -851,11 +953,21 @@ export default function ProductsPage() {
                       : <><span className="text-emerald-500 text-lg">✓</span><span className="font-semibold text-slate-800">Your data warehouse is ready</span></>
                     }
                   </div>
-                  {(autoBuilding || buildDone) && (
-                    <span className="text-xs text-slate-400 font-mono flex-shrink-0">
-                      {Math.floor(buildElapsed / 60) > 0 ? `${Math.floor(buildElapsed / 60)}m ` : ''}{buildElapsed % 60}s
-                    </span>
-                  )}
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    {(autoBuilding || buildDone) && (
+                      <span className="text-xs text-slate-400 font-mono">
+                        {Math.floor(buildElapsed / 60) > 0 ? `${Math.floor(buildElapsed / 60)}m ` : ''}{buildElapsed % 60}s
+                      </span>
+                    )}
+                    {autoBuilding && (
+                      <button
+                        onClick={handleCancelBuild}
+                        className="text-xs px-3 py-1.5 text-red-400 border border-red-300 rounded-lg hover:bg-red-50 font-medium"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div
                   ref={autoBuildScrollRef}
@@ -879,14 +991,32 @@ export default function ProductsPage() {
                           'text-slate-400'
                         }>{entry.msg}</span>
                       </div>
-                      {entry.sub && entry.status === 'running' && (
+                      {entry.sub && (
                         <div className="pl-5 mt-0.5">
-                          <span className="text-[10px] text-slate-600 italic line-clamp-1">{entry.sub}</span>
+                          <span className={`text-[10px] italic line-clamp-2 ${entry.status === 'error' ? 'text-red-500' : 'text-slate-600'}`}>{entry.sub}</span>
                         </div>
                       )}
                     </div>
                   ))}
                 </div>
+                {/* AI Reasoning drawer */}
+                {reasoningFull && (
+                  <div className="border-t border-slate-800 bg-slate-950">
+                    <button
+                      onClick={() => setShowReasoning((v) => !v)}
+                      className="w-full px-5 py-2.5 text-left flex items-center gap-2 hover:bg-slate-900 transition-colors"
+                    >
+                      <span className="text-[10px] text-slate-500">{showReasoning ? '▾' : '▸'}</span>
+                      <span className="text-xs text-slate-500 font-mono">AI reasoning</span>
+                      <span className="text-[10px] text-slate-700 ml-auto font-mono">{(reasoningFull.length / 1000).toFixed(1)}K chars</span>
+                    </button>
+                    {showReasoning && (
+                      <div className="px-5 pb-4 max-h-64 overflow-y-auto">
+                        <pre className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-wrap">{reasoningFull}</pre>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {buildDone && !autoBuilding && (
                   <div className="px-6 py-4 flex gap-3">
                     <a
@@ -2397,7 +2527,11 @@ function TopicsView({
   onRebuildAll: () => void;
   onShowAdvanced: () => void;
 }) {
-  const allProducts = [...domainProducts, ...foundationProducts];
+  // Hide the Calendar topic (pure dim_date infrastructure — not a user-facing topic)
+  const isCalendar = (p: DataProduct) => p.name === 'Calendar';
+  const visibleDomainProducts = domainProducts.filter((p) => !isCalendar(p));
+  const visibleFoundationProducts = foundationProducts.filter((p) => !isCalendar(p));
+  const allProducts = [...visibleDomainProducts, ...visibleFoundationProducts];
   const builtCount = allProducts.filter((p) => p.status === 'success').length;
 
   return (
@@ -2440,9 +2574,9 @@ function TopicsView({
       )}
 
       {/* Domain product cards */}
-      {!loading && domainProducts.length > 0 && (
+      {!loading && visibleDomainProducts.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {domainProducts.map((p) => (
+          {visibleDomainProducts.map((p) => (
             <TopicCard
               key={p.id}
               product={p}
@@ -2453,11 +2587,11 @@ function TopicsView({
         </div>
       )}
 
-      {/* Foundation / reference data chips */}
-      {!loading && foundationProducts.length > 0 && (
+      {/* Foundation / reference data chips (excluding Calendar) */}
+      {!loading && visibleFoundationProducts.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mr-1">Reference data</span>
-          {foundationProducts.map((p) => (
+          {visibleFoundationProducts.map((p) => (
             <span
               key={p.id}
               className={`inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-full border ${

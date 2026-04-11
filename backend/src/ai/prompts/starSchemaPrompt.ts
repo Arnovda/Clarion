@@ -336,10 +336,24 @@ For DIMENSIONS:
 - Flatten all attributes into the dimension (no snowflaking)
 - Cast data types appropriately (dates as DATE, numbers as DECIMAL/INTEGER)
 
-For dim_date (calendar spine):
-- Generate using: UNNEST(generate_series(DATE '...', DATE '...', INTERVAL 1 DAY)) AS full_date
-- Include: date_key (ROW_NUMBER), full_date, year, quarter, month, month_name, day_of_week, day_name, is_weekend
-- DuckDB syntax: extract(year FROM full_date), strftime(full_date, '%B') for month_name, etc.
+For dim_date (calendar spine) — CRITICAL RULES:
+- NEVER read from source tables. dim_date is ALWAYS self-contained.
+- Use EXACTLY this DuckDB pattern (copy and adapt dates only):
+  SELECT
+    ROW_NUMBER() OVER (ORDER BY d) AS date_key,
+    d::DATE AS full_date,
+    extract(year FROM d)::INTEGER AS year,
+    extract(quarter FROM d)::INTEGER AS quarter,
+    extract(month FROM d)::INTEGER AS month,
+    strftime(d, '%B') AS month_name,
+    extract(isodow FROM d)::INTEGER AS day_of_week,
+    strftime(d, '%A') AS day_name,
+    (extract(isodow FROM d) IN (6,7)) AS is_weekend,
+    extract(year FROM d)::INTEGER AS fiscal_year,
+    extract(quarter FROM d)::INTEGER AS fiscal_quarter
+  FROM generate_series(DATE '2015-01-01', DATE '2035-12-31', INTERVAL '1 day') AS t(d)
+- Use generate_series(start, end, interval) AS alias(col) — NOT UNNEST(generate_series(...))
+- This pattern produces rows for every calendar day. Do not add any WHERE clause or JOIN.
 
 For FACTS:
 - JOIN to dimension tables to resolve natural keys → surrogate keys
