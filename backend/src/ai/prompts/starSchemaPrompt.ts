@@ -180,6 +180,27 @@ For many-to-many relationships between fact and dimension, a bridge table is req
 - Store additive components; derive ratios in the BI layer
 - One definition per dimension, enforced across all fact tables (conformed)
 
+## 5. Denormalization of Classification / Lookup Tables — NON-NEGOTIABLE
+
+Source schemas often have small lookup tables that classify a primary entity. Examples:
+- customer_groups table -> classifies customers (group name, discount tier, credit limit)
+- product_categories table -> classifies products (category name, department)
+- payment_terms table -> classifies customers or invoices (term name, days due)
+- employee_grades table -> classifies employees (grade, band, salary range)
+
+MANDATORY RULE: If a source lookup table exclusively provides descriptive attributes for a primary entity (customer, product, employee) and has no business events of its own, you MUST flatten its columns directly into that entity's dimension. Do NOT create a separate dimension for it.
+
+CORRECT — fold customer_groups into dim_customer:
+  dim_customer columns: customer_key, customer_id, company_name, customer_group_name, customer_group_code, discount_pct, city, ...
+
+WRONG — two separate dimensions (this is snowflaking or an unnecessary outrigger):
+  dim_customer: customer_key, customer_id, company_name, customer_group_key, ...
+  dim_customer_group: customer_group_key, group_name, ...
+
+The test: ask "would a business user ever filter a dashboard by customer_group WITHOUT also needing customer?" If the classification only makes sense in the context of the parent entity, flatten all its columns into the parent dimension.
+
+The only exception: if the lookup table entity has its own independent facts referencing it directly (e.g., you track purchase_order_lines by supplier_category independently of supplier), then a separate dimension is warranted.
+
 ## 5. Domain Reference Patterns
 
 | Domain | Typical Transaction Facts | Typical Snapshot Facts | Typical Dimensions |

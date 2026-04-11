@@ -487,9 +487,6 @@ export default function ProductsPage() {
         // Accumulate a brief excerpt from Claude's thinking per topic
         const thinkingExcerpts = new Map<number, string>();
 
-        // 3-minute timeout per topic
-        const TOPIC_TIMEOUT_MS = 3 * 60 * 1000;
-
         await Promise.all(wave.map((meta) => {
           const key = `design-${meta.id}`;
           const name = cleanTopicName(meta.name);
@@ -520,18 +517,11 @@ export default function ProductsPage() {
             abortCtrl.signal,
           );
 
-          const timeoutHandle = { ref: 0 as unknown as ReturnType<typeof setTimeout> };
-          const timeoutPromise = new Promise<void>((_, rej) => {
-            timeoutHandle.ref = setTimeout(() => rej(new Error('Timed out after 3 minutes')), TOPIC_TIMEOUT_MS);
-          });
-
-          return Promise.race([designPromise, timeoutPromise])
+          return designPromise
             .then(() => {
-              clearTimeout(timeoutHandle.ref);
               if (!isCalendar) updateLogByKey(key, `  ${name}  ·  ✓ Schema + SQL ready`, 'success');
             })
             .catch((err: unknown) => {
-              clearTimeout(timeoutHandle.ref);
               if (isCalendar) return; // Calendar failures are silent — it's infrastructure
               const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
               if (!isAbort) {
