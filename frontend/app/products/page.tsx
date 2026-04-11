@@ -281,6 +281,7 @@ export default function ProductsPage() {
   const [buildElapsed, setBuildElapsed] = useState(0);
   const autoBuildLogRef = useRef<LogEntry[]>([]);
   const autoBuildScrollRef = useRef<HTMLDivElement>(null);
+  const reasoningScrollRef = useRef<HTMLDivElement>(null);
 
   const pushLog = (msg: string, status: LogEntry['status'] = 'info', indent = false, key?: string) => {
     const entry: LogEntry = { id: Date.now() + Math.random(), key, msg, status, indent };
@@ -647,6 +648,13 @@ export default function ProductsPage() {
     if (connections.length === 1) setAutoDesignConnId(connections[0].id);
   }, [connections]);
 
+  // Auto-scroll reasoning drawer to bottom whenever new text arrives
+  useEffect(() => {
+    if (showReasoning && reasoningScrollRef.current) {
+      reasoningScrollRef.current.scrollTop = reasoningScrollRef.current.scrollHeight;
+    }
+  }, [reasoningFull, showReasoning]);
+
   // Load full product details + KPIs for the topic card grid
   const loadAllTopics = useCallback(async (ids: number[]) => {
     if (!ids.length) return;
@@ -1001,18 +1009,18 @@ export default function ProductsPage() {
                 </div>
                 {/* AI Reasoning drawer */}
                 {reasoningFull && (
-                  <div className="border-t border-slate-800 bg-slate-950">
+                  <div className="border-t border-slate-700 bg-slate-950">
                     <button
                       onClick={() => setShowReasoning((v) => !v)}
                       className="w-full px-5 py-2.5 text-left flex items-center gap-2 hover:bg-slate-900 transition-colors"
                     >
-                      <span className="text-[10px] text-slate-500">{showReasoning ? '▾' : '▸'}</span>
-                      <span className="text-xs text-slate-500 font-mono">AI reasoning</span>
-                      <span className="text-[10px] text-slate-700 ml-auto font-mono">{(reasoningFull.length / 1000).toFixed(1)}K chars</span>
+                      <span className="text-[10px] text-emerald-600">{showReasoning ? '▾' : '▸'}</span>
+                      <span className="text-xs text-emerald-600 font-mono font-semibold">AI reasoning</span>
+                      <span className="text-[10px] text-slate-600 ml-auto font-mono">{(reasoningFull.length / 1000).toFixed(1)}K chars</span>
                     </button>
                     {showReasoning && (
-                      <div className="px-5 pb-4 max-h-64 overflow-y-auto">
-                        <pre className="text-[10px] text-slate-500 font-mono leading-relaxed whitespace-pre-wrap">{reasoningFull}</pre>
+                      <div ref={reasoningScrollRef} className="px-5 pb-4 max-h-64 overflow-y-auto">
+                        <pre className="text-[11px] text-emerald-400 font-mono leading-relaxed whitespace-pre-wrap">{reasoningFull}</pre>
                       </div>
                     )}
                   </div>
