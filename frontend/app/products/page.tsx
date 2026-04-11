@@ -1185,8 +1185,12 @@ export default function ProductsPage() {
 
                   {connections.length > 0 && (
                     <button
-                      onClick={() => { if (autoDesignConnId) handleFullAutoBuild(autoDesignConnId); }}
-                      disabled={!autoDesignConnId || loading}
+                      onClick={() => {
+                        // Use autoDesignConnId if set; fall back to the only connection when there's just one
+                        const connId = autoDesignConnId ?? (connections.length === 1 ? connections[0].id : null);
+                        if (connId) handleFullAutoBuild(connId);
+                      }}
+                      disabled={(connections.length > 1 && !autoDesignConnId) || loading}
                       className="w-full py-3.5 bg-violet-600 text-white font-bold text-base rounded-xl hover:bg-violet-700 disabled:opacity-40 transition-colors"
                     >
                       ⚡ Prepare my data
