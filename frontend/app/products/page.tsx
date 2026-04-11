@@ -599,11 +599,11 @@ export default function ProductsPage() {
   // ---------------------------------------------------------------------------
 
   const loadProducts = useCallback(async () => {
+    setLoading(false); // unlock the UI immediately; don't block on this request
     try {
       const res = await api.get('/products');
       setProducts(res.data.data ?? []);
     } catch { /* ignore */ }
-    setLoading(false);
   }, []);
 
   const loadDepGraph = useCallback(async () => {
@@ -1190,7 +1190,7 @@ export default function ProductsPage() {
                         const connId = autoDesignConnId ?? (connections.length === 1 ? connections[0].id : null);
                         if (connId) handleFullAutoBuild(connId);
                       }}
-                      disabled={(connections.length > 1 && !autoDesignConnId) || loading}
+                      disabled={connections.length > 1 && !autoDesignConnId}
                       className="w-full py-3.5 bg-violet-600 text-white font-bold text-base rounded-xl hover:bg-violet-700 disabled:opacity-40 transition-colors"
                     >
                       ⚡ Prepare my data
