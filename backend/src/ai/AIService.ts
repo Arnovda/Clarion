@@ -57,6 +57,8 @@ import {
   TransformationSqlOutput,
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
+  TRANSFORMATION_SQL_REPAIR_SYSTEM,
+  buildTransformationSqlRepairUser,
 } from './prompts/starSchemaPrompt';
 import {
   DATA_PRODUCT_PROPOSAL_SYSTEM,
@@ -774,4 +776,30 @@ export async function proposeDataProductsStreaming(
 
   const cleaned = fullText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
   return JSON.parse(cleaned) as DataProductProposal;
+}
+
+/**
+ * Repair a failing DuckDB transformation SQL statement.
+ * Takes the failing SQL, the DuckDB error, and the expected column schema,
+ * and returns a corrected SELECT statement.
+ */
+export async function repairTransformationSql(
+  tableName: string,
+  tableRole: string,
+  failingSql: string,
+  errorMessage: string,
+  expectedColumns: string,
+): Promise<string> {
+  const msg = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 4000,
+    system: TRANSFORMATION_SQL_REPAIR_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: buildTransformationSqlRepairUser(tableName, tableRole, failingSql, errorMessage, expectedColumns),
+    }],
+  });
+  const raw = msg.content.find((b) => b.type === 'text')?.text ?? '';
+  // Strip any accidental markdown code fences
+  return raw.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
 }

@@ -439,3 +439,41 @@ User's edit request: "${editRequest}"
 
 Return ONLY the updated SQL expression.`;
 }
+
+// ---------------------------------------------------------------------------
+// Prompt 4 — Transformation SQL Repair (auto-repair on DuckDB execution error)
+// ---------------------------------------------------------------------------
+
+export const TRANSFORMATION_SQL_REPAIR_SYSTEM =
+`You are a DuckDB SQL expert. A transformation SQL statement failed when executed against a warehouse. Fix the SQL so it runs correctly.
+
+Rules:
+- Return ONLY the corrected SELECT statement — no JSON, no explanation, no markdown fences
+- Must be a standalone SELECT (no CREATE TABLE — the runner wraps materialization)
+- Use DuckDB syntax only (strftime, extract, TRY_CAST, ILIKE, generate_series, etc.)
+- Source tables (raw layer) are pre-created as views — reference them by their plain table name
+- Dimension tables that are already materialized are also available as views by their plain name
+- Fix the minimum necessary to resolve the error — do not restructure the entire query
+- If the error mentions a missing column in a CTE or subquery alias, remove any reference to that column from the outer query or add it to the inner SELECT
+- If a JOIN references a column that no longer exists in the schema, remove or rewrite that JOIN`;
+
+export function buildTransformationSqlRepairUser(
+  tableName: string,
+  tableRole: string,
+  failingSql: string,
+  errorMessage: string,
+  expectedColumns: string,
+): string {
+  return `Fix this failing DuckDB SQL for table: ${tableName} (${tableRole})
+
+Error message:
+${errorMessage}
+
+Failing SQL:
+${failingSql}
+
+Expected output columns (what the table must produce):
+${expectedColumns}
+
+Return ONLY the corrected SELECT statement.`;
+}
