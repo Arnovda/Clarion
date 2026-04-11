@@ -733,3 +733,45 @@ export async function proposeDataProducts(
   const proposal: DataProductProposal = JSON.parse(cleaned);
   return proposal;
 }
+
+/**
+ * Streaming version of proposeDataProducts.
+ * Emits thinking tokens live so the SSE endpoint can forward them to the browser.
+ */
+export async function proposeDataProductsStreaming(
+  sourceTables: SourceTableContext[],
+  existingProducts: ExistingDataProduct[],
+  connectionName: string,
+  onEvent: (type: 'thinking' | 'text', delta: string) => void,
+): Promise<DataProductProposal> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model: MODEL,
+    max_tokens: 16000,
+    thinking: { type: 'enabled', budget_tokens: 6000 },
+    system: DATA_PRODUCT_PROPOSAL_SYSTEM,
+    messages: [{
+      role: 'user',
+      content: buildDataProductProposalUser(sourceTables, existingProducts, connectionName),
+    }],
+  };
+
+  const stream = getClient().messages.stream(params);
+  let fullText = '';
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+        onEvent('thinking', delta.thinking);
+      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        fullText += delta.text;
+        onEvent('text', delta.text);
+      }
+    }
+  }
+
+  const cleaned = fullText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  return JSON.parse(cleaned) as DataProductProposal;
+}

@@ -337,6 +337,52 @@ export default function ProductsPage() {
       } catch { resolve(); }
     });
 
+  // Stream the propose step — returns the proposal once Claude is done
+  const runProposeStream = (connId: number): Promise<DataProductProposal> =>
+    new Promise(async (resolve, reject) => {
+      pushLog('Claude is analysing your source system…', 'running', false, 'propose');
+      let thinkingExcerpt = '';
+      try {
+        const token = getToken();
+        const response = await fetch(`${BACKEND_URL}/api/products/propose-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ connectionId: connId }),
+        });
+        const reader = response.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (value) buffer += decoder.decode(value, { stream: !done });
+          const lines = buffer.split('\n');
+          buffer = done ? '' : (lines.pop() ?? '');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            let ev: Record<string, unknown>;
+            try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+            if (ev.type === 'phase') {
+              updateLogByKey('propose', `Claude is analysing your source system — ${ev.text as string}`, 'running');
+            }
+            if (ev.type === 'thinking') {
+              // Accumulate first 150 chars of reasoning as a subtitle
+              if (thinkingExcerpt.length < 150) {
+                thinkingExcerpt = (thinkingExcerpt + (ev.text as string)).slice(0, 150).replace(/\n/g, ' ');
+                updateLogByKey('propose', 'Claude is analysing your source system…', 'running', `"${thinkingExcerpt}…"`);
+              }
+            }
+            if (ev.type === 'done') {
+              updateLogByKey('propose', 'Claude is analysing your source system…', 'success');
+              resolve(ev.proposal as DataProductProposal);
+              return;
+            }
+            if (ev.type === 'error') { reject(new Error(ev.message as string)); return; }
+          }
+          if (done) { reject(new Error('Stream ended without result')); break; }
+        }
+      } catch (e) { reject(e); }
+    });
+
   const handleFullAutoBuild = async (connId: number) => {
     setAutoBuilding(true);
     autoBuildLogRef.current = [];
@@ -345,10 +391,8 @@ export default function ProductsPage() {
     const timerRef = setInterval(() => setBuildElapsed((s) => s + 1), 1000);
 
     try {
-      // Step 1 — propose (Claude analyses the schema)
-      pushLog('Asking Claude to analyse your source system…', 'running');
-      const proposeRes = await api.post('/products/propose', { connectionId: connId });
-      const prop: DataProductProposal = proposeRes.data.data;
+      // Step 1 — propose with live streaming
+      const prop = await runProposeStream(connId);
       updateLastLog(
         `Planned ${prop.data_products.length} topics · ${prop.shared_dimensions.length} shared reference tables`,
         'success'
