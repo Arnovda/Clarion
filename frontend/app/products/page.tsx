@@ -451,6 +451,25 @@ export default function ProductsPage() {
       await loadProducts();
       await loadDepGraph();
 
+      // Step 2.5 — ingest source data so warehouse_path is set before transformations run
+      pushLog('Ingesting source data into warehouse…', 'running', false, 'ingest');
+      try {
+        const tablesRes = await api.get(`/semantic/tables?connectionId=${connId}`);
+        const tableNames = ((tablesRes.data.data ?? []) as { table_name: string }[]).map((t) => t.table_name);
+        if (tableNames.length > 0) {
+          await api.post('/ingestion/ingest', { connectionId: connId, tables: tableNames });
+          updateLogByKey('ingest', `Ingested ${tableNames.length} source tables`, 'success');
+        } else {
+          updateLogByKey('ingest', 'No source tables found to ingest', 'info');
+        }
+      } catch (err: unknown) {
+        const msg =
+          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          (err instanceof Error ? err.message : 'Ingestion failed');
+        updateLogByKey('ingest', `⚠ Ingestion unavailable — ${msg.slice(0, 80)}`, 'error');
+        // Don't abort — continue with build; tables that need ingestion will fail individually
+      }
+
       // Step 3 — group by build_order → waves
       const byOrder = new Map<number, Array<{ name: string; id: number }>>();
       for (const meta of created) {
@@ -548,7 +567,8 @@ export default function ProductsPage() {
             try {
               // Check if aborted before building
               if (abortCtrl.signal.aborted) return;
-              const runRes = await api.post(`/products/${meta.id}/run`);
+              // Use run-full for initial build to ensure clean overwrite (avoids corrupted incremental parquet)
+              const runRes = await api.post(`/products/${meta.id}/run-full`);
               const results: Array<{ row_count?: number; status: string; error?: string }> = runRes.data?.data ?? [];
               const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
               const failedTables = results.filter((r) => r.status === 'error');
