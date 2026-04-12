@@ -19,6 +19,19 @@ import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView } from '@/com
 
 type MainTab = 'definitions' | 'relationships' | 'pathfinder' | 'kpis' | 'quality' | 'integrations' | 'audit';
 
+interface QualityTableItem {
+  id:               number;
+  connection_id:    number;
+  table_name:       string;
+  display_name:     string;
+  layer:            'source' | 'product';
+  product_name:     string | null;
+  product_table_id: number | null;
+  table_role:       string | null;
+  overall_score:    number | null;
+  rag:              'green' | 'amber' | 'red' | 'grey';
+}
+
 interface Connection { id: number; name: string; domains?: string[]; }
 
 function SemanticInner() {
@@ -44,6 +57,11 @@ function SemanticInner() {
   const [kpis, setKpis] = useState<KpiDefinition[]>([]);
 
   const [tab, setTab] = useState<MainTab>('definitions');
+
+  // ── Quality tab ────────────────────────────────────────────────────────────
+  const [qualityTables, setQualityTables]             = useState<QualityTableItem[]>([]);
+  const [qualityTablesLoading, setQualityTablesLoading] = useState(false);
+  const [selectedQualityItem, setSelectedQualityItem]  = useState<QualityTableItem | null>(null);
 
   // ── Cross-source views (for Relationships tab) ────────────────────────────
   const [views, setViews] = useState<CrossSourceView[]>([]);
@@ -130,6 +148,18 @@ function SemanticInner() {
   }, [activeConnId]);
 
   useEffect(() => { loadKpis(); }, [loadKpis]);
+
+  // ── Load quality tables (source + product) ───────────────────────────────
+  async function loadQualityTables() {
+    setQualityTablesLoading(true);
+    try {
+      const res = await api.get('/quality/tables');
+      const items: QualityTableItem[] = res.data.data ?? [];
+      setQualityTables(items);
+      if (!selectedQualityItem && items.length) setSelectedQualityItem(items[0]);
+    } catch { /* ignore */ }
+    setQualityTablesLoading(false);
+  }
 
   // ── Load cross-source views for active connection ─────────────────────────
   const loadViews = useCallback(async () => {
@@ -221,9 +251,14 @@ function SemanticInner() {
   const selectedTable = allTables.find((t) => t.id === selectedTableId) ?? null;
   const selectedCols  = selectedTableId ? (columnsByTable[selectedTableId] ?? []) : [];
 
+  function handleTabChange(t: MainTab) {
+    setTab(t);
+    if (t === 'quality' && qualityTables.length === 0) loadQualityTables();
+  }
+
   const tabBtn = (t: MainTab, label: string) => (
     <button
-      onClick={() => setTab(t)}
+      onClick={() => handleTabChange(t)}
       className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
         tab === t ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-800'
       }`}
@@ -279,19 +314,91 @@ function SemanticInner() {
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar */}
         <div className="flex-shrink-0 overflow-y-auto bg-white border-r border-slate-200" style={{ width: 260 }}>
-          <DatabaseTree
-            connections={connections}
-            tablesByConnection={tablesByConn}
-            columnsByTable={columnsByTable}
-            expandedConnectionIds={expandedConns}
-            loadingConnectionIds={loadingConns}
-            activeConnectionId={activeConnId}
-            selectedTableId={selectedTableId}
-            selectedColumnId={selectedColumnId}
-            onToggleConnection={handleToggleConnection}
-            onSelectTable={handleSelectTable}
-            onSelectColumn={handleSelectColumn}
-          />
+          {tab === 'quality' ? (
+            <div className="flex flex-col h-full">
+              <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Health</span>
+                <button onClick={loadQualityTables} className="text-slate-400 hover:text-blue-600 text-sm" title="Refresh">↺</button>
+              </div>
+              {qualityTablesLoading ? (
+                <div className="p-4 text-xs text-slate-400">Loading…</div>
+              ) : (
+                <div className="overflow-y-auto flex-1">
+                  {/* Sources section */}
+                  {qualityTables.filter((t) => t.layer === 'source').length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider bg-slate-50">Sources</div>
+                      {qualityTables.filter((t) => t.layer === 'source').map((t) => (
+                        <button
+                          key={`src-${t.id}`}
+                          onClick={() => setSelectedQualityItem(t)}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-slate-50 transition-colors ${
+                            selectedQualityItem?.id === t.id && selectedQualityItem?.layer === 'source' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700'
+                          }`}
+                        >
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                            t.rag === 'green' ? 'bg-emerald-500' :
+                            t.rag === 'amber' ? 'bg-amber-400' :
+                            t.rag === 'red'   ? 'bg-red-500'   : 'bg-slate-300'
+                          }`} />
+                          <span className="truncate">{t.display_name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {/* Products section — grouped by product_name */}
+                  {qualityTables.filter((t) => t.layer === 'product').length > 0 && (
+                    <div>
+                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider bg-slate-50">Products</div>
+                      {Array.from(new Set(qualityTables.filter((t) => t.layer === 'product').map((t) => t.product_name))).map((prodName) => (
+                        <div key={prodName}>
+                          <div className="px-3 py-1 text-xs text-slate-500 font-medium bg-white border-b border-slate-100">{prodName}</div>
+                          {qualityTables.filter((t) => t.layer === 'product' && t.product_name === prodName).map((t) => (
+                            <button
+                              key={`prod-${t.product_table_id}`}
+                              onClick={() => setSelectedQualityItem(t)}
+                              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 hover:bg-slate-50 transition-colors ${
+                                selectedQualityItem?.product_table_id === t.product_table_id && selectedQualityItem?.layer === 'product' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700'
+                              }`}
+                            >
+                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                t.rag === 'green' ? 'bg-emerald-500' :
+                                t.rag === 'amber' ? 'bg-amber-400' :
+                                t.rag === 'red'   ? 'bg-red-500'   : 'bg-slate-300'
+                              }`} />
+                              <span className="truncate">{t.display_name}</span>
+                              {t.table_role && (
+                                <span className={`ml-auto text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
+                                  t.table_role === 'fact' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                                }`}>{t.table_role}</span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {qualityTables.length === 0 && (
+                    <div className="p-4 text-xs text-slate-400">No profiled tables yet</div>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <DatabaseTree
+              connections={connections}
+              tablesByConnection={tablesByConn}
+              columnsByTable={columnsByTable}
+              expandedConnectionIds={expandedConns}
+              loadingConnectionIds={loadingConns}
+              activeConnectionId={activeConnId}
+              selectedTableId={selectedTableId}
+              selectedColumnId={selectedColumnId}
+              onToggleConnection={handleToggleConnection}
+              onSelectTable={handleSelectTable}
+              onSelectColumn={handleSelectColumn}
+            />
+          )}
         </div>
 
         {/* Right panel — overflow-hidden for canvas tabs so flex heights propagate correctly */}
@@ -394,11 +501,12 @@ function SemanticInner() {
           {tab === 'quality' && (
             <>
               <QualityAlertBanner />
-              {selectedTable && activeConnId ? (
+              {selectedQualityItem ? (
                 <QualityPanel
-                  key={`${activeConnId}-${selectedTable.table_name}`}
-                  connId={activeConnId}
-                  tableName={selectedTable.table_name}
+                  key={`${selectedQualityItem.connection_id}-${selectedQualityItem.table_name}`}
+                  connId={selectedQualityItem.connection_id}
+                  tableName={selectedQualityItem.table_name}
+                  productTableId={selectedQualityItem.product_table_id ?? undefined}
                 />
               ) : (
                 <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">

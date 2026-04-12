@@ -316,7 +316,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
     const ptQuery = semanticDb('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
-      .where('dp.status', 'success');
+      .whereIn('dp.status', ['approved', 'success']);
     if (connId) ptQuery.where('dp.connection_id', connId);
     const productTables = await ptQuery.select(
       'pt.id as pt_id', 'pt.table_name', 'pt.table_role', 'pt.row_count as pt_row_count',

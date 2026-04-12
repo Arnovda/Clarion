@@ -402,9 +402,11 @@ function FailureDrawer({ failure, onClose, onStatusChange }: {
 export default function QualityPanel({
   connId,
   tableName,
+  productTableId,
 }: {
-  connId:    number;
-  tableName: string;
+  connId:         number;
+  tableName:      string;
+  productTableId?: number;
 }) {
   const base = `/quality/${connId}/${encodeURIComponent(tableName)}`;
 
@@ -517,7 +519,10 @@ export default function QualityPanel({
     setActionError(null);
     setProfiling(true);
     try {
-      await api.post(`${base}/profile`);
+      const profileUrl = productTableId
+        ? `/quality/product/${productTableId}/profile`
+        : `${base}/profile`;
+      await api.post(profileUrl);
       await loadQuality();
       await refreshRules();
       await loadFailures();
