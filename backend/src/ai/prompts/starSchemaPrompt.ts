@@ -346,6 +346,12 @@ ${sourceContext}
 Source tables are accessed as regular table names (views are pre-created by the runner).
 Example: SELECT * FROM orders — this reads from the raw Delta Lake table.
 
+CRITICAL — Column names:
+- Use ONLY the exact column names listed above. Do NOT invent, translate, or expand column names.
+- If the source has "artikelnr", use "artikelnr" — do NOT write "artikelnummer" or "article_number_source".
+- If the source has "naam", use "naam" — do NOT write "naam_nl" or "naam_dutch".
+- Copy column names character-for-character from the source context above. Any deviation will cause a runtime error.
+
 Execution order:
 - Dimensions (dag_order=0) are executed FIRST
 - Facts (dag_order=1) are executed SECOND

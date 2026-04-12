@@ -802,8 +802,23 @@ export async function repairTransformationSql(
     }],
   });
   const raw = msg.content.find((b) => b.type === 'text')?.text ?? '';
-  // Strip any accidental markdown code fences
-  return raw.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
+  // Strip markdown code fences
+  let sql = raw.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+
+  // If Claude returned natural language before the SQL, extract just the SELECT statement.
+  // This happens when the model explains its reasoning despite being told not to.
+  if (sql.length > 0 && !sql.toUpperCase().startsWith('SELECT') && !sql.toUpperCase().startsWith('WITH')) {
+    // Try to find the first SELECT or WITH statement
+    const selectMatch = sql.match(/\b(SELECT\s[\s\S]*)/i) ?? sql.match(/\b(WITH\s[\s\S]*)/i);
+    if (selectMatch) {
+      sql = selectMatch[1].trim();
+      // Remove trailing natural language after the SQL (anything after a line that looks like end of SQL)
+      sql = sql.replace(/\s*```[\s\S]*$/, '').trim();
+    }
+  }
+
+  return sql;
 }
 
 // ---------------------------------------------------------------------------
