@@ -455,7 +455,8 @@ Rules:
 - Dimension tables that are already materialized are also available as views by their plain name
 - Fix the minimum necessary to resolve the error — do not restructure the entire query
 - If the error mentions a missing column in a CTE or subquery alias, remove any reference to that column from the outer query or add it to the inner SELECT
-- If a JOIN references a column that no longer exists in the schema, remove or rewrite that JOIN`;
+- If a JOIN references a column that no longer exists in the schema, remove or rewrite that JOIN
+- CRITICAL: If the error says a column is not found, check the "Available source columns" section — those are the REAL column names from the source database. The SQL may reference a translated or hallucinated column name (e.g. "stad" instead of "city"). Always use the actual source column names.`;
 
 export function buildTransformationSqlRepairUser(
   tableName: string,
@@ -463,7 +464,12 @@ export function buildTransformationSqlRepairUser(
   failingSql: string,
   errorMessage: string,
   expectedColumns: string,
+  sourceColumns?: string,
 ): string {
+  const sourceSection = sourceColumns
+    ? `\n\nAvailable source columns (REAL column names from the source database — use these exact names):\n${sourceColumns}`
+    : '';
+
   return `Fix this failing DuckDB SQL for table: ${tableName} (${tableRole})
 
 Error message:
@@ -473,7 +479,7 @@ Failing SQL:
 ${failingSql}
 
 Expected output columns (what the table must produce):
-${expectedColumns}
+${expectedColumns}${sourceSection}
 
 Return ONLY the corrected SELECT statement.`;
 }

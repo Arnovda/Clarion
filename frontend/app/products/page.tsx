@@ -451,23 +451,42 @@ export default function ProductsPage() {
       await loadProducts();
       await loadDepGraph();
 
-      // Step 2.5 — ingest source data so warehouse_path is set before transformations run
+      // Step 2.5 — ingest source data so warehouse_path is set before transformations
       pushLog('Ingesting source data into warehouse…', 'running', false, 'ingest');
+      const tablesRes = await api.get(`/semantic/tables?connectionId=${connId}`);
+      const sourceTableNames = ((tablesRes.data.data ?? []) as { table_name: string }[]).map((t) => t.table_name);
+      if (sourceTableNames.length === 0) {
+        updateLogByKey('ingest', '✗ No source tables found — cannot continue', 'error');
+        throw new Error('No source tables found for this connection');
+      }
       try {
-        const tablesRes = await api.get(`/semantic/tables?connectionId=${connId}`);
-        const tableNames = ((tablesRes.data.data ?? []) as { table_name: string }[]).map((t) => t.table_name);
-        if (tableNames.length > 0) {
-          await api.post('/ingestion/ingest', { connectionId: connId, tables: tableNames });
-          updateLogByKey('ingest', `Ingested ${tableNames.length} source tables`, 'success');
-        } else {
-          updateLogByKey('ingest', 'No source tables found to ingest', 'info');
+        const ingestRes = await api.post('/ingestion/ingest', { connectionId: connId, tables: sourceTableNames });
+        const wp = ingestRes.data?.data?.warehouse_path;
+        if (!wp) {
+          updateLogByKey('ingest', '✗ Ingestion completed but warehouse path not set', 'error');
+          throw new Error('Ingestion did not return a warehouse path — check ETL logs');
         }
+        updateLogByKey('ingest', `Ingested ${sourceTableNames.length} source tables`, 'success');
       } catch (err: unknown) {
         const msg =
           (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
           (err instanceof Error ? err.message : 'Ingestion failed');
-        updateLogByKey('ingest', `⚠ Ingestion unavailable — ${msg.slice(0, 80)}`, 'error');
-        // Don't abort — continue with build; tables that need ingestion will fail individually
+        // Check specifically for ETL not running
+        const isEtlDown = msg.includes('ETL service is not running') || msg.includes('ECONNREFUSED');
+        updateLogByKey('ingest', `✗ ${isEtlDown ? 'ETL service is not running — start Docker first' : msg.slice(0, 100)}`, 'error');
+        throw new Error(isEtlDown
+          ? 'ETL service is not running. Start it with: docker compose up -d'
+          : `Ingestion failed: ${msg.slice(0, 100)}`);
+      }
+
+      // Step 2.6 — refresh source column metadata so Claude designs against real column names
+      pushLog('Refreshing source metadata…', 'running', false, 'introspect');
+      try {
+        await api.post(`/connections/${connId}/introspect`);
+        updateLogByKey('introspect', 'Source column metadata up to date', 'success');
+      } catch {
+        updateLogByKey('introspect', '⚠ Could not refresh metadata — using existing', 'info');
+        // Non-fatal: existing source_columns may still be fine
       }
 
       // Step 3 — group by build_order → waves

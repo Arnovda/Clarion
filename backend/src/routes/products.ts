@@ -865,6 +865,24 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
     let tables = await fetchTables();
     let results = await runProductTransformation(product, tables, req.user?.tenantId);
 
+    // ── Build source-column context once (for repair loop) ─────────────
+    // These are the REAL column names from the source database — used to
+    // correct hallucinated names like "stad" when the source has "city".
+    const sourceColRows = await semanticDb('source_columns as sc')
+      .join('source_tables as st', 'sc.table_id', 'st.id')
+      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
+      .select('st.table_name', 'sc.column_name', 'sc.data_type');
+
+    const sourceColumnsByTable = new Map<string, string>();
+    for (const row of sourceColRows as { table_name: string; column_name: string; data_type: string }[]) {
+      const key = row.table_name;
+      const existing = sourceColumnsByTable.get(key) ?? '';
+      sourceColumnsByTable.set(key, existing + `  ${row.column_name} (${row.data_type})\n`);
+    }
+    const sourceColumnsContext = [...sourceColumnsByTable.entries()]
+      .map(([tName, cols]) => `Table "${tName}":\n${cols}`)
+      .join('\n');
+
     // ── Auto-repair loop (up to 2 attempts) ──────────────────────────────
     const MAX_REPAIR = 2;
     for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
@@ -901,6 +919,7 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
             tbl.transformation_sql,
             failedResult.error,
             expectedColumns,
+            sourceColumnsContext,
           );
 
           await semanticDb('product_tables')
@@ -957,6 +976,21 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 
     let result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
 
+    // ── Build source-column context for repair ─────────────────────────
+    const srcColRows = await semanticDb('source_columns as sc')
+      .join('source_tables as st', 'sc.table_id', 'st.id')
+      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
+      .select('st.table_name', 'sc.column_name', 'sc.data_type');
+
+    const srcColsByTable = new Map<string, string>();
+    for (const row of srcColRows as { table_name: string; column_name: string; data_type: string }[]) {
+      const existing = srcColsByTable.get(row.table_name) ?? '';
+      srcColsByTable.set(row.table_name, existing + `  ${row.column_name} (${row.data_type})\n`);
+    }
+    const srcColsContext = [...srcColsByTable.entries()]
+      .map(([tName, cols]) => `Table "${tName}":\n${cols}`)
+      .join('\n');
+
     // ── Auto-repair (up to 2 attempts) ───────────────────────────────────
     const MAX_REPAIR = 2;
     for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
@@ -982,6 +1016,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
           table.transformation_sql,
           result.error,
           expectedColumns,
+          srcColsContext,
         );
 
         await semanticDb('product_tables')
@@ -1180,7 +1215,70 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
     const fullTables = tables.map((t: Record<string, unknown>) => ({ ...t, load_mode: 'full' }));
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
+    const { repairTransformationSql } = await import('../ai/AIService');
+
+    let results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
+
+    // ── Auto-repair loop (same as /run) ──────────────────────────────────
+    const srcRows = await semanticDb('source_columns as sc')
+      .join('source_tables as st', 'sc.table_id', 'st.id')
+      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
+      .select('st.table_name', 'sc.column_name', 'sc.data_type');
+    const srcMap = new Map<string, string>();
+    for (const r of srcRows as { table_name: string; column_name: string; data_type: string }[]) {
+      srcMap.set(r.table_name, (srcMap.get(r.table_name) ?? '') + `  ${r.column_name} (${r.data_type})\n`);
+    }
+    const srcCtx = [...srcMap.entries()].map(([t, c]) => `Table "${t}":\n${c}`).join('\n');
+
+    const MAX_REPAIR = 2;
+    for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
+      const failed = results.filter((r) => r.status === 'error' && r.error);
+      if (failed.length === 0) break;
+
+      console.log(`[products/run-full] Auto-repairing ${failed.length} failed table(s), attempt ${attempt + 1}`);
+
+      const repairedTables: typeof fullTables = [];
+
+      await Promise.allSettled(failed.map(async (failedResult) => {
+        const tbl = fullTables.find((t: Record<string, unknown>) => t.table_name === failedResult.table_name);
+        if (!tbl?.transformation_sql || !failedResult.error) return;
+
+        const cols = await semanticDb('product_columns')
+          .where({ product_table_id: tbl.id })
+          .orderBy('sort_order')
+          .select('column_name', 'data_type', 'column_role', 'description');
+
+        const expectedColumns = cols.length
+          ? cols.map((c: Record<string, string>) =>
+              `  ${c.column_name} (${c.data_type ?? 'VARCHAR'}) [${c.column_role ?? 'attribute'}]${c.description ? ': ' + c.description : ''}`
+            ).join('\n')
+          : '  (no column metadata available)';
+
+        try {
+          const correctedSql = await repairTransformationSql(
+            tbl.table_name as string, tbl.table_role as string,
+            tbl.transformation_sql as string, failedResult.error,
+            expectedColumns, srcCtx,
+          );
+          await semanticDb('product_tables')
+            .where({ id: tbl.id })
+            .update({ transformation_sql: correctedSql, updated_at: new Date().toISOString() });
+          repairedTables.push({ ...tbl, transformation_sql: correctedSql });
+          console.log(`[products/run-full] Repaired SQL saved for ${tbl.table_name}`);
+        } catch (repairErr) {
+          console.warn(`[products/run-full] Repair AI call failed for ${tbl.table_name}:`, repairErr);
+        }
+      }));
+
+      if (repairedTables.length === 0) break;
+      const rerunResults = await runProductTransformation(
+        product,
+        repairedTables.sort((a: Record<string, unknown>, b: Record<string, unknown>) =>
+          (a.dag_order as number) - (b.dag_order as number)) as any,
+        req.user?.tenantId,
+      );
+      results = results.map((r) => rerunResults.find((rr) => rr.table_name === r.table_name) ?? r);
+    }
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }

@@ -790,6 +790,7 @@ export async function repairTransformationSql(
   failingSql: string,
   errorMessage: string,
   expectedColumns: string,
+  sourceColumns?: string,
 ): Promise<string> {
   const msg = await getClient().messages.create({
     model: MODEL,
@@ -797,7 +798,7 @@ export async function repairTransformationSql(
     system: TRANSFORMATION_SQL_REPAIR_SYSTEM,
     messages: [{
       role: 'user',
-      content: buildTransformationSqlRepairUser(tableName, tableRole, failingSql, errorMessage, expectedColumns),
+      content: buildTransformationSqlRepairUser(tableName, tableRole, failingSql, errorMessage, expectedColumns, sourceColumns),
     }],
   });
   const raw = msg.content.find((b) => b.type === 'text')?.text ?? '';
