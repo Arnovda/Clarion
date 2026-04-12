@@ -613,7 +613,14 @@ export default function ProductsPage() {
       }
 
       if (!abortCtrl.signal.aborted) {
-        pushLog('✓ All done! Your data is ready to query.', 'success');
+        // Check if any topics had errors
+        const hasErrors = autoBuildLogRef.current.some((l) => l.status === 'error');
+        if (hasErrors) {
+          const errorCount = autoBuildLogRef.current.filter((l) => l.status === 'error').length;
+          pushLog(`⚠ Finished with ${errorCount} error(s). Some topics may need attention.`, 'error');
+        } else {
+          pushLog('✓ All done! Your data is ready to query.', 'success');
+        }
         await loadDepGraph();
       }
     } catch (err: unknown) {

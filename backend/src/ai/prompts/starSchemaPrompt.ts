@@ -387,7 +387,8 @@ DuckDB-specific syntax:
 - Use CAST(x AS DATE), CAST(x AS DECIMAL(18,2))
 - Use extract(year FROM col), extract(month FROM col)
 - Use ILIKE for case-insensitive matching
-- Use TRY_CAST for safe casting
+- ALWAYS use TRY_CAST (not CAST) for numeric/date conversions — source data may contain 'None', 'null', 'N/A', or empty strings that must become NULL, not crash
+- Use NULLIF(TRIM(col), '') before TRY_CAST when source columns may have empty strings
 
 Each SQL statement must be a standalone SELECT (no CREATE TABLE — the runner handles materialization).
 
@@ -456,7 +457,9 @@ Rules:
 - Fix the minimum necessary to resolve the error — do not restructure the entire query
 - If the error mentions a missing column in a CTE or subquery alias, remove any reference to that column from the outer query or add it to the inner SELECT
 - If a JOIN references a column that no longer exists in the schema, remove or rewrite that JOIN
-- CRITICAL: If the error says a column is not found, check the "Available source columns" section — those are the REAL column names from the source database. The SQL may reference a translated or hallucinated column name (e.g. "stad" instead of "city"). Always use the actual source column names.`;
+- CRITICAL: If the error says a column is not found, check the "Available source columns" section — those are the REAL column names from the source database. The SQL may reference a translated or hallucinated column name (e.g. "stad" instead of "city"). Always use the actual source column names.
+- For Conversion Errors (e.g. "Could not convert string 'None' to INT32"), replace direct CAST with TRY_CAST so invalid values become NULL instead of crashing. Example: TRY_CAST(column AS INTEGER)
+- Source data may contain string representations of NULL like 'None', 'null', 'N/A', '' — handle these with NULLIF or CASE WHEN before casting`;
 
 export function buildTransformationSqlRepairUser(
   tableName: string,
