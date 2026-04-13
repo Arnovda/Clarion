@@ -146,6 +146,20 @@ interface DataProductProposal {
   }>;
 }
 
+interface BusMatrixOutput {
+  rationale: string;
+  conformed_dimensions: Array<{ table_name: string; display_name: string; description: string; columns: unknown[] }>;
+  fact_tables: Array<{ table_name: string; display_name: string; description: string; dimensions_used: string[] }>;
+  data_products: Array<{
+    name: string;
+    description: string;
+    build_order: number;
+    fact_tables: string[];
+    owned_dimensions: string[];
+  }>;
+  [key: string]: unknown;
+}
+
 interface SkeletonTable { name: string; role: string; description?: string; }
 
 // ---------------------------------------------------------------------------
@@ -420,79 +434,87 @@ export default function ProductsPage() {
     abortRef.current = abortCtrl;
 
     try {
-      // Step 1 — propose with live streaming
-      const prop = await runProposeStream(connId, abortCtrl.signal);
-
-      // Fix wave ordering: all foundation topics (no deps) → wave 1, rest → wave 2
-      const fixedProp = {
-        ...prop,
-        data_products: prop.data_products.map((dp) => ({
-          ...dp,
-          build_order: dp.depends_on.length === 0 ? 1 : 2,
-        })),
-      };
-
-      updateLogByKey(
-        'propose',
-        `Planned ${fixedProp.data_products.length} topics · ${fixedProp.shared_dimensions.length} shared reference tables`,
-        'success',
-      );
-
-      // Show what Claude decided
-      if (fixedProp.rationale) {
-        pushLog(`💬 ${fixedProp.rationale}`, 'info');
-      }
-
-      // Step 2 — create records
-      pushLog('Setting up topics in database…', 'running');
-      const buildRes = await api.post('/products/build-proposed', { connectionId: connId, proposal: fixedProp });
-      const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
-      updateLastLog(`Created ${created.length} topics`, 'success');
-      await loadProducts();
-      await loadDepGraph();
-
-      // Step 2.5 — ingest source data so warehouse_path is set before transformations
-      pushLog('Ingesting source data into warehouse…', 'running', false, 'ingest');
-      const tablesRes = await api.get(`/semantic/tables?connectionId=${connId}`);
-      const sourceTableNames = ((tablesRes.data.data ?? []) as { table_name: string }[]).map((t) => t.table_name);
-      if (sourceTableNames.length === 0) {
-        updateLogByKey('ingest', '✗ No source tables found — cannot continue', 'error');
-        throw new Error('No source tables found for this connection');
-      }
-      try {
-        const ingestRes = await api.post('/ingestion/ingest', { connectionId: connId, tables: sourceTableNames });
-        const wp = ingestRes.data?.data?.warehouse_path;
-        if (!wp) {
-          updateLogByKey('ingest', '✗ Ingestion completed but warehouse path not set', 'error');
-          throw new Error('Ingestion did not return a warehouse path — check ETL logs');
-        }
-        updateLogByKey('ingest', `Ingested ${sourceTableNames.length} source tables`, 'success');
-      } catch (err: unknown) {
-        const msg =
-          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-          (err instanceof Error ? err.message : 'Ingestion failed');
-        // Check specifically for ETL not running
-        const isEtlDown = msg.includes('ETL service is not running') || msg.includes('ECONNREFUSED');
-        updateLogByKey('ingest', `✗ ${isEtlDown ? 'ETL service is not running — start Docker first' : msg.slice(0, 100)}`, 'error');
-        throw new Error(isEtlDown
-          ? 'ETL service is not running. Start it with: docker compose up -d'
-          : `Ingestion failed: ${msg.slice(0, 100)}`);
-      }
-
-      // Step 2.6 — refresh source column metadata so Claude designs against real column names
+      // ── Step 0: Refresh source metadata so AI designs against real column names
       pushLog('Refreshing source metadata…', 'running', false, 'introspect');
       try {
         await api.post(`/connections/${connId}/introspect`);
         updateLogByKey('introspect', 'Source column metadata up to date', 'success');
       } catch {
         updateLogByKey('introspect', '⚠ Could not refresh metadata — using existing', 'info');
-        // Non-fatal: existing source_columns may still be fine
       }
 
-      // Step 3 — group by build_order → waves
+      // ── Step 1: Bus Matrix — one AI call designs everything ──────────────
+      pushLog('Claude is designing your data warehouse…', 'running', false, 'busmatrix');
+      let thinkingExcerpt = '';
+      const busMatrix: BusMatrixOutput = await new Promise(async (resolve, reject) => {
+        try {
+          const token = getToken();
+          const response = await fetch(`${BACKEND_URL}/api/products/bus-matrix-stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            signal: abortCtrl.signal,
+            body: JSON.stringify({ connectionId: connId }),
+          });
+          const reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (value) buffer += decoder.decode(value, { stream: !done });
+            const lines = buffer.split('\n');
+            buffer = done ? '' : (lines.pop() ?? '');
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              let ev: Record<string, unknown>;
+              try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+              if (ev.type === 'phase') {
+                updateLogByKey('busmatrix', `Claude is designing your data warehouse — ${ev.text as string}`, 'running');
+              }
+              if (ev.type === 'thinking') {
+                const chunk = ev.text as string;
+                setReasoningFull((prev) => prev + chunk);
+                if (thinkingExcerpt.length < 150) {
+                  thinkingExcerpt = (thinkingExcerpt + chunk).slice(0, 150).replace(/\n/g, ' ');
+                  updateLogByKey('busmatrix', 'Claude is designing your data warehouse…', 'running', `"${thinkingExcerpt}…"`);
+                }
+              }
+              if (ev.type === 'done') {
+                resolve(ev.busMatrix as BusMatrixOutput);
+                return;
+              }
+              if (ev.type === 'error') { reject(new Error(ev.message as string)); return; }
+            }
+            if (done) { reject(new Error('Stream ended without result')); break; }
+          }
+        } catch (e) { reject(e); }
+      });
+
+      const dimCount = busMatrix.conformed_dimensions?.length ?? 0;
+      const factCount = busMatrix.fact_tables?.length ?? 0;
+      const productCount = busMatrix.data_products?.length ?? 0;
+      updateLogByKey(
+        'busmatrix',
+        `Designed ${dimCount} dimensions · ${factCount} fact tables · ${productCount} topics`,
+        'success',
+      );
+
+      if (busMatrix.rationale) {
+        pushLog(`💬 ${busMatrix.rationale}`, 'info');
+      }
+
+      // ── Step 2: Persist bus matrix to DB ──────────────────────────────────
+      pushLog('Setting up topics in database…', 'running');
+      const buildRes = await api.post('/products/build-bus-matrix', { connectionId: connId, busMatrix });
+      const created: Array<{ name: string; id: number }> = buildRes.data.data?.products ?? [];
+      updateLastLog(`Created ${created.length} topics with schema + SQL`, 'success');
+      await loadProducts();
+      await loadDepGraph();
+
+      // ── Step 3: Run transformations per product (wave by build_order) ─────
+      // Source data is already ingested (warehouse_path + ingested_tables exist from setup phase)
       const byOrder = new Map<number, Array<{ name: string; id: number }>>();
       for (const meta of created) {
-        const order = fixedProp.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
+        const order = busMatrix.data_products.find((p) => p.name === meta.name)?.build_order ?? 99;
         const group = byOrder.get(order) ?? [];
         group.push(meta);
         byOrder.set(order, group);
@@ -501,77 +523,16 @@ export default function ProductsPage() {
 
       for (const [, wave] of waves) {
         const isFoundationWave = wave.every(
-          (m) => (fixedProp.data_products.find((p) => p.name === m.name)?.depends_on?.length ?? 0) === 0
+          (m) => (busMatrix.data_products.find((p) => p.name === m.name)?.fact_tables?.length ?? 0) === 0
         );
-        // Filter out Calendar from visible wave logging (it's infrastructure)
         const visibleWave = wave.filter((m) => m.name !== 'Calendar');
-        if (visibleWave.length === 0) {
-          // Calendar-only wave — still build it, just don't show a wave header
-        } else {
+        if (visibleWave.length > 0) {
           pushLog(
-            `─── ${isFoundationWave ? '🔷 Reference data' : `📊 Analytics data`}${visibleWave.length > 1 ? ` (${visibleWave.length} topics in parallel)` : ''}`,
+            `─── ${isFoundationWave ? '🔷 Reference data' : '📊 Analytics data'}${visibleWave.length > 1 ? ` (${visibleWave.length} topics in parallel)` : ''}`,
             'info'
           );
         }
 
-        // ── Design phase: one log line per topic, updated live ────────────────
-        for (const meta of wave) {
-          const displayName = meta.name === 'Calendar' ? null : cleanTopicName(meta.name);
-          if (displayName) {
-            pushLog(`  ${displayName}  ·  asking Claude to design…`, 'running', true, `design-${meta.id}`);
-          }
-        }
-
-        // Accumulate a brief excerpt from Claude's thinking per topic
-        const thinkingExcerpts = new Map<number, string>();
-
-        await Promise.all(wave.map((meta) => {
-          const key = `design-${meta.id}`;
-          const name = cleanTopicName(meta.name);
-          const isCalendar = meta.name === 'Calendar';
-
-          const designPromise = runDesignStream(
-            meta.id,
-            (phase) => {
-              if (isCalendar) return; // Silent for Calendar
-              const lastPhase = phase
-                .replace('Reading', 'Reading source data —')
-                .replace('source tables...', 'tables')
-                .replace('Designing star schema with AI...', 'Claude is designing the schema…')
-                .replace('Saving star schema design...', 'Saving design…')
-                .replace('Generating transformation SQL...', 'Generating SQL…')
-                .replace('Done!', '✓ Done');
-              const excerpt = thinkingExcerpts.get(meta.id);
-              updateLogByKey(key, `  ${name}  ·  ${lastPhase}`, 'running', excerpt ? `"${excerpt}"` : undefined);
-            },
-            (chunk) => {
-              // Keep a short rolling excerpt of Claude's reasoning (first 120 chars)
-              const current = thinkingExcerpts.get(meta.id) ?? '';
-              if (current.length < 120) {
-                const next = (current + chunk).slice(0, 120).replace(/\n/g, ' ');
-                thinkingExcerpts.set(meta.id, next);
-              }
-            },
-            abortCtrl.signal,
-          );
-
-          return designPromise
-            .then(() => {
-              if (!isCalendar) updateLogByKey(key, `  ${name}  ·  ✓ Schema + SQL ready`, 'success');
-            })
-            .catch((err: unknown) => {
-              if (isCalendar) return; // Calendar failures are silent — it's infrastructure
-              const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'));
-              if (!isAbort) {
-                const msg = err instanceof Error ? err.message : 'Design failed';
-                updateLogByKey(key, `  ${name}  ·  ✗ ${msg}`, 'error');
-              }
-            });
-        }));
-
-        await loadProducts();
-
-        // ── Build phase: one log line per topic, updated on completion ────────
         for (const meta of wave) {
           if (meta.name !== 'Calendar') {
             pushLog(`  ${cleanTopicName(meta.name)}  ·  loading data…`, 'running', true, `build-${meta.id}`);
@@ -584,9 +545,7 @@ export default function ProductsPage() {
             const name = cleanTopicName(meta.name);
             const isCalendar = meta.name === 'Calendar';
             try {
-              // Check if aborted before building
               if (abortCtrl.signal.aborted) return;
-              // Use run-full for initial build to ensure clean overwrite (avoids corrupted incremental parquet)
               const runRes = await api.post(`/products/${meta.id}/run-full`);
               const results: Array<{ row_count?: number; status: string; error?: string }> = runRes.data?.data ?? [];
               const rows = results.reduce((s: number, r) => s + (r.row_count ?? 0), 0);
@@ -613,7 +572,6 @@ export default function ProductsPage() {
       }
 
       if (!abortCtrl.signal.aborted) {
-        // Check if any topics had errors
         const hasErrors = autoBuildLogRef.current.some((l) => l.status === 'error');
         if (hasErrors) {
           const errorCount = autoBuildLogRef.current.filter((l) => l.status === 'error').length;

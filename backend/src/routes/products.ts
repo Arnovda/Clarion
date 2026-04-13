@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
+// tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 
 const router = Router();
@@ -68,6 +69,19 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
     }
 
     res.json({ ok: true, data: { id: productId } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/products/dependency-graph — All dependency edges for this tenant
+// Must be before /:id routes to avoid being captured by the param handler
+// ---------------------------------------------------------------------------
+
+router.get('/dependency-graph', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const deps = await semanticDb('data_product_dependencies')
+      .select('dependent_product_id', 'source_product_id');
+    res.json({ ok: true, data: deps });
   } catch (err) { next(err); }
 });
 
@@ -211,19 +225,6 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/products/dependency-graph — All dependency edges for this tenant
-// Must be before /:id routes to avoid being captured by the param handler
-// ---------------------------------------------------------------------------
-
-router.get('/dependency-graph', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const deps = await semanticDb('data_product_dependencies')
-      .select('dependent_product_id', 'source_product_id');
-    res.json({ ok: true, data: deps });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
 // GET /api/products/:id/sources — Source tables assigned to this data product
 // ---------------------------------------------------------------------------
 
@@ -346,7 +347,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     emit({ type: 'phase', text: 'Designing star schema with AI...' });
 
     // ── Phase 1: Streaming star schema design ─────────────────────────────
-    const { generateStarSchemaDesignStreaming, generateTransformationSqlStreaming } = await import('../ai/AIService');
+    const { generateStarSchemaDesignStreaming } = await import('../ai/AIService');
 
     const design = await generateStarSchemaDesignStreaming(
       product.name,
@@ -371,7 +372,8 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 
     const allSavedTables: { name: string; role: string; columnCount: number }[] = [];
 
-    for (const schema of design.star_schemas) {
+    const schema = design.star_schema;
+    {
       const [schemaRow] = await semanticDb('star_schemas')
         .insert({
           data_product_id: product.id,
@@ -393,7 +395,8 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
             description: table.description,
             table_role: table.table_role,
             dag_order: table.dag_order,
-            transformation_status: 'draft',
+            transformation_sql: table.transformation_sql ?? null,
+            transformation_status: table.transformation_sql ? 'draft' : 'pending',
             ai_draft: true,
           }).returning('id');
         const tableId: number = typeof tableRow === 'object' ? (tableRow as { id: number }).id : (tableRow as number);
@@ -468,6 +471,58 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
           });
         }
       }
+
+      // ── Auto-inject dim_date using hardcoded template ──────────────────
+      const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
+      const dateRange = design.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
+
+      const [dimDateRow] = await semanticDb('product_tables')
+        .insert({
+          star_schema_id: schemaId,
+          table_name: 'dim_date',
+          display_name: 'Date',
+          description: 'Auto-generated calendar dimension',
+          table_role: 'dimension',
+          dag_order: 0,
+          transformation_sql: DIM_DATE_SQL(dateRange.start, dateRange.end),
+          transformation_status: 'draft',
+          ai_draft: false,
+        }).returning('id');
+      const dimDateId: number = typeof dimDateRow === 'object' ? (dimDateRow as { id: number }).id : (dimDateRow as number);
+      tableNameToId.set('dim_date', dimDateId);
+
+      for (const col of DIM_DATE_COLUMNS) {
+        await semanticDb('product_columns')
+          .insert({
+            product_table_id: dimDateId,
+            column_name: col.column_name,
+            data_type: col.data_type,
+            display_name: col.display_name,
+            description: col.description,
+            column_role: col.column_role,
+            transformation_expression: col.transformation_expression,
+            scd_type: col.scd_type,
+            sort_order: col.sort_order,
+            ai_draft: false,
+          });
+      }
+
+      allSavedTables.push({
+        name: 'dim_date',
+        role: 'dimension',
+        columnCount: DIM_DATE_COLUMNS.length,
+      });
+
+      emit({ type: 'table_saved', table: {
+        name: 'dim_date',
+        role: 'dimension',
+        description: 'Auto-generated calendar dimension',
+        columns: DIM_DATE_COLUMNS.map((c) => ({
+          name: c.column_name,
+          role: c.column_role,
+          type: c.data_type,
+        })),
+      }});
     }
 
     // Save proposed KPIs
@@ -490,60 +545,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 
     emit({ type: 'design_complete', tables: allSavedTables });
 
-    // ── Phase 2: Auto-generate transformation SQL ─────────────────────────
-    emit({ type: 'phase', text: 'Generating transformation SQL...' });
-
-    try {
-      const savedSchemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
-      const savedSchemaIds = savedSchemas.map((s: { id: number }) => s.id);
-      const savedTables = savedSchemaIds.length
-        ? await semanticDb('product_tables').whereIn('star_schema_id', savedSchemaIds).orderBy(['dag_order', 'table_name'])
-        : [];
-      const savedTableIds = savedTables.map((t: { id: number }) => t.id);
-      const savedColumns = savedTableIds.length
-        ? await semanticDb('product_columns').whereIn('product_table_id', savedTableIds).orderBy(['sort_order', 'id'])
-        : [];
-
-      const schemaJsonForSql = savedSchemas.map((s: { id: number; name: string; grain: string }) => ({
-        ...s,
-        tables: savedTables
-          .filter((t: { star_schema_id: number }) => t.star_schema_id === s.id)
-          .map((t: { id: number; table_name: string; table_role: string; description: string }) => ({
-            ...t,
-            columns: savedColumns.filter((c: { product_table_id: number }) => c.product_table_id === t.id),
-          })),
-      }));
-
-      const rawTableNames = sources.map((s: { table_name: string }) => s.table_name).join(', ');
-      const sqlSourceContext = sharedDimsContext
-        ? `${rawTableNames}\n\n━━━ CONFORMED DIMENSIONS (pre-built views — JOIN directly by table name) ━━━\n\n${sharedDimsContext}`
-        : rawTableNames;
-      const sqlResult = await generateTransformationSqlStreaming(
-        JSON.stringify(schemaJsonForSql),
-        sqlSourceContext,
-        (type, delta) => {
-          if (type === 'thinking') {
-            emit({ type: 'sql_thinking', text: delta });
-          }
-        },
-      );
-
-      for (const item of sqlResult.tables) {
-        await semanticDb('product_tables')
-          .whereIn('star_schema_id', savedSchemaIds)
-          .where({ table_name: item.table_name })
-          .update({
-            transformation_sql: item.sql,
-            transformation_status: 'draft',
-            updated_at: new Date().toISOString(),
-          });
-      }
-
-      emit({ type: 'sql_complete', tablesUpdated: sqlResult.tables.length });
-    } catch (sqlErr) {
-      console.warn('[products/design-stream] SQL generation failed:', sqlErr);
-      emit({ type: 'sql_error', message: 'SQL generation failed — you can retry from the Transformations tab.' });
-    }
+    emit({ type: 'sql_complete', tablesUpdated: allSavedTables.length });
 
     emit({ type: 'done' });
     res.end();
@@ -621,7 +623,8 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     await semanticDb('star_schemas').where({ data_product_id: product.id }).delete();
 
     // Save the design
-    for (const schema of design.star_schemas) {
+    const schema = design.star_schema;
+    {
       const [schemaRow] = await semanticDb('star_schemas')
         .insert({
           data_product_id: product.id,
@@ -645,7 +648,8 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
             description: table.description,
             table_role: table.table_role,
             dag_order: table.dag_order,
-            transformation_status: 'draft',
+            transformation_sql: table.transformation_sql ?? null,
+            transformation_status: table.transformation_sql ? 'draft' : 'pending',
             ai_draft: true,
           })
           .returning('id');
@@ -705,6 +709,41 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
           });
         }
       }
+
+      // ── Auto-inject dim_date using hardcoded template ──────────────────
+      const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
+      const dateRange = design.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
+
+      const [dimDateRow] = await semanticDb('product_tables')
+        .insert({
+          star_schema_id: schemaId,
+          table_name: 'dim_date',
+          display_name: 'Date',
+          description: 'Auto-generated calendar dimension',
+          table_role: 'dimension',
+          dag_order: 0,
+          transformation_sql: DIM_DATE_SQL(dateRange.start, dateRange.end),
+          transformation_status: 'draft',
+          ai_draft: false,
+        }).returning('id');
+      const dimDateId: number = typeof dimDateRow === 'object' ? (dimDateRow as { id: number }).id : (dimDateRow as number);
+      tableNameToId.set('dim_date', dimDateId);
+
+      for (const col of DIM_DATE_COLUMNS) {
+        await semanticDb('product_columns')
+          .insert({
+            product_table_id: dimDateId,
+            column_name: col.column_name,
+            data_type: col.data_type,
+            display_name: col.display_name,
+            description: col.description,
+            column_role: col.column_role,
+            transformation_expression: col.transformation_expression,
+            scd_type: col.scd_type,
+            sort_order: col.sort_order,
+            ai_draft: false,
+          });
+      }
     }
 
     // Save proposed KPIs
@@ -727,46 +766,6 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
       updated_at: new Date().toISOString(),
     });
 
-    // Auto-chain: generate transformation SQL immediately after design
-    try {
-      const savedSchemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
-      const savedSchemaIds = savedSchemas.map((s: { id: number }) => s.id);
-      const savedTables = savedSchemaIds.length
-        ? await semanticDb('product_tables').whereIn('star_schema_id', savedSchemaIds).orderBy(['dag_order', 'table_name'])
-        : [];
-      const savedTableIds = savedTables.map((t: { id: number }) => t.id);
-      const savedColumns = savedTableIds.length
-        ? await semanticDb('product_columns').whereIn('product_table_id', savedTableIds).orderBy(['sort_order', 'id'])
-        : [];
-
-      const schemaJsonForSql = savedSchemas.map((s: { id: number; name: string; grain: string }) => ({
-        ...s,
-        tables: savedTables
-          .filter((t: { star_schema_id: number }) => t.star_schema_id === s.id)
-          .map((t: { id: number; table_name: string; table_role: string; description: string }) => ({
-            ...t,
-            columns: savedColumns.filter((c: { product_table_id: number }) => c.product_table_id === t.id),
-          })),
-      }));
-
-      const sqlSourceContext = sources.map((s: { table_name: string }) => s.table_name).join(', ');
-      const { generateTransformationSql } = await import('../ai/AIService');
-      const sqlResult = await generateTransformationSql(JSON.stringify(schemaJsonForSql), sqlSourceContext);
-
-      for (const item of sqlResult.tables) {
-        await semanticDb('product_tables')
-          .whereIn('star_schema_id', savedSchemaIds)
-          .where({ table_name: item.table_name })
-          .update({
-            transformation_sql: item.sql,
-            transformation_status: 'draft',
-            updated_at: new Date().toISOString(),
-          });
-      }
-    } catch (sqlErr) {
-      console.warn('[products/design] Auto SQL generation failed (non-blocking):', sqlErr);
-    }
-
     res.json({ ok: true, data: { status: 'approved', sqlGenerated: true } });
   } catch (err) {
     // Revert status on error
@@ -776,65 +775,6 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     }).catch(() => {});
     next(err);
   }
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/products/:id/generate-sql — Generate transformation SQL for all tables
-// ---------------------------------------------------------------------------
-
-router.post('/:id/generate-sql', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
-    if (!product) {
-      res.status(404).json({ ok: false, error: 'Data product not found' });
-      return;
-    }
-
-    // Get all star schemas + tables for this product
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
-    const schemaIds = schemas.map((s: { id: number }) => s.id);
-
-    const tables = schemaIds.length
-      ? await semanticDb('product_tables').whereIn('star_schema_id', schemaIds).orderBy(['dag_order', 'table_name'])
-      : [];
-
-    const tableIds = tables.map((t: { id: number }) => t.id);
-    const columns = tableIds.length
-      ? await semanticDb('product_columns').whereIn('product_table_id', tableIds).orderBy(['sort_order', 'id'])
-      : [];
-
-    // Build the schema JSON for the AI
-    const schemaJson = schemas.map((s: { id: number; name: string; grain: string }) => ({
-      ...s,
-      tables: tables
-        .filter((t: { star_schema_id: number }) => t.star_schema_id === s.id)
-        .map((t: { id: number; table_name: string; table_role: string; description: string }) => ({
-          ...t,
-          columns: columns.filter((c: { product_table_id: number }) => c.product_table_id === t.id),
-        })),
-    }));
-
-    // Get source table context
-    const sources = await semanticDb('data_product_sources').where({ data_product_id: product.id });
-    const sourceContext = sources.map((s: { table_name: string }) => s.table_name).join(', ');
-
-    const { generateTransformationSql } = await import('../ai/AIService');
-    const result = await generateTransformationSql(JSON.stringify(schemaJson), sourceContext);
-
-    // Update each table's SQL
-    for (const item of result.tables) {
-      await semanticDb('product_tables')
-        .whereIn('star_schema_id', schemaIds)
-        .where({ table_name: item.table_name })
-        .update({
-          transformation_sql: item.sql,
-          transformation_status: 'draft',
-          updated_at: new Date().toISOString(),
-        });
-    }
-
-    res.json({ ok: true, data: { tablesUpdated: result.tables.length } });
-  } catch (err) { next(err); }
 });
 
 // ---------------------------------------------------------------------------
@@ -860,92 +800,9 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
       : Promise.resolve([]);
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const { repairTransformationSql } = await import('../ai/AIService');
 
-    let tables = await fetchTables();
-    let results = await runProductTransformation(product, tables, req.user?.tenantId);
-
-    // ── Build source-column context once (for repair loop) ─────────────
-    // These are the REAL column names from the source database — used to
-    // correct hallucinated names like "stad" when the source has "city".
-    const sourceColRows = await semanticDb('source_columns as sc')
-      .join('source_tables as st', 'sc.table_id', 'st.id')
-      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
-      .select('st.table_name', 'sc.column_name', 'sc.data_type');
-
-    const sourceColumnsByTable = new Map<string, string>();
-    for (const row of sourceColRows as { table_name: string; column_name: string; data_type: string }[]) {
-      const key = row.table_name;
-      const existing = sourceColumnsByTable.get(key) ?? '';
-      sourceColumnsByTable.set(key, existing + `  ${row.column_name} (${row.data_type})\n`);
-    }
-    const sourceColumnsContext = [...sourceColumnsByTable.entries()]
-      .map(([tName, cols]) => `Table "${tName}":\n${cols}`)
-      .join('\n');
-
-    // ── Auto-repair loop (up to 2 attempts) ──────────────────────────────
-    const MAX_REPAIR = 2;
-    for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
-      const failed = results.filter((r) => r.status === 'error' && r.error);
-      if (failed.length === 0) break;
-
-      console.log(`[products/run] Auto-repairing ${failed.length} failed table(s), attempt ${attempt + 1}`);
-
-      // Re-fetch tables so SQL reflects any previous repair saves
-      tables = await fetchTables();
-
-      const repairedTables: typeof tables = [];
-
-      await Promise.allSettled(failed.map(async (failedResult) => {
-        const tbl = tables.find((t: { table_name: string }) => t.table_name === failedResult.table_name);
-        if (!tbl?.transformation_sql || !failedResult.error) return;
-
-        // Build expected-columns context from product_columns
-        const cols = await semanticDb('product_columns')
-          .where({ product_table_id: tbl.id })
-          .orderBy('sort_order')
-          .select('column_name', 'data_type', 'column_role', 'description');
-
-        const expectedColumns = cols.length
-          ? cols.map((c: Record<string, string>) =>
-              `  ${c.column_name} (${c.data_type ?? 'VARCHAR'}) [${c.column_role ?? 'attribute'}]${c.description ? ': ' + c.description : ''}`
-            ).join('\n')
-          : '  (no column metadata available)';
-
-        try {
-          const correctedSql = await repairTransformationSql(
-            tbl.table_name,
-            tbl.table_role,
-            tbl.transformation_sql,
-            failedResult.error,
-            expectedColumns,
-            sourceColumnsContext,
-          );
-
-          await semanticDb('product_tables')
-            .where({ id: tbl.id })
-            .update({ transformation_sql: correctedSql, updated_at: new Date().toISOString() });
-
-          repairedTables.push({ ...tbl, transformation_sql: correctedSql });
-          console.log(`[products/run] Repaired SQL saved for ${tbl.table_name}`);
-        } catch (repairErr) {
-          console.warn(`[products/run] Repair AI call failed for ${tbl.table_name}:`, repairErr);
-        }
-      }));
-
-      if (repairedTables.length === 0) break;
-
-      // Re-run only the repaired tables (in dag_order so dims come before facts)
-      const rerunResults = await runProductTransformation(
-        product,
-        repairedTables.sort((a: { dag_order: number }, b: { dag_order: number }) => a.dag_order - b.dag_order),
-        req.user?.tenantId,
-      );
-
-      // Merge re-run results back (replace the failed entries)
-      results = results.map((r) => rerunResults.find((rr) => rr.table_name === r.table_name) ?? r);
-    }
-    // ─────────────────────────────────────────────────────────────────────
+    const tables = await fetchTables();
+    const results = await runProductTransformation(product, tables, req.user?.tenantId);
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
@@ -957,7 +814,7 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
 
 router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    let table = await semanticDb('product_tables').where({ id: req.params.tableId }).first();
+    const table = await semanticDb('product_tables').where({ id: req.params.tableId }).first();
     if (!table) {
       res.status(404).json({ ok: false, error: 'Table not found' });
       return;
@@ -972,66 +829,8 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
     const product = await semanticDb('data_products').where({ id: schema.data_product_id }).first();
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const { repairTransformationSql } = await import('../ai/AIService');
 
-    let result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
-
-    // ── Build source-column context for repair ─────────────────────────
-    const srcColRows = await semanticDb('source_columns as sc')
-      .join('source_tables as st', 'sc.table_id', 'st.id')
-      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
-      .select('st.table_name', 'sc.column_name', 'sc.data_type');
-
-    const srcColsByTable = new Map<string, string>();
-    for (const row of srcColRows as { table_name: string; column_name: string; data_type: string }[]) {
-      const existing = srcColsByTable.get(row.table_name) ?? '';
-      srcColsByTable.set(row.table_name, existing + `  ${row.column_name} (${row.data_type})\n`);
-    }
-    const srcColsContext = [...srcColsByTable.entries()]
-      .map(([tName, cols]) => `Table "${tName}":\n${cols}`)
-      .join('\n');
-
-    // ── Auto-repair (up to 2 attempts) ───────────────────────────────────
-    const MAX_REPAIR = 2;
-    for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
-      if (!result || result.status !== 'error' || !result.error || !table.transformation_sql) break;
-
-      console.log(`[tables/run] Auto-repairing ${table.table_name}, attempt ${attempt + 1}: ${result.error}`);
-
-      const cols = await semanticDb('product_columns')
-        .where({ product_table_id: table.id })
-        .orderBy('sort_order')
-        .select('column_name', 'data_type', 'column_role', 'description');
-
-      const expectedColumns = cols.length
-        ? cols.map((c: Record<string, string>) =>
-            `  ${c.column_name} (${c.data_type ?? 'VARCHAR'}) [${c.column_role ?? 'attribute'}]${c.description ? ': ' + c.description : ''}`
-          ).join('\n')
-        : '  (no column metadata available)';
-
-      try {
-        const correctedSql = await repairTransformationSql(
-          table.table_name,
-          table.table_role,
-          table.transformation_sql,
-          result.error,
-          expectedColumns,
-          srcColsContext,
-        );
-
-        await semanticDb('product_tables')
-          .where({ id: table.id })
-          .update({ transformation_sql: correctedSql, updated_at: new Date().toISOString() });
-
-        table = { ...table, transformation_sql: correctedSql };
-        result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? result;
-        console.log(`[tables/run] Post-repair status for ${table.table_name}: ${result.status}`);
-      } catch (repairErr) {
-        console.warn(`[tables/run] Repair AI call failed for ${table.table_name}:`, repairErr);
-        break;
-      }
-    }
-    // ─────────────────────────────────────────────────────────────────────
+    const result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
 
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
@@ -1215,70 +1014,8 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
     const fullTables = tables.map((t: Record<string, unknown>) => ({ ...t, load_mode: 'full' }));
 
     const { runProductTransformation } = await import('../services/transformationRunner');
-    const { repairTransformationSql } = await import('../ai/AIService');
 
-    let results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
-
-    // ── Auto-repair loop (same as /run) ──────────────────────────────────
-    const srcRows = await semanticDb('source_columns as sc')
-      .join('source_tables as st', 'sc.table_id', 'st.id')
-      .where({ 'st.connection_id': product.connection_id, 'st.is_active': true })
-      .select('st.table_name', 'sc.column_name', 'sc.data_type');
-    const srcMap = new Map<string, string>();
-    for (const r of srcRows as { table_name: string; column_name: string; data_type: string }[]) {
-      srcMap.set(r.table_name, (srcMap.get(r.table_name) ?? '') + `  ${r.column_name} (${r.data_type})\n`);
-    }
-    const srcCtx = [...srcMap.entries()].map(([t, c]) => `Table "${t}":\n${c}`).join('\n');
-
-    const MAX_REPAIR = 2;
-    for (let attempt = 0; attempt < MAX_REPAIR; attempt++) {
-      const failed = results.filter((r) => r.status === 'error' && r.error);
-      if (failed.length === 0) break;
-
-      console.log(`[products/run-full] Auto-repairing ${failed.length} failed table(s), attempt ${attempt + 1}`);
-
-      const repairedTables: typeof fullTables = [];
-
-      await Promise.allSettled(failed.map(async (failedResult) => {
-        const tbl = fullTables.find((t: Record<string, unknown>) => t.table_name === failedResult.table_name);
-        if (!tbl?.transformation_sql || !failedResult.error) return;
-
-        const cols = await semanticDb('product_columns')
-          .where({ product_table_id: tbl.id })
-          .orderBy('sort_order')
-          .select('column_name', 'data_type', 'column_role', 'description');
-
-        const expectedColumns = cols.length
-          ? cols.map((c: Record<string, string>) =>
-              `  ${c.column_name} (${c.data_type ?? 'VARCHAR'}) [${c.column_role ?? 'attribute'}]${c.description ? ': ' + c.description : ''}`
-            ).join('\n')
-          : '  (no column metadata available)';
-
-        try {
-          const correctedSql = await repairTransformationSql(
-            tbl.table_name as string, tbl.table_role as string,
-            tbl.transformation_sql as string, failedResult.error,
-            expectedColumns, srcCtx,
-          );
-          await semanticDb('product_tables')
-            .where({ id: tbl.id })
-            .update({ transformation_sql: correctedSql, updated_at: new Date().toISOString() });
-          repairedTables.push({ ...tbl, transformation_sql: correctedSql });
-          console.log(`[products/run-full] Repaired SQL saved for ${tbl.table_name}`);
-        } catch (repairErr) {
-          console.warn(`[products/run-full] Repair AI call failed for ${tbl.table_name}:`, repairErr);
-        }
-      }));
-
-      if (repairedTables.length === 0) break;
-      const rerunResults = await runProductTransformation(
-        product,
-        repairedTables.sort((a: Record<string, unknown>, b: Record<string, unknown>) =>
-          (a.dag_order as number) - (b.dag_order as number)) as any,
-        req.user?.tenantId,
-      );
-      results = results.map((r) => rerunResults.find((rr) => rr.table_name === r.table_name) ?? r);
-    }
+    const results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
@@ -1362,8 +1099,452 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/products/bus-matrix-stream — SSE streaming enterprise bus matrix
+// One AI call designs ALL dims + ALL facts + groupings. Replaces propose + design.
+// ---------------------------------------------------------------------------
+
+router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const emit = (data: Record<string, unknown>) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  try {
+    const { connectionId } = req.body as { connectionId: number };
+    if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); res.end(); return; }
+
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) { emit({ type: 'error', message: 'Connection not found' }); res.end(); return; }
+
+    emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
+
+    // Build FULL source context (with columns + samples) for the AI
+    const sourceTables = await semanticDb('source_tables as st')
+      .where({ 'st.connection_id': connectionId, 'st.is_active': true })
+      .select('st.*');
+
+    const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
+    const sourceColumns = sourceTableIds.length
+      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+      : [];
+
+    const sourceContext = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
+      const cols = sourceColumns
+        .filter((c: { table_id: number }) => c.table_id === t.id)
+        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean; example_values: unknown }) => {
+          const examples = c.example_values
+            ? ` — samples: ${JSON.stringify(typeof c.example_values === 'string' ? JSON.parse(c.example_values) : c.example_values)}`
+            : '';
+          return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}${examples}`;
+        }).join('\n');
+      return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
+    }).join('\n\n');
+
+    emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables — designing bus matrix…` });
+
+    const { generateBusMatrixStreaming } = await import('../ai/AIService');
+
+    let busMatrix: Awaited<ReturnType<typeof generateBusMatrixStreaming>>;
+    try {
+      busMatrix = await generateBusMatrixStreaming(
+        connection.name as string,
+        sourceContext,
+        (type, delta) => {
+          if (type === 'thinking') emit({ type: 'thinking', text: delta });
+        },
+      );
+    } catch (aiErr) {
+      console.error('[products/bus-matrix-stream] AI call failed:', aiErr);
+      const msg = aiErr instanceof Error ? aiErr.message : 'AI call failed';
+      emit({ type: 'error', message: `AI design failed: ${msg}` });
+      res.end();
+      return;
+    }
+
+    emit({ type: 'done', busMatrix });
+  } catch (err) {
+    console.error('[products/bus-matrix-stream] Error:', err);
+    try {
+      emit({ type: 'error', message: err instanceof Error ? err.message : 'Bus matrix design failed' });
+    } catch { /* response already closed */ }
+  }
+  res.end();
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/build-bus-matrix — Persist a bus matrix design to DB
+// Creates data products, star schemas, tables (with SQL), columns, relationships.
+// ---------------------------------------------------------------------------
+
+router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, busMatrix } = req.body as {
+      connectionId: number;
+      busMatrix: import('../ai/prompts/busMatrixPrompt').BusMatrixOutput;
+    };
+    if (!connectionId || !busMatrix) {
+      res.status(400).json({ ok: false, error: 'connectionId and busMatrix required' });
+      return;
+    }
+
+    const tenantId = req.user?.tenantId;
+    const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
+
+    // Wrap in a transaction — all-or-nothing to avoid partial state on failure
+    const results = await semanticDb.transaction(async (trx) => {
+
+    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+
+    // Build lookup maps for dims and facts
+    const dimByName = new Map(busMatrix.conformed_dimensions.map((d) => [d.table_name, d]));
+    const factByName = new Map(busMatrix.fact_tables.map((f) => [f.table_name, f]));
+
+    // Sort products by build_order
+    const sortedProducts = [...busMatrix.data_products].sort((a, b) => a.build_order - b.build_order);
+
+    const productIdByName = new Map<string, number>();
+    const _results: Array<{ name: string; id: number; status: string }> = [];
+
+    // Collect all source table names used across dims + facts for data_product_sources
+    const allSourceTablesByProduct = new Map<string, Set<string>>();
+    for (const dp of sortedProducts) {
+      const srcSet = new Set<string>();
+      for (const dimName of dp.owned_dimensions) {
+        const dim = dimByName.get(dimName);
+        if (dim) dim.source_tables.forEach((s) => srcSet.add(s));
+      }
+      for (const factName of dp.fact_tables) {
+        const fact = factByName.get(factName);
+        if (fact) fact.source_tables.forEach((s) => srcSet.add(s));
+      }
+      allSourceTablesByProduct.set(dp.name, srcSet);
+    }
+
+    // Track which product owns which dim (for dependency resolution)
+    const dimOwnerProduct = new Map<string, string>();
+    for (const dp of sortedProducts) {
+      for (const dimName of dp.owned_dimensions) {
+        dimOwnerProduct.set(dimName, dp.name);
+      }
+    }
+
+    for (const dp of sortedProducts) {
+      // Create data_product row
+      const [productRow] = await trx('data_products').insert({
+        connection_id: connectionId,
+        name: dp.name,
+        description: dp.description,
+        status: 'draft',
+        created_by: req.user?.email || 'ai',
+        tenant_id: tenantId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).returning('id');
+
+      const pid = typeof productRow === 'object' ? (productRow as { id: number }).id : (productRow as number);
+      productIdByName.set(dp.name, pid);
+
+      // Record dependencies: for each fact's dimensions_used, if the dim is owned by another product, add dependency
+      const depProductNames = new Set<string>();
+      for (const factName of dp.fact_tables) {
+        const fact = factByName.get(factName);
+        if (!fact) continue;
+        for (const dimName of fact.dimensions_used) {
+          if (dimName === 'dim_date') continue; // dim_date is auto-injected, no dependency needed
+          const owner = dimOwnerProduct.get(dimName);
+          if (owner && owner !== dp.name) depProductNames.add(owner);
+        }
+      }
+      for (const depName of depProductNames) {
+        const sourceId = productIdByName.get(depName);
+        if (sourceId) {
+          await trx('data_product_dependencies').insert({
+            dependent_product_id: pid,
+            source_product_id: sourceId,
+            tenant_id: tenantId,
+          }).onConflict(['dependent_product_id', 'source_product_id']).ignore();
+        }
+      }
+
+      // Create star schema for this product
+      const allTablesInProduct = [...dp.owned_dimensions, ...dp.fact_tables];
+      const primaryFact = dp.fact_tables[0] ? factByName.get(dp.fact_tables[0]) : null;
+
+      const [schemaRow] = await trx('star_schemas').insert({
+        data_product_id: pid,
+        name: dp.name,
+        description: dp.description,
+        grain: primaryFact?.grain ?? 'Conformed dimensions',
+        fact_table_type: primaryFact?.fact_table_type ?? 'transaction',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).returning('id');
+      const schemaId = typeof schemaRow === 'object' ? (schemaRow as { id: number }).id : (schemaRow as number);
+
+      const tableNameToId = new Map<string, number>();
+
+      // Insert owned dimensions
+      for (const dimName of dp.owned_dimensions) {
+        const dim = dimByName.get(dimName);
+        if (!dim) continue;
+
+        const [tableRow] = await trx('product_tables').insert({
+          star_schema_id: schemaId,
+          table_name: dim.table_name,
+          display_name: dim.display_name,
+          description: dim.description,
+          table_role: 'dimension',
+          is_shared_dimension: true,
+          dag_order: 0,
+          transformation_sql: dim.transformation_sql,
+          transformation_status: 'draft',
+          load_mode: 'full',
+          ai_draft: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).returning('id');
+        const tableId = typeof tableRow === 'object' ? (tableRow as { id: number }).id : (tableRow as number);
+        tableNameToId.set(dim.table_name, tableId);
+
+        // Insert columns
+        for (const col of dim.columns) {
+          const [colRow] = await trx('product_columns').insert({
+            product_table_id: tableId,
+            column_name: col.column_name,
+            data_type: col.data_type,
+            display_name: col.display_name,
+            description: col.description,
+            column_role: col.column_role,
+            fk_target_table: col.fk_target_table ?? null,
+            fk_target_column: col.fk_target_column ?? null,
+            transformation_expression: col.transformation_expression,
+            additivity: col.additivity ?? null,
+            scd_type: col.scd_type ?? 1,
+            sort_order: col.sort_order ?? 0,
+            ai_draft: true,
+          }).returning('id');
+          const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
+
+          const validLineage = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          if (validLineage.length) {
+            await trx('column_lineage').insert(
+              validLineage.map((l) => ({
+                product_column_id: colId,
+                source_table_name: l.source_table_name,
+                source_column_name: l.source_column_name,
+                transformation_description: l.transformation_description ?? null,
+              })),
+            );
+          }
+        }
+      }
+
+      // Insert fact tables
+      for (const factName of dp.fact_tables) {
+        const fact = factByName.get(factName);
+        if (!fact) continue;
+
+        const [tableRow] = await trx('product_tables').insert({
+          star_schema_id: schemaId,
+          table_name: fact.table_name,
+          display_name: fact.display_name,
+          description: fact.description,
+          table_role: 'fact',
+          is_shared_dimension: false,
+          dag_order: 1,
+          transformation_sql: fact.transformation_sql,
+          transformation_status: 'draft',
+          load_mode: 'full',
+          ai_draft: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }).returning('id');
+        const tableId = typeof tableRow === 'object' ? (tableRow as { id: number }).id : (tableRow as number);
+        tableNameToId.set(fact.table_name, tableId);
+
+        for (const col of fact.columns) {
+          const [colRow] = await trx('product_columns').insert({
+            product_table_id: tableId,
+            column_name: col.column_name,
+            data_type: col.data_type,
+            display_name: col.display_name,
+            description: col.description,
+            column_role: col.column_role,
+            fk_target_table: col.fk_target_table ?? null,
+            fk_target_column: col.fk_target_column ?? null,
+            transformation_expression: col.transformation_expression,
+            additivity: col.additivity ?? null,
+            scd_type: col.scd_type ?? 1,
+            sort_order: col.sort_order ?? 0,
+            ai_draft: true,
+          }).returning('id');
+          const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
+
+          const validLineage = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          if (validLineage.length) {
+            await trx('column_lineage').insert(
+              validLineage.map((l) => ({
+                product_column_id: colId,
+                source_table_name: l.source_table_name,
+                source_column_name: l.source_column_name,
+                transformation_description: l.transformation_description ?? null,
+              })),
+            );
+          }
+        }
+
+        // Also add referenced shared dims (from other products) as stub entries
+        // so the star schema has complete info for querying
+        for (const dimName of fact.dimensions_used) {
+          if (dimName === 'dim_date') continue;
+          if (dp.owned_dimensions.includes(dimName)) continue; // Already added above
+          const dim = dimByName.get(dimName);
+          if (!dim || tableNameToId.has(dimName)) continue;
+
+          const [stubRow] = await trx('product_tables').insert({
+            star_schema_id: schemaId,
+            table_name: dim.table_name,
+            display_name: dim.display_name,
+            description: dim.description,
+            table_role: 'dimension',
+            is_shared_dimension: true,
+            dag_order: 0,
+            transformation_sql: null, // Not built here — owned by another product
+            transformation_status: 'draft',
+            load_mode: 'full',
+            ai_draft: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }).returning('id');
+          const stubId = typeof stubRow === 'object' ? (stubRow as { id: number }).id : (stubRow as number);
+          tableNameToId.set(dim.table_name, stubId);
+
+          // Insert dim columns as metadata (for query context)
+          for (const col of dim.columns) {
+            await trx('product_columns').insert({
+              product_table_id: stubId,
+              column_name: col.column_name,
+              data_type: col.data_type,
+              display_name: col.display_name,
+              description: col.description,
+              column_role: col.column_role,
+              fk_target_table: col.fk_target_table ?? null,
+              fk_target_column: col.fk_target_column ?? null,
+              transformation_expression: col.transformation_expression,
+              additivity: col.additivity ?? null,
+              scd_type: col.scd_type ?? 1,
+              sort_order: col.sort_order ?? 0,
+              ai_draft: true,
+            });
+          }
+        }
+      }
+
+      // Auto-inject dim_date
+      const dateRange = busMatrix.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
+      const [dimDateRow] = await trx('product_tables').insert({
+        star_schema_id: schemaId,
+        table_name: 'dim_date',
+        display_name: 'Date',
+        description: 'Auto-generated calendar dimension',
+        table_role: 'dimension',
+        dag_order: 0,
+        transformation_sql: dp.build_order === 1 ? DIM_DATE_SQL(dateRange.start, dateRange.end) : null,
+        transformation_status: 'draft',
+        ai_draft: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }).returning('id');
+      const dimDateId = typeof dimDateRow === 'object' ? (dimDateRow as { id: number }).id : (dimDateRow as number);
+      tableNameToId.set('dim_date', dimDateId);
+
+      for (const col of DIM_DATE_COLUMNS) {
+        await trx('product_columns').insert({
+          product_table_id: dimDateId,
+          column_name: col.column_name,
+          data_type: col.data_type,
+          display_name: col.display_name,
+          description: col.description,
+          column_role: col.column_role,
+          transformation_expression: col.transformation_expression,
+          scd_type: col.scd_type,
+          sort_order: col.sort_order,
+          ai_draft: false,
+        });
+      }
+
+      // Save relationships for tables in this product
+      for (const rel of busMatrix.relationships) {
+        const fromId = tableNameToId.get(rel.from_table_name);
+        const toId = tableNameToId.get(rel.to_table_name);
+        if (fromId && toId) {
+          await trx('product_relationships').insert({
+            star_schema_id: schemaId,
+            from_table_id: fromId,
+            from_column_name: rel.from_column_name,
+            to_table_id: toId,
+            to_column_name: rel.to_column_name,
+            relationship_type: rel.relationship_type,
+          });
+        }
+      }
+
+      // Populate data_product_sources
+      const srcSet = allSourceTablesByProduct.get(dp.name);
+      if (srcSet && srcSet.size > 0) {
+        const sourceTblRows = await trx('source_tables')
+          .where({ connection_id: connectionId })
+          .whereIn('table_name', [...srcSet])
+          .select('id', 'table_name');
+        if (sourceTblRows.length > 0) {
+          await trx('data_product_sources').insert(
+            sourceTblRows.map((r: { id: number; table_name: string }) => ({
+              data_product_id: pid,
+              source_table_id: r.id,
+              table_name: r.table_name,
+            })),
+          );
+        }
+      }
+
+      // Save KPIs for this product
+      const productKpis = (busMatrix.proposed_kpis ?? []).filter((k) => k.product_name === dp.name);
+      if (productKpis.length > 0) {
+        await trx('product_kpis').insert(
+          productKpis.map((k) => ({
+            data_product_id: pid,
+            name: k.name,
+            description: k.description,
+            formula_plain_text: k.formula_plain_text,
+            formula_sql: k.formula_sql,
+            ai_draft: true,
+          })),
+        );
+      }
+
+      // Mark as approved (ready to run)
+      await trx('data_products').where({ id: pid }).update({
+        status: 'approved',
+        updated_at: new Date().toISOString(),
+      });
+
+      _results.push({ name: dp.name, id: pid, status: 'created' });
+    }
+
+    return _results;
+
+    }); // end transaction
+
+    res.json({ ok: true, data: { products: results } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/propose-stream — SSE streaming version of /propose
 // Streams Claude's thinking tokens live so the browser shows progress immediately.
+// (LEGACY — kept for backward compat; new flow uses bus-matrix-stream)
 // ---------------------------------------------------------------------------
 
 router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {

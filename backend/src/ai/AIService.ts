@@ -52,22 +52,14 @@ import {
   STAR_SCHEMA_DESIGN_SYSTEM,
   buildStarSchemaDesignUser,
   StarSchemaDesignOutput,
-  TRANSFORMATION_SQL_SYSTEM,
-  buildTransformationSqlUser,
-  TransformationSqlOutput,
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
-  TRANSFORMATION_SQL_REPAIR_SYSTEM,
-  buildTransformationSqlRepairUser,
 } from './prompts/starSchemaPrompt';
 import {
-  DATA_PRODUCT_PROPOSAL_SYSTEM,
-  buildDataProductProposalUser,
-  buildSingleDataProductProposalUser,
-  DataProductProposal,
-  SourceTableContext,
-  ExistingDataProduct,
-} from './prompts/dataProductProposalPrompt';
+  BUS_MATRIX_SYSTEM,
+  buildBusMatrixUser,
+  BusMatrixOutput,
+} from './prompts/busMatrixPrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -622,7 +614,7 @@ export async function generateStarSchemaDesignStreaming(
   const params: any = {
     model: MODEL,
     max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
+    thinking: { type: 'enabled', budget_tokens: 4000 },
     system: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
     messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
   };
@@ -646,21 +638,28 @@ export async function generateStarSchemaDesignStreaming(
   return parseJson<StarSchemaDesignOutput>(fullText);
 }
 
+// ---------------------------------------------------------------------------
+// Bus Matrix Design — designs ALL dims + facts for entire source in one call
+// ---------------------------------------------------------------------------
+
 /**
- * Streaming version of transformation SQL generation.
+ * Streaming bus matrix design — designs all conformed dimensions and fact tables
+ * for an entire source system in a single AI call. Replaces the old propose +
+ * per-product design flow.
  */
-export async function generateTransformationSqlStreaming(
-  starSchemaJson: string,
-  sourceContext: string,
+export async function generateBusMatrixStreaming(
+  connectionName: string,
+  sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
-): Promise<TransformationSqlOutput> {
+): Promise<BusMatrixOutput> {
+  const currentDate = currentDateStr();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
-    system: TRANSFORMATION_SQL_SYSTEM(sourceContext),
-    messages: [{ role: 'user', content: buildTransformationSqlUser(starSchemaJson) }],
+    thinking: { type: 'enabled', budget_tokens: 10000 },
+    system: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
+    messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
 
   const stream = getClient().messages.stream(params);
@@ -677,26 +676,29 @@ export async function generateTransformationSqlStreaming(
         onEvent('text', delta.text);
       }
     }
+    // Capture stop reason from message_delta events
+    if (event.type === 'message_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = event as any;
+      if (md.delta?.stop_reason && md.delta.stop_reason !== 'end_turn') {
+        logger.warn({ stop_reason: md.delta.stop_reason }, 'Bus matrix stream stopped unexpectedly');
+      }
+    }
   }
 
-  return parseJson<TransformationSqlOutput>(fullText);
-}
+  if (!fullText.trim()) {
+    logger.error({ sourceContextLength: sourceTablesContext.length }, 'Bus matrix AI returned no text output');
+    throw new Error('AI returned no text output — the source schema may be too large or the model encountered an error. Check the backend logs.');
+  }
 
-// ---------------------------------------------------------------------------
-// Transformation SQL Generation — generates DuckDB SQL for each product table
-// (non-streaming fallback)
-// ---------------------------------------------------------------------------
+  logger.info({ textLength: fullText.length, preview: fullText.slice(0, 300) }, 'Bus matrix AI raw output preview');
 
-export async function generateTransformationSql(
-  starSchemaJson: string,
-  sourceContext: string,
-): Promise<TransformationSqlOutput> {
-  const raw = await callClaudeStreaming(
-    TRANSFORMATION_SQL_SYSTEM(sourceContext),
-    buildTransformationSqlUser(starSchemaJson),
-    64000,
-  );
-  return parseJson<TransformationSqlOutput>(raw);
+  try {
+    return parseJson<BusMatrixOutput>(fullText);
+  } catch (parseErr) {
+    logger.error({ textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON parse failed');
+    throw new Error(`Failed to parse AI output as JSON: ${parseErr instanceof Error ? parseErr.message : 'unknown parse error'}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -713,130 +715,4 @@ export async function editColumnExpression(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
   );
-}
-
-// ---------------------------------------------------------------------------
-// Data Product Proposal — auto-design all conformed products from a source
-// ---------------------------------------------------------------------------
-
-export async function proposeDataProducts(
-  sourceTables: SourceTableContext[],
-  existingProducts: ExistingDataProduct[],
-  connectionName: string,
-): Promise<DataProductProposal> {
-  const raw = await callClaude(
-    DATA_PRODUCT_PROPOSAL_SYSTEM,
-    buildDataProductProposalUser(sourceTables, existingProducts, connectionName),
-    8192,
-    'propose_data_products',
-  );
-
-  // Strip markdown fences if present
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-  const proposal: DataProductProposal = JSON.parse(cleaned);
-  return proposal;
-}
-
-/**
- * Streaming version of proposeDataProducts.
- * Emits thinking tokens live so the SSE endpoint can forward them to the browser.
- */
-export async function proposeDataProductsStreaming(
-  sourceTables: SourceTableContext[],
-  existingProducts: ExistingDataProduct[],
-  connectionName: string,
-  onEvent: (type: 'thinking' | 'text', delta: string) => void,
-): Promise<DataProductProposal> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const params: any = {
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: 'enabled', budget_tokens: 6000 },
-    system: DATA_PRODUCT_PROPOSAL_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: buildDataProductProposalUser(sourceTables, existingProducts, connectionName),
-    }],
-  };
-
-  const stream = getClient().messages.stream(params);
-  let fullText = '';
-
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const delta = (event as any).delta as Record<string, unknown>;
-      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        onEvent('thinking', delta.thinking);
-      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        fullText += delta.text;
-        onEvent('text', delta.text);
-      }
-    }
-  }
-
-  const cleaned = fullText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-  return JSON.parse(cleaned) as DataProductProposal;
-}
-
-/**
- * Repair a failing DuckDB transformation SQL statement.
- * Takes the failing SQL, the DuckDB error, and the expected column schema,
- * and returns a corrected SELECT statement.
- */
-export async function repairTransformationSql(
-  tableName: string,
-  tableRole: string,
-  failingSql: string,
-  errorMessage: string,
-  expectedColumns: string,
-  sourceColumns?: string,
-): Promise<string> {
-  const msg = await getClient().messages.create({
-    model: MODEL,
-    max_tokens: 4000,
-    system: TRANSFORMATION_SQL_REPAIR_SYSTEM,
-    messages: [{
-      role: 'user',
-      content: buildTransformationSqlRepairUser(tableName, tableRole, failingSql, errorMessage, expectedColumns, sourceColumns),
-    }],
-  });
-  const raw = msg.content.find((b) => b.type === 'text')?.text ?? '';
-
-  // Strip markdown code fences
-  let sql = raw.replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-
-  // If Claude returned natural language before the SQL, extract just the SELECT statement.
-  // This happens when the model explains its reasoning despite being told not to.
-  if (sql.length > 0 && !sql.toUpperCase().startsWith('SELECT') && !sql.toUpperCase().startsWith('WITH')) {
-    // Try to find the first SELECT or WITH statement
-    const selectMatch = sql.match(/\b(SELECT\s[\s\S]*)/i) ?? sql.match(/\b(WITH\s[\s\S]*)/i);
-    if (selectMatch) {
-      sql = selectMatch[1].trim();
-      // Remove trailing natural language after the SQL (anything after a line that looks like end of SQL)
-      sql = sql.replace(/\s*```[\s\S]*$/, '').trim();
-    }
-  }
-
-  return sql;
-}
-
-// ---------------------------------------------------------------------------
-// Propose a SINGLE data product from a free-text business description
-// ---------------------------------------------------------------------------
-
-export async function proposeSingleDataProduct(
-  sourceTables: SourceTableContext[],
-  existingProducts: ExistingDataProduct[],
-  connectionName: string,
-  userDescription: string,
-): Promise<DataProductProposal> {
-  const raw = await callClaude(
-    DATA_PRODUCT_PROPOSAL_SYSTEM,
-    buildSingleDataProductProposalUser(sourceTables, existingProducts, connectionName, userDescription),
-    8000,
-    'propose_single_data_product',
-  );
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
-  return JSON.parse(cleaned) as DataProductProposal;
 }
