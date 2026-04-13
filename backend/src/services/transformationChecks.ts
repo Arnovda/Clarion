@@ -11,6 +11,7 @@
 
 import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 
 export type CheckType = 'bk_uniqueness' | 'fan_out' | 'null_check' | 'ref_integrity' | 'value_range';
 
@@ -31,10 +32,12 @@ export interface CheckResult {
  * Dimensions: surrogate_key or natural_key columns.
  * Facts: all foreign_key + degenerate_dimension columns form the composite grain.
  */
-async function resolveBkColumns(tableId: number, tableRole: string): Promise<string[]> {
-  const columns = await semanticDb('product_columns')
-    .where({ product_table_id: tableId })
-    .select('column_name', 'column_role');
+async function resolveBkColumns(tableId: number, tableRole: string, tenantId?: number): Promise<string[]> {
+  const columns = await tenantQuery(tenantId, (trx) =>
+    trx('product_columns')
+      .where({ product_table_id: tableId })
+      .select('column_name', 'column_role')
+  );
 
   if (tableRole === 'fact') {
     // Fact grain = all FKs + degenerate dimensions
@@ -241,10 +244,13 @@ async function checkNullCompleteness(
   db: Database,
   tempTable: string,
   tableId: number,
+  tenantId?: number,
 ): Promise<CheckResult> {
-  const columns = await semanticDb('product_columns')
-    .where({ product_table_id: tableId })
-    .select('column_name', 'column_role');
+  const columns = await tenantQuery(tenantId, (trx) =>
+    trx('product_columns')
+      .where({ product_table_id: tableId })
+      .select('column_name', 'column_role')
+  );
 
   if (columns.length === 0) {
     return {
@@ -332,6 +338,7 @@ async function checkReferentialIntegrity(
   tempTable: string,
   tableId: number,
   tableRole: string,
+  tenantId?: number,
 ): Promise<CheckResult> {
   if (tableRole !== 'fact') {
     return {
@@ -347,9 +354,11 @@ async function checkReferentialIntegrity(
   }
 
   // Get FK columns and their target tables
-  const fkColumns = await semanticDb('product_columns')
-    .where({ product_table_id: tableId, column_role: 'foreign_key' })
-    .select('column_name', 'fk_target_table', 'fk_target_column');
+  const fkColumns = await tenantQuery(tenantId, (trx) =>
+    trx('product_columns')
+      .where({ product_table_id: tableId, column_role: 'foreign_key' })
+      .select('column_name', 'fk_target_table', 'fk_target_column')
+  );
 
   if (fkColumns.length === 0) {
     return {
@@ -448,10 +457,13 @@ async function checkValueRange(
   db: Database,
   tempTable: string,
   tableId: number,
+  tenantId?: number,
 ): Promise<CheckResult> {
-  const measures = await semanticDb('product_columns')
-    .where({ product_table_id: tableId, column_role: 'measure' })
-    .select('column_name');
+  const measures = await tenantQuery(tenantId, (trx) =>
+    trx('product_columns')
+      .where({ product_table_id: tableId, column_role: 'measure' })
+      .select('column_name')
+  );
 
   if (measures.length === 0) {
     return {
@@ -570,8 +582,9 @@ export async function runTransformationChecks(
   tableId: number,
   tableRole: string,
   sql: string,
+  tenantId?: number,
 ): Promise<CheckResult[]> {
-  const bkColumns = await resolveBkColumns(tableId, tableRole);
+  const bkColumns = await resolveBkColumns(tableId, tableRole, tenantId);
   const results: CheckResult[] = [];
 
   // 1. BK Uniqueness
@@ -610,7 +623,7 @@ export async function runTransformationChecks(
 
   // 4. Referential Integrity (fact tables only)
   try {
-    results.push(await checkReferentialIntegrity(db, tempTable, tableId, tableRole));
+    results.push(await checkReferentialIntegrity(db, tempTable, tableId, tableRole, tenantId));
   } catch (err) {
     results.push({
       check_type: 'ref_integrity',
@@ -626,7 +639,7 @@ export async function runTransformationChecks(
 
   // 5. Value Range (measures only)
   try {
-    results.push(await checkValueRange(db, tempTable, tableId));
+    results.push(await checkValueRange(db, tempTable, tableId, tenantId));
   } catch (err) {
     results.push({
       check_type: 'value_range',
@@ -641,20 +654,22 @@ export async function runTransformationChecks(
   }
 
   // Persist results (delete previous checks for this table, insert new ones)
-  await semanticDb('transformation_checks').where({ product_table_id: tableId }).del();
-  for (const r of results) {
-    await semanticDb('transformation_checks').insert({
-      product_table_id: tableId,
-      check_type: r.check_type,
-      status: r.status,
-      bk_columns: JSON.stringify(r.bk_columns),
-      total_rows: r.total_rows,
-      distinct_bk_rows: r.distinct_bk_rows,
-      duplicate_count: r.duplicate_count,
-      sample_duplicates: JSON.stringify(r.sample_duplicates),
-      message: r.message,
-    });
-  }
+  await tenantQuery(tenantId, async (trx) => {
+    await trx('transformation_checks').where({ product_table_id: tableId }).del();
+    for (const r of results) {
+      await trx('transformation_checks').insert({
+        product_table_id: tableId,
+        check_type: r.check_type,
+        status: r.status,
+        bk_columns: JSON.stringify(r.bk_columns),
+        total_rows: r.total_rows,
+        distinct_bk_rows: r.distinct_bk_rows,
+        duplicate_count: r.duplicate_count,
+        sample_duplicates: JSON.stringify(r.sample_duplicates),
+        message: r.message,
+      });
+    }
+  });
 
   return results;
 }

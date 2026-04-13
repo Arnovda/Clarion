@@ -263,6 +263,73 @@ router.get('/:id/profile/status', requireAuth, async (req: Request, res: Respons
   res.json({ ok: true, data: row });
 });
 
+// POST /api/connections/:id/introspect — lightweight column refresh (no AI)
+// Re-reads actual column names + types from the source database and updates
+// source_columns rows. Preserves existing AI-generated descriptions.
+router.post('/:id/introspect', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const connectionId = Number(req.params.id);
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    // Connect to the source database
+    const connector = createSourceConnector(connection);
+    await connector.connect();
+
+    let schema: { tables: Array<{ tableName: string; columns: Array<{ name: string; type: string; sampleValues?: unknown[] }> }> };
+    try {
+      schema = await connector.introspectSchema();
+    } finally {
+      connector.disconnect();
+    }
+
+    let updatedCols = 0;
+    let insertedCols = 0;
+
+    for (const tbl of schema.tables) {
+      // Find the matching source_table row
+      const sourceTable = await semanticDb('source_tables')
+        .where({ connection_id: connectionId, table_name: tbl.tableName, is_active: true })
+        .first();
+      if (!sourceTable) continue;
+
+      for (const col of tbl.columns) {
+        const existing = await semanticDb('source_columns')
+          .where({ table_id: sourceTable.id, column_name: col.name })
+          .first();
+
+        if (existing) {
+          // Update data_type and example_values if they changed
+          await semanticDb('source_columns').where({ id: existing.id }).update({
+            data_type: col.type,
+            example_values: col.sampleValues ? JSON.stringify(col.sampleValues) : existing.example_values,
+          });
+          updatedCols++;
+        } else {
+          // New column discovered — insert with ai_draft flag
+          await semanticDb('source_columns').insert({
+            table_id:       sourceTable.id,
+            column_name:    col.name,
+            data_type:      col.type,
+            display_name:   col.name,
+            description:    null,
+            example_values: col.sampleValues ? JSON.stringify(col.sampleValues) : null,
+            is_dimension:   false,
+            is_measure:     false,
+            ai_draft:       true,
+          });
+          insertedCols++;
+        }
+      }
+    }
+
+    res.json({ ok: true, data: { tables: schema.tables.length, updatedColumns: updatedCols, newColumns: insertedCols } });
+  } catch (err) { next(err); }
+});
+
 // DELETE /api/connections/:id — delete a connection and its semantic data
 router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {

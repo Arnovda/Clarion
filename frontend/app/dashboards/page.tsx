@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import AppShell from '@/components/layout/AppShell';
+import Nav from '@/components/Nav';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import {
@@ -1505,104 +1505,99 @@ export default function DashboardsPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
-  const sidebarContent = (
-    <div className="flex flex-col h-full">
-      {/* Sidebar header */}
-      <div className="px-3 py-3 ghost-border-b">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Dashboards</span>
-          <button
-            onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
-            className="text-label-md text-secondary font-semibold hover:text-primary"
-          >
-            + New
-          </button>
-        </div>
-        <CreateInput
-          compact
-          value={createInput}
-          onChange={setCreateInput}
-          onSubmit={initiateCreate}
-          loading={createLoading}
-        />
-        {createError && <p className="text-label-sm text-error mt-1">{createError}</p>}
-      </div>
-
-      {/* My / Shared toggle */}
-      <div className="px-2 pt-2 flex gap-1">
-        <button
-          onClick={() => { setShowShared(false); setActiveFolder(null); }}
-          className={`flex-1 text-label-md py-1 rounded-lg font-medium transition-colors ${!showShared ? 'pill-active' : 'pill-inactive'}`}
-        >
-          My
-        </button>
-        <button
-          onClick={() => { setShowShared(true); setActiveFolder(null); }}
-          className={`flex-1 text-label-md py-1 rounded-lg font-medium transition-colors ${showShared ? 'pill-active' : 'pill-inactive'}`}
-        >
-          Shared
-        </button>
-        <button
-          onClick={() => setShowTemplates(true)}
-          className="flex-1 text-label-md py-1 rounded-lg font-medium pill-inactive transition-colors"
-          title="Browse templates"
-        >
-          Templates
-        </button>
-      </div>
-
-      {/* Folder filter */}
-      {!showShared && folders.length > 0 && (
-        <div className="px-2 pt-1.5 flex flex-wrap gap-1">
-          <button
-            onClick={() => setActiveFolder(null)}
-            className={`text-label-sm px-2 py-0.5 rounded-pill transition-colors ${activeFolder === null ? 'bg-primary text-on-primary' : 'text-on-surface-variant ghost-border hover:bg-surface-container'}`}
-          >
-            All
-          </button>
-          {folders.map((f) => (
-            <button
-              key={f}
-              onClick={() => setActiveFolder(activeFolder === f ? null : f)}
-              className={`text-label-sm px-2 py-0.5 rounded-pill transition-colors ${activeFolder === f ? 'bg-primary text-on-primary' : 'text-on-surface-variant ghost-border hover:bg-surface-container'}`}
-            >
-              {f}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Dashboard list */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin py-2 px-2 space-y-0.5">
-        {favorites.length > 0 && (
-          <>
-            <p className="text-label-sm text-on-surface-variant/50 uppercase tracking-wider px-1 py-1">Favorites</p>
-            {favorites.map((d) => <DashboardListItem key={d.id} d={d} />)}
-            {regular.length > 0 && <div className="my-2" />}
-          </>
-        )}
-        {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
-        {visibleDashboards.length === 0 && (
-          <p className="text-label-sm text-on-surface-variant/40 text-center mt-4 px-2">
-            {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
-          </p>
-        )}
-      </div>
-    </div>
-  );
-
   return (
-    <AppShell
-      title="Dashboards"
-      contextPanel={sidebarContent}
-      pills={[{ key: 'all', label: 'All' }, { key: 'favorites', label: 'Favorites' }, { key: 'reports', label: 'Reports' }]}
-      activePill="all"
-      onPillChange={() => {}}
-    >
-      <div className={`flex-1 overflow-hidden flex flex-col ${darkMode ? 'dark' : ''}`}
-        style={{ background: darkMode
-          ? 'linear-gradient(135deg, #0f1117 0%, #1a1d2e 50%, #0f1117 100%)'
-          : undefined }}>
+    <div className={`h-screen overflow-hidden flex flex-col ${darkMode ? 'dark' : ''}`}
+      style={{ background: darkMode
+        ? 'linear-gradient(135deg, #0f1117 0%, #1a1d2e 50%, #0f1117 100%)'
+        : 'linear-gradient(135deg, #eef2ff 0%, #f8faff 40%, #f3f0ff 100%)' }}>
+      <Nav />
+
+      <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 57px)' }}>
+
+        {/* ── Left sidebar ── */}
+        <aside className="w-56 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-r border-black/5 dark:border-white/5 flex flex-col shrink-0 overflow-hidden">
+          {/* Sidebar header */}
+          <div className="px-3 py-3 border-b border-slate-100">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Dashboards</span>
+              <button
+                onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
+                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + New
+              </button>
+            </div>
+            <CreateInput
+              compact
+              value={createInput}
+              onChange={setCreateInput}
+              onSubmit={initiateCreate}
+              loading={createLoading}
+            />
+            {createError && <p className="text-xs text-red-500 mt-1">{createError}</p>}
+          </div>
+
+          {/* My / Shared toggle */}
+          <div className="px-2 pt-2 flex gap-1">
+            <button
+              onClick={() => { setShowShared(false); setActiveFolder(null); }}
+              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${!showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+            >
+              My
+            </button>
+            <button
+              onClick={() => { setShowShared(true); setActiveFolder(null); }}
+              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+            >
+              Shared
+            </button>
+            <button
+              onClick={() => setShowTemplates(true)}
+              className="flex-1 text-xs py-1 rounded-md font-medium text-slate-500 hover:bg-slate-100 transition-colors"
+              title="Browse templates"
+            >
+              Templates
+            </button>
+          </div>
+
+          {/* Folder filter */}
+          {!showShared && folders.length > 0 && (
+            <div className="px-2 pt-1.5 flex flex-wrap gap-1">
+              <button
+                onClick={() => setActiveFolder(null)}
+                className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === null ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+              >
+                All
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setActiveFolder(activeFolder === f ? null : f)}
+                  className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === f ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Dashboard list */}
+          <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+            {favorites.length > 0 && (
+              <>
+                <p className="text-xs text-slate-400 uppercase tracking-wider px-1 py-1">⭐ Favorites</p>
+                {favorites.map((d) => <DashboardListItem key={d.id} d={d} />)}
+                {regular.length > 0 && <div className="my-2 border-t border-slate-100" />}
+              </>
+            )}
+            {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
+            {visibleDashboards.length === 0 && (
+              <p className="text-xs text-slate-400 text-center mt-4 px-2">
+                {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
+              </p>
+            )}
+          </div>
+        </aside>
 
         {/* ── Main area ── */}
         <main className="flex-1 overflow-hidden flex flex-col">
@@ -2161,7 +2156,6 @@ export default function DashboardsPage() {
           </div>
         </div>
       )}
-      </div>
-    </AppShell>
+    </div>
   );
 }

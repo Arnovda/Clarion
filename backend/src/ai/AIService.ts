@@ -52,12 +52,14 @@ import {
   STAR_SCHEMA_DESIGN_SYSTEM,
   buildStarSchemaDesignUser,
   StarSchemaDesignOutput,
-  TRANSFORMATION_SQL_SYSTEM,
-  buildTransformationSqlUser,
-  TransformationSqlOutput,
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
+import {
+  BUS_MATRIX_SYSTEM,
+  buildBusMatrixUser,
+  BusMatrixOutput,
+} from './prompts/busMatrixPrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -612,7 +614,7 @@ export async function generateStarSchemaDesignStreaming(
   const params: any = {
     model: MODEL,
     max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
+    thinking: { type: 'enabled', budget_tokens: 4000 },
     system: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
     messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
   };
@@ -636,21 +638,28 @@ export async function generateStarSchemaDesignStreaming(
   return parseJson<StarSchemaDesignOutput>(fullText);
 }
 
+// ---------------------------------------------------------------------------
+// Bus Matrix Design — designs ALL dims + facts for entire source in one call
+// ---------------------------------------------------------------------------
+
 /**
- * Streaming version of transformation SQL generation.
+ * Streaming bus matrix design — designs all conformed dimensions and fact tables
+ * for an entire source system in a single AI call. Replaces the old propose +
+ * per-product design flow.
  */
-export async function generateTransformationSqlStreaming(
-  starSchemaJson: string,
-  sourceContext: string,
+export async function generateBusMatrixStreaming(
+  connectionName: string,
+  sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
-): Promise<TransformationSqlOutput> {
+): Promise<BusMatrixOutput> {
+  const currentDate = currentDateStr();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
-    system: TRANSFORMATION_SQL_SYSTEM(sourceContext),
-    messages: [{ role: 'user', content: buildTransformationSqlUser(starSchemaJson) }],
+    thinking: { type: 'enabled', budget_tokens: 10000 },
+    system: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
+    messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
 
   const stream = getClient().messages.stream(params);
@@ -667,26 +676,29 @@ export async function generateTransformationSqlStreaming(
         onEvent('text', delta.text);
       }
     }
+    // Capture stop reason from message_delta events
+    if (event.type === 'message_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md = event as any;
+      if (md.delta?.stop_reason && md.delta.stop_reason !== 'end_turn') {
+        logger.warn({ stop_reason: md.delta.stop_reason }, 'Bus matrix stream stopped unexpectedly');
+      }
+    }
   }
 
-  return parseJson<TransformationSqlOutput>(fullText);
-}
+  if (!fullText.trim()) {
+    logger.error({ sourceContextLength: sourceTablesContext.length }, 'Bus matrix AI returned no text output');
+    throw new Error('AI returned no text output — the source schema may be too large or the model encountered an error. Check the backend logs.');
+  }
 
-// ---------------------------------------------------------------------------
-// Transformation SQL Generation — generates DuckDB SQL for each product table
-// (non-streaming fallback)
-// ---------------------------------------------------------------------------
+  logger.info({ textLength: fullText.length, preview: fullText.slice(0, 300) }, 'Bus matrix AI raw output preview');
 
-export async function generateTransformationSql(
-  starSchemaJson: string,
-  sourceContext: string,
-): Promise<TransformationSqlOutput> {
-  const raw = await callClaudeStreaming(
-    TRANSFORMATION_SQL_SYSTEM(sourceContext),
-    buildTransformationSqlUser(starSchemaJson),
-    64000,
-  );
-  return parseJson<TransformationSqlOutput>(raw);
+  try {
+    return parseJson<BusMatrixOutput>(fullText);
+  } catch (parseErr) {
+    logger.error({ textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON parse failed');
+    throw new Error(`Failed to parse AI output as JSON: ${parseErr instanceof Error ? parseErr.message : 'unknown parse error'}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

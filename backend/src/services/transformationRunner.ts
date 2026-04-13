@@ -11,6 +11,7 @@ import fs from 'fs';
 import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
 import { runTransformationChecks } from './transformationChecks';
+import { tenantQuery } from './tenantQuery';
 
 interface ProductRow {
   id: number;
@@ -32,6 +33,130 @@ interface TransformResult {
   status: 'success' | 'error';
   row_count?: number;
   error?: string;
+}
+
+/**
+ * Deterministic SQL auto-fixer — parses DuckDB error messages and applies
+ * the suggested corrections without needing an AI call.
+ *
+ * Handles:
+ * 1. "Referenced column X not found, Candidate bindings: Y" → replace X with best match Y
+ * 2. "Table with name X does not exist! Did you mean Y?" → replace X with best available view
+ * 3. "Values list alias does not have a column named X" + candidate → replace
+ */
+function autoFixSql(sql: string, errorMessage: string, availableViews?: string[]): string {
+  let fixed = sql;
+
+  // Pattern 1: "Referenced column "X" not found ... Candidate bindings: "Y", "Z"
+  const colNotFound = errorMessage.match(
+    /Referenced column "([^"]+)" not found[\s\S]*?Candidate bindings:\s*"([^"]+)"/
+  );
+  if (colNotFound) {
+    const [, badCol, suggestedCol] = colNotFound;
+    const escaped = badCol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
+    fixed = sql.replace(pattern, suggestedCol);
+    if (fixed !== sql) return fixed;
+  }
+
+  // Pattern 2: "Table with name X does not exist!"
+  // DuckDB's "Did you mean" suggestion is often wrong (picks alphabetically closest).
+  // Instead, find the best semantic match from available DuckDB views using JOIN context.
+  const tableNotFound = errorMessage.match(
+    /Table with name (\w+) does not exist!/
+  );
+  if (tableNotFound && availableViews && availableViews.length > 0) {
+    const badTable = tableNotFound[1];
+    const bestMatch = findBestTableMatch(badTable, availableViews, sql);
+    if (bestMatch) {
+      const escaped = badTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
+      fixed = sql.replace(pattern, bestMatch);
+      if (fixed !== sql) return fixed;
+    }
+  }
+
+  // Pattern 3: "Binder Error: column X not found" with "Candidate bindings" (alternate format)
+  const binderCol = errorMessage.match(
+    /column "([^"]+)" not found[\s\S]*?Candidate bindings:\s*"([^"]+)"/i
+  );
+  if (binderCol) {
+    const [, badCol, suggestedCol] = binderCol;
+    const escaped = badCol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
+    fixed = sql.replace(pattern, suggestedCol);
+    if (fixed !== sql) return fixed;
+  }
+
+  return fixed; // No fix found — return unchanged
+}
+
+/**
+ * Find the best matching view name for a missing table reference.
+ * Uses the SQL context to match JOIN column references against available views.
+ * e.g., "LEFT JOIN dim_klant dc ON ... = dc.customer_key" → finds dim_customer
+ * because dim_customer has a customer_key column.
+ */
+function findBestTableMatch(badTable: string, availableViews: string[], sql?: string, db?: Database): string | null {
+  const badParts = badTable.toLowerCase().split('_');
+  const badPrefix = badParts[0]; // "dim", "fact", etc.
+
+  // Filter to same prefix only
+  const candidates = availableViews.filter(v => v.toLowerCase().startsWith(badPrefix + '_'));
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0]; // Only one option — use it
+
+  // Try to extract alias and referenced columns from the SQL JOIN clause
+  if (sql) {
+    // Find: "JOIN dim_klant <alias>" or "JOIN dim_klant AS <alias>"
+    const joinPattern = new RegExp(
+      `JOIN\\s+${badTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(?:AS\\s+)?(\\w+)`,
+      'i'
+    );
+    const joinMatch = sql.match(joinPattern);
+    if (joinMatch) {
+      const alias = joinMatch[1];
+      // Find all column references using this alias: alias.column_name
+      const colRefs = [...sql.matchAll(new RegExp(`${alias}\\.(\\w+)`, 'g'))].map(m => m[1]);
+      if (colRefs.length > 0) {
+        // The candidate with a column matching one of these references is our target
+        // Check column names by looking at the candidate view names
+        // e.g., if alias refs "customer_key", the view dim_customer likely has it
+        for (const candidate of candidates) {
+          const entityPart = candidate.split('_').slice(1).join('_'); // "customer"
+          for (const col of colRefs) {
+            if (col.toLowerCase().includes(entityPart) || entityPart.includes(col.toLowerCase().replace('_key', ''))) {
+              return candidate;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: longest common substring on the entity portion
+  const badSuffix = badParts.slice(1).join('_');
+  let bestMatch: string | null = null;
+  let bestScore = 0;
+  for (const view of candidates) {
+    const viewSuffix = view.toLowerCase().split('_').slice(1).join('_');
+    let score = 0;
+    // Exact part matches
+    for (const part of badParts.slice(1)) {
+      for (const vPart of view.toLowerCase().split('_').slice(1)) {
+        if (part === vPart) score += 10;
+        else if (vPart.includes(part) || part.includes(vPart)) score += 5;
+      }
+    }
+    // LCS bonus
+    let max = 0;
+    for (let i = 0; i < badSuffix.length; i++)
+      for (let j = i + 1; j <= badSuffix.length; j++)
+        if (viewSuffix.includes(badSuffix.substring(i, j)) && j - i > max) max = j - i;
+    score += max;
+    if (score > bestScore) { bestScore = score; bestMatch = view; }
+  }
+  return bestScore >= 3 ? bestMatch : null;
 }
 
 /** Check if a path is an Azure Blob URI. */
@@ -97,6 +222,55 @@ async function createScanView(db: Database, viewName: string, scanPath: string, 
 }
 
 /**
+ * Loads shared dimension Parquet files from dependency products as DuckDB views.
+ * This allows fact tables to JOIN to conformed dims without rebuilding them.
+ */
+async function loadDependencyDimensions(
+  db: Database,
+  productId: number,
+  productDir: string,
+  useAzure: boolean,
+  tenantId?: number,
+): Promise<void> {
+  // Find all products this product depends on
+  const deps = await tenantQuery(tenantId, (trx) =>
+    trx('data_product_dependencies as dpd')
+      .join('data_products as dp', 'dpd.source_product_id', 'dp.id')
+      .where('dpd.dependent_product_id', productId)
+      .select('dpd.source_product_id', 'dp.name as source_product_name', 'dp.connection_id')
+  );
+
+  for (const dep of deps) {
+    // Find the shared dimension tables in the source product
+    const sharedTables = await tenantQuery(tenantId, (trx) =>
+      trx('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': true })
+        .select('pt.table_name', 'pt.delta_path')
+    );
+
+    const sourceConn = await tenantQuery(tenantId, (trx) =>
+      trx('connections').where({ id: dep.connection_id }).first()
+    );
+    const sourceWarehouse = sourceConn?.warehouse_path;
+    if (!sourceWarehouse) continue;
+
+    const sourceSlug = (dep.source_product_name as string).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const sourceProductDir = productBasePath(sourceWarehouse, sourceSlug);
+
+    for (const tbl of sharedTables) {
+      const tblPath = (tbl.delta_path as string) || productTablePath(sourceProductDir, tbl.table_name as string);
+      try {
+        await createScanView(db, tbl.table_name as string, useAzure ? tblPath : tblPath.replace(/\\/g, '/'), useAzure);
+        console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${tbl.table_name}`);
+      } catch {
+        console.warn(`  [dep] could not load ${dep.source_product_name}.${tbl.table_name} — skipping`);
+      }
+    }
+  }
+}
+
+/**
  * Runs transformations for a data product's tables, respecting DAG order.
  */
 export async function runProductTransformation(
@@ -104,7 +278,9 @@ export async function runProductTransformation(
   tables: TableRow[],
   tenantId?: number,
 ): Promise<TransformResult[]> {
-  const connection = await semanticDb('connections').where({ id: product.connection_id }).first();
+  const connection = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: product.connection_id }).first()
+  );
   const warehousePath = connection?.warehouse_path;
 
   if (!warehousePath) {
@@ -141,8 +317,9 @@ export async function runProductTransformation(
     }
 
     // Create views for raw source tables (from ingestion)
-    const ingestedTables = await semanticDb('ingested_tables')
-      .where({ connection_id: product.connection_id, status: 'done' });
+    const ingestedTables = await tenantQuery(tenantId, (trx) =>
+      trx('ingested_tables').where({ connection_id: product.connection_id, status: 'done' })
+    );
 
     for (const it of ingestedTables) {
       const deltaPath = (it.delta_path as string).replace(/\\/g, '/');
@@ -163,15 +340,17 @@ export async function runProductTransformation(
       }
     }
 
+    // Load shared dimensions from dependency products (conformed dims)
+    await loadDependencyDimensions(db, product.id, productDir, useAzure, tenantId);
+
     // Pre-load existing product tables
-    const allProductTables = await semanticDb.transaction(async (trx) => {
-      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
-      return trx('product_tables')
+    const allProductTables = await tenantQuery(tenantId, (trx) =>
+      trx('product_tables')
         .whereIn('star_schema_id', function () {
           this.select('id').from('star_schemas').where({ data_product_id: product.id });
         })
-        .where('transformation_status', 'success');
-    });
+        .where('transformation_status', 'success')
+    );
 
     console.log(`[transformationRunner] Pre-loading ${allProductTables.length} existing product tables for "${product.name}"`);
     for (const pt of allProductTables) {
@@ -202,10 +381,12 @@ export async function runProductTransformation(
         fs.mkdirSync(tableOutputPath, { recursive: true });
       }
 
-      await semanticDb('product_tables').where({ id: table.id }).update({
-        transformation_status: 'running',
-        last_run_error: null,
-      });
+      await tenantQuery(tenantId, (trx) =>
+        trx('product_tables').where({ id: table.id }).update({
+          transformation_status: 'running',
+          last_run_error: null,
+        })
+      );
 
       try {
         // Create views for previously materialized product tables in this run
@@ -218,14 +399,44 @@ export async function runProductTransformation(
           }
         }
 
-        const rows = await db.all(table.transformation_sql);
+        // ── Deterministic auto-fix: retry with DuckDB's own column/table suggestions ──
+        // Collect available view/table names in DuckDB for table name resolution
+        let availableViews: string[] = [];
+        try {
+          const viewRows = await db.all("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'");
+          availableViews = viewRows.map((r: { table_name: string }) => r.table_name);
+        } catch { /* best-effort */ }
+
+        let sql = table.transformation_sql;
+        const MAX_AUTOFIX = 5;
+        for (let fix = 0; fix < MAX_AUTOFIX; fix++) {
+          try {
+            await db.all(sql);
+            break; // SQL is valid
+          } catch (sqlErr: unknown) {
+            const errMsg = sqlErr instanceof Error ? sqlErr.message : String(sqlErr);
+            const patched = autoFixSql(sql, errMsg, availableViews);
+            if (patched === sql) throw sqlErr; // No fix found — rethrow
+            console.log(`[transformationRunner] Auto-fixed SQL for ${table.table_name} (attempt ${fix + 1}): ${errMsg.substring(0, 80)}`);
+            sql = patched;
+          }
+        }
+        // Update table SQL if it was patched
+        if (sql !== table.transformation_sql) {
+          table.transformation_sql = sql;
+          await tenantQuery(tenantId, (trx) =>
+            trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql, updated_at: new Date().toISOString() })
+          );
+        }
+
+        const rows = await db.all(sql);
         let rowCount = rows.length;
 
         const tempTable = `__temp_${table.table_name}`;
-        await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${table.transformation_sql};`);
+        await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
 
         try {
-          await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql);
+          await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql, tenantId);
         } catch (checkErr) {
           console.warn(`[transformationRunner] Quality checks failed for ${table.table_name}:`, checkErr);
         }
@@ -242,10 +453,12 @@ export async function runProductTransformation(
 
         if (table.load_mode === 'incremental' && existingParquet && !useAzure) {
           // Incremental (local only for now)
-          const bkCols = await semanticDb('product_columns')
-            .where({ product_table_id: table.id })
-            .whereIn('column_role', ['surrogate_key', 'natural_key'])
-            .select('column_name');
+          const bkCols = await tenantQuery(tenantId, (trx) =>
+            trx('product_columns')
+              .where({ product_table_id: table.id })
+              .whereIn('column_role', ['surrogate_key', 'natural_key'])
+              .select('column_name')
+          );
 
           if (bkCols.length > 0) {
             await db.exec(`CREATE OR REPLACE TABLE __existing AS SELECT * FROM read_parquet('${escapedPath}');`);
@@ -284,22 +497,26 @@ export async function runProductTransformation(
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
         }
 
-        await semanticDb('product_tables').where({ id: table.id }).update({
-          transformation_status: 'success',
-          delta_path: tableOutputPath,
-          row_count: rowCount,
-          last_run_at: new Date().toISOString(),
-          last_run_error: null,
-        });
+        await tenantQuery(tenantId, (trx) =>
+          trx('product_tables').where({ id: table.id }).update({
+            transformation_status: 'success',
+            delta_path: tableOutputPath,
+            row_count: rowCount,
+            last_run_at: new Date().toISOString(),
+            last_run_error: null,
+          })
+        );
 
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        await semanticDb('product_tables').where({ id: table.id }).update({
-          transformation_status: 'error',
-          last_run_at: new Date().toISOString(),
-          last_run_error: msg,
-        });
+        await tenantQuery(tenantId, (trx) =>
+          trx('product_tables').where({ id: table.id }).update({
+            transformation_status: 'error',
+            last_run_at: new Date().toISOString(),
+            last_run_error: msg,
+          })
+        );
         results.push({ table_name: table.table_name, status: 'error', error: msg });
       }
     }
