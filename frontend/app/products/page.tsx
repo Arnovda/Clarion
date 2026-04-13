@@ -195,6 +195,27 @@ function statusBorderColor(status: string): string {
   }
 }
 
+function productIcon(name: string): string {
+  const n = name.toLowerCase();
+  if (n.includes('sales') || n.includes('revenue') || n.includes('order')) return '\u{1F4B0}';
+  if (n.includes('customer') || n.includes('client') || n.includes('crm')) return '\u{1F465}';
+  if (n.includes('product') || n.includes('article') || n.includes('item') || n.includes('catalogue')) return '\u{1F4E6}';
+  if (n.includes('supplier') || n.includes('vendor') || n.includes('purchas')) return '\u{1F3ED}';
+  if (n.includes('hr') || n.includes('employee') || n.includes('staff') || n.includes('payroll') || n.includes('people')) return '\u{1F9D1}\u{200D}\u{1F4BC}';
+  if (n.includes('finance') || n.includes('accounting') || n.includes('budget') || n.includes('cost')) return '\u{1F4CA}';
+  if (n.includes('inventory') || n.includes('stock') || n.includes('warehouse') || n.includes('logistic')) return '\u{1F3EA}';
+  if (n.includes('market') || n.includes('campaign') || n.includes('lead')) return '\u{1F4E3}';
+  if (n.includes('delivery') || n.includes('ship') || n.includes('transport')) return '\u{1F69A}';
+  if (n.includes('project') || n.includes('task') || n.includes('time') || n.includes('hour')) return '\u{1F4CB}';
+  return '\u{1F4C8}';
+}
+
+function cleanTopicName(name: string): string {
+  return name
+    .replace(/\s+(Analytics|360|Domain|Product|Data Product|Kimball)$/i, '')
+    .trim();
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -208,8 +229,10 @@ export default function ProductsPage() {
   // Full product details cache: productId -> FullDataProduct
   const [details, setDetails] = useState<Map<number, FullDataProduct>>(new Map());
 
-  // Accordion state
-  const [expandedProductId, setExpandedProductId] = useState<number | null>(null);
+  // Card click -> slide-over detail panel
+  const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
+
+  // Accordion state (used inside slide-over)
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
 
   // Build terminal state
@@ -271,18 +294,21 @@ export default function ProductsPage() {
     } catch { /* ignore */ }
   }, []);
 
-  // When expanding a product, load its details
-  const toggleProduct = useCallback((id: number) => {
-    if (expandedProductId === id) {
-      setExpandedProductId(null);
-      setExpandedTableId(null);
-    } else {
-      setExpandedProductId(id);
-      setExpandedTableId(null);
-      if (!details.has(id)) loadFullProduct(id);
-      if (!kpis.has(id)) loadKpis(id);
+  // Auto-load details + KPIs for all products
+  useEffect(() => {
+    if (products.length > 0) {
+      products.forEach((p) => {
+        if (!details.has(p.id)) loadFullProduct(p.id);
+        if (!kpis.has(p.id)) loadKpis(p.id);
+      });
     }
-  }, [expandedProductId, details, kpis, loadFullProduct, loadKpis]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products.length, loadFullProduct, loadKpis]);
+
+  const openProduct = useCallback((id: number) => {
+    setSelectedProductId(id);
+    setExpandedTableId(null);
+  }, []);
 
   // ----------- Bus Matrix Auto-Build (SSE) -----------
 
@@ -414,7 +440,7 @@ export default function ProductsPage() {
 
       // Expand first product
       if (createdProducts.length > 0) {
-        setExpandedProductId(createdProducts[0].id);
+        setSelectedProductId(createdProducts[0].id);
         loadFullProduct(createdProducts[0].id);
         loadKpis(createdProducts[0].id);
       }
@@ -451,7 +477,7 @@ export default function ProductsPage() {
     try {
       await api.put(`/products/tables/${editingSql.tableId}/sql`, { sql: editingSql.sql });
       setEditingSql(null);
-      if (expandedProductId) await loadFullProduct(expandedProductId);
+      if (selectedProductId) await loadFullProduct(selectedProductId);
     } catch { /* ignore */ }
     setSavingSql(false);
   };
@@ -460,7 +486,7 @@ export default function ProductsPage() {
     if (!confirm('Delete this data product and all its tables?')) return;
     try {
       await api.delete(`/products/${id}`);
-      if (expandedProductId === id) { setExpandedProductId(null); setExpandedTableId(null); }
+      if (selectedProductId === id) { setSelectedProductId(null); setExpandedTableId(null); }
       setDetails((prev) => { const next = new Map(prev); next.delete(id); return next; });
       await loadProducts();
     } catch { /* ignore */ }
@@ -628,242 +654,92 @@ export default function ProductsPage() {
                 </div>
               )}
 
-              {/* Product accordion cards */}
-              <div className="space-y-3">
+              {/* Product cards grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                 {products.map((product) => {
-                  const isExpanded = expandedProductId === product.id;
                   const detail = details.get(product.id);
                   const tables = detail ? getAllTables(detail) : [];
-                  const isRunning = runningProductId === product.id;
+                  const productKpis = kpis.get(product.id) ?? [];
+                  const visibleKpis = productKpis.slice(0, 5);
+                  const icon = productIcon(product.name);
+                  const name = cleanTopicName(product.name);
 
                   return (
-                    <div
+                    <button
                       key={product.id}
-                      className={`bg-white rounded-2xl border border-slate-200 border-l-[3px] shadow-sm hover:shadow-md transition-all overflow-hidden ${statusBorderColor(product.status)}`}
+                      onClick={() => openProduct(product.id)}
+                      className="text-left bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:border-slate-300 transition-all overflow-hidden group"
                     >
-                      {/* Product header */}
-                      <button
-                        onClick={() => toggleProduct(product.id)}
-                        className="w-full text-left px-5 py-4 flex items-center gap-4 hover:bg-slate-50/50 transition-colors"
-                      >
-                        <svg
-                          className={`w-4 h-4 text-slate-400 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-90' : ''}`}
-                          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                        </svg>
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2.5">
-                            <h3 className="text-base font-semibold text-slate-900 truncate">{product.name}</h3>
-                            <StatusBadge status={product.status} />
-                          </div>
-                          {product.description && (
-                            <p className="text-sm text-slate-500 mt-0.5 truncate">{product.description}</p>
-                          )}
+                      {/* Icon + name header */}
+                      <div className="px-5 pt-5 pb-3">
+                        <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl mb-3 group-hover:scale-105 transition-transform">
+                          {icon}
                         </div>
-
-                        <div className="flex items-center gap-4 text-xs text-slate-400 flex-shrink-0">
-                          {detail && (
-                            <>
-                              <span>{tables.length} tables</span>
-                              {totalRows(detail) > 0 && (
-                                <span>{totalRows(detail).toLocaleString()} rows</span>
-                              )}
-                            </>
-                          )}
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-base font-semibold text-slate-900 truncate">{name}</h3>
+                          <StatusDot status={product.status} />
                         </div>
-                      </button>
+                        {product.description && (
+                          <p className="text-sm text-slate-500 line-clamp-2">{product.description}</p>
+                        )}
+                      </div>
 
-                      {/* Expanded product content */}
-                      {isExpanded && (
-                        <div className="border-t border-slate-100">
-                          {/* Product action bar */}
-                          <div className="px-5 py-3 bg-slate-50/50 flex items-center justify-between">
-                            <span className="text-xs text-slate-500">
-                              {tables.filter((t) => t.table_role === 'dimension').length} lookup tables,{' '}
-                              {tables.filter((t) => t.table_role === 'fact').length} measure tables
-                            </span>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleRunProduct(product.id); }}
-                                disabled={isRunning || tables.length === 0}
-                                className="px-3 py-1.5 text-xs font-medium bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5 transition-colors"
-                              >
-                                {isRunning && <Spinner className="w-3 h-3" />}
-                                {isRunning ? 'Running...' : 'Run all'}
-                              </button>
-                              <button
-                                onClick={(e) => { e.stopPropagation(); handleDelete(product.id); }}
-                                className="px-3 py-1.5 text-xs font-medium text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors"
-                              >
-                                Delete
-                              </button>
-                            </div>
+                      {/* KPI hints */}
+                      {visibleKpis.length > 0 && (
+                        <div className="px-5 pb-3">
+                          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">What you can ask</p>
+                          <div className="space-y-1">
+                            {visibleKpis.map((kpi) => (
+                              <div key={kpi.id} className="flex items-center gap-1.5 text-xs text-slate-600">
+                                <span className="text-slate-300">-</span>
+                                <span className="truncate">{kpi.name}</span>
+                              </div>
+                            ))}
+                            {productKpis.length > 5 && (
+                              <p className="text-[11px] text-slate-400">+{productKpis.length - 5} more</p>
+                            )}
                           </div>
-
-                          {/* Table rows */}
-                          {!detail ? (
-                            <div className="px-5 py-8 text-center">
-                              <Spinner className="mx-auto mb-2" />
-                              <p className="text-sm text-slate-400">Loading tables...</p>
-                            </div>
-                          ) : tables.length === 0 ? (
-                            <div className="px-5 py-8 text-center text-sm text-slate-400">
-                              No tables designed yet.
-                            </div>
-                          ) : (
-                            <div className="divide-y divide-slate-100">
-                              {tables.map((table) => {
-                                const isTableExpanded = expandedTableId === table.id;
-                                const isTableRunning = runningTableId === table.id;
-
-                                return (
-                                  <div key={table.id}>
-                                    {/* Table row */}
-                                    <button
-                                      onClick={() => setExpandedTableId(isTableExpanded ? null : table.id)}
-                                      className="w-full text-left px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors"
-                                    >
-                                      <svg
-                                        className={`w-3.5 h-3.5 text-slate-300 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
-                                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                                      >
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                                      </svg>
-
-                                      <RoleBadge role={table.table_role} />
-
-                                      <div className="flex-1 min-w-0">
-                                        <span className="text-sm font-medium text-slate-800">{table.display_name ?? table.table_name}</span>
-                                        {table.description && (
-                                          <span className="text-xs text-slate-400 ml-2 hidden sm:inline">{table.description}</span>
-                                        )}
-                                      </div>
-
-                                      <div className="flex items-center gap-3 flex-shrink-0">
-                                        {table.row_count !== null && (
-                                          <span className="text-xs text-slate-400">{table.row_count.toLocaleString()} rows</span>
-                                        )}
-                                        <StatusDot status={table.transformation_status} />
-                                        {isTableRunning && <Spinner className="w-3.5 h-3.5" />}
-                                      </div>
-                                    </button>
-
-                                    {/* Expanded table: columns + SQL */}
-                                    {isTableExpanded && (
-                                      <div className="px-5 pb-4 bg-slate-50/30">
-                                        {/* Columns */}
-                                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
-                                          <div className="px-4 py-2.5 border-b border-slate-100">
-                                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                              Columns ({table.columns.length})
-                                            </span>
-                                          </div>
-                                          <div className="max-h-56 overflow-y-auto">
-                                            {table.columns.map((col) => (
-                                              <div key={col.id} className="px-4 py-1.5 flex items-center gap-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
-                                                <ColumnRoleBadge role={col.column_role} />
-                                                <span className="font-medium text-slate-700">{col.column_name}</span>
-                                                <span className="text-slate-300">{col.data_type}</span>
-                                                {col.description && (
-                                                  <span className="text-slate-400 truncate ml-auto">{col.description}</span>
-                                                )}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        </div>
-
-                                        {/* SQL */}
-                                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
-                                          <div className="px-4 py-2.5 border-b border-slate-100 flex items-center justify-between">
-                                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                              Transformation SQL
-                                            </span>
-                                            <div className="flex gap-2">
-                                              {editingSql?.tableId !== table.id && table.transformation_sql && (
-                                                <button
-                                                  onClick={() => setEditingSql({ tableId: table.id, sql: table.transformation_sql! })}
-                                                  className="text-[11px] text-blue-600 hover:text-blue-700 font-medium"
-                                                >
-                                                  Edit
-                                                </button>
-                                              )}
-                                              <button
-                                                onClick={() => handleRunTable(table.id, product.id)}
-                                                disabled={isTableRunning || !table.transformation_sql}
-                                                className="text-[11px] text-emerald-600 hover:text-emerald-700 font-medium disabled:opacity-50 flex items-center gap-1"
-                                              >
-                                                {isTableRunning && <Spinner className="w-3 h-3" />}
-                                                {isTableRunning ? 'Running...' : 'Run'}
-                                              </button>
-                                            </div>
-                                          </div>
-
-                                          {editingSql?.tableId === table.id ? (
-                                            <div className="p-3">
-                                              <textarea
-                                                value={editingSql.sql}
-                                                onChange={(e) => setEditingSql({ ...editingSql, sql: e.target.value })}
-                                                rows={Math.max(8, editingSql.sql.split('\n').length + 2)}
-                                                className="w-full font-mono text-xs border border-slate-300 rounded-lg p-3 bg-white resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                              />
-                                              <div className="flex gap-2 mt-2">
-                                                <button onClick={handleSaveSql} disabled={savingSql}
-                                                  className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
-                                                  {savingSql ? 'Saving...' : 'Save'}
-                                                </button>
-                                                <button onClick={() => setEditingSql(null)}
-                                                  className="px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">
-                                                  Cancel
-                                                </button>
-                                              </div>
-                                            </div>
-                                          ) : (
-                                            <pre className="p-3 text-xs font-mono text-slate-600 bg-slate-50/50 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
-                                              {table.transformation_sql || 'No SQL generated yet'}
-                                            </pre>
-                                          )}
-                                        </div>
-
-                                        {/* Run info */}
-                                        {(table.last_run_at || table.last_run_error) && (
-                                          <div className="text-xs text-slate-500 px-1 mb-2">
-                                            {table.last_run_at && (
-                                              <span>Last run: {new Date(table.last_run_at).toLocaleString()}</span>
-                                            )}
-                                            {table.last_run_error && (
-                                              <span className="text-red-500 ml-3">{table.last_run_error}</span>
-                                            )}
-                                          </div>
-                                        )}
-
-                                        {/* Quality checks */}
-                                        {table.quality_checks && table.quality_checks.length > 0 && (
-                                          <div className="space-y-1">
-                                            {table.quality_checks.map((chk) => (
-                                              <div key={chk.id} className="flex items-center gap-2 text-xs">
-                                                <StatusDot status={chk.status === 'pass' ? 'success' : chk.status === 'fail' ? 'error' : 'draft'} />
-                                                <span className={chk.status === 'pass' ? 'text-emerald-600' : chk.status === 'fail' ? 'text-red-600' : 'text-slate-500'}>
-                                                  {chk.check_type === 'bk_uniqueness' ? 'Key uniqueness' : 'Fan-out'}: {chk.message}
-                                                </span>
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
                         </div>
                       )}
-                    </div>
+
+                      {/* Footer */}
+                      <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
+                        <span className="text-xs text-slate-400">
+                          {tables.length > 0 ? `${tables.length} tables` : ''}
+                          {detail && totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
+                        </span>
+                        <span className="text-xs font-medium text-blue-600 group-hover:text-blue-700 transition-colors">
+                          Ask questions &rarr;
+                        </span>
+                      </div>
+                    </button>
                   );
                 })}
               </div>
+
+              {/* Slide-over detail panel */}
+              {selectedProductId !== null && (
+                <TopicSlideOver
+                  product={products.find((p) => p.id === selectedProductId)!}
+                  detail={details.get(selectedProductId)}
+                  productKpis={kpis.get(selectedProductId) ?? []}
+                  expandedTableId={expandedTableId}
+                  onToggleTable={(id) => setExpandedTableId(expandedTableId === id ? null : id)}
+                  runningTableId={runningTableId}
+                  runningProductId={runningProductId}
+                  editingSql={editingSql}
+                  savingSql={savingSql}
+                  onRunTable={handleRunTable}
+                  onRunProduct={handleRunProduct}
+                  onEditSql={setEditingSql}
+                  onSaveSql={handleSaveSql}
+                  onCancelEditSql={() => setEditingSql(null)}
+                  onDelete={handleDelete}
+                  onClose={() => { setSelectedProductId(null); setExpandedTableId(null); setEditingSql(null); }}
+                  getAllTables={getAllTables}
+                  totalRows={totalRows}
+                />
+              )}
             </>
           )}
 
@@ -881,6 +757,326 @@ export default function ProductsPage() {
           {tab === 'kpis' && (
             <KpisTab products={products} details={details} kpis={kpis} onLoadProduct={loadFullProduct} onLoadKpis={loadKpis} />
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Slide-over detail panel (appears when a product card is clicked)
+// ---------------------------------------------------------------------------
+
+function TopicSlideOver({
+  product, detail, productKpis, expandedTableId, onToggleTable,
+  runningTableId, runningProductId, editingSql, savingSql,
+  onRunTable, onRunProduct, onEditSql, onSaveSql, onCancelEditSql,
+  onDelete, onClose, getAllTables, totalRows,
+}: {
+  product: DataProduct;
+  detail: FullDataProduct | undefined;
+  productKpis: ProductKpi[];
+  expandedTableId: number | null;
+  onToggleTable: (id: number) => void;
+  runningTableId: number | null;
+  runningProductId: number | null;
+  editingSql: { tableId: number; sql: string } | null;
+  savingSql: boolean;
+  onRunTable: (tableId: number, productId: number) => void;
+  onRunProduct: (productId: number) => void;
+  onEditSql: (v: { tableId: number; sql: string }) => void;
+  onSaveSql: () => void;
+  onCancelEditSql: () => void;
+  onDelete: (id: number) => void;
+  onClose: () => void;
+  getAllTables: (p: FullDataProduct) => (ProductTable & { columns: ProductColumn[] })[];
+  totalRows: (p: FullDataProduct) => number;
+}) {
+  const tables = detail ? getAllTables(detail) : [];
+  const icon = productIcon(product.name);
+  const name = cleanTopicName(product.name);
+  const isRunning = runningProductId === product.id;
+  const [showSqlModal, setShowSqlModal] = useState(false);
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
+
+      {/* Panel */}
+      <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-white shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-slate-200 flex items-start gap-4 flex-shrink-0">
+          <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl flex-shrink-0">
+            {icon}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold text-slate-900 truncate">{name}</h2>
+              <StatusBadge status={product.status} />
+            </div>
+            {product.description && (
+              <p className="text-sm text-slate-500 mt-0.5 line-clamp-2">{product.description}</p>
+            )}
+            {detail && (
+              <p className="text-xs text-slate-400 mt-1">
+                {tables.length} tables{totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0 mt-1">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="flex-1 overflow-y-auto">
+          {/* KPIs section */}
+          {productKpis.length > 0 && (
+            <div className="px-6 py-4 border-b border-slate-100">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">What you can ask</p>
+              <div className="space-y-1.5">
+                {productKpis.map((kpi) => (
+                  <div key={kpi.id} className="flex items-start gap-2 text-sm">
+                    <span className="text-slate-300 mt-0.5">-</span>
+                    <div className="min-w-0">
+                      <span className="font-medium text-slate-700">{kpi.name}</span>
+                      {kpi.description && <span className="text-slate-400 ml-1.5 text-xs">{kpi.description}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Tables list */}
+          {!detail ? (
+            <div className="px-6 py-10 text-center">
+              <Spinner className="mx-auto mb-2" />
+              <p className="text-sm text-slate-400">Loading tables...</p>
+            </div>
+          ) : tables.length === 0 ? (
+            <div className="px-6 py-10 text-center text-sm text-slate-400">No tables designed yet.</div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {tables.map((table) => {
+                const isTableExpanded = expandedTableId === table.id;
+                const isTableRunning = runningTableId === table.id;
+
+                return (
+                  <div key={table.id}>
+                    <button
+                      onClick={() => onToggleTable(table.id)}
+                      className="w-full text-left px-6 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors"
+                    >
+                      <svg
+                        className={`w-3.5 h-3.5 text-slate-300 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                      <RoleBadge role={table.table_role} />
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-medium text-slate-800">{table.display_name ?? table.table_name}</span>
+                        {table.description && (
+                          <span className="text-xs text-slate-400 ml-2 hidden sm:inline">{table.description}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        {table.row_count !== null && (
+                          <span className="text-xs text-slate-400">{table.row_count.toLocaleString()} rows</span>
+                        )}
+                        <StatusDot status={table.transformation_status} />
+                        {isTableRunning && <Spinner className="w-3.5 h-3.5" />}
+                      </div>
+                    </button>
+
+                    {isTableExpanded && (
+                      <div className="px-6 pb-4 bg-slate-50/30">
+                        {/* Columns */}
+                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 border-b border-slate-100">
+                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                              Columns ({table.columns.length})
+                            </span>
+                          </div>
+                          <div className="max-h-56 overflow-y-auto">
+                            {table.columns.map((col) => (
+                              <div key={col.id} className="px-4 py-1.5 flex items-center gap-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
+                                <ColumnRoleBadge role={col.column_role} />
+                                <span className="font-medium text-slate-700">{col.column_name}</span>
+                                <span className="text-slate-300">{col.data_type}</span>
+                                {col.description && <span className="text-slate-400 truncate ml-auto">{col.description}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* SQL */}
+                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 border-b border-slate-100 flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">SQL</span>
+                            <div className="flex gap-2">
+                              {editingSql?.tableId !== table.id && table.transformation_sql && (
+                                <button onClick={() => onEditSql({ tableId: table.id, sql: table.transformation_sql! })}
+                                  className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Edit</button>
+                              )}
+                              <button
+                                onClick={() => onRunTable(table.id, product.id)}
+                                disabled={isTableRunning || !table.transformation_sql}
+                                className="text-[11px] text-emerald-600 hover:text-emerald-700 font-medium disabled:opacity-50 flex items-center gap-1"
+                              >
+                                {isTableRunning && <Spinner className="w-3 h-3" />}
+                                {isTableRunning ? 'Running...' : 'Run'}
+                              </button>
+                            </div>
+                          </div>
+                          {editingSql?.tableId === table.id ? (
+                            <div className="p-3">
+                              <textarea
+                                value={editingSql.sql}
+                                onChange={(e) => onEditSql({ ...editingSql, sql: e.target.value })}
+                                rows={Math.max(8, editingSql.sql.split('\n').length + 2)}
+                                className="w-full font-mono text-xs border border-slate-300 rounded-lg p-3 bg-white resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              />
+                              <div className="flex gap-2 mt-2">
+                                <button onClick={onSaveSql} disabled={savingSql}
+                                  className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                                  {savingSql ? 'Saving...' : 'Save'}
+                                </button>
+                                <button onClick={onCancelEditSql}
+                                  className="px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">Cancel</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <pre className="p-3 text-xs font-mono text-slate-600 bg-slate-50/50 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                              {table.transformation_sql || 'No SQL generated yet'}
+                            </pre>
+                          )}
+                        </div>
+
+                        {/* Run info + quality checks */}
+                        {(table.last_run_at || table.last_run_error) && (
+                          <div className="text-xs text-slate-500 px-1 mb-2">
+                            {table.last_run_at && <span>Last run: {new Date(table.last_run_at).toLocaleString()}</span>}
+                            {table.last_run_error && <span className="text-red-500 ml-3">{table.last_run_error}</span>}
+                          </div>
+                        )}
+                        {table.quality_checks && table.quality_checks.length > 0 && (
+                          <div className="space-y-1">
+                            {table.quality_checks.map((chk) => (
+                              <div key={chk.id} className="flex items-center gap-2 text-xs">
+                                <StatusDot status={chk.status === 'pass' ? 'success' : chk.status === 'fail' ? 'error' : 'draft'} />
+                                <span className={chk.status === 'pass' ? 'text-emerald-600' : chk.status === 'fail' ? 'text-red-600' : 'text-slate-500'}>
+                                  {chk.check_type === 'bk_uniqueness' ? 'Key uniqueness' : 'Fan-out'}: {chk.message}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between flex-shrink-0 bg-white">
+          <div className="flex gap-2">
+            <a href="/query" className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors">
+              Ask questions &rarr;
+            </a>
+            {tables.length > 0 && (
+              <button
+                onClick={() => setShowSqlModal(true)}
+                className="px-4 py-2 text-sm font-medium text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
+              >
+                View all SQL
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onRunProduct(product.id)}
+              disabled={isRunning || tables.length === 0}
+              className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5 transition-colors"
+            >
+              {isRunning && <Spinner className="w-3 h-3" />}
+              {isRunning ? 'Running...' : 'Rebuild'}
+            </button>
+            <button
+              onClick={() => onDelete(product.id)}
+              className="px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-xl hover:bg-red-50 transition-colors"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* SQL Modal */}
+      {showSqlModal && detail && (
+        <TopicSqlModal tables={tables} productName={name} onClose={() => setShowSqlModal(false)} />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Full SQL modal (shows all transformation SQL for a product)
+// ---------------------------------------------------------------------------
+
+function TopicSqlModal({
+  tables, productName, onClose,
+}: {
+  tables: (ProductTable & { columns: ProductColumn[] })[];
+  productName: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState<number | null>(null);
+
+  const handleCopy = (sql: string, id: number) => {
+    navigator.clipboard.writeText(sql);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between flex-shrink-0">
+          <h3 className="text-lg font-bold text-slate-900">All SQL — {productName}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {tables.filter((t) => t.transformation_sql).map((table) => (
+            <div key={table.id} className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <RoleBadge role={table.table_role} />
+                  <span className="text-sm font-medium text-slate-800">{table.display_name ?? table.table_name}</span>
+                </div>
+                <button
+                  onClick={() => handleCopy(table.transformation_sql!, table.id)}
+                  className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                >
+                  {copied === table.id ? 'Copied!' : 'Copy'}
+                </button>
+              </div>
+              <pre className="p-4 text-xs font-mono text-slate-600 bg-white overflow-x-auto whitespace-pre-wrap">
+                {table.transformation_sql}
+              </pre>
+            </div>
+          ))}
         </div>
       </div>
     </div>
