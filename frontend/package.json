@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@types/dagre": "^0.7.54",
-    "axios": "^1.14.0",
+    "axios": "^1.15.0",
     "canvg": "^4.0.3",
     "dagre": "^0.8.5",
     "html2canvas": "^1.4.1",
