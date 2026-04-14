@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { getToken, getTokenPayload } from '@/lib/auth';
@@ -1137,6 +1138,10 @@ export default function QueryPage() {
   const [isAdmin,        setIsAdmin]        = useState(false);
   const [starFilter,     setStarFilter]     = useState(false);
 
+  // URL params (e.g. ?connectionId=5 from Data Products "Ask questions" link)
+  const searchParams = useSearchParams();
+  const urlConnectionId = searchParams.get('connectionId');
+
   // Data source selection (silent — no UI picker)
   const [sources,       setSources]       = useState<DataSource[]>([]);
   const [selectedSource, setSelectedSource] = useState<string>('');
@@ -1174,11 +1179,19 @@ export default function QueryPage() {
         ...views.map((v) => ({ type: 'view' as const, id: v.id, label: v.name })),
       ];
       setSources(all);
-      const saved = localStorage.getItem('databridge_query_source');
-      if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
-        setSelectedSource(saved);
-      } else if (all.length > 0) {
-        setSelectedSource(`c:${all[0].id}`);
+
+      // Priority: URL param > localStorage > first source
+      if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
+        const key = `c:${urlConnectionId}`;
+        setSelectedSource(key);
+        localStorage.setItem('databridge_query_source', key);
+      } else {
+        const saved = localStorage.getItem('databridge_query_source');
+        if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
+          setSelectedSource(saved);
+        } else if (all.length > 0) {
+          setSelectedSource(`c:${all[0].id}`);
+        }
       }
       // Load domain tags for the first connection
       const firstConn = conns[0];

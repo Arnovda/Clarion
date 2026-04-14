@@ -997,7 +997,7 @@ function TopicSlideOver({
         {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between flex-shrink-0 bg-white">
           <div className="flex gap-2">
-            <a href="/query" className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors">
+            <a href={`/query?connectionId=${product.connection_id}`} className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors">
               Ask questions &rarr;
             </a>
             {tables.length > 0 && (
