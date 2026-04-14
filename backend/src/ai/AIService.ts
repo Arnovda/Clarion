@@ -207,6 +207,51 @@ function parseJson<T>(raw: string): T {
   return JSON.parse(cleaned) as T;
 }
 
+/**
+ * Attempt to repair truncated JSON by closing unclosed brackets, braces, and strings.
+ * Returns the repaired string or null if it can't be salvaged.
+ */
+function repairTruncatedJson(raw: string): string | null {
+  // Strip markdown fences
+  let text = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+  text = text.slice(start);
+
+  // Remove any trailing incomplete value (partial string, number, etc.)
+  // Trim back to the last complete structure delimiter
+  text = text.replace(/,\s*"[^"]*$/, '');         // trailing key without value
+  text = text.replace(/,\s*$/, '');                // trailing comma
+  text = text.replace(/:\s*"[^"]*$/, ': null');    // trailing incomplete string value
+  text = text.replace(/:\s*-?[0-9]*\.?[0-9]*$/, ': null'); // trailing incomplete number
+
+  // Count unclosed brackets and braces
+  let inString = false;
+  let escape = false;
+  const stack: string[] = [];
+
+  for (const ch of text) {
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{' || ch === '[') stack.push(ch);
+    else if (ch === '}') { if (stack.length && stack[stack.length - 1] === '{') stack.pop(); }
+    else if (ch === ']') { if (stack.length && stack[stack.length - 1] === '[') stack.pop(); }
+  }
+
+  // If we're inside an unclosed string, close it
+  if (inString) text += '"';
+
+  // Close all unclosed brackets/braces in reverse order
+  while (stack.length) {
+    const open = stack.pop();
+    text += open === '{' ? '}' : ']';
+  }
+
+  return text;
+}
+
 // ---------------------------------------------------------------------------
 // Call Type 1 — Schema Draft
 // ---------------------------------------------------------------------------
@@ -656,8 +701,8 @@ export async function generateBusMatrixStreaming(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
-    max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 10000 },
+    max_tokens: 128000,
+    thinking: { type: 'enabled', budget_tokens: 12000 },
     system: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
     messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
@@ -696,7 +741,19 @@ export async function generateBusMatrixStreaming(
   try {
     return parseJson<BusMatrixOutput>(fullText);
   } catch (parseErr) {
-    logger.error({ textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON parse failed');
+    logger.warn({ textLength: fullText.length, last200: fullText.slice(-200) }, 'Bus matrix JSON parse failed — attempting truncation repair');
+
+    // Try to repair truncated JSON by closing open brackets/braces
+    const repaired = repairTruncatedJson(fullText);
+    if (repaired) {
+      try {
+        const result = parseJson<BusMatrixOutput>(repaired);
+        logger.info('Bus matrix JSON repaired after truncation');
+        return result;
+      } catch { /* fall through to error */ }
+    }
+
+    logger.error({ textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON repair also failed');
     throw new Error(`Failed to parse AI output as JSON: ${parseErr instanceof Error ? parseErr.message : 'unknown parse error'}`);
   }
 }
