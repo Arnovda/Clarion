@@ -1288,7 +1288,10 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       // Insert owned dimensions
       for (const dimName of dp.owned_dimensions) {
         const dim = dimByName.get(dimName);
-        if (!dim) continue;
+        if (!dim) {
+          console.warn(`[build-bus-matrix] Product "${dp.name}": owned dimension "${dimName}" not found in conformed_dimensions — skipping`);
+          continue;
+        }
 
         const [tableRow] = await trx('product_tables').insert({
           star_schema_id: schemaId,
@@ -1344,7 +1347,10 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       // Insert fact tables
       for (const factName of dp.fact_tables) {
         const fact = factByName.get(factName);
-        if (!fact) continue;
+        if (!fact) {
+          console.warn(`[build-bus-matrix] Product "${dp.name}": fact table "${factName}" not found in fact_tables — skipping`);
+          continue;
+        }
 
         const [tableRow] = await trx('product_tables').insert({
           star_schema_id: schemaId,
@@ -1530,8 +1536,16 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
         updated_at: new Date().toISOString(),
       });
 
-      _results.push({ name: dp.name, id: pid, status: 'created' });
+      // Count tables actually inserted for this product
+      const tableCount = await trx('product_tables').where({ star_schema_id: schemaId }).count('id as count').first();
+      const count = Number(tableCount?.count ?? 0);
+      console.log(`[build-bus-matrix] Product "${dp.name}" (id=${pid}): ${count} tables created (owned_dims: ${dp.owned_dimensions.length}, facts: ${dp.fact_tables.length})`);
+
+      _results.push({ name: dp.name, id: pid, status: 'created', build_order: dp.build_order });
     }
+
+    // Summary
+    console.log(`[build-bus-matrix] Summary: AI designed ${busMatrix.conformed_dimensions?.length ?? 0} dims + ${busMatrix.fact_tables?.length ?? 0} facts → ${_results.length} products`);
 
     return _results;
 
