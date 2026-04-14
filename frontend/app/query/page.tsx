@@ -1840,9 +1840,23 @@ export default function QueryPage() {
         {/* Sub-header: source selector + show SQL toggle */}
         <div className="flex-shrink-0 px-6 py-2 flex items-center justify-between ghost-border-b">
           <div className="flex items-center gap-3">
-            {sources.length > 1 && (
+            {productContext ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-violet-50 border border-violet-200 rounded-xl">
+                <span className="text-sm font-medium text-violet-700">{productContext.name}</span>
+                <span className="text-[10px] text-violet-500 bg-violet-100 px-1.5 py-0.5 rounded font-medium">Product</span>
+                <button
+                  onClick={() => setProductContext(null)}
+                  className="text-violet-400 hover:text-violet-600 ml-1"
+                  title="Switch to all sources"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ) : sources.length > 1 ? (
               <SourceSelector sources={sources} selectedId={selectedSource} onChange={(id) => { setSelectedSource(id); localStorage.setItem('databridge_query_source', id); }} />
-            )}
+            ) : null}
           </div>
           <div className="flex items-center gap-4">
             {isAdmin && (
