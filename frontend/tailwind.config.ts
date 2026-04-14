@@ -139,7 +139,7 @@ const config: Config = {
       },
 
       spacing: {
-        'rail':    '48px',
+        'rail':    '200px',
         'context': '240px',
       },
     },

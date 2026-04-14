@@ -134,70 +134,60 @@ export default function IconRail() {
   }
 
   return (
-    <div className="w-rail h-screen flex flex-col items-center bg-primary py-4 flex-shrink-0 relative">
+    <div className="w-rail h-screen flex flex-col bg-primary py-4 px-3 flex-shrink-0 relative">
       {/* Logo */}
-      <Link href="/ask" className="mb-6 flex items-center justify-center w-8 h-8">
-        <span className="text-white font-headline font-bold text-lg">D</span>
+      <Link href="/ask" className="mb-6 flex items-center gap-2.5 px-2">
+        <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-white font-headline font-bold text-lg flex-shrink-0">D</span>
+        <span className="text-white font-headline font-semibold text-sm tracking-tight">DataBridge</span>
       </Link>
 
       {/* Main nav */}
-      <nav className="flex-1 flex flex-col items-center gap-1 w-full">
+      <nav className="flex-1 flex flex-col gap-0.5 w-full">
         {visibleItems.map((item) => {
           const active = isActive(item.href);
           return (
             <Link
               key={item.key}
               href={item.href}
-              title={item.label}
               className={`
-                relative w-full flex items-center justify-center h-10
-                transition-all duration-200 group
+                relative w-full flex items-center gap-3 h-10 px-2.5 rounded-lg
+                transition-all duration-200
                 ${active
-                  ? 'text-white'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'text-white bg-white/12'
+                  : 'text-white/50 hover:text-white/80 hover:bg-white/5'
                 }
               `}
             >
               {/* Active indicator — teal left border */}
               {active && (
-                <div className="absolute left-0 top-1 bottom-1 w-[3px] rounded-r-full bg-cyan-400" />
+                <div className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-cyan-400" />
               )}
-              <item.icon className="w-5 h-5" />
-
-              {/* Tooltip */}
-              <div className="
-                absolute left-full ml-3 px-2.5 py-1 rounded-md
-                bg-inverse-surface text-inverse-on-surface
-                text-label-sm whitespace-nowrap
-                opacity-0 pointer-events-none
-                group-hover:opacity-100
-                transition-opacity duration-150
-                z-50
-              ">
-                {item.label}
-              </div>
+              <item.icon className="w-5 h-5 flex-shrink-0" />
+              <span className="text-[13px] font-medium truncate">{item.label}</span>
             </Link>
           );
         })}
       </nav>
 
       {/* Bottom section */}
-      <div className="flex flex-col items-center gap-1 w-full pt-4 border-t border-white/10">
+      <div className="flex flex-col gap-0.5 w-full pt-4 border-t border-white/10">
         <Link
           href="/profile"
-          title="Settings"
-          className="w-full flex items-center justify-center h-10 text-white/40 hover:text-white/70 transition-colors"
+          className="w-full flex items-center gap-3 h-10 px-2.5 rounded-lg text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
         >
-          <IconSettings className="w-5 h-5" />
+          <IconSettings className="w-5 h-5 flex-shrink-0" />
+          <span className="text-[13px] font-medium">Settings</span>
         </Link>
 
-        {/* User avatar button */}
+        {/* User avatar + name */}
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
-          className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white text-label-sm font-semibold hover:bg-white/30 transition-colors"
-          title={payload?.displayName ?? 'Profile'}
+          className="w-full flex items-center gap-3 h-10 px-2.5 rounded-lg text-white/60 hover:text-white/90 hover:bg-white/5 transition-colors"
         >
-          {(payload?.displayName ?? 'U').charAt(0).toUpperCase()}
+          <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white text-[11px] font-semibold flex-shrink-0">
+            {(payload?.displayName ?? 'U').charAt(0).toUpperCase()}
+          </div>
+          <span className="text-[13px] font-medium truncate">{payload?.displayName ?? 'Profile'}</span>
         </button>
       </div>
 
