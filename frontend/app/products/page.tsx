@@ -109,7 +109,7 @@ interface ProductKpi {
   owner_name: string | null;
 }
 
-type ActiveTab = 'overview' | 'schema' | 'lineage' | 'kpis';
+type ActiveTab = 'overview' | 'bus-matrix' | 'schema' | 'lineage' | 'kpis';
 
 // ---------------------------------------------------------------------------
 // Small UI components
@@ -505,6 +505,7 @@ export default function ProductsPage() {
   // Tab bar items
   const tabs: { key: ActiveTab; label: string }[] = [
     { key: 'overview', label: 'Overview' },
+    { key: 'bus-matrix', label: 'Facts & Dimensions' },
     { key: 'schema', label: 'Schema Diagram' },
     { key: 'lineage', label: 'Lineage' },
     { key: 'kpis', label: 'KPIs' },
@@ -741,6 +742,11 @@ export default function ProductsPage() {
                 />
               )}
             </>
+          )}
+
+          {/* ── Facts & Dimensions Tab ─────────────────────────────── */}
+          {tab === 'bus-matrix' && (
+            <BusMatrixTab products={products} details={details} onLoadProduct={loadFullProduct} />
           )}
 
           {/* ── Schema Diagram Tab ─────────────────────────────────── */}
@@ -1078,6 +1084,188 @@ function TopicSqlModal({
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bus Matrix Tab — all facts & dimensions across products
+// ---------------------------------------------------------------------------
+
+function BusMatrixTab({
+  products, details, onLoadProduct,
+}: {
+  products: DataProduct[];
+  details: Map<number, FullDataProduct>;
+  onLoadProduct: (id: number) => void;
+}) {
+  useEffect(() => {
+    products.forEach((p) => { if (!details.has(p.id)) onLoadProduct(p.id); });
+  }, [products, details, onLoadProduct]);
+
+  // Collect all tables across all products
+  const allDimensions: { product: DataProduct; table: ProductTable; schema: StarSchema }[] = [];
+  const allFacts: { product: DataProduct; table: ProductTable; schema: StarSchema }[] = [];
+
+  products.forEach((p) => {
+    const detail = details.get(p.id);
+    if (!detail) return;
+    detail.star_schemas.forEach((s) => {
+      s.tables.forEach((t) => {
+        const entry = { product: p, table: t, schema: s };
+        if (t.table_role === 'dimension') allDimensions.push(entry);
+        else if (t.table_role === 'fact') allFacts.push(entry);
+      });
+    });
+  });
+
+  // Build the bus matrix: dimensions as columns, facts as rows, mark which fact uses which dimension
+  const dimensionNames = [...new Set(allDimensions.map((d) => d.table.table_name))].sort();
+
+  // For each fact, figure out which dimensions it references (via FK columns)
+  const factRows = allFacts.map((f) => {
+    const detail = details.get(f.product.id);
+    const rels = detail?.star_schemas.flatMap((s) => s.relationships) ?? [];
+    const factRels = rels.filter((r) => r.from_table_name === f.table.table_name);
+    const usedDims = new Set(factRels.map((r) => r.to_table_name));
+    return { ...f, usedDims };
+  });
+
+  const loaded = products.every((p) => details.has(p.id));
+
+  return (
+    <div className="space-y-8">
+      {/* Bus matrix grid */}
+      {dimensionNames.length > 0 && factRows.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-200">
+            <h3 className="text-sm font-bold text-slate-800">Bus Matrix</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Which dimensions are used by which fact tables</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 sticky left-0 bg-slate-50 min-w-[200px]">Fact Table</th>
+                  <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 min-w-[100px]">Product</th>
+                  {dimensionNames.map((dim) => (
+                    <th key={dim} className="text-center px-2 py-3 text-[11px] font-semibold text-slate-500 min-w-[80px]">
+                      <span className="writing-mode-vertical inline-block max-w-[80px] truncate" title={dim}>
+                        {dim.replace(/^dim_/, '').replace(/_/g, ' ')}
+                      </span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {factRows.map((row) => (
+                  <tr key={`${row.product.id}-${row.table.id}`} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                    <td className="px-4 py-2.5 font-medium text-slate-800 sticky left-0 bg-white">
+                      <div className="flex items-center gap-2">
+                        <span>{row.table.display_name ?? row.table.table_name.replace(/^fact_/, '').replace(/_/g, ' ')}</span>
+                        <StatusDot status={row.table.transformation_status} />
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-slate-500">
+                      <span className="inline-flex items-center gap-1">
+                        <span>{productIcon(row.product.name)}</span>
+                        <span>{cleanTopicName(row.product.name)}</span>
+                      </span>
+                    </td>
+                    {dimensionNames.map((dim) => (
+                      <td key={dim} className="text-center px-2 py-2.5">
+                        {row.usedDims.has(dim) ? (
+                          <span className="inline-block w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs leading-5 font-bold">&#10003;</span>
+                        ) : (
+                          <span className="text-slate-200">-</span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Dimensions list */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800">Dimensions ({allDimensions.length})</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Shared lookup tables across all products</p>
+          </div>
+          <span className="text-2xl">&#128270;</span>
+        </div>
+        {!loaded ? (
+          <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
+        ) : allDimensions.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-slate-400">No dimensions found.</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {allDimensions.map((d) => (
+              <div key={`${d.product.id}-${d.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                <RoleBadge role="dimension" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-slate-800">{d.table.display_name ?? d.table.table_name}</span>
+                    <StatusDot status={d.table.transformation_status} />
+                  </div>
+                  {d.table.description && (
+                    <p className="text-xs text-slate-400 truncate mt-0.5">{d.table.description}</p>
+                  )}
+                </div>
+                <span className="text-xs text-slate-400 flex-shrink-0">
+                  {productIcon(d.product.name)} {cleanTopicName(d.product.name)}
+                </span>
+                {d.table.row_count !== null && (
+                  <span className="text-xs text-slate-300 flex-shrink-0">{d.table.row_count.toLocaleString()} rows</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Facts list */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800">Fact Tables ({allFacts.length})</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Measure tables across all products</p>
+          </div>
+          <span className="text-2xl">&#128202;</span>
+        </div>
+        {!loaded ? (
+          <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
+        ) : allFacts.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-slate-400">No fact tables found.</div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {allFacts.map((f) => (
+              <div key={`${f.product.id}-${f.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                <RoleBadge role="fact" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-slate-800">{f.table.display_name ?? f.table.table_name}</span>
+                    <StatusDot status={f.table.transformation_status} />
+                  </div>
+                  {f.table.description && (
+                    <p className="text-xs text-slate-400 truncate mt-0.5">{f.table.description}</p>
+                  )}
+                </div>
+                <span className="text-xs text-slate-400 flex-shrink-0">
+                  {productIcon(f.product.name)} {cleanTopicName(f.product.name)}
+                </span>
+                {f.table.row_count !== null && (
+                  <span className="text-xs text-slate-300 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
