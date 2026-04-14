@@ -1104,9 +1104,12 @@ function BusMatrixTab({
     products.forEach((p) => { if (!details.has(p.id)) onLoadProduct(p.id); });
   }, [products, details, onLoadProduct]);
 
+  type DimEntry = { product: DataProduct; table: ProductTable & { columns: ProductColumn[] }; schema: StarSchema };
+  type FactEntry = { product: DataProduct; table: ProductTable & { columns: ProductColumn[] }; schema: StarSchema };
+
   // Collect all tables across all products
-  const allDimensions: { product: DataProduct; table: ProductTable; schema: StarSchema }[] = [];
-  const allFacts: { product: DataProduct; table: ProductTable; schema: StarSchema }[] = [];
+  const allDimensionEntries: DimEntry[] = [];
+  const allFactEntries: FactEntry[] = [];
 
   products.forEach((p) => {
     const detail = details.get(p.id);
@@ -1114,21 +1117,64 @@ function BusMatrixTab({
     detail.star_schemas.forEach((s) => {
       s.tables.forEach((t) => {
         const entry = { product: p, table: t, schema: s };
-        if (t.table_role === 'dimension') allDimensions.push(entry);
-        else if (t.table_role === 'fact') allFacts.push(entry);
+        if (t.table_role === 'dimension') allDimensionEntries.push(entry);
+        else if (t.table_role === 'fact') allFactEntries.push(entry);
       });
     });
   });
 
-  // Build the bus matrix: dimensions as columns, facts as rows, mark which fact uses which dimension
-  const dimensionNames = [...new Set(allDimensions.map((d) => d.table.table_name))].sort();
+  // Deduplicate dimensions by table_name — pick the one with the most columns (richest definition)
+  const dimByName = new Map<string, { best: DimEntry; products: Set<string> }>();
+  allDimensionEntries.forEach((d) => {
+    const name = d.table.table_name;
+    const existing = dimByName.get(name);
+    if (!existing) {
+      dimByName.set(name, { best: d, products: new Set([cleanTopicName(d.product.name)]) });
+    } else {
+      existing.products.add(cleanTopicName(d.product.name));
+      if (d.table.columns.length > existing.best.table.columns.length) {
+        existing.best = d;
+      }
+    }
+  });
+  const uniqueDimensions = [...dimByName.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, { best, products: prods }]) => ({ name, ...best, usedByProducts: [...prods].sort() }));
 
-  // For each fact, figure out which dimensions it references (via FK columns)
-  const factRows = allFacts.map((f) => {
+  // Build the bus matrix: deduplicated dimension names as columns
+  const dimensionNames = uniqueDimensions.map((d) => d.name);
+
+  // For each fact, figure out which dimensions it references via:
+  // 1. Explicit relationships (from_table_name -> to_table_name)
+  // 2. FK columns (column_role === 'foreign_key' with fk_target_table)
+  // 3. Column name heuristic (columns ending in _key matching dim table names)
+  const factRows = allFactEntries.map((f) => {
     const detail = details.get(f.product.id);
+    const usedDims = new Set<string>();
+
+    // Method 1: explicit relationships
     const rels = detail?.star_schemas.flatMap((s) => s.relationships) ?? [];
-    const factRels = rels.filter((r) => r.from_table_name === f.table.table_name);
-    const usedDims = new Set(factRels.map((r) => r.to_table_name));
+    rels.filter((r) => r.from_table_name === f.table.table_name).forEach((r) => usedDims.add(r.to_table_name));
+
+    // Method 2: FK columns with fk_target_table
+    f.table.columns.forEach((col) => {
+      if (col.fk_target_table) usedDims.add(col.fk_target_table);
+    });
+
+    // Method 3: columns with column_role 'foreign_key' — match to dimension table names in same product
+    const productDimNames = new Set(
+      detail?.star_schemas.flatMap((s) => s.tables.filter((t) => t.table_role === 'dimension').map((t) => t.table_name)) ?? [],
+    );
+    f.table.columns.forEach((col) => {
+      if (col.column_role === 'foreign_key' && !col.fk_target_table) {
+        // Try to match column name to a dimension: e.g. "customer_key" -> "dim_customer"
+        const colBase = col.column_name.replace(/_key$|_id$|_fk$/, '');
+        productDimNames.forEach((dimName) => {
+          if (dimName.replace(/^dim_/, '') === colBase) usedDims.add(dimName);
+        });
+      }
+    });
+
     return { ...f, usedDims };
   });
 
@@ -1190,36 +1236,41 @@ function BusMatrixTab({
         </div>
       )}
 
-      {/* Dimensions list */}
+      {/* Dimensions list — deduplicated */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-slate-800">Dimensions ({allDimensions.length})</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Shared lookup tables across all products</p>
+            <h3 className="text-sm font-bold text-slate-800">Dimensions ({uniqueDimensions.length})</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Shared lookup tables (deduplicated across products)</p>
           </div>
           <span className="text-2xl">&#128270;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
-        ) : allDimensions.length === 0 ? (
+        ) : uniqueDimensions.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-slate-400">No dimensions found.</div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {allDimensions.map((d) => (
-              <div key={`${d.product.id}-${d.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+            {uniqueDimensions.map((d) => (
+              <div key={d.name} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
                 <RoleBadge role="dimension" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium text-slate-800">{d.table.display_name ?? d.table.table_name}</span>
                     <StatusDot status={d.table.transformation_status} />
+                    <span className="text-[10px] text-slate-400">{d.table.columns.length} columns</span>
                   </div>
                   {d.table.description && (
                     <p className="text-xs text-slate-400 truncate mt-0.5">{d.table.description}</p>
                   )}
                 </div>
-                <span className="text-xs text-slate-400 flex-shrink-0">
-                  {productIcon(d.product.name)} {cleanTopicName(d.product.name)}
-                </span>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {d.usedByProducts.map((pName) => (
+                    <span key={pName} className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                      {productIcon(pName)} {pName}
+                    </span>
+                  ))}
+                </div>
                 {d.table.row_count !== null && (
                   <span className="text-xs text-slate-300 flex-shrink-0">{d.table.row_count.toLocaleString()} rows</span>
                 )}
@@ -1233,37 +1284,42 @@ function BusMatrixTab({
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-slate-800">Fact Tables ({allFacts.length})</h3>
+            <h3 className="text-sm font-bold text-slate-800">Fact Tables ({allFactEntries.length})</h3>
             <p className="text-xs text-slate-400 mt-0.5">Measure tables across all products</p>
           </div>
           <span className="text-2xl">&#128202;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
-        ) : allFacts.length === 0 ? (
+        ) : allFactEntries.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-slate-400">No fact tables found.</div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {allFacts.map((f) => (
-              <div key={`${f.product.id}-${f.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
-                <RoleBadge role="fact" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-800">{f.table.display_name ?? f.table.table_name}</span>
-                    <StatusDot status={f.table.transformation_status} />
+            {allFactEntries.map((f) => {
+              const row = factRows.find((r) => r.table.id === f.table.id);
+              const dimCount = row ? row.usedDims.size : 0;
+              return (
+                <div key={`${f.product.id}-${f.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                  <RoleBadge role="fact" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-slate-800">{f.table.display_name ?? f.table.table_name}</span>
+                      <StatusDot status={f.table.transformation_status} />
+                      {dimCount > 0 && <span className="text-[10px] text-slate-400">{dimCount} dimensions</span>}
+                    </div>
+                    {f.table.description && (
+                      <p className="text-xs text-slate-400 truncate mt-0.5">{f.table.description}</p>
+                    )}
                   </div>
-                  {f.table.description && (
-                    <p className="text-xs text-slate-400 truncate mt-0.5">{f.table.description}</p>
+                  <span className="text-xs text-slate-400 flex-shrink-0">
+                    {productIcon(f.product.name)} {cleanTopicName(f.product.name)}
+                  </span>
+                  {f.table.row_count !== null && (
+                    <span className="text-xs text-slate-300 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
                   )}
                 </div>
-                <span className="text-xs text-slate-400 flex-shrink-0">
-                  {productIcon(f.product.name)} {cleanTopicName(f.product.name)}
-                </span>
-                {f.table.row_count !== null && (
-                  <span className="text-xs text-slate-300 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
