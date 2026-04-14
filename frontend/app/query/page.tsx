@@ -1106,16 +1106,33 @@ function ThinkingBubble({
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
-function EmptyState({ onStarter }: { onStarter: (q: string) => void }) {
+function EmptyState({ onStarter, productContext }: { onStarter: (q: string) => void; productContext?: { name: string; kpis: string[] } | null }) {
+  // Build suggested questions: product KPIs first, then generic starters
+  const kpiQuestions = (productContext?.kpis ?? []).slice(0, 6).map((kpi) => `What is the ${kpi}?`);
+  const questions = kpiQuestions.length > 0
+    ? kpiQuestions
+    : STARTERS;
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-4 py-16">
       <div className="text-5xl mb-4">💬</div>
-      <h2 className="text-lg font-semibold text-slate-800 mb-1">Ask your data anything</h2>
-      <p className="text-sm text-slate-500 mb-8 max-w-md">
-        Type a question in plain English and get an instant answer. No SQL needed.
-      </p>
+      {productContext ? (
+        <>
+          <h2 className="text-lg font-semibold text-slate-800 mb-1">Ask about {productContext.name}</h2>
+          <p className="text-sm text-slate-500 mb-8 max-w-md">
+            Ask questions about your {productContext.name.toLowerCase()} data in plain English.
+          </p>
+        </>
+      ) : (
+        <>
+          <h2 className="text-lg font-semibold text-slate-800 mb-1">Ask your data anything</h2>
+          <p className="text-sm text-slate-500 mb-8 max-w-md">
+            Type a question in plain English and get an instant answer. No SQL needed.
+          </p>
+        </>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-xl">
-        {STARTERS.map((q) => (
+        {questions.map((q) => (
           <button key={q} onClick={() => onStarter(q)}
             className="text-left px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 transition-all shadow-sm">
             {q}
@@ -1138,9 +1155,14 @@ export default function QueryPage() {
   const [isAdmin,        setIsAdmin]        = useState(false);
   const [starFilter,     setStarFilter]     = useState(false);
 
-  // URL params (e.g. ?connectionId=5 from Data Products "Ask questions" link)
+  // URL params (e.g. ?connectionId=5&productId=3&productName=Sales from Data Products)
   const searchParams = useSearchParams();
   const urlConnectionId = searchParams.get('connectionId');
+  const urlProductId = searchParams.get('productId');
+  const urlProductName = searchParams.get('productName');
+
+  // Product context — shown when navigating from Data Products page
+  const [productContext, setProductContext] = useState<{ name: string; kpis: string[] } | null>(null);
 
   // Data source selection (silent — no UI picker)
   const [sources,       setSources]       = useState<DataSource[]>([]);
@@ -1165,6 +1187,20 @@ export default function QueryPage() {
   const initialized = useRef(false);
 
   useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'admin'); }, []);
+
+  // Load product context (KPIs) when navigating from Data Products
+  useEffect(() => {
+    if (urlProductId && urlProductName) {
+      api.get(`/products/${urlProductId}/kpis`)
+        .then((res) => {
+          const kpiNames = (res.data.data ?? []).map((k: { name: string }) => k.name);
+          setProductContext({ name: urlProductName, kpis: kpiNames });
+        })
+        .catch(() => {
+          setProductContext({ name: urlProductName, kpis: [] });
+        });
+    }
+  }, [urlProductId, urlProductName]);
 
   // Load available connections + integration views (silent — no UI picker shown)
   useEffect(() => {
@@ -1837,7 +1873,7 @@ export default function QueryPage() {
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="max-w-2xl mx-auto w-full px-4 py-6">
             {messages.length === 0 && !loading ? (
-              <EmptyState onStarter={send} />
+              <EmptyState onStarter={send} productContext={productContext} />
             ) : (
               <div className="space-y-4">
                 {messages.map((m) => (
