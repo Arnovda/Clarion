@@ -436,13 +436,16 @@ export default function ProductsPage() {
 
       addBuildLog(allOk ? 'All done!' : 'Build completed with some errors.');
       setBuildSuccess(allOk);
+
+      // Clear caches so everything reloads fresh from DB
+      setDetails(new Map());
+      setKpis(new Map());
       await loadProducts();
 
-      // Expand first product
-      if (createdProducts.length > 0) {
-        setSelectedProductId(createdProducts[0].id);
-        loadFullProduct(createdProducts[0].id);
-        loadKpis(createdProducts[0].id);
+      // Load all product details + KPIs (don't rely on useEffect — do it explicitly)
+      for (const p of createdProducts) {
+        loadFullProduct(p.id);
+        loadKpis(p.id);
       }
     } catch (err) {
       addBuildLog(`Error: ${err instanceof Error ? err.message : 'Build failed'}`);
