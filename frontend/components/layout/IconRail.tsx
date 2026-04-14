@@ -134,7 +134,7 @@ export default function IconRail() {
   }
 
   return (
-    <div className="w-rail h-screen flex flex-col bg-primary py-4 px-3 flex-shrink-0 relative">
+    <div className="w-[200px] min-w-[200px] h-screen flex flex-col bg-primary py-4 px-3 flex-shrink-0 relative">
       {/* Logo */}
       <Link href="/ask" className="mb-6 flex items-center gap-2.5 px-2">
         <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-white font-headline font-bold text-lg flex-shrink-0">D</span>
