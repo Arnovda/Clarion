@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import Nav from '@/components/Nav';
 import DatabaseTree from '@/components/semantic/DatabaseTree';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
@@ -282,9 +281,7 @@ function SemanticInner() {
 
   return (
     <div className="flex flex-col bg-surface" style={{ height: '100vh', overflow: 'hidden' }}>
-      <Nav />
-
-      {/* Tab bar — gradient mesh style */}
+      {/* Tab bar — gradient mesh style (no separate Nav bar — actions are inline) */}
       <div className="gradient-mesh px-4 flex items-center gap-0 flex-shrink-0 relative overflow-hidden">
         {/* Decorative circles */}
         <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
