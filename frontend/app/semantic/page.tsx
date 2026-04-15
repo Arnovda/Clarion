@@ -77,7 +77,6 @@ function SemanticInner() {
       }
 
       if (targetId) {
-        setExpandedConns(new Set([targetId]));
         loadConnectionTables(targetId);
       }
     }).catch(() => {});

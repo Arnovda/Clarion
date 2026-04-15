@@ -107,7 +107,7 @@ export default function DatabaseTree({
   onSelectProductColumn,
   loadingProductIds,
 }: Props) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['dims', 'facts']));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
 
   function toggleSection(id: string) {
     setExpandedSections((prev) => {
