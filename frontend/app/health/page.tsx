@@ -26,16 +26,16 @@ interface Connection {
 }
 
 function ScoreCell({ score }: { score: number | null }) {
-  if (score === null) return <span className="text-label-sm text-on-surface-variant/30">—</span>;
+  if (score === null) return <span className="text-xs text-on-surface-variant/30">—</span>;
   const pct = Math.round(score * 100);
-  const cls = pct >= 90 ? 'bg-amber-400/15 text-amber-700' : pct >= 70 ? 'bg-amber-400/10 text-amber-600' : 'bg-error/10 text-error';
-  return <span className={`text-label-md font-bold px-2 py-0.5 rounded-lg ${cls}`}>{pct}%</span>;
+  const cls = pct >= 90 ? 'bg-emerald-500/15 text-emerald-600' : pct >= 70 ? 'bg-amber-500/15 text-amber-600' : 'bg-red-500/15 text-red-600';
+  return <span className={`text-sm font-bold px-2 py-0.5 rounded-lg ${cls}`}>{pct}%</span>;
 }
 
 function ScoreDot({ score }: { score: number | null }) {
-  if (score === null) return <span className="w-2 h-2 rounded-full bg-outline-variant/30 inline-block" />;
+  if (score === null) return <span className="w-2 h-2 rounded-full bg-on-surface-variant/20 inline-block" />;
   const pct = Math.round(score * 100);
-  const cls = pct >= 90 ? 'bg-amber-400' : pct >= 70 ? 'bg-amber-500' : 'bg-error';
+  const cls = pct >= 90 ? 'bg-emerald-400' : pct >= 70 ? 'bg-amber-400' : 'bg-red-400';
   return <span className={`w-2 h-2 rounded-full ${cls} inline-block`} />;
 }
 
@@ -277,14 +277,14 @@ export default function HealthPage() {
             const sourceTables = filteredTables.filter((t) => (t.layer ?? 'source') === 'source');
             const isProfilingThis = profilingKey === (selectedConn ? `conn-${selectedConn.id}` : selectedProductName ? `product-${selectedProductName}` : null);
             return (
-              <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-8 flex items-center gap-8">
+              <div className="glass-card rounded-2xl p-8 flex items-center gap-8">
                 <div className="w-24 h-24 rounded-full border-4 flex items-center justify-center flex-shrink-0"
-                  style={{ borderColor: avgScore >= 90 ? '#f59e0b' : avgScore >= 70 ? '#d97706' : '#ba1a1a' }}>
-                  <span className="font-headline text-display-md font-bold text-on-surface">{avgScore}</span>
+                  style={{ borderColor: avgScore >= 90 ? '#06b6d4' : avgScore >= 70 ? '#d97706' : '#ba1a1a' }}>
+                  <span className="text-4xl font-bold text-on-surface">{avgScore}</span>
                 </div>
                 <div className="flex-1">
-                  <h2 className="font-headline text-headline-md font-bold text-on-surface">Overall Health Score</h2>
-                  <p className="text-body-md text-on-surface-variant mt-1">
+                  <h2 className="text-xl font-bold text-on-surface">Overall Health Score</h2>
+                  <p className="text-sm text-on-surface-variant mt-1">
                     {profiledTables.length} of {filteredTables.length} tables profiled across{' '}
                     {selectedConn?.name ?? selectedProductName ?? 'all connections'}
                   </p>
@@ -293,7 +293,7 @@ export default function HealthPage() {
                 {(selectedConn || selectedProductName) && (
                   <div className="flex-shrink-0">
                     {isProfilingThis ? (
-                      <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-50 text-cyan-700 text-label-md font-medium">
+                      <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-500/10 text-cyan-700 text-sm font-medium">
                         <span className="w-4 h-4 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
                         Profiling {profilingProgress.done}/{profilingProgress.total}…
                       </div>
@@ -306,7 +306,7 @@ export default function HealthPage() {
                             profileAllProduct(selectedProductName, selectedProduct, e);
                           }
                         }}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-on-primary text-label-md font-medium hover:bg-primary/90 transition-colors shadow-sm">
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl gradient-primary text-on-primary text-sm font-medium shadow-glow-primary hover:shadow-glow-teal-md transition-all">
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 3l14 9-14 9V3z" />
                         </svg>
@@ -320,14 +320,14 @@ export default function HealthPage() {
           })()}
 
           {/* Table quality grid */}
-          <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">
+          <div className="glass-card rounded-2xl overflow-hidden">
             <table className="w-full">
               <thead>
-                <tr className="bg-surface-container-low">
-                  <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Table</th>
-                  <th className="text-center px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Score</th>
-                  <th className="text-right px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Rows</th>
-                  <th className="text-right px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Last Profiled</th>
+                <tr className="bg-surface-container">
+                  <th className="text-left px-5 py-3 text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Table</th>
+                  <th className="text-center px-5 py-3 text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Score</th>
+                  <th className="text-right px-5 py-3 text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Rows</th>
+                  <th className="text-right px-5 py-3 text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Last Profiled</th>
                 </tr>
               </thead>
               <tbody>
@@ -336,21 +336,21 @@ export default function HealthPage() {
                   .map((t, i) => (
                   <tr key={t.id}
                     onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
-                    className={`cursor-pointer transition-colors hover:bg-surface-container-low ${i % 2 === 1 ? 'bg-surface/50' : ''}`}>
+                    className={`cursor-pointer transition-colors hover:bg-white/40 border-b border-white/40 last:border-0 ${i % 2 === 1 ? 'bg-white/30' : 'bg-white/60'}`}>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
                         <ScoreDot score={t.overall_score} />
-                        <span className="text-body-sm font-medium text-on-surface">{t.display_name || t.table_name}</span>
+                        <span className="text-sm font-medium text-on-surface">{t.display_name || t.table_name}</span>
                         {t.display_name && t.display_name !== t.table_name && (
-                          <span className="text-label-sm text-on-surface-variant/40">{t.table_name}</span>
+                          <span className="text-xs text-on-surface-variant/40">{t.table_name}</span>
                         )}
                       </div>
                     </td>
                     <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
-                    <td className="px-5 py-3 text-right text-body-sm text-on-surface-variant">
+                    <td className="px-5 py-3 text-right text-sm text-on-surface-variant">
                       {t.row_count != null ? t.row_count.toLocaleString() : '—'}
                     </td>
-                    <td className="px-5 py-3 text-right text-label-sm text-on-surface-variant/50">
+                    <td className="px-5 py-3 text-right text-xs text-on-surface-variant/50">
                       {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
                     </td>
                   </tr>
@@ -358,7 +358,7 @@ export default function HealthPage() {
               </tbody>
             </table>
             {filteredTables.length === 0 && (
-              <div className="text-center py-12 text-on-surface-variant text-body-md">
+              <div className="text-center py-12 text-on-surface-variant text-sm">
                 No tables found. Run profiling from the Connect page first.
               </div>
             )}
