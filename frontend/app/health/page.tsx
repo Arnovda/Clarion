@@ -264,6 +264,44 @@ export default function HealthPage() {
             .map(([productName, tbls]) => ({ productName, tables: tbls.sort((a, b) => a.table_name.localeCompare(b.table_name)) }));
 
           return (<>
+            {/* ── Dimensions (shared/deduplicated) ── */}
+            {dimensions.length > 0 && (
+              <>
+                <div className="px-3 pt-4 pb-1">
+                  <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
+                    <ChevronIcon expanded={expandedSections.has('dims')} />
+                    <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Dimensions</span>
+                    <span className="text-[10px] text-white/20 ml-auto">{dimensions.length}</span>
+                  </button>
+                </div>
+                {expandedSections.has('dims') && (
+                  <div className="ml-5 border-l border-white/[0.06]">
+                    {dimensions.map((dim) => {
+                      const isActive = selectedTable?.tableName === dim.name;
+                      return (
+                        <button key={dim.name}
+                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
+                          className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
+                            isActive
+                              ? 'bg-purple-500/10 border-r-2 border-purple-400 text-purple-300 font-semibold'
+                              : 'border-r-2 border-transparent text-white/60 hover:bg-white/[0.04] hover:text-white/80'
+                          }`}>
+                          <TableIcon active={isActive} />
+                          <span className="truncate flex-1">{dim.table.display_name || dim.name}</span>
+                          {dim.usedBy.length > 1 && (
+                            <span className="text-[9px] px-1.5 py-0.5 bg-cyan-500/15 text-cyan-400 rounded font-medium" title={`Used in: ${dim.usedBy.join(', ')}`}>
+                              {dim.usedBy.length}x
+                            </span>
+                          )}
+                          <ScoreDot score={dim.table.overall_score} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
             {/* ── Fact Tables (grouped by product) ── */}
             {factGroups.length > 0 && (
               <>
@@ -299,44 +337,6 @@ export default function HealthPage() {
                         })}
                       </div>
                     ))}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* ── Dimensions (shared/deduplicated) ── */}
-            {dimensions.length > 0 && (
-              <>
-                <div className="px-3 pt-4 pb-1">
-                  <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
-                    <ChevronIcon expanded={expandedSections.has('dims')} />
-                    <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Dimensions</span>
-                    <span className="text-[10px] text-white/20 ml-auto">{dimensions.length}</span>
-                  </button>
-                </div>
-                {expandedSections.has('dims') && (
-                  <div className="ml-5 border-l border-white/[0.06]">
-                    {dimensions.map((dim) => {
-                      const isActive = selectedTable?.tableName === dim.name;
-                      return (
-                        <button key={dim.name}
-                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
-                          className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
-                            isActive
-                              ? 'bg-purple-500/10 border-r-2 border-purple-400 text-purple-300 font-semibold'
-                              : 'border-r-2 border-transparent text-white/60 hover:bg-white/[0.04] hover:text-white/80'
-                          }`}>
-                          <TableIcon active={isActive} />
-                          <span className="truncate flex-1">{dim.table.display_name || dim.name}</span>
-                          {dim.usedBy.length > 1 && (
-                            <span className="text-[9px] px-1.5 py-0.5 bg-cyan-500/15 text-cyan-400 rounded font-medium" title={`Used in: ${dim.usedBy.join(', ')}`}>
-                              {dim.usedBy.length}x
-                            </span>
-                          )}
-                          <ScoreDot score={dim.table.overall_score} />
-                        </button>
-                      );
-                    })}
                   </div>
                 )}
               </>
