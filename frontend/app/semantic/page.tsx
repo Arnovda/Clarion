@@ -102,12 +102,16 @@ function SemanticInner() {
       const tbls: SourceTable[] = tRes.data.data ?? [];
       setTablesByConn((prev) => ({ ...prev, [connId]: tbls }));
 
-      // Load columns for every table in parallel
+      // Load columns in batches of 5 to avoid 429 rate limits
       const colMap: Record<number, SourceColumn[]> = {};
-      await Promise.all(tbls.map(async (t) => {
-        const r = await api.get(`/semantic/columns?tableId=${t.id}`);
-        colMap[t.id] = r.data.data ?? [];
-      }));
+      const BATCH = 5;
+      for (let i = 0; i < tbls.length; i += BATCH) {
+        const batch = tbls.slice(i, i + BATCH);
+        await Promise.all(batch.map(async (t) => {
+          const r = await api.get(`/semantic/columns?tableId=${t.id}`);
+          colMap[t.id] = r.data.data ?? [];
+        }));
+      }
       setColumnsByTable((prev) => ({ ...prev, ...colMap }));
 
       // Auto-select first table on first load
@@ -127,10 +131,14 @@ function SemanticInner() {
     setTablesByConn((prev) => ({ ...prev, [connId]: tbls }));
 
     const colMap: Record<number, SourceColumn[]> = {};
-    await Promise.all(tbls.map(async (t) => {
-      const r = await api.get(`/semantic/columns?tableId=${t.id}`);
-      colMap[t.id] = r.data.data ?? [];
-    }));
+    const BATCH = 5;
+    for (let i = 0; i < tbls.length; i += BATCH) {
+      const batch = tbls.slice(i, i + BATCH);
+      await Promise.all(batch.map(async (t) => {
+        const r = await api.get(`/semantic/columns?tableId=${t.id}`);
+        colMap[t.id] = r.data.data ?? [];
+      }));
+    }
     setColumnsByTable((prev) => ({ ...prev, ...colMap }));
   }, []);
 
