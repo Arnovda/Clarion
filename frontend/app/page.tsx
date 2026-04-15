@@ -21,7 +21,10 @@ export default function LoginPage() {
       const res = await api.post('/auth/login', { email, password });
       setToken(res.data.data.token);
       const payload = getTokenPayload();
-      if (payload?.role === 'admin') {
+      if (payload?.role === 'viewer') {
+        // Viewers land on dashboards — their primary consumption surface
+        router.push('/dashboards');
+      } else if (payload?.role === 'admin') {
         try {
           const connRes = await api.get('/connections');
           const hasConnections = (connRes.data.data?.length ?? 0) > 0;
@@ -30,6 +33,7 @@ export default function LoginPage() {
           router.push('/setup');
         }
       } else {
+        // Analysts land on query
         router.push('/query');
       }
     } catch {

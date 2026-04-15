@@ -7,15 +7,17 @@ import { isAdmin } from '@/lib/auth';
 type ApprovalStatus = 'draft' | 'pending_review' | 'approved' | 'rejected';
 
 interface Props {
-  entityType: 'table' | 'column' | 'kpi';
+  entityType: 'table' | 'column' | 'kpi' | 'product_table' | 'product_column';
   entityId: number;
   status: ApprovalStatus | undefined;
   aiDraft: boolean;
   rejectionReason?: string;
   onChanged: () => void;
+  /** Compact mode: show only the orb, no text */
+  compact?: boolean;
 }
 
-export default function ApprovalBadge({ entityType, entityId, status, aiDraft, rejectionReason, onChanged }: Props) {
+export default function ApprovalBadge({ entityType, entityId, status, aiDraft, rejectionReason, onChanged, compact = false }: Props) {
   const [acting, setActing] = useState(false);
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
@@ -23,28 +25,23 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
   const [localRejection, setLocalRejection] = useState<string | null>(null);
   const admin = isAdmin();
 
-  // Use local override if set, otherwise use prop
   const current = localStatus ?? status ?? 'draft';
   const rejMsg = localRejection ?? rejectionReason;
+
+  // Orb + label config
+  const orbClass = current === 'approved' ? 'orb-approved'
+    : current === 'rejected' ? 'orb-rejected'
+    : aiDraft ? 'orb-draft'
+    : 'orb-neutral';
 
   const label = current === 'approved' ? 'Approved'
     : current === 'rejected' ? 'Rejected'
     : aiDraft ? 'AI Draft' : 'Draft';
-  const style = current === 'approved' ? 'bg-green-100 text-green-700'
-    : current === 'rejected' ? 'bg-red-100 text-red-700'
-    : aiDraft ? 'bg-amber-100 text-amber-700'
-    : 'bg-slate-100 text-slate-600';
 
   async function doAction(action: 'approve' | 'reject', rejectReason?: string) {
     setActing(true);
     try {
-      await api.post('/semantic/approve', {
-        entityType,
-        entityId,
-        action,
-        reason: rejectReason,
-      });
-      // Optimistic update
+      await api.post('/semantic/approve', { entityType, entityId, action, reason: rejectReason });
       setLocalStatus(action === 'approve' ? 'approved' : 'rejected');
       if (action === 'reject') setLocalRejection(rejectReason ?? null);
       else setLocalRejection(null);
@@ -59,15 +56,23 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
     setActing(false);
   }
 
+  if (compact) {
+    return (
+      <span className={orbClass} title={label} />
+    );
+  }
+
   return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${style}`}>
-        {label}
-      </span>
+    <div className="flex items-center gap-2.5 flex-wrap">
+      {/* Glowing orb */}
+      <div className="flex items-center gap-2">
+        <span className={orbClass} />
+        <span className="text-xs font-medium text-slate-500">{label}</span>
+      </div>
 
       {current === 'rejected' && rejMsg && (
-        <span className="text-xs text-red-500 italic" title={rejMsg}>
-          {rejMsg.length > 40 ? rejMsg.slice(0, 40) + '...' : rejMsg}
+        <span className="text-xs text-red-400 italic max-w-[180px] truncate" title={rejMsg}>
+          {rejMsg}
         </span>
       )}
 
@@ -76,7 +81,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
           {current !== 'approved' && (
             <button
               onClick={() => doAction('approve')}
-              className="text-xs px-2 py-0.5 bg-green-50 text-green-600 border border-green-200 rounded hover:bg-green-100"
+              className="text-[10px] px-2.5 py-1 bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-500/20 font-semibold transition-all hover:shadow-glow-green"
             >
               Approve
             </button>
@@ -84,7 +89,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
           {current !== 'rejected' && (
             <button
               onClick={() => setShowReject(!showReject)}
-              className="text-xs px-2 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded hover:bg-red-100"
+              className="text-[10px] px-2.5 py-1 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 font-semibold transition-all hover:shadow-glow-red"
             >
               Reject
             </button>
@@ -92,7 +97,12 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
         </div>
       )}
 
-      {acting && <span className="text-xs text-slate-400">Updating...</span>}
+      {acting && (
+        <span className="flex items-center gap-1.5 text-xs text-slate-400">
+          <span className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+          Updating...
+        </span>
+      )}
 
       {showReject && (
         <div className="flex items-center gap-2 mt-1 w-full">
@@ -100,11 +110,11 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             placeholder="Rejection reason..."
-            className="flex-1 border border-red-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-red-400"
+            className="flex-1 bg-red-500/5 border border-red-200/50 rounded-lg px-3 py-1.5 text-xs text-slate-700 placeholder:text-red-300 focus:outline-none focus:ring-1 focus:ring-red-400/50"
           />
           <button
             onClick={() => doAction('reject', reason)}
-            className="text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+            className="text-xs px-3 py-1.5 bg-red-500 text-white rounded-lg hover:bg-red-600 font-medium transition-colors"
           >
             Confirm
           </button>

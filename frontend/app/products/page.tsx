@@ -135,15 +135,15 @@ function StatusDot({ status }: { status: string }) {
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    draft: 'bg-slate-100 text-slate-600',
-    designing: 'bg-blue-100 text-blue-700',
-    approved: 'bg-emerald-100 text-emerald-700',
-    running: 'bg-amber-100 text-amber-700',
-    success: 'bg-emerald-100 text-emerald-700',
-    error: 'bg-red-100 text-red-700',
+    draft: 'bg-surface-container text-on-surface-variant',
+    designing: 'bg-cyan-500/15 text-cyan-700',
+    approved: 'bg-emerald-500/15 text-emerald-600',
+    running: 'bg-amber-500/15 text-amber-700',
+    success: 'bg-emerald-500/15 text-emerald-600',
+    error: 'bg-red-500/15 text-red-600',
   };
   return (
-    <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${colors[status] ?? 'bg-slate-100 text-slate-600'}`}>
+    <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${colors[status] ?? 'bg-surface-container text-on-surface-variant'}`}>
       {status}
     </span>
   );
@@ -151,27 +151,27 @@ function StatusBadge({ status }: { status: string }) {
 
 function RoleBadge({ role }: { role: string }) {
   const config: Record<string, { bg: string; label: string }> = {
-    fact: { bg: 'bg-violet-100 text-violet-700', label: 'Measures' },
-    dimension: { bg: 'bg-sky-100 text-sky-700', label: 'Lookup' },
-    bridge: { bg: 'bg-amber-100 text-amber-700', label: 'Bridge' },
-    junk: { bg: 'bg-slate-100 text-slate-600', label: 'Flags' },
+    fact: { bg: 'bg-violet-500/15 text-violet-700', label: 'Measures' },
+    dimension: { bg: 'bg-cyan-500/15 text-cyan-700', label: 'Lookup' },
+    bridge: { bg: 'bg-amber-500/15 text-amber-700', label: 'Bridge' },
+    junk: { bg: 'bg-surface-container text-on-surface-variant', label: 'Flags' },
   };
-  const c = config[role] ?? { bg: 'bg-slate-100 text-slate-600', label: role };
-  return <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${c.bg}`}>{c.label}</span>;
+  const c = config[role] ?? { bg: 'bg-surface-container text-on-surface-variant', label: role };
+  return <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${c.bg}`}>{c.label}</span>;
 }
 
 function ColumnRoleBadge({ role }: { role: string | null }) {
   if (!role) return null;
   const colors: Record<string, string> = {
-    surrogate_key: 'bg-yellow-100 text-yellow-800',
-    natural_key: 'bg-orange-100 text-orange-700',
-    foreign_key: 'bg-purple-100 text-purple-700',
-    measure: 'bg-green-100 text-green-700',
-    attribute: 'bg-blue-100 text-blue-700',
-    degenerate_dimension: 'bg-slate-100 text-slate-600',
+    surrogate_key: 'bg-amber-500/15 text-amber-700',
+    natural_key: 'bg-orange-500/15 text-orange-700',
+    foreign_key: 'bg-purple-500/15 text-purple-700',
+    measure: 'bg-emerald-500/15 text-emerald-700',
+    attribute: 'bg-blue-500/15 text-blue-700',
+    degenerate_dimension: 'bg-surface-container text-on-surface-variant',
   };
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${colors[role] ?? 'bg-slate-100 text-slate-600'}`}>
+    <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${colors[role] ?? 'bg-surface-container text-on-surface-variant'}`}>
       {role.replace(/_/g, ' ')}
     </span>
   );
@@ -516,22 +516,24 @@ export default function ProductsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* ── Top bar ──────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between flex-shrink-0">
-        <div>
-          <h1 className="text-lg font-bold text-slate-900">Data Products</h1>
-          <p className="text-sm text-slate-500">Organize and transform your source data</p>
+      {/* ── Top bar — gradient mesh ────────────────────────────────── */}
+      <div className="gradient-mesh px-6 py-4 flex items-center justify-between flex-shrink-0 relative overflow-hidden">
+        <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
+        <div className="absolute -bottom-4 right-1/4 w-16 h-16 rounded-full bg-white/[0.02]" />
+        <div className="relative">
+          <h1 className="text-lg font-headline font-bold text-white tracking-tight">Data Products</h1>
+          <p className="text-sm text-white/50">Organize and transform your source data</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="relative flex items-center gap-2">
           {connections.length > 1 && (
             <select
               value={buildConnId ?? ''}
               onChange={(e) => setBuildConnId(Number(e.target.value))}
-              className="text-sm border border-slate-200 rounded-xl px-3 py-2.5 bg-white"
+              className="text-sm bg-white/10 border border-white/15 text-white rounded-xl px-3 py-2.5 backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
             >
-              <option value="">Select connection...</option>
+              <option value="" className="text-on-surface bg-white">Select connection...</option>
               {connections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.id} value={c.id} className="text-on-surface bg-white">{c.name}</option>
               ))}
             </select>
           )}
@@ -542,7 +544,7 @@ export default function ProductsPage() {
                 if (connId) handleAutoBuild(connId);
               }}
               disabled={building || (connections.length > 1 && !buildConnId)}
-              className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm hover:shadow-md transition-all flex items-center gap-2"
+              className="px-5 py-2.5 bg-white/15 border border-white/20 text-white text-sm font-semibold rounded-xl hover:bg-white/25 disabled:opacity-50 transition-all flex items-center gap-2 backdrop-blur-sm"
             >
               {building && <Spinner />}
               {building ? 'Building...' : 'Prepare my data'}
@@ -552,16 +554,16 @@ export default function ProductsPage() {
       </div>
 
       {/* ── Tab bar ──────────────────────────────────────────────────── */}
-      <div className="bg-white border-b border-slate-200 px-6 flex-shrink-0">
+      <div className="bg-surface-container-low ghost-border-b px-6 flex-shrink-0">
         <div className="flex gap-1 -mb-px">
           {tabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition-all ${
                 tab === t.key
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
+                  ? 'border-cyan-500 text-on-surface font-semibold'
+                  : 'border-transparent text-on-surface-variant hover:text-on-surface'
               }`}
             >
               {t.label}
@@ -571,7 +573,7 @@ export default function ProductsPage() {
       </div>
 
       {/* ── Content ──────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto bg-gradient-to-br from-surface via-surface to-surface-container-low/30">
         <div className="p-6 max-w-5xl mx-auto">
 
           {/* ── Build Terminal ──────────────────────────────────────── */}
@@ -582,7 +584,7 @@ export default function ProductsPage() {
                   {building ? (
                     <div className="w-3 h-3 bg-emerald-400 rounded-full animate-pulse" />
                   ) : buildSuccess ? (
-                    <span className="text-emerald-400 text-sm font-bold">OK</span>
+                    <span className="text-cyan-400 text-sm font-bold">OK</span>
                   ) : (
                     <span className="text-red-400 text-sm font-bold">!</span>
                   )}
@@ -612,7 +614,7 @@ export default function ProductsPage() {
 
               {showThinking && buildThinking && (
                 <div ref={thinkingRef} className="px-5 py-3 max-h-48 overflow-y-auto border-b border-slate-800">
-                  <pre className="text-xs text-emerald-400 font-mono whitespace-pre-wrap leading-relaxed">{buildThinking}</pre>
+                  <pre className="text-xs text-cyan-400 font-mono whitespace-pre-wrap leading-relaxed">{buildThinking}</pre>
                 </div>
               )}
 
@@ -620,7 +622,7 @@ export default function ProductsPage() {
                 {buildLog.map((line, i) => (
                   <div key={i} className={`text-sm font-mono py-0.5 ${
                     line.startsWith('Error') ? 'text-red-400'
-                    : line.startsWith('All done') ? 'text-emerald-400 font-semibold'
+                    : line.startsWith('All done') ? 'text-cyan-400 font-semibold'
                     : line.startsWith('  ') ? 'text-slate-400'
                     : 'text-slate-300'
                   }`}>
@@ -644,17 +646,17 @@ export default function ProductsPage() {
 
               {/* Empty state */}
               {!loading && products.length === 0 && !building && !buildDone && (
-                <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-sm">
-                  <div className="w-16 h-16 mx-auto mb-4 bg-slate-100 rounded-2xl flex items-center justify-center">
-                    <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <div className="glass-card rounded-2xl p-12 text-center animate-fadeIn">
+                  <div className="w-16 h-16 mx-auto mb-4 gradient-mesh rounded-2xl flex items-center justify-center shadow-glow-teal">
+                    <svg className="w-8 h-8 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-semibold text-slate-800 mb-1">No data products yet</h3>
-                  <p className="text-sm text-slate-500 mb-6">
+                  <h3 className="text-lg font-headline font-bold text-on-surface mb-1">No data products yet</h3>
+                  <p className="text-sm text-on-surface-variant mb-6">
                     Data products organize your source tables into clean, query-ready datasets.
                   </p>
-                  <p className="text-xs text-slate-400">Click &quot;Prepare my data&quot; above to get started.</p>
+                  <p className="text-xs text-on-surface-variant/50">Click &quot;Prepare my data&quot; above to get started.</p>
                 </div>
               )}
 
@@ -672,47 +674,47 @@ export default function ProductsPage() {
                     <button
                       key={product.id}
                       onClick={() => openProduct(product.id)}
-                      className="text-left bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-lg hover:border-slate-300 transition-all overflow-hidden group"
+                      className="text-left glass-card rounded-2xl hover:shadow-glow-teal transition-all overflow-hidden group"
                     >
                       {/* Icon + name header */}
                       <div className="px-5 pt-5 pb-3">
-                        <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl mb-3 group-hover:scale-105 transition-transform">
+                        <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-2xl mb-3 group-hover:scale-105 transition-transform">
                           {icon}
                         </div>
                         <div className="flex items-center gap-2 mb-1">
-                          <h3 className="text-base font-semibold text-slate-900 truncate">{name}</h3>
+                          <h3 className="text-base font-semibold text-on-surface truncate">{name}</h3>
                           <StatusDot status={product.status} />
                         </div>
                         {product.description && (
-                          <p className="text-sm text-slate-500 line-clamp-2">{product.description}</p>
+                          <p className="text-sm text-on-surface-variant line-clamp-2">{product.description}</p>
                         )}
                       </div>
 
                       {/* KPI hints */}
                       {visibleKpis.length > 0 && (
                         <div className="px-5 pb-3">
-                          <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">What you can ask</p>
+                          <p className="text-[11px] font-semibold text-on-surface-variant/50 uppercase tracking-wider mb-1.5">What you can ask</p>
                           <div className="space-y-1">
                             {visibleKpis.map((kpi) => (
-                              <div key={kpi.id} className="flex items-center gap-1.5 text-xs text-slate-600">
-                                <span className="text-slate-300">-</span>
+                              <div key={kpi.id} className="flex items-center gap-1.5 text-xs text-on-surface-variant">
+                                <span className="text-on-surface-variant/30">-</span>
                                 <span className="truncate">{kpi.name}</span>
                               </div>
                             ))}
                             {productKpis.length > 5 && (
-                              <p className="text-[11px] text-slate-400">+{productKpis.length - 5} more</p>
+                              <p className="text-[11px] text-on-surface-variant/50">+{productKpis.length - 5} more</p>
                             )}
                           </div>
                         </div>
                       )}
 
                       {/* Footer */}
-                      <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
-                        <span className="text-xs text-slate-400">
+                      <div className="px-5 py-3 border-t border-slate-200/30 flex items-center justify-between bg-surface-container-low/30">
+                        <span className="text-xs text-on-surface-variant/50">
                           {tables.length > 0 ? `${tables.length} tables` : ''}
                           {detail && totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
                         </span>
-                        <span className="text-xs font-medium text-blue-600 group-hover:text-blue-700 transition-colors">
+                        <span className="text-xs font-semibold text-cyan-600 group-hover:text-cyan-500 transition-colors">
                           Ask questions &rarr;
                         </span>
                       </div>
@@ -810,30 +812,30 @@ function TopicSlideOver({
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/20 z-40" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40" onClick={onClose} />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-white shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
+      <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-surface-container-lowest/95 backdrop-blur-xl shadow-ambient-lg z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
-        <div className="px-6 py-5 border-b border-slate-200 flex items-start gap-4 flex-shrink-0">
-          <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-2xl flex-shrink-0">
+        <div className="px-6 py-5 ghost-border-b flex items-start gap-4 flex-shrink-0">
+          <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-2xl flex-shrink-0">
             {icon}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-slate-900 truncate">{name}</h2>
+              <h2 className="text-lg font-bold text-on-surface truncate">{name}</h2>
               <StatusBadge status={product.status} />
             </div>
             {product.description && (
-              <p className="text-sm text-slate-500 mt-0.5 line-clamp-2">{product.description}</p>
+              <p className="text-sm text-on-surface-variant mt-0.5 line-clamp-2">{product.description}</p>
             )}
             {detail && (
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-on-surface-variant/50 mt-1">
                 {tables.length} tables{totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
               </p>
             )}
           </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0 mt-1">
+          <button onClick={onClose} className="text-on-surface-variant/50 hover:text-on-surface transition-colors flex-shrink-0 mt-1">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -844,15 +846,15 @@ function TopicSlideOver({
         <div className="flex-1 overflow-y-auto">
           {/* KPIs section */}
           {productKpis.length > 0 && (
-            <div className="px-6 py-4 border-b border-slate-100">
-              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">What you can ask</p>
+            <div className="px-6 py-4 ghost-border-b">
+              <p className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider mb-2">What you can ask</p>
               <div className="space-y-1.5">
                 {productKpis.map((kpi) => (
                   <div key={kpi.id} className="flex items-start gap-2 text-sm">
-                    <span className="text-slate-300 mt-0.5">-</span>
+                    <span className="text-on-surface-variant/30 mt-0.5">-</span>
                     <div className="min-w-0">
-                      <span className="font-medium text-slate-700">{kpi.name}</span>
-                      {kpi.description && <span className="text-slate-400 ml-1.5 text-xs">{kpi.description}</span>}
+                      <span className="font-medium text-on-surface">{kpi.name}</span>
+                      {kpi.description && <span className="text-on-surface-variant ml-1.5 text-xs">{kpi.description}</span>}
                     </div>
                   </div>
                 ))}
@@ -869,7 +871,7 @@ function TopicSlideOver({
           ) : tables.length === 0 ? (
             <div className="px-6 py-10 text-center text-sm text-slate-400">No tables designed yet.</div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="divide-y divide-slate-200/20">
               {tables.map((table) => {
                 const isTableExpanded = expandedTableId === table.id;
                 const isTableRunning = runningTableId === table.id;
@@ -878,24 +880,24 @@ function TopicSlideOver({
                   <div key={table.id}>
                     <button
                       onClick={() => onToggleTable(table.id)}
-                      className="w-full text-left px-6 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors"
+                      className="w-full text-left px-6 py-3 flex items-center gap-3 hover:bg-surface-container-low/50 transition-colors"
                     >
                       <svg
-                        className={`w-3.5 h-3.5 text-slate-300 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
+                        className={`w-3.5 h-3.5 text-on-surface-variant/30 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
                         fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
                       >
                         <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                       </svg>
                       <RoleBadge role={table.table_role} />
                       <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium text-slate-800">{table.display_name ?? table.table_name}</span>
+                        <span className="text-sm font-medium text-on-surface">{table.display_name ?? table.table_name}</span>
                         {table.description && (
-                          <span className="text-xs text-slate-400 ml-2 hidden sm:inline">{table.description}</span>
+                          <span className="text-xs text-on-surface-variant ml-2 hidden sm:inline">{table.description}</span>
                         )}
                       </div>
                       <div className="flex items-center gap-3 flex-shrink-0">
                         {table.row_count !== null && (
-                          <span className="text-xs text-slate-400">{table.row_count.toLocaleString()} rows</span>
+                          <span className="text-xs text-on-surface-variant/50">{table.row_count.toLocaleString()} rows</span>
                         )}
                         <StatusDot status={table.transformation_status} />
                         {isTableRunning && <Spinner className="w-3.5 h-3.5" />}
@@ -903,39 +905,39 @@ function TopicSlideOver({
                     </button>
 
                     {isTableExpanded && (
-                      <div className="px-6 pb-4 bg-slate-50/30">
+                      <div className="px-6 pb-4 bg-surface-container-low/20 panel-enter">
                         {/* Columns */}
-                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 border-b border-slate-100">
-                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                        <div className="glass-card rounded-xl overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 ghost-border-b">
+                            <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">
                               Columns ({table.columns.length})
                             </span>
                           </div>
                           <div className="max-h-56 overflow-y-auto">
                             {table.columns.map((col) => (
-                              <div key={col.id} className="px-4 py-1.5 flex items-center gap-2 text-xs hover:bg-slate-50 border-b border-slate-50 last:border-0">
+                              <div key={col.id} className="px-4 py-1.5 flex items-center gap-2 text-xs hover:bg-white/40 border-b border-slate-200/20 last:border-0 transition-colors">
                                 <ColumnRoleBadge role={col.column_role} />
-                                <span className="font-medium text-slate-700">{col.column_name}</span>
-                                <span className="text-slate-300">{col.data_type}</span>
-                                {col.description && <span className="text-slate-400 truncate ml-auto">{col.description}</span>}
+                                <span className="font-medium text-on-surface">{col.column_name}</span>
+                                <span className="text-on-surface-variant/40">{col.data_type}</span>
+                                {col.description && <span className="text-on-surface-variant truncate ml-auto">{col.description}</span>}
                               </div>
                             ))}
                           </div>
                         </div>
 
                         {/* SQL */}
-                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 border-b border-slate-100 flex items-center justify-between">
-                            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">SQL</span>
+                        <div className="glass-card rounded-xl overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 ghost-border-b flex items-center justify-between">
+                            <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">SQL</span>
                             <div className="flex gap-2">
                               {editingSql?.tableId !== table.id && table.transformation_sql && (
                                 <button onClick={() => onEditSql({ tableId: table.id, sql: table.transformation_sql! })}
-                                  className="text-[11px] text-blue-600 hover:text-blue-700 font-medium">Edit</button>
+                                  className="text-[11px] text-cyan-600 hover:text-cyan-500 font-semibold transition-colors">Edit</button>
                               )}
                               <button
                                 onClick={() => onRunTable(table.id, product.id)}
                                 disabled={isTableRunning || !table.transformation_sql}
-                                className="text-[11px] text-emerald-600 hover:text-emerald-700 font-medium disabled:opacity-50 flex items-center gap-1"
+                                className="text-[11px] text-emerald-600 hover:text-emerald-500 font-semibold disabled:opacity-50 flex items-center gap-1 transition-colors"
                               >
                                 {isTableRunning && <Spinner className="w-3 h-3" />}
                                 {isTableRunning ? 'Running...' : 'Run'}
@@ -948,19 +950,19 @@ function TopicSlideOver({
                                 value={editingSql.sql}
                                 onChange={(e) => onEditSql({ ...editingSql, sql: e.target.value })}
                                 rows={Math.max(8, editingSql.sql.split('\n').length + 2)}
-                                className="w-full font-mono text-xs border border-slate-300 rounded-lg p-3 bg-white resize-y focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                className="w-full font-mono text-xs bg-white/60 border border-white/80 rounded-xl p-3 resize-y focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all"
                               />
                               <div className="flex gap-2 mt-2">
                                 <button onClick={onSaveSql} disabled={savingSql}
-                                  className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+                                  className="px-3 py-1.5 text-xs gradient-primary text-on-primary rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold shadow-sm">
                                   {savingSql ? 'Saving...' : 'Save'}
                                 </button>
                                 <button onClick={onCancelEditSql}
-                                  className="px-3 py-1.5 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50">Cancel</button>
+                                  className="px-3 py-1.5 text-xs text-on-surface-variant bg-white/60 border border-white/80 rounded-lg hover:bg-white/80 transition-all">Cancel</button>
                               </div>
                             </div>
                           ) : (
-                            <pre className="p-3 text-xs font-mono text-slate-600 bg-slate-50/50 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
+                            <pre className="p-3 text-xs font-mono text-on-surface-variant bg-surface-container-low/30 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
                               {table.transformation_sql || 'No SQL generated yet'}
                             </pre>
                           )}
@@ -995,15 +997,15 @@ function TopicSlideOver({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between flex-shrink-0 bg-white">
+        <div className="px-6 py-4 ghost-border-b flex items-center justify-between flex-shrink-0 bg-white/60 backdrop-blur-xl border-t border-white/60">
           <div className="flex gap-2">
-            <a href={`/query?connectionId=${product.connection_id}&productId=${product.id}&productName=${encodeURIComponent(cleanTopicName(product.name))}`} className="px-4 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors">
+            <a href={`/query?connectionId=${product.connection_id}&productId=${product.id}&productName=${encodeURIComponent(cleanTopicName(product.name))}`} className="px-4 py-2 text-sm font-medium text-cyan-700 bg-cyan-500/10 border border-cyan-500/20 rounded-xl hover:bg-cyan-500/20 transition-colors">
               Ask questions &rarr;
             </a>
             {tables.length > 0 && (
               <button
                 onClick={() => setShowSqlModal(true)}
-                className="px-4 py-2 text-sm font-medium text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors"
+                className="px-4 py-2 text-sm font-medium text-on-surface-variant bg-white/60 border border-white/80 rounded-xl hover:bg-white/80 transition-colors"
               >
                 View all SQL
               </button>
@@ -1013,14 +1015,14 @@ function TopicSlideOver({
             <button
               onClick={() => onRunProduct(product.id)}
               disabled={isRunning || tables.length === 0}
-              className="px-4 py-2 text-sm font-medium bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5 transition-colors"
+              className="px-4 py-2 text-sm font-medium gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-50 flex items-center gap-1.5 transition-all"
             >
               {isRunning && <Spinner className="w-3 h-3" />}
               {isRunning ? 'Running...' : 'Rebuild'}
             </button>
             <button
               onClick={() => onDelete(product.id)}
-              className="px-4 py-2 text-sm font-medium text-red-600 border border-red-200 rounded-xl hover:bg-red-50 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-red-600 bg-red-500/10 border border-red-500/20 rounded-xl hover:bg-red-500/20 transition-colors"
             >
               Delete
             </button>
@@ -1056,11 +1058,11 @@ function TopicSqlModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col">
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between flex-shrink-0">
-          <h3 className="text-lg font-bold text-slate-900">All SQL — {productName}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+      <div className="glass-card rounded-2xl shadow-ambient-lg w-full max-w-4xl max-h-[80vh] flex flex-col">
+        <div className="px-6 py-4 ghost-border-b flex items-center justify-between flex-shrink-0">
+          <h3 className="text-lg font-bold text-on-surface">All SQL — {productName}</h3>
+          <button onClick={onClose} className="text-on-surface-variant hover:text-on-surface transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -1068,20 +1070,20 @@ function TopicSqlModal({
         </div>
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {tables.filter((t) => t.transformation_sql).map((table) => (
-            <div key={table.id} className="border border-slate-200 rounded-xl overflow-hidden">
-              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+            <div key={table.id} className="preview-terminal rounded-xl overflow-hidden">
+              <div className="px-4 py-2.5 flex items-center justify-between border-b border-white/10">
                 <div className="flex items-center gap-2">
                   <RoleBadge role={table.table_role} />
-                  <span className="text-sm font-medium text-slate-800">{table.display_name ?? table.table_name}</span>
+                  <span className="text-sm font-medium text-white/90">{table.display_name ?? table.table_name}</span>
                 </div>
                 <button
                   onClick={() => handleCopy(table.transformation_sql!, table.id)}
-                  className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                  className="text-xs text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
                 >
                   {copied === table.id ? 'Copied!' : 'Copy'}
                 </button>
               </div>
-              <pre className="p-4 text-xs font-mono text-slate-600 bg-white overflow-x-auto whitespace-pre-wrap">
+              <pre className="p-4 text-xs font-mono text-cyan-300/80 overflow-x-auto whitespace-pre-wrap">
                 {table.transformation_sql}
               </pre>
             </div>
@@ -1187,19 +1189,19 @@ function BusMatrixTab({
     <div className="space-y-8">
       {/* Bus matrix grid */}
       {dimensionNames.length > 0 && factRows.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200">
-            <h3 className="text-sm font-bold text-slate-800">Bus Matrix</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Which dimensions are used by which fact tables</p>
+        <div className="glass-card rounded-2xl overflow-hidden">
+          <div className="px-5 py-4 ghost-border-b">
+            <h3 className="text-sm font-bold text-on-surface">Bus Matrix</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Which dimensions are used by which fact tables</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 sticky left-0 bg-slate-50 min-w-[200px]">Fact Table</th>
-                  <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 min-w-[100px]">Product</th>
+                <tr className="bg-surface-container ghost-border-b">
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-variant sticky left-0 bg-surface-container min-w-[200px]">Fact Table</th>
+                  <th className="text-left px-3 py-3 text-xs font-semibold text-on-surface-variant min-w-[100px]">Product</th>
                   {dimensionNames.map((dim) => (
-                    <th key={dim} className="text-center px-2 py-3 text-[11px] font-semibold text-slate-500 min-w-[80px]">
+                    <th key={dim} className="text-center px-2 py-3 text-[11px] font-semibold text-on-surface-variant min-w-[80px]">
                       <span className="writing-mode-vertical inline-block max-w-[80px] truncate" title={dim}>
                         {dim.replace(/^dim_/, '').replace(/_/g, ' ')}
                       </span>
@@ -1209,14 +1211,14 @@ function BusMatrixTab({
               </thead>
               <tbody>
                 {factRows.map((row) => (
-                  <tr key={`${row.product.id}-${row.table.id}`} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
-                    <td className="px-4 py-2.5 font-medium text-slate-800 sticky left-0 bg-white">
+                  <tr key={`${row.product.id}-${row.table.id}`} className="border-b border-white/40 hover:bg-white/40 transition-colors">
+                    <td className="px-4 py-2.5 font-medium text-on-surface sticky left-0 bg-white/72">
                       <div className="flex items-center gap-2">
                         <span>{row.table.display_name ?? row.table.table_name.replace(/^fact_/, '').replace(/_/g, ' ')}</span>
                         <StatusDot status={row.table.transformation_status} />
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-xs text-slate-500">
+                    <td className="px-3 py-2.5 text-xs text-on-surface-variant">
                       <span className="inline-flex items-center gap-1">
                         <span>{productIcon(row.product.name)}</span>
                         <span>{cleanTopicName(row.product.name)}</span>
@@ -1225,9 +1227,9 @@ function BusMatrixTab({
                     {dimensionNames.map((dim) => (
                       <td key={dim} className="text-center px-2 py-2.5">
                         {row.usedDims.has(dim) ? (
-                          <span className="inline-block w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 text-xs leading-5 font-bold">&#10003;</span>
+                          <span className="inline-block w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-600 text-xs leading-5 font-bold">&#10003;</span>
                         ) : (
-                          <span className="text-slate-200">-</span>
+                          <span className="text-on-surface-variant/30">-</span>
                         )}
                       </td>
                     ))}
@@ -1240,42 +1242,42 @@ function BusMatrixTab({
       )}
 
       {/* Dimensions list — deduplicated */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+      <div className="glass-card rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-slate-800">Dimensions ({uniqueDimensions.length})</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Shared lookup tables (deduplicated across products)</p>
+            <h3 className="text-sm font-bold text-on-surface">Dimensions ({uniqueDimensions.length})</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Shared lookup tables (deduplicated across products)</p>
           </div>
           <span className="text-2xl">&#128270;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
         ) : uniqueDimensions.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-slate-400">No dimensions found.</div>
+          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No dimensions found.</div>
         ) : (
-          <div className="divide-y divide-slate-100">
+          <div className="divide-y divide-white/40">
             {uniqueDimensions.map((d) => (
-              <div key={d.name} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+              <div key={d.name} className="px-5 py-3 flex items-center gap-3 hover:bg-white/40 transition-colors">
                 <RoleBadge role="dimension" />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-slate-800">{d.table.display_name ?? d.table.table_name}</span>
+                    <span className="text-sm font-medium text-on-surface">{d.table.display_name ?? d.table.table_name}</span>
                     <StatusDot status={d.table.transformation_status} />
-                    <span className="text-[10px] text-slate-400">{d.table.columns.length} columns</span>
+                    <span className="text-[10px] text-on-surface-variant">{d.table.columns.length} columns</span>
                   </div>
                   {d.table.description && (
-                    <p className="text-xs text-slate-400 truncate mt-0.5">{d.table.description}</p>
+                    <p className="text-xs text-on-surface-variant truncate mt-0.5">{d.table.description}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   {d.usedByProducts.map((pName) => (
-                    <span key={pName} className="inline-flex items-center gap-1 text-[11px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                    <span key={pName} className="inline-flex items-center gap-1 text-[11px] bg-surface-container text-on-surface-variant px-2 py-0.5 rounded-full">
                       {productIcon(pName)} {pName}
                     </span>
                   ))}
                 </div>
                 {d.table.row_count !== null && (
-                  <span className="text-xs text-slate-300 flex-shrink-0">{d.table.row_count.toLocaleString()} rows</span>
+                  <span className="text-xs text-on-surface-variant/50 flex-shrink-0">{d.table.row_count.toLocaleString()} rows</span>
                 )}
               </div>
             ))}
@@ -1284,41 +1286,41 @@ function BusMatrixTab({
       </div>
 
       {/* Facts list */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+      <div className="glass-card rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-slate-800">Fact Tables ({allFactEntries.length})</h3>
-            <p className="text-xs text-slate-400 mt-0.5">Measure tables across all products</p>
+            <h3 className="text-sm font-bold text-on-surface">Fact Tables ({allFactEntries.length})</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Measure tables across all products</p>
           </div>
           <span className="text-2xl">&#128202;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
         ) : allFactEntries.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-slate-400">No fact tables found.</div>
+          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No fact tables found.</div>
         ) : (
-          <div className="divide-y divide-slate-100">
+          <div className="divide-y divide-white/40">
             {allFactEntries.map((f) => {
               const row = factRows.find((r) => r.table.id === f.table.id);
               const dimCount = row ? row.usedDims.size : 0;
               return (
-                <div key={`${f.product.id}-${f.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-slate-50/50 transition-colors">
+                <div key={`${f.product.id}-${f.table.id}`} className="px-5 py-3 flex items-center gap-3 hover:bg-white/40 transition-colors">
                   <RoleBadge role="fact" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-slate-800">{f.table.display_name ?? f.table.table_name}</span>
+                      <span className="text-sm font-medium text-on-surface">{f.table.display_name ?? f.table.table_name}</span>
                       <StatusDot status={f.table.transformation_status} />
-                      {dimCount > 0 && <span className="text-[10px] text-slate-400">{dimCount} dimensions</span>}
+                      {dimCount > 0 && <span className="text-[10px] text-on-surface-variant">{dimCount} dimensions</span>}
                     </div>
                     {f.table.description && (
-                      <p className="text-xs text-slate-400 truncate mt-0.5">{f.table.description}</p>
+                      <p className="text-xs text-on-surface-variant truncate mt-0.5">{f.table.description}</p>
                     )}
                   </div>
-                  <span className="text-xs text-slate-400 flex-shrink-0">
+                  <span className="text-xs text-on-surface-variant flex-shrink-0">
                     {productIcon(f.product.name)} {cleanTopicName(f.product.name)}
                   </span>
                   {f.table.row_count !== null && (
-                    <span className="text-xs text-slate-300 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
+                    <span className="text-xs text-on-surface-variant/50 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
                   )}
                 </div>
               );
@@ -1354,17 +1356,17 @@ function SchemaTab({
       {products.length > 1 && (
         <div className="mb-4">
           <select value={selectedId ?? ''} onChange={(e) => setSelectedId(Number(e.target.value))}
-            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white">
+            className="text-sm bg-white/60 border border-white/80 rounded-xl px-3 py-2 focus:ring-2 focus:ring-cyan-400/30">
             {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
       )}
       {!product ? (
-        <div className="text-center py-16 text-slate-400 text-sm">
+        <div className="text-center py-16 text-on-surface-variant text-sm">
           {products.length === 0 ? 'No data products yet.' : 'Loading...'}
         </div>
       ) : product.star_schemas.length === 0 ? (
-        <div className="text-center py-16 text-slate-400 text-sm">No tables designed yet.</div>
+        <div className="text-center py-16 text-on-surface-variant text-sm">No tables designed yet.</div>
       ) : (
         <div className="space-y-6">
           {product.star_schemas.map((schema) => (
@@ -1397,7 +1399,7 @@ function LineageTab({
   const product = selectedId ? details.get(selectedId) : undefined;
 
   if (!product) {
-    return <div className="text-center py-16 text-slate-400 text-sm">{products.length === 0 ? 'No data products yet.' : 'Loading...'}</div>;
+    return <div className="text-center py-16 text-on-surface-variant text-sm">{products.length === 0 ? 'No data products yet.' : 'Loading...'}</div>;
   }
 
   const allColumns = product.star_schemas.flatMap((s) =>
@@ -1411,53 +1413,53 @@ function LineageTab({
         <div className="flex items-center gap-3">
           {products.length > 1 && (
             <select value={selectedId ?? ''} onChange={(e) => setSelectedId(Number(e.target.value))}
-              className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white">
+              className="text-sm bg-white/60 border border-white/80 rounded-xl px-3 py-2 focus:ring-2 focus:ring-cyan-400/30">
               {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
         </div>
-        <div className="flex bg-slate-100 rounded-lg p-0.5">
+        <div className="flex bg-white/60 rounded-lg p-0.5 border border-white/80">
           <button onClick={() => setViewMode('flow')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'flow' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'flow' ? 'bg-white shadow-sm text-cyan-700' : 'text-on-surface-variant hover:text-on-surface'}`}>
             Diagram
           </button>
           <button onClick={() => setViewMode('table')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table' ? 'bg-white shadow text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table' ? 'bg-white shadow-sm text-cyan-700' : 'text-on-surface-variant hover:text-on-surface'}`}>
             Table
           </button>
         </div>
       </div>
 
       {viewMode === 'flow' ? (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+        <div className="glass-card rounded-2xl overflow-hidden">
           <LineageFlow data={{ tables: product.star_schemas.flatMap((s) => s.tables) }} />
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+        <div className="glass-card rounded-2xl overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50">
+            <thead className="bg-surface-container">
               <tr>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Product Table</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Column</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Source Table</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Source Column</th>
-                <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Transformation</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-variant">Product Table</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-variant">Column</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-variant">Source Table</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-variant">Source Column</th>
+                <th className="text-left px-4 py-2.5 text-xs font-semibold text-on-surface-variant">Transformation</th>
               </tr>
             </thead>
             <tbody>
               {columnsWithLineage.map((col) =>
                 col.lineage!.map((l, li) => (
-                  <tr key={`${col.id}-${li}`} className="border-t border-slate-100 hover:bg-slate-50 transition-colors">
-                    <td className="px-4 py-2 font-medium text-slate-700">{col.tableName}</td>
-                    <td className="px-4 py-2 text-slate-600">{col.column_name}</td>
-                    <td className="px-4 py-2 text-slate-600">{l.source_table_name}</td>
-                    <td className="px-4 py-2 text-slate-600">{l.source_column_name}</td>
-                    <td className="px-4 py-2 text-xs text-slate-500">{l.transformation_description}</td>
+                  <tr key={`${col.id}-${li}`} className="border-t border-white/40 hover:bg-white/40 transition-colors">
+                    <td className="px-4 py-2 font-medium text-on-surface">{col.tableName}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{col.column_name}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{l.source_table_name}</td>
+                    <td className="px-4 py-2 text-on-surface-variant">{l.source_column_name}</td>
+                    <td className="px-4 py-2 text-xs text-on-surface-variant">{l.transformation_description}</td>
                   </tr>
                 )),
               )}
               {columnsWithLineage.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-400">No lineage data available.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-on-surface-variant">No lineage data available.</td></tr>
               )}
             </tbody>
           </table>
@@ -1542,56 +1544,56 @@ function KpisTab({
         <div className="flex items-center gap-3">
           {products.length > 1 && (
             <select value={selectedId ?? ''} onChange={(e) => setSelectedId(Number(e.target.value))}
-              className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white">
+              className="text-sm bg-white/60 border border-white/80 rounded-xl px-3 py-2 focus:ring-2 focus:ring-cyan-400/30">
               {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
         </div>
         <button onClick={() => { resetForm(); setShowAdd(true); }}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 shadow-sm">
+          className="px-4 py-2 gradient-primary text-on-primary text-sm font-medium rounded-xl shadow-glow-primary hover:shadow-glow-teal-md transition-all">
           + Add KPI
         </button>
       </div>
 
       {tableNames.length > 0 && (
-        <div className="mb-4 bg-slate-50 rounded-xl px-4 py-2.5 text-xs text-slate-500">
+        <div className="mb-4 bg-surface-container rounded-xl px-4 py-2.5 text-xs text-on-surface-variant">
           <span className="font-semibold">Available tables: </span>{tableNames.join(', ')}
         </div>
       )}
 
       {productKpis.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center shadow-sm">
-          <p className="text-slate-500">No KPIs defined yet.</p>
-          <p className="text-sm text-slate-400 mt-1">KPIs proposed by the AI during design will appear here.</p>
+        <div className="glass-card rounded-2xl p-10 text-center">
+          <p className="text-on-surface-variant">No KPIs defined yet.</p>
+          <p className="text-sm text-on-surface-variant/70 mt-1">KPIs proposed by the AI during design will appear here.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {productKpis.map((kpi) => (
-            <div key={kpi.id} className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+            <div key={kpi.id} className="glass-card rounded-2xl p-5 hover:shadow-glow-teal transition-all">
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-slate-800">{kpi.name}</h3>
-                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">AI Draft</span>}
+                  <h3 className="font-semibold text-on-surface">{kpi.name}</h3>
+                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 font-medium">AI Draft</span>}
                 </div>
                 <div className="flex gap-1">
                   {kpi.ai_draft && (
-                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200">Approve</button>
+                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-emerald-500/15 text-emerald-600 rounded hover:bg-emerald-500/25 transition-colors">Approve</button>
                   )}
-                  <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-slate-100 text-slate-600 rounded hover:bg-slate-200">Edit</button>
-                  <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-red-50 text-red-600 rounded hover:bg-red-100">Delete</button>
+                  <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-white/60 text-on-surface-variant rounded hover:bg-white/80 transition-colors">Edit</button>
+                  <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-red-500/10 text-red-600 rounded hover:bg-red-500/20 transition-colors">Delete</button>
                 </div>
               </div>
-              {kpi.description && <p className="text-sm text-slate-600 mb-2">{kpi.description}</p>}
+              {kpi.description && <p className="text-sm text-on-surface-variant mb-2">{kpi.description}</p>}
               {kpi.formula_plain_text && (
                 <div className="mb-2">
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase">Business Definition</p>
-                  <p className="text-sm text-slate-700">{kpi.formula_plain_text}</p>
+                  <p className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Business Definition</p>
+                  <p className="text-sm text-on-surface">{kpi.formula_plain_text}</p>
                 </div>
               )}
               {kpi.formula_sql && (
                 <div>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase">SQL Formula</p>
-                  <pre className="text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 mt-0.5 overflow-x-auto">{kpi.formula_sql}</pre>
+                  <p className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">SQL Formula</p>
+                  <pre className="text-xs font-mono bg-slate-900/90 text-cyan-300/80 rounded-lg px-3 py-2 mt-0.5 overflow-x-auto">{kpi.formula_sql}</pre>
                 </div>
               )}
             </div>
@@ -1601,30 +1603,30 @@ function KpisTab({
 
       {/* Add/Edit KPI dialog */}
       {showAdd && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
-            <h3 className="text-lg font-bold text-slate-900 mb-4">{editingKpi ? 'Edit KPI' : 'New KPI'}</h3>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Name</label>
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="glass-card rounded-2xl shadow-ambient-lg w-full max-w-lg p-6">
+            <h3 className="text-lg font-bold text-on-surface mb-4">{editingKpi ? 'Edit KPI' : 'New KPI'}</h3>
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-1">Name</label>
             <input value={formName} onChange={(e) => setFormName(e.target.value)}
-              className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3" placeholder="e.g. Gross Margin" />
-            <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
+              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm mb-3 focus:ring-2 focus:ring-cyan-400/30 focus:outline-none" placeholder="e.g. Gross Margin" />
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-1">Description</label>
             <textarea value={formDesc} onChange={(e) => setFormDesc(e.target.value)}
-              className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3" rows={2} placeholder="What does this KPI measure?" />
-            <label className="block text-sm font-medium text-slate-700 mb-1">Business Definition</label>
+              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm mb-3 focus:ring-2 focus:ring-cyan-400/30 focus:outline-none" rows={2} placeholder="What does this KPI measure?" />
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-1">Business Definition</label>
             <input value={formPlainText} onChange={(e) => setFormPlainText(e.target.value)}
-              className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm mb-3" placeholder="e.g. Revenue minus cost of goods sold" />
-            <label className="block text-sm font-medium text-slate-700 mb-1">SQL Formula</label>
+              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm mb-3 focus:ring-2 focus:ring-cyan-400/30 focus:outline-none" placeholder="e.g. Revenue minus cost of goods sold" />
+            <label className="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-1">SQL Formula</label>
             <textarea value={formSql} onChange={(e) => setFormSql(e.target.value)}
-              className="w-full border border-slate-300 rounded-xl px-3 py-2 text-sm font-mono mb-3" rows={3} placeholder="e.g. SUM(f.revenue) - SUM(f.cogs)" />
+              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm font-mono mb-3 focus:ring-2 focus:ring-cyan-400/30 focus:outline-none" rows={3} placeholder="e.g. SUM(f.revenue) - SUM(f.cogs)" />
             {tableNames.length > 0 && (
-              <div className="bg-slate-50 rounded-xl px-3 py-2 mb-4 text-xs text-slate-500">
+              <div className="bg-surface-container rounded-xl px-3 py-2 mb-4 text-xs text-on-surface-variant">
                 <span className="font-semibold">Available tables: </span>{tableNames.join(', ')}
               </div>
             )}
             <div className="flex justify-end gap-2">
-              <button onClick={resetForm} className="px-4 py-2 text-sm text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50">Cancel</button>
+              <button onClick={resetForm} className="px-4 py-2 text-sm text-on-surface-variant bg-white/60 border border-white/80 rounded-xl hover:bg-white/80 transition-colors">Cancel</button>
               <button onClick={handleSave} disabled={!formName.trim() || saving}
-                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-50">
+                className="px-4 py-2 text-sm gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-50 transition-all">
                 {saving ? 'Saving...' : editingKpi ? 'Update KPI' : 'Create KPI'}
               </button>
             </div>

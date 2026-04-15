@@ -34,7 +34,7 @@ function SourceSelector({
     <select
       value={selectedId}
       onChange={(e) => onChange(e.target.value)}
-      className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400 max-w-[200px]"
+      className="text-xs bg-white/60 border border-white/80 rounded-xl px-2 py-1.5 text-on-surface focus:outline-none focus:ring-2 focus:ring-cyan-400/30 max-w-[200px]"
     >
       {sources.filter((s) => s.type === 'connection').length > 0 && (
         <optgroup label="Single source">
@@ -209,30 +209,30 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
   const chartH    = showChart ? Math.min(rows.length * 34 + 48, 320) : 0;
 
   return (
-    <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
+    <div className="mt-3 space-y-3 border-t border-white/40 pt-3">
       {showChart && (
-        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+        <div className="rounded-xl bg-surface-container-low/50 border border-white/60 p-3">
           <ResponsiveContainer width="100%" height={chartH}>
             <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-              <XAxis type="number" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false}
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(255,255,255,0.4)" />
+              <XAxis type="number" tick={{ fontSize: 10, fill: '#42474f' }} axisLine={false} tickLine={false}
                 tickFormatter={(v) => Math.abs(v) >= 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v)} />
-              <YAxis type="category" dataKey={labelCol} tick={{ fontSize: 10, fill: '#475569' }} width={130} axisLine={false} tickLine={false} />
+              <YAxis type="category" dataKey={labelCol} tick={{ fontSize: 10, fill: '#0d1c2f' }} width={130} axisLine={false} tickLine={false} />
               <Tooltip
                 formatter={(value: unknown) => [formatCellValue(value), valueCol!.replace(/_/g, ' ')]}
-                contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                contentStyle={{ fontSize: 11, borderRadius: 12, border: '1px solid rgba(255,255,255,0.6)', backdropFilter: 'blur(12px)', background: 'rgba(255,255,255,0.8)' }}
               />
-              <Bar dataKey={valueCol!} fill="#3b82f6" radius={[0, 4, 4, 0]} maxBarSize={22} />
+              <Bar dataKey={valueCol!} fill="#006781" radius={[0, 4, 4, 0]} maxBarSize={22} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       )}
-      <div className="overflow-x-auto rounded-xl border border-slate-200 text-xs">
+      <div className="overflow-x-auto rounded-xl border border-white/60 text-xs">
         <table className="w-full">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-200">
+            <tr className="bg-surface-container ghost-border-b">
               {columns.map((col) => (
-                <th key={col} className="px-3 py-2 text-left font-semibold text-slate-500 uppercase tracking-wide text-[10px]">
+                <th key={col} className="px-3 py-2 text-left font-semibold text-on-surface-variant uppercase tracking-wide text-[10px]">
                   {col.replace(/_/g, ' ')}
                 </th>
               ))}
@@ -240,9 +240,9 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
           </thead>
           <tbody>
             {rows.map((row, i) => (
-              <tr key={i} className={`border-b border-slate-100 last:border-0 ${i % 2 === 1 ? 'bg-slate-50/50' : 'bg-white'}`}>
+              <tr key={i} className={`border-b border-white/40 last:border-0 ${i % 2 === 1 ? 'bg-white/30' : 'bg-white/60'}`}>
                 {columns.map((col) => (
-                  <td key={col} className={`px-3 py-2 ${numericCols.includes(col) ? 'text-right font-mono text-slate-700' : 'text-slate-700'}`}>
+                  <td key={col} className={`px-3 py-2 ${numericCols.includes(col) ? 'text-right font-mono text-on-surface' : 'text-on-surface'}`}>
                     {formatCellValue(row[col])}
                   </td>
                 ))}
@@ -251,7 +251,7 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
           </tbody>
         </table>
         {rows.length >= 200 && (
-          <p className="text-center text-[10px] text-slate-400 py-1.5 bg-slate-50 border-t border-slate-200">
+          <p className="text-center text-[10px] text-on-surface-variant py-1.5 bg-surface-container border-t border-white/40">
             Showing first 200 rows
           </p>
         )}
@@ -264,9 +264,9 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
 
 function ConfidenceBadge({ value }: { value: number }) {
   const pct   = Math.round(value * 100);
-  const color = value >= 0.85 ? 'text-emerald-600 bg-emerald-50 border-emerald-200'
-              : value >= 0.70 ? 'text-amber-600  bg-amber-50  border-amber-200'
-              :                 'text-red-500    bg-red-50    border-red-200';
+  const color = value >= 0.85 ? 'text-emerald-600 bg-emerald-500/15 border-emerald-500/20'
+              : value >= 0.70 ? 'text-amber-600  bg-amber-500/15  border-amber-500/20'
+              :                 'text-red-500    bg-red-500/15    border-red-500/20';
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${color}`}>
       <span className="opacity-60">confidence</span> {pct}%
@@ -279,8 +279,8 @@ function ConfidenceBadge({ value }: { value: number }) {
 function QueryLayerBadge({ layer }: { layer: 'product' | 'source' }) {
   const isProduct = layer === 'product';
   const color = isProduct
-    ? 'text-violet-600 bg-violet-50 border-violet-200'
-    : 'text-slate-500 bg-slate-50 border-slate-200';
+    ? 'text-violet-600 bg-violet-500/15 border-violet-500/20'
+    : 'text-on-surface-variant bg-white/60 border-white/80';
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${color}`}>
       {isProduct ? '⭐ Star Schema' : '📦 Source'}
@@ -376,7 +376,7 @@ function AdminDebugPanel({ msg }: { msg: Message }) {
           <div className="flex border-t border-b border-slate-800">
             {tabs.map((t) => (
               <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-3 py-1.5 text-[10px] font-semibold transition-colors ${tab === t.id ? 'text-white bg-slate-800 border-b-2 border-blue-500' : 'text-slate-400 hover:text-slate-200'}`}>
+                className={`px-3 py-1.5 text-[10px] font-semibold transition-colors ${tab === t.id ? 'text-white bg-slate-800 border-b-2 border-cyan-400' : 'text-slate-400 hover:text-slate-200'}`}>
                 {t.label}
               </button>
             ))}
@@ -460,7 +460,7 @@ function ThinkingPanel({
             {repair.isActive ? (
               <span className="flex gap-0.5">
                 {[0,1,2].map((i) => (
-                  <span key={i} className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce"
+                  <span key={i} className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce"
                     style={{ animationDelay: `${i * 0.15}s` }} />
                 ))}
               </span>
@@ -551,7 +551,7 @@ function ThinkingPanel({
                     onClarify(clarifyInput.trim(), repair.pendingHistory!);
                     setClarifyInput('');
                   }}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition-colors"
+                  className="px-3 py-1.5 gradient-primary text-on-primary rounded-lg text-xs font-semibold transition-all shadow-glow-primary"
                 >
                   Send
                 </button>
@@ -592,10 +592,10 @@ function ChatSidebar({
   }
 
   return (
-    <aside className="w-56 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-hidden">
-      <div className="flex-shrink-0 p-3 border-b border-slate-100 space-y-2">
+    <aside className="w-56 flex-shrink-0 bg-surface-container-lowest border-r border-white/60 flex flex-col overflow-hidden">
+      <div className="flex-shrink-0 p-3 ghost-border-b space-y-2">
         <button onClick={onNew}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors">
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 gradient-primary text-on-primary text-xs font-semibold rounded-lg transition-all shadow-glow-primary hover:shadow-glow-teal-md">
           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
@@ -603,7 +603,7 @@ function ChatSidebar({
         </button>
         <button onClick={onToggleStarFilter}
           className={`w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg transition-colors border ${
-            starFilter ? 'bg-amber-50 border-amber-200 text-amber-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+            starFilter ? 'bg-amber-500/15 border-amber-500/20 text-amber-700' : 'bg-white/60 border-white/80 text-on-surface-variant hover:bg-white/80'
           }`}>
           <span>{starFilter ? '★' : '☆'}</span>
           {starFilter ? 'Showing starred' : 'Show starred'}
@@ -619,14 +619,14 @@ function ChatSidebar({
         {conversations.map((conv) => (
           <div key={conv.id}
             className={`group relative flex items-start gap-2 px-3 py-2.5 cursor-pointer transition-colors border-l-2 ${
-              conv.id === activeId ? 'bg-blue-50 border-blue-500' : 'border-transparent hover:bg-slate-50'
+              conv.id === activeId ? 'bg-cyan-500/10 border-cyan-500' : 'border-transparent hover:bg-white/60'
             }`}
             onClick={() => onSelect(conv.id)}
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1">
                 {conv.starred && <span className="text-amber-400 text-[10px] flex-shrink-0">★</span>}
-                <p className={`text-xs font-medium truncate leading-snug ${conv.id === activeId ? 'text-blue-700' : 'text-slate-700'}`}>
+                <p className={`text-xs font-medium truncate leading-snug ${conv.id === activeId ? 'text-cyan-700' : 'text-on-surface'}`}>
                   {conv.title}
                 </p>
               </div>
@@ -688,7 +688,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
   if (msg.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[75%] bg-blue-600 text-white rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-sm">
+        <div className="max-w-[75%] gradient-primary text-on-primary rounded-2xl rounded-br-md px-4 py-2.5 text-sm leading-relaxed shadow-glow-primary">
           {msg.text}
         </div>
       </div>
@@ -701,12 +701,12 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
       return (
         <div className="flex justify-start">
           <div className="max-w-[90%] space-y-2">
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl rounded-bl-md px-4 py-4 text-sm text-blue-900 shadow-sm space-y-4">
+            <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-2xl rounded-bl-md px-4 py-4 text-sm text-on-surface shadow-sm space-y-4">
               <div className="flex items-start gap-2">
-                <span className="text-blue-400 mt-0.5 flex-shrink-0">🔎</span>
+                <span className="text-cyan-500 mt-0.5 flex-shrink-0">🔎</span>
                 <p className="leading-relaxed font-medium">
                   I found multiple records named{' '}
-                  <span className="font-mono bg-blue-100 px-1 py-0.5 rounded text-blue-700">
+                  <span className="font-mono bg-cyan-500/15 px-1 py-0.5 rounded text-cyan-700">
                     &quot;{msg.ambiguities[0].literal}&quot;
                   </span>.
                   Which one did you mean?
@@ -740,18 +740,18 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                       <button
                         key={idx}
                         onClick={() => onSend(correctedQ)}
-                        className="w-full text-left px-4 py-3 bg-white hover:bg-blue-100 border border-blue-200 hover:border-blue-400 rounded-xl transition-colors shadow-sm group"
+                        className="w-full text-left px-4 py-3 glass-card rounded-xl hover:shadow-glow-teal transition-all group"
                       >
                         <div className="flex items-center justify-between">
                           <div className="space-y-0.5">
                             {displayFields.map(([k, v]) => (
                               <div key={k} className="flex gap-2 text-[11px]">
-                                <span className="text-slate-400 min-w-[80px] capitalize">{k.replace(/_/g, ' ')}</span>
-                                <span className="text-slate-700 font-medium">{String(v)}</span>
+                                <span className="text-on-surface-variant min-w-[80px] capitalize">{k.replace(/_/g, ' ')}</span>
+                                <span className="text-on-surface font-medium">{String(v)}</span>
                               </div>
                             ))}
                           </div>
-                          <span className="text-[11px] text-blue-500 group-hover:text-blue-700 font-semibold ml-4 flex-shrink-0">
+                          <span className="text-[11px] text-cyan-600 group-hover:text-cyan-700 font-semibold ml-4 flex-shrink-0">
                             Use this →
                           </span>
                         </div>
@@ -761,7 +761,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                 </div>
               ))}
 
-              <p className="text-[11px] text-blue-400 pl-1">
+              <p className="text-[11px] text-cyan-500 pl-1">
                 Click a record to re-run your question filtered to that specific entry.
               </p>
             </div>
@@ -776,17 +776,17 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
       return (
         <div className="flex justify-start">
           <div className="max-w-[85%] space-y-2">
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl rounded-bl-md px-4 py-3 text-sm text-blue-900 shadow-sm space-y-3">
+            <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-2xl rounded-bl-md px-4 py-3 text-sm text-on-surface shadow-sm space-y-3">
               <div className="flex items-start gap-2">
-                <span className="text-blue-400 mt-0.5 flex-shrink-0">🔎</span>
+                <span className="text-cyan-500 mt-0.5 flex-shrink-0">🔎</span>
                 <p className="leading-relaxed font-medium">
                   I couldn&apos;t find an exact match in your data. Did you mean one of these?
                 </p>
               </div>
               {msg.mismatches.map((m) => (
                 <div key={m.literal} className="pl-6 space-y-1.5">
-                  <p className="text-[11px] text-blue-600 font-semibold">
-                    Instead of <span className="font-mono bg-blue-100 px-1 py-0.5 rounded">&quot;{m.literal}&quot;</span>:
+                  <p className="text-[11px] text-cyan-700 font-semibold">
+                    Instead of <span className="font-mono bg-cyan-500/15 px-1 py-0.5 rounded">&quot;{m.literal}&quot;</span>:
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {m.alternatives.map((alt) => {
@@ -798,7 +798,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                         <button
                           key={alt}
                           onClick={() => onSend(correctedQ)}
-                          className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg transition-colors shadow-sm"
+                          className="px-2.5 py-1 gradient-primary text-on-primary text-xs font-semibold rounded-lg transition-all shadow-glow-primary hover:shadow-glow-teal-md"
                         >
                           {alt}
                         </button>
@@ -807,7 +807,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                   </div>
                 </div>
               ))}
-              <p className="pl-6 text-[11px] text-blue-500">
+              <p className="pl-6 text-[11px] text-cyan-600">
                 Click a suggestion to re-run the question with the correct name, or type a new question below.
               </p>
             </div>
@@ -886,8 +886,8 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
               style={{ borderTop:'7px solid transparent', borderBottom:'7px solid transparent', borderRight:'8px solid white' }} />
 
             {/* Bubble body */}
-            <div className="bg-white border border-violet-200 rounded-2xl rounded-tl-sm overflow-hidden">
-              <div className="px-3 py-1.5 bg-violet-50 border-b border-violet-100 flex items-center gap-1.5">
+            <div className="glass-card rounded-2xl rounded-tl-sm overflow-hidden border-violet-500/20">
+              <div className="px-3 py-1.5 bg-violet-500/10 border-b border-violet-500/15 flex items-center gap-1.5">
                 <span className="text-[9px] font-bold text-violet-500 uppercase tracking-widest">Reasoning</span>
               </div>
               <div className="px-3 py-2.5 max-h-64 overflow-y-auto">
@@ -902,15 +902,15 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
 
       {/* Right column: answer bubble — shape never changes */}
       <div className="flex-1 min-w-0 space-y-2">
-        <div className={`bg-white border rounded-2xl rounded-bl-md px-4 py-3 text-sm shadow-sm space-y-2.5 ${
-          msg.wasRepaired ? 'border-emerald-300' : 'border-slate-200'
+        <div className={`glass-card rounded-2xl rounded-bl-md px-4 py-3 text-sm space-y-2.5 ${
+          msg.wasRepaired ? 'border-l-2 border-l-cyan-400' : ''
         }`}>
           {msg.wasRepaired && (
             <div className="flex items-center gap-1.5 text-[10px] text-emerald-600 font-semibold">
               <span>✓</span> Corrected after investigation
             </div>
           )}
-          <p className="text-slate-800 leading-relaxed"><BoldText text={msg.text} /></p>
+          <p className="text-on-surface leading-relaxed"><BoldText text={msg.text} /></p>
           {msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} />}
           {msg.warning && !msg.wasRepaired && (
             <div className="flex items-start gap-2 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs text-yellow-800">
@@ -919,15 +919,15 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
             </div>
           )}
           {isAdmin && (msg.confidence !== undefined || msg.sql) && (
-            <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-100">
+            <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-white/40">
               {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
               {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
               {msg.tablesUsed && msg.tablesUsed.length > 0 && (
-                <span className="text-[10px] text-slate-400">tables: {msg.tablesUsed.join(', ')}</span>
+                <span className="text-[10px] text-on-surface-variant">tables: {msg.tablesUsed.join(', ')}</span>
               )}
               {msg.sql && showSql && (
                 <button onClick={() => setSqlOpen((o) => !o)}
-                  className="ml-auto text-[10px] font-medium text-slate-400 hover:text-blue-600 transition-colors flex items-center gap-1">
+                  className="ml-auto text-[10px] font-medium text-on-surface-variant hover:text-cyan-600 transition-colors flex items-center gap-1">
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
                   </svg>
@@ -937,13 +937,13 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
             </div>
           )}
           {isAdmin && showSql && sqlOpen && msg.sql && (
-            <pre className="text-[11px] bg-slate-900 text-emerald-400 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono">
+            <pre className="text-[11px] bg-slate-900 text-cyan-400 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono">
               {formatSql(msg.sql)}
             </pre>
           )}
           {/* Feedback + Export row */}
           {msg.role === 'assistant' && !msg.error && !msg.blocked && (
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+            <div className="flex items-center gap-2 pt-2 border-t border-white/40">
               {/* Feedback buttons */}
               {msg.serverId && (
                 <div className="flex items-center gap-1">
@@ -977,7 +977,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                 <div className="flex items-center gap-1 ml-auto">
                   <button
                     onClick={() => onExport('csv', conversationId, msg.serverId)}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-on-surface-variant hover:text-cyan-600 hover:bg-cyan-500/10 rounded transition-colors"
                     title="Export as CSV"
                   >
                     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -987,7 +987,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
                   </button>
                   <button
                     onClick={() => onExport('xlsx', conversationId, msg.serverId)}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-slate-400 hover:text-green-600 hover:bg-green-50 rounded transition-colors"
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-on-surface-variant hover:text-emerald-600 hover:bg-emerald-500/10 rounded transition-colors"
                     title="Export as Excel"
                   >
                     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1054,9 +1054,9 @@ function ThinkingBubble({
         <span className="text-sm">🧠</span>
       </div>
 
-      <div className="max-w-[85%] w-full bg-white border border-slate-200 rounded-2xl rounded-bl-md overflow-hidden shadow-sm">
+      <div className="max-w-[85%] w-full glass-card rounded-2xl rounded-bl-md overflow-hidden">
         {/* Phase header */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50">
+        <div className="flex items-center gap-2 px-4 py-2.5 ghost-border-b bg-surface-container-low/50">
           {isExecuting ? (
             <svg className="w-3.5 h-3.5 text-emerald-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
@@ -1065,12 +1065,12 @@ function ThinkingBubble({
           ) : (
             <span className="flex gap-0.5 flex-shrink-0">
               {[0,1,2].map((i) => (
-                <span key={i} className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce"
+                <span key={i} className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-bounce"
                   style={{ animationDelay: `${i * 0.15}s` }} />
               ))}
             </span>
           )}
-          <span className="text-xs font-semibold text-slate-600">{phase || 'Loading…'}</span>
+          <span className="text-xs font-semibold text-on-surface-variant">{phase || 'Loading…'}</span>
         </div>
 
         {/* Word-by-word reasoning — plain grey text, no scroll, grows naturally */}
@@ -1085,7 +1085,7 @@ function ThinkingBubble({
 
         {/* SQL preview once generated */}
         {sql && (
-          <div className="px-4 py-2.5 border-t border-slate-100 bg-slate-900 space-y-1">
+          <div className="px-4 py-2.5 border-t border-white/40 bg-slate-900 space-y-1">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Generated SQL</span>
               {confidence !== null && (
@@ -1118,15 +1118,15 @@ function EmptyState({ onStarter, productContext }: { onStarter: (q: string) => v
       <div className="text-5xl mb-4">💬</div>
       {productContext ? (
         <>
-          <h2 className="text-lg font-semibold text-slate-800 mb-1">Ask about {productContext.name}</h2>
-          <p className="text-sm text-slate-500 mb-8 max-w-md">
+          <h2 className="text-lg font-semibold text-on-surface mb-1">Ask about {productContext.name}</h2>
+          <p className="text-sm text-on-surface-variant mb-8 max-w-md">
             Ask questions about your {productContext.name.toLowerCase()} data in plain English.
           </p>
         </>
       ) : (
         <>
-          <h2 className="text-lg font-semibold text-slate-800 mb-1">Ask your data anything</h2>
-          <p className="text-sm text-slate-500 mb-8 max-w-md">
+          <h2 className="text-lg font-semibold text-on-surface mb-1">Ask your data anything</h2>
+          <p className="text-sm text-on-surface-variant mb-8 max-w-md">
             Type a question in plain English and get an instant answer. No SQL needed.
           </p>
         </>
@@ -1134,7 +1134,7 @@ function EmptyState({ onStarter, productContext }: { onStarter: (q: string) => v
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 w-full max-w-xl">
         {questions.map((q) => (
           <button key={q} onClick={() => onStarter(q)}
-            className="text-left px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 transition-all shadow-sm">
+            className="text-left px-4 py-3 glass-card rounded-xl text-sm text-on-surface hover:shadow-glow-teal transition-all">
             {q}
           </button>
         ))}
@@ -1841,9 +1841,9 @@ export default function QueryPage() {
         <div className="flex-shrink-0 px-6 py-2 flex items-center justify-between ghost-border-b">
           <div className="flex items-center gap-3">
             {productContext ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-violet-50 border border-violet-200 rounded-xl">
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-xl">
                 <span className="text-sm font-medium text-violet-700">{productContext.name}</span>
-                <span className="text-[10px] text-violet-500 bg-violet-100 px-1.5 py-0.5 rounded font-medium">Product</span>
+                <span className="text-[10px] text-violet-600 bg-violet-500/15 px-1.5 py-0.5 rounded font-medium">Product</span>
                 <button
                   onClick={() => setProductContext(null)}
                   className="text-violet-400 hover:text-violet-600 ml-1"

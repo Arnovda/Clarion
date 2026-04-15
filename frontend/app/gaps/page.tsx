@@ -73,6 +73,11 @@ export default function GapsPage() {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const logPag = usePagination(50);
 
+  // Approval queue
+  interface PendingItem { id: number; type: 'table' | 'column' | 'kpi'; name: string; description: string; status: string; updated_at: string; }
+  const [pendingItems, setPendingItems] = useState<PendingItem[]>([]);
+  const [pendingLoading, setPendingLoading] = useState(true);
+
   const loadGaps = useCallback(async (page = 1) => {
     setGapsLoading(true);
     try {
@@ -91,8 +96,17 @@ export default function GapsPage() {
     } catch { setLogRows([]); } finally { setLogLoading(false); }
   }, [logPag.limit]);
 
+  const loadPending = useCallback(async () => {
+    setPendingLoading(true);
+    try {
+      const res = await api.get('/semantic/pending-approvals');
+      setPendingItems(res.data.data ?? []);
+    } catch { setPendingItems([]); } finally { setPendingLoading(false); }
+  }, []);
+
   useEffect(() => { if (isAdminUser) loadGaps(gapsPag.page); }, [isAdminUser, gapsPag.page, loadGaps]);
   useEffect(() => { if (isAdminUser) loadLog(logPag.page); }, [isAdminUser, logPag.page, loadLog]);
+  useEffect(() => { if (isAdminUser) loadPending(); }, [isAdminUser, loadPending]);
 
   async function resolveGap(id: number) { await api.patch(`/reports/gaps/${id}/resolve`); await loadGaps(); }
 
@@ -110,6 +124,10 @@ export default function GapsPage() {
           <div className="flex items-center justify-between px-2">
             <span className="text-body-sm text-on-surface-variant">Open gaps</span>
             <span className={`text-body-sm font-bold ${unresolvedCount > 0 ? 'text-error' : 'text-on-surface'}`}>{unresolvedCount}</span>
+          </div>
+          <div className="flex items-center justify-between px-2">
+            <span className="text-body-sm text-on-surface-variant">Pending approvals</span>
+            <span className={`text-body-sm font-bold ${pendingItems.length > 0 ? 'text-amber-600' : 'text-on-surface'}`}>{pendingItems.length}</span>
           </div>
           <div className="flex items-center justify-between px-2">
             <span className="text-body-sm text-on-surface-variant">Queries logged</span>
@@ -131,12 +149,64 @@ export default function GapsPage() {
       contextPanel={contextPanel}
       pills={[
         { key: 'gaps', label: `Gaps${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}` },
+        { key: 'approvals', label: `Approvals${pendingItems.length > 0 ? ` (${pendingItems.length})` : ''}` },
         { key: 'log', label: 'Query Log' },
       ]}
       activePill={activePill}
       onPillChange={setActivePill}
     >
-      {activePill === 'gaps' ? (
+      {activePill === 'approvals' ? (
+        <div className="p-6 max-w-4xl">
+          {pendingLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
+
+          {!pendingLoading && pendingItems.length === 0 && (
+            <div className="text-center py-16">
+              <div className="text-4xl mb-3">&#10003;</div>
+              <h3 className="text-title-md font-semibold text-on-surface mb-1">All caught up!</h3>
+              <p className="text-body-sm text-on-surface-variant max-w-sm mx-auto">
+                No definitions are waiting for approval. AI drafts and changes will appear here when they need review.
+              </p>
+            </div>
+          )}
+
+          {!pendingLoading && pendingItems.length > 0 && (
+            <div className="space-y-2">
+              {pendingItems.map((item) => (
+                <div key={`${item.type}-${item.id}`}
+                  className="flex items-center gap-4 rounded-2xl bg-surface-container-lowest shadow-ambient p-4 hover:bg-surface-container-low transition-colors cursor-pointer"
+                  onClick={() => {
+                    window.location.href = '/semantic';
+                  }}
+                >
+                  <div className="flex-shrink-0">
+                    <span className={`inline-block text-label-md px-2 py-0.5 rounded-pill font-semibold capitalize ${
+                      item.type === 'table' ? 'bg-blue-100 text-blue-700' :
+                      item.type === 'column' ? 'bg-purple-100 text-purple-700' :
+                      'bg-amber-100 text-amber-700'
+                    }`}>{item.type}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-body-sm font-semibold text-on-surface truncate">{item.name}</p>
+                    {item.description && (
+                      <p className="text-label-md text-on-surface-variant truncate">{item.description}</p>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0">
+                    <span className={`text-label-md px-2 py-0.5 rounded-pill font-semibold ${
+                      item.status === 'ai_draft' ? 'bg-amber-500/10 text-amber-600' :
+                      item.status === 'pending' ? 'bg-blue-500/10 text-blue-600' :
+                      'bg-slate-100 text-slate-500'
+                    }`}>{item.status === 'ai_draft' ? 'AI Draft' : item.status}</span>
+                  </div>
+                  <div className="flex-shrink-0 text-label-sm text-on-surface-variant/50">
+                    {relativeTime(item.updated_at)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : activePill === 'gaps' ? (
         <div className="p-6 max-w-4xl">
           {gapsLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
 

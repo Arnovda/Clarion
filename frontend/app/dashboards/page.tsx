@@ -1829,15 +1829,71 @@ export default function DashboardsPage() {
             </div>
           )}
 
-          {/* Generating state */}
+          {/* Generating state — wireframe preview */}
           {mode === 'creating' && (
-            <div className="flex items-center justify-center h-full">
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10 text-center">
-                <div className="flex justify-center mb-4">
-                  <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            <div className="flex items-center justify-center h-full px-8">
+              <div className="w-full max-w-3xl">
+                <div className="text-center mb-6">
+                  <div className="flex justify-center mb-3">
+                    <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  </div>
+                  <p className="text-base font-semibold text-slate-700">Generating your dashboard...</p>
+                  <p className="text-sm text-slate-400 mt-1">AI is designing widgets, filters, and SQL queries</p>
                 </div>
-                <p className="text-base font-semibold text-slate-700">Generating your dashboard…</p>
-                <p className="text-sm text-slate-400 mt-1">AI is designing your widgets and queries</p>
+
+                {/* Wireframe skeleton preview */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
+                  {/* Title bar wireframe */}
+                  <div className="flex items-center justify-between">
+                    <div className="h-5 w-48 bg-slate-200 rounded animate-pulse" />
+                    <div className="flex gap-2">
+                      <div className="h-7 w-20 bg-slate-100 rounded-lg animate-pulse" />
+                      <div className="h-7 w-20 bg-slate-100 rounded-lg animate-pulse" />
+                    </div>
+                  </div>
+
+                  {/* KPI cards row */}
+                  <div className="grid grid-cols-4 gap-3">
+                    {[0.8, 1.0, 0.6, 0.9].map((delay, i) => (
+                      <div key={i} className="rounded-xl border border-slate-100 p-4 space-y-2" style={{ animationDelay: `${delay}s` }}>
+                        <div className="h-3 w-16 bg-slate-100 rounded animate-pulse" style={{ animationDelay: `${delay}s` }} />
+                        <div className="h-6 w-20 bg-slate-200 rounded animate-pulse" style={{ animationDelay: `${delay + 0.2}s` }} />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Chart area wireframe */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="rounded-xl border border-slate-100 p-4 space-y-3">
+                      <div className="h-3 w-24 bg-slate-100 rounded animate-pulse" />
+                      <div className="flex items-end gap-2 h-24">
+                        {[40, 65, 45, 80, 55, 70, 50].map((h, i) => (
+                          <div key={i} className="flex-1 bg-blue-100 rounded-t animate-pulse" style={{ height: `${h}%`, animationDelay: `${i * 0.15}s` }} />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-100 p-4 space-y-3">
+                      <div className="h-3 w-28 bg-slate-100 rounded animate-pulse" />
+                      <div className="flex items-center justify-center h-24">
+                        <div className="w-20 h-20 border-8 border-slate-100 border-t-blue-200 rounded-full animate-spin" style={{ animationDuration: '3s' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Table wireframe */}
+                  <div className="rounded-xl border border-slate-100 p-4 space-y-2">
+                    <div className="h-3 w-20 bg-slate-100 rounded animate-pulse" />
+                    <div className="space-y-1.5">
+                      {[1, 2, 3].map((i) => (
+                        <div key={i} className="flex gap-4">
+                          <div className="h-3 w-24 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
+                          <div className="h-3 w-16 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2 + 0.1}s` }} />
+                          <div className="h-3 flex-1 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2 + 0.2}s` }} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}

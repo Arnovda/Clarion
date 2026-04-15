@@ -67,11 +67,26 @@ function IconUsers({ className }: { className?: string }) {
     </svg>
   );
 }
+function IconCode({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </svg>
+  );
+}
 function IconSettings({ className }: { className?: string }) {
   return (
     <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+function IconChevron({ className, expanded }: { className?: string; expanded: boolean }) {
+  return (
+    <svg className={`${className} transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18l6-6-6-6" />
     </svg>
   );
 }
@@ -84,17 +99,22 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   roles: Array<'admin' | 'analyst' | 'viewer'>;
+  /** If true, this item is in the collapsible "Admin" group */
+  admin?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
+  // ── Main nav (everyone) ──
   { key: 'ask',        href: '/query',      label: 'Ask',            icon: IconChat,      roles: ['admin', 'analyst', 'viewer'] },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',     icon: IconDashboard, roles: ['admin', 'analyst', 'viewer'] },
-  { key: 'dictionary', href: '/semantic',   label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'] },
-  { key: 'health',     href: '/health',     label: 'Data Health',    icon: IconHeart,     roles: ['admin', 'analyst'] },
-  { key: 'products',   href: '/products',   label: 'Data Products',  icon: IconStar,      roles: ['admin'] },
-  { key: 'connect',    href: '/setup',      label: 'Connect',        icon: IconPlug,      roles: ['admin'] },
-  { key: 'review',     href: '/gaps',       label: 'Review Queue',   icon: IconInbox,     roles: ['admin'] },
-  { key: 'team',       href: '/users',      label: 'Team',           icon: IconUsers,      roles: ['admin'] },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',      icon: IconCode,      roles: ['admin', 'analyst'] },
+  // ── Admin group ──
+  { key: 'dictionary', href: '/semantic',   label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'], admin: true },
+  { key: 'health',     href: '/health',     label: 'Data Health',    icon: IconHeart,     roles: ['admin', 'analyst'], admin: true },
+  { key: 'products',   href: '/products',   label: 'Data Products',  icon: IconStar,      roles: ['admin'],            admin: true },
+  { key: 'connect',    href: '/setup',      label: 'Connect',        icon: IconPlug,      roles: ['admin'],            admin: true },
+  { key: 'review',     href: '/gaps',       label: 'Review Queue',   icon: IconInbox,     roles: ['admin'],            admin: true },
+  { key: 'team',       href: '/users',      label: 'Team',           icon: IconUsers,     roles: ['admin'],            admin: true },
 ];
 
 /* ── Component ───────────────────────────────────────────────────────── */
@@ -104,6 +124,7 @@ export default function IconRail() {
   const router = useRouter();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [adminExpanded, setAdminExpanded] = useState(true);
 
   useEffect(() => {
     setPayload(getTokenPayload());
@@ -112,15 +133,24 @@ export default function IconRail() {
   const role = payload?.role ?? 'viewer';
 
   const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role as 'admin' | 'analyst' | 'viewer'));
+  const mainItems = visibleItems.filter((i) => !i.admin);
+  const adminItems = visibleItems.filter((i) => i.admin);
 
-  // Match both old and new URLs during migration
+  // Auto-expand admin section if current page is an admin page
+  useEffect(() => {
+    if (adminItems.some((i) => isActive(i.href))) {
+      setAdminExpanded(true);
+    }
+  }, [pathname]);
+
   const ROUTE_ALIASES: Record<string, string[]> = {
-    '/query':    ['/query', '/ask'],
-    '/semantic': ['/semantic', '/dictionary'],
-    '/setup':    ['/setup', '/connect'],
-    '/gaps':     ['/gaps', '/review'],
-    '/users':    ['/users', '/team'],
-    '/health':   ['/health'],
+    '/query':     ['/query', '/ask'],
+    '/notebooks': ['/notebooks'],
+    '/semantic':  ['/semantic', '/dictionary'],
+    '/setup':     ['/setup', '/connect'],
+    '/gaps':      ['/gaps', '/review'],
+    '/users':     ['/users', '/team'],
+    '/health':    ['/health'],
   };
 
   function isActive(href: string) {
@@ -133,40 +163,62 @@ export default function IconRail() {
     router.push('/');
   }
 
+  function NavLink({ item }: { item: NavItem }) {
+    const active = isActive(item.href);
+    return (
+      <Link
+        href={item.href}
+        className={`
+          relative w-full flex items-center gap-3 h-10 px-2.5 rounded-lg
+          transition-all duration-200
+          ${active
+            ? 'text-white bg-white/12'
+            : 'text-white/50 hover:text-white/80 hover:bg-white/5'
+          }
+        `}
+      >
+        {active && (
+          <div className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-cyan-400" />
+        )}
+        <item.icon className="w-5 h-5 flex-shrink-0" />
+        <span className="text-[13px] font-medium truncate">{item.label}</span>
+      </Link>
+    );
+  }
+
   return (
     <div className="w-[200px] min-w-[200px] h-screen flex flex-col bg-primary py-4 px-3 flex-shrink-0 relative">
       {/* Logo */}
-      <Link href="/ask" className="mb-6 flex items-center gap-2.5 px-2">
+      <Link href="/query" className="mb-6 flex items-center gap-2.5 px-2">
         <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-white font-headline font-bold text-lg flex-shrink-0">D</span>
         <span className="text-white font-headline font-semibold text-sm tracking-tight">DataBridge</span>
       </Link>
 
       {/* Main nav */}
-      <nav className="flex-1 flex flex-col gap-0.5 w-full">
-        {visibleItems.map((item) => {
-          const active = isActive(item.href);
-          return (
-            <Link
-              key={item.key}
-              href={item.href}
-              className={`
-                relative w-full flex items-center gap-3 h-10 px-2.5 rounded-lg
-                transition-all duration-200
-                ${active
-                  ? 'text-white bg-white/12'
-                  : 'text-white/50 hover:text-white/80 hover:bg-white/5'
-                }
-              `}
+      <nav className="flex-1 flex flex-col gap-0.5 w-full overflow-y-auto scrollbar-thin">
+        {mainItems.map((item) => (
+          <NavLink key={item.key} item={item} />
+        ))}
+
+        {/* Admin section — collapsible */}
+        {adminItems.length > 0 && (
+          <div className="mt-3">
+            <button
+              onClick={() => setAdminExpanded(!adminExpanded)}
+              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-white/30 hover:text-white/50 transition-colors"
             >
-              {/* Active indicator — teal left border */}
-              {active && (
-                <div className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-cyan-400" />
-              )}
-              <item.icon className="w-5 h-5 flex-shrink-0" />
-              <span className="text-[13px] font-medium truncate">{item.label}</span>
-            </Link>
-          );
-        })}
+              <IconChevron className="w-3.5 h-3.5 flex-shrink-0" expanded={adminExpanded} />
+              <span className="text-[10px] font-semibold uppercase tracking-widest">Manage</span>
+            </button>
+            {adminExpanded && (
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                {adminItems.map((item) => (
+                  <NavLink key={item.key} item={item} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </nav>
 
       {/* Bottom section */}
@@ -179,7 +231,6 @@ export default function IconRail() {
           <span className="text-[13px] font-medium">Settings</span>
         </Link>
 
-        {/* User avatar + name */}
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
           className="w-full flex items-center gap-3 h-10 px-2.5 rounded-lg text-white/60 hover:text-white/90 hover:bg-white/5 transition-colors"

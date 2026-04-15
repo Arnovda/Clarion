@@ -126,3 +126,171 @@ body {
 .pill-inactive:hover {
   background: #eff4ff;
 }
+
+/* ── Glassmorphic cards (dictionary detail panels) ───────────────────── */
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 51, 88, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.glass-card-dark {
+  background: rgba(13, 28, 47, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ── Gradient mesh header ────────────────────────────────────────────── */
+
+.gradient-mesh {
+  background: linear-gradient(135deg, #003358 0%, #004a7c 40%, #006781 70%, #0891b2 100%);
+  background-size: 200% 200%;
+  animation: gradientShift 6s ease infinite;
+}
+
+/* ── Status orb glow effects ─────────────────────────────────────────── */
+
+.orb-approved {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #34d399, #10b981);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.5), 0 0 2px rgba(16, 185, 129, 0.8);
+  animation: pulseGreen 2s ease-in-out infinite;
+}
+
+.orb-draft {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fbbf24, #f59e0b);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5), 0 0 2px rgba(245, 158, 11, 0.8);
+  animation: pulseAmber 2.5s ease-in-out infinite;
+}
+
+.orb-rejected {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #f87171, #ef4444);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5), 0 0 2px rgba(239, 68, 68, 0.8);
+}
+
+.orb-neutral {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #94a3b8, #64748b);
+  box-shadow: 0 0 4px rgba(100, 116, 139, 0.3);
+}
+
+@keyframes pulseGreen {
+  0%, 100% { box-shadow: 0 0 8px rgba(16, 185, 129, 0.5), 0 0 2px rgba(16, 185, 129, 0.8); }
+  50%      { box-shadow: 0 0 14px rgba(16, 185, 129, 0.7), 0 0 4px rgba(16, 185, 129, 1); }
+}
+
+@keyframes pulseAmber {
+  0%, 100% { box-shadow: 0 0 8px rgba(245, 158, 11, 0.5), 0 0 2px rgba(245, 158, 11, 0.8); }
+  50%      { box-shadow: 0 0 14px rgba(245, 158, 11, 0.7), 0 0 4px rgba(245, 158, 11, 1); }
+}
+
+/* ── Dark sidebar tree ───────────────────────────────────────────────── */
+
+.dark-tree {
+  background: linear-gradient(180deg, #0d1c2f 0%, #162336 100%);
+}
+
+.dark-tree::-webkit-scrollbar {
+  width: 4px;
+}
+.dark-tree::-webkit-scrollbar-track { background: transparent; }
+.dark-tree::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+/* ── Health ring (circular progress) ─────────────────────────────────── */
+
+.health-ring {
+  transform: rotate(-90deg);
+}
+.health-ring circle {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+/* ── Data preview dark terminal ──────────────────────────────────────── */
+
+.preview-terminal {
+  background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+  border: 1px solid rgba(6, 183, 212, 0.15);
+  box-shadow: 0 0 24px rgba(6, 183, 212, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.preview-terminal table thead tr {
+  background: rgba(6, 183, 212, 0.08);
+}
+
+.preview-terminal table th {
+  color: #06b6d4;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.preview-terminal table td {
+  color: #94a3b8;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.preview-terminal table tbody tr:hover {
+  background: rgba(6, 183, 212, 0.05);
+}
+
+/* ── Floating action bar ─────────────────────────────────────────────── */
+
+.floating-bar {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(193, 199, 208, 0.25);
+  box-shadow: 0 -4px 24px rgba(0, 51, 88, 0.08);
+}
+
+/* ── Data type color chips ───────────────────────────────────────────── */
+
+.dtype-text    { background: #dbeafe; color: #1d4ed8; }
+.dtype-numeric { background: #d1fae5; color: #047857; }
+.dtype-date    { background: #ede9fe; color: #6d28d9; }
+.dtype-bool    { background: #ffedd5; color: #c2410c; }
+.dtype-json    { background: #fce7f3; color: #be185d; }
+.dtype-other   { background: #f1f5f9; color: #475569; }
+
+/* ── Column completeness heatmap ─────────────────────────────────────── */
+
+.heatmap-complete   { background: rgba(16, 185, 129, 0.04); }
+.heatmap-partial    { background: rgba(245, 158, 11, 0.04); }
+.heatmap-incomplete { background: rgba(239, 68, 68, 0.03); }
+
+/* ── Section transitions ─────────────────────────────────────────────── */
+
+.panel-enter {
+  animation: slideUp 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gradientShift {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}

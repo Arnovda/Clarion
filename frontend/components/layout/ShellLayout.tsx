@@ -11,7 +11,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
   return (
     <div className="flex h-screen overflow-hidden bg-surface">
       <IconRail />
-      <div className="flex-1 min-w-0 overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {children}
       </div>
     </div>

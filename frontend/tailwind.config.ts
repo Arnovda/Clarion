@@ -108,15 +108,26 @@ const config: Config = {
         'ambient':  '0px 12px 32px rgba(13, 28, 47, 0.06)',
         'ambient-lg': '0px 16px 48px rgba(13, 28, 47, 0.08)',
         'glow-teal': '0 0 16px rgba(6, 183, 212, 0.15)',
+        'glow-teal-md': '0 0 24px rgba(6, 183, 212, 0.25)',
         'glow-primary': '0 0 16px rgba(0, 51, 88, 0.1)',
+        'glow-green': '0 0 12px rgba(16, 185, 129, 0.35)',
+        'glow-amber': '0 0 12px rgba(245, 158, 11, 0.35)',
+        'glow-red': '0 0 12px rgba(239, 68, 68, 0.35)',
+        'inner-glow': 'inset 0 1px 2px rgba(255,255,255,0.08)',
+        'card-glass': '0 8px 32px rgba(0, 51, 88, 0.08), inset 0 1px 0 rgba(255,255,255,0.6)',
       },
 
       animation: {
-        'fadeIn':     'fadeIn 0.4s ease-out',
-        'slideIn':    'slideIn 0.3s ease-out',
-        'shimmer':    'shimmer 2s ease-in-out infinite',
-        'pulse-teal': 'pulseTeal 2s ease-in-out infinite',
-        'spin-slow':  'spin 2s linear infinite',
+        'fadeIn':      'fadeIn 0.4s ease-out',
+        'slideIn':     'slideIn 0.3s ease-out',
+        'slideUp':     'slideUp 0.35s cubic-bezier(0.22, 1, 0.36, 1)',
+        'shimmer':     'shimmer 2s ease-in-out infinite',
+        'pulse-teal':  'pulseTeal 2s ease-in-out infinite',
+        'pulse-green': 'pulseGreen 2s ease-in-out infinite',
+        'pulse-amber': 'pulseAmber 2.5s ease-in-out infinite',
+        'spin-slow':   'spin 2s linear infinite',
+        'gradient':    'gradientShift 6s ease infinite',
+        'float':       'float 3s ease-in-out infinite',
       },
 
       keyframes: {
@@ -128,6 +139,10 @@ const config: Config = {
           from: { opacity: '0', transform: 'translateX(-12px)' },
           to:   { opacity: '1', transform: 'translateX(0)' },
         },
+        slideUp: {
+          from: { opacity: '0', transform: 'translateY(12px)' },
+          to:   { opacity: '1', transform: 'translateY(0)' },
+        },
         shimmer: {
           '0%, 100%': { opacity: '0.5' },
           '50%':      { opacity: '1' },
@@ -135,6 +150,23 @@ const config: Config = {
         pulseTeal: {
           '0%, 100%': { boxShadow: '0 0 0 0 rgba(6, 183, 212, 0.3)' },
           '50%':      { boxShadow: '0 0 0 8px rgba(6, 183, 212, 0)' },
+        },
+        pulseGreen: {
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(16, 185, 129, 0.4)' },
+          '50%':      { boxShadow: '0 0 0 6px rgba(16, 185, 129, 0)' },
+        },
+        pulseAmber: {
+          '0%, 100%': { boxShadow: '0 0 0 0 rgba(245, 158, 11, 0.4)' },
+          '50%':      { boxShadow: '0 0 0 6px rgba(245, 158, 11, 0)' },
+        },
+        gradientShift: {
+          '0%':   { backgroundPosition: '0% 50%' },
+          '50%':  { backgroundPosition: '100% 50%' },
+          '100%': { backgroundPosition: '0% 50%' },
+        },
+        float: {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%':      { transform: 'translateY(-4px)' },
         },
       },
 

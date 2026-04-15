@@ -22,7 +22,7 @@ interface DiffResult {
 }
 
 interface Props {
-  entityType: 'table' | 'column' | 'kpi';
+  entityType: 'table' | 'column' | 'kpi' | 'product_table' | 'product_column';
   entityId: number;
   entityName: string;
 }

@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { SourceTable, SourceColumn } from './types';
+import { useMemo, useState } from 'react';
+import { SourceTable, SourceColumn, ProductTable, ProductColumn, ProductTreeItem } from './types';
 
 interface Connection {
   id: number;
@@ -20,10 +20,19 @@ interface Props {
   onToggleConnection: (id: number) => void;
   onSelectTable: (connectionId: number, tableId: number) => void;
   onSelectColumn: (tableId: number, columnId: number) => void;
+  productTree?: ProductTreeItem[];
+  productColumnsByTable?: Record<number, ProductColumn[]>;
+  selectedProductTableId?: number | null;
+  selectedProductColumnId?: number | null;
+  onSelectProductTable?: (productId: number, tableId: number) => void;
+  onSelectProductColumn?: (tableId: number, columnId: number) => void;
+  loadingProductIds?: Set<number>;
 }
 
-const DbIcon = ({ className }: { className?: string }) => (
-  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+// ── Icons (teal-tinted for dark background) ─────────────────────────────────
+
+const DbIcon = ({ active }: { active?: boolean }) => (
+  <svg className={`w-4 h-4 flex-shrink-0 transition-colors ${active ? 'text-cyan-400' : 'text-cyan-600/60'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <ellipse cx="12" cy="6" rx="8" ry="3" strokeWidth={2} />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6" />
@@ -31,17 +40,58 @@ const DbIcon = ({ className }: { className?: string }) => (
 );
 
 const ChevronIcon = ({ expanded }: { expanded: boolean }) => (
-  <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className={`w-3 h-3 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
   </svg>
 );
 
 const TableIcon = ({ active }: { active: boolean }) => (
-  <svg className={`w-3.5 h-3.5 flex-shrink-0 ${active ? 'text-blue-500' : 'text-slate-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-colors ${active ? 'text-cyan-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
       d="M3 10h18M3 14h18M10 4v16M3 4h18a1 1 0 011 1v14a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1z" />
   </svg>
 );
+
+// ── Health ring (circular progress indicator) ───────────────────────────────
+
+function HealthRing({ percent, size = 18 }: { percent: number; size?: number }) {
+  const r = (size - 4) / 2;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference - (percent / 100) * circumference;
+  const color = percent >= 80 ? '#10b981' : percent >= 50 ? '#f59e0b' : '#64748b';
+
+  return (
+    <svg className="health-ring flex-shrink-0" width={size} height={size}>
+      <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.08)" />
+      <circle cx={size / 2} cy={size / 2} r={r} stroke={color}
+        strokeDasharray={circumference} strokeDashoffset={offset}
+        style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+    </svg>
+  );
+}
+
+// ── Role color (for dark background) ────────────────────────────────────────
+
+const roleColor = (role: string | null): string => {
+  switch (role) {
+    case 'fact':       return 'bg-cyan-500/15 text-cyan-400';
+    case 'dimension':  return 'bg-purple-500/15 text-purple-400';
+    case 'bridge':     return 'bg-amber-500/15 text-amber-400';
+    case 'junk':       return 'bg-slate-500/15 text-slate-400';
+    default:           return 'bg-slate-500/15 text-slate-400';
+  }
+};
+
+// ── Shared dimension type ───────────────────────────────────────────────────
+
+interface SharedDim {
+  tableName: string;
+  bestTable: ProductTable;
+  bestProductId: number;
+  usedByProducts: string[];
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
 
 export default function DatabaseTree({
   connections, tablesByConnection, columnsByTable,
@@ -49,166 +99,163 @@ export default function DatabaseTree({
   activeConnectionId,
   selectedTableId, selectedColumnId,
   onToggleConnection, onSelectTable, onSelectColumn,
+  productTree = [],
+  productColumnsByTable = {},
+  selectedProductTableId,
+  selectedProductColumnId,
+  onSelectProductTable,
+  onSelectProductColumn,
+  loadingProductIds,
 }: Props) {
-  const [expandedTables, setExpandedTables] = useState<Set<number>>(new Set());
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['dims', 'facts']));
 
-  function toggleTable(id: number) {
-    setExpandedTables((prev) => {
+  function toggleSection(id: string) {
+    setExpandedSections((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   }
 
-  return (
-    <div className="flex flex-col h-full">
-      <div className="px-3 pt-3 pb-1 flex-shrink-0">
-        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1.5">
-          Data sources
-        </p>
-      </div>
+  // ── Deduplicate dimensions & collect fact tables ──────────────────────────
+  const { sharedDimensions, factsByProduct } = useMemo(() => {
+    const dimByName = new Map<string, { best: ProductTable; bestProductId: number; bestColCount: number; products: Set<string> }>();
+    const facts: { product: ProductTreeItem; table: ProductTable }[] = [];
 
-      <div className="flex-1 overflow-y-auto py-1">
+    for (const product of productTree) {
+      for (const schema of product.starSchemas) {
+        for (const table of schema.tables) {
+          if (table.table_role === 'dimension' || table.table_role === 'bridge' || table.table_role === 'junk') {
+            const name = table.table_name;
+            const existing = dimByName.get(name);
+            const colCount = table.column_count ?? 0;
+            if (!existing) {
+              dimByName.set(name, { best: table, bestProductId: product.productId, bestColCount: colCount, products: new Set([product.productName]) });
+            } else {
+              existing.products.add(product.productName);
+              if (colCount > existing.bestColCount) {
+                existing.best = table;
+                existing.bestProductId = product.productId;
+                existing.bestColCount = colCount;
+              }
+            }
+          } else {
+            facts.push({ product, table });
+          }
+        }
+      }
+    }
+
+    const dims: SharedDim[] = [...dimByName.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([tableName, { best, bestProductId, products }]) => ({
+        tableName,
+        bestTable: best,
+        bestProductId,
+        usedByProducts: [...products].sort(),
+      }));
+
+    const fMap = new Map<number, { product: ProductTreeItem; tables: ProductTable[] }>();
+    for (const f of facts) {
+      const existing = fMap.get(f.product.productId);
+      if (existing) { existing.tables.push(f.table); }
+      else { fMap.set(f.product.productId, { product: f.product, tables: [f.table] }); }
+    }
+
+    return { sharedDimensions: dims, factsByProduct: [...fMap.values()] };
+  }, [productTree]);
+
+  const hasProducts = sharedDimensions.length > 0 || factsByProduct.length > 0;
+
+  // ── Compute health per connection ─────────────────────────────────────────
+  function connectionHealth(connId: number): number {
+    const tables = tablesByConnection[connId] ?? [];
+    if (tables.length === 0) return 0;
+    const confirmed = tables.filter((t) => !t.ai_draft).length;
+    return Math.round((confirmed / tables.length) * 100);
+  }
+
+  return (
+    <div className="dark-tree flex flex-col h-full min-h-0 text-white/80">
+      <div className="flex-1 overflow-y-auto py-1 min-h-0">
+
+        {/* ── Data Sources ── */}
+        <div className="px-4 pt-4 pb-2 flex-shrink-0">
+          <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+            Data sources
+          </p>
+        </div>
+
         {connections.map((conn) => {
           const isConnExpanded = expandedConnectionIds.has(conn.id);
           const isLoading      = loadingConnectionIds.has(conn.id);
           const tables         = tablesByConnection[conn.id] ?? [];
+          const health         = connectionHealth(conn.id);
 
           return (
             <div key={conn.id}>
-              {/* ── Connection header ── */}
               <button
                 onClick={() => onToggleConnection(conn.id)}
-                className={`w-full flex items-center gap-2 px-3 py-2 transition-colors group select-none ${
-                  activeConnectionId === conn.id ? 'bg-blue-50' : 'hover:bg-slate-50'
+                className={`w-full flex items-center gap-2.5 px-4 py-2.5 transition-all group select-none ${
+                  activeConnectionId === conn.id
+                    ? 'bg-white/[0.07] border-l-2 border-cyan-400'
+                    : 'border-l-2 border-transparent hover:bg-white/[0.04]'
                 }`}
               >
                 <ChevronIcon expanded={isConnExpanded} />
-                <DbIcon className={`w-4 h-4 flex-shrink-0 ${activeConnectionId === conn.id ? 'text-blue-600' : 'text-blue-400'}`} />
-                <span className={`text-sm font-semibold truncate flex-1 text-left ${
-                  activeConnectionId === conn.id ? 'text-blue-700' : 'text-slate-700'
+                <DbIcon active={activeConnectionId === conn.id} />
+                <span className={`text-body-sm font-medium truncate flex-1 text-left ${
+                  activeConnectionId === conn.id ? 'text-white' : 'text-white/70'
                 }`}>
                   {conn.name}
                 </span>
-                {isLoading && (
-                  <div className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
-                )}
-                {!isLoading && isConnExpanded && tables.length === 0 && (
-                  <span className="text-[9px] text-slate-400 flex-shrink-0">no tables</span>
-                )}
-                {!isLoading && tables.length > 0 && (
-                  <span className="text-[10px] text-slate-400 flex-shrink-0">{tables.length}</span>
-                )}
+                {isLoading ? (
+                  <div className="w-3 h-3 border border-cyan-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                ) : tables.length > 0 ? (
+                  <HealthRing percent={health} />
+                ) : null}
               </button>
 
-              {/* ── Tables under this connection ── */}
               {isConnExpanded && !isLoading && (
-                <div className="border-l-2 border-slate-100 ml-4">
+                <div className="ml-5 border-l border-white/[0.06]">
                   {tables.length === 0 ? (
-                    <p className="pl-4 py-2 text-xs text-slate-400 italic">
-                      No tables found. Try Re-analyse in Sources.
+                    <p className="pl-4 py-3 text-xs text-white/30 italic">
+                      No tables found
                     </p>
                   ) : (
                     tables.map((table) => {
-                      const isTableExpanded = expandedTables.has(table.id);
-                      const isSelected      = selectedTableId === table.id;
-                      const cols            = columnsByTable[table.id] ?? [];
-                      const confirmedPct    = cols.length
-                        ? Math.round((cols.filter((c) => !c.ai_draft).length / cols.length) * 100)
-                        : null;
-
+                      const isSelected = selectedTableId === table.id && !selectedProductTableId;
                       return (
-                        <div key={table.id}>
-                          {/* ── Table row ── */}
-                          <div
-                            className={`flex items-center gap-1 pl-2 pr-2 py-1.5 cursor-grab group select-none ${
-                              isSelected && !selectedColumnId ? 'bg-blue-50' : 'hover:bg-slate-50'
-                            }`}
-                            draggable
-                            onDragStart={(e) => {
-                              e.dataTransfer.effectAllowed = 'copyMove';
-                              e.dataTransfer.setData('application/x-table-id', String(table.id));
-                              e.dataTransfer.setData('application/x-conn-id',   String(conn.id));
-                              e.dataTransfer.setData('text/plain', String(table.id));
-                            }}
-                          >
-                            <button
-                              onClick={(e) => { e.stopPropagation(); toggleTable(table.id); }}
-                              className="p-0.5 rounded text-slate-300 hover:text-slate-500 flex-shrink-0"
-                            >
-                              <ChevronIcon expanded={isTableExpanded} />
-                            </button>
-
-                            <div
-                              className="flex items-center gap-1.5 flex-1 min-w-0"
-                              onClick={() => { onSelectTable(conn.id, table.id); if (!isTableExpanded) toggleTable(table.id); }}
-                            >
-                              <TableIcon active={isSelected && !selectedColumnId} />
-                              <span className={`text-sm truncate flex-1 ${
-                                isSelected && !selectedColumnId ? 'text-blue-700 font-semibold' : 'text-slate-700 font-medium'
-                              }`}>
-                                {table.display_name || table.table_name}
-                              </span>
-                              <div className="flex items-center gap-1 flex-shrink-0">
-                                {table.ai_draft && (
-                                  <span className="text-[9px] px-1 py-0 bg-amber-100 text-amber-600 rounded font-medium">draft</span>
-                                )}
-                                {!table.is_active && (
-                                  <span className="text-[9px] px-1 py-0 bg-slate-100 text-slate-400 rounded font-medium">off</span>
-                                )}
-                              </div>
-                            </div>
+                        <div
+                          key={table.id}
+                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                            isSelected
+                              ? 'bg-cyan-500/10 border-r-2 border-cyan-400'
+                              : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                          }`}
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = 'copyMove';
+                            e.dataTransfer.setData('application/x-table-id', String(table.id));
+                            e.dataTransfer.setData('application/x-conn-id',   String(conn.id));
+                            e.dataTransfer.setData('text/plain', String(table.id));
+                          }}
+                          onClick={() => onSelectTable(conn.id, table.id)}
+                        >
+                          <TableIcon active={isSelected} />
+                          <span className={`text-body-sm truncate flex-1 ${
+                            isSelected ? 'text-cyan-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                          }`}>
+                            {table.display_name || table.table_name}
+                          </span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {table.ai_draft && (
+                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                            )}
+                            {!table.is_active && (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-white/5 text-white/30 rounded font-medium">off</span>
+                            )}
                           </div>
-
-                          {/* ── Columns ── */}
-                          {isTableExpanded && (
-                            <div className="border-l-2 border-slate-100 ml-5">
-                              {cols.length === 0 && (
-                                <p className="pl-4 py-1 text-xs text-slate-300 italic">No columns</p>
-                              )}
-                              {cols.map((col) => {
-                                const isColSelected = selectedColumnId === col.id;
-                                const dotColor = col.is_dimension
-                                  ? 'bg-purple-400'
-                                  : col.is_measure
-                                  ? 'bg-green-400'
-                                  : 'bg-slate-300';
-
-                                return (
-                                  <div
-                                    key={col.id}
-                                    onClick={() => onSelectColumn(table.id, col.id)}
-                                    className={`flex items-center gap-2 pl-3 pr-2 py-1 cursor-pointer text-xs transition-colors ${
-                                      isColSelected ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                                    }`}
-                                  >
-                                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotColor}`} />
-                                    <span className={`truncate flex-1 ${isColSelected ? 'font-medium' : ''}`}>
-                                      {col.display_name || col.column_name}
-                                    </span>
-                                    <span className="text-[10px] text-slate-300 flex-shrink-0 font-mono">
-                                      {col.data_type?.toLowerCase().replace('integer', 'int')}
-                                    </span>
-                                    {col.ai_draft && (
-                                      <span className="w-1.5 h-1.5 rounded-full bg-amber-300 flex-shrink-0" title="AI draft" />
-                                    )}
-                                  </div>
-                                );
-                              })}
-
-                              {cols.length > 0 && confirmedPct !== null && (
-                                <div className="px-3 py-1.5 border-t border-slate-50">
-                                  <div className="flex items-center justify-between mb-0.5">
-                                    <span className="text-[9px] text-slate-400">Confirmed</span>
-                                    <span className="text-[9px] text-slate-400">{confirmedPct}%</span>
-                                  </div>
-                                  <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
-                                    <div className="h-full bg-green-400 rounded-full transition-all" style={{ width: `${confirmedPct}%` }} />
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
                       );
                     })
@@ -218,13 +265,123 @@ export default function DatabaseTree({
             </div>
           );
         })}
-      </div>
 
-      {/* Legend */}
-      <div className="flex-shrink-0 px-3 py-2 border-t border-slate-100 flex items-center gap-3">
-        <span className="flex items-center gap-1 text-[10px] text-slate-400"><span className="w-1.5 h-1.5 rounded-full bg-purple-400" /> Dim</span>
-        <span className="flex items-center gap-1 text-[10px] text-slate-400"><span className="w-1.5 h-1.5 rounded-full bg-green-400" /> Meas</span>
-        <span className="flex items-center gap-1 text-[10px] text-slate-400"><span className="w-1.5 h-1.5 rounded-full bg-amber-300" /> Draft</span>
+        {/* ── Data Products: Shared Dimensions + Fact Tables ── */}
+        {hasProducts && (
+          <>
+            {/* ── Shared Dimensions ── */}
+            {sharedDimensions.length > 0 && (
+              <>
+                <div className="px-4 pt-5 pb-2 flex-shrink-0">
+                  <button
+                    onClick={() => toggleSection('dims')}
+                    className="flex items-center gap-2 w-full text-left group"
+                  >
+                    <ChevronIcon expanded={expandedSections.has('dims')} />
+                    <p className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">
+                      Dimensions
+                    </p>
+                    <span className="text-[10px] text-white/20 ml-auto">{sharedDimensions.length}</span>
+                  </button>
+                </div>
+
+                {expandedSections.has('dims') && (
+                  <div className="ml-5 border-l border-white/[0.06]">
+                    {sharedDimensions.map((dim) => {
+                      const isSelected = selectedProductTableId === dim.bestTable.id;
+                      return (
+                        <div
+                          key={dim.tableName}
+                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                            isSelected
+                              ? 'bg-purple-500/10 border-r-2 border-purple-400'
+                              : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                          }`}
+                          onClick={() => onSelectProductTable?.(dim.bestProductId, dim.bestTable.id)}
+                        >
+                          <TableIcon active={isSelected} />
+                          <span className={`text-body-sm truncate flex-1 ${
+                            isSelected ? 'text-purple-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                          }`}>
+                            {dim.bestTable.display_name || dim.tableName}
+                          </span>
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            {dim.usedByProducts.length > 1 && (
+                              <span className="text-[9px] px-1.5 py-0.5 bg-cyan-500/15 text-cyan-400 rounded font-medium" title={`Used in: ${dim.usedByProducts.join(', ')}`}>
+                                {dim.usedByProducts.length}x
+                              </span>
+                            )}
+                            {dim.bestTable.ai_draft && (
+                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── Fact Tables (grouped by product) ── */}
+            {factsByProduct.length > 0 && (
+              <>
+                <div className="px-4 pt-4 pb-2 flex-shrink-0">
+                  <button
+                    onClick={() => toggleSection('facts')}
+                    className="flex items-center gap-2 w-full text-left group"
+                  >
+                    <ChevronIcon expanded={expandedSections.has('facts')} />
+                    <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+                      Fact tables
+                    </p>
+                    <span className="text-[10px] text-white/20 ml-auto">
+                      {factsByProduct.reduce((n, g) => n + g.tables.length, 0)}
+                    </span>
+                  </button>
+                </div>
+
+                {expandedSections.has('facts') && (
+                  <div className="ml-5 border-l border-white/[0.06]">
+                    {factsByProduct.map((group) => (
+                      <div key={group.product.productId}>
+                        <div className="pl-4 pr-3 pt-3 pb-1">
+                          <span className="text-[10px] font-semibold text-white/25 uppercase tracking-wide">
+                            {group.product.productName}
+                          </span>
+                        </div>
+                        {group.tables.map((table) => {
+                          const isSelected = selectedProductTableId === table.id;
+                          return (
+                            <div
+                              key={table.id}
+                              className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                                isSelected
+                                  ? 'bg-cyan-500/10 border-r-2 border-cyan-400'
+                                  : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                              }`}
+                              onClick={() => onSelectProductTable?.(group.product.productId, table.id)}
+                            >
+                              <TableIcon active={isSelected} />
+                              <span className={`text-body-sm truncate flex-1 ${
+                                isSelected ? 'text-cyan-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                              }`}>
+                                {table.display_name || table.table_name}
+                              </span>
+                              {table.ai_draft && (
+                                <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

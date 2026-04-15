@@ -2,16 +2,15 @@
 
 import { useState } from 'react';
 import api from '@/lib/api';
-import { SourceTable, SourceColumn } from './types';
+import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
-import HelpTooltip from '@/components/HelpTooltip';
 
 interface Props {
-  table: SourceTable;
-  columns: SourceColumn[];
+  tableId: number;
+  productTree: ProductTreeItem[];
+  columns: ProductColumn[];
   focusColumnId: number | null;
-  connectionDomains?: string[];
   onSaved: () => void;
 }
 
@@ -19,21 +18,45 @@ interface Props {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function parseDomains(raw: SourceTable['domains']): string[] {
+function parseDomains(raw: string | string[] | undefined): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.filter(Boolean);
-  try { return JSON.parse(raw as unknown as string) ?? []; } catch { return []; }
+  try { return JSON.parse(raw) ?? []; } catch { return []; }
 }
 
-function parseExamples(raw: SourceColumn['example_values']): string[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
-  } catch {}
-  return [];
-}
+const roleColor = (role: string | null): string => {
+  switch (role) {
+    case 'fact':       return 'bg-cyan-500/15 text-cyan-300';
+    case 'dimension':  return 'bg-purple-500/15 text-purple-300';
+    case 'bridge':     return 'bg-amber-500/15 text-amber-300';
+    case 'junk':       return 'bg-white/10 text-white/40';
+    default:           return 'bg-white/10 text-white/40';
+  }
+};
+
+const colRoleLabel = (role: string | null): string => {
+  switch (role) {
+    case 'surrogate_key':        return 'Surrogate Key';
+    case 'natural_key':          return 'Natural Key';
+    case 'foreign_key':          return 'Foreign Key';
+    case 'measure':              return 'Measure';
+    case 'attribute':            return 'Attribute';
+    case 'degenerate_dimension': return 'Degenerate Dim';
+    default:                     return role ?? '';
+  }
+};
+
+const colRoleBadge = (role: string | null): string => {
+  switch (role) {
+    case 'surrogate_key':
+    case 'natural_key':          return 'bg-amber-100 text-amber-700';
+    case 'foreign_key':          return 'bg-blue-100 text-blue-700';
+    case 'measure':              return 'bg-green-100 text-green-700';
+    case 'attribute':            return 'bg-purple-100 text-purple-700';
+    case 'degenerate_dimension': return 'bg-pink-100 text-pink-700';
+    default:                     return 'bg-slate-100 text-slate-500';
+  }
+};
 
 /** Classify a SQL data type into a visual category */
 function classifyType(dt: string): { cls: string; icon: string } {
@@ -47,10 +70,10 @@ function classifyType(dt: string): { cls: string; icon: string } {
 }
 
 /** Column completeness score (0-3) */
-function columnCompleteness(col: SourceColumn): 'complete' | 'partial' | 'incomplete' {
+function columnCompleteness(col: ProductColumn): 'complete' | 'partial' | 'incomplete' {
   let score = 0;
   if (col.description && col.description.trim().length > 0) score++;
-  if (col.is_dimension || col.is_measure) score++;
+  if (col.column_role) score++;
   if (!col.ai_draft) score++;
   return score >= 3 ? 'complete' : score >= 1 ? 'partial' : 'incomplete';
 }
@@ -59,19 +82,22 @@ function columnCompleteness(col: SourceColumn): 'complete' | 'partial' | 'incomp
 // PreviewTable — dark terminal-style data preview
 // ---------------------------------------------------------------------------
 
-function PreviewTable({ connectionId, tableName }: { connectionId: number; tableName: string }) {
+function PreviewTable({ productTableId }: { productTableId: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [rows, setRows]   = useState<Record<string, unknown>[]>([]);
   const [cols, setCols]   = useState<string[]>([]);
+  const [errMsg, setErrMsg] = useState('');
 
   async function load() {
     setState('loading');
     try {
-      const res = await api.get(`/semantic/preview?connectionId=${connectionId}&table=${encodeURIComponent(tableName)}&limit=10`);
+      const res = await api.get(`/semantic/product-preview?productTableId=${productTableId}&limit=10`);
       setRows(res.data.data.rows);
       setCols(res.data.data.columns);
       setState('done');
-    } catch {
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load preview';
+      setErrMsg(msg);
       setState('error');
     }
   }
@@ -103,7 +129,7 @@ function PreviewTable({ connectionId, tableName }: { connectionId: number; table
   }
 
   if (state === 'error') {
-    return <p className="text-xs text-red-400">Could not load preview.</p>;
+    return <p className="text-xs text-red-400">{errMsg}</p>;
   }
 
   return (
@@ -141,73 +167,127 @@ function PreviewTable({ connectionId, tableName }: { connectionId: number; table
 }
 
 // ---------------------------------------------------------------------------
-// Main panel
+// Main panel — matches TableDetailPanel visual design
 // ---------------------------------------------------------------------------
 
-export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved }: Props) {
-  const [tbl, setTbl]               = useState<SourceTable>(table);
-  const [cols, setCols]             = useState<SourceColumn[]>(columns);
+export default function ProductTableDetailPanel({
+  tableId, productTree, columns, focusColumnId, onSaved,
+}: Props) {
+  // Find the table in the product tree
+  let table: ProductTable | null = null;
+  let productName = '';
+  let schemaName = '';
+  let pgTableId: number | null = null;
+  const usedByProducts: string[] = [];
+  for (const product of productTree) {
+    for (const schema of product.starSchemas) {
+      const found = schema.tables.find((t) => t.id === tableId);
+      if (found) {
+        table = found;
+        productName = product.productName;
+        schemaName = schema.schemaName;
+        pgTableId = found.pg_table_id ?? tableId;
+        break;
+      }
+    }
+    if (table) break;
+  }
+  if (table) {
+    for (const product of productTree) {
+      for (const schema of product.starSchemas) {
+        if (schema.tables.some((t) => t.table_name === table!.table_name)) {
+          if (!usedByProducts.includes(product.productName)) {
+            usedByProducts.push(product.productName);
+          }
+        }
+      }
+    }
+    usedByProducts.sort();
+  }
+
+  // Table state
+  const [tbl, setTbl]                 = useState(table);
+  const [cols, setCols]               = useState<ProductColumn[]>(columns);
+  const [prevTableId, setPrevTableId] = useState(tableId);
+  const [prevColLen, setPrevColLen]    = useState(columns.length);
   const [savingTable, setSavingTable] = useState(false);
-  const [savingCol, setSavingCol]   = useState<number | null>(null);
-  const [savedMsg, setSavedMsg]     = useState('');
+  const [savingCol, setSavingCol]     = useState<number | null>(null);
+  const [savedMsg, setSavedMsg]       = useState('');
+  const [colView, setColView]         = useState<'cards' | 'grid'>('grid');
 
-  if (table.id !== tbl.id) { setTbl(table); setCols(columns); }
+  // Keep local state in sync when parent switches table or columns arrive
+  if (tableId !== prevTableId) {
+    setPrevTableId(tableId);
+    setPrevColLen(columns.length);
+    setTbl(table);
+    setCols(columns);
+  } else if (columns.length !== prevColLen) {
+    setPrevColLen(columns.length);
+    setCols(columns);
+  }
 
+  // Domain management
   const [domainInput, setDomainInput] = useState('');
   const [showTableHistory, setShowTableHistory] = useState(false);
   const [showColHistory, setShowColHistory] = useState<number | null>(null);
-  const [colView, setColView] = useState<'cards' | 'grid'>('grid');
 
-  // Track unsaved changes for floating bar
-  const [hasChanges, setHasChanges] = useState(false);
+  if (!tbl) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
+        Table not found
+      </div>
+    );
+  }
+
+  const domains = parseDomains(tbl.domains);
 
   function addDomain(value: string) {
     const tag = value.trim().toLowerCase();
-    if (!tag) return;
-    const current: string[] = parseDomains(tbl.domains);
-    if (!current.includes(tag)) { setTbl({ ...tbl, domains: [...current, tag] }); setHasChanges(true); }
+    if (!tag || !tbl) return;
+    if (!domains.includes(tag)) setTbl({ ...tbl, domains: [...domains, tag] });
     setDomainInput('');
   }
 
   function removeDomain(tag: string) {
-    setTbl({ ...tbl, domains: parseDomains(tbl.domains).filter((d) => d !== tag) });
-    setHasChanges(true);
+    if (!tbl) return;
+    setTbl({ ...tbl, domains: domains.filter((d) => d !== tag) });
   }
 
   async function saveTable() {
+    if (!tbl) return;
     setSavingTable(true);
-    await api.patch(`/semantic/tables/${tbl.id}`, {
-      display_name: tbl.display_name,
-      description:  tbl.description,
-      is_active:    tbl.is_active,
-      domains:      parseDomains(tbl.domains),
-    });
+    try {
+      await api.patch(`/semantic/product-tables/${tbl.id}`, {
+        display_name: tbl.display_name,
+        description:  tbl.description,
+        owner_name:   tbl.owner_name,
+        domains:      parseDomains(tbl.domains),
+      });
+      setSavedMsg('Table saved');
+      setTimeout(() => setSavedMsg(''), 2000);
+      onSaved();
+    } catch {
+      setSavedMsg('Failed to save');
+    }
     setSavingTable(false);
-    setSavedMsg('Table saved');
-    setHasChanges(false);
-    setTimeout(() => setSavedMsg(''), 2000);
-    onSaved();
   }
 
-  async function saveColumn(col: SourceColumn) {
+  async function saveColumn(col: ProductColumn) {
     setSavingCol(col.id);
-    await api.patch(`/semantic/columns/${col.id}`, {
-      display_name: col.display_name,
-      description:  col.description,
-      is_dimension: col.is_dimension,
-      is_measure:   col.is_measure,
-    });
+    try {
+      await api.patch(`/semantic/product-columns/${col.id}`, {
+        display_name: col.display_name,
+        description:  col.description,
+      });
+      onSaved();
+    } catch {
+      alert('Failed to save column');
+    }
     setSavingCol(null);
-    onSaved();
   }
 
-  function updateCol(id: number, patch: Partial<SourceColumn>) {
+  function updateCol(id: number, patch: Partial<ProductColumn>) {
     setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
-  }
-
-  function updateTbl(patch: Partial<SourceTable>) {
-    setTbl((prev) => ({ ...prev, ...patch }));
-    setHasChanges(true);
   }
 
   return (
@@ -222,27 +302,59 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
 
           <div className="relative flex items-start justify-between">
             <div>
-              <h2 className="text-xl font-headline font-bold text-white tracking-tight">
-                {tbl.display_name || tbl.table_name}
-              </h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl font-headline font-bold text-white tracking-tight">
+                  {tbl.display_name || tbl.table_name}
+                </h2>
+                <span className={`text-[10px] px-2.5 py-1 rounded-lg font-semibold ${roleColor(tbl.table_role)}`}>
+                  {tbl.table_role}
+                </span>
+              </div>
               <p className="text-sm font-mono text-white/40 mt-1">{tbl.table_name}</p>
-              <div className="flex items-center gap-3 mt-3">
+
+              <div className="flex items-center gap-3 mt-3 flex-wrap">
                 <span className="text-[10px] font-semibold text-white/50 bg-white/10 px-2.5 py-1 rounded-lg">
                   {cols.length} columns
                 </span>
-                {tbl.is_active ? (
-                  <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 px-2.5 py-1 rounded-lg">Active</span>
-                ) : (
-                  <span className="text-[10px] font-semibold text-white/30 bg-white/5 px-2.5 py-1 rounded-lg">Inactive</span>
+                {tbl.row_count != null && (
+                  <span className="text-[10px] font-semibold text-white/50 bg-white/10 px-2.5 py-1 rounded-lg">
+                    {tbl.row_count.toLocaleString()} rows
+                  </span>
+                )}
+                {tbl.transformation_status && (
+                  <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-lg ${
+                    tbl.transformation_status === 'success' ? 'text-emerald-300 bg-emerald-500/15'
+                    : tbl.transformation_status === 'error' ? 'text-red-300 bg-red-500/15'
+                    : 'text-white/30 bg-white/5'
+                  }`}>
+                    {tbl.transformation_status}
+                  </span>
+                )}
+                {tbl.last_run_at && (
+                  <span className="text-[10px] text-white/30">
+                    Last run: {new Date(tbl.last_run_at).toLocaleDateString()}
+                  </span>
                 )}
               </div>
+
+              {/* Used-by badges for shared dimensions */}
+              {usedByProducts.length > 0 && (
+                <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+                  <span className="text-[10px] text-white/30">Used in:</span>
+                  {usedByProducts.map((pName) => (
+                    <span key={pName} className="text-[10px] bg-white/10 text-white/60 border border-white/10 px-2.5 py-0.5 rounded-lg font-medium">
+                      {pName}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
+
             <ApprovalBadge
-              entityType="table"
+              entityType="product_table"
               entityId={tbl.id}
-              status={tbl.approval_status}
-              aiDraft={tbl.ai_draft}
-              rejectionReason={tbl.rejection_reason}
+              status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+              aiDraft={!!tbl.ai_draft}
               onChanged={onSaved}
             />
           </div>
@@ -255,21 +367,19 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
               <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Display name</label>
               <input
                 value={tbl.display_name ?? ''}
-                onChange={(e) => updateTbl({ display_name: e.target.value })}
+                onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
                 className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all placeholder:text-slate-300"
                 placeholder="Human-readable name"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Active in AI context</label>
-              <select
-                value={tbl.is_active ? 'yes' : 'no'}
-                onChange={(e) => updateTbl({ is_active: e.target.value === 'yes' })}
-                className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all"
-              >
-                <option value="yes">Yes — include in AI context</option>
-                <option value="no">No — exclude from AI context</option>
-              </select>
+              <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Owner</label>
+              <input
+                value={tbl.owner_name ?? ''}
+                onChange={(e) => setTbl({ ...tbl, owner_name: e.target.value })}
+                className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all placeholder:text-slate-300"
+                placeholder="Table owner"
+              />
             </div>
           </div>
 
@@ -277,38 +387,23 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
             <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Description</label>
             <textarea
               value={tbl.description ?? ''}
-              onChange={(e) => updateTbl({ description: e.target.value })}
+              onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
               rows={2}
               className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all resize-none placeholder:text-slate-300"
               placeholder="What does this table contain?"
             />
           </div>
 
+          {/* Domain tags */}
           <div>
-            <label className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Data domains
-              <HelpTooltip text="Tags that categorize this table by business area (e.g. sales, hr, finance). Helps scope AI queries to relevant tables." />
-            </label>
-            {/* Inherited from source */}
-            {connectionDomains.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {connectionDomains.map((tag) => (
-                  <span key={tag} title="Inherited from source" className="inline-flex items-center gap-1 text-[10px] bg-slate-100/80 text-slate-500 rounded-lg px-2.5 py-1 font-medium">
-                    {tag}
-                    <span className="text-[9px] text-slate-300 italic">source</span>
-                  </span>
-                ))}
-              </div>
-            )}
+            <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Data domains</label>
             <div className="flex flex-wrap gap-1.5 mb-2">
-              {parseDomains(tbl.domains)
-                .filter((tag) => !connectionDomains.includes(tag))
-                .map((tag) => (
-                  <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-gradient-to-r from-violet-100 to-purple-50 text-violet-700 border border-violet-200/50 rounded-lg px-2.5 py-1 font-semibold shadow-sm">
-                    {tag}
-                    <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none text-violet-400">&times;</button>
-                  </span>
-                ))}
+              {domains.map((tag) => (
+                <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-gradient-to-r from-violet-100 to-purple-50 text-violet-700 border border-violet-200/50 rounded-lg px-2.5 py-1 font-semibold shadow-sm">
+                  {tag}
+                  <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none text-violet-400">&times;</button>
+                </span>
+              ))}
             </div>
             <div className="flex gap-2">
               <input
@@ -341,13 +436,13 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
 
           {showTableHistory && (
             <div className="mt-4 pt-4 border-t border-slate-200/30">
-              <HistoryPanel entityType="table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+              <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
             </div>
           )}
 
           {/* Data preview */}
           <div className="pt-4 border-t border-slate-200/30">
-            <PreviewTable connectionId={tbl.connection_id} tableName={tbl.table_name} />
+            <PreviewTable productTableId={pgTableId ?? tableId} />
           </div>
         </section>
 
@@ -389,13 +484,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                   <tr className="bg-slate-50/80 border-b border-slate-200/40">
                     <th className="text-left px-4 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Column</th>
                     <th className="text-left px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Type</th>
+                    <th className="text-left px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Role</th>
                     <th className="text-left px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Description</th>
-                    <th className="text-center px-2 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">
-                      <span className="inline-flex items-center gap-0.5">Dim <HelpTooltip text="Dimension columns are used for grouping and filtering (e.g. country, category, date)." /></span>
-                    </th>
-                    <th className="text-center px-2 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">
-                      <span className="inline-flex items-center gap-0.5">Mea <HelpTooltip text="Measure columns contain numeric values that can be aggregated (e.g. revenue, quantity, cost)." /></span>
-                    </th>
                     <th className="text-center px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Status</th>
                     <th className="text-right px-4 py-3"></th>
                   </tr>
@@ -428,6 +518,13 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                             {col.data_type}
                           </span>
                         </td>
+                        <td className="px-3 py-2.5">
+                          {col.column_role && (
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${colRoleBadge(col.column_role)}`}>
+                              {colRoleLabel(col.column_role)}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 max-w-[220px]">
                           <input
                             value={col.description ?? ''}
@@ -436,21 +533,12 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                             className="w-full bg-transparent text-slate-600 placeholder:text-slate-300 focus:outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400/50 rounded-md px-2 py-1 -ml-2 text-xs transition-all"
                           />
                         </td>
-                        <td className="text-center px-2 py-2.5">
-                          <input type="checkbox" checked={col.is_dimension}
-                            onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 text-indigo-600 border-slate-300 focus:ring-indigo-400" />
-                        </td>
-                        <td className="text-center px-2 py-2.5">
-                          <input type="checkbox" checked={col.is_measure}
-                            onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 text-emerald-600 border-slate-300 focus:ring-emerald-400" />
-                        </td>
                         <td className="text-center px-3 py-2.5">
                           <ApprovalBadge
-                            entityType="column" entityId={col.id}
-                            status={col.approval_status} aiDraft={col.ai_draft}
-                            rejectionReason={col.rejection_reason} onChanged={onSaved}
+                            entityType="product_column" entityId={col.id}
+                            status={col.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+                            aiDraft={!!col.ai_draft}
+                            onChanged={onSaved}
                             compact
                           />
                         </td>
@@ -472,9 +560,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           {colView === 'cards' && (
             <div className="space-y-3">
               {cols.map((col) => {
-                const isFocused  = col.id === focusColumnId;
-                const examples   = parseExamples(col.example_values);
-                const typeInfo   = classifyType(col.data_type);
+                const isFocused = col.id === focusColumnId;
+                const typeInfo  = classifyType(col.data_type);
 
                 return (
                   <div
@@ -491,23 +578,43 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                           <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
                           {col.data_type}
                         </span>
-                        {col.is_dimension && <span className="text-[10px] text-indigo-600 bg-indigo-50/80 px-2 py-0.5 rounded-md font-semibold">dimension</span>}
-                        {col.is_measure   && <span className="text-[10px] text-emerald-600 bg-emerald-50/80 px-2 py-0.5 rounded-md font-semibold">measure</span>}
+                        {col.column_role && (
+                          <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${colRoleBadge(col.column_role)}`}>
+                            {colRoleLabel(col.column_role)}
+                          </span>
+                        )}
                       </div>
                       <ApprovalBadge
-                        entityType="column" entityId={col.id}
-                        status={col.approval_status} aiDraft={col.ai_draft}
-                        rejectionReason={col.rejection_reason} onChanged={onSaved}
+                        entityType="product_column" entityId={col.id}
+                        status={col.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+                        aiDraft={!!col.ai_draft}
+                        onChanged={onSaved}
                       />
                     </div>
 
-                    {examples.length > 0 && (
+                    {/* FK / transformation metadata */}
+                    {(col.fk_target_table || col.transformation_expression || col.additivity) && (
                       <div className="flex flex-wrap gap-1.5 mb-3">
-                        {examples.map((v, i) => (
-                          <span key={i} className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md font-mono border border-slate-200/40">
-                            {v}
+                        {col.fk_target_table && (
+                          <span className="text-[10px] bg-blue-50/80 text-blue-600 px-2.5 py-0.5 rounded-md font-mono border border-blue-200/40">
+                            FK &rarr; {col.fk_target_table}.{col.fk_target_column}
                           </span>
-                        ))}
+                        )}
+                        {col.additivity && (
+                          <span className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md border border-slate-200/40">
+                            {col.additivity}
+                          </span>
+                        )}
+                        {col.scd_type > 1 && (
+                          <span className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md border border-slate-200/40">
+                            SCD Type {col.scd_type}
+                          </span>
+                        )}
+                        {col.transformation_expression && (
+                          <span className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md font-mono truncate max-w-[300px] border border-slate-200/40" title={col.transformation_expression}>
+                            {col.transformation_expression}
+                          </span>
+                        )}
                       </div>
                     )}
 
@@ -520,19 +627,12 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                           className="w-full bg-white/60 border border-white/80 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all"
                         />
                       </div>
-                      <div className="flex items-end gap-4 pb-1">
-                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                          <input type="checkbox" checked={col.is_dimension}
-                            onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded text-indigo-600" />
-                          <span className="text-slate-600 text-xs">Dimension</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                          <input type="checkbox" checked={col.is_measure}
-                            onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded text-emerald-600" />
-                          <span className="text-slate-600 text-xs">Measure</span>
-                        </label>
+                      <div className="flex items-end gap-3 pb-1">
+                        {col.column_role && (
+                          <span className={`text-xs px-3 py-1.5 rounded-lg font-semibold ${colRoleBadge(col.column_role)}`}>
+                            {colRoleLabel(col.column_role)}
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -555,9 +655,10 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                         {showColHistory === col.id ? 'Hide' : 'History'}
                       </button>
                     </div>
+
                     {showColHistory === col.id && (
                       <div className="mt-4 pt-4 border-t border-slate-200/30">
-                        <HistoryPanel entityType="column" entityId={col.id} entityName={col.display_name || col.column_name} />
+                        <HistoryPanel entityType="product_column" entityId={col.id} entityName={col.display_name || col.column_name} />
                       </div>
                     )}
                   </div>

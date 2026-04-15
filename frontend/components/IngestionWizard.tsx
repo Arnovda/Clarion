@@ -169,9 +169,9 @@ export default function IngestionWizard({
   // ── Loading state ──────────────────────────────────────────────────────────
   if (step === 'loading') {
     return (
-      <div className="bg-white border border-slate-200 rounded-xl p-8 text-center">
-        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-sm text-slate-600">Discovering tables in source...</p>
+      <div className="glass-card rounded-2xl p-8 text-center">
+        <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+        <p className="text-sm text-on-surface-variant">Discovering tables in source...</p>
       </div>
     );
   }
@@ -179,9 +179,9 @@ export default function IngestionWizard({
   // ── Error state ────────────────────────────────────────────────────────────
   if (step === 'error') {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-6">
+      <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6">
         <div className="flex items-start gap-3">
-          <span className="text-xl">!</span>
+          <span className="w-3 h-3 mt-0.5 rounded-full bg-red-400 shrink-0" />
           <div className="flex-1">
             <p className="font-semibold text-red-800 text-sm">Ingestion Error</p>
             <p className="text-xs text-red-600 mt-1">{error}</p>
@@ -190,14 +190,14 @@ export default function IngestionWizard({
         <div className="flex gap-2 mt-4">
           <button
             onClick={loadTables}
-            className="px-4 py-2 text-sm bg-white border border-red-200 text-red-700 rounded-lg hover:bg-red-50 transition-colors"
+            className="px-4 py-2 text-sm bg-white/60 border border-red-500/20 text-red-700 rounded-xl hover:bg-white/80 transition-colors"
           >
             Retry
           </button>
           {onSkip && (
             <button
               onClick={onSkip}
-              className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
+              className="px-4 py-2 text-sm text-on-surface-variant hover:text-on-surface transition-colors"
             >
               Skip ingestion
             </button>
@@ -210,30 +210,30 @@ export default function IngestionWizard({
   // ── Ingestion in progress ──────────────────────────────────────────────────
   if (step === 'ingesting') {
     return (
-      <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+      <div className="glass-card rounded-2xl p-6">
         <div className="flex items-center gap-2 mb-4">
-          <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-          <p className="text-sm font-semibold text-slate-800">
-            Ingesting data for <span className="text-blue-600">{connectionName}</span>
+          <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+          <p className="text-sm font-semibold text-on-surface">
+            Ingesting data for <span className="text-cyan-600">{connectionName}</span>
           </p>
-          <span className="ml-auto text-xs text-slate-400">{progress}%</span>
+          <span className="ml-auto text-xs text-on-surface-variant">{progress}%</span>
         </div>
-        <div className="w-full h-1.5 bg-slate-100 rounded-full mb-4 overflow-hidden">
+        <div className="w-full h-1.5 bg-surface-container rounded-full mb-4 overflow-hidden">
           <div
-            className="h-full bg-blue-500 rounded-full transition-all duration-700 ease-out"
+            className="h-full bg-gradient-to-r from-cyan-500 to-teal-400 rounded-full transition-all duration-700 ease-out"
             style={{ width: `${progress}%` }}
           />
         </div>
-        <p className="text-xs text-slate-500 mb-3">{ingestionMessage}</p>
+        <p className="text-xs text-on-surface-variant mb-3">{ingestionMessage}</p>
         {tableResults.length > 0 && (
           <div className="space-y-1 max-h-40 overflow-y-auto">
             {tableResults.map((r) => (
               <div key={r.table} className="flex items-center gap-2 text-xs">
-                <span className={r.status === 'done' ? 'text-green-600' : 'text-red-500'}>
+                <span className={r.status === 'done' ? 'text-emerald-600' : 'text-red-500'}>
                   {r.status === 'done' ? 'Done' : 'Error'}
                 </span>
-                <span className="text-slate-700 font-mono">{r.table}</span>
-                {r.rows ? <span className="text-slate-400">{r.rows.toLocaleString()} rows</span> : null}
+                <span className="text-on-surface font-mono">{r.table}</span>
+                {r.rows ? <span className="text-on-surface-variant">{r.rows.toLocaleString()} rows</span> : null}
               </div>
             ))}
           </div>
@@ -245,32 +245,32 @@ export default function IngestionWizard({
   // ── Done ───────────────────────────────────────────────────────────────────
   if (step === 'done') {
     return (
-      <div className="bg-green-50 border border-green-200 rounded-xl p-6">
+      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-6">
         <div className="flex items-center gap-3 mb-3">
-          <span className="text-2xl">Done</span>
+          <span className="w-3 h-3 rounded-full orb-approved shrink-0" />
           <div>
-            <p className="font-semibold text-green-800 text-sm">
+            <p className="font-semibold text-emerald-800 text-sm">
               Data ingested for <span className="font-bold">{connectionName}</span>
             </p>
-            <p className="text-xs text-green-600 mt-0.5">{ingestionMessage}</p>
+            <p className="text-xs text-emerald-600 mt-0.5">{ingestionMessage}</p>
           </div>
         </div>
         {tableResults.length > 0 && (
           <div className="space-y-1 mb-4 max-h-32 overflow-y-auto">
             {tableResults.map((r) => (
               <div key={r.table} className="flex items-center gap-2 text-xs">
-                <span className={r.status === 'done' ? 'text-green-600' : 'text-red-500'}>
+                <span className={r.status === 'done' ? 'text-emerald-600' : 'text-red-500'}>
                   {r.status === 'done' ? 'Done' : 'Error'}
                 </span>
-                <span className="text-slate-700 font-mono">{r.table}</span>
-                {r.rows ? <span className="text-slate-400">{r.rows.toLocaleString()} rows</span> : null}
+                <span className="text-on-surface font-mono">{r.table}</span>
+                {r.rows ? <span className="text-on-surface-variant">{r.rows.toLocaleString()} rows</span> : null}
               </div>
             ))}
           </div>
         )}
         <button
           onClick={onIngestionDone}
-          className="w-full px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          className="w-full px-4 py-2.5 text-sm font-medium gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md transition-all"
         >
           Continue to profiling
         </button>
@@ -280,53 +280,53 @@ export default function IngestionWizard({
 
   // ── Table picker ───────────────────────────────────────────────────────────
   return (
-    <div className="bg-white border border-slate-200 rounded-xl shadow-sm">
-      <div className="px-6 py-4 border-b border-slate-100">
-        <h3 className="font-semibold text-slate-900 text-sm">
+    <div className="glass-card rounded-2xl">
+      <div className="px-6 py-4 ghost-border-b">
+        <h3 className="font-semibold text-on-surface text-sm">
           Select tables to ingest
         </h3>
-        <p className="text-xs text-slate-500 mt-1">
+        <p className="text-xs text-on-surface-variant mt-1">
           Choose which tables to load into the data warehouse. Only ingested tables will be available in the platform.
         </p>
       </div>
 
-      <div className="px-6 py-3 border-b border-slate-100 flex items-center gap-3">
-        <button onClick={selectAll} className="text-xs text-blue-600 hover:text-blue-800 transition-colors">
+      <div className="px-6 py-3 ghost-border-b flex items-center gap-3">
+        <button onClick={selectAll} className="text-xs text-cyan-600 hover:text-cyan-700 transition-colors">
           Select all
         </button>
-        <span className="text-slate-300">|</span>
-        <button onClick={selectNone} className="text-xs text-blue-600 hover:text-blue-800 transition-colors">
+        <span className="text-on-surface-variant/30">|</span>
+        <button onClick={selectNone} className="text-xs text-cyan-600 hover:text-cyan-700 transition-colors">
           Deselect all
         </button>
-        <span className="ml-auto text-xs text-slate-400">
+        <span className="ml-auto text-xs text-on-surface-variant">
           {selected.size} of {tables.length} selected
           {totalRows > 0 && <span className="ml-1">({totalRows.toLocaleString()} rows total)</span>}
         </span>
       </div>
 
-      <div className="max-h-72 overflow-y-auto divide-y divide-slate-50">
+      <div className="max-h-72 overflow-y-auto divide-y divide-white/40">
         {tables.map((t) => (
           <label
             key={t.table_name}
-            className="flex items-center gap-3 px-6 py-3 hover:bg-slate-50 cursor-pointer transition-colors"
+            className="flex items-center gap-3 px-6 py-3 hover:bg-white/40 cursor-pointer transition-colors"
           >
             <input
               type="checkbox"
               checked={selected.has(t.table_name)}
               onChange={() => toggleTable(t.table_name)}
-              className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+              className="w-4 h-4 text-cyan-600 border-white/80 rounded focus:ring-cyan-400/30"
             />
             <div className="flex-1 min-w-0">
-              <span className="text-sm font-mono text-slate-800">{t.table_name}</span>
+              <span className="text-sm font-mono text-on-surface">{t.table_name}</span>
             </div>
-            <span className="text-xs text-slate-400 tabular-nums">
+            <span className="text-xs text-on-surface-variant tabular-nums">
               {t.row_count.toLocaleString()} rows
             </span>
-            <span className="text-xs text-slate-400 tabular-nums">
+            <span className="text-xs text-on-surface-variant tabular-nums">
               {t.column_count} cols
             </span>
             {t.ingestion_status === 'done' && (
-              <span className="text-[10px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
+              <span className="text-[10px] px-1.5 py-0.5 bg-emerald-500/15 text-emerald-600 rounded-full font-medium">
                 Ingested
               </span>
             )}
@@ -334,11 +334,11 @@ export default function IngestionWizard({
         ))}
       </div>
 
-      <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
+      <div className="px-6 py-4 border-t border-white/40 flex gap-3">
         {onSkip && (
           <button
             onClick={onSkip}
-            className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
+            className="px-4 py-2 text-sm text-on-surface-variant hover:text-on-surface transition-colors"
           >
             Skip
           </button>
@@ -346,7 +346,7 @@ export default function IngestionWizard({
         <button
           onClick={startIngestion}
           disabled={selected.size === 0}
-          className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors font-medium"
+          className="flex-1 px-4 py-2.5 text-sm gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-40 transition-all font-medium"
         >
           Ingest {selected.size} table{selected.size !== 1 ? 's' : ''}
         </button>

@@ -5,32 +5,16 @@ import { useSearchParams } from 'next/navigation';
 import Nav from '@/components/Nav';
 import DatabaseTree from '@/components/semantic/DatabaseTree';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
+import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
 import KpiPanel from '@/components/semantic/KpiPanel';
-import PathFinderPanel from '@/components/semantic/PathFinderPanel';
-import QualityPanel from '@/components/QualityPanel';
-import QualityAlertBanner from '@/components/QualityAlertBanner';
-import IntegrationsPanel from '@/components/IntegrationsPanel';
-import AuditPanel from '@/components/semantic/AuditPanel';
 import BulkImportModal from '@/components/semantic/BulkImportModal';
+import HelpTooltip from '@/components/HelpTooltip';
 import api from '@/lib/api';
 import { isAdmin } from '@/lib/auth';
-import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView } from '@/components/semantic/types';
+import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView, ProductColumn, ProductTreeItem } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'pathfinder' | 'kpis' | 'quality' | 'integrations' | 'audit';
-
-interface QualityTableItem {
-  id:               number;
-  connection_id:    number;
-  table_name:       string;
-  display_name:     string;
-  layer:            'source' | 'product';
-  product_name:     string | null;
-  product_table_id: number | null;
-  table_role:       string | null;
-  overall_score:    number | null;
-  rag:              'green' | 'amber' | 'red' | 'grey';
-}
+type MainTab = 'definitions' | 'relationships' | 'kpis';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
@@ -58,16 +42,20 @@ function SemanticInner() {
 
   const [tab, setTab] = useState<MainTab>('definitions');
 
-  // ── Quality tab ────────────────────────────────────────────────────────────
-  const [qualityTables, setQualityTables]             = useState<QualityTableItem[]>([]);
-  const [qualityTablesLoading, setQualityTablesLoading] = useState(false);
-  const [selectedQualityItem, setSelectedQualityItem]  = useState<QualityTableItem | null>(null);
-
   // ── Cross-source views (for Relationships tab) ────────────────────────────
   const [views, setViews] = useState<CrossSourceView[]>([]);
   const [activeViewId, setActiveViewId] = useState<number | null>(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
+
+  // ── Product tree state ────────────────────────────────────────────────────
+  const [productTree, setProductTree] = useState<ProductTreeItem[]>([]);
+  const [productColumnsByTable, setProductColumnsByTable] = useState<Record<number, ProductColumn[]>>({});
+  const [selectedProductTableId, setSelectedProductTableId] = useState<number | null>(null);
+  const [selectedProductColumnId, setSelectedProductColumnId] = useState<number | null>(null);
+  const [loadingProductColumns, setLoadingProductColumns] = useState<Set<number>>(new Set());
+  // Track which layer is active: source or product
+  const [selectionLayer, setSelectionLayer] = useState<'source' | 'product'>('source');
 
   const hasAutoExpanded = useRef<Set<number>>(new Set());
 
@@ -96,6 +84,13 @@ function SemanticInner() {
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramConnId]);
+
+  // ── Load product tree on mount ──────────────────────────────────────────────
+  useEffect(() => {
+    api.get('/semantic/product-tree').then((res) => {
+      setProductTree(res.data.data ?? []);
+    }).catch(() => {});
+  }, []);
 
   // ── Load tables + columns for a connection ─────────────────────────────────
   async function loadConnectionTables(connId: number) {
@@ -148,18 +143,6 @@ function SemanticInner() {
   }, [activeConnId]);
 
   useEffect(() => { loadKpis(); }, [loadKpis]);
-
-  // ── Load quality tables (source + product) ───────────────────────────────
-  async function loadQualityTables() {
-    setQualityTablesLoading(true);
-    try {
-      const res = await api.get('/quality/tables');
-      const items: QualityTableItem[] = res.data.data ?? [];
-      setQualityTables(items);
-      if (!selectedQualityItem && items.length) setSelectedQualityItem(items[0]);
-    } catch { /* ignore */ }
-    setQualityTablesLoading(false);
-  }
 
   // ── Load cross-source views for active connection ─────────────────────────
   const loadViews = useCallback(async () => {
@@ -221,24 +204,53 @@ function SemanticInner() {
     });
   }
 
-  // ── Select a table ─────────────────────────────────────────────────────────
+  // ── Select a source table ────────────────────────────────────────────────────
   function handleSelectTable(connId: number, tableId: number) {
     setActiveConnId(connId);
     setSelectedTableId(tableId);
     setSelectedColumnId(null);
+    setSelectedProductTableId(null);
+    setSelectedProductColumnId(null);
+    setSelectionLayer('source');
     setZoomToTableId(tableId);
     localStorage.setItem('databridge_last_conn', String(connId));
-    // Switching tables while on KPIs → go back to definitions; Quality stays on quality
     if (tab === 'kpis') setTab('definitions');
   }
 
   function handleSelectColumn(tableId: number, columnId: number) {
     setSelectedColumnId(columnId);
+    setSelectionLayer('source');
     if (tab === 'definitions') {
       setTimeout(() => {
         document.getElementById(`col-${columnId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 80);
     }
+  }
+
+  // ── Select a product table ─────────────────────────────────────────────────
+  function handleSelectProductTable(productId: number, tableId: number) {
+    setSelectedProductTableId(tableId);
+    setSelectedProductColumnId(null);
+    setSelectedTableId(null);
+    setSelectedColumnId(null);
+    setSelectionLayer('product');
+    if (tab === 'kpis') setTab('definitions');
+
+    // Lazy-load product columns
+    if (!productColumnsByTable[tableId]) {
+      setLoadingProductColumns((prev) => new Set(prev).add(tableId));
+      api.get(`/semantic/product-columns?tablePgId=${tableId}`).then((res) => {
+        const cols: ProductColumn[] = res.data.data ?? [];
+        setProductColumnsByTable((prev) => ({ ...prev, [tableId]: cols }));
+      }).catch(() => {}).finally(() => {
+        setLoadingProductColumns((prev) => { const s = new Set(prev); s.delete(tableId); return s; });
+      });
+    }
+  }
+
+  function handleSelectProductColumn(tableId: number, columnId: number) {
+    setSelectedProductColumnId(columnId);
+    setSelectionLayer('product');
   }
 
   function handleCanvasSelectTable(tableId: number) {
@@ -251,43 +263,62 @@ function SemanticInner() {
   const selectedTable = allTables.find((t) => t.id === selectedTableId) ?? null;
   const selectedCols  = selectedTableId ? (columnsByTable[selectedTableId] ?? []) : [];
 
-  function handleTabChange(t: MainTab) {
-    setTab(t);
-    if (t === 'quality' && qualityTables.length === 0) loadQualityTables();
-  }
-
-  const tabBtn = (t: MainTab, label: string) => (
+  const tabBtn = (t: MainTab, label: string, icon: React.ReactNode) => (
     <button
-      onClick={() => handleTabChange(t)}
-      className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-        tab === t ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-500 hover:text-slate-800'
+      onClick={() => setTab(t)}
+      className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all whitespace-nowrap relative ${
+        tab === t
+          ? 'text-white'
+          : 'text-white/50 hover:text-white/80'
       }`}
     >
+      {icon}
       {label}
+      {tab === t && (
+        <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-cyan-400 rounded-full shadow-glow-teal" />
+      )}
     </button>
   );
 
   return (
-    <div className="flex flex-col bg-slate-50" style={{ height: '100vh', overflow: 'hidden' }}>
+    <div className="flex flex-col bg-surface" style={{ height: '100vh', overflow: 'hidden' }}>
       <Nav />
 
-      {/* Tab bar */}
-      <div className="bg-white border-b border-slate-200 px-4 flex items-center gap-0 flex-shrink-0">
-        {tabBtn('definitions', 'Tables & Columns')}
-        {tabBtn('quality', 'Quality')}
-        {tabBtn('relationships', 'Relationships')}
-        {tabBtn('pathfinder', 'Path Finder')}
-        {tabBtn('integrations', 'Integrations')}
-        {tabBtn('kpis', 'KPIs')}
-        {tabBtn('audit', 'Audit Trail')}
+      {/* Tab bar — gradient mesh style */}
+      <div className="gradient-mesh px-4 flex items-center gap-0 flex-shrink-0 relative overflow-hidden">
+        {/* Decorative circles */}
+        <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
+        <div className="absolute -bottom-4 right-1/3 w-16 h-16 rounded-full bg-white/[0.02]" />
+
+        <div className="relative flex items-center gap-0">
+          {tabBtn('definitions', 'Tables & Columns', (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M3 6h18M3 18h18" />
+            </svg>
+          ))}
+          <HelpTooltip text="Define what your tables and columns mean so the AI understands your data. Confirm AI drafts or edit descriptions." />
+          {tabBtn('relationships', 'Relationships', (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.102 1.101" />
+            </svg>
+          ))}
+          <HelpTooltip text="Define how tables relate to each other (foreign keys). This helps the AI write correct JOIN queries." />
+          {tabBtn('kpis', 'KPIs', (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          ))}
+          <HelpTooltip text="Define business KPIs with SQL formulas. The AI uses these to answer metric questions accurately." />
+        </div>
 
         {/* Spacer + action buttons */}
         <div className="flex-1" />
         {isAdmin() && activeConnId && (
-          <div className="flex items-center gap-2 py-2">
+          <div className="relative flex items-center gap-2 py-2">
             <button
               onClick={() => setShowImportModal(true)}
-              className="px-3 py-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+              className="px-3.5 py-1.5 text-xs font-semibold text-white/80 bg-white/10 border border-white/15 rounded-xl hover:bg-white/15 hover:text-white transition-all backdrop-blur-sm"
             >
               Import Definitions
             </button>
@@ -304,7 +335,7 @@ function SemanticInner() {
                   console.error('Dictionary error:', err);
                 }
               }}
-              className="px-3 py-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 transition-colors"
+              className="px-3.5 py-1.5 text-xs font-semibold text-cyan-300 bg-cyan-500/15 border border-cyan-400/20 rounded-xl hover:bg-cyan-500/25 transition-all backdrop-blur-sm"
             >
               Data Dictionary
             </button>
@@ -313,79 +344,8 @@ function SemanticInner() {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Left sidebar */}
-        <div className="flex-shrink-0 overflow-y-auto bg-white border-r border-slate-200" style={{ width: 260 }}>
-          {tab === 'quality' ? (
-            <div className="flex flex-col h-full">
-              <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Health</span>
-                <button onClick={loadQualityTables} className="text-slate-400 hover:text-blue-600 text-sm" title="Refresh">↺</button>
-              </div>
-              {qualityTablesLoading ? (
-                <div className="p-4 text-xs text-slate-400">Loading…</div>
-              ) : (
-                <div className="overflow-y-auto flex-1">
-                  {/* Sources section */}
-                  {qualityTables.filter((t) => t.layer === 'source').length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider bg-slate-50">Sources</div>
-                      {qualityTables.filter((t) => t.layer === 'source').map((t) => (
-                        <button
-                          key={`src-${t.id}`}
-                          onClick={() => setSelectedQualityItem(t)}
-                          className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 hover:bg-slate-50 transition-colors ${
-                            selectedQualityItem?.id === t.id && selectedQualityItem?.layer === 'source' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700'
-                          }`}
-                        >
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                            t.rag === 'green' ? 'bg-emerald-500' :
-                            t.rag === 'amber' ? 'bg-amber-400' :
-                            t.rag === 'red'   ? 'bg-red-500'   : 'bg-slate-300'
-                          }`} />
-                          <span className="truncate">{t.display_name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {/* Products section — grouped by product_name */}
-                  {qualityTables.filter((t) => t.layer === 'product').length > 0 && (
-                    <div>
-                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-400 uppercase tracking-wider bg-slate-50">Products</div>
-                      {Array.from(new Set(qualityTables.filter((t) => t.layer === 'product').map((t) => t.product_name))).map((prodName) => (
-                        <div key={prodName}>
-                          <div className="px-3 py-1 text-xs text-slate-500 font-medium bg-white border-b border-slate-100">{prodName}</div>
-                          {qualityTables.filter((t) => t.layer === 'product' && t.product_name === prodName).map((t) => (
-                            <button
-                              key={`prod-${t.product_table_id}`}
-                              onClick={() => setSelectedQualityItem(t)}
-                              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 hover:bg-slate-50 transition-colors ${
-                                selectedQualityItem?.product_table_id === t.product_table_id && selectedQualityItem?.layer === 'product' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-700'
-                              }`}
-                            >
-                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                                t.rag === 'green' ? 'bg-emerald-500' :
-                                t.rag === 'amber' ? 'bg-amber-400' :
-                                t.rag === 'red'   ? 'bg-red-500'   : 'bg-slate-300'
-                              }`} />
-                              <span className="truncate">{t.display_name}</span>
-                              {t.table_role && (
-                                <span className={`ml-auto text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
-                                  t.table_role === 'fact' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
-                                }`}>{t.table_role}</span>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {qualityTables.length === 0 && (
-                    <div className="p-4 text-xs text-slate-400">No profiled tables yet</div>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
+        {/* Left sidebar — dark tree, no white bg or border */}
+        <div className="flex-shrink-0 overflow-y-auto" style={{ width: 260 }}>
             <DatabaseTree
               connections={connections}
               tablesByConnection={tablesByConn}
@@ -393,19 +353,39 @@ function SemanticInner() {
               expandedConnectionIds={expandedConns}
               loadingConnectionIds={loadingConns}
               activeConnectionId={activeConnId}
-              selectedTableId={selectedTableId}
-              selectedColumnId={selectedColumnId}
+              selectedTableId={selectionLayer === 'source' ? selectedTableId : null}
+              selectedColumnId={selectionLayer === 'source' ? selectedColumnId : null}
               onToggleConnection={handleToggleConnection}
               onSelectTable={handleSelectTable}
               onSelectColumn={handleSelectColumn}
+              productTree={productTree}
+              productColumnsByTable={productColumnsByTable}
+              selectedProductTableId={selectionLayer === 'product' ? selectedProductTableId : null}
+              selectedProductColumnId={selectionLayer === 'product' ? selectedProductColumnId : null}
+              onSelectProductTable={handleSelectProductTable}
+              onSelectProductColumn={handleSelectProductColumn}
             />
-          )}
         </div>
 
         {/* Right panel — overflow-hidden for canvas tabs so flex heights propagate correctly */}
-        <div className={`flex-1 min-h-0 flex flex-col ${tab === 'integrations' || tab === 'pathfinder' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+        <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
           {tab === 'definitions' && (
-            selectedTable ? (
+            selectionLayer === 'product' && selectedProductTableId ? (
+              <ProductTableDetailPanel
+                key={`pt-${selectedProductTableId}`}
+                tableId={selectedProductTableId}
+                productTree={productTree}
+                columns={productColumnsByTable[selectedProductTableId] ?? []}
+                focusColumnId={selectedProductColumnId}
+                onSaved={() => {
+                  // Reload product tree + columns
+                  api.get('/semantic/product-tree').then((res) => setProductTree(res.data.data ?? [])).catch(() => {});
+                  api.get(`/semantic/product-columns?tablePgId=${selectedProductTableId}`).then((res) => {
+                    setProductColumnsByTable((prev) => ({ ...prev, [selectedProductTableId!]: res.data.data ?? [] }));
+                  }).catch(() => {});
+                }}
+              />
+            ) : selectedTable ? (
               <TableDetailPanel
                 key={selectedTable.id}
                 table={selectedTable}
@@ -414,9 +394,29 @@ function SemanticInner() {
                 connectionDomains={connections.find((c) => c.id === activeConnId)?.domains ?? []}
                 onSaved={() => activeConnId && reloadConnectionTables(activeConnId)}
               />
+            ) : connections.length === 0 ? (
+              <div className="flex flex-col items-center justify-center flex-1 text-center py-16 px-4 bg-gradient-to-br from-surface via-surface to-surface-container-low/30 animate-fadeIn">
+                <div className="w-20 h-20 rounded-2xl gradient-mesh flex items-center justify-center mb-5 shadow-glow-teal">
+                  <svg className="w-10 h-10 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-headline font-bold text-slate-800 mb-1">No data sources connected</h3>
+                <p className="text-sm text-slate-500 max-w-md mb-6">
+                  Connect a database to start building your semantic layer. The AI will draft definitions for all your tables and columns.
+                </p>
+                <a href="/setup" className="px-6 py-2.5 gradient-primary text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-glow-primary hover:shadow-glow-teal-md">
+                  Connect a source
+                </a>
+              </div>
             ) : (
-              <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
-                Select a table from the left panel
+              <div className="flex flex-col items-center justify-center flex-1 text-center py-16 px-4 bg-gradient-to-br from-surface via-surface to-surface-container-low/30 animate-fadeIn">
+                <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center mb-4">
+                  <svg className="w-6 h-6 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                </div>
+                <p className="text-sm text-slate-400">Select a table from the left panel to view and edit its definitions</p>
               </div>
             )
           )}
@@ -438,13 +438,13 @@ function SemanticInner() {
                 />
               </div>
               {/* View tab bar */}
-              <div className="h-10 border-t border-slate-200 bg-white flex items-center gap-0 px-2 overflow-x-auto flex-shrink-0">
+              <div className="h-10 border-t border-slate-200/50 bg-surface-container-lowest flex items-center gap-0 px-2 overflow-x-auto flex-shrink-0">
                 <button
                   onClick={() => setActiveViewId(null)}
-                  className={`px-3 h-full text-xs whitespace-nowrap transition-colors ${
+                  className={`px-3.5 h-full text-xs whitespace-nowrap transition-all ${
                     activeViewId === null
-                      ? 'border-b-2 border-blue-600 text-blue-700 font-medium'
-                      : 'text-slate-500 hover:text-slate-700'
+                      ? 'border-b-2 border-cyan-500 text-primary font-semibold'
+                      : 'text-slate-400 hover:text-slate-600'
                   }`}
                 >
                   All tables
@@ -454,16 +454,16 @@ function SemanticInner() {
                     key={v.id}
                     onClick={() => setActiveViewId(v.id)}
                     onDoubleClick={(e) => { e.preventDefault(); handleRenameView(v.id); }}
-                    className={`px-3 h-full text-xs whitespace-nowrap transition-colors flex items-center gap-1 ${
+                    className={`px-3.5 h-full text-xs whitespace-nowrap transition-all flex items-center gap-1 ${
                       activeViewId === v.id
-                        ? 'border-b-2 border-blue-600 text-blue-700 font-medium'
-                        : 'text-slate-500 hover:text-slate-700'
+                        ? 'border-b-2 border-cyan-500 text-primary font-semibold'
+                        : 'text-slate-400 hover:text-slate-600'
                     }`}
                   >
                     {v.name}
                     <span
                       onClick={(e) => { e.stopPropagation(); handleDeleteView(v.id); }}
-                      className="ml-1 text-slate-400 hover:text-red-500 cursor-pointer text-sm leading-none"
+                      className="ml-1 text-slate-300 hover:text-red-500 cursor-pointer text-sm leading-none transition-colors"
                       title="Delete view"
                     >
                       &times;
@@ -472,22 +472,12 @@ function SemanticInner() {
                 ))}
                 <button
                   onClick={handleCreateView}
-                  className="px-2 h-full text-slate-400 hover:text-blue-600 text-lg leading-none transition-colors"
+                  className="px-2.5 h-full text-slate-300 hover:text-cyan-600 text-lg leading-none transition-colors"
                   title="Create new view"
                 >
                   +
                 </button>
               </div>
-            </div>
-          )}
-
-          {tab === 'pathfinder' && (
-            <div className="flex-1 min-h-0 flex flex-col" style={{ height: '100%' }}>
-              <PathFinderPanel
-                connectionId={String(activeConnId ?? '')}
-                tables={activeConnId ? (tablesByConn[activeConnId] ?? []) : []}
-                columnsByTable={columnsByTable}
-              />
             </div>
           )}
 
@@ -499,36 +489,6 @@ function SemanticInner() {
             />
           )}
 
-          {tab === 'quality' && (
-            <>
-              <QualityAlertBanner />
-              {selectedQualityItem ? (
-                <QualityPanel
-                  key={`${selectedQualityItem.connection_id}-${selectedQualityItem.table_name}`}
-                  connId={selectedQualityItem.connection_id}
-                  tableName={selectedQualityItem.table_name}
-                  productTableId={selectedQualityItem.product_table_id ?? undefined}
-                />
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
-                  Select a table from the left panel
-                </div>
-              )}
-            </>
-          )}
-
-          {tab === 'integrations' && (
-            <div className="flex flex-col flex-1 min-h-0">
-              <IntegrationsPanel selectedTableId={selectedTableId} />
-            </div>
-          )}
-
-          {tab === 'audit' && (
-            <div className="px-6 py-6">
-              <h2 className="text-lg font-semibold text-slate-900 mb-4">Audit Trail</h2>
-              <AuditPanel limit={100} />
-            </div>
-          )}
         </div>
       </div>
 

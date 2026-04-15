@@ -225,7 +225,7 @@ function ConnectionCard({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-start gap-4 hover:shadow-md transition-shadow">
+    <div className="glass-card rounded-2xl p-5 flex items-start gap-4 hover:shadow-glow-teal transition-all">
       {connector ? (
         <ConnectorIcon connector={connector} size="lg" />
       ) : (
@@ -233,20 +233,20 @@ function ConnectionCard({
       )}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
-          <span className="font-semibold text-slate-900">{conn.name}</span>
-          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Connected</span>
+          <span className="font-semibold text-on-surface">{conn.name}</span>
+          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-600">Connected</span>
           {conn.query_engine === 'duckdb' ? (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-100 text-purple-700">Delta Lake</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-500/15 text-purple-600">Delta Lake</span>
           ) : (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-500">Source</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-container text-on-surface-variant">Source</span>
           )}
         </div>
-        <p className="text-xs text-slate-400 uppercase tracking-wide mb-1">{conn.type}</p>
+        <p className="text-xs text-on-surface-variant/50 uppercase tracking-wide mb-1">{conn.type}</p>
         {config.filepath && (
-          <p className="text-xs text-slate-500 font-mono truncate" title={config.filepath}>{config.filepath}</p>
+          <p className="text-xs text-on-surface-variant font-mono truncate" title={config.filepath}>{config.filepath}</p>
         )}
         {(config as Record<string, unknown>).host && (
-          <p className="text-xs text-slate-500 font-mono truncate">
+          <p className="text-xs text-on-surface-variant font-mono truncate">
             {(config as Record<string, unknown>).host}:{(config as Record<string, unknown>).port ?? ''}
             {(config as Record<string, unknown>).database ? ` / ${(config as Record<string, unknown>).database}` : ''}
           </p>
@@ -258,12 +258,12 @@ function ConnectionCard({
           return tags.length > 0 ? (
             <div className="flex flex-wrap gap-1 mt-1.5">
               {tags.map((t) => (
-                <span key={t} className="text-[10px] px-2 py-0.5 bg-violet-100 text-violet-700 border border-violet-200 rounded-full font-medium">{t}</span>
+                <span key={t} className="text-[10px] px-2 py-0.5 bg-gradient-to-r from-violet-100 to-purple-50 text-violet-700 border border-violet-200/50 rounded-full font-semibold shadow-sm">{t}</span>
               ))}
             </div>
           ) : null;
         })()}
-        <p className="text-xs text-slate-400 mt-1">
+        <p className="text-xs text-on-surface-variant/50 mt-1">
           Added {new Date(conn.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
           {conn.last_ingested_at && (
             <span className="ml-2">
@@ -275,33 +275,33 @@ function ConnectionCard({
       <div className="flex flex-col gap-1 shrink-0">
         <button
           onClick={() => router.push(`/semantic?connectionId=${conn.id}`)}
-          className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition-colors"
+          className="px-3 py-1.5 text-xs font-semibold gradient-primary text-on-primary rounded-lg hover:opacity-90 transition-all shadow-sm hover:shadow-glow-primary"
         >
           View definitions
         </button>
         <button
           onClick={() => onEdit(conn)}
-          className="px-3 py-1.5 text-xs font-medium bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors"
+          className="px-3 py-1.5 text-xs font-medium bg-white/60 border border-white/80 text-on-surface-variant rounded-lg hover:bg-white/80 transition-all"
         >
           Edit
         </button>
         <button
           onClick={() => onReIngest(conn)}
-          className="px-3 py-1.5 text-xs font-medium bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100 transition-colors"
+          className="px-3 py-1.5 text-xs font-medium bg-purple-500/10 text-purple-600 rounded-lg hover:bg-purple-500/20 transition-all"
         >
           Re-ingest
         </button>
         <button
           onClick={handleReProfile}
           disabled={reprofiling}
-          className="px-3 py-1.5 text-xs font-medium bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-100 transition-colors disabled:opacity-50"
+          className="px-3 py-1.5 text-xs font-medium bg-white/60 border border-white/80 text-on-surface-variant rounded-lg hover:bg-white/80 transition-all disabled:opacity-50"
         >
           {reprofiling ? 'Re-analysing…' : 'Re-analyse'}
         </button>
         <button
           onClick={handleDelete}
           disabled={deleting}
-          className="px-3 py-1.5 text-xs font-medium bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+          className="px-3 py-1.5 text-xs font-medium bg-red-500/10 text-red-600 rounded-lg hover:bg-red-500/20 transition-all disabled:opacity-50"
         >
           {deleting ? 'Removing…' : 'Remove'}
         </button>
@@ -319,24 +319,24 @@ function ConnectorTile({ connector, onClick }: { connector: Connector; onClick: 
     <button
       onClick={connector.available ? onClick : undefined}
       disabled={!connector.available}
-      className={`relative bg-white rounded-xl border p-4 text-left transition-all flex flex-col gap-3 ${
+      className={`relative glass-card rounded-2xl p-4 text-left transition-all flex flex-col gap-3 ${
         connector.available
-          ? 'border-slate-200 shadow-sm hover:shadow-md hover:border-blue-300 cursor-pointer'
-          : 'border-slate-100 opacity-60 cursor-default'
+          ? 'hover:shadow-glow-teal hover:border-cyan-300/30 cursor-pointer'
+          : 'opacity-60 cursor-default'
       }`}
     >
       {!connector.available && (
-        <span className="absolute top-2.5 right-2.5 text-[10px] font-medium text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">
+        <span className="absolute top-2.5 right-2.5 text-[10px] font-medium text-on-surface-variant/50 bg-surface-container px-1.5 py-0.5 rounded-full">
           Coming soon
         </span>
       )}
       <ConnectorIcon connector={connector} size="md" />
       <div>
-        <p className="font-semibold text-slate-800 text-sm">{connector.name}</p>
-        <p className="text-xs text-slate-500 mt-0.5">{connector.description}</p>
+        <p className="font-semibold text-on-surface text-sm">{connector.name}</p>
+        <p className="text-xs text-on-surface-variant mt-0.5">{connector.description}</p>
       </div>
       {connector.available && (
-        <span className="text-xs font-medium text-blue-600">Connect →</span>
+        <span className="text-xs font-semibold text-cyan-600">Connect →</span>
       )}
     </button>
   );
@@ -470,64 +470,64 @@ function SlidePanel({
   return (
     <>
       {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40" onClick={onClose} />
 
       {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl z-50 flex flex-col">
+      <div className="fixed top-0 right-0 h-full w-full max-w-md bg-surface-container-lowest/95 backdrop-blur-xl shadow-ambient-lg z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 py-5 border-b border-slate-200">
+        <div className="flex items-center gap-3 px-6 py-5 ghost-border-b">
           <ConnectorIcon connector={connector} size="md" />
           <div>
-            <h2 className="font-semibold text-slate-900">
+            <h2 className="font-semibold text-on-surface">
               {isEdit ? `Edit — ${editConnection!.name}` : `Connect ${connector.name}`}
             </h2>
-            <p className="text-xs text-slate-500">{connector.description}</p>
+            <p className="text-xs text-on-surface-variant">{connector.description}</p>
           </div>
-          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-slate-700 text-xl leading-none">×</button>
+          <button onClick={onClose} className="ml-auto text-on-surface-variant/50 hover:text-on-surface text-xl leading-none transition-colors">×</button>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
           {/* Connection name */}
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Connection name</label>
+            <label className="block text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5">Connection name</label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Sample SQLite DB"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all placeholder:text-on-surface-variant/40"
             />
           </div>
 
           {/* Dynamic fields */}
           {connector.formFields.map((f) => (
             <div key={f.key}>
-              <label className="block text-sm font-medium text-slate-700 mb-1">{f.label}</label>
+              <label className="block text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5">{f.label}</label>
               <input
                 type={f.type}
                 value={fields[f.key] ?? ''}
                 onChange={(e) => setField(f.key, e.target.value)}
                 placeholder={f.placeholder}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm font-mono text-on-surface focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all placeholder:text-on-surface-variant/40"
               />
-              {f.hint && <p className="text-xs text-slate-400 mt-1">{f.hint}</p>}
+              {f.hint && <p className="text-xs text-on-surface-variant/50 mt-1">{f.hint}</p>}
             </div>
           ))}
 
           {/* Data domains */}
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Data domains <span className="font-normal text-slate-400 text-xs">(optional)</span>
+            <label className="block text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider mb-1.5">
+              Data domains <span className="font-normal text-on-surface-variant/50 normal-case">(optional)</span>
             </label>
-            <p className="text-xs text-slate-400 mb-2">
+            <p className="text-xs text-on-surface-variant/50 mb-2">
               Tags set here apply to all tables in this source. You can still add extra tags on individual tables.
             </p>
             <div className="flex flex-wrap gap-1.5 mb-2">
               {domains.map((tag) => (
-                <span key={tag} className="inline-flex items-center gap-1 text-xs bg-violet-100 text-violet-700 border border-violet-200 rounded-full px-2.5 py-0.5 font-medium">
+                <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-gradient-to-r from-violet-100 to-purple-50 text-violet-700 border border-violet-200/50 rounded-lg px-2.5 py-1 font-semibold shadow-sm">
                   {tag}
-                  <button type="button" onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none">&times;</button>
+                  <button type="button" onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none text-violet-400">&times;</button>
                 </span>
               ))}
             </div>
@@ -538,25 +538,25 @@ function SlidePanel({
                 onChange={(e) => setDomainInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
                 placeholder="e.g. sales, hr, finance — press Enter to add"
-                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="flex-1 bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all placeholder:text-on-surface-variant/40"
               />
               <button
                 type="button"
                 onClick={() => addDomain(domainInput)}
-                className="px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors"
+                className="px-4 py-2.5 text-sm bg-white/60 border border-white/80 hover:bg-white/80 text-on-surface-variant rounded-xl transition-all font-medium"
               >Add</button>
             </div>
           </div>
 
           {/* Test result */}
           {testStatus === 'ok' && (
-            <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-              <span>✓</span> {testMsg}
+            <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-2.5">
+              <span className="orb-approved" style={{ width: 8, height: 8 }} /> {testMsg}
             </div>
           )}
           {testStatus === 'fail' && (
-            <div className="flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-              <span>✗</span> {testMsg}
+            <div className="flex items-start gap-2 text-sm text-red-600 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5">
+              <span className="orb-rejected" style={{ width: 8, height: 8, marginTop: 4 }} /> {testMsg}
             </div>
           )}
 
@@ -564,8 +564,8 @@ function SlidePanel({
 
           {/* Info note */}
           {!isEdit && (
-            <div className="bg-slate-50 rounded-lg p-4 text-xs text-slate-500 space-y-1">
-              <p className="font-medium text-slate-600">What happens when you connect?</p>
+            <div className="bg-surface-container rounded-xl p-4 text-xs text-on-surface-variant space-y-1">
+              <p className="font-semibold text-on-surface">What happens when you connect?</p>
               <p>1. DataBridge tests the connection to make sure it works.</p>
               <p>2. You pick which tables to ingest into the data warehouse.</p>
               <p>3. Data is ingested as Delta Lake tables for fast querying.</p>
@@ -573,26 +573,26 @@ function SlidePanel({
             </div>
           )}
           {isEdit && (
-            <div className="bg-amber-50 rounded-lg p-4 text-xs text-amber-700 space-y-1">
-              <p className="font-medium">Changing connection details?</p>
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 text-xs text-amber-700 space-y-1">
+              <p className="font-semibold">Changing connection details?</p>
               <p>Test the connection first, then save. If you point to a different database, use Re-analyse to regenerate definitions.</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-slate-200 flex gap-3">
+        <div className="px-6 py-4 ghost-border-b flex gap-3" style={{ borderBottom: 'none', borderTop: '1px solid rgba(193, 199, 208, 0.15)' }}>
           <button
             onClick={handleTest}
             disabled={!allFilled || testStatus === 'testing'}
-            className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors"
+            className="px-4 py-2.5 text-sm bg-white/60 border border-white/80 rounded-xl hover:bg-white/80 disabled:opacity-40 transition-all font-medium text-on-surface-variant"
           >
             {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
           </button>
           <button
             onClick={handleSave}
             disabled={testStatus !== 'ok' || saving}
-            className="flex-1 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors font-medium"
+            className="flex-1 px-4 py-2.5 text-sm gradient-primary text-on-primary rounded-xl hover:opacity-90 disabled:opacity-40 transition-all font-semibold shadow-glow-primary"
           >
             {saving
               ? (isEdit ? 'Saving…' : 'Saving & analysing…')
@@ -759,14 +759,14 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
 
   if (error) {
     return (
-      <div className="bg-red-50 border border-red-200 rounded-xl p-5">
+      <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5 panel-enter">
         <div className="flex items-center gap-3">
-          <span className="text-2xl">⚠</span>
+          <span className="orb-rejected" style={{ width: 12, height: 12 }} />
           <div>
-            <p className="font-semibold text-red-800 text-sm">Profiling failed</p>
-            <p className="text-xs text-red-600 mt-0.5">{error}</p>
+            <p className="font-semibold text-red-700 text-sm">Profiling failed</p>
+            <p className="text-xs text-red-500 mt-0.5">{error}</p>
           </div>
-          <button onClick={onDismiss} className="ml-auto text-red-400 hover:text-red-700 text-xl leading-none">×</button>
+          <button onClick={onDismiss} className="ml-auto text-red-400 hover:text-red-600 text-xl leading-none transition-colors">×</button>
         </div>
       </div>
     );
@@ -774,18 +774,18 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
 
   if (finished) {
     return (
-      <div className="bg-green-50 border border-green-200 rounded-xl p-5">
+      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-5 panel-enter">
         <div className="flex items-center gap-3 mb-3">
-          <span className="text-2xl">🎉</span>
+          <span className="orb-approved" style={{ width: 12, height: 12 }} />
           <div>
-            <p className="font-semibold text-green-800 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
-            <p className="text-xs text-green-600 mt-0.5">{doneMessage || 'Quality profiles, definitions and relationships are ready.'}</p>
+            <p className="font-semibold text-emerald-700 text-sm">Analysis complete for <span className="font-semibold">{name}</span></p>
+            <p className="text-xs text-emerald-600 mt-0.5">{doneMessage || 'Quality profiles, definitions and relationships are ready.'}</p>
           </div>
-          <button onClick={onDismiss} className="ml-auto text-green-400 hover:text-green-700 text-xl leading-none">×</button>
+          <button onClick={onDismiss} className="ml-auto text-emerald-400 hover:text-emerald-600 text-xl leading-none transition-colors">×</button>
         </div>
         <button
           onClick={() => router.push(`/semantic?connectionId=${connId}`)}
-          className="mt-1 w-full px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+          className="mt-1 w-full px-4 py-2.5 text-sm font-semibold gradient-primary text-on-primary rounded-xl hover:opacity-90 transition-all shadow-glow-primary"
         >
           Review definitions →
         </button>
@@ -797,18 +797,18 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   const progress = Math.round(((currentOrder + 1) / PHASE_KEYS.length) * 100);
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+    <div className="glass-card rounded-2xl p-5 panel-enter">
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
-        <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-        <p className="text-sm font-semibold text-slate-800">Analysing <span className="text-blue-600">{name}</span></p>
-        <span className="ml-auto text-xs text-slate-400">{progress}%</span>
+        <span className="orb-draft" style={{ width: 8, height: 8 }} />
+        <p className="text-sm font-semibold text-on-surface">Analysing <span className="text-cyan-600">{name}</span></p>
+        <span className="ml-auto text-xs text-on-surface-variant/50">{progress}%</span>
       </div>
 
       {/* Progress bar */}
-      <div className="w-full h-1.5 bg-slate-100 rounded-full mb-4 overflow-hidden">
+      <div className="w-full h-1.5 bg-surface-container rounded-full mb-4 overflow-hidden">
         <div
-          className="h-full bg-blue-500 rounded-full transition-all duration-700 ease-out"
+          className="h-full bg-gradient-to-r from-primary to-cyan-500 rounded-full transition-all duration-700 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -820,22 +820,22 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
           const isDone    = meta.order < currentOrder;
           const isActive  = phaseKey === currentPhase;
           return (
-            <div key={phaseKey} className={`flex items-center gap-3 rounded-lg px-3 py-2 transition-all ${isActive ? 'bg-blue-50 border border-blue-100' : ''}`}>
+            <div key={phaseKey} className={`flex items-center gap-3 rounded-xl px-3 py-2 transition-all ${isActive ? 'bg-cyan-500/10 border border-cyan-500/20' : ''}`}>
               <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm shrink-0 transition-all ${
-                isDone   ? 'bg-green-100 text-green-600'  :
-                isActive ? 'bg-blue-100 text-blue-600'    :
-                           'bg-slate-100 text-slate-400'
+                isDone   ? 'bg-emerald-500/15 text-emerald-600'  :
+                isActive ? 'bg-cyan-500/15 text-cyan-600'    :
+                           'bg-surface-container text-on-surface-variant/40'
               }`}>
                 {isDone ? '✓' : isActive ? (
-                  <span className="block w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="block w-3.5 h-3.5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
                 ) : meta.icon}
               </div>
               <div className="min-w-0">
-                <p className={`text-xs font-medium ${isDone ? 'text-green-700' : isActive ? 'text-blue-700' : 'text-slate-400'}`}>
+                <p className={`text-xs font-medium ${isDone ? 'text-emerald-600' : isActive ? 'text-cyan-700' : 'text-on-surface-variant/40'}`}>
                   {meta.label}
                 </p>
                 {isActive && (
-                  <p className="text-[11px] text-blue-500 mt-0.5">{message}</p>
+                  <p className="text-[11px] text-cyan-500 mt-0.5">{message}</p>
                 )}
               </div>
             </div>
