@@ -85,7 +85,7 @@ export default function HealthPage() {
   const [activePill, setActivePill] = useState('overview');
   const [profilingKey, setProfilingKey] = useState<string | null>(null); // e.g. "conn-22" or "product-Sales"
   const [profilingProgress, setProfilingProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['facts', 'dims']));
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
 
   function toggleSection(key: string) {
     setExpandedSections((prev) => {
