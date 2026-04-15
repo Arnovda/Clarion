@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import AppShell from '@/components/layout/AppShell';
+import IconRail from '@/components/layout/IconRail';
+import ContextPanel from '@/components/layout/ContextPanel';
 import QualityPanel from '@/components/QualityPanel';
 import api from '@/lib/api';
 
@@ -289,18 +290,50 @@ export default function HealthPage() {
     </div>
   );
 
-  return (
-    <AppShell
-      title="Data Health"
-      subtitle={`${profiledTables.length} tables profiled • Average score: ${avgScore}%`}
-      contextPanel={contextPanel}
-      pills={[
-        { key: 'overview', label: 'Overview' },
-        { key: 'detail', label: 'Table Detail' },
-      ]}
-      activePill={activePill}
-      onPillChange={setActivePill}
+  const pillBtn = (key: string, label: string) => (
+    <button
+      key={key}
+      onClick={() => setActivePill(key)}
+      className={`px-5 py-3 text-sm font-semibold transition-all whitespace-nowrap relative ${
+        activePill === key
+          ? 'text-white'
+          : 'text-white/50 hover:text-white/70'
+      }`}
     >
+      {label}
+      {activePill === key && (
+        <span className="absolute bottom-0 left-3 right-3 h-[3px] rounded-full bg-cyan-400" />
+      )}
+    </button>
+  );
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-surface">
+      <IconRail />
+
+      <ContextPanel>
+        {contextPanel}
+      </ContextPanel>
+
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* Gradient mesh header */}
+        <div className="gradient-mesh px-6 py-4 flex items-center justify-between flex-shrink-0 relative overflow-hidden">
+          <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
+          <div className="absolute -bottom-4 right-1/4 w-16 h-16 rounded-full bg-white/[0.02]" />
+          <div className="relative">
+            <h1 className="text-lg font-headline font-bold text-white tracking-tight">Data Health</h1>
+            <p className="text-sm text-white/50">
+              {profiledTables.length} tables profiled &bull; Average score: {avgScore}%
+            </p>
+          </div>
+          <div className="relative flex items-center gap-0">
+            {pillBtn('overview', 'Overview')}
+            {pillBtn('detail', 'Table Detail')}
+          </div>
+        </div>
+
+        {/* Scrollable content area */}
+        <div className="flex-1 overflow-y-auto overflow-x-hidden">
       {loading ? (
         <div className="flex items-center justify-center h-64">
           <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />
@@ -419,6 +452,8 @@ export default function HealthPage() {
           Select a table from the left panel to view quality details
         </div>
       )}
-    </AppShell>
+        </div>
+      </div>
+    </div>
   );
 }
