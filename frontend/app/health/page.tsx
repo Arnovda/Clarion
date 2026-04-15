@@ -113,8 +113,6 @@ export default function HealthPage() {
         conns = connIds.map(id => ({ id, name: `Connection ${id}` }));
       }
       setConnections(conns);
-      // Auto-expand first connection
-      if (conns.length > 0) setSelectedConnId(conns[0].id);
     } catch {} finally { setLoading(false); }
   }, []);
 
