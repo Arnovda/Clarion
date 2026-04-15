@@ -266,13 +266,19 @@ export default function DatabaseTree({
           );
         })}
 
-        {/* ── Data Products: Shared Dimensions + Fact Tables ── */}
+        {/* ── Data Products ── */}
         {hasProducts && (
           <>
+            <div className="px-4 pt-5 pb-2 flex-shrink-0">
+              <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+                Data products
+              </p>
+            </div>
+
             {/* ── Shared Dimensions ── */}
             {sharedDimensions.length > 0 && (
               <>
-                <div className="px-4 pt-5 pb-2 flex-shrink-0">
+                <div className="px-4 pt-1 pb-2 flex-shrink-0">
                   <button
                     onClick={() => toggleSection('dims')}
                     className="flex items-center gap-2 w-full text-left group"

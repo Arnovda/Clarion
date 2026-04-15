@@ -262,10 +262,12 @@ export default function HealthPage() {
             .map(([productName, tbls]) => ({ productName, tables: tbls.sort((a, b) => a.table_name.localeCompare(b.table_name)) }));
 
           return (<>
+            <div className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em] px-3 pt-4 pb-1">Data products</div>
+
             {/* ── Dimensions (shared/deduplicated) ── */}
             {dimensions.length > 0 && (
               <>
-                <div className="px-3 pt-4 pb-1">
+                <div className="px-3 pt-1 pb-1">
                   <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
                     <ChevronIcon expanded={expandedSections.has('dims')} />
                     <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Dimensions</span>
