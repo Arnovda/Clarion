@@ -85,6 +85,15 @@ export default function HealthPage() {
   const [activePill, setActivePill] = useState('overview');
   const [profilingKey, setProfilingKey] = useState<string | null>(null); // e.g. "conn-22" or "product-Sales"
   const [profilingProgress, setProfilingProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['facts', 'dims']));
+
+  function toggleSection(key: string) {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -218,68 +227,120 @@ export default function HealthPage() {
           );
         })}
 
-        {/* Products section */}
+        {/* Fact & Dimension sections (matching Data Dictionary layout) */}
         {(() => {
           const productTables = tables.filter((t) => t.layer === 'product');
-          const productNames = [...new Set(productTables.map((t) => t.product_name).filter(Boolean))] as string[];
-          if (productNames.length === 0) return null;
-          return (<>
-            <div className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em] px-3 pt-4 pb-1 flex items-center gap-1.5">
-              <span>Products</span>
-            </div>
-            {productNames.map((pn) => {
-              const allPtables = productTables.filter((t) => t.product_name === pn);
-              const seenNames = new Map<string, TableHealth>();
-              for (const t of allPtables) {
-                const existing = seenNames.get(t.table_name);
-                if (!existing || (t.overall_score !== null && existing.overall_score === null)) {
-                  seenNames.set(t.table_name, t);
+          if (productTables.length === 0) return null;
+
+          // Deduplicate dimensions across products, collect facts grouped by product
+          const dimByName = new Map<string, { best: TableHealth; products: Set<string> }>();
+          const factsByProduct = new Map<string, TableHealth[]>();
+
+          for (const t of productTables) {
+            const pn = t.product_name ?? 'Unknown';
+            if (t.table_role === 'dimension' || t.table_role === 'bridge' || t.table_role === 'junk') {
+              const existing = dimByName.get(t.table_name);
+              if (!existing) {
+                dimByName.set(t.table_name, { best: t, products: new Set([pn]) });
+              } else {
+                existing.products.add(pn);
+                if (t.overall_score !== null && existing.best.overall_score === null) {
+                  existing.best = t;
                 }
               }
-              const ptables = Array.from(seenNames.values())
-                .sort((a, b) => (a.table_role === 'fact' ? -1 : 1) - (b.table_role === 'fact' ? -1 : 1) || a.table_name.localeCompare(b.table_name));
-              const ptAvg = ptables.filter((t) => t.overall_score !== null);
-              const avg = ptAvg.length > 0 ? Math.round((ptAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / ptAvg.length) * 100) : null;
-              const isExpanded = selectedConnId === -ptables[0]?.id;
-              return (
-                <div key={pn}>
-                  <button
-                    onClick={() => { setSelectedConnId(isExpanded ? null : -ptables[0]?.id); setSelectedTable(null); setActivePill('overview'); }}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-xs flex items-center gap-2.5 transition-colors ${
-                      isExpanded
-                        ? 'bg-white/[0.07] border-l-2 border-purple-400 text-white font-semibold'
-                        : 'border-l-2 border-transparent text-white/60 hover:bg-white/[0.04] hover:text-white/80'
-                    }`}>
-                    <ChevronIcon expanded={isExpanded} />
-                    <span className="text-xs">&#11088;</span>
-                    <span className="truncate flex-1">{pn}</span>
-                    {avg !== null && <HealthRing percent={avg} size={18} />}
-                    <span className="text-[10px] text-white/30">{ptables.length}</span>
+            } else {
+              const arr = factsByProduct.get(pn);
+              if (arr) { if (!arr.find(x => x.table_name === t.table_name)) arr.push(t); }
+              else factsByProduct.set(pn, [t]);
+            }
+          }
+
+          const dimensions = [...dimByName.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([name, { best, products }]) => ({ name, table: best, usedBy: [...products].sort() }));
+
+          const factGroups = [...factsByProduct.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([productName, tbls]) => ({ productName, tables: tbls.sort((a, b) => a.table_name.localeCompare(b.table_name)) }));
+
+          return (<>
+            {/* ── Fact Tables (grouped by product) ── */}
+            {factGroups.length > 0 && (
+              <>
+                <div className="px-3 pt-4 pb-1">
+                  <button onClick={() => toggleSection('facts')} className="flex items-center gap-2 w-full text-left">
+                    <ChevronIcon expanded={expandedSections.has('facts')} />
+                    <span className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">Fact tables</span>
+                    <span className="text-[10px] text-white/20 ml-auto">{factGroups.reduce((n, g) => n + g.tables.length, 0)}</span>
                   </button>
-                  {isExpanded && (
-                    <div className="ml-5 border-l border-white/[0.06] mt-0.5 mb-1">
-                      {ptables.map((t) => {
-                        const isActive = selectedTable?.tableName === t.table_name;
-                        return (
-                          <button key={t.id}
-                            onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, productTableId: t.product_table_id }); setActivePill('detail'); }}
-                            className={`w-full text-left pl-4 pr-3 py-1.5 text-xs flex items-center gap-2 transition-colors ${
-                              isActive
-                                ? 'bg-cyan-500/10 border-r-2 border-cyan-400 text-cyan-300 font-semibold'
-                                : 'border-r-2 border-transparent text-white/50 hover:bg-white/[0.04] hover:text-white/70'
-                            }`}>
-                            <TableIcon active={isActive} />
-                            <span className="truncate flex-1">{t.table_name}</span>
-                            <span className="text-[10px] text-white/25 mr-1">{t.table_role === 'fact' ? 'F' : 'D'}</span>
-                            <ScoreDot score={t.overall_score} />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
-              );
-            })}
+                {expandedSections.has('facts') && (
+                  <div className="ml-5 border-l border-white/[0.06]">
+                    {factGroups.map((group) => (
+                      <div key={group.productName}>
+                        <div className="pl-4 pr-3 pt-3 pb-1">
+                          <span className="text-[10px] font-semibold text-white/25 uppercase tracking-wide">{group.productName}</span>
+                        </div>
+                        {group.tables.map((t) => {
+                          const isActive = selectedTable?.tableName === t.table_name && selectedTable?.productTableId === t.product_table_id;
+                          return (
+                            <button key={t.id}
+                              onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, productTableId: t.product_table_id }); setActivePill('detail'); }}
+                              className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
+                                isActive
+                                  ? 'bg-cyan-500/10 border-r-2 border-cyan-400 text-cyan-300 font-semibold'
+                                  : 'border-r-2 border-transparent text-white/60 hover:bg-white/[0.04] hover:text-white/80'
+                              }`}>
+                              <TableIcon active={isActive} />
+                              <span className="truncate flex-1">{t.display_name || t.table_name}</span>
+                              <ScoreDot score={t.overall_score} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ── Dimensions (shared/deduplicated) ── */}
+            {dimensions.length > 0 && (
+              <>
+                <div className="px-3 pt-4 pb-1">
+                  <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
+                    <ChevronIcon expanded={expandedSections.has('dims')} />
+                    <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Dimensions</span>
+                    <span className="text-[10px] text-white/20 ml-auto">{dimensions.length}</span>
+                  </button>
+                </div>
+                {expandedSections.has('dims') && (
+                  <div className="ml-5 border-l border-white/[0.06]">
+                    {dimensions.map((dim) => {
+                      const isActive = selectedTable?.tableName === dim.name;
+                      return (
+                        <button key={dim.name}
+                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
+                          className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
+                            isActive
+                              ? 'bg-purple-500/10 border-r-2 border-purple-400 text-purple-300 font-semibold'
+                              : 'border-r-2 border-transparent text-white/60 hover:bg-white/[0.04] hover:text-white/80'
+                          }`}>
+                          <TableIcon active={isActive} />
+                          <span className="truncate flex-1">{dim.table.display_name || dim.name}</span>
+                          {dim.usedBy.length > 1 && (
+                            <span className="text-[9px] px-1.5 py-0.5 bg-cyan-500/15 text-cyan-400 rounded font-medium" title={`Used in: ${dim.usedBy.join(', ')}`}>
+                              {dim.usedBy.length}x
+                            </span>
+                          )}
+                          <ScoreDot score={dim.table.overall_score} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
           </>);
         })()}
 
