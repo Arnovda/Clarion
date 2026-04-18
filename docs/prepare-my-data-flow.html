@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DataBridge — "Prepare my data" Flow</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f8fafc; color: #1e293b; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+  h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  h1 span { color: #3b82f6; }
+  .subtitle { color: #64748b; font-size: 15px; margin-bottom: 40px; }
+  .card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 32px; margin-bottom: 32px; border: 1px solid #e2e8f0; }
+  .card h2 { font-size: 20px; font-weight: 600; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
+  .card h2 .num { background: #3b82f6; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+  .card .desc { color: #64748b; font-size: 14px; margin-bottom: 24px; }
+  .mermaid { display: flex; justify-content: center; }
+  .mermaid svg { max-width: 100%; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; padding: 12px 16px; background: #f1f5f9; border-radius: 8px; font-size: 13px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+  .error-box { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 16px; margin-top: 16px; }
+  .error-box h3 { color: #dc2626; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .error-box p { font-size: 13px; color: #7f1d1d; line-height: 1.6; }
+  .fix-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px; margin-top: 12px; }
+  .fix-box h3 { color: #16a34a; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+  .fix-box p { font-size: 13px; color: #14532d; line-height: 1.6; }
+  .toc { background: white; border-radius: 12px; border: 1px solid #e2e8f0; padding: 20px 28px; margin-bottom: 32px; }
+  .toc h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; margin-bottom: 12px; }
+  .toc ol { padding-left: 20px; }
+  .toc li { font-size: 14px; margin-bottom: 6px; }
+  .toc a { color: #3b82f6; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1><span>Prepare my data</span> — Full Flow Diagram</h1>
+<p class="subtitle">Everything that happens when a user clicks the button — from UI to disk.</p>
+
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#user-view">What the user sees (timeline)</a></li>
+    <li><a href="#high-level">High-level architecture</a></li>
+    <li><a href="#sequence">Full sequence diagram (all API calls)</a></li>
+    <li><a href="#data-flow">Data flow — what gets written where</a></li>
+    <li><a href="#wave">Wave execution — design + build per topic</a></li>
+    <li><a href="#repair">Auto-repair loop</a></li>
+    <li><a href="#errors">Where the 3 errors occur</a></li>
+  </ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="user-view">
+  <h2><span class="num">1</span> What the user sees</h2>
+  <p class="desc">The terminal log that appears in the UI, step by step. Each line corresponds to a backend operation.</p>
+  <pre class="mermaid">
+timeline
+    title "Prepare my data" — User-visible timeline
+    section Step 1 — Analyse
+      Claude is analysing your source system : Propose SSE stream
+      Planned 5 topics · 2 shared reference tables : Proposal done
+    section Step 2 — Setup
+      Setting up topics in database : Create product records
+      Created 5 topics : Records saved
+    section Step 3 — Ingest
+      Ingesting source data into warehouse : ETL copies tables
+      Ingested 6 source tables : warehouse_path set
+    section Step 4 — Reference data
+      Customers · asking Claude to design : Star schema AI
+      Customers · loading data : DuckDB transform
+      Customers · 150 rows loaded : Done
+    section Step 5 — Analytics data
+      Sales · asking Claude to design : Star schema AI
+      Sales · loading data : DuckDB transform
+      Sales · 2,400 rows loaded : Done
+    section Done
+      All done! Your data is ready to query : Build complete
+  </pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="high-level">
+  <h2><span class="num">2</span> High-level architecture</h2>
+  <p class="desc">The four systems involved and what each one does.</p>
+  <pre class="mermaid">
+graph LR
+    subgraph Browser["🖥️ Browser (Next.js)"]
+      UI["Products page<br/><code>products/page.tsx</code>"]
+    end
+
+    subgraph Backend["⚙️ Node.js Backend (Express)"]
+      direction TB
+      Products["Products API<br/><code>routes/products.ts</code>"]
+      Ingestion["Ingestion API<br/><code>routes/ingestion.ts</code>"]
+      AI["AIService<br/><code>ai/AIService.ts</code>"]
+      Runner["Transformation Runner<br/><code>services/transformationRunner.ts</code>"]
+    end
+
+    subgraph External["🌐 External Services"]
+      Claude["Claude API<br/>(Anthropic)"]
+      ETL["ETL Service<br/>(Python FastAPI<br/>Docker :8000)"]
+    end
+
+    subgraph Storage["💾 Storage"]
+      PG["PostgreSQL<br/>(semantic layer)"]
+      Warehouse["Warehouse<br/>(Parquet files)"]
+      SQLite["Source DB<br/>(SQLite / PG / MySQL)"]
+    end
+
+    UI -->|"REST + SSE"| Products
+    UI -->|"REST"| Ingestion
+    Products --> AI
+    AI -->|"claude-sonnet-4-6"| Claude
+    Ingestion -->|"HTTP POST"| ETL
+    ETL -->|"reads"| SQLite
+    ETL -->|"writes Delta Lake"| Warehouse
+    Products --> Runner
+    Runner -->|"reads"| Warehouse
+    Runner -->|"writes Parquet"| Warehouse
+    Products --> PG
+    Ingestion --> PG
+    Runner --> PG
+
+    style Browser fill:#eff6ff,stroke:#3b82f6,stroke-width:2px
+    style Backend fill:#f0fdf4,stroke:#22c55e,stroke-width:2px
+    style External fill:#fefce8,stroke:#eab308,stroke-width:2px
+    style Storage fill:#fdf2f8,stroke:#ec4899,stroke-width:2px
+  </pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="sequence">
+  <h2><span class="num">3</span> Full sequence diagram</h2>
+  <p class="desc">Every API call in order. The frontend drives the entire flow — each step waits for the previous one.</p>
+  <pre class="mermaid">
+sequenceDiagram
+    participant U as 🖥️ Browser
+    participant B as ⚙️ Backend
+    participant C as 🤖 Claude API
+    participant E as 🐍 ETL Service
+    participant PG as 🐘 PostgreSQL
+    participant W as 📁 Warehouse
+
+    rect rgb(239, 246, 255)
+    Note over U,C: Step 1 — Propose (SSE stream)
+    U->>+B: POST /products/propose-stream {connectionId}
+    B->>PG: Read source_tables + source_columns
+    B->>+C: Claude: analyse source, propose data products
+    loop Streaming
+        C-->>B: thinking tokens
+        B-->>U: SSE: {type: thinking, text: "..."}
+    end
+    C->>-B: Final proposal JSON
+    B-->>-U: SSE: {type: done, proposal: {...}}
+    end
+
+    rect rgb(240, 253, 244)
+    Note over U,PG: Step 2 — Create records
+    U->>+B: POST /products/build-proposed {proposal}
+    B->>PG: INSERT data_products, star_schemas,<br/>data_product_sources, data_product_dependencies
+    B->>-U: {products: [{name, id}, ...]}
+    end
+
+    rect rgb(254, 252, 232)
+    Note over U,W: Step 3 — Ingest source data (NEW)
+    U->>B: GET /semantic/tables?connectionId=X
+    B->>U: [{table_name: "customers"}, ...]
+    U->>+B: POST /ingestion/ingest {connectionId, tables}
+    B->>PG: UPDATE connections SET ingestion_status='running'
+    B->>+E: POST /ingest {source_type, config, tables}
+    E->>W: Read source DB → write Delta Lake (Parquet)
+    E->>-B: {warehouse_path, results: [...]}
+    B->>PG: UPDATE connections SET warehouse_path=...
+    B->>PG: UPDATE ingested_tables SET delta_path=...
+    B->>-U: {ok: true, warehouse_path: "..."}
+    end
+
+    rect rgb(245, 243, 255)
+    Note over U,W: Step 4 — Wave 1: Reference data (per topic, parallel)
+    par Design Customers
+        U->>+B: POST /products/1/design-stream
+        B->>PG: Read source_columns for assigned tables
+        B->>+C: Claude: design star schema
+        C-->>B: thinking + schema JSON
+        B->>PG: INSERT star_schemas, product_tables, product_columns
+        C->>-B: Done
+        B->>+C: Claude: generate transformation SQL per table
+        C->>-B: SQL strings
+        B->>PG: UPDATE product_tables SET transformation_sql=...
+        B-->>-U: SSE: {type: done}
+    and Design Calendar
+        U->>B: POST /products/2/design-stream
+        Note over B,C: Same flow (silent)
+    end
+
+    par Build Customers
+        U->>+B: POST /products/1/run-full
+        B->>PG: Read product_tables WHERE transformation_sql IS NOT NULL
+        B->>PG: Read connections.warehouse_path
+        B->>W: DuckDB: delta_scan() → create views from ingested tables
+        B->>W: DuckDB: execute transformation SQL
+        B->>W: DuckDB: COPY TO parquet (output)
+        B->>PG: UPDATE product_tables SET status='success', row_count=...
+        B->>-U: {results: [{table, status, row_count}]}
+    and Build Calendar
+        U->>B: POST /products/2/run-full
+        Note over B,W: Same flow (silent)
+    end
+    end
+
+    rect rgb(255, 241, 242)
+    Note over U,W: Step 5 — Wave 2: Analytics data (depends on wave 1)
+    Note over U,C: Same design + build pattern<br/>but fact tables can JOIN to<br/>dim tables from wave 1
+    end
+
+    U->>U: ✅ "All done! Your data is ready to query."
+  </pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="data-flow">
+  <h2><span class="num">4</span> Data flow — what gets written where</h2>
+  <p class="desc">Physical files and database rows created at each stage.</p>
+  <pre class="mermaid">
+graph TB
+    subgraph Source["📦 Source Database (sample.db)"]
+      ST[("customers, products,<br/>orders, order_lines,<br/>invoices")]
+    end
+
+    subgraph ETLBox["🐍 ETL Service"]
+      ETL["Python FastAPI<br/>reads source → writes Delta"]
+    end
+
+    subgraph RawWarehouse["📁 warehouse/conn_1/"]
+      R1["customers/<br/>├─ _delta_log/<br/>└─ *.parquet"]
+      R2["products/<br/>├─ _delta_log/<br/>└─ *.parquet"]
+      R3["orders/<br/>├─ _delta_log/<br/>└─ *.parquet"]
+      R4["order_lines/<br/>├─ _delta_log/<br/>└─ *.parquet"]
+      R5["invoices/<br/>├─ _delta_log/<br/>└─ *.parquet"]
+    end
+
+    subgraph DuckDB["🦆 DuckDB (in-memory)"]
+      V1["VIEW customers<br/>(delta_scan)"]
+      V2["VIEW products<br/>(delta_scan)"]
+      V3["VIEW orders<br/>(delta_scan)"]
+      TX["Transformation SQL<br/>(Claude-generated)"]
+    end
+
+    subgraph ProductWarehouse["📁 warehouse/product/sales/"]
+      P1["dim_customer/<br/>└─ data.parquet"]
+      P2["dim_product/<br/>└─ data.parquet"]
+      P3["fact_sales/<br/>└─ data.parquet"]
+    end
+
+    subgraph Postgres["🐘 PostgreSQL"]
+      PG1["connections<br/>(warehouse_path)"]
+      PG2["ingested_tables<br/>(delta_path, status)"]
+      PG3["data_products<br/>(status)"]
+      PG4["product_tables<br/>(transformation_sql,<br/>delta_path, row_count)"]
+      PG5["product_columns<br/>(column_name, data_type,<br/>column_role)"]
+    end
+
+    ST -->|"ETL reads"| ETL
+    ETL -->|"writes Delta Lake"| RawWarehouse
+    ETL -->|"returns paths"| PG1
+    ETL -->|"per-table paths"| PG2
+
+    R1 --> V1
+    R2 --> V2
+    R3 --> V3
+
+    V1 --> TX
+    V2 --> TX
+    V3 --> TX
+
+    TX -->|"COPY TO parquet"| ProductWarehouse
+
+    ProductWarehouse -->|"update status"| PG4
+
+    style Source fill:#fef3c7,stroke:#d97706
+    style ETLBox fill:#fefce8,stroke:#eab308
+    style RawWarehouse fill:#dbeafe,stroke:#3b82f6
+    style DuckDB fill:#e0e7ff,stroke:#6366f1
+    style ProductWarehouse fill:#d1fae5,stroke:#10b981
+    style Postgres fill:#fce7f3,stroke:#ec4899
+  </pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="wave">
+  <h2><span class="num">5</span> Wave execution — dependency order</h2>
+  <p class="desc">Topics are grouped into waves based on dependencies. Wave 1 (reference/dimensions) runs first, wave 2 (analytics/facts) can JOIN to wave 1 results.</p>
+  <pre class="mermaid">
+graph TD
+    subgraph Wave1["🔷 Wave 1 — Reference data (no dependencies)"]
+      direction LR
+      Cal["📅 Calendar"]
+      Cust["👥 Customers"]
+      Inv["📦 Inventory"]
+    end
+
+    subgraph Wave2["📊 Wave 2 — Analytics data (depends on wave 1)"]
+      direction LR
+      Sales["💰 Sales"]
+      Purch["🛒 Purchasing"]
+    end
+
+    Wave1 --> Wave2
+
+    subgraph PerTopic["Per topic execution"]
+      direction LR
+      D["Design<br/>(Claude SSE)"] --> B["Build<br/>(DuckDB run-full)"]
+    end
+
+    subgraph DesignDetail["Design phase detail"]
+      direction TB
+      D1["Read source_columns<br/>from PostgreSQL"] --> D2["Claude designs<br/>star schema"]
+      D2 --> D3["Save tables +<br/>columns to PG"]
+      D3 --> D4["Claude generates<br/>transformation SQL"]
+      D4 --> D5["Save SQL to<br/>product_tables"]
+    end
+
+    subgraph BuildDetail["Build phase detail"]
+      direction TB
+      B1["Load ingested tables<br/>as DuckDB views<br/>(delta_scan)"] --> B2["Load shared dims<br/>from wave 1<br/>(read_parquet)"]
+      B2 --> B3["Execute transformation<br/>SQL per table<br/>(DAG order)"]
+      B3 --> B4["Write output<br/>parquet files"]
+      B4 --> B5["Update PG:<br/>status, row_count"]
+    end
+
+    style Wave1 fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    style Wave2 fill:#fef3c7,stroke:#d97706,stroke-width:2px
+    style PerTopic fill:#f0fdf4,stroke:#22c55e
+    style DesignDetail fill:#ede9fe,stroke:#8b5cf6
+    style BuildDetail fill:#fce7f3,stroke:#ec4899
+  </pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="repair">
+  <h2><span class="num">6</span> Auto-repair loop</h2>
+  <p class="desc">When transformation SQL fails, the backend automatically asks Claude to fix it (up to 2 attempts).</p>
+  <pre class="mermaid">
+flowchart TD
+    A["Execute transformation SQL<br/>(all tables, DAG order)"] --> B{"Any tables<br/>failed?"}
+    B -->|No| Z["✅ Return results"]
+    B -->|Yes| C["Collect failed tables<br/>+ error messages"]
+    C --> D{"attempt < 2?"}
+    D -->|No| Z
+    D -->|Yes| E["For each failed table:"]
+    E --> F["Read product_columns<br/>(expected output schema)"]
+    F --> G["Call Claude:<br/>repairTransformationSql()<br/>with error + SQL + expectedColumns"]
+    G --> H["Save corrected SQL<br/>to product_tables"]
+    H --> I["Re-run ONLY<br/>repaired tables"]
+    I --> J["Merge results back"]
+    J --> B
+
+    style A fill:#dbeafe,stroke:#3b82f6
+    style Z fill:#d1fae5,stroke:#10b981
+    style G fill:#fefce8,stroke:#eab308
+    style E fill:#fee2e2,stroke:#ef4444
+  </pre>
+
+  <div class="error-box" style="margin-top: 20px;">
+    <h3>Bug: repair validates against wrong columns</h3>
+    <p>
+      The repair prompt receives <code>product_columns</code> (what Claude designed) as the "expected" schema.
+      If Claude designed a column called <code>stad</code> during star schema design, the repair loop sees <code>stad</code>
+      as the expected column — it doesn't know the <strong>source</strong> column is actually called <code>city</code>.
+      So the repair reinforces the original mistake instead of fixing it.
+    </p>
+  </div>
+  <div class="fix-box">
+    <h3>Fix: also pass source column names</h3>
+    <p>
+      Add the <code>source_columns</code> from the ingested tables as additional context to the repair prompt.
+      Then Claude can see: "The error says 'stad' not found. The source column is 'city'. Replace stad → city."
+    </p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card" id="errors">
+  <h2><span class="num">7</span> Where the 3 errors occur</h2>
+  <p class="desc">Mapped onto the execution flow.</p>
+  <pre class="mermaid">
+flowchart TD
+    Start(["🖱️ Click 'Prepare my data'"]) --> Propose["Step 1<br/>Propose topics<br/>(Claude SSE)"]
+    Propose --> Setup["Step 2<br/>Create records in PG"]
+    Setup --> Ingest["Step 3<br/>Ingest via ETL"]
+
+    Ingest --> IngestCheck{"ETL running?"}
+    IngestCheck -->|"No (ECONNREFUSED)"| ERR1["❌ ERROR 1<br/>warehouse_path stays NULL<br/>All transformations fail:<br/>'Connection has no<br/>warehouse path'"]
+    IngestCheck -->|Yes| ETLRun["ETL reads source DB<br/>writes Delta Lake"]
+    ETLRun --> DeltaCheck{"Delta files<br/>written cleanly?"}
+    DeltaCheck -->|"Partial / corrupted write"| ERR2_SETUP["Corrupted parquet in<br/>warehouse/conn_1/customers/"]
+    DeltaCheck -->|OK| SetPath["Set warehouse_path on connection"]
+
+    SetPath --> Wave1["Step 4 — Wave 1"]
+    ERR2_SETUP --> SetPath
+
+    Wave1 --> Design["Design: Claude reads<br/>source_columns from PG"]
+    Design --> DesignCheck{"source_columns<br/>accurate?"}
+    DesignCheck -->|"Wrong/missing metadata"| ERR3_SETUP["Claude generates SQL<br/>with 'stad' instead of 'city'"]
+    DesignCheck -->|OK| GoodSQL["Correct transformation SQL"]
+
+    ERR3_SETUP --> Build
+    GoodSQL --> Build
+
+    Build["Build: DuckDB<br/>delta_scan() source tables"]
+    Build --> ScanCheck{"Can DuckDB read<br/>Delta files?"}
+    ScanCheck -->|"Corrupted parquet"| ERR2["❌ ERROR 2<br/>Serialization Error:<br/>Failed to parse JSON"]
+    ScanCheck -->|OK| ExecSQL["Execute transformation SQL"]
+
+    ExecSQL --> SQLCheck{"All columns exist?"}
+    SQLCheck -->|"Missing column"| ERR3["❌ ERROR 3<br/>Binder Error:<br/>column 'stad' not found"]
+    SQLCheck -->|OK| WriteParquet["Write output parquet"]
+
+    ERR3 --> Repair["Auto-repair loop<br/>(up to 2 attempts)"]
+    Repair --> RepairCheck{"Repair successful?"}
+    RepairCheck -->|"Yes"| WriteParquet
+    RepairCheck -->|"No (validates against<br/>wrong product_columns)"| ERR3_FINAL["⚠️ Table still failed"]
+
+    WriteParquet --> Done(["✅ Done"])
+
+    style ERR1 fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    style ERR2 fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    style ERR3 fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
+    style ERR2_SETUP fill:#fff7ed,stroke:#f97316,stroke-width:2px
+    style ERR3_SETUP fill:#fff7ed,stroke:#f97316,stroke-width:2px
+    style ERR3_FINAL fill:#fef2f2,stroke:#ef4444
+    style Done fill:#d1fae5,stroke:#10b981,stroke-width:2px
+    style Start fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    style Repair fill:#fefce8,stroke:#eab308
+  </pre>
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 24px;">
+    <div class="error-box">
+      <h3>Error 1 — No warehouse path</h3>
+      <p><strong>Where:</strong> <code>transformationRunner.ts:152</code></p>
+      <p><strong>When:</strong> Every topic's build phase</p>
+      <p><strong>Root cause:</strong> ETL service not running or ingestion never triggered</p>
+      <p><strong>Fix:</strong> Ingestion step added before transformations. Must hard-gate if ETL fails.</p>
+    </div>
+    <div class="error-box">
+      <h3>Error 2 — Serialization Error</h3>
+      <p><strong>Where:</strong> <code>transformationRunner.ts:189-205</code></p>
+      <p><strong>When:</strong> DuckDB creates views from ingested delta files</p>
+      <p><strong>Root cause:</strong> Corrupted parquet from a previous failed ETL run</p>
+      <p><strong>Fix:</strong> Re-ingestion overwrites the corrupted files. <code>run-full</code> alone doesn't help.</p>
+    </div>
+    <div class="error-box">
+      <h3>Error 3 — Column "stad"</h3>
+      <p><strong>Where:</strong> <code>transformationRunner.ts:266</code> (DuckDB exec)</p>
+      <p><strong>When:</strong> Executing Claude-generated SQL</p>
+      <p><strong>Root cause:</strong> Stale/wrong <code>source_columns</code> → Claude picks wrong name at design time</p>
+      <p><strong>Fix:</strong> Refresh source metadata before design + pass source columns to repair prompt.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="card">
+  <h2>Summary — 3 proposed fixes</h2>
+  <pre class="mermaid">
+graph LR
+    subgraph Fix1["Fix 1: Hard-gate ingestion"]
+      direction TB
+      F1A["POST /ingestion/ingest"] --> F1B{"Response OK +<br/>warehouse_path set?"}
+      F1B -->|No| F1C["❌ STOP build<br/>Show: 'Start Docker'"]
+      F1B -->|Yes| F1D["✅ Continue to waves"]
+    end
+
+    subgraph Fix2["Fix 2: Refresh source metadata"]
+      direction TB
+      F2A["After ingestion succeeds"] --> F2B["Re-introspect source DB<br/>(column names from<br/>PRAGMA table_info)"]
+      F2B --> F2C["Update source_columns<br/>in PostgreSQL"]
+      F2C --> F2D["Claude sees correct<br/>column names at<br/>design time"]
+    end
+
+    subgraph Fix3["Fix 3: Source cols in repair"]
+      direction TB
+      F3A["On transformation error"] --> F3B["Fetch source_columns<br/>for the connection"]
+      F3B --> F3C["Pass to Claude repair:<br/>'Source has: city, not stad'"]
+      F3C --> F3D["Claude fixes<br/>stad → city"]
+    end
+
+    style Fix1 fill:#dbeafe,stroke:#3b82f6,stroke-width:2px
+    style Fix2 fill:#fefce8,stroke:#eab308,stroke-width:2px
+    style Fix3 fill:#d1fae5,stroke:#10b981,stroke-width:2px
+  </pre>
+</div>
+
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'neutral',
+  flowchart: { curve: 'basis', padding: 16 },
+  sequence: { actorMargin: 40, messageFontSize: 12, noteMargin: 10 },
+  themeVariables: {
+    fontSize: '13px',
+    fontFamily: 'Segoe UI, system-ui, sans-serif',
+  }
+});
+</script>
+</body>
+</html>

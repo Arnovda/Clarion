@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>DataBridge | Integration Hub</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "primary-fixed": "#d0e4ff",
+                    "primary-fixed-dim": "#9ccaff",
+                    "secondary-fixed": "#b9eaff",
+                    "error": "#ba1a1a",
+                    "primary-container": "#004a7c",
+                    "on-secondary-container": "#00647d",
+                    "on-surface-variant": "#42474f",
+                    "outline": "#727780",
+                    "tertiary-fixed-dim": "#c3c0ff",
+                    "primary": "#003358",
+                    "inverse-primary": "#9ccaff",
+                    "surface-tint": "#296195",
+                    "surface": "#f8f9ff",
+                    "surface-bright": "#f8f9ff",
+                    "on-secondary-fixed-variant": "#004d62",
+                    "surface-container-lowest": "#ffffff",
+                    "outline-variant": "#c1c7d0",
+                    "on-secondary": "#ffffff",
+                    "on-primary-fixed-variant": "#00497b",
+                    "error-container": "#ffdad6",
+                    "on-error": "#ffffff",
+                    "tertiary": "#1d00a7",
+                    "secondary-container": "#8fdfff",
+                    "on-primary": "#ffffff",
+                    "surface-container-highest": "#d5e3fd",
+                    "tertiary-container": "#3424cc",
+                    "surface-variant": "#d5e3fd",
+                    "surface-container-high": "#dde9ff",
+                    "on-error-container": "#93000a",
+                    "secondary-fixed-dim": "#81d1f0",
+                    "surface-container": "#e6eeff",
+                    "surface-dim": "#ccdbf4",
+                    "surface-container-low": "#eff4ff",
+                    "on-tertiary-fixed": "#0f0069",
+                    "on-primary-container": "#87baf3",
+                    "on-surface": "#0d1c2f",
+                    "on-primary-fixed": "#001d35",
+                    "on-tertiary-fixed-variant": "#3323cc",
+                    "on-background": "#0d1c2f",
+                    "secondary": "#006781",
+                    "on-secondary-fixed": "#001f29",
+                    "tertiary-fixed": "#e2dfff",
+                    "on-tertiary-container": "#b0aeff",
+                    "background": "#f8f9ff",
+                    "inverse-on-surface": "#ebf1ff",
+                    "on-tertiary": "#ffffff",
+                    "inverse-surface": "#233144"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "fontFamily": {
+                    "headline": ["Manrope"],
+                    "body": ["Inter"],
+                    "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        .glass-panel {
+            background: rgba(213, 227, 253, 0.6);
+            backdrop-filter: blur(24px);
+        }
+    </style>
+</head>
+<body class="bg-surface font-body text-on-surface flex overflow-hidden h-screen">
+<!-- SideNavBar Component -->
+<aside class="hidden md:flex flex-col h-full py-6 bg-[#eff4ff] dark:bg-slate-900 h-screen w-64 border-r-0">
+<div class="px-6 mb-8">
+<h1 class="text-xl font-bold text-[#0d1c2f] dark:text-white font-headline">DataBridge</h1>
+<p class="text-xs text-slate-500 font-medium">Enterprise Intelligence</p>
+</div>
+<div class="flex-1 px-4 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+                Dashboard
+            </a>
+<!-- Active Tab: Integration -->
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-[#004A7C] dark:text-blue-300 font-bold border-r-4 border-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] text-sm tracking-tight active:scale-95 duration-150" href="#">
+<span class="material-symbols-outlined" data-icon="hub">hub</span>
+                Integration
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined" data-icon="analytics">analytics</span>
+                Insights
+            </a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined" data-icon="security">security</span>
+                Governance
+            </a>
+</div>
+<div class="px-4 mb-6">
+<button class="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-br from-[#003358] to-[#004a7c] text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:brightness-110 transition-all">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+                New Analysis
+            </button>
+</div>
+<div class="px-4 border-t border-slate-200 dark:border-slate-800 pt-6 space-y-1">
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined" data-icon="help">help</span>
+                Support
+            </a>
+<a class="flex items-center gap-3 px-4 py-2 text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+                Settings
+            </a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+<!-- TopNavBar Component -->
+<nav class="flex items-center justify-between px-8 h-16 w-full bg-[#f8f9ff]/60 backdrop-blur-xl dark:bg-slate-950/60 sticky top-0 z-50 border-b border-[#0d1c2f]/10">
+<div class="flex items-center gap-8">
+<span class="md:hidden text-lg font-black tracking-tighter text-[#0d1c2f] dark:text-white font-headline">DataBridge</span>
+<div class="hidden lg:flex items-center bg-surface-container-low rounded-full px-4 py-1.5 focus-within:ring-2 ring-secondary/20 transition-all">
+<span class="material-symbols-outlined text-slate-400 text-sm" data-icon="search">search</span>
+<input class="bg-transparent border-none focus:ring-0 text-sm font-['Inter'] w-64 placeholder:text-slate-400" placeholder="Search resources..." type="text"/>
+</div>
+<div class="hidden md:flex items-center gap-6">
+<a class="text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-all font-['Inter'] text-sm font-medium" href="#">Overview</a>
+<a class="text-[#004A7C] border-b-2 border-[#004A7C] pb-1 font-['Inter'] text-sm font-medium" href="#">Reports</a>
+<a class="text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-all font-['Inter'] text-sm font-medium" href="#">Activity</a>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-slate-500 hover:bg-surface-container-highest rounded-full transition-colors">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+</button>
+<button class="p-2 text-slate-500 hover:bg-surface-container-highest rounded-full transition-colors">
+<span class="material-symbols-outlined" data-icon="dark_mode">dark_mode</span>
+</button>
+<div class="h-8 w-8 rounded-full bg-primary-container flex items-center justify-center overflow-hidden">
+<img alt="User Profile" class="h-full w-full object-cover" data-alt="professional headshot of a data architect in a modern office environment with soft natural lighting" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBOinR8GvtfeztzD6INqDap6-OUfhm3ru3qWJNc7WaU5DTEZ44vmroaUuM33QydGU_eO1AmM-n9AcMSBiGP9x4M9Zmaen1zzaro-MsTtESP3bj8hAfGLJLsZ_n7RoPN1yAHLPI0bg8pnewa-J1P4uFROaBer7BLjRoZvpJtldKc0oTZc_DneWbQ7tzQwK5xjT4t_7xk2pWHn1dXH3xc6oYaBi189e5PuA0uIPr-YjCve2kw4RM1n27Ezs2eq3-MK_xrFCdjFNggl9IA"/>
+</div>
+</div>
+</nav>
+<!-- Content Area -->
+<div class="flex-1 overflow-y-auto p-8 space-y-8">
+<!-- Header Section -->
+<header class="flex flex-col md:flex-row md:items-end justify-between gap-6">
+<div>
+<h2 class="text-4xl font-extrabold tracking-tight font-headline text-on-surface">Integration Hub</h2>
+<p class="text-on-surface-variant mt-2 font-medium">Manage and monitor your enterprise data stream ecosystem.</p>
+</div>
+<button class="flex items-center gap-2 px-6 py-3 bg-gradient-to-br from-primary to-primary-container text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:brightness-110 transition-all">
+<span class="material-symbols-outlined" data-icon="add_circle">add_circle</span>
+                    Connect New Source
+                </button>
+</header>
+<!-- Statistical Overview (Bento Grid) -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+<div class="md:col-span-2 bg-surface-container-lowest p-6 rounded-2xl flex flex-col justify-between group">
+<div class="flex justify-between items-start">
+<span class="text-label-md font-bold text-on-surface-variant tracking-wider uppercase text-xs">Total Data Ingested</span>
+<span class="material-symbols-outlined text-primary-container" data-icon="bar_chart">bar_chart</span>
+</div>
+<div class="mt-8 flex items-baseline gap-2">
+<span class="text-5xl font-extrabold font-headline text-on-surface">14.8</span>
+<span class="text-2xl font-bold text-primary">PB</span>
+</div>
+<div class="mt-4 flex items-center gap-2 text-sm font-medium text-secondary">
+<span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>
+<span>+12.5% from last month</span>
+</div>
+</div>
+<div class="bg-surface-container-low p-6 rounded-2xl">
+<span class="text-xs font-bold text-on-surface-variant uppercase tracking-wider">Active Streams</span>
+<div class="mt-6 text-4xl font-extrabold font-headline">24</div>
+<div class="mt-2 flex -space-x-2">
+<div class="w-8 h-8 rounded-full border-2 border-surface bg-primary text-[10px] flex items-center justify-center text-white">AWS</div>
+<div class="w-8 h-8 rounded-full border-2 border-surface bg-secondary text-[10px] flex items-center justify-center text-white">SF</div>
+<div class="w-8 h-8 rounded-full border-2 border-surface bg-tertiary text-[10px] flex items-center justify-center text-white">BQ</div>
+<div class="w-8 h-8 rounded-full border-2 border-surface bg-surface-container-highest text-[10px] flex items-center justify-center text-on-surface-variant font-bold">+5</div>
+</div>
+</div>
+<div class="bg-tertiary-container/10 p-6 rounded-2xl border-l-4 border-tertiary">
+<div class="flex items-center gap-2 text-tertiary font-bold text-sm">
+<span class="material-symbols-outlined text-sm" data-icon="auto_awesome">auto_awesome</span>
+                        AI Insight
+                    </div>
+<p class="mt-4 text-sm text-on-surface-variant leading-relaxed">
+                        Salesforce sync latency has increased by <span class="font-bold text-on-surface">15ms</span>. Consider regionalizing your endpoint.
+                    </p>
+</div>
+</div>
+<!-- Grid of Data Sources -->
+<div class="space-y-4">
+<div class="flex items-center justify-between">
+<h3 class="text-xl font-bold font-headline">Active Connections</h3>
+<div class="flex gap-2">
+<button class="p-2 rounded-lg bg-surface-container text-on-surface-variant hover:bg-surface-container-highest transition-colors">
+<span class="material-symbols-outlined" data-icon="grid_view">grid_view</span>
+</button>
+<button class="p-2 rounded-lg text-slate-400 hover:text-on-surface transition-colors">
+<span class="material-symbols-outlined" data-icon="list">list</span>
+</button>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+<!-- Salesforce Card -->
+<div class="bg-surface-container-lowest p-6 rounded-2xl group hover:ring-2 ring-primary/10 transition-all">
+<div class="flex justify-between items-start">
+<div class="h-12 w-12 bg-blue-50 rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-blue-600 text-3xl" data-icon="cloud">cloud</span>
+</div>
+<span class="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-[10px] font-bold uppercase tracking-tight">Connected</span>
+</div>
+<h4 class="mt-6 text-lg font-bold font-headline">Salesforce CRM</h4>
+<p class="text-sm text-on-surface-variant mt-1">Global Sales Operations</p>
+<div class="mt-8 pt-6 border-t border-surface-container border-dashed flex justify-between items-center">
+<div class="text-xs">
+<span class="text-on-surface-variant">Last Sync:</span>
+<span class="font-bold ml-1">2m ago</span>
+</div>
+<button class="text-primary font-bold text-sm hover:underline">Configure</button>
+</div>
+</div>
+<!-- AWS Card -->
+<div class="bg-surface-container-lowest p-6 rounded-2xl group hover:ring-2 ring-primary/10 transition-all">
+<div class="flex justify-between items-start">
+<div class="h-12 w-12 bg-orange-50 rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-orange-600 text-3xl" data-icon="storage">storage</span>
+</div>
+<span class="px-3 py-1 rounded-full bg-primary-fixed text-on-primary-fixed-variant text-[10px] font-bold uppercase tracking-tight flex items-center gap-1">
+<span class="w-1.5 h-1.5 bg-on-primary-fixed-variant rounded-full animate-pulse"></span>
+                                Syncing
+                            </span>
+</div>
+<h4 class="mt-6 text-lg font-bold font-headline">AWS S3 Bucket</h4>
+<p class="text-sm text-on-surface-variant mt-1">Raw Media Assets</p>
+<div class="mt-8 pt-6 border-t border-surface-container border-dashed flex justify-between items-center">
+<div class="text-xs">
+<span class="text-on-surface-variant">Throughput:</span>
+<span class="font-bold ml-1">450 MB/s</span>
+</div>
+<button class="text-primary font-bold text-sm hover:underline">Monitor</button>
+</div>
+</div>
+<!-- Google BigQuery Card -->
+<div class="bg-surface-container-lowest p-6 rounded-2xl group hover:ring-2 ring-primary/10 transition-all">
+<div class="flex justify-between items-start">
+<div class="h-12 w-12 bg-red-50 rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-red-600 text-3xl" data-icon="database">database</span>
+</div>
+<span class="px-3 py-1 rounded-full bg-error-container text-on-error-container text-[10px] font-bold uppercase tracking-tight">Error</span>
+</div>
+<h4 class="mt-6 text-lg font-bold font-headline">Google BigQuery</h4>
+<p class="text-sm text-on-surface-variant mt-1">Analytics Data Warehouse</p>
+<div class="mt-8 pt-6 border-t border-surface-container border-dashed flex justify-between items-center">
+<div class="text-xs text-error font-bold flex items-center gap-1">
+<span class="material-symbols-outlined text-xs" data-icon="warning">warning</span>
+                                Authentication Failed
+                            </div>
+<button class="text-primary font-bold text-sm hover:underline">Reconnect</button>
+</div>
+</div>
+<!-- Snowflake Card -->
+<div class="bg-surface-container-lowest p-6 rounded-2xl group hover:ring-2 ring-primary/10 transition-all">
+<div class="flex justify-between items-start">
+<div class="h-12 w-12 bg-cyan-50 rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-cyan-600 text-3xl" data-icon="ac_unit">ac_unit</span>
+</div>
+<span class="px-3 py-1 rounded-full bg-secondary-container text-on-secondary-container text-[10px] font-bold uppercase tracking-tight">Connected</span>
+</div>
+<h4 class="mt-6 text-lg font-bold font-headline">Snowflake</h4>
+<p class="text-sm text-on-surface-variant mt-1">Financial Ledgers</p>
+<div class="mt-8 pt-6 border-t border-surface-container border-dashed flex justify-between items-center">
+<div class="text-xs">
+<span class="text-on-surface-variant">Health:</span>
+<span class="font-bold ml-1 text-green-600">Optimal</span>
+</div>
+<button class="text-primary font-bold text-sm hover:underline">Details</button>
+</div>
+</div>
+<!-- Empty State / Add Card -->
+<div class="border-2 border-dashed border-outline-variant bg-transparent p-6 rounded-2xl flex flex-col items-center justify-center group hover:bg-surface-container-low hover:border-primary transition-all cursor-pointer">
+<div class="h-12 w-12 rounded-full border-2 border-outline-variant flex items-center justify-center group-hover:bg-primary group-hover:border-primary transition-colors">
+<span class="material-symbols-outlined text-outline-variant group-hover:text-white" data-icon="add">add</span>
+</div>
+<p class="mt-4 font-bold text-on-surface-variant group-hover:text-on-surface">Add Source</p>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Bottom Navigation (Mobile Only) -->
+<nav class="md:hidden fixed bottom-0 left-0 right-0 h-16 bg-surface-container-lowest flex items-center justify-around z-50">
+<a class="flex flex-col items-center gap-1 text-slate-400" href="#">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="text-[10px] font-bold">Dash</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-primary" href="#">
+<span class="material-symbols-outlined" data-icon="hub" style="font-variation-settings: 'FILL' 1;">hub</span>
+<span class="text-[10px] font-bold">Hub</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-400" href="#">
+<span class="material-symbols-outlined" data-icon="analytics">analytics</span>
+<span class="text-[10px] font-bold">Insights</span>
+</a>
+<a class="flex flex-col items-center gap-1 text-slate-400" href="#">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="text-[10px] font-bold">Config</span>
+</a>
+</nav>
+</body></html>

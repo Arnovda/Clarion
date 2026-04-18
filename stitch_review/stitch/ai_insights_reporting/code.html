@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "primary-fixed": "#d0e4ff",
+                    "primary-fixed-dim": "#9ccaff",
+                    "secondary-fixed": "#b9eaff",
+                    "error": "#ba1a1a",
+                    "primary-container": "#004a7c",
+                    "on-secondary-container": "#00647d",
+                    "on-surface-variant": "#42474f",
+                    "outline": "#727780",
+                    "tertiary-fixed-dim": "#c3c0ff",
+                    "primary": "#003358",
+                    "inverse-primary": "#9ccaff",
+                    "surface-tint": "#296195",
+                    "surface": "#f8f9ff",
+                    "surface-bright": "#f8f9ff",
+                    "on-secondary-fixed-variant": "#004d62",
+                    "surface-container-lowest": "#ffffff",
+                    "outline-variant": "#c1c7d0",
+                    "on-secondary": "#ffffff",
+                    "on-primary-fixed-variant": "#00497b",
+                    "error-container": "#ffdad6",
+                    "on-error": "#ffffff",
+                    "tertiary": "#1d00a7",
+                    "secondary-container": "#8fdfff",
+                    "on-primary": "#ffffff",
+                    "surface-container-highest": "#d5e3fd",
+                    "tertiary-container": "#3424cc",
+                    "surface-variant": "#d5e3fd",
+                    "surface-container-high": "#dde9ff",
+                    "on-error-container": "#93000a",
+                    "secondary-fixed-dim": "#81d1f0",
+                    "surface-container": "#e6eeff",
+                    "surface-dim": "#ccdbf4",
+                    "surface-container-low": "#eff4ff",
+                    "on-tertiary-fixed": "#0f0069",
+                    "on-primary-container": "#87baf3",
+                    "on-surface": "#0d1c2f",
+                    "on-primary-fixed": "#001d35",
+                    "on-tertiary-fixed-variant": "#3323cc",
+                    "on-background": "#0d1c2f",
+                    "secondary": "#006781",
+                    "on-secondary-fixed": "#001f29",
+                    "tertiary-fixed": "#e2dfff",
+                    "on-tertiary-container": "#b0aeff",
+                    "background": "#f8f9ff",
+                    "inverse-on-surface": "#ebf1ff",
+                    "on-tertiary": "#ffffff",
+                    "inverse-surface": "#233144"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "fontFamily": {
+                    "headline": ["Manrope"],
+                    "body": ["Inter"],
+                    "label": ["Inter"]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body { font-family: 'Inter', sans-serif; }
+        h1, h2, h3 { font-family: 'Manrope', sans-serif; }
+        .glass-panel {
+            background: rgba(213, 227, 253, 0.6);
+            backdrop-filter: blur(24px);
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface flex min-h-screen">
+<!-- SideNavBar Component -->
+<aside class="h-screen w-64 border-r-0 bg-[#eff4ff] dark:bg-slate-900 flex flex-col py-6 sticky top-0 shrink-0">
+<div class="px-6 mb-10">
+<h1 class="text-xl font-bold text-[#0d1c2f] dark:text-white">DataBridge</h1>
+<p class="text-[10px] uppercase tracking-widest text-slate-500 font-bold mt-1">Enterprise Intelligence</p>
+</div>
+<nav class="flex-1 px-3 space-y-1">
+<a class="flex items-center px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="dashboard">dashboard</span>
+                Dashboard
+            </a>
+<a class="flex items-center px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="hub">hub</span>
+                Integration
+            </a>
+<!-- Active State: Insights -->
+<a class="flex items-center px-4 py-3 rounded-lg text-[#004A7C] dark:text-blue-300 font-bold border-r-4 border-[#004A7C] bg-[#d5e3fd]/50 dark:bg-slate-800/50 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight scale-95 duration-150" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="analytics">analytics</span>
+                Insights
+            </a>
+<a class="flex items-center px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] dark:hover:bg-slate-800 transition-colors font-['Manrope'] font-semibold text-sm tracking-tight" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="security">security</span>
+                Governance
+            </a>
+</nav>
+<div class="px-4 mt-8">
+<button class="w-full py-3 px-4 rounded-xl bg-gradient-to-br from-[#003358] to-[#004a7c] text-white text-sm font-bold flex items-center justify-center gap-2 shadow-lg hover:brightness-110 transition-all">
+<span class="material-symbols-outlined text-sm" data-icon="add">add</span>
+                New Analysis
+            </button>
+</div>
+<div class="mt-auto px-3 space-y-1">
+<a class="flex items-center px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] transition-colors font-['Manrope'] font-semibold text-sm" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="help">help</span>
+                Support
+            </a>
+<a class="flex items-center px-4 py-3 rounded-lg text-slate-500 dark:text-slate-400 hover:text-[#004A7C] hover:bg-[#d5e3fd] transition-colors font-['Manrope'] font-semibold text-sm" href="#">
+<span class="material-symbols-outlined mr-3" data-icon="settings">settings</span>
+                Settings
+            </a>
+</div>
+</aside>
+<div class="flex-1 flex flex-col min-w-0">
+<!-- TopNavBar Component -->
+<header class="flex items-center justify-between px-8 h-16 w-full bg-[#f8f9ff]/60 backdrop-blur-xl dark:bg-slate-950/60 docked full-width top-0 sticky z-50 border-b border-[#0d1c2f]/10">
+<div class="flex items-center flex-1 max-w-xl">
+<div class="relative w-full">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm" data-icon="search">search</span>
+<input class="w-full bg-surface-container-lowest border-none h-10 pl-10 pr-4 rounded-full text-sm focus:ring-2 focus:ring-secondary/10 transition-all placeholder:text-slate-400" placeholder="Search analytics, models, or reports..." type="text"/>
+</div>
+</div>
+<nav class="hidden md:flex items-center gap-8 mx-8 font-['Inter'] text-sm font-medium">
+<a class="text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-all" href="#">Overview</a>
+<a class="text-[#004A7C] border-b-2 border-[#004A7C] pb-1" href="#">Reports</a>
+<a class="text-slate-500 dark:text-slate-400 hover:text-[#004A7C] transition-all" href="#">Activity</a>
+</nav>
+<div class="flex items-center gap-4">
+<button class="p-2 text-slate-500 hover:text-[#004A7C] transition-all relative">
+<span class="material-symbols-outlined" data-icon="notifications">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-error rounded-full"></span>
+</button>
+<button class="p-2 text-slate-500 hover:text-[#004A7C] transition-all">
+<span class="material-symbols-outlined" data-icon="dark_mode">dark_mode</span>
+</button>
+<div class="h-8 w-8 rounded-full bg-slate-200 overflow-hidden ml-2 ring-2 ring-primary/5">
+<img alt="User Profile" data-alt="professional corporate portrait of a middle-aged male executive with a confident smile in a clean office environment" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBFld_HaeqttHEbmqAlI2lKUYAuTauMg6hWp5HuKrHDPxhyLV2BXVK_ledQFPwsuak2uGosQtsyqqigN38BDe-MVSCr9NIjzv4lAZZQ0xPfo-L2GVLP8bD9ioWLZrndvp5nCw6SDZZv66GFnSCSs1IO-qonuiqWgb8PwuP2qiaI9vaXCYH36EQFFcTz900TUtz-uGtnUQtFUipi15Fvi-dVgbVTOmQyCYRFJTU3LDwPKcCOfxmiKJum0mnoGjnYVJWt6aekSbO4mdaq"/>
+</div>
+</div>
+</header>
+<main class="flex-1 p-8 space-y-8 overflow-y-auto">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row md:items-end justify-between gap-6">
+<div>
+<span class="text-secondary font-bold text-xs tracking-widest uppercase mb-2 block">Enterprise Intelligence</span>
+<h2 class="text-4xl font-extrabold text-on-surface tracking-tight">AI Insights &amp; Reporting</h2>
+<p class="text-on-surface-variant mt-2 max-w-2xl">Visualizing predictive anomalies and real-time performance metrics across your global data infrastructure.</p>
+</div>
+<div class="flex items-center gap-3">
+<div class="flex bg-surface-container-low p-1 rounded-lg">
+<button class="px-4 py-2 text-xs font-semibold rounded-md bg-surface-container-lowest text-on-surface shadow-sm">Real-time</button>
+<button class="px-4 py-2 text-xs font-semibold text-slate-500">Historical</button>
+</div>
+<button class="flex items-center gap-2 px-4 py-2 bg-surface-container-lowest border border-outline-variant/15 text-sm font-semibold rounded-lg hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined text-lg" data-icon="filter_list">filter_list</span>
+                        Filters
+                    </button>
+<button class="flex items-center gap-2 px-4 py-2 bg-surface-container-lowest border border-outline-variant/15 text-sm font-semibold rounded-lg hover:bg-surface-container transition-colors">
+<span class="material-symbols-outlined text-lg" data-icon="share">share</span>
+                        Share
+                    </button>
+</div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-6">
+<!-- Main Chart Card -->
+<div class="col-span-12 lg:col-span-8 bg-surface-container-lowest rounded-xl p-6 relative overflow-hidden group">
+<div class="flex items-center justify-between mb-8">
+<div>
+<h3 class="text-lg font-bold">Data Ingestion Trends</h3>
+<p class="text-sm text-slate-500">Processing volume vs. projected capacity</p>
+</div>
+<div class="flex items-center gap-4 text-xs font-semibold">
+<div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-primary"></span> Actual</div>
+<div class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-secondary-container"></span> Projected</div>
+</div>
+</div>
+<!-- Placeholder for Chart -->
+<div class="h-[340px] flex items-end gap-2 px-2 relative">
+<div class="absolute inset-0 flex flex-col justify-between py-2 border-l border-outline-variant/10 text-[10px] text-slate-400 font-mono">
+<span>100 TB</span><span>80 TB</span><span>60 TB</span><span>40 TB</span><span>20 TB</span><span>0</span>
+</div>
+<!-- Bar chart elements with staggered heights for visual interest -->
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[60%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[45%] transition-all group-hover/bar:h-[50%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[65%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[50%] transition-all group-hover/bar:h-[55%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[75%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[60%] transition-all group-hover/bar:h-[65%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[85%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[78%] transition-all group-hover/bar:h-[82%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[70%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[55%] transition-all group-hover/bar:h-[60%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[80%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[72%] transition-all group-hover/bar:h-[75%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[95%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[88%] transition-all group-hover/bar:h-[92%]"></div>
+</div>
+<div class="flex-1 flex flex-col justify-end gap-1 group/bar">
+<div class="w-full bg-secondary-container/30 rounded-t-sm h-[60%]"></div>
+<div class="w-full bg-primary rounded-t-sm h-[48%] transition-all group-hover/bar:h-[52%]"></div>
+</div>
+</div>
+<div class="flex justify-between mt-4 px-10 text-[10px] font-bold text-slate-400">
+<span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span>
+</div>
+</div>
+<!-- AI Observations Side Panel -->
+<div class="col-span-12 lg:col-span-4 space-y-6">
+<div class="bg-surface-container-lowest rounded-xl p-6 border-l-4 border-tertiary shadow-sm">
+<div class="flex items-center gap-3 mb-4">
+<div class="p-2 bg-tertiary-container/20 rounded-lg">
+<span class="material-symbols-outlined text-tertiary" data-icon="auto_awesome">auto_awesome</span>
+</div>
+<h3 class="text-lg font-bold">AI Observations</h3>
+</div>
+<div class="space-y-4">
+<div class="p-4 rounded-lg bg-tertiary-container/10 border border-tertiary/10">
+<div class="flex justify-between items-start mb-1">
+<span class="text-xs font-bold text-tertiary">Anomalous Peak</span>
+<span class="text-[10px] text-slate-500">2h ago</span>
+</div>
+<p class="text-xs leading-relaxed text-slate-700">Storage usage increased by 14% unexpectedly in the 'Analytics-West' cluster. Possible log dump detected.</p>
+</div>
+<div class="p-4 rounded-lg bg-secondary-container/10 border border-secondary/10">
+<div class="flex justify-between items-start mb-1">
+<span class="text-xs font-bold text-secondary">Optimization Tip</span>
+<span class="text-[10px] text-slate-500">5h ago</span>
+</div>
+<p class="text-xs leading-relaxed text-slate-700">Predictive analysis suggests scaling down node-74 between 02:00-04:00 GMT to save 12% compute cost.</p>
+</div>
+</div>
+<button class="w-full mt-6 py-3 border border-outline-variant/20 rounded-lg text-xs font-bold text-primary hover:bg-surface-container transition-all">View All Findings</button>
+</div>
+<div class="bg-gradient-to-br from-primary to-primary-container rounded-xl p-6 text-white overflow-hidden relative group">
+<div class="relative z-10">
+<h4 class="text-sm font-bold opacity-80 uppercase tracking-widest mb-1">Predictive Health</h4>
+<div class="text-4xl font-black mb-4">98.2<span class="text-lg opacity-60 ml-1">%</span></div>
+<div class="flex items-center gap-2 text-xs font-medium">
+<span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>
+<span>+2.4% from last period</span>
+</div>
+</div>
+<!-- Abstract Background Decoration -->
+<div class="absolute -right-4 -bottom-4 w-32 h-32 bg-white/10 rounded-full blur-3xl group-hover:scale-125 transition-transform duration-700"></div>
+</div>
+</div>
+<!-- Secondary Row: Performance Details -->
+<div class="col-span-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+<div class="bg-surface-container-lowest rounded-xl p-6 flex items-center justify-between">
+<div>
+<p class="text-[10px] font-bold text-slate-500 uppercase mb-1">Active Integrations</p>
+<h4 class="text-2xl font-black">1,248</h4>
+</div>
+<div class="w-12 h-12 rounded-full bg-secondary-container/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-on-secondary-container" data-icon="cable">cable</span>
+</div>
+</div>
+<div class="bg-surface-container-lowest rounded-xl p-6 flex items-center justify-between">
+<div>
+<p class="text-[10px] font-bold text-slate-500 uppercase mb-1">Latency (Avg)</p>
+<h4 class="text-2xl font-black">42<span class="text-sm font-normal text-slate-400">ms</span></h4>
+</div>
+<div class="w-12 h-12 rounded-full bg-tertiary-container/20 flex items-center justify-center">
+<span class="material-symbols-outlined text-on-tertiary-fixed-variant" data-icon="speed">speed</span>
+</div>
+</div>
+<div class="bg-surface-container-lowest rounded-xl p-6 flex items-center justify-between">
+<div>
+<p class="text-[10px] font-bold text-slate-500 uppercase mb-1">Report Exports</p>
+<h4 class="text-2xl font-black">342</h4>
+</div>
+<div class="w-12 h-12 rounded-full bg-primary-fixed/30 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary" data-icon="file_export">file_export</span>
+</div>
+</div>
+</div>
+<!-- Interactive Data Table (Editorial Style) -->
+<div class="col-span-12 bg-surface-container-lowest rounded-xl overflow-hidden">
+<div class="px-6 py-5 flex items-center justify-between border-b border-outline-variant/10">
+<h3 class="font-bold">Recent Intelligence Reports</h3>
+<button class="text-sm font-bold text-primary flex items-center gap-1">Export CSV <span class="material-symbols-outlined text-sm" data-icon="download">download</span></button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead>
+<tr class="bg-surface text-[10px] font-black uppercase text-slate-400 tracking-wider">
+<th class="px-6 py-4">Report Name</th>
+<th class="px-6 py-4">Status</th>
+<th class="px-6 py-4 text-center">Confidence</th>
+<th class="px-6 py-4">Generated By</th>
+<th class="px-6 py-4 text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/5">
+<tr class="hover:bg-surface-container transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-sm text-primary" data-icon="description">description</span>
+</div>
+<div>
+<div class="text-sm font-bold">Cloud Infrastructure Audit</div>
+<div class="text-[10px] text-slate-400">Sept 12, 2023 • 4.2MB</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 rounded-full text-[10px] font-bold bg-secondary-container/30 text-on-secondary-container">COMPLETED</span>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center justify-center gap-2">
+<div class="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-secondary w-[92%]"></div>
+</div>
+<span class="text-[10px] font-bold">92%</span>
+</div>
+</td>
+<td class="px-6 py-4 text-sm font-medium">AI Bridge v2.4</td>
+<td class="px-6 py-4 text-right">
+<button class="p-2 hover:bg-white rounded-lg transition-colors text-slate-400 hover:text-primary">
+<span class="material-symbols-outlined" data-icon="more_horiz">more_horiz</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-sm text-primary" data-icon="query_stats">query_stats</span>
+</div>
+<div>
+<div class="text-sm font-bold">Regional Ingestion Sync</div>
+<div class="text-[10px] text-slate-400">Sept 11, 2023 • 1.8MB</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 rounded-full text-[10px] font-bold bg-secondary-container/30 text-on-secondary-container">COMPLETED</span>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center justify-center gap-2">
+<div class="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-secondary w-[87%]"></div>
+</div>
+<span class="text-[10px] font-bold">87%</span>
+</div>
+</td>
+<td class="px-6 py-4 text-sm font-medium">Auto-Report System</td>
+<td class="px-6 py-4 text-right">
+<button class="p-2 hover:bg-white rounded-lg transition-colors text-slate-400 hover:text-primary">
+<span class="material-symbols-outlined" data-icon="more_horiz">more_horiz</span>
+</button>
+</td>
+</tr>
+<tr class="hover:bg-surface-container transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 rounded bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-sm text-primary" data-icon="monitoring">monitoring</span>
+</div>
+<div>
+<div class="text-sm font-bold">Predictive Capacity Plan</div>
+<div class="text-[10px] text-slate-400">Sept 10, 2023 • 12.5MB</div>
+</div>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="px-2 py-1 rounded-full text-[10px] font-bold bg-tertiary-container/20 text-tertiary">PROCESSING</span>
+</td>
+<td class="px-6 py-4">
+<div class="flex items-center justify-center gap-2">
+<div class="w-24 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-tertiary w-[34%]"></div>
+</div>
+<span class="text-[10px] font-bold">34%</span>
+</div>
+</td>
+<td class="px-6 py-4 text-sm font-medium">AI Bridge v2.4</td>
+<td class="px-6 py-4 text-right">
+<button class="p-2 hover:bg-white rounded-lg transition-colors text-slate-400 hover:text-primary">
+<span class="material-symbols-outlined" data-icon="more_horiz">more_horiz</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

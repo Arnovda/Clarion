@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DataBridge Profiling Pipeline — Explained</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #f8fafc; color: #1e293b; padding: 40px; line-height: 1.6; }
+  h1 { font-size: 28px; margin-bottom: 8px; }
+  .subtitle { color: #64748b; margin-bottom: 40px; font-size: 15px; }
+
+  .phase {
+    background: white; border-radius: 16px; padding: 32px; margin-bottom: 24px;
+    border: 1px solid #e2e8f0; position: relative;
+  }
+  .phase::before {
+    content: ''; position: absolute; left: 50%; top: -24px;
+    width: 2px; height: 24px; background: #cbd5e1;
+  }
+  .phase:first-of-type::before { display: none; }
+
+  .phase-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .phase-num {
+    width: 48px; height: 48px; border-radius: 12px; display: flex;
+    align-items: center; justify-content: center; font-weight: 700;
+    font-size: 20px; color: white; flex-shrink: 0;
+  }
+  .phase-title { font-size: 20px; font-weight: 700; }
+  .phase-time { font-size: 13px; color: #94a3b8; margin-left: auto; background: #f1f5f9; padding: 4px 12px; border-radius: 8px; }
+
+  .p1 .phase-num { background: #3b82f6; }
+  .p2 .phase-num { background: #8b5cf6; }
+  .p3 .phase-num { background: #f59e0b; }
+  .p4 .phase-num { background: #10b981; }
+  .p5 .phase-num { background: #06b6d4; }
+
+  .flow { display: flex; flex-direction: column; gap: 12px; }
+  .step {
+    display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px;
+    background: #f8fafc; border-radius: 10px; border: 1px solid #e2e8f0;
+  }
+  .step-icon { font-size: 18px; flex-shrink: 0; margin-top: 2px; }
+  .step-content { flex: 1; }
+  .step-title { font-weight: 600; font-size: 14px; }
+  .step-detail { font-size: 13px; color: #64748b; margin-top: 2px; }
+  .step-sql {
+    background: #1e293b; color: #e2e8f0; padding: 10px 14px; border-radius: 8px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px;
+    margin-top: 8px; overflow-x: auto; white-space: pre; line-height: 1.5;
+  }
+  .step-sql .kw { color: #93c5fd; }
+  .step-sql .fn { color: #fbbf24; }
+  .step-sql .str { color: #86efac; }
+  .step-sql .comment { color: #64748b; }
+
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    color: #94a3b8; font-size: 20px; padding: 4px 0;
+  }
+
+  .data-flow {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .data-box {
+    padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  }
+  .db-azure { background: #dbeafe; color: #1d4ed8; }
+  .db-duckdb { background: #fef3c7; color: #92400e; }
+  .db-postgres { background: #e0e7ff; color: #3730a3; }
+  .db-neo4j { background: #d1fae5; color: #065f46; }
+  .db-claude { background: #fce7f3; color: #9d174d; }
+  .db-arrow { color: #94a3b8; font-size: 16px; }
+
+  .layers {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;
+  }
+  .layer {
+    padding: 12px 16px; background: #f8fafc; border-radius: 10px;
+    border: 1px solid #e2e8f0;
+  }
+  .layer-title { font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .layer-detail { font-size: 12px; color: #64748b; }
+  .layer-result { font-size: 12px; color: #059669; font-weight: 600; margin-top: 4px; }
+
+  .summary {
+    background: linear-gradient(135deg, #eff6ff, #f0fdf4);
+    border-radius: 16px; padding: 32px; margin-top: 40px;
+    border: 1px solid #d1d5db;
+  }
+  .summary h2 { font-size: 20px; margin-bottom: 16px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .stat { text-align: center; }
+  .stat-value { font-size: 32px; font-weight: 800; color: #1e293b; }
+  .stat-label { font-size: 13px; color: #64748b; }
+
+  .legend {
+    display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 32px;
+    padding: 16px; background: white; border-radius: 12px; border: 1px solid #e2e8f0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>DataBridge Profiling Pipeline</h1>
+<p class="subtitle">What happens when you click "Re-analyse" — every step, every query, every system involved.</p>
+
+<div class="legend">
+  <div class="legend-item"><span class="data-box db-azure">Azure Blob</span> Delta Lake warehouse</div>
+  <div class="legend-item"><span class="data-box db-duckdb">DuckDB</span> In-memory query engine</div>
+  <div class="legend-item"><span class="data-box db-postgres">PostgreSQL</span> Semantic layer DB</div>
+  <div class="legend-item"><span class="data-box db-neo4j">Neo4j</span> Knowledge graph</div>
+  <div class="legend-item"><span class="data-box db-claude">Claude AI</span> Anthropic API</div>
+</div>
+
+<!-- Phase 1: Schema Introspection -->
+<div class="phase p1">
+  <div class="phase-header">
+    <div class="phase-num">1</div>
+    <div>
+      <div class="phase-title">Reading Schema</div>
+      <div style="font-size:13px;color:#64748b">Discover tables, columns, types, sample values, and foreign keys</div>
+    </div>
+    <div class="phase-time">~4 min for 35 tables</div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="step-icon">🔌</div>
+      <div class="step-content">
+        <div class="step-title">Connect to DuckDB + Azure Blob</div>
+        <div class="step-detail">Creates an in-memory DuckDB database, loads the <code>delta</code> and <code>azure</code> extensions, sets <code>azure_transport_option_type = 'curl'</code> for SSL compatibility, and creates an Azure secret from the storage connection string.</div>
+        <div class="data-flow">
+          <span class="data-box db-duckdb">DuckDB :memory:</span>
+          <span class="db-arrow">&rarr;</span>
+          <span class="data-box db-azure">Azure Blob Storage</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">📋</div>
+      <div class="step-content">
+        <div class="step-title">Introspect each table (35 tables)</div>
+        <div class="step-detail">For each table in the warehouse, DuckDB creates a view pointing at the Delta Lake files on Azure Blob, then reads column names, types, and 5 sample values per column.</div>
+        <div class="step-sql"><span class="comment">-- For each table:</span>
+<span class="kw">CREATE OR REPLACE VIEW</span> "__introspect_customers" <span class="kw">AS</span>
+  <span class="kw">SELECT</span> * <span class="kw">FROM</span> <span class="fn">delta_scan</span>(<span class="str">'az://warehouse/tenant_2/conn_10/customers'</span>);
+
+<span class="kw">DESCRIBE</span> "__introspect_customers";  <span class="comment">-- returns column names + types</span>
+
+<span class="kw">SELECT DISTINCT</span> "customer_name" <span class="kw">AS</span> val
+  <span class="kw">FROM</span> "__introspect_customers"
+  <span class="kw">WHERE</span> "customer_name" <span class="kw">IS NOT NULL</span>
+  <span class="kw">LIMIT</span> 5;  <span class="comment">-- sample values per column</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">🔗</div>
+      <div class="step-content">
+        <div class="step-title">Detect foreign key relationships (4 layers)</div>
+        <div class="step-detail">Progressively discovers table relationships using heuristics, name patterns, and data overlap verification.</div>
+
+        <div class="layers">
+          <div class="layer">
+            <div class="layer-title">Layer 1: Declared FKs</div>
+            <div class="layer-detail">Reads foreign keys declared in the source database schema (e.g. via PRAGMA or information_schema).</div>
+            <div class="layer-result">Your result: 0 declared FKs</div>
+          </div>
+          <div class="layer">
+            <div class="layer-title">Layer 2: Name Patterns</div>
+            <div class="layer-detail">Matches column names like <code>customer_id</code> to tables like <code>customers</code>. Handles abbreviations (<code>cust</code> &rarr; <code>customer</code>).</div>
+            <div class="layer-result">Your result: 19 matches found</div>
+          </div>
+          <div class="layer">
+            <div class="layer-title">Layer 3: Value Overlap</div>
+            <div class="layer-detail">Verifies Layer 2 candidates by JOINing actual data. If 95%+ of <code>orders.customer_id</code> values exist in <code>customers.id</code>, it's a real FK.</div>
+            <div class="layer-result">Your result: 14 verified, 5 rejected</div>
+          </div>
+          <div class="layer">
+            <div class="layer-title">Layer 4: Discovery Scan</div>
+            <div class="layer-detail">Brute-force checks remaining integer columns in fact tables against dimension PKs. Time-budgeted to 2 minutes max.</div>
+            <div class="layer-result">Your result: 0 new (budget exhausted)</div>
+          </div>
+        </div>
+
+        <div class="step-sql"><span class="comment">-- Layer 3 verification query (per FK candidate):</span>
+<span class="kw">SELECT</span> <span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> f.v) <span class="kw">AS</span> matched,
+  (<span class="kw">SELECT</span> <span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> "customer_id") <span class="kw">FROM</span> "orders") <span class="kw">AS</span> total
+<span class="kw">FROM</span> (<span class="kw">SELECT DISTINCT</span> "customer_id" <span class="kw">AS</span> v <span class="kw">FROM</span> "orders" <span class="kw">LIMIT</span> 500) f
+<span class="kw">INNER JOIN</span> "customers" t <span class="kw">ON</span> <span class="fn">CAST</span>(f.v <span class="kw">AS</span> TEXT) = <span class="fn">CAST</span>(t."id" <span class="kw">AS</span> TEXT)</div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">🤖</div>
+      <div class="step-content">
+        <div class="step-title">AI-assisted FK matching (Claude)</div>
+        <div class="step-detail">Columns that weren't matched by name patterns are sent to Claude. It suggests matches like <code>inkoop_regels.artikel_id &rarr; artikelen.artikel_id</code>, which are then verified with data overlap JOINs.</div>
+        <div class="data-flow">
+          <span class="data-box db-claude">Claude API</span>
+          <span class="db-arrow">&rarr;</span>
+          <span>suggests FK pairs</span>
+          <span class="db-arrow">&rarr;</span>
+          <span class="data-box db-duckdb">DuckDB verifies</span>
+        </div>
+        <div class="layer-result" style="margin-top:8px">Your result: 31 additional relationships from Claude</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 2: Quality Profiling -->
+<div class="phase p2">
+  <div class="phase-header">
+    <div class="phase-num">2</div>
+    <div>
+      <div class="phase-title">Profiling Data Quality</div>
+      <div style="font-size:13px;color:#64748b">Compute per-field statistics for every column in every table</div>
+    </div>
+    <div class="phase-time">~2 min for 35 tables (was 30+ min before optimization)</div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="step-icon">📊</div>
+      <div class="step-content">
+        <div class="step-title">Query 1: Batched stats (1 query per table)</div>
+        <div class="step-detail">A single SELECT computes row count, null count, distinct count, min, max, average, and median for ALL columns at once. This replaced 10+ individual queries per column.</div>
+        <div class="step-sql"><span class="comment">-- One query computes ALL stats for ALL columns in a table:</span>
+<span class="kw">SELECT</span>
+  <span class="fn">COUNT</span>(*) <span class="kw">AS</span> "__row_count",
+  <span class="fn">SUM</span>(<span class="kw">CASE WHEN</span> "customer_id" <span class="kw">IS NULL THEN</span> 1 <span class="kw">ELSE</span> 0 <span class="kw">END</span>) <span class="kw">AS</span> "customer_id__nulls",
+  <span class="fn">COUNT</span>(<span class="kw">DISTINCT</span> "customer_id") <span class="kw">AS</span> "customer_id__distinct",
+  <span class="fn">MIN</span>("customer_id") <span class="kw">AS</span> "customer_id__min",
+  <span class="fn">MAX</span>("customer_id") <span class="kw">AS</span> "customer_id__max",
+  <span class="fn">AVG</span>("order_total") <span class="kw">AS</span> "order_total__avg",             <span class="comment">-- numeric only</span>
+  <span class="fn">PERCENTILE_CONT</span>(0.5) <span class="kw">WITHIN GROUP</span>
+    (<span class="kw">ORDER BY</span> "order_total") <span class="kw">AS</span> "order_total__median", <span class="comment">-- numeric only</span>
+  <span class="comment">-- ... repeated for every column in the table</span>
+<span class="kw">FROM</span> "orders"</div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">🏆</div>
+      <div class="step-content">
+        <div class="step-title">Query 2: Top values (1 UNION ALL per table)</div>
+        <div class="step-detail">Gets the 5 most frequent values for each column in a single query using UNION ALL of subqueries.</div>
+        <div class="step-sql"><span class="kw">SELECT</span> * <span class="kw">FROM</span> (
+  <span class="kw">SELECT</span> <span class="str">'customer_id'</span> <span class="kw">AS</span> "__field", <span class="fn">CAST</span>("customer_id" <span class="kw">AS VARCHAR</span>) <span class="kw">AS</span> "__val",
+    <span class="fn">COUNT</span>(*) <span class="kw">AS</span> "__cnt"
+  <span class="kw">FROM</span> "orders" <span class="kw">WHERE</span> "customer_id" <span class="kw">IS NOT NULL</span>
+  <span class="kw">GROUP BY</span> "customer_id" <span class="kw">ORDER BY</span> "__cnt" <span class="kw">DESC LIMIT</span> 5
+)
+<span class="kw">UNION ALL</span>
+<span class="kw">SELECT</span> * <span class="kw">FROM</span> (
+  <span class="kw">SELECT</span> <span class="str">'order_date'</span> <span class="kw">AS</span> "__field", <span class="fn">CAST</span>("order_date" <span class="kw">AS VARCHAR</span>) <span class="kw">AS</span> "__val",
+    <span class="fn">COUNT</span>(*) <span class="kw">AS</span> "__cnt"
+  <span class="kw">FROM</span> "orders" <span class="kw">WHERE</span> "order_date" <span class="kw">IS NOT NULL</span>
+  <span class="kw">GROUP BY</span> "order_date" <span class="kw">ORDER BY</span> "__cnt" <span class="kw">DESC LIMIT</span> 5
+)
+<span class="comment">-- ... UNION ALL for every column</span></div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">💯</div>
+      <div class="step-content">
+        <div class="step-title">Compute quality scores</div>
+        <div class="step-detail">From the stats, compute: <strong>completeness</strong> (% non-null for business key), <strong>uniqueness</strong> (% distinct for business key), and <strong>overall</strong> (average). The business key is auto-detected as the most distinct column.</div>
+        <div class="data-flow">
+          <span class="data-box db-duckdb">DuckDB stats</span>
+          <span class="db-arrow">&rarr;</span>
+          <span>scores computed</span>
+          <span class="db-arrow">&rarr;</span>
+          <span class="data-box db-postgres">dataset_profiles + field_profiles</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 3: AI Draft -->
+<div class="phase p3">
+  <div class="phase-header">
+    <div class="phase-num">3</div>
+    <div>
+      <div class="phase-title">Claude is Learning Your Data</div>
+      <div style="font-size:13px;color:#64748b">AI generates plain-language definitions for every table and column</div>
+    </div>
+    <div class="phase-time">~6 min for 35 tables (batched API calls)</div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="step-icon">📦</div>
+      <div class="step-content">
+        <div class="step-title">Batch tables for Claude API calls</div>
+        <div class="step-detail">Tables are grouped into batches of ~3 to keep each API call's context manageable. Each batch includes table names, column names, data types, sample values, quality stats (null%, distinct%, cardinality), and FK candidates.</div>
+      </div>
+    </div>
+
+    <div class="arrow">&darr;</div>
+
+    <div class="step">
+      <div class="step-icon">🤖</div>
+      <div class="step-content">
+        <div class="step-title">Claude generates definitions (per batch)</div>
+        <div class="step-detail">For each batch, Claude returns JSON with: <strong>table</strong> display name, description, grain, and role (fact/dimension); <strong>column</strong> display name, description, is_dimension, is_measure flags; and <strong>suggested relationships</strong> it infers from context.</div>
+        <div class="data-flow">
+          <span class="data-box db-claude">Claude API</span>
+          <span class="db-arrow">&rarr;</span>
+          <span>JSON: tables[], columns[], relationships[]</span>
+        </div>
+        <div class="step-sql"><span class="comment">// Example Claude output for one table:</span>
+{
+  "tables": [{
+    "table_name": "verkooporders",
+    "display_name": "Sales Orders",
+    "description": "Each row is a sales order placed by a customer...",
+    "grain": "One row per sales order",
+    "role": "fact",
+    "suggested_relationships": [
+      { "to_table": "klanten", "via_column": "klant_id", "type": "many_to_one" }
+    ]
+  }],
+  "columns": [{
+    "table_name": "verkooporders",
+    "column_name": "klant_id",
+    "display_name": "Customer ID",
+    "description": "Foreign key to the klanten (customers) table",
+    "is_dimension": true,
+    "is_measure": false
+  }]
+}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 4: Storing -->
+<div class="phase p4">
+  <div class="phase-header">
+    <div class="phase-num">4</div>
+    <div>
+      <div class="phase-title">Saving Definitions</div>
+      <div style="font-size:13px;color:#64748b">Persist everything to PostgreSQL in a single transaction</div>
+    </div>
+    <div class="phase-time">~10 sec</div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="step-icon">🗄️</div>
+      <div class="step-content">
+        <div class="step-title">PostgreSQL transaction</div>
+        <div class="step-detail">In a single atomic transaction:</div>
+        <div style="margin-top:8px;font-size:13px;color:#475569">
+          <div>1. <strong>Snapshot</strong> existing cross-view canvas positions (so they survive re-profiling)</div>
+          <div>2. <strong>Delete</strong> old source_tables, source_columns, table_relationships for this connection</div>
+          <div>3. <strong>Insert</strong> new source_tables (35 rows) with AI-generated display names + descriptions</div>
+          <div>4. <strong>Insert</strong> new source_columns (393 rows) with types, sample values, dimension/measure flags</div>
+          <div>5. <strong>Insert</strong> table_relationships (71 rows) from AI suggestions + heuristic FK candidates</div>
+          <div>6. <strong>Restore</strong> cross-view canvas positions using new table/column IDs</div>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:#94a3b8">All rows marked <code>ai_draft = true</code> — nothing is visible to end users until an admin confirms.</div>
+        <div class="data-flow" style="margin-top:12px">
+          <span class="data-box db-postgres">source_tables</span>
+          <span class="data-box db-postgres">source_columns</span>
+          <span class="data-box db-postgres">table_relationships</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 5: Neo4j -->
+<div class="phase p5">
+  <div class="phase-header">
+    <div class="phase-num">5</div>
+    <div>
+      <div class="phase-title">Syncing Knowledge Graph</div>
+      <div style="font-size:13px;color:#64748b">Mirror the semantic layer to Neo4j for graph-based querying</div>
+    </div>
+    <div class="phase-time">~5 sec</div>
+  </div>
+
+  <div class="flow">
+    <div class="step">
+      <div class="step-icon">🕸️</div>
+      <div class="step-content">
+        <div class="step-title">Upsert to Neo4j graph</div>
+        <div class="step-detail">Uses MERGE (upsert) so re-profiling is safe and manually confirmed definitions are preserved. Creates nodes for tables and columns, edges for relationships and FK candidates.</div>
+        <div style="margin-top:8px;font-size:13px;color:#475569">
+          <div><strong>Nodes:</strong> (:SourceTable) &times; 35, (:SourceColumn) &times; 393</div>
+          <div><strong>Edges:</strong> [:HAS_COLUMN], [:RELATES_TO] &times; 71, [:FK_CANDIDATE]</div>
+        </div>
+        <div class="data-flow" style="margin-top:12px">
+          <span class="data-box db-postgres">PostgreSQL</span>
+          <span class="db-arrow">&rarr;</span>
+          <span class="data-box db-neo4j">Neo4j Graph</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Summary -->
+<div class="summary">
+  <h2>Your Profiling Results</h2>
+  <div class="summary-grid">
+    <div class="stat">
+      <div class="stat-value">35</div>
+      <div class="stat-label">Tables discovered</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">393</div>
+      <div class="stat-label">Columns profiled</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">71</div>
+      <div class="stat-label">Relationships found</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">~14 min</div>
+      <div class="stat-label">Total profiling time</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">~70</div>
+      <div class="stat-label">SQL queries (was ~3500)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">5</div>
+      <div class="stat-label">Systems orchestrated</div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:40px;padding:24px;background:white;border-radius:16px;border:1px solid #e2e8f0">
+  <h2 style="font-size:18px;margin-bottom:16px">Data Flow Summary</h2>
+  <div style="font-family:monospace;font-size:14px;line-height:2.2;color:#475569">
+    <div><span class="data-box db-azure" style="display:inline-block;width:120px;text-align:center">Azure Blob</span> <span class="db-arrow">&rarr;</span> <span class="data-box db-duckdb" style="display:inline-block;width:120px;text-align:center">DuckDB</span> <span style="color:#94a3b8">reads Delta Lake tables via delta_scan()</span></div>
+    <div><span class="data-box db-duckdb" style="display:inline-block;width:120px;text-align:center">DuckDB</span> <span class="db-arrow">&rarr;</span> <span class="data-box db-claude" style="display:inline-block;width:120px;text-align:center">Claude AI</span> <span style="color:#94a3b8">schema + quality stats sent for definition generation</span></div>
+    <div><span class="data-box db-claude" style="display:inline-block;width:120px;text-align:center">Claude AI</span> <span class="db-arrow">&rarr;</span> <span class="data-box db-postgres" style="display:inline-block;width:120px;text-align:center">PostgreSQL</span> <span style="color:#94a3b8">definitions, relationships, quality scores persisted</span></div>
+    <div><span class="data-box db-postgres" style="display:inline-block;width:120px;text-align:center">PostgreSQL</span> <span class="db-arrow">&rarr;</span> <span class="data-box db-neo4j" style="display:inline-block;width:120px;text-align:center">Neo4j</span> <span style="color:#94a3b8">semantic graph mirrored for cross-source queries</span></div>
+  </div>
+</div>
+
+<p style="margin-top:32px;color:#94a3b8;font-size:12px;text-align:center">Generated by Claude Code for DataBridge &mdash; April 2026</p>
+
+</body>
+</html>
