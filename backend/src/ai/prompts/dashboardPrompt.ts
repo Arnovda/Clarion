@@ -213,7 +213,18 @@ const DASHBOARD_SQL_SQLITE = `
 - Current date: date('now')`;
 
 const DASHBOARD_SQL_DUCKDB = `
+CRITICAL — This is DuckDB, NOT PostgreSQL. These functions DO NOT EXIST in DuckDB and must NEVER be used:
+  ✗ to_char()  → use strftime(date_column, '%Y-%m') instead
+  ✗ to_date()  → use CAST(x AS DATE) or strptime(x, '%Y-%m-%d') instead
+  ✗ EXTRACT(DOW FROM x) → use dayofweek(x)
+  ✗ generate_series() for dates → use generate_series(DATE '2025-01-01', DATE '2025-12-31', INTERVAL '1 month')
+  ✗ string_agg() → use list_aggr() or group_concat()
+  ✗ || for string concat with non-strings → CAST both sides to VARCHAR first
+
+DuckDB date functions:
 - Monthly labels: strftime(date_column, '%Y-%m')  (NOTE: DuckDB argument order is value, format)
+- Year: strftime(date_column, '%Y') or extract(year from date_column)
+- Quarter: 'Q' || extract(quarter from date_column)
 - Date filtering: date_column >= '2025-01-01'
 - Date math: current_date - INTERVAL '3 months', date_trunc('month', date_column)
 - Use ILIKE for case-insensitive text matching

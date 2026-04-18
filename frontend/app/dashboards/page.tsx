@@ -1,758 +1,70 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import Nav from '@/components/Nav';
 import api from '@/lib/api';
-import { getTokenPayload } from '@/lib/auth';
+import { getToken, getTokenPayload } from '@/lib/auth';
+
+// ─── Extracted types ─────────────────────────────────────────────────────────
+import type {
+  FilterSpec,
+  WidgetSpec,
+  DashboardSpec,
+  SavedDashboard,
+  DashboardTemplate,
+  WidgetData,
+  DrillState,
+  RefinementQuestion,
+  ChatMessage,
+} from './types';
+
+// ─── Extracted utilities ─────────────────────────────────────────────────────
+import { buildDefaultFilters, relTime } from './utils/format';
+import { containerVariants, slideUp, shimmerClass } from './utils/motion';
+
+// ─── Extracted components ────────────────────────────────────────────────────
+import { WidgetCard } from './components/WidgetCard';
+import { KpiCard } from './components/KpiCard';
 import {
-  BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell,
-  ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  Legend, ReferenceLine, RadarChart, Radar, PolarGrid, PolarAngleAxis,
-  PolarRadiusAxis, RadialBarChart, RadialBar, Treemap,
-} from 'recharts';
+  BarChartWidget,
+  VerticalBarChartWidget,
+  LineChartWidget,
+  StackedBarChartWidget,
+  PieChartWidget,
+  TopListWidget,
+  DataTableWidget,
+  ComboChartWidget,
+  RadarChartWidget,
+  TreemapWidget,
+} from './components/ChartWidgets';
+import { FilterBar } from './components/FilterBar';
+import { DashboardHeader } from './components/DashboardHeader';
+import { MarkdownAnswer } from './components/MarkdownAnswer';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-interface FilterSpec {
-  id: string;
-  type: 'date_range' | 'select';
-  label: string;
-  table: string;
-  column: string;
-  allLabel?: string;
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
+
+/** Authenticated file download helper */
+function downloadFile(url: string, filename: string) {
+  const token = getToken();
+  fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    .then((r) => {
+      if (!r.ok) throw new Error('Export failed');
+      return r.blob();
+    })
+    .then((blob) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    })
+    .catch(() => alert('Export failed'));
 }
 
-interface WidgetSpec {
-  id: string;
-  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart';
-  title: string;
-  sql: string;
-  drillDownSql?: string;
-  drillDownLabel?: string;
-  format?: 'currency' | 'number' | 'percentage';
-  colSpan?: 1 | 2 | 3 | 4;
-  featured?: boolean;
-  crossFilterKey?: string;  // SQL column name emitted as {{xf_<key>}} when clicked
-}
-
-interface DashboardSpec {
-  title: string;
-  description: string;
-  filters: FilterSpec[];
-  widgets: WidgetSpec[];
-}
-
-interface SavedDashboard {
-  id: number;
-  title: string;
-  description: string;
-  is_favorite: boolean;
-  is_shared: boolean;
-  shared_permission: string;
-  folder: string | null;
-  auto_refresh_seconds: number | null;
-  user_id: string;
-  is_owner: boolean;
-  permission: 'owner' | 'editor' | 'viewer';
-  created_at: string;
-  updated_at: string;
-}
-
-interface DashboardTemplate {
-  id: number;
-  name: string;
-  description: string;
-  category: string;
-  created_at: string;
-}
-
-interface WidgetData {
-  rows: Record<string, unknown>[];
-  loading: boolean;
-  error?: string;
-}
-
-interface DrillState {
-  widgetId: string;
-  key: string;    // crossFilterKey → passed as xf_<key> to all widget executions
-  value: string;
-  label: string;
-}
-
-interface RefinementQuestion {
-  question: string;
-  suggestions: string[];
-}
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  type: 'query' | 'refine';
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const CHART_COLORS = [
-  '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6',
-  '#ef4444', '#06b6d4', '#84cc16', '#f97316',
-];
-
-const TYPE_ACCENT: Record<string, string> = {
-  kpi_card:           '#6366f1',
-  bar_chart:          '#3b82f6',
-  vertical_bar_chart: '#10b981',
-  stacked_bar_chart:  '#f59e0b',
-  line_chart:         '#06b6d4',
-  pie_chart:          '#8b5cf6',
-  top_list:           '#ef4444',
-  data_table:         '#64748b',
-  combo_chart:        '#0ea5e9',
-  radar_chart:        '#a855f7',
-  treemap_chart:      '#10b981',
-};
-
-// ─── Utility functions ────────────────────────────────────────────────────────
-
-function formatValue(v: unknown, format?: string): string {
-  if (v === null || v === undefined) return '—';
-  const n = typeof v === 'number' ? v : Number(v);
-  if (isNaN(n)) return String(v);
-  if (format === 'currency' || (format !== 'number' && format !== 'percentage' && Math.abs(n) >= 100)) {
-    return '€' + n.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-  if (format === 'percentage') return n.toLocaleString('nl-BE', { maximumFractionDigits: 1 }) + '%';
-  return n.toLocaleString('nl-BE', { maximumFractionDigits: 2 });
-}
-
-function buildDefaultFilters(filters: FilterSpec[]): Record<string, string> {
-  const values: Record<string, string> = {};
-  const today = new Date();
-  const yearAgo = new Date(today);
-  yearAgo.setFullYear(today.getFullYear() - 1);
-  for (const f of filters) {
-    if (f.type === 'date_range') {
-      values[`${f.id}_from`] = yearAgo.toISOString().slice(0, 10);
-      values[`${f.id}_to`] = today.toISOString().slice(0, 10);
-    } else {
-      values[f.id] = 'all';
-    }
-  }
-  return values;
-}
-
-function relTime(ts: string): string {
-  const d = Date.now() - new Date(ts).getTime();
-  const m = Math.floor(d / 60000);
-  const h = Math.floor(d / 3600000);
-  const dy = Math.floor(d / 86400000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  if (h < 24) return `${h}h ago`;
-  return `${dy}d ago`;
-}
-
-// ─── CustomTooltip ────────────────────────────────────────────────────────────
-
-function CustomTooltip({ active, payload, label, format }: {
-  active?: boolean;
-  payload?: { name?: string; value?: number; color?: string }[];
-  label?: string;
-  format?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-sm border border-black/10 dark:border-white/10 rounded-xl shadow-xl px-3 py-2 text-xs">
-      {label && <p className="font-semibold text-slate-700 dark:text-slate-200 mb-1">{label}</p>}
-      {payload.map((p, i) => (
-        <p key={i} className="text-slate-600 dark:text-slate-300" style={{ color: p.color }}>
-          {p.name ? `${p.name}: ` : ''}{formatValue(p.value, format)}
-        </p>
-      ))}
-    </div>
-  );
-}
-
-// ─── Markdown renderer (bold + tables) ───────────────────────────────────────
-
-function renderInline(text: string): React.ReactNode {
-  const parts = text.split(/\*\*(.*?)\*\*/g);
-  return parts.map((part, i) =>
-    i % 2 === 1 ? <strong key={i}>{part}</strong> : part,
-  );
-}
-
-function MarkdownAnswer({ text }: { text: string }) {
-  const lines = text.split('\n');
-  const elements: React.ReactNode[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Table: header row followed by separator row (|---|)
-    if (line.trim().startsWith('|') && lines[i + 1]?.trim().startsWith('|---')) {
-      const headers = line.split('|').map(c => c.trim()).filter(Boolean);
-      i += 2; // skip header + separator
-      const rows: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) {
-        rows.push(lines[i].split('|').map(c => c.trim()).filter(Boolean));
-        i++;
-      }
-      elements.push(
-        <div key={`t${i}`} className="overflow-x-auto mt-2 mb-1">
-          <table className="text-xs w-full border-collapse">
-            <thead>
-              <tr>
-                {headers.map((h, j) => (
-                  <th key={j} className="px-2 py-1 text-left font-semibold bg-slate-100 border border-slate-200 whitespace-nowrap">
-                    {renderInline(h)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, j) => (
-                <tr key={j} className={j % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
-                  {row.map((cell, k) => (
-                    <td key={k} className="px-2 py-1 border border-slate-200 whitespace-nowrap">
-                      {renderInline(cell)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>,
-      );
-    } else if (line.trim()) {
-      elements.push(<p key={`p${i}`} className="mb-1">{renderInline(line)}</p>);
-      i++;
-    } else {
-      i++;
-    }
-  }
-
-  return <div className="text-sm leading-relaxed">{elements}</div>;
-}
-
-// ─── Widget card wrapper ──────────────────────────────────────────────────────
-
-function WidgetCard({
-  spec, colSpan, children, isFiltered, isCrossFilterSource,
-}: {
-  spec: WidgetSpec;
-  colSpan: number;
-  children: React.ReactNode;
-  isFiltered?: boolean;
-  isCrossFilterSource?: boolean;
-}) {
-  const isKpi   = spec.type === 'kpi_card';
-  const accent  = TYPE_ACCENT[spec.type] ?? '#6366f1';
-  const featured = spec.featured;
-
-  return (
-    <div
-      style={{
-        gridColumn: `span ${colSpan}`,
-        gridRow: featured ? 'span 2' : undefined,
-      }}
-      className={`rounded-2xl overflow-hidden transition-all duration-300 flex flex-col
-        backdrop-blur-md border
-        ${isCrossFilterSource
-          ? 'bg-white/85 dark:bg-slate-800/80 border-indigo-300/60 dark:border-indigo-500/40 shadow-[0_0_0_2px_rgba(99,102,241,0.25),0_8px_32px_rgba(99,102,241,0.12)]'
-          : isFiltered
-          ? 'bg-white/50 dark:bg-slate-800/40 border-white/30 dark:border-slate-700/30 shadow-sm opacity-55'
-          : 'bg-white/80 dark:bg-slate-800/70 border-white/60 dark:border-slate-700/40 shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.04)] hover:shadow-[0_8px_32px_rgba(0,0,0,0.10),0_2px_8px_rgba(0,0,0,0.06)] hover:-translate-y-0.5'
-        }`}
-    >
-      {/* Colored accent bar */}
-      <div className="h-0.5 w-full shrink-0" style={{ background: isCrossFilterSource ? '#6366f1' : accent }} />
-
-      {/* Card header (non-KPI only) */}
-      {!isKpi && (
-        <div className="px-4 py-2 border-b border-black/5 dark:border-white/5 flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: accent }} />
-            <h3 className="text-xs font-semibold text-slate-600 dark:text-slate-300 truncate">{spec.title}</h3>
-          </div>
-          {isCrossFilterSource && (
-            <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md"
-              style={{ color: '#6366f1', background: 'rgba(99,102,241,0.10)' }}>
-              Filtering
-            </span>
-          )}
-        </div>
-      )}
-
-      <div className={`flex-1 ${isKpi ? 'p-4' : 'p-3'}`}>{children}</div>
-    </div>
-  );
-}
-
-// ─── Loading / error helpers ──────────────────────────────────────────────────
-
-function WidgetSkeleton() {
-  return (
-    <div className="animate-pulse space-y-3">
-      <div className="h-3 bg-slate-100 dark:bg-slate-700 rounded-full w-1/3" />
-      <div className="h-10 bg-slate-100 dark:bg-slate-700 rounded-lg w-2/3" />
-      <div className="h-3 bg-slate-100 dark:bg-slate-700 rounded-full w-1/2" />
-    </div>
-  );
-}
-
-function ChartSkeleton({ height = 200 }: { height?: number }) {
-  return (
-    <div className="animate-pulse flex items-end gap-2 px-2" style={{ height }}>
-      {[65, 40, 80, 55, 90, 35, 70, 50].map((h, i) => (
-        <div key={i} className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-t-sm" style={{ height: `${h}%` }} />
-      ))}
-    </div>
-  );
-}
-
-function WidgetError({ msg }: { msg: string }) {
-  return <p className="text-xs text-red-500">{msg}</p>;
-}
-
-// ─── KpiCard ─────────────────────────────────────────────────────────────────
-
-function KpiCard({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <WidgetSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  const row = data.rows[0] ?? {};
-  const val = row.value;
-  const delta = row.delta !== undefined && row.delta !== null ? Number(row.delta) : null;
-  const deltaLabel = row.delta_label ? String(row.delta_label) : 'vs prior period';
-  const isPositive = delta !== null && delta > 0;
-  const isNegative = delta !== null && delta < 0;
-
-  return (
-    <div>
-      <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wide mb-1">{spec.title}</p>
-      <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{formatValue(val, spec.format)}</p>
-      <div className="mt-2 flex items-center gap-1.5">
-        {delta !== null ? (
-          <>
-            <span className={`text-xs font-semibold ${isPositive ? 'text-emerald-600' : isNegative ? 'text-red-500' : 'text-slate-400'}`}>
-              {isPositive ? '▲' : isNegative ? '▼' : '—'} {Math.abs(delta).toFixed(1)}%
-            </span>
-            <span className="text-xs text-slate-400">{deltaLabel}</span>
-          </>
-        ) : (
-          <>
-            <span className="inline-block w-2 h-2 rounded-full bg-blue-400" />
-            <span className="text-xs text-slate-400">Current period</span>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── BarChartWidget ──────────────────────────────────────────────────────────
-
-function BarChartWidget({
-  spec, data, onCrossFilter, isCrossFilterActive, drillLabel,
-}: {
-  spec: WidgetSpec;
-  data: WidgetData;
-  onCrossFilter?: (value: string | null) => void;
-  isCrossFilterActive?: boolean;
-  drillLabel?: string;
-}) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const chartData = data.rows.map((r) => ({ label: String(r.label ?? ''), value: Number(r.value ?? 0) }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const height = Math.max(180, Math.min(chartData.length * 36 + 48, 320));
-  const yFmt = (v: number) => (maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
-
-  return (
-    <div>
-      {isCrossFilterActive && drillLabel && (
-        <div className="mb-3 flex items-center gap-2">
-          <button onClick={() => onCrossFilter?.(null)} className="text-xs text-blue-600 hover:text-blue-800">← Clear</button>
-          <p className="text-xs text-slate-500 dark:text-slate-400">{drillLabel}</p>
-        </div>
-      )}
-      <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(148,163,184,0.15)" />
-          <XAxis type="number" tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-          <YAxis type="category" dataKey="label" width={110} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-          <Tooltip formatter={(v: number) => [formatValue(v, spec.format), spec.title]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-          <Bar
-            dataKey="value"
-            radius={[0, 4, 4, 0]}
-            cursor={onCrossFilter ? 'pointer' : undefined}
-            onClick={onCrossFilter ? (entry) => onCrossFilter(String(entry.label)) : undefined}
-          >
-            {chartData.map((_, i) => (
-              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-      {onCrossFilter && !isCrossFilterActive && (
-        <p className="text-xs text-slate-400 dark:text-slate-600 mt-1 text-center">Click a bar to cross-filter</p>
-      )}
-    </div>
-  );
-}
-
-// ─── LineChartWidget ──────────────────────────────────────────────────────────
-
-function LineChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const chartData = data.rows.map((r) => ({ label: String(r.label ?? ''), value: Number(r.value ?? 0) }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = (v: number) => (maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
-
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <LineChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
-      >
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip formatter={(v: number) => [formatValue(v, spec.format), spec.title]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-        <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} activeDot={{ r: 5 }} />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── VerticalBarChartWidget ───────────────────────────────────────────────────
-
-function VerticalBarChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-    target: r.target !== undefined ? Number(r.target) : undefined,
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = (v: number) => (maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k` : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
-
-  const hasTarget = chartData.some((r) => r.target !== undefined);
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={chartData} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%"
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
-      >
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.15)" />
-        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip formatter={(v: number, name: string) => [formatValue(v, spec.format), name === 'value' ? spec.title : 'Target']} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-        <Bar dataKey="value" fill={CHART_COLORS[0]} radius={[4, 4, 0, 0]} />
-        {hasTarget && (
-          <Line type="monotone" dataKey="target" stroke="#64748b" strokeWidth={2} strokeDasharray="4 2" dot={false} />
-        )}
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── StackedBarChartWidget ─────────────────────────────────────────────────────
-
-function StackedBarChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  // Pivot tidy format (label, series, value) → { label, [series]: value }
-  const labels = [...new Set(data.rows.map((r) => String(r.label ?? '')))];
-  const seriesNames = [...new Set(data.rows.map((r) => String(r.series ?? '')))];
-  const pivoted = labels.map((label) => {
-    const row: Record<string, unknown> = { label };
-    for (const s of seriesNames) {
-      const match = data.rows.find((r) => String(r.label) === label && String(r.series) === s);
-      row[s] = match ? Number(match.value ?? 0) : 0;
-    }
-    return row;
-  });
-
-  const maxVal = pivoted.reduce((acc, row) => {
-    const total = seriesNames.reduce((s, k) => s + Number(row[k] ?? 0), 0);
-    return Math.max(acc, total);
-  }, 0);
-  const yFmt = (v: number) => (maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k` : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v));
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <BarChart data={pivoted} margin={{ left: 8, right: 16, top: 4, bottom: 4 }} barCategoryGap="30%"
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
-      >
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.15)" />
-        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <Tooltip formatter={(v: number, name: string) => [formatValue(v, spec.format), name]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-        {seriesNames.map((s, i) => (
-          <Bar key={s} dataKey={s} stackId="a" fill={CHART_COLORS[i % CHART_COLORS.length]} radius={i === seriesNames.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]} />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── PieChartWidget ──────────────────────────────────────────────────────────
-
-function PieChartWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const chartData = data.rows.map((r) => ({ name: String(r.label ?? ''), value: Number(r.value ?? 0) }));
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <PieChart>
-        <Pie
-          data={chartData}
-          dataKey="value"
-          nameKey="name"
-          cx="50%"
-          cy="45%"
-          outerRadius={80}
-          label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
-          labelLine={false}
-          cursor={onCrossFilter ? 'pointer' : undefined}
-          onClick={onCrossFilter ? (entry) => onCrossFilter(String(entry.name)) : undefined}
-        >
-          {chartData.map((_, i) => (
-            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip formatter={(v: number) => [formatValue(v, spec.format)]} contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }} />
-        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-      </PieChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── TopListWidget ────────────────────────────────────────────────────────────
-
-function TopListWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <WidgetSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const rows = data.rows.slice(0, 10);
-
-  return (
-    <div className="space-y-0.5">
-      {rows.map((row, i) => (
-        <div
-          key={i}
-          onClick={onCrossFilter ? () => onCrossFilter(String(row.label ?? '')) : undefined}
-          className={`flex items-center justify-between px-2 py-1.5 rounded-md transition-colors
-            ${onCrossFilter ? 'cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30' : ''}
-            ${i % 2 === 0 ? 'bg-slate-50 dark:bg-slate-700/40' : 'bg-white dark:bg-slate-800/40'}`}
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-xs font-medium text-slate-400 dark:text-slate-500 w-5 shrink-0">{i + 1}.</span>
-            <span className="text-sm text-slate-700 dark:text-slate-200 truncate">{String(row.label ?? '—')}</span>
-          </div>
-          <span className="text-sm font-semibold text-slate-900 dark:text-slate-100 shrink-0 ml-2">
-            {formatValue(row.value, spec.format)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── Combo Chart (Bar + Line overlay) ────────────────────────────────────────
-
-function ComboChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error)   return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
-
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-    line:  r.line !== undefined ? Number(r.line) : undefined,
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 1);
-  const yFmt = (v: number) =>
-    maxVal > 10000 ? `€${(v / 1000).toFixed(0)}k`
-    : maxVal > 1000 ? `€${(v / 1000).toFixed(1)}k`
-    : String(v);
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <ComposedChart data={chartData} margin={{ left: 4, right: 24, top: 4, bottom: 20 }}>
-        <defs>
-          <linearGradient id={`combo-${spec.id}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={CHART_COLORS[0]} stopOpacity={0.9} />
-            <stop offset="100%" stopColor={CHART_COLORS[0]} stopOpacity={0.6} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} angle={-30} textAnchor="end" />
-        <YAxis yAxisId="left" tickFormatter={yFmt} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: '#a855f7' }} axisLine={false} tickLine={false} />
-        <Tooltip content={<CustomTooltip format={spec.format} />} />
-        <Bar yAxisId="left" dataKey="value" fill={`url(#combo-${spec.id})`} radius={[4, 4, 0, 0]} name="Value" />
-        {chartData.some((r) => r.line !== undefined) && (
-          <Line yAxisId="right" type="monotone" dataKey="line" stroke="#a855f7" strokeWidth={2.5} dot={{ fill: '#a855f7', r: 3 }} name="Rate" />
-        )}
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── Radar Chart ─────────────────────────────────────────────────────────────
-
-function RadarChartWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error)   return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
-
-  const chartData = data.rows.map((r) => ({
-    subject: String(r.label ?? ''),
-    value:   Number(r.value ?? 0),
-    fullMark: Math.max(...data.rows.map((x) => Number(x.value ?? 0))) * 1.2,
-  }));
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <RadarChart data={chartData} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
-        <PolarGrid stroke="rgba(148,163,184,0.25)" />
-        <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#94a3b8' }} />
-        <PolarRadiusAxis tick={false} axisLine={false} />
-        <Radar
-          name={spec.title}
-          dataKey="value"
-          stroke={CHART_COLORS[4]}
-          fill={CHART_COLORS[4]}
-          fillOpacity={0.25}
-          strokeWidth={2}
-        />
-        <Tooltip content={<CustomTooltip format={spec.format} />} />
-      </RadarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── Treemap Chart ────────────────────────────────────────────────────────────
-
-function TreemapWidget({ spec, data }: { spec: WidgetSpec; data: WidgetData }) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error)   return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500 py-8 text-center">No data</p>;
-
-  const chartData = data.rows.map((r, i) => ({
-    name:  String(r.label ?? ''),
-    size:  Number(r.value ?? 0),
-    fill:  CHART_COLORS[i % CHART_COLORS.length],
-  }));
-
-  const CustomTreemapContent = (props: {
-    x?: number; y?: number; width?: number; height?: number;
-    name?: string; fill?: string; size?: number;
-  }) => {
-    const { x = 0, y = 0, width = 0, height = 0, name = '', fill = '#6366f1', size = 0 } = props;
-    if (width < 30 || height < 20) return null;
-    return (
-      <g>
-        <rect x={x + 1} y={y + 1} width={width - 2} height={height - 2} fill={fill} fillOpacity={0.85} rx={4} />
-        {width > 60 && height > 30 && (
-          <>
-            <text x={x + 8} y={y + 18} fill="white" fontSize={11} fontWeight={600} style={{ pointerEvents: 'none' }}>
-              {name.length > 14 ? name.slice(0, 13) + '…' : name}
-            </text>
-            {height > 44 && (
-              <text x={x + 8} y={y + 32} fill="rgba(255,255,255,0.75)" fontSize={9} style={{ pointerEvents: 'none' }}>
-                {formatValue(size, spec.format)}
-              </text>
-            )}
-          </>
-        )}
-      </g>
-    );
-  };
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <Treemap
-        data={chartData}
-        dataKey="size"
-        aspectRatio={4 / 3}
-        content={<CustomTreemapContent />}
-      >
-        <Tooltip formatter={(v: number) => [formatValue(v, spec.format), '']} />
-      </Treemap>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── DataTableWidget ──────────────────────────────────────────────────────────
-
-function DataTableWidget({ spec, data, onCrossFilter }: { spec: WidgetSpec; data: WidgetData; onCrossFilter?: (v: string | null) => void }) {
-  if (data.loading) return <WidgetSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <p className="text-xs text-slate-400 dark:text-slate-500">No data</p>;
-
-  const keys = Object.keys(data.rows[0]);
-  const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-  const headerLabel = (k: string) => capitalize(k.replace(/_/g, ' '));
-  const isNumeric = (v: unknown) => typeof v === 'number' || (typeof v === 'string' && !isNaN(Number(v)));
-  // Cross-filter: emit the value of the first non-numeric column in a clicked row
-  const firstTextKey = keys.find((k) => !isNumeric(data.rows[0][k]));
-
-  return (
-    <div className="overflow-y-auto" style={{ maxHeight: 300 }}>
-      <table className="w-full text-xs border-collapse">
-        <thead>
-          <tr className="sticky top-0 bg-slate-50 dark:bg-slate-800">
-            {keys.map((k) => (
-              <th key={k} className="px-2 py-1.5 text-left font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 whitespace-nowrap">
-                {headerLabel(k)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.rows.map((row, i) => (
-            <tr
-              key={i}
-              onClick={onCrossFilter && firstTextKey ? () => onCrossFilter(String(row[firstTextKey] ?? '')) : undefined}
-              className={`transition-colors
-                ${onCrossFilter ? 'cursor-pointer hover:bg-blue-50 dark:hover:bg-blue-900/30' : ''}
-                ${i % 2 === 0 ? 'bg-white dark:bg-slate-800/50' : 'bg-slate-50 dark:bg-slate-700/30'}`}
-            >
-              {keys.map((k) => (
-                <td key={k} className={`px-2 py-1.5 text-slate-700 dark:text-slate-300 ${isNumeric(row[k]) ? 'text-right font-mono' : ''}`}>
-                  {String(row[k] ?? '—')}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ─── Create input — defined OUTSIDE the page so it is never remounted ────────
+// ─── CreateInput (kept inline — tightly coupled to page state) ───────────────
 
 function CreateInput({
   value, onChange, onSubmit, loading, compact, inputRef,
@@ -772,28 +84,35 @@ function CreateInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
-        placeholder={compact ? 'Describe a dashboard…' : 'e.g. Sales overview by product and region'}
-        className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white placeholder-slate-400"
+        placeholder={compact ? 'Describe a dashboard...' : 'e.g. Sales overview by product and region'}
+        className={`flex-1 px-3 py-2 text-sm rounded-xl border transition-all
+          ${compact
+            ? 'bg-white/8 border-white/10 text-slate-200 placeholder-slate-500 focus:ring-cyan-400/30 focus:border-cyan-400/30'
+            : 'bg-white/60 border-white/80 text-slate-800 placeholder-slate-400 focus:ring-cyan-400/30 focus:border-cyan-400/40'
+          }
+          focus:outline-none focus:ring-2
+          shadow-sm disabled:opacity-50`}
         disabled={loading}
       />
       <button
         onClick={onSubmit}
         disabled={loading || !value.trim()}
-        className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className={`px-4 py-2 text-sm font-bold rounded-xl transition-all
+          ${compact
+            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
+            : 'gradient-primary text-white shadow-lg shadow-[#003358]/20 hover:shadow-xl hover:scale-[1.02]'
+          }
+          disabled:opacity-50 disabled:cursor-not-allowed`}
       >
-        {loading ? '…' : 'Go'}
+        {loading ? '...' : 'Go'}
       </button>
     </div>
   );
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
+// ─── Main page ───────────────────────────────────────────────────────────────
 
 export default function DashboardsPage() {
-  const [darkMode, setDarkMode] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem('db_dark') === '1';
-  });
   const [dashboards, setDashboards] = useState<SavedDashboard[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [currentSpec, setCurrentSpec] = useState<DashboardSpec | null>(null);
@@ -843,7 +162,7 @@ export default function DashboardsPage() {
       });
       setDashboards(sorted);
     } catch {
-      // ignore — may not be connected yet
+      // ignore -- may not be connected yet
     }
   }, []);
 
@@ -879,13 +198,11 @@ export default function DashboardsPage() {
       connId: number,
     ) => {
       for (const widget of spec.widgets) {
-        // If this widget is the cross-filter source AND has a drill SQL, show its drill view
         const isDrilled = xFilter?.widgetId === widget.id && widget.drillDownSql;
         const sql = isDrilled ? widget.drillDownSql! : widget.sql;
         const filterPayload: Record<string, string> = {
           ...filters,
           ...(isDrilled ? { drill_value: xFilter!.value } : {}),
-          // Pass xf_<key> so any widget SQL with that placeholder gets filtered
           ...(xFilter ? { [`xf_${xFilter.key}`]: xFilter.value } : {}),
         };
         executeWidget(widget.id, sql, filterPayload, connId);
@@ -1018,7 +335,6 @@ export default function DashboardsPage() {
       setMode('viewing');
       setChatMessages([]);
       setSettingsOpen(false);
-      // Sync auto-refresh from saved dashboard
       const saved = dashboards.find((d) => d.id === id);
       setAutoRefreshActive(!!(saved?.auto_refresh_seconds && saved.auto_refresh_seconds > 0));
       loadFilterOptions(spec.filters, connectionId);
@@ -1062,7 +378,6 @@ export default function DashboardsPage() {
 
   function handleCrossFilter(widgetId: string, xfKey: string, value: string | null) {
     if (!value || (crossFilter?.widgetId === widgetId && crossFilter?.value === value)) {
-      // Second click on same item → clear
       setCrossFilter(null);
       if (currentSpec) executeAllWidgets(currentSpec, filterValues, null, connectionId);
       return;
@@ -1082,7 +397,7 @@ export default function DashboardsPage() {
     if (currentSpec) executeAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
   }
 
-  // ── Intent detection — routes to query or refine ─────────────────────────
+  // ── Intent detection -- routes to query or refine ─────────────────────────
 
   function detectIntent(input: string): 'query' | 'refine' {
     const lower = input.toLowerCase().trim();
@@ -1090,7 +405,7 @@ export default function DashboardsPage() {
     return queryPattern.test(lower) ? 'query' : 'refine';
   }
 
-  // ── Smart chat submit — asks data questions OR refines the dashboard ───────
+  // ── Smart chat submit -- asks data questions OR refines the dashboard ─────
 
   async function handleChatSubmit() {
     if (!refineInput.trim() || chatLoading || !currentSpec) return;
@@ -1104,7 +419,6 @@ export default function DashboardsPage() {
 
     try {
       if (intent === 'query') {
-        // Build context from previous Q&A if this looks like a follow-up
         const prevMessages = chatMessages.filter(m => m.type === 'query');
         const isFollowUp = /^(can you|could you|give me|show me|list|what about|and |also |them|they|those|it |that |these)/i.test(input);
         let fullQuestion = input;
@@ -1128,7 +442,7 @@ export default function DashboardsPage() {
         setIsUnsaved(true);
         loadFilterOptions(newSpec.filters, connectionId);
         executeAllWidgets(newSpec, defaults, null, connectionId);
-        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated — "${newSpec.title}"`, type: 'refine' }]);
+        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated -- "${newSpec.title}"`, type: 'refine' }]);
       }
     } catch {
       setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_e', role: 'assistant', text: 'Something went wrong. Please try again.', type: intent }]);
@@ -1140,13 +454,8 @@ export default function DashboardsPage() {
   // ── Effects ───────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    localStorage.setItem('db_dark', darkMode ? '1' : '0');
-  }, [darkMode]);
-
-  useEffect(() => {
     setIsAdmin(getTokenPayload()?.role === 'admin');
     loadDashboards();
-    // Load the real connection ID — never assume it is 1
     api.get('/connections')
       .then((r) => {
         const conns = r.data.data as { id: number; name: string; domains?: string | string[] }[];
@@ -1174,7 +483,6 @@ export default function DashboardsPage() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // Close settings dropdown when clicking outside
   useEffect(() => {
     if (!settingsOpen) return;
     const handler = () => setSettingsOpen(false);
@@ -1276,7 +584,6 @@ export default function DashboardsPage() {
 
   async function exportPdf() {
     if (!dashboardGridRef.current || !currentSpec) return;
-    // Dynamic import to avoid bundling html2canvas + jspdf for everyone
     const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
       import('html2canvas'),
       import('jspdf'),
@@ -1298,6 +605,15 @@ export default function DashboardsPage() {
     pdf.save(`${currentSpec.title.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
   }
 
+  // ── XLSX export (all widgets) ────────────────────────────────────────
+
+  function exportAllXlsx() {
+    if (!activeId || !currentSpec) return;
+    const filterQs = Object.entries(filterValues).map(([k, v]) => `filter_${k}=${encodeURIComponent(v)}`).join('&');
+    const url = `${BACKEND_URL}/api/dashboards/${activeId}/export/xlsx${filterQs ? '?' + filterQs : ''}`;
+    downloadFile(url, `${currentSpec.title.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`);
+  }
+
   // ── Create from template ──────────────────────────────────────────────
 
   async function createFromTemplate(templateId: number) {
@@ -1317,8 +633,8 @@ export default function DashboardsPage() {
 
   const visibleDashboards = dashboards.filter((d) => {
     if (showShared && !d.is_shared && !d.is_owner) return false;
-    if (showShared && d.is_owner) return false; // show only others' shared
-    if (!showShared && !d.is_owner) return false; // my dashboards only
+    if (showShared && d.is_owner) return false;
+    if (!showShared && !d.is_owner) return false;
     if (activeFolder !== null && d.folder !== activeFolder) return false;
     return true;
   });
@@ -1332,22 +648,22 @@ export default function DashboardsPage() {
     return (
       <button
         onClick={() => openDashboard(d.id)}
-        className={`w-full text-left px-3 py-2 rounded-lg group flex items-start justify-between gap-1 transition-colors ${
+        className={`w-full text-left px-3 py-2.5 rounded-xl group flex items-start justify-between gap-1 transition-all duration-200 ${
           isActive
-            ? 'border-l-2 border-blue-500 bg-blue-50 pl-2.5'
-            : 'hover:bg-slate-50 border-l-2 border-transparent'
+            ? 'bg-cyan-500/10 border-l-2 border-cyan-400 pl-2.5'
+            : 'hover:bg-white/5 border-l-2 border-transparent'
         }`}
       >
         <div className="min-w-0">
-          <div className="flex items-center gap-1">
-            <p className={`text-sm font-medium truncate ${isActive ? 'text-blue-700' : 'text-slate-700 dark:text-slate-200'}`}>
+          <div className="flex items-center gap-1.5">
+            <p className={`text-[13px] font-medium truncate ${isActive ? 'text-cyan-300' : 'text-slate-300'}`}>
               {d.title}
             </p>
-            {d.is_shared && <span className="shrink-0 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">shared</span>}
-            {!d.is_owner && <span className="shrink-0 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">{d.permission}</span>}
+            {d.is_shared && <span className="shrink-0 text-[9px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-full font-semibold">shared</span>}
+            {!d.is_owner && <span className="shrink-0 text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded-full font-semibold">{d.permission}</span>}
           </div>
-          <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
-            {d.folder && <span className="text-slate-300 mr-1">{d.folder} /</span>}
+          <p className="text-[11px] text-slate-600 mt-0.5">
+            {d.folder && <span className="text-slate-600 mr-1">{d.folder} /</span>}
             {relTime(d.updated_at)}
           </p>
         </div>
@@ -1356,34 +672,42 @@ export default function DashboardsPage() {
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
-                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-blue-500 rounded text-xs"
+                className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-cyan-400 rounded text-xs transition-colors"
                 title="Duplicate"
               >
-                ⧉
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
               </button>
               <button
                 onClick={(e) => toggleFavorite(d.id, e)}
-                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-amber-400 rounded"
+                className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${d.is_favorite ? 'text-amber-400' : 'text-slate-500 hover:text-amber-400'}`}
                 title={d.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
               >
-                {d.is_favorite ? '⭐' : '☆'}
+                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill={d.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.5}>
+                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                </svg>
               </button>
               <button
                 onClick={(e) => deleteDashboard(d.id, e)}
-                className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-red-500 rounded text-xs"
+                className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-red-400 rounded text-xs transition-colors"
                 title="Delete"
               >
-                ×
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
               </button>
             </>
           )}
           {!d.is_owner && (
             <button
               onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
-              className="w-5 h-5 flex items-center justify-center text-slate-400 hover:text-blue-500 rounded text-xs"
+              className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-cyan-400 rounded text-xs transition-colors"
               title="Duplicate to my dashboards"
             >
-              ⧉
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
             </button>
           )}
         </div>
@@ -1391,15 +715,11 @@ export default function DashboardsPage() {
     );
   }
 
-  // ── Create input row ──────────────────────────────────────────────────────
-
   // ── Render widget by type ─────────────────────────────────────────────────
 
   function renderWidget(widget: WidgetSpec) {
     const data: WidgetData = widgetData[widget.id] ?? { rows: [], loading: true };
 
-    // 12-column grid: spec colSpan 1→3cols, 2→6cols, 3→9cols, 4→12cols
-    // kpi_card=3 → 4 per row (12), everything else=6 → 2 per row (12), data_table=12 → full row
     const defaultCols: Record<string, number> = {
       kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
       line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
@@ -1411,93 +731,106 @@ export default function DashboardsPage() {
     const isCrossFilterSource = crossFilter?.widgetId === widget.id;
     const isFiltered = crossFilter !== null && !isCrossFilterSource;
 
-    // Cross-filter handler: use widget.crossFilterKey, fall back to the widget id
     const xfKey = widget.crossFilterKey ?? widget.id;
     const onCF = (val: string | null) => handleCrossFilter(widget.id, xfKey, val);
     const hasCrossFilter = Boolean(widget.crossFilterKey);
 
+    // Widget export callbacks (only when dashboard is saved)
+    const widgetIdx = currentSpec ? currentSpec.widgets.indexOf(widget) : -1;
+    const canExport = activeId && !isUnsaved && widgetIdx >= 0;
+    const filterQs = Object.entries(filterValues).map(([k, v]) => `filter_${k}=${encodeURIComponent(v)}`).join('&');
+    const exportCsv = canExport ? () => {
+      const url = `${BACKEND_URL}/api/dashboards/${activeId}/widget/${widgetIdx}/export/csv${filterQs ? '?' + filterQs : ''}`;
+      downloadFile(url, `${widget.title.replace(/[^a-zA-Z0-9]/g, '_')}.csv`);
+    } : undefined;
+    const exportXlsx = canExport ? () => {
+      const url = `${BACKEND_URL}/api/dashboards/${activeId}/widget/${widgetIdx}/export/xlsx${filterQs ? '?' + filterQs : ''}`;
+      downloadFile(url, `${widget.title.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`);
+    } : undefined;
+
+    const widgetProps = { spec: widget, data };
+    const cardProps = {
+      key: widget.id,
+      spec: widget,
+      colSpan: col12,
+      isFiltered,
+      isCrossFilterSource,
+      onExportCsv: exportCsv,
+      onExportXlsx: exportXlsx,
+    };
+
     switch (widget.type) {
       case 'kpi_card':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <KpiCard spec={widget} data={data} />
+          <WidgetCard {...cardProps}>
+            <KpiCard {...widgetProps} />
           </WidgetCard>
         );
-
       case 'bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
+          <WidgetCard {...cardProps}>
             <BarChartWidget
-              spec={widget}
-              data={data}
+              {...widgetProps}
               onCrossFilter={hasCrossFilter ? onCF : undefined}
               isCrossFilterActive={isCrossFilterSource}
               drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
             />
           </WidgetCard>
         );
-
       case 'line_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <LineChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <LineChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'vertical_bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <VerticalBarChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <VerticalBarChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'stacked_bar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <StackedBarChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <StackedBarChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'pie_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <PieChartWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <PieChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'top_list':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <TopListWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <TopListWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'data_table':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <DataTableWidget spec={widget} data={data} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+          <WidgetCard {...cardProps}>
+            <DataTableWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
           </WidgetCard>
         );
-
       case 'combo_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <ComboChartWidget spec={widget} data={data} />
+          <WidgetCard {...cardProps}>
+            <ComboChartWidget {...widgetProps} />
           </WidgetCard>
         );
       case 'radar_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <RadarChartWidget spec={widget} data={data} />
+          <WidgetCard {...cardProps}>
+            <RadarChartWidget {...widgetProps} />
           </WidgetCard>
         );
       case 'treemap_chart':
         return (
-          <WidgetCard key={widget.id} spec={widget} colSpan={col12} isFiltered={isFiltered} isCrossFilterSource={isCrossFilterSource}>
-            <TreemapWidget spec={widget} data={data} />
+          <WidgetCard {...cardProps}>
+            <TreemapWidget {...widgetProps} />
           </WidgetCard>
         );
-
       default:
         return null;
     }
@@ -1506,23 +839,21 @@ export default function DashboardsPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col ${darkMode ? 'dark' : ''}`}
-      style={{ background: darkMode
-        ? 'linear-gradient(135deg, #0f1117 0%, #1a1d2e 50%, #0f1117 100%)'
-        : 'linear-gradient(135deg, #eef2ff 0%, #f8faff 40%, #f3f0ff 100%)' }}>
+    <div className="h-screen overflow-hidden flex flex-col"
+      style={{ background: 'linear-gradient(135deg, #eef2ff 0%, #f8faff 40%, #f3f0ff 100%)' }}>
       <Nav />
 
       <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 57px)' }}>
 
         {/* ── Left sidebar ── */}
-        <aside className="w-56 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-r border-black/5 dark:border-white/5 flex flex-col shrink-0 overflow-hidden">
+        <aside className="w-60 glass-sidebar flex flex-col shrink-0 overflow-hidden">
           {/* Sidebar header */}
-          <div className="px-3 py-3 border-b border-slate-100">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Dashboards</span>
+          <div className="px-4 py-4 border-b border-white/8">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[11px] font-bold text-cyan-400/80 uppercase tracking-[0.15em]">Dashboards</span>
               <button
                 onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
-                className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
               >
                 + New
               </button>
@@ -1534,26 +865,26 @@ export default function DashboardsPage() {
               onSubmit={initiateCreate}
               loading={createLoading}
             />
-            {createError && <p className="text-xs text-red-500 mt-1">{createError}</p>}
+            {createError && <p className="text-xs text-red-400 mt-1">{createError}</p>}
           </div>
 
           {/* My / Shared toggle */}
-          <div className="px-2 pt-2 flex gap-1">
+          <div className="px-3 pt-3 flex gap-1">
             <button
               onClick={() => { setShowShared(false); setActiveFolder(null); }}
-              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${!showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+              className={`flex-1 text-[11px] py-1.5 rounded-lg font-semibold transition-all ${!showShared ? 'bg-cyan-500/15 text-cyan-400 shadow-sm ring-1 ring-cyan-500/20' : 'text-slate-500 hover:bg-white/5 hover:text-slate-400'}`}
             >
               My
             </button>
             <button
               onClick={() => { setShowShared(true); setActiveFolder(null); }}
-              className={`flex-1 text-xs py-1 rounded-md font-medium transition-colors ${showShared ? 'bg-blue-100 text-blue-700' : 'text-slate-500 hover:bg-slate-100'}`}
+              className={`flex-1 text-[11px] py-1.5 rounded-lg font-semibold transition-all ${showShared ? 'bg-cyan-500/15 text-cyan-400 shadow-sm ring-1 ring-cyan-500/20' : 'text-slate-500 hover:bg-white/5 hover:text-slate-400'}`}
             >
               Shared
             </button>
             <button
               onClick={() => setShowTemplates(true)}
-              className="flex-1 text-xs py-1 rounded-md font-medium text-slate-500 hover:bg-slate-100 transition-colors"
+              className="flex-1 text-[11px] py-1.5 rounded-lg font-semibold text-slate-500 hover:bg-white/5 hover:text-slate-400 transition-all"
               title="Browse templates"
             >
               Templates
@@ -1562,10 +893,10 @@ export default function DashboardsPage() {
 
           {/* Folder filter */}
           {!showShared && folders.length > 0 && (
-            <div className="px-2 pt-1.5 flex flex-wrap gap-1">
+            <div className="px-3 pt-2 flex flex-wrap gap-1">
               <button
                 onClick={() => setActiveFolder(null)}
-                className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === null ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+                className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all ${activeFolder === null ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'text-slate-500 border-white/8 hover:border-cyan-500/30 hover:text-cyan-400'}`}
               >
                 All
               </button>
@@ -1573,7 +904,7 @@ export default function DashboardsPage() {
                 <button
                   key={f}
                   onClick={() => setActiveFolder(activeFolder === f ? null : f)}
-                  className={`text-[10px] px-2 py-0.5 rounded-full border transition-colors ${activeFolder === f ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-500 border-slate-200 hover:border-blue-400'}`}
+                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all ${activeFolder === f ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'text-slate-500 border-white/8 hover:border-cyan-500/30 hover:text-cyan-400'}`}
                 >
                   {f}
                 </button>
@@ -1582,17 +913,17 @@ export default function DashboardsPage() {
           )}
 
           {/* Dashboard list */}
-          <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+          <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5 scrollbar-thin">
             {favorites.length > 0 && (
               <>
-                <p className="text-xs text-slate-400 uppercase tracking-wider px-1 py-1">⭐ Favorites</p>
+                <p className="text-[10px] text-slate-600 uppercase tracking-[0.15em] px-2 py-1.5 font-bold">Favorites</p>
                 {favorites.map((d) => <DashboardListItem key={d.id} d={d} />)}
-                {regular.length > 0 && <div className="my-2 border-t border-slate-100" />}
+                {regular.length > 0 && <div className="my-2 border-t border-white/5" />}
               </>
             )}
             {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
             {visibleDashboards.length === 0 && (
-              <p className="text-xs text-slate-400 text-center mt-4 px-2">
+              <p className="text-xs text-slate-600 text-center mt-6 px-2">
                 {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
               </p>
             )}
@@ -1605,10 +936,19 @@ export default function DashboardsPage() {
           {/* Empty state */}
           {mode === 'empty' && (
             <div className="flex items-center justify-center h-full p-8">
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-10 max-w-md w-full text-center">
-                <div className="text-5xl mb-4">📊</div>
-                <h2 className="text-xl font-bold text-slate-900 mb-2">Build your first dashboard</h2>
-                <p className="text-sm text-slate-500 mb-6">
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                className="widget-card rounded-2xl p-10 max-w-md w-full text-center"
+              >
+                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-500/25">
+                  <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+                  </svg>
+                </div>
+                <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-2">Build your first dashboard</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
                   Describe what you want to see and let AI design it for you.
                 </p>
                 <div className="flex justify-center mb-6">
@@ -1626,26 +966,30 @@ export default function DashboardsPage() {
                     <button
                       key={prompt}
                       onClick={() => { setCreateInput(prompt); setMode('choosing'); }}
-                      className="px-3 py-1 text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-full transition-colors"
+                      className="px-3.5 py-1.5 text-xs bg-slate-100/80 dark:bg-slate-700/50 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-300 rounded-full transition-all shadow-sm border border-slate-200/60 dark:border-slate-600/40"
                     >
                       {prompt}
                     </button>
                   ))}
                 </div>
-              </div>
+              </motion.div>
             </div>
           )}
 
           {/* Choosing: refine first or generate now */}
           {mode === 'choosing' && (
             <div className="flex items-center justify-center h-full p-8">
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 max-w-lg w-full">
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Your request</p>
-                <p className="text-base font-semibold text-slate-800 mb-4 leading-snug">&ldquo;{createInput}&rdquo;</p>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                className="widget-card rounded-2xl p-8 max-w-lg w-full"
+              >
+                <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Your request</p>
+                <p className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4 leading-snug">&ldquo;{createInput}&rdquo;</p>
 
-                {/* Data domain selector — shown when multiple connections / domains exist */}
+                {/* Data domain selector */}
                 {connections.length > 1 && (() => {
-                  // Build flat list: one chip per domain; fall back to connection name
                   const chips: { label: string; connId: number }[] = [];
                   for (const c of connections) {
                     if (c.domains.length > 0) {
@@ -1656,16 +1000,16 @@ export default function DashboardsPage() {
                   }
                   return (
                     <div className="mb-5">
-                      <p className="text-xs text-slate-500 mb-1.5 font-medium">Data domain</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 font-medium">Data domain</p>
                       <div className="flex flex-wrap gap-2">
                         {chips.map((chip) => (
                           <button
                             key={`${chip.connId}-${chip.label}`}
                             onClick={() => setConnectionId(chip.connId)}
-                            className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium capitalize ${
+                            className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium capitalize shadow-sm ${
                               connectionId === chip.connId
-                                ? 'bg-blue-600 text-white border-blue-600'
-                                : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
+                                : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
                             }`}
                           >
                             {chip.label}
@@ -1679,14 +1023,14 @@ export default function DashboardsPage() {
                 {/* Data product selector */}
                 {products.length > 0 && (
                   <div className="mb-5">
-                    <p className="text-xs text-slate-500 mb-1.5 font-medium">Data product(s)</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 font-medium">Data model(s)</p>
                     <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => setSelectedProductIds([])}
-                        className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium ${
+                        className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium shadow-sm ${
                           selectedProductIds.length === 0
-                            ? 'bg-blue-600 text-white border-blue-600'
-                            : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
+                            : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
                         }`}
                       >
                         All products
@@ -1701,10 +1045,10 @@ export default function DashboardsPage() {
                                 : [...prev, p.id],
                             );
                           }}
-                          className={`px-3 py-1.5 text-xs rounded-full border transition-colors font-medium ${
+                          className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium shadow-sm ${
                             selectedProductIds.includes(p.id)
-                              ? 'bg-indigo-600 text-white border-indigo-600'
-                              : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400 hover:text-indigo-600'
+                              ? 'bg-violet-600 text-white border-violet-600 shadow-violet-500/20'
+                              : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-300'
                           }`}
                         >
                           {p.name}
@@ -1712,62 +1056,85 @@ export default function DashboardsPage() {
                       ))}
                     </div>
                     {selectedProductIds.length > 0 && (
-                      <p className="text-[10px] text-slate-400 mt-1">
-                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard will only use tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
+                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected -- dashboard will only use tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
                       </p>
                     )}
                   </div>
                 )}
 
-                <p className="text-sm text-slate-500 mb-5">How would you like to proceed?</p>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">How would you like to proceed?</p>
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={askForRefinement}
-                    className="flex flex-col items-start gap-2 p-4 border-2 border-blue-200 hover:border-blue-400 bg-blue-50 hover:bg-blue-100 rounded-xl transition-colors text-left"
+                    className="flex flex-col items-start gap-2 p-4 rounded-xl transition-all text-left
+                      border-2 border-indigo-200/60 dark:border-indigo-700/40
+                      bg-indigo-50/50 dark:bg-indigo-900/10
+                      hover:border-indigo-400 dark:hover:border-indigo-500
+                      hover:bg-indigo-50 dark:hover:bg-indigo-900/20
+                      hover:shadow-lg hover:shadow-indigo-500/10"
                   >
-                    <span className="text-2xl">🎯</span>
-                    <span className="text-sm font-semibold text-blue-800">Refine with AI first</span>
-                    <span className="text-xs text-blue-600">Answer a few questions so AI can tailor the dashboard exactly to your needs</span>
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-md shadow-indigo-500/20">
+                      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                    </div>
+                    <span className="text-sm font-semibold text-indigo-800 dark:text-indigo-200">Refine with AI first</span>
+                    <span className="text-xs text-indigo-600/80 dark:text-indigo-400/80">Answer a few questions so AI can tailor the dashboard exactly to your needs</span>
                   </button>
                   <button
                     onClick={() => createDashboard()}
-                    className="flex flex-col items-start gap-2 p-4 border-2 border-slate-200 hover:border-slate-400 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors text-left"
+                    className="flex flex-col items-start gap-2 p-4 rounded-xl transition-all text-left
+                      border-2 border-slate-200/60 dark:border-slate-600/40
+                      bg-slate-50/50 dark:bg-slate-800/30
+                      hover:border-slate-400 dark:hover:border-slate-500
+                      hover:bg-slate-50 dark:hover:bg-slate-800/50
+                      hover:shadow-lg hover:shadow-slate-500/10"
                   >
-                    <span className="text-2xl">⚡</span>
-                    <span className="text-sm font-semibold text-slate-700">Generate now</span>
-                    <span className="text-xs text-slate-500">Let AI decide what to include based on best practices and your schema</span>
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-500 to-slate-700 flex items-center justify-center shadow-md shadow-slate-500/20">
+                      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                    </div>
+                    <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Generate now</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Let AI decide what to include based on best practices and your schema</span>
                   </button>
                 </div>
                 <button
                   onClick={() => setMode('empty')}
-                  className="mt-4 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                  className="mt-4 text-xs text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
                 >
-                  ← Back
+                  &larr; Back
                 </button>
                 {createError && <p className="text-xs text-red-500 mt-3">{createError}</p>}
-              </div>
+              </motion.div>
             </div>
           )}
 
           {/* Refining: AI questions */}
           {mode === 'refining' && (
             <div className="flex items-center justify-center h-full p-8">
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 max-w-xl w-full">
-                <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Refining</p>
-                <p className="text-base font-semibold text-slate-800 mb-1">&ldquo;{createInput}&rdquo;</p>
-                <p className="text-xs text-slate-400 mb-6">Answer what you can — skip anything that doesn&apos;t apply</p>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                className="widget-card rounded-2xl p-8 max-w-xl w-full"
+              >
+                <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Refining</p>
+                <p className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-1">&ldquo;{createInput}&rdquo;</p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mb-6">Answer what you can -- skip anything that doesn&apos;t apply</p>
 
                 {refinementLoading ? (
                   <div className="flex items-center gap-3 py-8 justify-center">
-                    <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-sm text-slate-500">Thinking of the right questions…</span>
+                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    <span className="text-sm text-slate-500 dark:text-slate-400">Thinking of the right questions...</span>
                   </div>
                 ) : (
                   <div className="space-y-6">
                     {refinementQuestions.map((q, idx) => (
                       <div key={idx}>
-                        <p className="text-sm font-medium text-slate-700 mb-2">
-                          <span className="text-blue-500 font-bold mr-1.5">{idx + 1}.</span>
+                        <p className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
+                          <span className="text-indigo-500 font-bold mr-1.5">{idx + 1}.</span>
                           {q.question}
                         </p>
                         {/* Suggestion chips */}
@@ -1779,23 +1146,27 @@ export default function DashboardsPage() {
                                 ...prev,
                                 [idx]: prev[idx] === s ? '' : s,
                               }))}
-                              className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                              className={`px-3 py-1.5 text-xs rounded-full border transition-all shadow-sm ${
                                 refinementAnswers[idx] === s
-                                  ? 'bg-blue-600 text-white border-blue-600'
-                                  : 'bg-white text-slate-600 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
+                                  : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
                               }`}
                             >
                               {s}
                             </button>
                           ))}
                         </div>
-                        {/* Custom free-text answer */}
                         <input
                           type="text"
                           value={refinementAnswers[idx] ?? ''}
                           onChange={(e) => setRefinementAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
-                          placeholder="Or type your own answer…"
-                          className="w-full px-3 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-400 text-slate-700 placeholder-slate-300"
+                          placeholder="Or type your own answer..."
+                          className="w-full px-3 py-1.5 text-xs rounded-lg border
+                            border-slate-200/60 dark:border-slate-600/40
+                            bg-white/70 dark:bg-slate-800/60
+                            focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400
+                            text-slate-700 dark:text-slate-200 placeholder-slate-300 dark:placeholder-slate-600
+                            transition-all"
                         />
                       </div>
                     ))}
@@ -1804,14 +1175,18 @@ export default function DashboardsPage() {
                       <button
                         onClick={() => createDashboard(Object.values(refinementAnswers).filter(Boolean))}
                         disabled={createLoading}
-                        className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-colors"
+                        className="flex-1 py-2.5 text-sm font-semibold rounded-xl text-white transition-all
+                          bg-gradient-to-r from-indigo-600 to-blue-600
+                          hover:from-indigo-700 hover:to-blue-700
+                          shadow-md shadow-indigo-500/20
+                          disabled:opacity-50"
                       >
-                        {createLoading ? 'Generating…' : 'Generate Dashboard →'}
+                        {createLoading ? 'Generating...' : 'Generate Dashboard'}
                       </button>
                       <button
                         onClick={() => createDashboard()}
                         disabled={createLoading}
-                        className="px-4 py-2.5 border border-slate-200 hover:bg-slate-50 text-slate-500 text-sm rounded-xl transition-colors"
+                        className="px-4 py-2.5 border border-slate-200/60 dark:border-slate-600/40 hover:bg-slate-50 dark:hover:bg-slate-700/30 text-slate-500 dark:text-slate-400 text-sm rounded-xl transition-all"
                         title="Skip refinement and generate now"
                       >
                         Skip
@@ -1819,76 +1194,69 @@ export default function DashboardsPage() {
                     </div>
                     <button
                       onClick={() => setMode('choosing')}
-                      className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+                      className="text-xs text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
                     >
-                      ← Back
+                      &larr; Back
                     </button>
                   </div>
                 )}
-              </div>
+              </motion.div>
             </div>
           )}
 
-          {/* Generating state — wireframe preview */}
+          {/* Generating state -- wireframe preview */}
           {mode === 'creating' && (
             <div className="flex items-center justify-center h-full px-8">
               <div className="w-full max-w-3xl">
                 <div className="text-center mb-6">
                   <div className="flex justify-center mb-3">
-                    <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                    <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
                   </div>
-                  <p className="text-base font-semibold text-slate-700">Generating your dashboard...</p>
-                  <p className="text-sm text-slate-400 mt-1">AI is designing widgets, filters, and SQL queries</p>
+                  <p className="text-base font-semibold text-slate-700 dark:text-slate-200">Generating your dashboard...</p>
+                  <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">AI is designing widgets, filters, and SQL queries</p>
                 </div>
 
                 {/* Wireframe skeleton preview */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-                  {/* Title bar wireframe */}
+                <div className="widget-card rounded-2xl p-6 space-y-4">
                   <div className="flex items-center justify-between">
-                    <div className="h-5 w-48 bg-slate-200 rounded animate-pulse" />
+                    <div className={`${shimmerClass} h-5 w-48`} />
                     <div className="flex gap-2">
-                      <div className="h-7 w-20 bg-slate-100 rounded-lg animate-pulse" />
-                      <div className="h-7 w-20 bg-slate-100 rounded-lg animate-pulse" />
+                      <div className={`${shimmerClass} h-7 w-20 rounded-lg`} />
+                      <div className={`${shimmerClass} h-7 w-20 rounded-lg`} />
                     </div>
                   </div>
-
-                  {/* KPI cards row */}
                   <div className="grid grid-cols-4 gap-3">
                     {[0.8, 1.0, 0.6, 0.9].map((delay, i) => (
-                      <div key={i} className="rounded-xl border border-slate-100 p-4 space-y-2" style={{ animationDelay: `${delay}s` }}>
-                        <div className="h-3 w-16 bg-slate-100 rounded animate-pulse" style={{ animationDelay: `${delay}s` }} />
-                        <div className="h-6 w-20 bg-slate-200 rounded animate-pulse" style={{ animationDelay: `${delay + 0.2}s` }} />
+                      <div key={i} className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-2">
+                        <div className={`${shimmerClass} h-3 w-16`} style={{ animationDelay: `${delay}s` }} />
+                        <div className={`${shimmerClass} h-6 w-20`} style={{ animationDelay: `${delay + 0.2}s` }} />
                       </div>
                     ))}
                   </div>
-
-                  {/* Chart area wireframe */}
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="rounded-xl border border-slate-100 p-4 space-y-3">
-                      <div className="h-3 w-24 bg-slate-100 rounded animate-pulse" />
+                    <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-3">
+                      <div className={`${shimmerClass} h-3 w-24`} />
                       <div className="flex items-end gap-2 h-24">
                         {[40, 65, 45, 80, 55, 70, 50].map((h, i) => (
-                          <div key={i} className="flex-1 bg-blue-100 rounded-t animate-pulse" style={{ height: `${h}%`, animationDelay: `${i * 0.15}s` }} />
+                          <div key={i} className={`flex-1 ${shimmerClass} rounded-t`} style={{ height: `${h}%`, animationDelay: `${i * 0.15}s` }} />
                         ))}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-slate-100 p-4 space-y-3">
-                      <div className="h-3 w-28 bg-slate-100 rounded animate-pulse" />
+                    <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-3">
+                      <div className={`${shimmerClass} h-3 w-28`} />
                       <div className="flex items-center justify-center h-24">
-                        <div className="w-20 h-20 border-8 border-slate-100 border-t-blue-200 rounded-full animate-spin" style={{ animationDuration: '3s' }} />
+                        <div className="w-20 h-20 border-8 border-slate-100/60 dark:border-slate-700/30 border-t-indigo-200 dark:border-t-indigo-500/30 rounded-full animate-spin" style={{ animationDuration: '3s' }} />
                       </div>
                     </div>
                   </div>
-
-                  {/* Table wireframe */}
-                  <div className="rounded-xl border border-slate-100 p-4 space-y-2">
-                    <div className="h-3 w-20 bg-slate-100 rounded animate-pulse" />
+                  <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-2">
+                    <div className={`${shimmerClass} h-3 w-20`} />
                     <div className="space-y-1.5">
                       {[1, 2, 3].map((i) => (
                         <div key={i} className="flex gap-4">
-                          <div className="h-3 w-24 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2}s` }} />
-                          <div className="h-3 w-16 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2 + 0.1}s` }} />
-                          <div className="h-3 flex-1 bg-slate-50 rounded animate-pulse" style={{ animationDelay: `${i * 0.2 + 0.2}s` }} />
+                          <div className={`${shimmerClass} h-3 w-24`} style={{ animationDelay: `${i * 0.2}s` }} />
+                          <div className={`${shimmerClass} h-3 w-16`} style={{ animationDelay: `${i * 0.2 + 0.1}s` }} />
+                          <div className={`${shimmerClass} h-3 flex-1`} style={{ animationDelay: `${i * 0.2 + 0.2}s` }} />
                         </div>
                       ))}
                     </div>
@@ -1901,16 +1269,16 @@ export default function DashboardsPage() {
           {/* Dashboard view */}
           {mode === 'viewing' && currentSpec && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Top bar */}
-              <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-black/5 dark:border-white/5 px-6 py-3 flex items-center justify-between gap-4 shrink-0">
+              {/* Top bar — gradient mesh header */}
+              <div className="dashboard-topbar px-6 py-4 flex items-center justify-between gap-4 shrink-0 shadow-lg">
                 <div className="min-w-0">
-                  <h1 className="font-bold text-lg text-slate-900 leading-tight">{currentSpec.title}</h1>
+                  <h1 className="font-bold text-lg text-white leading-tight tracking-tight">{currentSpec.title}</h1>
                   {currentSpec.description && (
-                    <p className="text-sm text-slate-500 mt-0.5 truncate">{currentSpec.description}</p>
+                    <p className="text-sm text-white/70 mt-0.5 truncate">{currentSpec.description}</p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  {/* Settings dropdown (share, folder, auto-refresh) — only for saved owned dashboards */}
+                  {/* Settings dropdown (share, folder, auto-refresh) */}
                   {activeId && !isUnsaved && (() => {
                     const activeDash = dashboards.find((d) => d.id === activeId);
                     if (!activeDash?.is_owner) return null;
@@ -1918,15 +1286,21 @@ export default function DashboardsPage() {
                       <div className="relative">
                         <button
                           onClick={() => setSettingsOpen(!settingsOpen)}
-                          className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
+                          className="w-8 h-8 flex items-center justify-center rounded-lg
+                            border border-white/20
+                            bg-white/10
+                            hover:bg-white/20
+                            transition-colors"
                           title="Dashboard settings"
                         >
-                          &#9881;
+                          <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
                         </button>
                         {settingsOpen && (
-                          <div className="absolute right-0 top-10 z-50 w-64 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl p-3 space-y-3"
+                          <div className="absolute right-0 top-10 z-50 w-64 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-700/40 rounded-xl shadow-2xl p-3 space-y-3"
                                onClick={(e) => e.stopPropagation()}>
-                            {/* Sharing */}
                             <div>
                               <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
                                 <input
@@ -1941,28 +1315,24 @@ export default function DashboardsPage() {
                                 <select
                                   value={activeDash.shared_permission}
                                   onChange={(e) => updateSharedPermission(activeId, e.target.value)}
-                                  className="mt-1 w-full text-xs border border-slate-200 rounded-md px-2 py-1"
+                                  className="mt-1 w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
                                 >
                                   <option value="viewer">Team can view</option>
                                   <option value="editor">Team can edit</option>
                                 </select>
                               )}
                             </div>
-                            {/* Folder */}
                             <div>
                               <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Folder</label>
-                              <div className="flex gap-1">
-                                <input
-                                  type="text"
-                                  defaultValue={activeDash.folder ?? ''}
-                                  placeholder="Uncategorized"
-                                  onBlur={(e) => moveToFolder(activeId, e.target.value || null)}
-                                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                  className="flex-1 text-xs border border-slate-200 rounded-md px-2 py-1"
-                                />
-                              </div>
+                              <input
+                                type="text"
+                                defaultValue={activeDash.folder ?? ''}
+                                placeholder="Uncategorized"
+                                onBlur={(e) => moveToFolder(activeId, e.target.value || null)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                                className="w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
+                              />
                             </div>
-                            {/* Auto-refresh */}
                             <div>
                               <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Auto-refresh</label>
                               <select
@@ -1972,7 +1342,7 @@ export default function DashboardsPage() {
                                   setAutoRefresh(activeId, v || null);
                                   setAutoRefreshActive(v > 0);
                                 }}
-                                className="w-full text-xs border border-slate-200 rounded-md px-2 py-1"
+                                className="w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
                               >
                                 <option value={0}>Off</option>
                                 <option value={30}>Every 30 seconds</option>
@@ -1984,7 +1354,7 @@ export default function DashboardsPage() {
                             </div>
                             <button
                               onClick={() => setSettingsOpen(false)}
-                              className="w-full text-xs text-slate-400 hover:text-slate-600 pt-1"
+                              className="w-full text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 pt-1 transition-colors"
                             >
                               Close
                             </button>
@@ -1994,61 +1364,79 @@ export default function DashboardsPage() {
                     );
                   })()}
 
-                  {/* PDF export */}
+                  {/* Export buttons */}
                   {!isUnsaved && (
-                    <button
-                      onClick={exportPdf}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
-                      title="Export as PDF"
-                    >
-                      PDF
-                    </button>
+                    <>
+                      <button
+                        onClick={exportPdf}
+                        className="h-8 px-3 flex items-center justify-center rounded-lg
+                          border border-white/20 bg-white/10
+                          hover:bg-white/20
+                          transition-colors text-[10px] font-bold text-white/80 tracking-wide"
+                        title="Export as PDF"
+                      >
+                        PDF
+                      </button>
+                      <button
+                        onClick={exportAllXlsx}
+                        className="h-8 px-3 flex items-center justify-center rounded-lg
+                          border border-white/20 bg-white/10
+                          hover:bg-white/20
+                          transition-colors text-[10px] font-bold text-white/80 tracking-wide"
+                        title="Export all widgets as Excel"
+                      >
+                        XLSX
+                      </button>
+                    </>
                   )}
 
                   {/* Duplicate */}
                   {activeId && !isUnsaved && (
                     <button
                       onClick={() => duplicateDashboard(activeId)}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-sm"
+                      className="w-8 h-8 flex items-center justify-center rounded-lg
+                        border border-white/20 bg-white/10
+                        hover:bg-white/20
+                        transition-colors"
                       title="Duplicate dashboard"
                     >
-                      ⧉
+                      <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
                     </button>
                   )}
 
                   {/* Auto-refresh indicator */}
                   {autoRefreshActive && (
-                    <span className="px-2 py-1 text-[10px] bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-full font-medium flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                      Auto
+                    <span className="px-2.5 py-1 text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-bold flex items-center gap-1.5 tracking-wide">
+                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
+                      LIVE
                     </span>
                   )}
 
-                  <button
-                    onClick={() => setDarkMode((d) => !d)}
-                    className="w-8 h-8 flex items-center justify-center rounded-lg border border-black/10 dark:border-white/10 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors text-base"
-                    title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
-                  >
-                    {darkMode ? '☀️' : '🌙'}
-                  </button>
                   {isUnsaved ? (
                     <>
                       <button
                         onClick={discardDashboard}
-                        className="px-3 py-1.5 text-sm border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 transition-colors"
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg
+                          text-white/70 hover:text-white hover:bg-white/10
+                          transition-colors"
                       >
                         Discard
                       </button>
                       <button
                         onClick={saveDashboard}
                         disabled={saving}
-                        className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
+                        className="px-4 py-1.5 text-xs font-bold rounded-lg text-white transition-all
+                          bg-white/20 hover:bg-white/30 border border-white/30
+                          shadow-lg shadow-black/10
+                          disabled:opacity-50"
                       >
-                        {saving ? 'Saving…' : 'Save'}
+                        {saving ? 'Saving...' : 'Save'}
                       </button>
                     </>
                   ) : (
-                    <span className="px-3 py-1 text-xs bg-green-50 text-green-700 border border-green-200 rounded-full font-medium">
+                    <span className="px-3 py-1 text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-bold tracking-wide">
                       Saved
                     </span>
                   )}
@@ -2056,75 +1444,44 @@ export default function DashboardsPage() {
               </div>
 
               {/* Filter bar */}
-              {currentSpec.filters.length > 0 && (
-                <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-b border-black/5 dark:border-white/5 px-6 py-2 flex flex-wrap items-center gap-x-5 gap-y-1.5 shrink-0">
-                  {currentSpec.filters.map((f) => {
-                    if (f.type === 'date_range') {
-                      return (
-                        <div key={f.id} className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-slate-500">{f.label}</span>
-                          <input
-                            type="date"
-                            value={filterValues[`${f.id}_from`] ?? ''}
-                            onChange={(e) => handleFilterChange(`${f.id}_from`, e.target.value)}
-                            className="px-2 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          />
-                          <span className="text-xs text-slate-400">to</span>
-                          <input
-                            type="date"
-                            value={filterValues[`${f.id}_to`] ?? ''}
-                            onChange={(e) => handleFilterChange(`${f.id}_to`, e.target.value)}
-                            className="px-2 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-                      );
-                    }
-                    if (f.type === 'select') {
-                      const opts = filterOptions[f.id] ?? [];
-                      return (
-                        <div key={f.id} className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-slate-500">{f.label}</span>
-                          <select
-                            value={filterValues[f.id] ?? 'all'}
-                            onChange={(e) => handleFilterChange(f.id, e.target.value)}
-                            className="px-2 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
-                          >
-                            <option value="all">{f.allLabel ?? `All ${f.label}`}</option>
-                            {opts.map((o) => (
-                              <option key={o} value={o}>{o}</option>
-                            ))}
-                          </select>
-                        </div>
-                      );
-                    }
-                    return null;
-                  })}
-                </div>
-              )}
+              <FilterBar
+                filters={currentSpec.filters}
+                filterValues={filterValues}
+                filterOptions={filterOptions}
+                onFilterChange={handleFilterChange}
+              />
 
-              {/* Widget grid */}
+              {/* Widget grid with stagger animation */}
               <div className="flex-1 overflow-y-auto">
-              <div ref={dashboardGridRef} className="grid gap-3 p-4" style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}>
-                {currentSpec.widgets.map((widget) => renderWidget(widget))}
-              </div>
+                <motion.div
+                  ref={dashboardGridRef}
+                  className="dashboard-canvas grid gap-5 p-6"
+                  style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}
+                  variants={containerVariants}
+                  initial="hidden"
+                  animate="visible"
+                  key={currentSpec.title}
+                >
+                  {currentSpec.widgets.map((widget) => renderWidget(widget))}
+                </motion.div>
               </div>
 
               {/* Bottom chat bar */}
-              <div className="bg-white/70 dark:bg-slate-900/70 backdrop-blur-md border-t border-black/5 dark:border-white/5 shrink-0">
+              <div className="bg-white/80 backdrop-blur-xl border-t border-slate-200/50 shrink-0 shadow-[0_-4px_24px_rgba(0,51,88,0.04)]">
                 {/* Chat history */}
                 {chatMessages.length > 0 && (
                   <div className="px-6 pt-3 pb-1 max-h-52 overflow-y-auto space-y-2">
                     {chatMessages.map((msg) => (
                       <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] px-3 py-2 rounded-xl ${
+                        <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl ${
                           msg.role === 'user'
-                            ? 'bg-blue-600 text-white rounded-br-sm text-sm'
+                            ? 'gradient-primary text-white rounded-br-sm text-sm shadow-lg shadow-[#003358]/20'
                             : msg.type === 'refine'
-                            ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-bl-sm'
-                            : 'bg-slate-100 text-slate-800 rounded-bl-sm'
+                            ? 'bg-emerald-50/80 text-emerald-800 border border-emerald-200/60 rounded-bl-sm'
+                            : 'glass-card text-slate-800 rounded-bl-sm ai-accent'
                         }`}>
                           {msg.role === 'assistant' && msg.type === 'refine' && (
-                            <span className="text-xs font-semibold block mb-0.5 text-emerald-600">✦ Dashboard updated</span>
+                            <span className="text-xs font-semibold block mb-0.5 text-emerald-600 dark:text-emerald-400">Dashboard updated</span>
                           )}
                           {msg.role === 'assistant'
                             ? <MarkdownAnswer text={msg.text} />
@@ -2134,10 +1491,10 @@ export default function DashboardsPage() {
                     ))}
                     {chatLoading && (
                       <div className="flex justify-start">
-                        <div className="bg-slate-100 rounded-xl rounded-bl-sm px-3 py-2 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                        <div className="glass-card rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-2">
+                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
+                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
+                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
                         </div>
                       </div>
                     )}
@@ -2151,16 +1508,25 @@ export default function DashboardsPage() {
                     value={refineInput}
                     onChange={(e) => setRefineInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
-                    placeholder='Ask about the data or say how to improve this dashboard…'
+                    placeholder='Ask about the data or say how to improve this dashboard...'
                     disabled={chatLoading}
-                    className="flex-1 px-4 py-2 text-sm border border-black/10 dark:border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white/80 dark:bg-slate-800/80 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600 disabled:opacity-50 backdrop-blur-sm"
+                    className="flex-1 px-4 py-2.5 text-sm rounded-xl
+                      bg-white/60 border border-white/80
+                      focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-400/40
+                      text-slate-800
+                      placeholder-slate-400
+                      disabled:opacity-50 transition-all"
                   />
                   <button
                     onClick={handleChatSubmit}
                     disabled={chatLoading || !refineInput.trim()}
-                    className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+                    className="px-5 py-2.5 text-sm font-bold text-white rounded-xl
+                      gradient-primary
+                      shadow-lg shadow-[#003358]/20
+                      hover:shadow-xl hover:shadow-[#003358]/25 hover:scale-[1.02]
+                      disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
                   >
-                    {chatLoading ? '…' : 'Send'}
+                    {chatLoading ? '...' : 'Send'}
                   </button>
                 </div>
               </div>
@@ -2170,48 +1536,69 @@ export default function DashboardsPage() {
       </div>
 
       {/* Template gallery modal */}
-      {showTemplates && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Dashboard Templates</h2>
-              <button onClick={() => setShowTemplates(false)} className="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              {templates.length === 0 ? (
-                <div className="text-center py-12">
-                  <div className="text-4xl mb-3">📋</div>
-                  <p className="text-sm text-slate-500">No templates available yet.</p>
-                  <p className="text-xs text-slate-400 mt-1">Admins can save dashboard specs as templates.</p>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {(() => {
-                    const categories = [...new Set(templates.map((t) => t.category))];
-                    return categories.map((cat) => (
-                      <div key={cat} className="col-span-2">
-                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">{cat}</p>
-                        <div className="grid grid-cols-2 gap-3">
-                          {templates.filter((t) => t.category === cat).map((t) => (
-                            <button
-                              key={t.id}
-                              onClick={() => createFromTemplate(t.id)}
-                              className="text-left p-4 border border-slate-200 hover:border-blue-400 rounded-xl transition-colors group"
-                            >
-                              <p className="text-sm font-semibold text-slate-700 group-hover:text-blue-700">{t.name}</p>
-                              {t.description && <p className="text-xs text-slate-500 mt-1">{t.description}</p>}
-                            </button>
-                          ))}
+      <AnimatePresence>
+        {showTemplates && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+          >
+            <motion.div
+              variants={slideUp}
+              initial="hidden"
+              animate="visible"
+              exit="exit"
+              className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-slate-200/60 dark:border-slate-700/40 shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-slate-100/60 dark:border-slate-700/30 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Dashboard Templates</h2>
+                <button onClick={() => setShowTemplates(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl transition-colors">&times;</button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-6">
+                {templates.length === 0 ? (
+                  <div className="text-center py-12">
+                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
+                      <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">No templates available yet.</p>
+                    <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Admins can save dashboard specs as templates.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4">
+                    {(() => {
+                      const categories = Array.from(new Set(templates.map((t) => t.category)));
+                      return categories.map((cat) => (
+                        <div key={cat} className="col-span-2">
+                          <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">{cat}</p>
+                          <div className="grid grid-cols-2 gap-3">
+                            {templates.filter((t) => t.category === cat).map((t) => (
+                              <button
+                                key={t.id}
+                                onClick={() => createFromTemplate(t.id)}
+                                className="text-left p-4 rounded-xl transition-all group
+                                  border border-slate-200/60 dark:border-slate-700/40
+                                  hover:border-indigo-400 dark:hover:border-indigo-500
+                                  hover:shadow-lg hover:shadow-indigo-500/10
+                                  bg-white/60 dark:bg-slate-800/40"
+                              >
+                                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-300 transition-colors">{t.name}</p>
+                                {t.description && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t.description}</p>}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ));
-                  })()}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+                      ));
+                    })()}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

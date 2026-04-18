@@ -7,6 +7,7 @@ import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/pr
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
+import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBuilder';
 
 const router = Router();
 
@@ -56,6 +57,34 @@ function applyDefaultFilters(sql: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Helper — rewrite PostgreSQL-only SQL functions to DuckDB equivalents
+// ---------------------------------------------------------------------------
+
+function fixDuckDbDialect(sql: string): string {
+  let fixed = sql;
+  // to_char(date_col, 'YYYY-MM') → strftime(date_col, '%Y-%m')
+  fixed = fixed.replace(
+    /to_char\s*\(\s*([^,]+?)\s*,\s*'([^']+)'\s*\)/gi,
+    (_match, col, fmt) => {
+      const duckFmt = fmt
+        .replace(/YYYY/g, '%Y').replace(/YY/g, '%y')
+        .replace(/MM/g, '%m').replace(/DD/g, '%d')
+        .replace(/HH24/g, '%H').replace(/MI/g, '%M').replace(/SS/g, '%S')
+        .replace(/Mon/g, '%b').replace(/Month/g, '%B')
+        .replace(/Dy/g, '%a').replace(/Day/g, '%A')
+        .replace(/-/g, '-');
+      return `strftime(${col.trim()}, '${duckFmt}')`;
+    },
+  );
+  // to_date(str, fmt) → CAST(str AS DATE)
+  fixed = fixed.replace(
+    /to_date\s*\(\s*([^,]+?)\s*,\s*'[^']*'\s*\)/gi,
+    (_match, val) => `CAST(${val.trim()} AS DATE)`,
+  );
+  return fixed;
+}
+
+// ---------------------------------------------------------------------------
 // Helper — execute all widgets with default filters, return results for validation
 // ---------------------------------------------------------------------------
 
@@ -74,7 +103,7 @@ async function executeSpecForValidation(
   if (!connection) return [];
 
   const connector = productPath
-    ? await createProductConnector(productPath, connection.id)
+    ? await createProductConnector(productPath, connection.id, tenantId)
     : await createConnector(connection);
   await connector.connect();
 
@@ -82,7 +111,7 @@ async function executeSpecForValidation(
 
   try {
     for (const widget of spec.widgets) {
-      const resolvedSql = applyDefaultFilters(widget.sql);
+      const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
       try {
         const result = await connector.executeQuery(resolvedSql);
         const rows = result.rows as Record<string, unknown>[];
@@ -261,6 +290,9 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       .replace(/\{\{[^}]+_to\}\}/g, '2099-12-31')
       .replace(/\{\{[^}]+\}\}/g, 'all');
 
+    // Fix any PostgreSQL-only functions that slipped through AI generation
+    resolvedSql = fixDuckDbDialect(resolvedSql);
+
     // Wrap all RLS-dependent queries in a single transaction to guarantee tenant context
     const tenantId = req.user!.tenantId;
     const { connection, productPath } = await semanticDb.transaction(async (trx) => {
@@ -276,7 +308,7 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id)
+      ? await createProductConnector(productPath, connection.id, tenantId)
       : await createConnector(connection);
     await connector.connect();
 
@@ -284,8 +316,14 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       const result = await connector.executeQuery(resolvedSql);
       res.json({ ok: true, data: { rows: result.rows } });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.json({ ok: false, error: message });
+      const raw = err instanceof Error ? err.message : String(err);
+      console.warn('[dashboards/execute] Widget SQL error:', raw);
+      const friendly = raw.includes('does not exist')
+        ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
+        : raw.includes('Serialization')
+          ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
+          : 'This chart could not load data. Try regenerating the dashboard.';
+      res.json({ ok: false, error: friendly });
     } finally {
       connector.disconnect();
     }
@@ -326,7 +364,7 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
     }
 
     const connector = filterProductPath
-      ? await createProductConnector(filterProductPath, filterConn.id)
+      ? await createProductConnector(filterProductPath, filterConn.id, filterTenantId)
       : await createConnector(filterConn);
     await connector.connect();
 
@@ -717,6 +755,212 @@ router.post('/:id/duplicate', requireAuth, async (req: Request, res: Response, n
 
     const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
     res.json({ ok: true, data: { id } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Helper — resolve filter placeholders in SQL using query params
+// ---------------------------------------------------------------------------
+
+function resolveFiltersFromQuery(sql: string, query: Record<string, unknown>): string {
+  let resolved = sql;
+  for (const [key, value] of Object.entries(query)) {
+    if (key.startsWith('filter_') && typeof value === 'string') {
+      const filterId = key.slice(7); // strip 'filter_'
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}\\}\\}`, 'g'), value);
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_from\\}\\}`, 'g'), value);
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_to\\}\\}`, 'g'), value);
+    }
+  }
+  // Apply defaults for any remaining unsubstituted placeholders
+  resolved = applyDefaultFilters(resolved);
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// Helper — execute a single widget and return rows
+// ---------------------------------------------------------------------------
+
+async function executeWidgetSql(
+  dashboardId: number,
+  widgetIndex: number,
+  query: Record<string, unknown>,
+  tenantId?: number,
+): Promise<{ rows: Record<string, unknown>[]; widget: { title: string; id: string }; connectionId: number }> {
+  const row = await semanticDb('dashboards').where({ id: dashboardId }).first();
+  if (!row) throw Object.assign(new Error('Dashboard not found'), { status: 404 });
+
+  const spec: DashboardSpec = typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
+  if (widgetIndex < 0 || widgetIndex >= spec.widgets.length) {
+    throw Object.assign(new Error('Widget index out of range'), { status: 400 });
+  }
+
+  const widget = spec.widgets[widgetIndex];
+  const resolvedSql = resolveFiltersFromQuery(widget.sql, query);
+
+  const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+    const conn = await trx('connections').where({ id: row.connection_id }).first();
+    const pp = await getProductWarehousePath(row.connection_id, trx);
+    return { connection: conn, productPath: pp };
+  });
+
+  if (!connection) throw Object.assign(new Error('Connection not found'), { status: 404 });
+
+  const connector = productPath
+    ? await createProductConnector(productPath, connection.id, tenantId)
+    : await createConnector(connection);
+  await connector.connect();
+
+  try {
+    const result = await connector.executeQuery(resolvedSql);
+    return { rows: result.rows as Record<string, unknown>[], widget, connectionId: row.connection_id };
+  } finally {
+    connector.disconnect();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/:id/widget/:widgetIndex/export/csv
+// ---------------------------------------------------------------------------
+
+router.get('/:id/widget/:widgetIndex/export/csv', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rows, widget } = await executeWidgetSql(
+      Number(req.params.id),
+      Number(req.params.widgetIndex),
+      req.query as Record<string, unknown>,
+      req.user!.tenantId,
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ ok: false, error: 'No data to export' });
+      return;
+    }
+
+    const columns = Object.keys(rows[0]);
+    const csv = buildCsvFromRows(columns, rows);
+    const filename = `${widget.title.replace(/[^a-zA-Z0-9]/g, '_')}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send('\uFEFF' + csv); // BOM for Excel UTF-8 compat
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'status' in err) {
+      res.status((err as { status: number }).status).json({ ok: false, error: (err as Error).message });
+    } else {
+      next(err);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/:id/widget/:widgetIndex/export/xlsx
+// ---------------------------------------------------------------------------
+
+router.get('/:id/widget/:widgetIndex/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { rows, widget } = await executeWidgetSql(
+      Number(req.params.id),
+      Number(req.params.widgetIndex),
+      req.query as Record<string, unknown>,
+      req.user!.tenantId,
+    );
+
+    if (!rows.length) {
+      res.status(404).json({ ok: false, error: 'No data to export' });
+      return;
+    }
+
+    const columns = Object.keys(rows[0]);
+    const xlsx = buildXlsxFromRows(columns, rows);
+    const filename = `${widget.title.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xlsx);
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'status' in err) {
+      res.status((err as { status: number }).status).json({ ok: false, error: (err as Error).message });
+    } else {
+      next(err);
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/dashboards/:id/export/xlsx — all widgets as multi-sheet XLSX
+// ---------------------------------------------------------------------------
+
+router.get('/:id/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const dashboardId = Number(req.params.id);
+    const row = await semanticDb('dashboards').where({ id: dashboardId }).first();
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Dashboard not found' });
+      return;
+    }
+
+    const spec: DashboardSpec = typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
+    const tenantId = req.user!.tenantId;
+
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: row.connection_id }).first();
+      const pp = await getProductWarehousePath(row.connection_id, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const connector = productPath
+      ? await createProductConnector(productPath, connection.id, tenantId)
+      : await createConnector(connection);
+    await connector.connect();
+
+    const sheets: Array<{ name: string; headers: string[]; rows: unknown[][] }> = [];
+
+    try {
+      for (let i = 0; i < spec.widgets.length; i++) {
+        const widget = spec.widgets[i];
+        const resolvedSql = resolveFiltersFromQuery(widget.sql, req.query as Record<string, unknown>);
+        try {
+          const result = await connector.executeQuery(resolvedSql);
+          const rows = result.rows as Record<string, unknown>[];
+          if (rows.length > 0) {
+            const columns = Object.keys(rows[0]);
+            // Sheet name must be <= 31 chars and unique
+            const sheetName = widget.title.replace(/[^\w\s-]/g, '').substring(0, 28) || `Widget ${i + 1}`;
+            sheets.push({
+              name: sheetName,
+              headers: columns,
+              rows: rows.map((r) => columns.map((c) => r[c])),
+            });
+          }
+        } catch {
+          // Skip widgets that fail to execute
+        }
+      }
+    } finally {
+      connector.disconnect();
+    }
+
+    if (sheets.length === 0) {
+      res.status(404).json({ ok: false, error: 'No widget data to export' });
+      return;
+    }
+
+    const xlsx = buildXlsx(sheets);
+    const filename = `${(spec.title || 'dashboard').replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xlsx);
   } catch (err) {
     next(err);
   }

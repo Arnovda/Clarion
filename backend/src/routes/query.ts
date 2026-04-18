@@ -6,8 +6,11 @@ import { semanticDb } from '../db/knex';
 import { notifyAdmins } from '../services/notificationService';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
+import { applyDataPolicies } from '../services/policyEngine';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
-import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion, SqlDialect } from '../ai/AIService';
+import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
+import { isForecastQuestion } from '../ai/prompts/forecastPrompt';
+import { computeForecast, TimeSeriesPoint } from '../services/forecastEngine';
 import {
   REPAIR_SYSTEM,
   getRepairSystem,
@@ -88,6 +91,30 @@ function buildColumnDisambiguationWarning(
   return `\n--- COLUMN DISAMBIGUATION WARNING ---\nThe following column names appear in multiple tables. Be explicit about which table you use:\n${lines.join('\n')}`;
 }
 
+// ---------------------------------------------------------------------------
+// Conversation history loader — fetches the last N messages for follow-up context
+// ---------------------------------------------------------------------------
+async function loadConversationHistory(
+  conversationId: number,
+  limit = 5,
+): Promise<Array<{ role: string; content: string }>> {
+  try {
+    const rows = await semanticDb('conversation_messages')
+      .where({ conversation_id: conversationId })
+      .orderBy('created_at', 'desc')
+      .limit(limit)
+      .select('role', 'content');
+    // Reverse to chronological order and map to the shape the AI service expects
+    return rows.reverse().map((r: { role: string; content: string }) => ({
+      role: r.role,
+      content: r.content,
+    }));
+  } catch {
+    // If the conversation doesn't exist or the query fails, return empty — non-blocking
+    return [];
+  }
+}
+
 // Dedup-or-increment gap: if a similar unresolved gap exists (keyword overlap),
 // bump its hit_count instead of creating a duplicate.
 async function upsertDefinitionGap(queryLogId: number, description: string, question: string): Promise<void> {
@@ -117,12 +144,19 @@ async function upsertDefinitionGap(queryLogId: number, description: string, ques
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, question, domains } = req.body as { connectionId: number; question: string; domains?: string[] };
+    const { connectionId, question, domains, conversationId } = req.body as {
+      connectionId: number; question: string; domains?: string[]; conversationId?: number;
+    };
 
     if (!question?.trim()) {
       res.status(400).json({ ok: false, error: 'question is required' });
       return;
     }
+
+    // Load conversation history for follow-up context (if conversationId provided)
+    const conversationHistory = conversationId
+      ? await loadConversationHistory(conversationId)
+      : undefined;
 
     // 0. Check for product layer — if a star schema exists with transformed tables,
     //    use product context (cleaner Kimball model) instead of raw source context.
@@ -142,6 +176,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
       const nlResult = await generateSql(
         question, productCtx.semanticContext, productCtx.relationshipContext, productCtx.kpiFormulas, dialect,
+        conversationHistory,
       );
 
       const blockCheck = shouldBlockQuery(nlResult);
@@ -174,12 +209,16 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         return;
       }
 
+      // Apply data access policies before execution
+      const productPolicyResult = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
+      const productExecSql = productPolicyResult.sql;
+
       // Execute against product layer DuckDB
-      const connector = await createProductConnector(productWarehouse, connection.id);
+      const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       let execRows: Record<string, unknown>[];
       try {
-        const result = await connector.executeQuery(nlResult.sql);
+        const result = await connector.executeQuery(productExecSql);
         execRows = result.rows;
       } finally {
         connector.disconnect();
@@ -187,7 +226,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
       const [answer, validation] = await Promise.all([
         formatAnswer(question, execRows),
-        validateQueryResult(question, nlResult.sql, execRows),
+        validateQueryResult(question, productExecSql, execRows),
       ]);
 
       await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
@@ -200,6 +239,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           uncertaintyNotes: nlResult.uncertainty_notes,
           blocked: false, tablesUsed: nlResult.tables_used,
           queryLayer: 'product',
+          ...(productPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
           ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
           rows: execRows.slice(0, 200),
           sql: nlResult.sql,
@@ -545,8 +585,8 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     const dialect = getDialect(connection);
 
     const nlResult = isCrossSourceQuery
-      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect)
-      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect);
+      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory)
+      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory);
 
     // 3. Log the query regardless of outcome
     const blockCheck = shouldBlockQuery(nlResult);
@@ -826,14 +866,19 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
   };
 
   try {
-    const { connectionId, question, domains } = req.body as {
-      connectionId: number; question: string; domains?: string[];
+    const { connectionId, question, domains, conversationId } = req.body as {
+      connectionId: number; question: string; domains?: string[]; conversationId?: number;
     };
 
     if (!question?.trim()) {
       emit({ type: 'error', message: 'question is required' });
       res.end(); return;
     }
+
+    // Load conversation history for follow-up context (if conversationId provided)
+    const conversationHistory = conversationId
+      ? await loadConversationHistory(conversationId)
+      : undefined;
 
     // ── 0. Check for product layer ────────────────────────────────────────
     emit({ type: 'phase', text: 'Loading context…' });
@@ -856,6 +901,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         question, thinkProductCtx.semanticContext, thinkProductCtx.relationshipContext, thinkProductCtx.kpiFormulas,
         (type, delta) => emit({ type, text: delta }),
         dialect,
+        conversationHistory,
       );
       emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 
@@ -878,7 +924,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       }
 
       emit({ type: 'phase', text: 'Running query on star schema…' });
-      const connector = await createProductConnector(thinkProductWarehouse, connection.id);
+      const connector = await createProductConnector(thinkProductWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       let queryRows: Record<string, unknown>[];
       try {
@@ -1019,6 +1065,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       question, fullContext, thinkRelCtx, kpiFormulas,
       (type, delta) => emit({ type, text: delta }),
       dialect,
+      conversationHistory,
     );
 
     emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
@@ -1367,12 +1414,17 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 router.post('/cross-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   let inMemDb: Database.Database | null = null;
   try {
-    const { viewId, question } = req.body as { viewId: number; question: string };
+    const { viewId, question, conversationId } = req.body as { viewId: number; question: string; conversationId?: number };
 
     if (!question?.trim()) {
       res.status(400).json({ ok: false, error: 'question is required' });
       return;
     }
+
+    // Load conversation history for follow-up context (if conversationId provided)
+    const conversationHistory = conversationId
+      ? await loadConversationHistory(conversationId)
+      : undefined;
 
     // 1. Load view tables with connection info
     const viewTables = await semanticDb('cross_view_tables as vt')
@@ -1457,7 +1509,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
       : 'No cross-source relationships defined yet — avoid cross-schema JOINs unless you are certain of the key columns.';
 
     // 7. Generate SQL via Claude (cross-source variant)
-    const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext, 'No KPIs defined yet.');
+    const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext, 'No KPIs defined yet.', 'sqlite', conversationHistory);
 
     // 8. Log the query
     const [logRow] = await semanticDb('query_log')
@@ -1531,6 +1583,182 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
     });
   } catch (err) {
     inMemDb?.close();
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/query/forecast — AI-driven forecasting pipeline
+// Detects forecast intent, fetches historical data, computes statistical
+// forecast, and returns both historical + predicted data for visualization.
+// ---------------------------------------------------------------------------
+
+router.post('/forecast', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, question, domains } = req.body as {
+      connectionId: number; question: string; domains?: string[];
+    };
+
+    if (!question?.trim()) {
+      res.status(400).json({ ok: false, error: 'question is required' });
+      return;
+    }
+
+    // 1. Build semantic context (same as the main query path)
+    const productCtx = await buildProductSemanticContext(connectionId);
+    const tenantId = req.user!.tenantId;
+    const productWarehouse = productCtx
+      ? await semanticDb.transaction(async (trx) => {
+          if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+          return getProductWarehousePath(connectionId, trx);
+        })
+      : null;
+
+    let semanticContext: string;
+    let relationshipContext: string;
+    let kpiFormulas: string;
+    let dialect: SqlDialect;
+
+    if (productCtx && productWarehouse) {
+      semanticContext = productCtx.semanticContext;
+      relationshipContext = productCtx.relationshipContext;
+      kpiFormulas = productCtx.kpiFormulas;
+      dialect = 'duckdb';
+    } else {
+      // Source layer context
+      const catalog = await getTableAndColumnNames(connectionId, domains);
+      const entityMatches = extractEntitiesFromQuestion(question, catalog);
+      const seeds = entityMatches.length > 0 ? entityMatches : [];
+
+      const ctx = seeds.length > 0
+        ? await buildRelevantSubgraph(connectionId, seeds, domains)
+        : await buildSemanticContextForQuery(connectionId, domains);
+
+      semanticContext = (ctx.tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
+        const cols = (ctx.columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
+          .filter((c) => c.table_id === t.id)
+          .map((c) =>
+            `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+          ).join('\n');
+        const grainNote = t.grain ? ` (grain: ${t.grain})` : '';
+        return `Table: ${t.table_name}${grainNote} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+      }).join('\n\n');
+
+      relationshipContext = ctx.relationships.length
+        ? (ctx.relationships as { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }[])
+            .map((r) => {
+              const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
+              const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
+              return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
+            }).join('\n')
+        : 'No relationships defined yet.';
+
+      kpiFormulas = ctx.kpis.length
+        ? (ctx.kpis as { name: string; formula_plain_text: string | null; formula_sql: string }[])
+            .map((k) => `${k.name}: ${k.formula_sql ?? '(not defined)'}`)
+            .join('\n')
+        : 'No KPIs defined yet.';
+
+      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      dialect = getDialect(connection);
+    }
+
+    // 2. Ask Claude to generate the historical SQL + forecast parameters
+    const fcResult = await forecastQuery(question, semanticContext, relationshipContext, kpiFormulas, dialect);
+
+    if (fcResult.confidence < 0.5) {
+      res.json({
+        ok: true,
+        data: {
+          answer: "I'm not confident enough to generate a forecast for this question. Try being more specific about what metric you'd like to predict and over what time period.",
+          blocked: true,
+          confidence: fcResult.confidence,
+        },
+      });
+      return;
+    }
+
+    // 3. Execute the historical SQL to get time-series data
+    let histRows: Record<string, unknown>[];
+
+    if (productCtx && productWarehouse) {
+      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
+      await connector.connect();
+      try {
+        const result = await connector.executeQuery(fcResult.historicalSql);
+        histRows = result.rows;
+      } finally {
+        connector.disconnect();
+      }
+    } else {
+      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connector = await createConnector(connection);
+      await connector.connect();
+      try {
+        const result = await connector.executeQuery(fcResult.historicalSql);
+        histRows = result.rows;
+      } finally {
+        connector.disconnect();
+      }
+    }
+
+    // 4. Transform rows into time-series format
+    const timeSeries: TimeSeriesPoint[] = histRows.map((row) => ({
+      date: String(row[fcResult.dateColumn] ?? ''),
+      value: Number(row[fcResult.valueColumn] ?? 0),
+    })).filter((p) => p.date && !isNaN(p.value));
+
+    if (timeSeries.length < 2) {
+      res.json({
+        ok: true,
+        data: {
+          answer: 'Not enough historical data points to generate a meaningful forecast. I need at least 2 data points in the time series.',
+          blocked: true,
+          confidence: fcResult.confidence,
+          rows: histRows.slice(0, 50),
+          sql: fcResult.historicalSql,
+        },
+      });
+      return;
+    }
+
+    // 5. Compute the statistical forecast
+    const forecastResult = computeForecast(timeSeries, fcResult.forecastPeriods, fcResult.periodUnit);
+
+    // 6. Log the query
+    await semanticDb('query_log').insert({
+      user_id:          req.user!.sub,
+      question_text:    question,
+      generated_sql:    fcResult.historicalSql,
+      confidence_score: fcResult.confidence,
+      was_flagged:      false,
+      executed:         true,
+      result_summary:   fcResult.explanation,
+    });
+
+    // 7. Return combined response
+    res.json({
+      ok: true,
+      data: {
+        answer: fcResult.explanation,
+        confidence: fcResult.confidence,
+        blocked: false,
+        tablesUsed: fcResult.tables_used,
+        sql: fcResult.historicalSql,
+        rows: histRows.slice(0, 200),
+        forecast: {
+          historical: forecastResult.historical,
+          predicted: forecastResult.forecast,
+          method: forecastResult.method === 'linear_regression' ? 'Linear Regression' : 'Moving Average',
+          r2: forecastResult.r2,
+          periods: fcResult.forecastPeriods,
+          periodUnit: fcResult.periodUnit,
+          explanation: fcResult.explanation,
+        },
+      },
+    });
+  } catch (err) {
     next(err);
   }
 });

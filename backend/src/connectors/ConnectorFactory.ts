@@ -134,10 +134,41 @@ export function createSourceConnector(conn: ConnectionRow): BaseConnector {
 
 /**
  * Creates a DuckDB connector pointing at the product layer warehouse.
+ *
+ * Gathers ALL successfully materialized product tables across ALL data products
+ * for this connection. This is critical because shared/conformed dimensions
+ * (e.g. dim_customer) may live in a different product's warehouse directory
+ * (e.g. Catalogue) than the fact tables being queried (e.g. Operations).
  */
-export async function createProductConnector(productWarehousePath: string, connectionId: number): Promise<BaseConnector> {
-  const tableNames = await getIngestedTableNames(connectionId);
-  return new DuckDBConnector(productWarehousePath, tableNames);
+export async function createProductConnector(productWarehousePath: string, connectionId: number, tenantId?: number): Promise<BaseConnector> {
+  // Get all successfully materialized product tables across ALL products for this connection.
+  // Wrap in a transaction with tenant context to ensure RLS allows access (the pool
+  // connection may not have app.current_tenant set from the middleware).
+  const productTables = await semanticDb.transaction(async (trx) => {
+    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+    return trx('product_tables')
+      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+      .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+      .where('data_products.connection_id', connectionId)
+      .where('product_tables.transformation_status', 'success')
+      .whereNotNull('product_tables.delta_path')
+      .select('product_tables.table_name', 'product_tables.delta_path');
+  });
+
+  // Build explicit table → path mapping
+  const tablePaths = new Map<string, string>();
+  const tableNames: string[] = [];
+  for (const t of productTables) {
+    tablePaths.set(t.table_name, t.delta_path);
+    tableNames.push(t.table_name);
+  }
+
+  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${new Set(productTables.map((t: { delta_path: string }) => {
+    const parts = t.delta_path.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 2]; // parent directory = product slug
+  })).size} product(s): ${tableNames.join(', ')}`);
+
+  return new DuckDBConnector(productWarehousePath, tableNames, tablePaths);
 }
 
 /**

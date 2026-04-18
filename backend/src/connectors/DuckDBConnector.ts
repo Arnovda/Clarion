@@ -28,6 +28,8 @@ export class DuckDBConnector extends BaseConnector {
   private readonly warehousePath: string;
   private readonly isAzure: boolean;
   private readonly tableNames: string[];
+  /** Explicit table → directory path mapping (used for cross-product warehouse access) */
+  private readonly tablePaths: Map<string, string>;
   private db: Database | null = null;
   private viewsCreated = false;
 
@@ -36,16 +38,21 @@ export class DuckDBConnector extends BaseConnector {
    * @param tableNames - Optional list of known table names (from ingested_tables DB).
    *   Required for Azure mode since we can't scan blob directories.
    *   For local mode, falls back to filesystem scanning if not provided.
+   * @param tablePaths - Optional explicit mapping of table_name → directory path.
+   *   When provided, takes precedence over warehousePath-based path building.
+   *   Used for product layer queries where tables span multiple warehouse directories.
    */
-  constructor(warehousePath: string, tableNames?: string[]) {
+  constructor(warehousePath: string, tableNames?: string[], tablePaths?: Map<string, string>) {
     super();
     this.isAzure = warehousePath.startsWith('az://');
     this.warehousePath = this.isAzure ? warehousePath : path.resolve(warehousePath);
     this.tableNames = tableNames ?? [];
+    this.tablePaths = tablePaths ?? new Map();
   }
 
   async connect(): Promise<void> {
-    if (!this.isAzure && !fs.existsSync(this.warehousePath)) {
+    // Skip warehouse path check if we have explicit table paths (cross-product mode)
+    if (!this.isAzure && this.tablePaths.size === 0 && !fs.existsSync(this.warehousePath)) {
       throw new Error(`Warehouse directory not found: ${this.warehousePath}`);
     }
 
@@ -214,6 +221,13 @@ export class DuckDBConnector extends BaseConnector {
 
   /** Build the full path/URI for a table within this warehouse. */
   private tablePath(tableName: string): string {
+    // If explicit path mapping exists, use it (cross-product warehouse access)
+    const explicit = this.tablePaths.get(tableName);
+    if (explicit) {
+      if (this.isAzure) return explicit;
+      return path.resolve(explicit).replace(/\\/g, '/');
+    }
+
     if (this.isAzure) {
       // az://warehouse/tenant_1/conn_4/orders
       return `${this.warehousePath}/${tableName}`;
@@ -221,10 +235,15 @@ export class DuckDBConnector extends BaseConnector {
     return path.join(this.warehousePath, tableName).replace(/\\/g, '/');
   }
 
-  /** Get list of table names — from constructor or filesystem scan. */
+  /** Get list of table names — from explicit paths, constructor arg, or filesystem scan. */
   private getTableNames(): string[] {
-    if (this.tableNames.length > 0) {
-      return this.tableNames;
+    // Merge explicit table paths with provided table names (dedup)
+    const names = new Set<string>(this.tableNames);
+    for (const key of this.tablePaths.keys()) {
+      names.add(key);
+    }
+    if (names.size > 0) {
+      return [...names];
     }
 
     // Fallback: scan local filesystem (only works in local mode)
@@ -272,15 +291,19 @@ export class DuckDBConnector extends BaseConnector {
     if (this.viewsCreated) return;
     const tableNames = this.getTableNames();
 
+    let created = 0;
+    let failed = 0;
     for (const tableName of tableNames) {
       const tPath = this.tablePath(tableName);
       try {
         await this.createDeltaView(db, tableName, tPath);
+        created++;
       } catch (err) {
-        console.warn(`[DuckDBConnector] Failed to create view for ${tableName}:`, err);
+        failed++;
+        console.warn(`[DuckDBConnector] Failed to create view for ${tableName} (path: ${tPath}):`, err instanceof Error ? err.message : err);
       }
     }
     this.viewsCreated = true;
-    console.log(`[DuckDBConnector] ${tableNames.length} views created (cached for reuse)`);
+    console.log(`[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''} (cached for reuse)`);
   }
 }
