@@ -57,7 +57,7 @@ export default function IngestionWizard({
       setStep('pick');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
-        ?? 'Failed to discover tables. Is the ETL service running?';
+        ?? 'Failed to discover tables. Is the data processing service running?';
       setError(msg);
       setStep('error');
     }

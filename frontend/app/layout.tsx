@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${manrope.variable} ${inter.variable} ${geistMono.variable}`}>
-      <body className="antialiased font-body bg-surface text-on-surface">{children}</body>
+      <body suppressHydrationWarning className="antialiased font-body bg-surface text-on-surface">{children}</body>
     </html>
   );
 }

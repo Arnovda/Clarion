@@ -207,6 +207,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       await semanticDb('connections').where({ id: connectionId }).update({
         profiling_status: 'done', profiling_phase: 'done',
         profiling_message: doneMsg, profiling_progress: 100,
+        last_profiled_at: new Date().toISOString(),
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
@@ -237,6 +238,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
         profiling_status: 'done', profiling_phase: 'done',
         profiling_message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`,
         profiling_progress: 100,
+        last_profiled_at: new Date().toISOString(),
       });
       res.json({ ok: true, data: result });
     } catch (err) {
@@ -328,6 +330,56 @@ router.post('/:id/introspect', requireAuth, requireRole('admin'), async (req: Re
 
     res.json({ ok: true, data: { tables: schema.tables.length, updatedColumns: updatedCols, newColumns: insertedCols } });
   } catch (err) { next(err); }
+});
+
+// GET /api/connections/freshness — freshness info for all connections + data products
+router.get('/freshness', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Connection freshness
+    const connections = await semanticDb('connections')
+      .select('id', 'name', 'last_synced_at', 'last_profiled_at', 'last_ingested_at', 'created_at')
+      .orderBy('name');
+
+    // Latest transformation run per product (graceful — may not exist)
+    let products: Record<string, unknown>[] = [];
+    try {
+      products = await semanticDb('data_products as dp')
+        .leftJoin('transformation_schedules as ts', 'ts.product_id', 'dp.id')
+        .leftJoin(
+          semanticDb('transformation_runs')
+            .select('schedule_id')
+            .max('finished_at as last_run_at')
+            .where('status', 'success')
+            .groupBy('schedule_id')
+            .as('tr'),
+          'tr.schedule_id', 'ts.id'
+        )
+        .select('dp.id', 'dp.name', 'dp.created_at', 'tr.last_run_at')
+        .groupBy('dp.id', 'dp.name', 'dp.created_at', 'tr.last_run_at')
+        .orderBy('dp.name');
+    } catch { /* data_products table may not exist yet */ }
+
+    res.json({
+      ok: true,
+      data: {
+        connections: connections.map((c: Record<string, unknown>) => ({
+          id: c.id,
+          name: c.name,
+          last_synced_at: c.last_synced_at ?? c.last_ingested_at ?? null,
+          last_profiled_at: c.last_profiled_at ?? null,
+          created_at: c.created_at,
+        })),
+        products: products.map((p: Record<string, unknown>) => ({
+          id: p.id,
+          name: p.name,
+          last_run_at: p.last_run_at ?? null,
+          created_at: p.created_at,
+        })),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // DELETE /api/connections/:id — delete a connection and its semantic data

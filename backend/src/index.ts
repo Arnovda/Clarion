@@ -36,7 +36,10 @@ import jobsRouter         from './routes/jobs';
 import schedulesRouter    from './routes/schedules';
 import usersRouter        from './routes/users';
 import conversationsRouter from './routes/conversations';
+import notebooksRouter     from './routes/notebooks';
 import notificationsRouter from './routes/notifications';
+import policiesRouter      from './routes/policies';
+import settingsRouter      from './routes/settings';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -131,7 +134,10 @@ app.use('/api/jobs',         jobsRouter);
 app.use('/api/schedules',   schedulesRouter);
 app.use('/api/users',       usersRouter);
 app.use('/api/conversations', conversationsRouter);
+app.use('/api/notebooks',     notebooksRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/policies',      policiesRouter);
+app.use('/api/settings',      settingsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
@@ -196,6 +202,15 @@ if (!process.env.VITEST) {
         if (stale > 0) console.log(`[startup] Reset ${stale} stale profiling job(s)`);
       } catch { /* non-fatal */ }
     })();
+
+    // Auto-approve stale AI drafts — run once after a 30s delay to let the app settle
+    setTimeout(async () => {
+      try {
+        const { autoApproveAllTenants } = await import('./services/autoApproveService');
+        const count = await autoApproveAllTenants();
+        if (count > 0) console.log(`[startup] Auto-approved ${count} stale AI draft(s)`);
+      } catch { /* non-fatal */ }
+    }, 30_000);
 
     // Stale ingestion/profiling cleanup — mark any stuck in 'running' for >30min as failed.
     // Runs every 5 minutes.

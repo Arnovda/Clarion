@@ -126,7 +126,7 @@ export default function GapsPage() {
             <span className={`text-body-sm font-bold ${unresolvedCount > 0 ? 'text-error' : 'text-on-surface'}`}>{unresolvedCount}</span>
           </div>
           <div className="flex items-center justify-between px-2">
-            <span className="text-body-sm text-on-surface-variant">Pending approvals</span>
+            <span className="text-body-sm text-on-surface-variant">AI suggestions</span>
             <span className={`text-body-sm font-bold ${pendingItems.length > 0 ? 'text-amber-600' : 'text-on-surface'}`}>{pendingItems.length}</span>
           </div>
           <div className="flex items-center justify-between px-2">
@@ -144,12 +144,12 @@ export default function GapsPage() {
 
   return (
     <AppShell
-      title="Review Queue"
-      subtitle="Questions the AI couldn't answer and query history"
+      title="AI Suggestions"
+      subtitle="Questions the AI couldn't answer, AI suggestions, and query history"
       contextPanel={contextPanel}
       pills={[
         { key: 'gaps', label: `Gaps${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}` },
-        { key: 'approvals', label: `Approvals${pendingItems.length > 0 ? ` (${pendingItems.length})` : ''}` },
+        { key: 'approvals', label: `AI Suggestions${pendingItems.length > 0 ? ` (${pendingItems.length})` : ''}` },
         { key: 'log', label: 'Query Log' },
       ]}
       activePill={activePill}
@@ -164,7 +164,7 @@ export default function GapsPage() {
               <div className="text-4xl mb-3">&#10003;</div>
               <h3 className="text-title-md font-semibold text-on-surface mb-1">All caught up!</h3>
               <p className="text-body-sm text-on-surface-variant max-w-sm mx-auto">
-                No definitions are waiting for approval. AI drafts and changes will appear here when they need review.
+                No AI suggestions pending. New AI-generated definitions will appear here for optional review. Suggestions are auto-confirmed if not reviewed.
               </p>
             </div>
           )}
@@ -196,7 +196,7 @@ export default function GapsPage() {
                       item.status === 'ai_draft' ? 'bg-amber-500/10 text-amber-600' :
                       item.status === 'pending' ? 'bg-blue-500/10 text-blue-600' :
                       'bg-slate-100 text-slate-500'
-                    }`}>{item.status === 'ai_draft' ? 'AI Draft' : item.status}</span>
+                    }`}>{item.status === 'ai_draft' ? 'AI Suggested' : item.status === 'pending' ? 'AI Suggested' : item.status}</span>
                   </div>
                   <div className="flex-shrink-0 text-label-sm text-on-surface-variant/50">
                     {relativeTime(item.updated_at)}

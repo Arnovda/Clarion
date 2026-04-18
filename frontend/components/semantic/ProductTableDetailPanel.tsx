@@ -607,7 +607,7 @@ export default function ProductTableDetailPanel({
                         )}
                         {col.scd_type > 1 && (
                           <span className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md border border-slate-200/40">
-                            SCD Type {col.scd_type}
+                            History Type {col.scd_type}
                           </span>
                         )}
                         {col.transformation_expression && (

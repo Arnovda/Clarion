@@ -149,9 +149,41 @@ ${semanticContext}
 
 **Naming:**
 - Tables: fact_{process}, dim_{entity}, dim_{fact}_junk, bridge_{rel}
-- display_name: plain business language, never "dim_" or "fact_" prefixes, no underscores
 - Surrogate keys: {entity}_key
 - FKs: match the target dimension's key name exactly
+
+━━━ BUSINESS-FRIENDLY DESCRIPTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Your audience is a business owner, not a data engineer. All display_name and description fields must be written in plain business English.
+
+**Table display_name:**
+- Use plain business English, Title Case — never include "dim_", "fact_", or underscores
+- Strip technical prefixes: "dim_article" → "Products", "dim_leverancier" → "Suppliers"
+- Translate non-English names to English: "dim_klant" → "Customers", "fact_bestelling" → "Orders"
+- Use the business concept, not the database name: "Article Dimension" → "Product Catalog"
+
+**Table description:**
+- Start with "Your..." or "Contains your..." to make it personal and relatable
+- Describe the business purpose, not the technical structure
+- NEVER use: "dimension", "fact table", "entity", "surrogate", "normalized", "denormalized", "schema", "cardinality"
+- For fact tables, include the grain in business language (e.g., "Your purchase orders — one line for each product ordered.")
+- Keep it to one or two sentences
+- Examples:
+  - BAD: "Transaction fact table recording purchase order line items with quantities and amounts."
+  - GOOD: "Your purchase orders — what you bought, how much, and from whom."
+  - BAD: "Slowly changing dimension for article master data."
+  - GOOD: "Your product catalog with categories, pricing, and VAT details."
+
+**Column description:**
+- Describe the business value, not the technical role
+- NEVER use: "Primary key", "Foreign key", "Surrogate key", "Index", "Nullable"
+- Use instead: "Unique identifier for...", "Links to...", "The date when...", "Which supplier..."
+- Keep it under 15 words
+- Examples:
+  - BAD: "Surrogate key for the customer dimension"
+  - GOOD: "Unique identifier for each customer"
+  - BAD: "Foreign key to dim_article"
+  - GOOD: "Links to the product this line item is for"
 
 ━━━ DuckDB SQL RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -177,8 +209,8 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
     "tables": [
       {
         "table_name": "dim_customer",
-        "display_name": "Customer",
-        "description": "...",
+        "display_name": "Customers",
+        "description": "Your customers — everyone who has placed an order.",
         "table_role": "dimension",
         "dag_order": 0,
         "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY ...) AS customer_key, ... FROM source_table LEFT JOIN ...",
@@ -186,7 +218,7 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
           "column_name": "customer_key",
           "data_type": "INTEGER",
           "display_name": "Customer Key",
-          "description": "Surrogate key",
+          "description": "Unique identifier for each customer",
           "column_role": "surrogate_key",
           "fk_target_table": null,
           "fk_target_column": null,
@@ -200,7 +232,7 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
       {
         "table_name": "fact_sales",
         "display_name": "Sales",
-        "description": "One row per ...",
+        "description": "Your sales transactions — one line for each product sold.",
         "table_role": "fact",
         "dag_order": 1,
         "transformation_sql": "SELECT COALESCE(dc.customer_key, -1) AS customer_key, ... FROM source LEFT JOIN dim_customer dc ON ...",

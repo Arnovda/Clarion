@@ -402,10 +402,12 @@ function FailureDrawer({ failure, onClose, onStatusChange }: {
 export default function QualityPanel({
   connId,
   tableName,
+  displayName,
   productTableId,
 }: {
   connId:         number;
   tableName:      string;
+  displayName?:   string;
   productTableId?: number;
 }) {
   const base = `/quality/${connId}/${encodeURIComponent(tableName)}`;
@@ -778,7 +780,7 @@ export default function QualityPanel({
         <div className="glass-card rounded-2xl overflow-hidden">
           <div className="px-5 py-4 flex items-center justify-between">
             <div>
-              <h2 className="font-bold text-on-surface text-lg">{tableName}</h2>
+              <h2 className="font-bold text-on-surface text-lg">{displayName || tableName}</h2>
               <p className="text-xs text-on-surface-variant mt-0.5">
                 {summary
                   ? `${summary.row_count.toLocaleString()} rows · last profiled ${new Date(summary.profiled_at).toLocaleString()}`

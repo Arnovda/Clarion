@@ -25,6 +25,7 @@ interface Props {
   entityType: 'table' | 'column' | 'kpi' | 'product_table' | 'product_column';
   entityId: number;
   entityName: string;
+  onRevert?: () => void;
 }
 
 function parseJson(v: unknown): Record<string, unknown> {
@@ -49,7 +50,7 @@ function formatValue(v: unknown): string {
   return String(v);
 }
 
-export default function HistoryPanel({ entityType, entityId, entityName }: Props) {
+export default function HistoryPanel({ entityType, entityId, entityName, onRevert }: Props) {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
@@ -57,6 +58,8 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
   const [selectedV1, setSelectedV1] = useState<number | null>(null);
   const [selectedV2, setSelectedV2] = useState<number | null>(null);
   const [expandedVersion, setExpandedVersion] = useState<number | null>(null);
+  const [revertingVersion, setRevertingVersion] = useState<number | null>(null);
+  const [confirmRevert, setConfirmRevert] = useState<number | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -79,6 +82,23 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
     setDiffLoading(false);
   }
 
+  async function handleRevert(version: number) {
+    // Only allow revert for table, column, kpi (not product_table/product_column)
+    if (!['table', 'column', 'kpi'].includes(entityType)) return;
+    setRevertingVersion(version);
+    try {
+      await api.post('/semantic/revert', { entityType, entityId, version });
+      // Refresh version history
+      const res = await api.get(`/semantic/history?entityType=${entityType}&entityId=${entityId}`);
+      setVersions(res.data.data ?? []);
+      setConfirmRevert(null);
+      onRevert?.();
+    } catch {
+      // silently fail — user sees the button reset
+    }
+    setRevertingVersion(null);
+  }
+
   if (loading) {
     return <div className="p-4 text-sm text-slate-400">Loading history...</div>;
   }
@@ -94,23 +114,25 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-700">
+        <h3 className="text-sm font-semibold text-slate-300">
           Version History: {entityName}
         </h3>
-        <span className="text-xs text-slate-400">{versions.length} version{versions.length !== 1 ? 's' : ''}</span>
+        <span className="text-xs text-slate-500">{versions.length} version{versions.length !== 1 ? 's' : ''}</span>
       </div>
 
       {/* Version list */}
       <div className="space-y-2">
-        {versions.map((v) => {
+        {versions.map((v, idx) => {
           const changes = parseJson(v.changes);
           const changedKeys = Object.keys(changes);
           const isExpanded = expandedVersion === v.version;
+          const isLatest = idx === 0;
+          const canRevert = !isLatest && ['table', 'column', 'kpi'].includes(entityType);
 
           return (
-            <div key={v.id} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div key={v.id} className="bg-white/5 border border-white/10 rounded-lg overflow-hidden">
               <div
-                className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-slate-50"
+                className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-white/5"
                 onClick={() => setExpandedVersion(isExpanded ? null : v.version)}
               >
                 <div className="flex items-center gap-2">
@@ -131,28 +153,31 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
                     className="rounded"
                     title="Select for comparison"
                   />
-                  <span className="text-xs font-mono font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded">
+                  <span className="text-xs font-mono font-bold text-cyan-400 bg-cyan-400/10 px-2 py-0.5 rounded">
                     v{v.version}
                   </span>
+                  {isLatest && (
+                    <span className="text-[10px] text-purple-300 bg-purple-400/10 px-1.5 py-0.5 rounded">current</span>
+                  )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <span className="text-sm text-slate-700">
+                  <span className="text-sm text-slate-300">
                     {changedKeys.length > 0
                       ? `Changed: ${changedKeys.join(', ')}`
                       : v.change_reason || 'Initial version'}
                   </span>
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
-                  <span className="text-xs text-slate-400">{v.changed_by}</span>
-                  <span className="text-xs text-slate-400">{formatDate(v.created_at)}</span>
-                  <svg className={`w-4 h-4 text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <span className="text-xs text-slate-500">{v.changed_by}</span>
+                  <span className="text-xs text-slate-500">{formatDate(v.created_at)}</span>
+                  <svg className={`w-4 h-4 text-slate-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </div>
               </div>
 
               {isExpanded && (
-                <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50">
+                <div className="px-4 py-3 border-t border-white/5 bg-white/[0.02]">
                   {v.change_reason && (
                     <p className="text-xs text-slate-500 mb-2 italic">{v.change_reason}</p>
                   )}
@@ -160,16 +185,47 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
                     <div className="space-y-1.5">
                       {changedKeys.map((key) => (
                         <div key={key} className="text-xs">
-                          <span className="font-medium text-slate-600">{key}:</span>{' '}
-                          <span className="text-red-500 line-through">{formatValue(changes[key]?.from)}</span>
+                          <span className="font-medium text-slate-400">{key}:</span>{' '}
+                          <span className="text-red-400 line-through">{formatValue(changes[key]?.from)}</span>
                           {' → '}
-                          <span className="text-green-600">{formatValue(changes[key]?.to)}</span>
+                          <span className="text-green-400">{formatValue(changes[key]?.to)}</span>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="text-xs text-slate-400">
+                    <div className="text-xs text-slate-500">
                       Full snapshot recorded (no field-level diff available).
+                    </div>
+                  )}
+
+                  {/* Revert button — only for non-latest versions of table/column/kpi */}
+                  {canRevert && (
+                    <div className="mt-3 pt-2 border-t border-white/5">
+                      {confirmRevert === v.version ? (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-amber-400">Revert to v{v.version}?</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handleRevert(v.version); }}
+                            disabled={revertingVersion === v.version}
+                            className="px-2 py-0.5 text-xs text-white bg-amber-600 hover:bg-amber-500 rounded transition-colors disabled:opacity-50"
+                          >
+                            {revertingVersion === v.version ? 'Reverting...' : 'Confirm'}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setConfirmRevert(null); }}
+                            className="px-2 py-0.5 text-xs text-slate-400 hover:text-slate-300 transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setConfirmRevert(v.version); }}
+                          className="text-xs text-cyan-400/70 hover:text-cyan-300 transition-colors"
+                        >
+                          Revert to this version
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -181,22 +237,22 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
 
       {/* Diff comparison */}
       {(selectedV1 != null || selectedV2 != null) && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4">
+        <div className="bg-white/5 border border-white/10 rounded-lg p-4">
           <div className="flex items-center gap-3 mb-3">
-            <h4 className="text-sm font-medium text-slate-700">Compare versions</h4>
-            <span className="text-xs text-slate-400">
+            <h4 className="text-sm font-medium text-slate-300">Compare versions</h4>
+            <span className="text-xs text-slate-500">
               {selectedV1 != null ? `v${selectedV1}` : '?'} vs {selectedV2 != null ? `v${selectedV2}` : '?'}
             </span>
             <button
               onClick={loadDiff}
               disabled={selectedV1 == null || selectedV2 == null || diffLoading}
-              className="ml-auto px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              className="ml-auto px-3 py-1 text-xs bg-cyan-600 text-white rounded-lg hover:bg-cyan-500 disabled:opacity-50"
             >
               {diffLoading ? 'Loading...' : 'Compare'}
             </button>
             <button
               onClick={() => { setSelectedV1(null); setSelectedV2(null); setDiffResult(null); }}
-              className="px-3 py-1 text-xs text-slate-500 hover:text-slate-700"
+              className="px-3 py-1 text-xs text-slate-500 hover:text-slate-300"
             >
               Clear
             </button>
@@ -205,23 +261,23 @@ export default function HistoryPanel({ entityType, entityId, entityName }: Props
           {diffResult && (
             <div className="space-y-2">
               {Object.keys(diffResult.diff).length === 0 ? (
-                <p className="text-xs text-slate-400">No differences between these versions.</p>
+                <p className="text-xs text-slate-500">No differences between these versions.</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="text-xs w-full">
                     <thead>
-                      <tr className="border-b border-slate-200">
-                        <th className="text-left px-3 py-2 font-medium text-slate-500">Field</th>
-                        <th className="text-left px-3 py-2 font-medium text-red-500">v{selectedV1}</th>
-                        <th className="text-left px-3 py-2 font-medium text-green-600">v{selectedV2}</th>
+                      <tr className="border-b border-white/10">
+                        <th className="text-left px-3 py-2 font-medium text-slate-400">Field</th>
+                        <th className="text-left px-3 py-2 font-medium text-red-400">v{selectedV1}</th>
+                        <th className="text-left px-3 py-2 font-medium text-green-400">v{selectedV2}</th>
                       </tr>
                     </thead>
                     <tbody>
                       {Object.entries(diffResult.diff).map(([key, val]) => (
-                        <tr key={key} className="border-b border-slate-100">
-                          <td className="px-3 py-2 font-medium text-slate-600">{key}</td>
-                          <td className="px-3 py-2 text-red-500 bg-red-50/50">{formatValue(val.from)}</td>
-                          <td className="px-3 py-2 text-green-600 bg-green-50/50">{formatValue(val.to)}</td>
+                        <tr key={key} className="border-b border-white/5">
+                          <td className="px-3 py-2 font-medium text-slate-400">{key}</td>
+                          <td className="px-3 py-2 text-red-400 bg-red-500/5">{formatValue(val.from)}</td>
+                          <td className="px-3 py-2 text-green-400 bg-green-500/5">{formatValue(val.to)}</td>
                         </tr>
                       ))}
                     </tbody>

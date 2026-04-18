@@ -2,7 +2,8 @@
  * semanticGraph.ts — All Cypher queries for the Neo4j semantic knowledge graph.
  * This is the ONLY file in the codebase that contains Cypher.
  *
- * Node labels:  SourceTable, SourceColumn, KpiDefinition, CrossSourceView, QualityRule
+ * Node labels:  SourceTable, SourceColumn, KpiDefinition, CrossSourceView, QualityRule,
+ *               ProductTable, ProductColumn
  * Edge types:   HAS_COLUMN, RELATES_TO, DEFINES_KPI,
  *               INCLUDES (view→table), CROSS_VIEW_LINK (table→table within a view),
  *               APPLIES_TO (rule→table), CHECKS_FIELD (rule→column),
@@ -767,10 +768,12 @@ const LABEL_MAP: Record<string, string> = {
   table: 'SourceTable',
   column: 'SourceColumn',
   kpi: 'KpiDefinition',
+  product_table: 'ProductTable',
+  product_column: 'ProductColumn',
 };
 
 export async function updateApprovalStatus(
-  entityType: 'table' | 'column' | 'kpi',
+  entityType: 'table' | 'column' | 'kpi' | 'product_table' | 'product_column',
   pgId: number,
   updates: {
     approval_status: string;
@@ -1940,6 +1943,432 @@ export async function getTablesByPgIds(pgIds: number[]): Promise<Record<string, 
       { ids: pgIds },
     );
     return result.records.map((r) => mapTable(r.get('t').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Product Tables & Columns — mirror of Postgres product_tables / product_columns
+// ---------------------------------------------------------------------------
+
+function mapProductTable(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:                    toNum(p.pgId),
+    data_product_id:       toNum(p.dataProductId),
+    star_schema_id:        p.starSchemaId != null ? toNum(p.starSchemaId) : null,
+    table_name:            toStr(p.tableName),
+    display_name:          toStr(p.displayName),
+    description:           toStr(p.description),
+    table_role:            toStr(p.tableRole),
+    dag_order:             p.dagOrder != null ? toNum(p.dagOrder) : 0,
+    row_count:             p.rowCount != null ? toNum(p.rowCount) : null,
+    transformation_status: toStr(p.transformationStatus),
+    owner_name:            toStr(p.ownerName),
+    domains:               JSON.stringify(parseDomains(p.domains)),
+    ai_draft:              Boolean(p.aiDraft),
+    approval_status:       toStr(p.approvalStatus) || 'draft',
+    approved_by:           toStr(p.approvedBy),
+    approved_at:           toStr(p.approvedAt),
+    rejection_reason:      toStr(p.rejectionReason),
+    last_run_at:           toStr(p.lastRunAt),
+    created_at:            toStr(p.createdAt),
+    updated_at:            toStr(p.updatedAt),
+  };
+}
+
+function mapProductColumn(p: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id:                        toNum(p.pgId),
+    table_id:                  toNum(p.tablePgId),
+    table_name:                toStr(p.tableName),
+    column_name:               toStr(p.columnName),
+    data_type:                 toStr(p.dataType),
+    display_name:              toStr(p.displayName),
+    description:               toStr(p.description),
+    column_role:               toStr(p.columnRole),
+    fk_target_table:           toStr(p.fkTargetTable),
+    fk_target_column:          toStr(p.fkTargetColumn),
+    transformation_expression: toStr(p.transformationExpression),
+    additivity:                toStr(p.additivity),
+    scd_type:                  p.scdType != null ? toNum(p.scdType) : 1,
+    sort_order:                p.sortOrder != null ? toNum(p.sortOrder) : 0,
+    owner_name:                toStr(p.ownerName),
+    ai_draft:                  Boolean(p.aiDraft),
+    approval_status:           toStr(p.approvalStatus) || 'draft',
+    approved_by:               toStr(p.approvedBy),
+    approved_at:               toStr(p.approvedAt),
+    rejection_reason:          toStr(p.rejectionReason),
+    created_at:                toStr(p.createdAt),
+    updated_at:                toStr(p.updatedAt),
+  };
+}
+
+// All product tables for a specific data product
+export async function getProductTablesByProduct(
+  dataProductId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:ProductTable {dataProductId: $dpid})
+       RETURN t ORDER BY t.dagOrder, t.tableName`,
+      { dpid: dataProductId },
+    );
+    return result.records.map((r) => mapProductTable(r.get('t').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+// All product tables across all products (for the semantic tree)
+export async function getAllProductTables(): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:ProductTable)
+       RETURN t ORDER BY t.dataProductId, t.dagOrder, t.tableName`,
+    );
+    return result.records.map((r) => mapProductTable(r.get('t').properties as Record<string, unknown>));
+  } finally {
+    await session.close();
+  }
+}
+
+// Single product table by pgId (for version tracking)
+export async function getProductTableByPgId(pgId: number): Promise<Record<string, unknown> | null> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:ProductTable {pgId: $pgId}) RETURN t`,
+      { pgId },
+    );
+    if (result.records.length === 0) return null;
+    return mapProductTable(result.records[0].get('t').properties as Record<string, unknown>);
+  } finally {
+    await session.close();
+  }
+}
+
+// Single product column by pgId (for version tracking)
+export async function getProductColumnByPgId(pgId: number): Promise<Record<string, unknown> | null> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (c:ProductColumn {pgId: $pgId}) RETURN c`,
+      { pgId },
+    );
+    if (result.records.length === 0) return null;
+    return mapProductColumn(result.records[0].get('c').properties as Record<string, unknown>);
+  } finally {
+    await session.close();
+  }
+}
+
+// Columns for a product table
+export async function getProductColumnsByTablePgId(
+  tablePgId: number,
+): Promise<Record<string, unknown>[]> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:ProductTable {pgId: $tpid})-[:HAS_COLUMN]->(c:ProductColumn)
+       RETURN c, t.tableName AS tableName
+       ORDER BY c.sortOrder, c.columnName`,
+      { tpid: tablePgId },
+    );
+    return result.records.map((r) => {
+      const props = r.get('c').properties as Record<string, unknown>;
+      props.tableName = r.get('tableName');
+      return mapProductColumn(props);
+    });
+  } finally {
+    await session.close();
+  }
+}
+
+// Update a product table definition (governance fields)
+export async function updateProductTable(
+  pgId: number,
+  patch: {
+    display_name?: unknown; description?: unknown; owner_name?: unknown;
+    domains?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:ProductTable {pgId: $pgId})
+       SET t.displayName  = $displayName,
+           t.description  = $description,
+           t.ownerName    = $ownerName,
+           t.domains      = $domains,
+           t.aiDraft      = false,
+           t.updatedAt    = $now`,
+      {
+        pgId,
+        displayName: patch.display_name ?? null,
+        description: patch.description  ?? null,
+        ownerName:   patch.owner_name   ?? null,
+        domains:     Array.isArray(patch.domains) ? patch.domains : parseDomains(patch.domains),
+        now:         new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// Update a product column definition (governance fields)
+export async function updateProductColumn(
+  pgId: number,
+  patch: {
+    display_name?: unknown; description?: unknown; owner_name?: unknown;
+    column_role?: unknown;
+  },
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (c:ProductColumn {pgId: $pgId})
+       SET c.displayName = $displayName,
+           c.description = $description,
+           c.ownerName   = $ownerName,
+           c.columnRole  = COALESCE($columnRole, c.columnRole),
+           c.aiDraft     = false,
+           c.updatedAt   = $now`,
+      {
+        pgId,
+        displayName: patch.display_name ?? null,
+        description: patch.description  ?? null,
+        ownerName:   patch.owner_name   ?? null,
+        columnRole:  patch.column_role   ?? null,
+        now:         new Date().toISOString(),
+      },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// Upsert product tables + columns to Neo4j (called after design / transformation)
+export async function upsertProductGraph(
+  dataProductId: number,
+  tables: Array<{
+    pgId: number;
+    starSchemaId: number;
+    tableName: string;
+    displayName: string | null;
+    description: string | null;
+    tableRole: string;
+    dagOrder: number;
+    rowCount: number | null;
+    transformationStatus: string | null;
+    aiDraft: boolean;
+    lastRunAt: string | null;
+  }>,
+  columns: Array<{
+    pgId: number;
+    tablePgId: number;
+    tableName: string;
+    columnName: string;
+    dataType: string | null;
+    displayName: string | null;
+    description: string | null;
+    columnRole: string | null;
+    fkTargetTable: string | null;
+    fkTargetColumn: string | null;
+    transformationExpression: string | null;
+    additivity: string | null;
+    scdType: number;
+    sortOrder: number;
+    aiDraft: boolean;
+  }>,
+): Promise<void> {
+  const session = getSession();
+  const now = new Date().toISOString();
+  try {
+    // Upsert tables — MERGE on (dataProductId, tableName)
+    for (const t of tables) {
+      await session.run(
+        `MERGE (tbl:ProductTable {dataProductId: $dpid, tableName: $tn})
+         ON CREATE SET
+           tbl.pgId                  = $pgId,
+           tbl.starSchemaId          = $ssid,
+           tbl.displayName           = $displayName,
+           tbl.description           = $description,
+           tbl.tableRole             = $tableRole,
+           tbl.dagOrder              = $dagOrder,
+           tbl.rowCount              = $rowCount,
+           tbl.transformationStatus  = $txStatus,
+           tbl.aiDraft               = $aiDraft,
+           tbl.lastRunAt             = $lastRunAt,
+           tbl.approvalStatus        = 'draft',
+           tbl.domains               = [],
+           tbl.createdAt             = $now,
+           tbl.updatedAt             = $now
+         ON MATCH SET
+           tbl.pgId                  = $pgId,
+           tbl.starSchemaId          = $ssid,
+           tbl.displayName           = COALESCE(CASE WHEN tbl.aiDraft = false THEN tbl.displayName ELSE $displayName END, $displayName),
+           tbl.description           = COALESCE(CASE WHEN tbl.aiDraft = false THEN tbl.description ELSE $description END, $description),
+           tbl.tableRole             = $tableRole,
+           tbl.dagOrder              = $dagOrder,
+           tbl.rowCount              = $rowCount,
+           tbl.transformationStatus  = $txStatus,
+           tbl.lastRunAt             = $lastRunAt,
+           tbl.updatedAt             = $now`,
+        {
+          pgId:        t.pgId,
+          dpid:        dataProductId,
+          ssid:        t.starSchemaId,
+          tn:          t.tableName,
+          displayName: t.displayName ?? t.tableName,
+          description: t.description ?? null,
+          tableRole:   t.tableRole,
+          dagOrder:    t.dagOrder,
+          rowCount:    t.rowCount ?? null,
+          txStatus:    t.transformationStatus ?? 'draft',
+          aiDraft:     t.aiDraft,
+          lastRunAt:   t.lastRunAt ?? null,
+          now,
+        },
+      );
+    }
+
+    // Upsert columns — MERGE on parent table + columnName
+    for (const c of columns) {
+      await session.run(
+        `MATCH (tbl:ProductTable {pgId: $tpid})
+         MERGE (col:ProductColumn {tablePgId: $tpid, columnName: $cn})
+         ON CREATE SET
+           col.pgId                      = $pgId,
+           col.tableName                 = $tn,
+           col.dataType                  = $dataType,
+           col.displayName               = $displayName,
+           col.description               = $description,
+           col.columnRole                = $columnRole,
+           col.fkTargetTable             = $fkTargetTable,
+           col.fkTargetColumn            = $fkTargetColumn,
+           col.transformationExpression  = $txExpr,
+           col.additivity                = $additivity,
+           col.scdType                   = $scdType,
+           col.sortOrder                 = $sortOrder,
+           col.aiDraft                   = $aiDraft,
+           col.approvalStatus            = 'draft',
+           col.createdAt                 = $now,
+           col.updatedAt                 = $now
+         ON MATCH SET
+           col.pgId                      = $pgId,
+           col.tableName                 = $tn,
+           col.dataType                  = $dataType,
+           col.displayName               = COALESCE(CASE WHEN col.aiDraft = false THEN col.displayName ELSE $displayName END, $displayName),
+           col.description               = COALESCE(CASE WHEN col.aiDraft = false THEN col.description ELSE $description END, $description),
+           col.columnRole                = $columnRole,
+           col.fkTargetTable             = $fkTargetTable,
+           col.fkTargetColumn            = $fkTargetColumn,
+           col.transformationExpression  = $txExpr,
+           col.additivity                = $additivity,
+           col.scdType                   = $scdType,
+           col.sortOrder                 = $sortOrder,
+           col.updatedAt                 = $now
+         MERGE (tbl)-[:HAS_COLUMN]->(col)`,
+        {
+          pgId:          c.pgId,
+          tpid:          c.tablePgId,
+          tn:            c.tableName,
+          cn:            c.columnName,
+          dataType:      c.dataType ?? null,
+          displayName:   c.displayName ?? c.columnName,
+          description:   c.description ?? null,
+          columnRole:    c.columnRole ?? null,
+          fkTargetTable: c.fkTargetTable ?? null,
+          fkTargetColumn:c.fkTargetColumn ?? null,
+          txExpr:        c.transformationExpression ?? null,
+          additivity:    c.additivity ?? null,
+          scdType:       c.scdType ?? 1,
+          sortOrder:     c.sortOrder ?? 0,
+          aiDraft:       c.aiDraft,
+          now,
+        },
+      );
+    }
+
+    // Remove orphaned columns (columns that were in Neo4j but not in the current set)
+    const tableNames = tables.map((t) => t.tableName);
+    const colKeys = columns.map((c) => `${c.tableName}::${c.columnName}`);
+    if (tableNames.length) {
+      await session.run(
+        `MATCH (t:ProductTable {dataProductId: $dpid})-[:HAS_COLUMN]->(c:ProductColumn)
+         WHERE t.tableName IN $tableNames
+         WITH c, c.tableName + '::' + c.columnName AS key
+         WHERE NOT key IN $colKeys
+         DETACH DELETE c`,
+        { dpid: dataProductId, tableNames, colKeys },
+      );
+    }
+
+    // Remove orphaned tables
+    const currentTableNames = tables.map((t) => t.tableName);
+    await session.run(
+      `MATCH (t:ProductTable {dataProductId: $dpid})
+       WHERE NOT t.tableName IN $names
+       OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
+       DETACH DELETE c, t`,
+      { dpid: dataProductId, names: currentTableNames },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// Delete all product graph nodes for a data product
+export async function deleteProductGraph(dataProductId: number): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (t:ProductTable {dataProductId: $dpid})
+       OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
+       DETACH DELETE c, t`,
+      { dpid: dataProductId },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
+// Product tree for the semantic page sidebar
+export async function getProductTree(): Promise<{
+  products: Array<{
+    dataProductId: number;
+    tables: Array<Record<string, unknown>>;
+  }>;
+}> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (t:ProductTable)
+       OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
+       RETURN t, count(c) AS columnCount
+       ORDER BY t.dataProductId, t.dagOrder, t.tableName`,
+    );
+
+    const productMap = new Map<number, Array<Record<string, unknown>>>();
+    for (const rec of result.records) {
+      const props = rec.get('t').properties as Record<string, unknown>;
+      const mapped = mapProductTable(props);
+      mapped.column_count = toNum(rec.get('columnCount'));
+      const dpid = toNum(props.dataProductId);
+      if (!productMap.has(dpid)) productMap.set(dpid, []);
+      productMap.get(dpid)!.push(mapped);
+    }
+
+    const products = Array.from(productMap.entries()).map(([dataProductId, tables]) => ({
+      dataProductId,
+      tables,
+    }));
+
+    return { products };
   } finally {
     await session.close();
   }

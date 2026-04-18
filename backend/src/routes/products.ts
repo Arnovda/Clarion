@@ -3,6 +3,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
+import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
 
 const router = Router();
 
@@ -215,11 +216,56 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req: Request, res: 
 
 router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const deleted = await semanticDb('data_products').where({ id: req.params.id }).delete();
-    if (!deleted) {
+    const productId = Number(req.params.id);
+
+    // Collect table info before cascading delete removes it
+    const product = await semanticDb('data_products').where({ id: productId }).first();
+    if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
+
+    const schemas = await semanticDb('star_schemas').where({ data_product_id: productId }).select('id');
+    const schemaIds = schemas.map((s: { id: number }) => s.id);
+    const tables = schemaIds.length
+      ? await semanticDb('product_tables').whereIn('star_schema_id', schemaIds).select('table_name', 'delta_path')
+      : [];
+    const connId = product.connection_id;
+
+    // Clean up quality data for product tables (keyed by connection_id + table_name, no FK cascade)
+    for (const t of tables) {
+      const tn = t.table_name as string;
+      // Delete quality rules (cascades to rule_executions + quality_failures)
+      await semanticDb('quality_rules').where({ connection_id: connId, table_name: tn }).delete();
+      // Delete quality score history
+      await semanticDb('quality_score_history').where({ connection_id: connId, table_name: tn }).delete();
+      // Delete field profiles via dataset_profiles
+      const profiles = await semanticDb('dataset_profiles')
+        .where({ connection_id: connId, table_name: tn }).select('id');
+      if (profiles.length) {
+        await semanticDb('field_profiles').whereIn('profile_id', profiles.map((p: { id: number }) => p.id)).delete();
+        await semanticDb('dataset_profiles').where({ connection_id: connId, table_name: tn }).delete();
+      }
+    }
+
+    // Clean up warehouse Parquet files
+    const productSlug = (product.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const conn = await semanticDb('connections').where({ id: connId }).first();
+    const warehousePath = conn?.warehouse_path ?? `./warehouse/conn_${connId}`;
+    if (!warehousePath.startsWith('az://')) {
+      const productDir = require('path').resolve('./warehouse/product', productSlug);
+      const fs = require('fs');
+      if (fs.existsSync(productDir)) {
+        fs.rmSync(productDir, { recursive: true, force: true });
+        console.log(`[products] Deleted warehouse dir: ${productDir}`);
+      }
+    }
+
+    // Delete product row (cascades to star_schemas → product_tables → product_columns)
+    await semanticDb('data_products').where({ id: productId }).delete();
+
+    // Remove product graph from Neo4j
+    deleteProductFromNeo4j(productId).catch(() => {});
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -547,6 +593,9 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 
     emit({ type: 'sql_complete', tablesUpdated: allSavedTables.length });
 
+    // Sync product graph to Neo4j for data dictionary
+    await syncProductToNeo4j(product.id);
+
     emit({ type: 'done' });
     res.end();
   } catch (err: unknown) {
@@ -766,6 +815,9 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
       updated_at: new Date().toISOString(),
     });
 
+    // Sync product graph to Neo4j for data dictionary
+    await syncProductToNeo4j(product.id);
+
     res.json({ ok: true, data: { status: 'approved', sqlGenerated: true } });
   } catch (err) {
     // Revert status on error
@@ -804,6 +856,9 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
     const tables = await fetchTables();
     const results = await runProductTransformation(product, tables, req.user?.tenantId);
 
+    // Sync updated row counts / status to Neo4j
+    syncProductToNeo4j(product.id).catch(() => {});
+
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
 });
@@ -831,6 +886,9 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
     const { runProductTransformation } = await import('../services/transformationRunner');
 
     const result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
+
+    // Sync updated row counts / status to Neo4j
+    syncProductToNeo4j(product.id).catch(() => {});
 
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }

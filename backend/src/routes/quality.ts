@@ -319,13 +319,15 @@ router.get('/tables', requireAuth, async (req, res, next) => {
       .whereIn('dp.status', ['approved', 'success']);
     if (connId) ptQuery.where('dp.connection_id', connId);
     const productTables = await ptQuery.select(
-      'pt.id as pt_id', 'pt.table_name', 'pt.table_role', 'pt.row_count as pt_row_count',
+      'pt.id as pt_id', 'pt.table_name', 'pt.display_name as pt_display_name',
+      'pt.table_role', 'pt.row_count as pt_row_count',
       'dp.id as dp_id', 'dp.name as product_name', 'dp.connection_id',
     );
 
     const productResult = await Promise.all(
       (productTables as {
-        pt_id: number; table_name: string; table_role: string; pt_row_count: number | null;
+        pt_id: number; table_name: string; pt_display_name: string | null;
+        table_role: string; pt_row_count: number | null;
         dp_id: number; product_name: string; connection_id: number;
       }[]).map(async (t) => {
         const latest = await semanticDb('dataset_profiles')
@@ -335,7 +337,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
           id:               t.pt_id,
           connection_id:    t.connection_id,
           table_name:       t.table_name,
-          display_name:     t.table_name.replace(/_/g, ' '),
+          display_name:     t.pt_display_name || t.table_name.replace(/_/g, ' '),
           layer:            'product' as const,
           product_name:     t.product_name,
           product_table_id: t.pt_id,
@@ -377,23 +379,24 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
       productDir = require('path').resolve('./warehouse/product', productSlug);
     }
 
+    // Verify that warehouse data actually exists for this table before profiling
+    const tablePath = require('path').join(productDir, pt.table_name);
+    const fs = require('fs');
+    if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f: string) => f.endsWith('.parquet'))) {
+      res.status(404).json({ ok: false, error: `No warehouse data found for table "${pt.table_name}". Run the transformation first.` });
+      return;
+    }
+
     // Create DuckDB connector pointing at product warehouse
     const connector = new DuckDBConnector(productDir, [pt.table_name]);
     await connector.connect();
 
-    // Get column definitions
-    const columns = await semanticDb('product_columns')
-      .where({ product_table_id: ptId })
-      .select('column_name', 'data_type');
-    const columnDefs = (columns as { column_name: string; data_type: string }[])
-      .map((c) => ({ name: c.column_name, type: c.data_type || 'TEXT' }));
-
-    // Run quality profiling
+    // Let the profiler introspect the actual Parquet columns via SELECT * LIMIT 1
+    // (product_columns metadata may be stale / out of sync with materialized data)
     const result = await runQualityProfileWithConnector(
       dp.connection_id,
       pt.table_name,
       connector,
-      columnDefs.length > 0 ? columnDefs : undefined,
     );
 
     connector.disconnect();

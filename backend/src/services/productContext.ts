@@ -111,7 +111,7 @@ export async function buildProductSemanticContext(
   if (schemaIds.length === 0) return null;
 
   // Get all product tables with star schema info
-  const tables: ProductTableRow[] = await semanticDb('product_tables')
+  let tables: ProductTableRow[] = await semanticDb('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
     .whereIn('star_schemas.id', schemaIds)
     .where('product_tables.transformation_status', 'success')
@@ -124,6 +124,46 @@ export async function buildProductSemanticContext(
       'star_schemas.name as star_schema_name',
       'star_schemas.grain',
     );
+
+  // Include shared dimensions from OTHER products for the same connection.
+  // Dimensions (like dim_customer, dim_article) are often defined in one product
+  // but referenced by fact tables in another. Without this, the AI sees fact tables
+  // but no dimensions to join to and hallucinates column names.
+  const existingTableNames = new Set(tables.map((t) => t.table_name));
+  const allProductIds = (await semanticDb('data_products')
+    .where({ connection_id: connectionId })
+    .whereIn('status', ['approved', 'success'])
+    .select('id')).map((p: { id: number }) => p.id);
+
+  if (allProductIds.length > productIds.length) {
+    const allSchemaIds = (await semanticDb('star_schemas')
+      .whereIn('data_product_id', allProductIds)
+      .select('id')).map((s: { id: number }) => s.id);
+
+    const sharedDims: ProductTableRow[] = await semanticDb('product_tables')
+      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+      .whereIn('star_schemas.id', allSchemaIds)
+      .where('product_tables.transformation_status', 'success')
+      .whereIn('product_tables.table_role', ['dimension', 'bridge'])
+      .whereNotIn('product_tables.table_name', [...existingTableNames])
+      .select(
+        'product_tables.id',
+        'product_tables.table_name',
+        'product_tables.display_name',
+        'product_tables.description',
+        'product_tables.table_role',
+        'star_schemas.name as star_schema_name',
+        'star_schemas.grain',
+      );
+
+    // Deduplicate by table_name (pick the first match)
+    for (const dim of sharedDims) {
+      if (!existingTableNames.has(dim.table_name)) {
+        tables.push(dim);
+        existingTableNames.add(dim.table_name);
+      }
+    }
+  }
 
   if (tables.length === 0) return null;
 

@@ -153,7 +153,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
         },
       },
     });
-  } catch (err) { next(err); }
+  } catch (err) { console.error('[auth/login] Error:', err); next(err); }
 });
 
 // ---------------------------------------------------------------------------

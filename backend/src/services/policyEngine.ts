@@ -1,0 +1,200 @@
+/**
+ * Policy Engine — applies row-level data access policies to AI-generated SQL.
+ *
+ * Loads active policies for the current user (by user_id AND by role),
+ * finds table names in the SQL, and injects filter expressions as WHERE clauses.
+ *
+ * For row_filter policies: wraps the original SQL as a subquery with filters applied.
+ * For column_mask policies: replaces column references with masked values.
+ */
+
+import { semanticDb } from '../db/knex';
+
+// Dangerous SQL keywords that must never appear in filter expressions
+const FORBIDDEN_PATTERNS = /\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|GRANT|REVOKE|UNION)\b/i;
+const FORBIDDEN_CHARS = /;/;
+
+export interface DataPolicy {
+  id: number;
+  tenant_id: number;
+  name: string;
+  description: string | null;
+  user_id: number | null;
+  role: string | null;
+  table_name: string;
+  column_name: string | null;
+  filter_expression: string;
+  policy_type: 'row_filter' | 'column_mask';
+  is_active: boolean;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PolicyApplicationResult {
+  sql: string;
+  policiesApplied: number;
+  policyNames: string[];
+}
+
+/**
+ * Validate a filter expression for basic safety.
+ * Returns null if valid, or an error message if invalid.
+ */
+export function validateFilterExpression(expr: string): string | null {
+  if (!expr || !expr.trim()) {
+    return 'Filter expression cannot be empty';
+  }
+  if (FORBIDDEN_CHARS.test(expr)) {
+    return 'Filter expression cannot contain semicolons';
+  }
+  if (FORBIDDEN_PATTERNS.test(expr)) {
+    return 'Filter expression contains forbidden SQL keywords (DROP, DELETE, INSERT, UPDATE, ALTER, CREATE, TRUNCATE, EXEC, GRANT, REVOKE, UNION)';
+  }
+  // Check for balanced parentheses
+  let depth = 0;
+  for (const ch of expr) {
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (depth < 0) return 'Filter expression has unbalanced parentheses';
+  }
+  if (depth !== 0) return 'Filter expression has unbalanced parentheses';
+
+  return null;
+}
+
+/**
+ * Load all active policies that apply to a given user.
+ * Matches on: exact user_id OR matching role.
+ */
+async function loadPoliciesForUser(
+  userId: number,
+  userRole: string,
+  tenantId: number,
+): Promise<DataPolicy[]> {
+  return semanticDb('data_policies')
+    .where({ tenant_id: tenantId, is_active: true })
+    .andWhere(function () {
+      this.where({ user_id: userId }).orWhere({ role: userRole });
+    })
+    .orderBy('table_name');
+}
+
+/**
+ * Extract table names from SQL by looking at FROM and JOIN clauses.
+ * Returns a Set of lowercased table names found in the SQL.
+ */
+function extractTableNames(sql: string): Set<string> {
+  const tables = new Set<string>();
+
+  // Match: FROM table_name, FROM "table_name", FROM schema.table_name
+  // Match: JOIN table_name, LEFT JOIN table_name, etc.
+  const patterns = [
+    /\bFROM\s+["']?(\w+)["']?/gi,
+    /\bJOIN\s+["']?(\w+)["']?/gi,
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(sql)) !== null) {
+      tables.add(match[1].toLowerCase());
+    }
+  }
+
+  return tables;
+}
+
+/**
+ * Apply data access policies to an AI-generated SQL query.
+ *
+ * Strategy:
+ * - For row_filter policies: wraps the SQL in a CTE and adds WHERE conditions
+ * - For column_mask policies: replaces column references with '***'
+ *
+ * Returns the modified SQL and metadata about which policies were applied.
+ */
+export async function applyDataPolicies(
+  sql: string,
+  userId: number,
+  userRole: string,
+  tenantId: number,
+): Promise<PolicyApplicationResult> {
+  // Admins bypass all data policies
+  if (userRole === 'admin') {
+    return { sql, policiesApplied: 0, policyNames: [] };
+  }
+
+  const policies = await loadPoliciesForUser(userId, userRole, tenantId);
+  if (policies.length === 0) {
+    return { sql, policiesApplied: 0, policyNames: [] };
+  }
+
+  const tablesInSql = extractTableNames(sql);
+  let modifiedSql = sql;
+  const appliedNames: string[] = [];
+
+  // Collect row filters grouped by table
+  const rowFilters = new Map<string, string[]>();
+  const columnMasks: DataPolicy[] = [];
+
+  for (const policy of policies) {
+    const policyTableLower = policy.table_name.toLowerCase();
+    if (!tablesInSql.has(policyTableLower)) continue;
+
+    if (policy.policy_type === 'row_filter') {
+      if (!rowFilters.has(policyTableLower)) rowFilters.set(policyTableLower, []);
+      rowFilters.get(policyTableLower)!.push(policy.filter_expression);
+      appliedNames.push(policy.name);
+    } else if (policy.policy_type === 'column_mask' && policy.column_name) {
+      columnMasks.push(policy);
+      appliedNames.push(policy.name);
+    }
+  }
+
+  // Apply column masks first (simple text replacement)
+  for (const mask of columnMasks) {
+    // Replace "table.column" and standalone "column" references
+    // Use word-boundary matching to avoid partial replacements
+    const colName = mask.column_name!;
+    const tableName = mask.table_name;
+
+    // Replace qualified references: table.column -> '***'
+    const qualifiedPattern = new RegExp(
+      `\\b${escapeRegex(tableName)}\\.${escapeRegex(colName)}\\b`,
+      'gi',
+    );
+    modifiedSql = modifiedSql.replace(qualifiedPattern, `'***' /* ${colName} masked */`);
+
+    // Replace unqualified references in SELECT (only if the table is referenced)
+    // Be conservative: only replace if it looks like a column reference
+    const unqualifiedPattern = new RegExp(
+      `(?<=SELECT\\s[\\s\\S]*?)\\b${escapeRegex(colName)}\\b(?=[\\s,])`,
+      'gi',
+    );
+    modifiedSql = modifiedSql.replace(unqualifiedPattern, `'***' /* ${colName} masked */`);
+  }
+
+  // Apply row filters by wrapping SQL in a CTE
+  if (rowFilters.size > 0) {
+    const allConditions: string[] = [];
+    for (const [, filters] of rowFilters) {
+      for (const filter of filters) {
+        allConditions.push(`(${filter})`);
+      }
+    }
+
+    // Wrap original query as a subquery and add WHERE conditions
+    const trimmedSql = modifiedSql.replace(/;\s*$/, ''); // Remove trailing semicolon
+    modifiedSql = `SELECT * FROM (${trimmedSql}) AS _policy_filtered WHERE ${allConditions.join(' AND ')}`;
+  }
+
+  return {
+    sql: modifiedSql,
+    policiesApplied: appliedNames.length,
+    policyNames: appliedNames,
+  };
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}

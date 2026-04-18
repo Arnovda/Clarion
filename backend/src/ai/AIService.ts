@@ -60,6 +60,11 @@ import {
   buildBusMatrixUser,
   BusMatrixOutput,
 } from './prompts/busMatrixPrompt';
+import {
+  FORECAST_SYSTEM,
+  buildForecastUser,
+  ForecastQueryOutput,
+} from './prompts/forecastPrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -440,10 +445,25 @@ export async function generateSql(
   relationshipContext: string,
   kpiFormulas: string,
   dialect: SqlDialect = 'sqlite',
+  conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+
+  // If conversation history is provided, use multi-turn messages for follow-up context
+  if (conversationHistory && conversationHistory.length > 0) {
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      ...conversationHistory.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: buildNlToSqlUser(question) },
+    ];
+    const raw = await callClaudeMultiTurn(systemPrompt, messages);
+    return defaultSubScores(parseJson<Record<string, unknown>>(raw));
+  }
+
   const raw = await callClaude(systemPrompt, buildNlToSqlUser(question));
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
@@ -480,10 +500,24 @@ export async function generateCrossSourceSql(
   relationshipContext: string,
   kpiFormulas: string,
   dialect: SqlDialect = 'sqlite',
+  conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_CROSS_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
     : NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+
+  if (conversationHistory && conversationHistory.length > 0) {
+    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+      ...conversationHistory.map((m) => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: buildNlToSqlCrossUser(question) },
+    ];
+    const raw = await callClaudeMultiTurn(systemPrompt, messages);
+    return defaultSubScores(parseJson<Record<string, unknown>>(raw));
+  }
+
   const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question));
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
@@ -501,17 +535,28 @@ export async function generateSqlStreaming(
   kpiFormulas: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
   dialect: SqlDialect = 'sqlite',
+  conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+
+  // Build messages array — prepend conversation history if available
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  if (conversationHistory && conversationHistory.length > 0) {
+    for (const m of conversationHistory) {
+      messages.push({ role: m.role as 'user' | 'assistant', content: m.content });
+    }
+  }
+  messages.push({ role: 'user', content: buildNlToSqlUser(question) });
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'enabled', budget_tokens: 8000 },
     system: systemPrompt,
-    messages: [{ role: 'user', content: buildNlToSqlUser(question) }],
+    messages,
   };
 
   const stream = getClient().messages.stream(params);
@@ -772,4 +817,24 @@ export async function editColumnExpression(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Forecast Query — detect forecast intent and generate historical SQL
+// ---------------------------------------------------------------------------
+
+export async function forecastQuery(
+  question: string,
+  semanticContext: string,
+  relationshipContext: string,
+  kpiFormulas: string,
+  dialect: SqlDialect = 'sqlite',
+): Promise<ForecastQueryOutput> {
+  const raw = await callClaude(
+    FORECAST_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), dialect),
+    buildForecastUser(question),
+    4096,
+    'forecast_query',
+  );
+  return parseJson<ForecastQueryOutput>(raw);
 }

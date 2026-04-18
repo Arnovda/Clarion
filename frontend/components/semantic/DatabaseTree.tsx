@@ -250,7 +250,7 @@ export default function DatabaseTree({
                           </span>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {table.ai_draft && (
-                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
                             )}
                             {!table.is_active && (
                               <span className="text-[9px] px-1.5 py-0.5 bg-white/5 text-white/30 rounded font-medium">off</span>
@@ -271,7 +271,7 @@ export default function DatabaseTree({
           <>
             <div className="px-4 pt-5 pb-2 flex-shrink-0">
               <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
-                Data products
+                Organized data
               </p>
             </div>
 
@@ -285,7 +285,7 @@ export default function DatabaseTree({
                   >
                     <ChevronIcon expanded={expandedSections.has('dims')} />
                     <p className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">
-                      Dimensions
+                      Reference Tables
                     </p>
                     <span className="text-[10px] text-white/20 ml-auto">{sharedDimensions.length}</span>
                   </button>
@@ -318,7 +318,7 @@ export default function DatabaseTree({
                               </span>
                             )}
                             {dim.bestTable.ai_draft && (
-                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
                             )}
                           </div>
                         </div>
@@ -339,7 +339,7 @@ export default function DatabaseTree({
                   >
                     <ChevronIcon expanded={expandedSections.has('facts')} />
                     <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
-                      Fact tables
+                      Transaction tables
                     </p>
                     <span className="text-[10px] text-white/20 ml-auto">
                       {factsByProduct.reduce((n, g) => n + g.tables.length, 0)}
@@ -375,7 +375,7 @@ export default function DatabaseTree({
                                 {table.display_name || table.table_name}
                               </span>
                               {table.ai_draft && (
-                                <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Draft" />
+                                <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
                               )}
                             </div>
                           );

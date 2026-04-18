@@ -75,6 +75,13 @@ function IconCode({ className }: { className?: string }) {
     </svg>
   );
 }
+function IconShield({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
 function IconSettings({ className }: { className?: string }) {
   return (
     <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -111,10 +118,11 @@ const NAV_ITEMS: NavItem[] = [
   // ── Admin group ──
   { key: 'dictionary', href: '/semantic',   label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'], admin: true },
   { key: 'health',     href: '/health',     label: 'Data Health',    icon: IconHeart,     roles: ['admin', 'analyst'], admin: true },
-  { key: 'products',   href: '/products',   label: 'Data Products',  icon: IconStar,      roles: ['admin'],            admin: true },
+  { key: 'products',   href: '/products',   label: 'Organized Data', icon: IconStar,      roles: ['admin'],            admin: true },
   { key: 'connect',    href: '/setup',      label: 'Connect',        icon: IconPlug,      roles: ['admin'],            admin: true },
-  { key: 'review',     href: '/gaps',       label: 'Review Queue',   icon: IconInbox,     roles: ['admin'],            admin: true },
+  { key: 'review',     href: '/gaps',       label: 'AI Suggestions', icon: IconInbox,     roles: ['admin'],            admin: true },
   { key: 'team',       href: '/users',      label: 'Team',           icon: IconUsers,     roles: ['admin'],            admin: true },
+  { key: 'policies',   href: '/policies',   label: 'Policies',       icon: IconShield,    roles: ['admin'],            admin: true },
 ];
 
 /* ── Component ───────────────────────────────────────────────────────── */
@@ -151,6 +159,7 @@ export default function IconRail() {
     '/gaps':      ['/gaps', '/review'],
     '/users':     ['/users', '/team'],
     '/health':    ['/health'],
+    '/policies':  ['/policies'],
   };
 
   function isActive(href: string) {

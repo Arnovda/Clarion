@@ -8,6 +8,7 @@ import type { SemanticContext } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 import { invalidateSemanticCache } from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
+import { buildXlsx, buildCsv, escapeCsvField } from '../utils/xlsxBuilder';
 
 const router = Router();
 
@@ -494,6 +495,110 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
 });
 
 // ---------------------------------------------------------------------------
+// Revert to a previous version
+// ---------------------------------------------------------------------------
+
+// POST /api/semantic/revert
+router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { entityType, entityId, version } = req.body as {
+      entityType: 'table' | 'column' | 'kpi';
+      entityId: number;
+      version: number;
+    };
+
+    if (!entityType || !entityId || !version) {
+      res.status(400).json({ ok: false, error: 'entityType, entityId, and version are required' });
+      return;
+    }
+
+    if (!['table', 'column', 'kpi'].includes(entityType)) {
+      res.status(400).json({ ok: false, error: 'entityType must be table, column, or kpi' });
+      return;
+    }
+
+    // Look up the target version
+    const targetVersion = await semanticDb('definition_versions')
+      .where({ entity_type: entityType, entity_id: entityId, version })
+      .first();
+
+    if (!targetVersion) {
+      res.status(404).json({ ok: false, error: `Version ${version} not found for ${entityType} #${entityId}` });
+      return;
+    }
+
+    const snapshot = typeof targetVersion.snapshot === 'string'
+      ? JSON.parse(targetVersion.snapshot)
+      : targetVersion.snapshot;
+
+    // Get the current state for diff
+    const currentVersion = await semanticDb('definition_versions')
+      .where({ entity_type: entityType, entity_id: entityId })
+      .orderBy('version', 'desc')
+      .first();
+    const currentSnapshot = currentVersion?.snapshot
+      ? (typeof currentVersion.snapshot === 'string' ? JSON.parse(currentVersion.snapshot) : currentVersion.snapshot)
+      : {};
+
+    // Apply the snapshot to the entity
+    if (entityType === 'table') {
+      const patch: Record<string, unknown> = {};
+      if (snapshot.display_name !== undefined) patch.display_name = snapshot.display_name;
+      if (snapshot.description !== undefined) patch.description = snapshot.description;
+      if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
+      if (snapshot.domains !== undefined) patch.domains = snapshot.domains;
+      if (snapshot.grain !== undefined) patch.grain = snapshot.grain;
+      if (snapshot.is_active !== undefined) patch.is_active = snapshot.is_active;
+      await graph.updateTable(entityId, patch);
+    } else if (entityType === 'column') {
+      const patch: Record<string, unknown> = {};
+      if (snapshot.display_name !== undefined) patch.display_name = snapshot.display_name;
+      if (snapshot.description !== undefined) patch.description = snapshot.description;
+      if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
+      if (snapshot.is_dimension !== undefined) patch.is_dimension = snapshot.is_dimension;
+      if (snapshot.is_measure !== undefined) patch.is_measure = snapshot.is_measure;
+      await graph.updateColumn(entityId, patch);
+    } else if (entityType === 'kpi') {
+      const patch: Record<string, unknown> = {};
+      if (snapshot.name !== undefined) patch.name = snapshot.name;
+      if (snapshot.description !== undefined) patch.description = snapshot.description;
+      if (snapshot.formula_plain_text !== undefined) patch.formula_plain_text = snapshot.formula_plain_text;
+      if (snapshot.formula_sql !== undefined) patch.formula_sql = snapshot.formula_sql;
+      if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
+      await graph.updateKpi(entityId, patch);
+    }
+
+    await invalidateSemanticCache();
+
+    // Record a new version entry for the revert
+    const changes = computeChanges(currentSnapshot, snapshot);
+    await recordVersion(
+      req.user!.tenantId,
+      entityType,
+      entityId,
+      snapshot,
+      changes,
+      req.user!.sub,
+      `Reverted to version ${version}`,
+    );
+
+    // Record audit log
+    await auditLog(
+      req.user!.tenantId,
+      req.user!.sub,
+      req.user!.name as string,
+      'revert',
+      entityType,
+      entityId,
+      null,
+      { reverted_to_version: version },
+    );
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // Version History + Diff
 // ---------------------------------------------------------------------------
 
@@ -585,7 +690,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       return;
     }
 
-    if (!['table', 'column', 'kpi'].includes(entityType)) {
+    if (!['table', 'column', 'kpi', 'product_table', 'product_column'].includes(entityType)) {
       res.status(400).json({ ok: false, error: 'Invalid entityType' });
       return;
     }
@@ -614,7 +719,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       updates.approved_at = null;
     }
 
-    await graph.updateApprovalStatus(entityType as 'table' | 'column' | 'kpi', entityId, updates);
+    await graph.updateApprovalStatus(entityType as 'table' | 'column' | 'kpi' | 'product_table' | 'product_column', entityId, updates);
     await invalidateSemanticCache();
     await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, action, entityType, entityId, null, { reason });
 
@@ -800,6 +905,410 @@ router.get('/dictionary', requireAuth, async (req: Request, res: Response, next:
         },
       });
     }
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Data Dictionary Export — CSV
+// ---------------------------------------------------------------------------
+
+// GET /api/semantic/export/csv?connectionId=1
+router.get('/export/csv', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const connectionId = Number(req.query.connectionId);
+    if (!connectionId) {
+      res.status(400).json({ ok: false, error: 'connectionId required' });
+      return;
+    }
+
+    const tables = await graph.getTablesByConnection(connectionId);
+    const allColumns = await graph.getColumnsByConnection(connectionId);
+
+    type TableRow = { id: number; table_name: string; display_name: string; description: string; row_count: number | null };
+    type ColRow = { table_id: number; table_name?: string; column_name: string; display_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean; column_role: string };
+
+    // Build a table_name lookup
+    const tableNameMap = new Map((tables as TableRow[]).map((t) => [t.id, t.table_name]));
+
+    // Flat CSV: one row per column
+    const headers = ['table_name', 'column_name', 'display_name', 'data_type', 'description', 'is_dimension', 'is_measure'];
+    const rows = (allColumns as ColRow[]).map((c) => [
+      tableNameMap.get(c.table_id) ?? '',
+      c.column_name ?? '',
+      c.display_name ?? '',
+      c.data_type ?? '',
+      c.description ?? '',
+      String(c.is_dimension ?? false),
+      String(c.is_measure ?? false),
+    ]);
+
+    const csv = buildCsv(headers, rows);
+    const filename = `data-dictionary-${connectionId}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send('\uFEFF' + csv);
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Data Dictionary Export — XLSX (multi-sheet)
+// ---------------------------------------------------------------------------
+
+// GET /api/semantic/export/xlsx?connectionId=1
+router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const connectionId = Number(req.query.connectionId);
+    if (!connectionId) {
+      res.status(400).json({ ok: false, error: 'connectionId required' });
+      return;
+    }
+
+    const tables = await graph.getTablesByConnection(connectionId);
+    const allColumns = await graph.getColumnsByConnection(connectionId);
+    const relationships = await graph.getRelationshipsForConnection(connectionId);
+    const kpis = await graph.getKpisByConnection(connectionId);
+
+    type TableRow = { id: number; table_name: string; display_name: string; description: string; domains: string[] | string; row_count: number | null; approval_status: string };
+    type ColRow = { table_id: number; column_name: string; display_name: string; data_type: string; description: string; column_role: string; is_nullable: boolean; is_dimension: boolean; is_measure: boolean; approval_status: string };
+    type RelRow = { from_table: string; from_column: string; to_table: string; to_column: string; relationship_type: string };
+    type KpiRow = { name: string; description: string; formula_sql: string; target_value: number | null; unit: string | null };
+
+    const tableNameMap = new Map((tables as TableRow[]).map((t) => [t.id, t.table_name]));
+
+    // Sheet 1: Tables
+    const tablesSheet = {
+      name: 'Tables',
+      headers: ['table_name', 'display_name', 'description', 'domain', 'row_count', 'approval_status'],
+      rows: (tables as TableRow[]).map((t) => {
+        const domains = Array.isArray(t.domains) ? t.domains.join(', ') : (t.domains ?? '');
+        return [t.table_name, t.display_name ?? '', t.description ?? '', domains, t.row_count ?? '', t.approval_status ?? ''];
+      }),
+    };
+
+    // Sheet 2: Columns
+    const columnsSheet = {
+      name: 'Columns',
+      headers: ['table_name', 'column_name', 'display_name', 'data_type', 'description', 'column_role', 'is_nullable', 'approval_status'],
+      rows: (allColumns as ColRow[]).map((c) => {
+        const role = c.column_role ?? (c.is_dimension ? 'dimension' : c.is_measure ? 'measure' : '');
+        return [
+          tableNameMap.get(c.table_id) ?? '',
+          c.column_name, c.display_name ?? '', c.data_type ?? '', c.description ?? '',
+          role, String(c.is_nullable ?? ''), c.approval_status ?? '',
+        ];
+      }),
+    };
+
+    // Sheet 3: Relationships
+    const relsSheet = {
+      name: 'Relationships',
+      headers: ['from_table', 'from_column', 'to_table', 'to_column', 'relationship_type'],
+      rows: (relationships as RelRow[]).map((r) => [
+        r.from_table ?? '', r.from_column ?? '', r.to_table ?? '', r.to_column ?? '', r.relationship_type ?? '',
+      ]),
+    };
+
+    // Sheet 4: KPIs
+    const kpisSheet = {
+      name: 'KPIs',
+      headers: ['name', 'description', 'formula', 'target_value', 'unit'],
+      rows: (kpis as KpiRow[]).map((k) => [
+        k.name ?? '', k.description ?? '', k.formula_sql ?? '', k.target_value ?? '', k.unit ?? '',
+      ]),
+    };
+
+    const xlsx = buildXlsx([tablesSheet, columnsSheet, relsSheet, kpisSheet]);
+    const filename = `data-dictionary-${connectionId}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(xlsx);
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Product Tables — mirrored in Neo4j for governance
+// ---------------------------------------------------------------------------
+
+// GET /api/semantic/product-tree — Hierarchical product tree for sidebar
+router.get('/product-tree', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { products } = await graph.getProductTree();
+
+    // Enrich with product/schema names from Postgres
+    const allProductIds = products.map((p) => p.dataProductId);
+    const productRows = allProductIds.length
+      ? await semanticDb('data_products').whereIn('id', allProductIds).select('id', 'name', 'connection_id', 'status')
+      : [];
+    const productMap = new Map(productRows.map((p: { id: number; name: string; connection_id: number; status: string }) => [p.id, p]));
+
+    // Get star schema names
+    const schemaRows = allProductIds.length
+      ? await semanticDb('star_schemas').whereIn('data_product_id', allProductIds).select('id', 'data_product_id', 'name')
+      : [];
+    const schemaMap = new Map(schemaRows.map((s: { id: number; data_product_id: number; name: string }) => [s.id, s]));
+
+    const tree = products.map((p) => {
+      const product = productMap.get(p.dataProductId);
+      // Group tables by star_schema_id
+      const schemaGroups = new Map<number, { schemaId: number; schemaName: string; tables: Record<string, unknown>[] }>();
+      for (const table of p.tables) {
+        const ssid = table.star_schema_id as number;
+        if (!schemaGroups.has(ssid)) {
+          const schema = schemaMap.get(ssid);
+          schemaGroups.set(ssid, {
+            schemaId: ssid,
+            schemaName: schema?.name ?? 'Schema',
+            tables: [],
+          });
+        }
+        schemaGroups.get(ssid)!.tables.push(table);
+      }
+
+      return {
+        productId: p.dataProductId,
+        productName: product?.name ?? `Product ${p.dataProductId}`,
+        connectionId: product?.connection_id ?? null,
+        status: product?.status ?? 'unknown',
+        starSchemas: Array.from(schemaGroups.values()),
+      };
+    });
+
+    res.json({ ok: true, data: tree });
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/product-tables?dataProductId=X — Product tables from Neo4j
+router.get('/product-tables', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const dataProductId = Number(req.query.dataProductId);
+    if (!dataProductId) {
+      res.status(400).json({ ok: false, error: 'dataProductId required' });
+      return;
+    }
+    const rows = await graph.getProductTablesByProduct(dataProductId);
+    res.json({ ok: true, data: rows });
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/product-columns?tablePgId=X — Product columns from Neo4j
+router.get('/product-columns', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tablePgId = Number(req.query.tablePgId);
+    if (!tablePgId) {
+      res.status(400).json({ ok: false, error: 'tablePgId required' });
+      return;
+    }
+    const rows = await graph.getProductColumnsByTablePgId(tablePgId);
+    res.json({ ok: true, data: rows });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/semantic/product-tables/:id — Update product table definition
+router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pgId = Number(req.params.id);
+    const body = req.body as Record<string, unknown>;
+
+    await graph.updateProductTable(pgId, {
+      display_name: body.display_name,
+      description:  body.description,
+      owner_name:   body.owner_name,
+      domains:      body.domains,
+    });
+
+    await invalidateSemanticCache();
+    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/semantic/product-columns/:id — Update product column definition
+router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pgId = Number(req.params.id);
+    const body = req.body as Record<string, unknown>;
+
+    await graph.updateProductColumn(pgId, {
+      display_name: body.display_name,
+      description:  body.description,
+      owner_name:   body.owner_name,
+      column_role:  body.column_role,
+    });
+
+    await invalidateSemanticCache();
+    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/product-preview?productTableId=123&limit=10
+router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { productTableId, limit = '10' } = req.query as Record<string, string>;
+    if (!productTableId) {
+      res.status(400).json({ ok: false, error: 'productTableId is required' });
+      return;
+    }
+
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
+
+    // Look up the product table by neo4j_pg_id (which is the id from the frontend) or regular id
+    const pgIdNum = Number(productTableId);
+    let table = await semanticDb('product_tables').where({ neo4j_pg_id: pgIdNum }).first();
+    if (!table) table = await semanticDb('product_tables').where({ id: pgIdNum }).first();
+    if (!table) {
+      res.status(404).json({ ok: false, error: 'Product table not found' });
+      return;
+    }
+
+    if (!table.delta_path) {
+      res.status(400).json({ ok: false, error: 'Product table has no data yet — run the transformation first' });
+      return;
+    }
+
+    // delta_path points to the table directory (e.g. ./warehouse/product/sales/fact_sales)
+    // The parent directory is the product warehouse, and the table name is the last segment
+    const deltaPath = String(table.delta_path);
+    const path = await import('path');
+    const parentDir = path.dirname(deltaPath);
+    const tableName = String(table.table_name);
+
+    // Create DuckDB connector with the parent dir as warehouse and the table name
+    const { DuckDBConnector } = await import('../connectors/DuckDBConnector');
+    const tablePaths = new Map<string, string>();
+    tablePaths.set(tableName, deltaPath);
+    const connector = new DuckDBConnector(parentDir, [tableName], tablePaths);
+    await connector.connect();
+
+    try {
+      const result = await connector.executeQuery(
+        `SELECT * FROM "${tableName}" LIMIT ${safeLimit}`,
+      );
+
+      res.json({
+        ok: true,
+        data: {
+          rows: result.rows,
+          columns: result.rows.length ? Object.keys(result.rows[0] as object) : [],
+        },
+      });
+    } finally {
+      connector.disconnect();
+    }
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Pending approvals — items waiting for human review
+// ---------------------------------------------------------------------------
+
+router.get('/pending-approvals', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const items: Array<{ id: number; type: string; name: string; description: string; status: string; updated_at: string }> = [];
+
+    // Tables with ai_draft=true or approval_status='pending'
+    const tables = await semanticDb('source_tables')
+      .where(function() {
+        this.where('ai_draft', true).orWhere('approval_status', 'pending');
+      })
+      .select('id', 'table_name', 'display_name', 'description', 'approval_status', 'ai_draft', 'updated_at')
+      .orderBy('updated_at', 'desc')
+      .limit(50);
+    for (const t of tables) {
+      items.push({ id: t.id, type: 'table', name: t.display_name || t.table_name, description: t.description ?? '', status: t.ai_draft ? 'ai_draft' : (t.approval_status ?? 'pending'), updated_at: t.updated_at });
+    }
+
+    // Columns with ai_draft=true or approval_status='pending'
+    const columns = await semanticDb('source_columns as c')
+      .join('source_tables as t', 'c.table_id', 't.id')
+      .where(function() {
+        this.where('c.ai_draft', true).orWhere('c.approval_status', 'pending');
+      })
+      .select('c.id', 'c.column_name', 'c.display_name', 'c.description', 'c.approval_status', 'c.ai_draft', 'c.updated_at', 't.table_name as parent_table')
+      .orderBy('c.updated_at', 'desc')
+      .limit(100);
+    for (const c of columns) {
+      items.push({ id: c.id, type: 'column', name: `${c.parent_table}.${c.display_name || c.column_name}`, description: c.description ?? '', status: c.ai_draft ? 'ai_draft' : (c.approval_status ?? 'pending'), updated_at: c.updated_at });
+    }
+
+    // Sort by most recent
+    items.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+
+    res.json({ ok: true, data: items.slice(0, 100) });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Global search — Cmd+K palette
+// ---------------------------------------------------------------------------
+
+router.get('/search', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = String(req.query.q ?? '').trim().toLowerCase();
+    const limit = Math.min(Number(req.query.limit) || 10, 20);
+    if (!q) { res.json({ ok: true, data: [] }); return; }
+
+    const results: Array<{ type: string; id: number; name: string; parent?: string; connectionName?: string }> = [];
+
+    // Search source tables
+    const tables = await semanticDb('source_tables as t')
+      .join('connections as c', 't.connection_id', 'c.id')
+      .whereRaw('LOWER(t.table_name) LIKE ? OR LOWER(t.display_name) LIKE ?', [`%${q}%`, `%${q}%`])
+      .select('t.id', 't.table_name', 't.display_name', 'c.name as connection_name')
+      .limit(limit);
+    for (const t of tables) {
+      results.push({ type: 'table', id: t.id, name: t.display_name || t.table_name, connectionName: t.connection_name });
+    }
+
+    // Search source columns
+    const columns = await semanticDb('source_columns as col')
+      .join('source_tables as t', 'col.table_id', 't.id')
+      .whereRaw('LOWER(col.column_name) LIKE ? OR LOWER(col.display_name) LIKE ?', [`%${q}%`, `%${q}%`])
+      .select('col.id', 'col.column_name', 'col.display_name', 't.display_name as table_display_name', 't.table_name')
+      .limit(limit);
+    for (const c of columns) {
+      results.push({ type: 'column', id: c.id, name: c.display_name || c.column_name, parent: c.table_display_name || c.table_name });
+    }
+
+    // Search KPIs
+    const kpis = await semanticDb('kpi_definitions')
+      .whereRaw('LOWER(name) LIKE ? OR LOWER(description) LIKE ?', [`%${q}%`, `%${q}%`])
+      .select('id', 'name')
+      .limit(limit);
+    for (const k of kpis) {
+      results.push({ type: 'kpi', id: k.id, name: k.name });
+    }
+
+    // Search dashboards
+    const dashboards = await semanticDb('dashboards')
+      .whereRaw('LOWER(name) LIKE ?', [`%${q}%`])
+      .select('id', 'name')
+      .limit(limit);
+    for (const d of dashboards) {
+      results.push({ type: 'dashboard', id: d.id, name: d.name });
+    }
+
+    // Search data products
+    const products = await semanticDb('data_products')
+      .whereRaw('LOWER(name) LIKE ?', [`%${q}%`])
+      .select('id', 'name')
+      .limit(limit);
+    for (const p of products) {
+      results.push({ type: 'product', id: p.id, name: p.name });
+    }
+
+    // Sort by relevance (exact prefix match first, then contains)
+    results.sort((a, b) => {
+      const aStarts = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+      const bStarts = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+      return aStarts - bStarts || a.name.localeCompare(b.name);
+    });
+
+    res.json({ ok: true, data: results.slice(0, limit) });
   } catch (err) { next(err); }
 });
 

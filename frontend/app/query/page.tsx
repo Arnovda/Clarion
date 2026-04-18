@@ -6,9 +6,10 @@ import { useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { getToken, getTokenPayload } from '@/lib/auth';
+import { formatRelativeTime, getOverallFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer,
+  ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -110,6 +111,24 @@ interface Message {
   feedback?:           'up' | 'down' | null; // user feedback
   feedbackComment?:    string;
   serverId?:           number;            // DB id from conversation_messages table
+  forecast?:           ForecastData;      // forecast visualization data
+}
+
+interface ForecastPoint {
+  date: string;
+  value: number;
+  lower: number;
+  upper: number;
+}
+
+interface ForecastData {
+  historical: Array<{ date: string; value: number }>;
+  predicted:  ForecastPoint[];
+  method:     string;
+  r2:         number;
+  periods:    number;
+  periodUnit: string;
+  explanation: string;
 }
 
 interface Conversation {
@@ -260,6 +279,165 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
   );
 }
 
+// ─── Forecast chart ─────────────────────────────────────────────────────────
+
+function ForecastChart({ forecast }: { forecast: ForecastData }) {
+  // Merge historical and forecast into a single dataset for the ComposedChart
+  const lastHistDate = forecast.historical.length > 0
+    ? forecast.historical[forecast.historical.length - 1].date
+    : null;
+
+  const chartData = [
+    ...forecast.historical.map((h) => ({
+      date: h.date,
+      historical: h.value,
+      forecast: h.date === lastHistDate ? h.value : undefined as number | undefined,
+      lower: undefined as number | undefined,
+      upper: undefined as number | undefined,
+      range: undefined as [number, number] | undefined,
+    })),
+    ...forecast.predicted.map((p) => ({
+      date: p.date,
+      historical: undefined as number | undefined,
+      forecast: p.value,
+      lower: p.lower,
+      upper: p.upper,
+      range: [p.lower, p.upper] as [number, number],
+    })),
+  ];
+
+  const allValues = [
+    ...forecast.historical.map((h) => h.value),
+    ...forecast.predicted.map((p) => p.upper),
+    ...forecast.predicted.map((p) => p.lower),
+  ].filter((v) => v !== undefined && !isNaN(v));
+  const minVal = Math.min(...allValues);
+  const maxVal = Math.max(...allValues);
+  const padding = (maxVal - minVal) * 0.1 || 1;
+
+  return (
+    <div className="mt-3 space-y-3 border-t border-white/40 pt-3">
+      <div className="rounded-xl bg-slate-900 border border-slate-700/60 p-4">
+        <ResponsiveContainer width="100%" height={280}>
+          <ComposedChart data={chartData} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+            <defs>
+              <linearGradient id="forecastGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#a78bfa" stopOpacity={0.25} />
+                <stop offset="95%" stopColor="#a78bfa" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 10, fill: '#94a3b8' }}
+              axisLine={{ stroke: '#334155' }}
+              tickLine={false}
+            />
+            <YAxis
+              tick={{ fontSize: 10, fill: '#94a3b8' }}
+              axisLine={{ stroke: '#334155' }}
+              tickLine={false}
+              domain={[Math.floor(minVal - padding), Math.ceil(maxVal + padding)]}
+              tickFormatter={(v) => Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(Math.round(v))}
+            />
+            <Tooltip
+              contentStyle={{
+                fontSize: 11,
+                borderRadius: 12,
+                border: '1px solid rgba(100,116,139,0.3)',
+                background: 'rgba(15,23,42,0.95)',
+                color: '#e2e8f0',
+                backdropFilter: 'blur(12px)',
+              }}
+              formatter={(value: number, name: string) => {
+                if (name === 'range') return [null, null];
+                const label = name === 'historical' ? 'Actual' : 'Forecast';
+                return [value?.toLocaleString('en-US', { maximumFractionDigits: 2 }), label];
+              }}
+            />
+            {/* Vertical reference line at the boundary between historical and forecast */}
+            {lastHistDate && (
+              <ReferenceLine
+                x={lastHistDate}
+                stroke="#475569"
+                strokeDasharray="6 4"
+                strokeWidth={1.5}
+                label={{
+                  value: 'Forecast',
+                  position: 'insideTopRight',
+                  fill: '#a78bfa',
+                  fontSize: 10,
+                  fontWeight: 600,
+                }}
+              />
+            )}
+            {/* Confidence interval shaded area */}
+            <Area
+              type="monotone"
+              dataKey="range"
+              fill="url(#forecastGradient)"
+              stroke="none"
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+            {/* Historical line — solid cyan */}
+            <Line
+              type="monotone"
+              dataKey="historical"
+              stroke="#06b6d4"
+              strokeWidth={2.5}
+              dot={{ r: 3, fill: '#06b6d4', strokeWidth: 0 }}
+              activeDot={{ r: 5, fill: '#06b6d4', strokeWidth: 2, stroke: '#0e7490' }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+            {/* Forecast line — dashed purple */}
+            <Line
+              type="monotone"
+              dataKey="forecast"
+              stroke="#a78bfa"
+              strokeWidth={2.5}
+              strokeDasharray="8 4"
+              dot={{ r: 3, fill: '#a78bfa', strokeWidth: 0 }}
+              activeDot={{ r: 5, fill: '#a78bfa', strokeWidth: 2, stroke: '#7c3aed' }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+      {/* Forecast metadata bar */}
+      <div className="flex flex-wrap items-center gap-3 text-[11px]">
+        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-violet-500/15 border border-violet-500/20 text-violet-300 font-semibold">
+          {forecast.method}
+        </span>
+        <span className="text-slate-400">
+          {forecast.periods} {forecast.periodUnit}{forecast.periods !== 1 ? 's' : ''} ahead
+        </span>
+        {forecast.r2 > 0 && (
+          <span className="text-slate-500">
+            R² = {forecast.r2.toFixed(3)}
+          </span>
+        )}
+        <div className="flex items-center gap-3 ml-auto text-[10px]">
+          <span className="flex items-center gap-1">
+            <span className="w-4 h-0.5 bg-cyan-400 rounded inline-block" />
+            <span className="text-slate-400">Historical</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-4 h-0.5 bg-violet-400 rounded inline-block" style={{ backgroundImage: 'repeating-linear-gradient(90deg, #a78bfa 0, #a78bfa 4px, transparent 4px, transparent 8px)' }} />
+            <span className="text-slate-400">Forecast</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-3 h-3 bg-violet-500/15 border border-violet-500/20 rounded inline-block" />
+            <span className="text-slate-400">95% CI</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Confidence badge ─────────────────────────────────────────────────────────
 
 function ConfidenceBadge({ value }: { value: number }) {
@@ -283,7 +461,7 @@ function QueryLayerBadge({ layer }: { layer: 'product' | 'source' }) {
     : 'text-on-surface-variant bg-white/60 border-white/80';
   return (
     <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${color}`}>
-      {isProduct ? '⭐ Star Schema' : '📦 Source'}
+      {isProduct ? '⭐ Data Model' : '📦 Source'}
     </span>
   );
 }
@@ -911,7 +1089,7 @@ function MessageBubble({ msg, showSql, isAdmin, onSend, onFeedback, onExport, co
             </div>
           )}
           <p className="text-on-surface leading-relaxed"><BoldText text={msg.text} /></p>
-          {msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} />}
+          {msg.forecast ? <ForecastChart forecast={msg.forecast} /> : (msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} />)}
           {msg.warning && !msg.wasRepaired && (
             <div className="flex items-start gap-2 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs text-yellow-800">
               <span className="flex-shrink-0 mt-0.5">⚠</span>
@@ -1175,6 +1353,9 @@ export default function QueryPage() {
   // Ephemeral repair state — never persisted
   const [repairState, setRepairState] = useState<RepairState | null>(null);
 
+  // Data freshness indicator
+  const [freshnessDates, setFreshnessDates] = useState<(string | null)[]>([]);
+
   // Live thinking state — shown while /think SSE stream is open
   const [thinkingPhase, setThinkingPhase] = useState<string>('');
   const [thinkingText,  setThinkingText]  = useState<string>('');
@@ -1187,6 +1368,18 @@ export default function QueryPage() {
   const initialized = useRef(false);
 
   useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'admin'); }, []);
+
+  // Fetch data freshness info
+  useEffect(() => {
+    api.get('/connections/freshness').then(r => {
+      const d = r.data.data;
+      const dates = [
+        ...(d.connections ?? []).map((c: { last_synced_at: string | null }) => c.last_synced_at),
+        ...(d.products ?? []).map((p: { last_run_at: string | null }) => p.last_run_at),
+      ];
+      setFreshnessDates(dates);
+    }).catch(() => {});
+  }, []);
 
   // Load product context (KPIs) when navigating from Data Products
   useEffect(() => {
@@ -1613,20 +1806,16 @@ export default function QueryPage() {
     setThinkingConf(null);
 
     try {
-      // Build prior-Q context for follow-ups
-      let fullQuestion = q;
-      const prior = messages.filter((m) => m.role === 'assistant').slice(-1)[0];
-      const priorQ = messages.filter((m) => m.role === 'user').slice(-1)[0];
-      if (prior && priorQ && priorQ.text !== q) {
-        fullQuestion = `Previous question: "${priorQ.text}"\nPrevious answer: "${prior.text.slice(0, 400)}"\n\nFollow-up: ${q}`;
-      }
-
       const isCrossView = selectedSource.startsWith('v:');
       const sourceId    = Number(selectedSource.split(':')[1]);
 
       // Cross-view queries use the regular (non-streaming) route
       if (isCrossView) {
-        const res = await api.post('/query/cross-view', { viewId: sourceId, question: fullQuestion });
+        const res = await api.post('/query/cross-view', {
+          viewId: sourceId,
+          question: q,
+          ...(cid && cid > 0 ? { conversationId: cid } : {}),
+        });
         const d   = res.data.data;
         const assistantId = nextId.current++;
         const assistantMsg: Message = {
@@ -1648,6 +1837,55 @@ export default function QueryPage() {
         return;
       }
 
+      // Forecast detection — lightweight keyword check before the main query path
+      const FORECAST_KEYWORDS = [
+        'predict', 'forecast', 'will be', 'next quarter', 'next month', 'next year',
+        'next week', 'expect', 'project', 'projection', 'trend going forward',
+        'future', 'going to be', 'estimated', 'estimation', 'outlook',
+        'projected', 'anticipated', 'upcoming', 'trajectory',
+      ];
+      const qLower = q.toLowerCase();
+      const isForecast = FORECAST_KEYWORDS.some((kw) => qLower.includes(kw));
+
+      if (isForecast) {
+        try {
+          setThinkingPhase('Generating forecast...');
+          const res = await api.post('/query/forecast', {
+            connectionId: sourceId,
+            question: q,
+            ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+          });
+          const d = res.data.data;
+          const assistantId = nextId.current++;
+          const assistantMsg: Message = {
+            id: assistantId, role: 'assistant', text: d.answer, question: q,
+            sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence,
+            blocked: d.blocked, rows: d.rows,
+            forecast: d.forecast,
+          };
+          if (cid && cid > 0) {
+            persistMessage(cid, assistantMsg).then((serverId) => {
+              if (serverId) setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, serverId } : m));
+            });
+          }
+          setMessages((prev) => [...prev, assistantMsg]);
+        } catch {
+          setMessages((prev) => [...prev, {
+            id: nextId.current++, role: 'assistant',
+            text: 'Something went wrong generating the forecast. Please try again.',
+            error: true,
+          }]);
+        } finally {
+          setLoading(false);
+          setThinkingPhase('');
+          setThinkingText('');
+          setThinkingSql(null);
+          setThinkingConf(null);
+          setTimeout(() => inputRef.current?.focus(), 50);
+        }
+        return;
+      }
+
       // Single-source: use the streaming /think endpoint
       const token = getToken();
       const response = await fetch(`${BACKEND_URL}/api/query/think`, {
@@ -1658,7 +1896,8 @@ export default function QueryPage() {
         },
         body: JSON.stringify({
           connectionId: sourceId,
-          question:     fullQuestion,
+          question:     q,
+          ...(cid && cid > 0 ? { conversationId: cid } : {}),
           ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
         }),
       });
@@ -1916,6 +2155,19 @@ export default function QueryPage() {
 
         {/* Input */}
         <div className="flex-shrink-0 px-4 py-3 ghost-border-t bg-surface">
+          {/* Freshness banner */}
+          {(() => {
+            const validDates = freshnessDates.filter(Boolean) as string[];
+            if (validDates.length === 0) return null;
+            const mostRecent = new Date(Math.max(...validDates.map(d => new Date(d).getTime())));
+            const status = getOverallFreshnessStatus(freshnessDates);
+            if (status === 'fresh' || status === 'unknown') return null;
+            return (
+              <div className={`max-w-2xl mx-auto mb-1.5 text-center text-[11px] ${getFreshnessTextColor(status)}`}>
+                Data last refreshed {formatRelativeTime(mostRecent)}
+              </div>
+            );
+          })()}
           <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2">
             <input
               ref={inputRef}

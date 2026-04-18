@@ -10,7 +10,7 @@ import KpiPanel from '@/components/semantic/KpiPanel';
 import BulkImportModal from '@/components/semantic/BulkImportModal';
 import HelpTooltip from '@/components/HelpTooltip';
 import api from '@/lib/api';
-import { isAdmin } from '@/lib/auth';
+import { isAdmin, getToken } from '@/lib/auth';
 import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView, ProductColumn, ProductTreeItem } from '@/components/semantic/types';
 
 type MainTab = 'definitions' | 'relationships' | 'kpis';
@@ -46,6 +46,14 @@ function SemanticInner() {
   const [activeViewId, setActiveViewId] = useState<number | null>(null);
 
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  // ── Auto-approve settings ─────────────────────────────────────────────────
+  const [showApprovalSettings, setShowApprovalSettings] = useState(false);
+  const [autoApproveEnabled, setAutoApproveEnabled] = useState(true);
+  const [autoApproveDays, setAutoApproveDays] = useState(7);
+  const [approvalSettingsLoading, setApprovalSettingsLoading] = useState(false);
+  const [approvalSettingsSaved, setApprovalSettingsSaved] = useState(false);
 
   // ── Product tree state ────────────────────────────────────────────────────
   const [productTree, setProductTree] = useState<ProductTreeItem[]>([]);
@@ -89,6 +97,35 @@ function SemanticInner() {
       setProductTree(res.data.data ?? []);
     }).catch(() => {});
   }, []);
+
+  // ── Load auto-approve settings on mount ─────────────────────────────────────
+  useEffect(() => {
+    if (!isAdmin()) return;
+    api.get('/settings/approval').then((res) => {
+      const d = res.data.data;
+      if (d) {
+        setAutoApproveEnabled(d.autoApproveAiDrafts ?? true);
+        setAutoApproveDays(d.autoApproveDelayDays ?? 7);
+      }
+    }).catch(() => {});
+  }, []);
+
+  async function saveApprovalSettings() {
+    setApprovalSettingsLoading(true);
+    setApprovalSettingsSaved(false);
+    try {
+      await api.put('/settings/approval', {
+        autoApproveAiDrafts: autoApproveEnabled,
+        autoApproveDelayDays: autoApproveDays,
+      });
+      setApprovalSettingsSaved(true);
+      setTimeout(() => setApprovalSettingsSaved(false), 2000);
+    } catch {
+      alert('Failed to save approval settings');
+    } finally {
+      setApprovalSettingsLoading(false);
+    }
+  }
 
   // ── Load tables + columns for a connection ─────────────────────────────────
   async function loadConnectionTables(connId: number) {
@@ -343,6 +380,117 @@ function SemanticInner() {
             >
               Data Dictionary
             </button>
+            {/* Export Dictionary dropdown */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu((v) => !v)}
+                className="px-3.5 py-1.5 text-xs font-semibold text-emerald-300 bg-emerald-500/15 border border-emerald-400/20 rounded-xl hover:bg-emerald-500/25 transition-all backdrop-blur-sm"
+              >
+                Export Dictionary
+              </button>
+              {showExportMenu && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-slate-800 border border-white/10 rounded-xl shadow-xl overflow-hidden min-w-[140px]">
+                  <button
+                    className="w-full px-4 py-2 text-xs text-left text-slate-200 hover:bg-white/10 transition-colors"
+                    onClick={() => {
+                      setShowExportMenu(false);
+                      const backendUrl = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
+                      const url = `${backendUrl}/api/semantic/export/csv?connectionId=${activeConnId}`;
+                      const token = getToken();
+                      fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+                        .then((r) => r.blob())
+                        .then((blob) => {
+                          const a = document.createElement('a');
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `data-dictionary-${activeConnId}.csv`;
+                          a.click();
+                          URL.revokeObjectURL(a.href);
+                        })
+                        .catch(() => alert('Export failed'));
+                    }}
+                  >
+                    Export as CSV
+                  </button>
+                  <button
+                    className="w-full px-4 py-2 text-xs text-left text-slate-200 hover:bg-white/10 transition-colors"
+                    onClick={() => {
+                      setShowExportMenu(false);
+                      const backendUrl = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
+                      const url = `${backendUrl}/api/semantic/export/xlsx?connectionId=${activeConnId}`;
+                      const token = getToken();
+                      fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+                        .then((r) => r.blob())
+                        .then((blob) => {
+                          const a = document.createElement('a');
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `data-dictionary-${activeConnId}.xlsx`;
+                          a.click();
+                          URL.revokeObjectURL(a.href);
+                        })
+                        .catch(() => alert('Export failed'));
+                    }}
+                  >
+                    Export as XLSX
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* Auto-approve settings gear */}
+            <div className="relative">
+              <button
+                onClick={() => setShowApprovalSettings((v) => !v)}
+                className="p-1.5 text-white/50 hover:text-white/80 transition-colors rounded-lg hover:bg-white/10"
+                title="AI suggestion settings"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+              {showApprovalSettings && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-slate-800 border border-white/10 rounded-xl shadow-xl p-4 min-w-[280px]">
+                  <div className="text-xs font-semibold text-white/90 mb-3">AI Suggestion Settings</div>
+                  <label className="flex items-center gap-2.5 cursor-pointer mb-3">
+                    <input
+                      type="checkbox"
+                      checked={autoApproveEnabled}
+                      onChange={(e) => setAutoApproveEnabled(e.target.checked)}
+                      className="w-4 h-4 rounded border-white/20 bg-white/10 text-cyan-500 focus:ring-cyan-400/50 accent-cyan-500"
+                    />
+                    <span className="text-xs text-white/80">Auto-confirm AI suggestions</span>
+                  </label>
+                  {autoApproveEnabled && (
+                    <div className="flex items-center gap-2 mb-3 pl-6">
+                      <span className="text-xs text-white/60">after</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={autoApproveDays}
+                        onChange={(e) => setAutoApproveDays(Math.max(1, Math.min(90, Number(e.target.value) || 7)))}
+                        className="w-14 px-2 py-1 text-xs bg-white/10 border border-white/15 rounded-lg text-white text-center focus:outline-none focus:ring-1 focus:ring-cyan-400/50"
+                      />
+                      <span className="text-xs text-white/60">days with no review</span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-white/40 mb-3 leading-relaxed">
+                    When enabled, AI-generated definitions are automatically confirmed if no one reviews them within the specified number of days.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={saveApprovalSettings}
+                      disabled={approvalSettingsLoading}
+                      className="px-3 py-1.5 text-xs font-semibold text-white bg-cyan-500/30 border border-cyan-400/20 rounded-lg hover:bg-cyan-500/40 transition-all disabled:opacity-50"
+                    >
+                      {approvalSettingsLoading ? 'Saving...' : 'Save'}
+                    </button>
+                    {approvalSettingsSaved && (
+                      <span className="text-xs text-emerald-400">Saved</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -407,7 +555,7 @@ function SemanticInner() {
                 </div>
                 <h3 className="text-lg font-headline font-bold text-slate-800 mb-1">No data sources connected</h3>
                 <p className="text-sm text-slate-500 max-w-md mb-6">
-                  Connect a database to start building your semantic layer. The AI will draft definitions for all your tables and columns.
+                  Connect a database to start building your data dictionary. The AI will draft definitions for all your tables and columns.
                 </p>
                 <a href="/setup" className="px-6 py-2.5 gradient-primary text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-all shadow-glow-primary hover:shadow-glow-teal-md">
                   Connect a source

@@ -251,11 +251,13 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
 
         // Update connection
         const allDone = results.every((r: { status: string }) => r.status === 'done');
+        const nowTs = new Date().toISOString();
         await semanticDb('connections').where({ id: connectionId }).update({
           ingestion_status: allDone ? 'done' : 'error',
           ingestion_progress: 100,
           ingestion_error: allDone ? null : 'Some tables failed to ingest',
-          last_ingested_at: new Date().toISOString(),
+          last_ingested_at: nowTs,
+          last_synced_at: allDone ? nowTs : undefined,
           warehouse_path: warehousePath,
           query_engine: allDone ? 'duckdb' : 'source',
         });
@@ -314,10 +316,12 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         }
 
         const allDone = results.every((r: { status: string }) => r.status === 'done');
+        const syncNowTs = new Date().toISOString();
         await semanticDb('connections').where({ id: connectionId }).update({
           ingestion_status: allDone ? 'done' : 'error',
           ingestion_progress: 100,
-          last_ingested_at: new Date().toISOString(),
+          last_ingested_at: syncNowTs,
+          last_synced_at: allDone ? syncNowTs : undefined,
           warehouse_path: warehousePath,
           query_engine: allDone ? 'duckdb' : 'source',
         });

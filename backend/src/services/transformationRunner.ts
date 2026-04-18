@@ -12,6 +12,7 @@ import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
 import { runTransformationChecks } from './transformationChecks';
 import { tenantQuery } from './tenantQuery';
+import { syncProductToNeo4j } from './productGraphSync';
 
 interface ProductRow {
   id: number;
@@ -33,6 +34,83 @@ interface TransformResult {
   status: 'success' | 'error';
   row_count?: number;
   error?: string;
+}
+
+/**
+ * After transformation, sync product_columns in Postgres (and Neo4j) to match
+ * the actual columns materialized in the Parquet output.
+ * Removes columns no longer present, adds new ones, updates data types.
+ */
+async function syncProductColumns(
+  productTableId: number,
+  actualCols: Array<{ column_name: string; column_type: string }>,
+  tenantId?: number,
+): Promise<void> {
+  const existing = await (tenantId
+    ? tenantQuery(tenantId, (trx) =>
+        trx('product_columns').where({ product_table_id: productTableId })
+          .select('id', 'column_name', 'data_type', 'sort_order'))
+    : semanticDb('product_columns').where({ product_table_id: productTableId })
+        .select('id', 'column_name', 'data_type', 'sort_order')
+  ) as Array<{ id: number; column_name: string; data_type: string; sort_order: number | null }>;
+
+  const existingMap = new Map(existing.map((c) => [c.column_name, c]));
+  const actualNames = new Set(actualCols.map((c) => c.column_name));
+
+  // Remove columns that no longer exist in output
+  const toRemove = existing.filter((c) => !actualNames.has(c.column_name));
+  for (const col of toRemove) {
+    await (tenantId
+      ? tenantQuery(tenantId, (trx) => trx('product_columns').where({ id: col.id }).del())
+      : semanticDb('product_columns').where({ id: col.id }).del()
+    );
+  }
+
+  // Add new columns / update data types
+  for (let i = 0; i < actualCols.length; i++) {
+    const ac = actualCols[i];
+    const ex = existingMap.get(ac.column_name);
+    if (ex) {
+      // Update data type if changed
+      if (ex.data_type !== ac.column_type) {
+        await (tenantId
+          ? tenantQuery(tenantId, (trx) =>
+              trx('product_columns').where({ id: ex.id }).update({ data_type: ac.column_type }))
+          : semanticDb('product_columns').where({ id: ex.id }).update({ data_type: ac.column_type })
+        );
+      }
+    } else {
+      // New column — insert with basic info
+      await (tenantId
+        ? tenantQuery(tenantId, (trx) =>
+            trx('product_columns').insert({
+              product_table_id: productTableId,
+              column_name: ac.column_name,
+              data_type: ac.column_type,
+              display_name: ac.column_name.replace(/_/g, ' '),
+              description: '',
+              column_role: 'attribute',
+              sort_order: i,
+              ai_draft: true,
+            }))
+        : semanticDb('product_columns').insert({
+            product_table_id: productTableId,
+            column_name: ac.column_name,
+            data_type: ac.column_type,
+            display_name: ac.column_name.replace(/_/g, ' '),
+            description: '',
+            column_role: 'attribute',
+            sort_order: i,
+            ai_draft: true,
+          })
+      );
+    }
+  }
+
+  if (toRemove.length > 0 || actualCols.some((ac) => !existingMap.has(ac.column_name))) {
+    console.log(`[transformationRunner] Synced product_columns for table ${productTableId}: ` +
+      `removed ${toRemove.length}, added ${actualCols.filter((ac) => !existingMap.has(ac.column_name)).length}`);
+  }
 }
 
 /**
@@ -507,6 +585,17 @@ export async function runProductTransformation(
           })
         );
 
+        // Sync product_columns to match actual materialized output
+        try {
+          const descView = `__desc_${table.table_name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+          await db.exec(`CREATE OR REPLACE VIEW "${descView}" AS SELECT * FROM read_parquet('${escapedPath}');`);
+          const actualCols = await db.all(`DESCRIBE "${descView}"`) as Array<{ column_name: string; column_type: string }>;
+          await db.exec(`DROP VIEW IF EXISTS "${descView}";`);
+          await syncProductColumns(table.id, actualCols, tenantId);
+        } catch (syncErr) {
+          console.warn(`[transformationRunner] Column sync failed for ${table.table_name}:`, syncErr);
+        }
+
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -522,6 +611,15 @@ export async function runProductTransformation(
     }
   } finally {
     await db.close();
+  }
+
+  // Sync updated product_columns to Neo4j (once after all tables)
+  if (results.some((r) => r.status === 'success')) {
+    try {
+      await syncProductToNeo4j(product.id);
+    } catch (neo4jErr) {
+      console.warn(`[transformationRunner] Neo4j product sync failed (non-fatal):`, neo4jErr);
+    }
   }
 
   return results;

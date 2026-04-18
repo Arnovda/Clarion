@@ -58,6 +58,13 @@ For "this quarter": extract(quarter from '${currentDate}'::date) determines the 
 • TRY_CAST(value AS type) — returns NULL on failure instead of error
 • :: for casting (e.g. column::varchar, '2025-01-01'::date)
 
+━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If conversation history is provided, use it to resolve references like "it", "those",
+"the same period", "but only for Q1", "break that down by region", etc.
+The user may be refining or following up on a previous question. Treat prior questions
+and answers as context for understanding the current request.
+
 ━━━ REASONING PROTOCOL — follow every step before writing SQL ━━━━━━━━━━━━━━━━
 
 Step 1 — Understand the schema
@@ -176,6 +183,13 @@ ${kpiFormulas}
 Current date: ${currentDate}
 Use DuckDB date functions ONLY: current_date, date_trunc(), extract(), date_diff(), strftime(value, format), INTERVAL.
 NEVER use SQLite functions: date(), julianday(), strftime(format, value).
+
+━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If conversation history is provided, use it to resolve references like "it", "those",
+"the same period", "but only for Q1", "break that down by region", etc.
+The user may be refining or following up on a previous question. Treat prior questions
+and answers as context for understanding the current request.
 
 ━━━ REASONING PROTOCOL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

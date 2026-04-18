@@ -37,6 +37,13 @@ NEVER use these (they are PostgreSQL/MySQL and will fail on SQLite):
 For "this quarter": strftime('%m', '${currentDate}') determines the current month;
 Q1 = months 01-03, Q2 = 04-06, Q3 = 07-09, Q4 = 10-12.
 
+━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If conversation history is provided, use it to resolve references like "it", "those",
+"the same period", "but only for Q1", "break that down by region", etc.
+The user may be refining or following up on a previous question. Treat prior questions
+and answers as context for understanding the current request.
+
 ━━━ REASONING PROTOCOL — follow every step before writing SQL ━━━━━━━━━━━━━━━━
 
 Step 1 — Understand the schema
@@ -227,6 +234,13 @@ ${kpiFormulas}
 Current date: ${currentDate}
 Use SQLite date functions ONLY: date(), strftime(), julianday().
 NEVER use EXTRACT(), DATE_TRUNC(), DATEADD(), DATEDIFF(), INTERVAL, NOW(), CURRENT_DATE.
+
+━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If conversation history is provided, use it to resolve references like "it", "those",
+"the same period", "but only for Q1", "break that down by region", etc.
+The user may be refining or following up on a previous question. Treat prior questions
+and answers as context for understanding the current request.
 
 ━━━ REASONING PROTOCOL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

@@ -508,9 +508,9 @@ export default function ProductsPage() {
   // Tab bar items
   const tabs: { key: ActiveTab; label: string }[] = [
     { key: 'overview', label: 'Overview' },
-    { key: 'bus-matrix', label: 'Facts & Dimensions' },
+    { key: 'bus-matrix', label: 'Coverage Map' },
     { key: 'schema', label: 'Schema Diagram' },
-    { key: 'lineage', label: 'Lineage' },
+    { key: 'lineage', label: 'Data Flow' },
     { key: 'kpis', label: 'KPIs' },
   ];
 
@@ -521,7 +521,7 @@ export default function ProductsPage() {
         <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
         <div className="absolute -bottom-4 right-1/4 w-16 h-16 rounded-full bg-white/[0.02]" />
         <div className="relative">
-          <h1 className="text-lg font-headline font-bold text-white tracking-tight">Data Products</h1>
+          <h1 className="text-lg font-headline font-bold text-white tracking-tight">Organized Data</h1>
           <p className="text-sm text-white/50">Organize and transform your source data</p>
         </div>
         <div className="relative flex items-center gap-2">
@@ -652,9 +652,9 @@ export default function ProductsPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-headline font-bold text-on-surface mb-1">No data products yet</h3>
+                  <h3 className="text-lg font-headline font-bold text-on-surface mb-1">No organized data yet</h3>
                   <p className="text-sm text-on-surface-variant mb-6">
-                    Data products organize your source tables into clean, query-ready datasets.
+                    Organized data turns your source tables into clean, query-ready datasets.
                   </p>
                   <p className="text-xs text-on-surface-variant/50">Click &quot;Prepare my data&quot; above to get started.</p>
                 </div>
@@ -1191,14 +1191,14 @@ function BusMatrixTab({
       {dimensionNames.length > 0 && factRows.length > 0 && (
         <div className="glass-card rounded-2xl overflow-hidden">
           <div className="px-5 py-4 ghost-border-b">
-            <h3 className="text-sm font-bold text-on-surface">Bus Matrix</h3>
-            <p className="text-xs text-on-surface-variant mt-0.5">Which dimensions are used by which fact tables</p>
+            <h3 className="text-sm font-bold text-on-surface">Coverage Map</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Which reference tables are shared across your transaction data</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-surface-container ghost-border-b">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-variant sticky left-0 bg-surface-container min-w-[200px]">Fact Table</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-variant sticky left-0 bg-surface-container min-w-[200px]">Transaction Table</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-on-surface-variant min-w-[100px]">Product</th>
                   {dimensionNames.map((dim) => (
                     <th key={dim} className="text-center px-2 py-3 text-[11px] font-semibold text-on-surface-variant min-w-[80px]">
@@ -1245,15 +1245,15 @@ function BusMatrixTab({
       <div className="glass-card rounded-2xl overflow-hidden">
         <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-on-surface">Dimensions ({uniqueDimensions.length})</h3>
-            <p className="text-xs text-on-surface-variant mt-0.5">Shared lookup tables (deduplicated across products)</p>
+            <h3 className="text-sm font-bold text-on-surface">Reference Tables ({uniqueDimensions.length})</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Shared reference data used across your models</p>
           </div>
           <span className="text-2xl">&#128270;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
         ) : uniqueDimensions.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No dimensions found.</div>
+          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No reference tables found.</div>
         ) : (
           <div className="divide-y divide-white/40">
             {uniqueDimensions.map((d) => (
@@ -1289,15 +1289,15 @@ function BusMatrixTab({
       <div className="glass-card rounded-2xl overflow-hidden">
         <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-bold text-on-surface">Fact Tables ({allFactEntries.length})</h3>
-            <p className="text-xs text-on-surface-variant mt-0.5">Measure tables across all products</p>
+            <h3 className="text-sm font-bold text-on-surface">Transaction Tables ({allFactEntries.length})</h3>
+            <p className="text-xs text-on-surface-variant mt-0.5">Tables recording your business transactions</p>
           </div>
           <span className="text-2xl">&#128202;</span>
         </div>
         {!loaded ? (
           <div className="px-5 py-8 text-center"><Spinner className="mx-auto" /></div>
         ) : allFactEntries.length === 0 ? (
-          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No fact tables found.</div>
+          <div className="px-5 py-8 text-center text-sm text-on-surface-variant">No transaction tables found.</div>
         ) : (
           <div className="divide-y divide-white/40">
             {allFactEntries.map((f) => {
@@ -1310,7 +1310,7 @@ function BusMatrixTab({
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-on-surface">{f.table.display_name ?? f.table.table_name}</span>
                       <StatusDot status={f.table.transformation_status} />
-                      {dimCount > 0 && <span className="text-[10px] text-on-surface-variant">{dimCount} dimensions</span>}
+                      {dimCount > 0 && <span className="text-[10px] text-on-surface-variant">{dimCount} reference tables</span>}
                     </div>
                     {f.table.description && (
                       <p className="text-xs text-on-surface-variant truncate mt-0.5">{f.table.description}</p>
@@ -1459,7 +1459,7 @@ function LineageTab({
                 )),
               )}
               {columnsWithLineage.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-on-surface-variant">No lineage data available.</td></tr>
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-on-surface-variant">No data flow information available.</td></tr>
               )}
             </tbody>
           </table>
@@ -1573,11 +1573,11 @@ function KpisTab({
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <h3 className="font-semibold text-on-surface">{kpi.name}</h3>
-                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 font-medium">AI Draft</span>}
+                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 font-medium">AI Suggested</span>}
                 </div>
                 <div className="flex gap-1">
                   {kpi.ai_draft && (
-                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-emerald-500/15 text-emerald-600 rounded hover:bg-emerald-500/25 transition-colors">Approve</button>
+                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-emerald-500/15 text-emerald-600 rounded hover:bg-emerald-500/25 transition-colors">Confirm</button>
                   )}
                   <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-white/60 text-on-surface-variant rounded hover:bg-white/80 transition-colors">Edit</button>
                   <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-red-500/10 text-red-600 rounded hover:bg-red-500/20 transition-colors">Delete</button>

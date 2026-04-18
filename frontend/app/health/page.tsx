@@ -5,6 +5,7 @@ import IconRail from '@/components/layout/IconRail';
 import ContextPanel from '@/components/layout/ContextPanel';
 import QualityPanel from '@/components/QualityPanel';
 import api from '@/lib/api';
+import { formatRelativeTime, getFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
 
 interface TableHealth {
   id: number;
@@ -81,7 +82,7 @@ export default function HealthPage() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedConnId, setSelectedConnId] = useState<number | null>(null);
-  const [selectedTable, setSelectedTable] = useState<{ connId: number; tableName: string; productTableId?: number | null } | null>(null);
+  const [selectedTable, setSelectedTable] = useState<{ connId: number; tableName: string; displayName?: string; productTableId?: number | null } | null>(null);
   const [activePill, setActivePill] = useState('overview');
   const [profilingKey, setProfilingKey] = useState<string | null>(null); // e.g. "conn-22" or "product-Sales"
   const [profilingProgress, setProfilingProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
@@ -207,7 +208,7 @@ export default function HealthPage() {
                     const isActive = selectedTable?.tableName === t.table_name && selectedTable?.connId === t.connection_id;
                     return (
                       <button key={t.id}
-                        onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
+                        onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, displayName: t.display_name || undefined }); setActivePill('detail'); }}
                         className={`w-full text-left pl-4 pr-3 py-1.5 text-xs flex items-center gap-2 transition-colors ${
                           isActive
                             ? 'bg-cyan-500/10 border-r-2 border-cyan-400 text-cyan-300 font-semibold'
@@ -215,6 +216,11 @@ export default function HealthPage() {
                         }`}>
                         <TableIcon active={isActive} />
                         <span className="truncate flex-1">{t.display_name || t.table_name}</span>
+                        {t.profiled_at && (
+                          <span className={`text-[9px] ${getFreshnessTextColor(getFreshnessStatus(t.profiled_at))}`}>
+                            {formatRelativeTime(t.profiled_at)}
+                          </span>
+                        )}
                         <ScoreDot score={t.overall_score} />
                       </button>
                     );
@@ -242,7 +248,13 @@ export default function HealthPage() {
                 dimByName.set(t.table_name, { best: t, products: new Set([pn]) });
               } else {
                 existing.products.add(pn);
-                if (t.overall_score !== null && existing.best.overall_score === null) {
+                // Prefer tables with data: first by score, then by row_count (warehouse data exists)
+                const curHasData = existing.best.row_count != null && existing.best.row_count > 0;
+                const newHasData = t.row_count != null && t.row_count > 0;
+                if (
+                  (t.overall_score !== null && existing.best.overall_score === null) ||
+                  (!curHasData && newHasData)
+                ) {
                   existing.best = t;
                 }
               }
@@ -262,7 +274,7 @@ export default function HealthPage() {
             .map(([productName, tbls]) => ({ productName, tables: tbls.sort((a, b) => a.table_name.localeCompare(b.table_name)) }));
 
           return (<>
-            <div className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em] px-3 pt-4 pb-1">Data products</div>
+            <div className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em] px-3 pt-4 pb-1">Organized data</div>
 
             {/* ── Dimensions (shared/deduplicated) ── */}
             {dimensions.length > 0 && (
@@ -270,7 +282,7 @@ export default function HealthPage() {
                 <div className="px-3 pt-1 pb-1">
                   <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
                     <ChevronIcon expanded={expandedSections.has('dims')} />
-                    <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Dimensions</span>
+                    <span className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">Reference Tables</span>
                     <span className="text-[10px] text-white/20 ml-auto">{dimensions.length}</span>
                   </button>
                 </div>
@@ -280,7 +292,7 @@ export default function HealthPage() {
                       const isActive = selectedTable?.tableName === dim.name;
                       return (
                         <button key={dim.name}
-                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
+                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, displayName: dim.table.display_name || undefined, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
                           className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
                             isActive
                               ? 'bg-purple-500/10 border-r-2 border-purple-400 text-purple-300 font-semibold'
@@ -293,6 +305,11 @@ export default function HealthPage() {
                               {dim.usedBy.length}x
                             </span>
                           )}
+                          {dim.table.profiled_at && (
+                            <span className={`text-[9px] ${getFreshnessTextColor(getFreshnessStatus(dim.table.profiled_at))}`}>
+                              {formatRelativeTime(dim.table.profiled_at)}
+                            </span>
+                          )}
                           <ScoreDot score={dim.table.overall_score} />
                         </button>
                       );
@@ -302,13 +319,13 @@ export default function HealthPage() {
               </>
             )}
 
-            {/* ── Fact Tables (grouped by product) ── */}
+            {/* ── Transaction Tables (grouped by product) ── */}
             {factGroups.length > 0 && (
               <>
                 <div className="px-3 pt-4 pb-1">
                   <button onClick={() => toggleSection('facts')} className="flex items-center gap-2 w-full text-left">
                     <ChevronIcon expanded={expandedSections.has('facts')} />
-                    <span className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">Fact tables</span>
+                    <span className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">Transaction tables</span>
                     <span className="text-[10px] text-white/20 ml-auto">{factGroups.reduce((n, g) => n + g.tables.length, 0)}</span>
                   </button>
                 </div>
@@ -323,7 +340,7 @@ export default function HealthPage() {
                           const isActive = selectedTable?.tableName === t.table_name && selectedTable?.productTableId === t.product_table_id;
                           return (
                             <button key={t.id}
-                              onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, productTableId: t.product_table_id }); setActivePill('detail'); }}
+                              onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, displayName: t.display_name || undefined, productTableId: t.product_table_id }); setActivePill('detail'); }}
                               className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-xs transition-all ${
                                 isActive
                                   ? 'bg-cyan-500/10 border-r-2 border-cyan-400 text-cyan-300 font-semibold'
@@ -331,6 +348,11 @@ export default function HealthPage() {
                               }`}>
                               <TableIcon active={isActive} />
                               <span className="truncate flex-1">{t.display_name || t.table_name}</span>
+                              {t.profiled_at && (
+                                <span className={`text-[9px] ${getFreshnessTextColor(getFreshnessStatus(t.profiled_at))}`}>
+                                  {formatRelativeTime(t.profiled_at)}
+                                </span>
+                              )}
                               <ScoreDot score={t.overall_score} />
                             </button>
                           );
@@ -474,7 +496,7 @@ export default function HealthPage() {
                   .sort((a, b) => (a.overall_score ?? 2) - (b.overall_score ?? 2))
                   .map((t, i) => (
                   <tr key={t.id}
-                    onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name }); setActivePill('detail'); }}
+                    onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, displayName: t.display_name || undefined, productTableId: t.product_table_id ?? undefined }); setActivePill('detail'); }}
                     className={`cursor-pointer transition-colors hover:bg-white/40 border-b border-white/40 last:border-0 ${i % 2 === 1 ? 'bg-white/30' : 'bg-white/60'}`}>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
@@ -506,7 +528,7 @@ export default function HealthPage() {
       ) : selectedTable ? (
         /* Detail view — renders QualityPanel for selected table */
         <div className="p-4">
-          <QualityPanel connId={selectedTable.connId} tableName={selectedTable.tableName} />
+          <QualityPanel connId={selectedTable.connId} tableName={selectedTable.tableName} displayName={selectedTable.displayName} productTableId={selectedTable.productTableId ?? undefined} />
         </div>
       ) : (
         <div className="flex items-center justify-center h-64 text-on-surface-variant text-sm">

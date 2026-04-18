@@ -30,6 +30,8 @@ export async function ensureNeo4jConstraints(): Promise<void> {
         ['KpiDefinition_pgId',     'CREATE CONSTRAINT kpiDefinition_pgId  IF NOT EXISTS FOR (n:KpiDefinition)    REQUIRE n.pgId IS UNIQUE'],
         ['CrossSourceView_pgId',   'CREATE CONSTRAINT crossView_pgId      IF NOT EXISTS FOR (n:CrossSourceView)  REQUIRE n.pgId IS UNIQUE'],
         ['QualityRule_pgId',       'CREATE CONSTRAINT qualityRule_pgId    IF NOT EXISTS FOR (n:QualityRule)      REQUIRE n.pgId IS UNIQUE'],
+        ['ProductTable_pgId',      'CREATE CONSTRAINT productTable_pgId   IF NOT EXISTS FOR (n:ProductTable)     REQUIRE n.pgId IS UNIQUE'],
+        ['ProductColumn_pgId',     'CREATE CONSTRAINT productColumn_pgId  IF NOT EXISTS FOR (n:ProductColumn)    REQUIRE n.pgId IS UNIQUE'],
       ];
 
       // Indexes on tenantId for future multi-tenant Neo4j filtering
@@ -39,6 +41,10 @@ export async function ensureNeo4jConstraints(): Promise<void> {
         'CREATE INDEX kpiDef_tenantId        IF NOT EXISTS FOR (n:KpiDefinition)    ON (n.tenantId)',
         'CREATE INDEX crossView_tenantId     IF NOT EXISTS FOR (n:CrossSourceView)  ON (n.tenantId)',
         'CREATE INDEX qualityRule_tenantId   IF NOT EXISTS FOR (n:QualityRule)      ON (n.tenantId)',
+        'CREATE INDEX productTable_productId IF NOT EXISTS FOR (n:ProductTable)     ON (n.dataProductId)',
+        'CREATE INDEX productColumn_tablePgId IF NOT EXISTS FOR (n:ProductColumn)   ON (n.tablePgId)',
+        'CREATE INDEX productTable_tenantId  IF NOT EXISTS FOR (n:ProductTable)     ON (n.tenantId)',
+        'CREATE INDEX productColumn_tenantId IF NOT EXISTS FOR (n:ProductColumn)    ON (n.tenantId)',
       ];
       for (const [, cypher] of constraints) {
         await session.run(cypher);

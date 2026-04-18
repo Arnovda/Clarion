@@ -34,9 +34,9 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
     : aiDraft ? 'orb-draft'
     : 'orb-neutral';
 
-  const label = current === 'approved' ? 'Approved'
-    : current === 'rejected' ? 'Rejected'
-    : aiDraft ? 'AI Draft' : 'Draft';
+  const label = current === 'approved' ? 'Confirmed'
+    : current === 'rejected' ? 'Flagged'
+    : aiDraft ? 'AI Suggested' : 'Draft';
 
   async function doAction(action: 'approve' | 'reject', rejectReason?: string) {
     setActing(true);
@@ -83,7 +83,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
               onClick={() => doAction('approve')}
               className="text-[10px] px-2.5 py-1 bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-500/20 font-semibold transition-all hover:shadow-glow-green"
             >
-              Approve
+              Confirm
             </button>
           )}
           {current !== 'rejected' && (
@@ -91,7 +91,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
               onClick={() => setShowReject(!showReject)}
               className="text-[10px] px-2.5 py-1 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 font-semibold transition-all hover:shadow-glow-red"
             >
-              Reject
+              Flag Issue
             </button>
           )}
         </div>
@@ -109,7 +109,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
           <input
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Rejection reason..."
+            placeholder="What's the issue?"
             className="flex-1 bg-red-500/5 border border-red-200/50 rounded-lg px-3 py-1.5 text-xs text-slate-700 placeholder:text-red-300 focus:outline-none focus:ring-1 focus:ring-red-400/50"
           />
           <button

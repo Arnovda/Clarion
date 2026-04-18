@@ -441,7 +441,7 @@ function RelationshipEdge({
               >&#10003;</button>
               <button
                 onClick={(e) => { e.stopPropagation(); data?.onDelete(data.relId); }}
-                title="Reject relationship"
+                title="Flag issue with relationship"
                 style={{
                   width: 24, height: 24, borderRadius: '50%', border: '2px solid #dc2626',
                   background: '#fff', color: '#dc2626', fontSize: 14, fontWeight: 700,
@@ -1829,7 +1829,7 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <span style={{ fontSize: 16 }}>⚡</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>Review AI Drafts</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>Review AI Suggestions</span>
                   <span style={{
                     fontSize: 11, fontWeight: 600, color: '#64748b',
                     background: '#f1f5f9', padding: '2px 8px', borderRadius: 99,
