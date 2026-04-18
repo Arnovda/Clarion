@@ -22,6 +22,12 @@ warehouse/
 # Claude Code internal files
 .claude/
 
+# Logs
+*.log
+
+# Terraform plans (binary, regenerable)
+*.tfplan
+
 # OS
 .DS_Store
 Thumbs.db
