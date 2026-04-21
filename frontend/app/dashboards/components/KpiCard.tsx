@@ -1,5 +1,6 @@
 'use client';
 
+import { TrendingUp, TrendingDown } from 'lucide-react';
 import type { WidgetExecutionProps } from '../types';
 import { AnimatedNumber } from './AnimatedNumber';
 import { Sparkline } from './Sparkline';
@@ -7,7 +8,7 @@ import { PALETTE } from '../utils/chart-theme';
 import { formatValue } from '../utils/format';
 import { WidgetSkeleton, WidgetError } from './WidgetSkeletons';
 
-export function KpiCard({ spec, data }: WidgetExecutionProps) {
+export function KpiCard({ spec, data, onDrillDetail }: WidgetExecutionProps) {
   if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
 
@@ -34,14 +35,7 @@ export function KpiCard({ spec, data }: WidgetExecutionProps) {
     }
   }
 
-  // Background tint class based on delta
-  const tintClass = isPositive
-    ? 'kpi-positive'
-    : isNegative
-      ? 'kpi-negative'
-      : 'kpi-neutral';
-
-  // Sparkline and accent color based on delta
+  // Sparkline accent follows delta direction (neutral ocean when unknown)
   const accentColor = isPositive
     ? PALETTE.positive.solid
     : isNegative
@@ -49,21 +43,15 @@ export function KpiCard({ spec, data }: WidgetExecutionProps) {
       : PALETTE.series[0].solid;
 
   return (
-    <div className={`${tintClass} -m-5 p-5 relative overflow-hidden`}>
-      {/* Decorative background circle */}
-      <div
-        className="absolute -right-6 -top-6 w-28 h-28 rounded-full opacity-[0.04]"
-        style={{ background: accentColor }}
-      />
-
+    <div>
       {/* Title */}
-      <p className="text-[11px] text-slate-500 uppercase tracking-widest mb-2 font-semibold">
+      <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-3">
         {spec.title}
       </p>
 
       {/* Big number — the hero element */}
       <div className="flex items-end gap-3">
-        <div className="text-[2.25rem] leading-none font-extrabold text-slate-900 tracking-tight tabular-nums">
+        <div className="font-display text-[36px] leading-none font-medium text-ink tracking-[-0.02em] tabular-nums">
           {!isNaN(numVal) ? (
             <AnimatedNumber value={numVal} format={spec.format} />
           ) : (
@@ -73,50 +61,54 @@ export function KpiCard({ spec, data }: WidgetExecutionProps) {
 
         {/* Sparkline next to the number */}
         {trendData && trendData.length > 1 && (
-          <div className="mb-1.5 opacity-80">
+          <div className="mb-1.5 opacity-90">
             <Sparkline data={trendData} color={accentColor} width={80} height={28} />
           </div>
         )}
       </div>
 
-      {/* Delta badge — prominent pill */}
+      {/* Drill-to-detail link */}
+      {onDrillDetail && spec.drillDownSql && (
+        <button
+          onClick={onDrillDetail}
+          className="mt-2 text-[10px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors"
+        >
+          View detail →
+        </button>
+      )}
+
+      {/* Delta + comparison label */}
       <div className="mt-3 flex items-center gap-2">
         {delta !== null ? (
           <>
             <span
-              className={`inline-flex items-center gap-1 text-xs font-bold px-2.5 py-1 rounded-full ${
+              className={`inline-flex items-center gap-1 text-[11px] font-mono tracking-[0.06em] uppercase px-2 py-0.5 rounded border ${
                 isPositive
-                  ? 'bg-emerald-500/15 text-emerald-700'
+                  ? 'bg-ok-soft text-ok border-line'
                   : isNegative
-                    ? 'bg-red-500/15 text-red-600'
-                    : 'bg-slate-200/60 text-slate-500'
+                    ? 'bg-err-soft text-err border-line'
+                    : 'bg-softer text-muted border-line'
               }`}
             >
               {isPositive ? (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 12 12" fill="currentColor">
-                  <path d="M6 2l4 5H2l4-5z" />
-                </svg>
+                <TrendingUp className="w-3 h-3" strokeWidth={2.5} />
               ) : isNegative ? (
-                <svg className="w-3.5 h-3.5" viewBox="0 0 12 12" fill="currentColor">
-                  <path d="M6 10L2 5h8l-4 5z" />
-                </svg>
+                <TrendingDown className="w-3 h-3" strokeWidth={2.5} />
               ) : (
                 <span className="text-[10px]">—</span>
               )}
               {Math.abs(delta).toFixed(1)}%
             </span>
-            <span className="text-[11px] text-slate-400 font-medium">{deltaLabel}</span>
+            <span className="text-[11px] text-muted">{deltaLabel}</span>
           </>
         ) : (
-          <>
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
-              <span
-                className="w-2 h-2 rounded-full animate-pulse"
-                style={{ background: accentColor }}
-              />
-              Current period
-            </span>
-          </>
+          <span className="inline-flex items-center gap-1.5 text-[11px] text-muted">
+            <span
+              className="w-1.5 h-1.5 rounded-full animate-pulse"
+              style={{ background: accentColor }}
+            />
+            Current period
+          </span>
         )}
       </div>
     </div>

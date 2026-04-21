@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import AppShell from '@/components/layout/AppShell';
+import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
-import { isAdmin } from '@/lib/auth';
-import { useRouter } from 'next/navigation';
+import { useToast } from '@/components/ui/Toast';
 
 interface User {
   id: number;
@@ -20,25 +20,24 @@ const ROLES = ['admin', 'analyst', 'viewer'] as const;
 
 function RoleBadge({ role }: { role: string }) {
   const colors: Record<string, string> = {
-    admin:   'bg-primary/10 text-primary',
-    analyst: 'bg-cyan-500/10 text-cyan-700',
-    viewer:  'bg-amber-500/10 text-amber-700',
+    admin:   'bg-ocean-softer text-ocean',
+    analyst: 'bg-ai-soft text-ai',
+    viewer:  'bg-softer text-muted',
   };
   return (
-    <span className={`text-label-md px-2.5 py-0.5 rounded-pill font-semibold ${colors[role] ?? 'bg-surface-container text-on-surface-variant'}`}>
+    <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${colors[role] ?? 'bg-softer text-muted'}`}>
       {role}
     </span>
   );
 }
 
-const inputCls = "w-full px-3.5 py-2.5 rounded-xl text-body-md bg-surface-container-low text-on-surface placeholder:text-on-surface-variant/40 border-b-2 border-transparent focus:border-primary focus:outline-none transition-colors";
+const inputCls = 'w-full px-3 py-2 rounded-md text-[13px] bg-raised border border-line text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors';
 
-export default function UsersPage() {
-  const router = useRouter();
+function UsersPageInner() {
+  const toast = useToast();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [activePill, setActivePill] = useState('members');
-  const [showInvite, setShowInvite] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState<string>('analyst');
@@ -48,9 +47,8 @@ export default function UsersPage() {
   const [editRole, setEditRole] = useState('');
 
   useEffect(() => {
-    if (!isAdmin()) { router.push('/query'); return; }
     loadUsers();
-  }, [router]);
+  }, []);
 
   async function loadUsers() {
     try {
@@ -75,84 +73,112 @@ export default function UsersPage() {
   }
 
   async function handleRoleChange(userId: number, role: string) {
-    try { await api.patch(`/users/${userId}`, { role }); setEditingUser(null); loadUsers(); }
-    catch { alert('Failed to update role'); }
+    try {
+      await api.patch(`/users/${userId}`, { role });
+      setEditingUser(null);
+      loadUsers();
+      toast.success('Role updated');
+    } catch (err) {
+      toast.error('Could not update role', { description: extractError(err) });
+    }
   }
 
   async function handleDeactivate(userId: number) {
     if (!confirm('Deactivate this user? They will lose access immediately.')) return;
-    try { await api.patch(`/users/${userId}/deactivate`); loadUsers(); }
-    catch { alert('Failed to deactivate user'); }
+    try {
+      await api.patch(`/users/${userId}/deactivate`);
+      loadUsers();
+      toast.success('User deactivated');
+    } catch (err) {
+      toast.error('Could not deactivate user', { description: extractError(err) });
+    }
   }
 
   async function handleReactivate(userId: number) {
-    try { await api.patch(`/users/${userId}/reactivate`); loadUsers(); }
-    catch { alert('Failed to reactivate user'); }
+    try {
+      await api.patch(`/users/${userId}/reactivate`);
+      loadUsers();
+      toast.success('User reactivated');
+    } catch (err) {
+      toast.error('Could not reactivate user', { description: extractError(err) });
+    }
   }
 
   const activeUsers = users.filter((u) => u.is_active);
   const deactivatedUsers = users.filter((u) => !u.is_active);
 
   const contextPanel = (
-    <div className="p-4 space-y-4">
-      <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider">Team</div>
-      {activeUsers.map((u) => (
-        <div key={u.id} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg hover:bg-surface-container transition-colors">
-          <div className="w-7 h-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-label-md font-semibold">
-            {u.display_name.charAt(0).toUpperCase()}
+    <div className="flex flex-col h-full">
+      <div className="px-4 pt-5 pb-3">
+        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Team</p>
+      </div>
+      <div className="flex-1 overflow-y-auto scrollbar-thin pb-2">
+        {activeUsers.map((u) => (
+          <div key={u.id} className="flex items-center gap-2.5 px-4 py-2 border-l-2 border-transparent hover:bg-softer transition-colors">
+            <div className="w-7 h-7 rounded-full bg-ocean-softer text-ocean flex items-center justify-center text-[11px] font-medium shrink-0">
+              {u.display_name.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] text-ink-2 truncate leading-snug">{u.display_name}</p>
+              <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-0.5">{u.role}</p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="text-body-sm font-medium text-on-surface truncate">{u.display_name}</p>
-            <p className="text-label-sm text-on-surface-variant/50">{u.role}</p>
-          </div>
-        </div>
-      ))}
+        ))}
+        {activeUsers.length === 0 && !loading && (
+          <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted-2 text-center mt-6 px-4">No team members yet</p>
+        )}
+      </div>
     </div>
   );
 
   return (
     <AppShell
-      title="Team"
-      subtitle={`${activeUsers.length} active member${activeUsers.length !== 1 ? 's' : ''}`}
       contextPanel={contextPanel}
       pills={[{ key: 'members', label: 'Members' }, { key: 'invites', label: 'Invites' }]}
       activePill={activePill}
       onPillChange={setActivePill}
     >
       {loading ? (
-        <div className="p-8 text-on-surface-variant">Loading...</div>
+        <div className="p-8 text-[11px] font-mono tracking-[0.08em] uppercase text-muted">Loading…</div>
       ) : activePill === 'members' ? (
-        <div className="p-6 max-w-4xl">
+        <div className="max-w-4xl mx-auto px-6 pt-10 pb-10 space-y-8">
+          <header>
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Team</p>
+            <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+              {activeUsers.length} active member{activeUsers.length !== 1 ? 's' : ''}
+            </h1>
+          </header>
+
           {/* User table */}
-          <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">
+          <div className="bg-raised border border-line rounded-lg overflow-hidden">
             <table className="w-full">
               <thead>
-                <tr className="bg-surface-container-low">
-                  <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">User</th>
-                  <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Role</th>
-                  <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Joined</th>
-                  <th className="text-right px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Actions</th>
+                <tr className="bg-softer border-b border-line">
+                  <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">User</th>
+                  <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Role</th>
+                  <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Joined</th>
+                  <th className="text-right px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {activeUsers.map((user, i) => (
-                  <tr key={user.id} className={`transition-colors hover:bg-surface-container-low ${i % 2 === 1 ? 'bg-surface/50' : ''}`}>
-                    <td className="px-5 py-3.5">
+                {activeUsers.map((user) => (
+                  <tr key={user.id} className="border-b border-line last:border-b-0 transition-colors hover:bg-softer">
+                    <td className="px-5 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center text-body-sm font-semibold">
+                        <div className="w-8 h-8 rounded-full bg-ocean-softer text-ocean flex items-center justify-center text-[12px] font-medium">
                           {user.display_name.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <p className="text-body-sm font-semibold text-on-surface">{user.display_name}</p>
-                          <p className="text-label-sm text-on-surface-variant">{user.email}</p>
+                          <p className="text-[13px] font-medium text-ink">{user.display_name}</p>
+                          <p className="text-[11px] text-muted">{user.email}</p>
                         </div>
                       </div>
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-3">
                       {editingUser === user.id ? (
                         <select value={editRole} onChange={(e) => handleRoleChange(user.id, e.target.value)}
                           onBlur={() => setEditingUser(null)} autoFocus
-                          className="text-body-sm bg-surface-container-low rounded-lg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-cyan-400">
+                          className="text-[12px] bg-raised border border-line rounded-md px-2 py-1 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30">
                           {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
                         </select>
                       ) : (
@@ -161,12 +187,12 @@ export default function UsersPage() {
                         </button>
                       )}
                     </td>
-                    <td className="px-5 py-3.5 text-body-sm text-on-surface-variant">
+                    <td className="px-5 py-3 text-[12px] text-ink-3">
                       {new Date(user.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
                     </td>
-                    <td className="px-5 py-3.5 text-right">
+                    <td className="px-5 py-3 text-right">
                       <button onClick={() => handleDeactivate(user.id)}
-                        className="text-label-md text-error/60 hover:text-error font-medium transition-colors">
+                        className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-err transition-colors">
                         Deactivate
                       </button>
                     </td>
@@ -178,28 +204,28 @@ export default function UsersPage() {
 
           {/* Deactivated users */}
           {deactivatedUsers.length > 0 && (
-            <div className="mt-8">
-              <h2 className="text-label-lg font-semibold text-on-surface-variant mb-3">Deactivated Users</h2>
-              <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden opacity-60">
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-3">Deactivated</p>
+              <div className="bg-raised border border-line rounded-lg overflow-hidden opacity-60">
                 <table className="w-full">
                   <tbody>
                     {deactivatedUsers.map((user) => (
-                      <tr key={user.id}>
+                      <tr key={user.id} className="border-b border-line last:border-b-0">
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-full bg-surface-container text-on-surface-variant flex items-center justify-center text-body-sm font-medium">
+                            <div className="w-8 h-8 rounded-full bg-softer border border-line text-muted flex items-center justify-center text-[12px]">
                               {user.display_name.charAt(0).toUpperCase()}
                             </div>
                             <div>
-                              <p className="text-body-sm text-on-surface-variant">{user.display_name}</p>
-                              <p className="text-label-sm text-on-surface-variant/50">{user.email}</p>
+                              <p className="text-[13px] text-ink-2">{user.display_name}</p>
+                              <p className="text-[11px] text-muted">{user.email}</p>
                             </div>
                           </div>
                         </td>
                         <td className="px-5 py-3"><RoleBadge role={user.role} /></td>
                         <td className="px-5 py-3 text-right">
                           <button onClick={() => handleReactivate(user.id)}
-                            className="text-label-md text-secondary font-medium hover:text-primary transition-colors">
+                            className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors">
                             Reactivate
                           </button>
                         </td>
@@ -213,45 +239,50 @@ export default function UsersPage() {
         </div>
       ) : (
         /* Invites pill */
-        <div className="p-6 max-w-2xl">
-          <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-6">
-            <h2 className="font-headline text-headline-sm font-bold text-on-surface mb-5">Invite a new team member</h2>
+        <div className="max-w-2xl mx-auto px-6 pt-10 pb-10">
+          <header className="mb-6">
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Invites</p>
+            <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+              Invite a new team member
+            </h1>
+          </header>
+
+          <div className="bg-raised border border-line rounded-lg p-6">
             <form onSubmit={handleInvite} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-label-lg text-on-surface mb-1.5">Email</label>
+                  <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Email</label>
                   <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
                     placeholder="colleague@company.com" required className={inputCls} />
                 </div>
                 <div>
-                  <label className="block text-label-lg text-on-surface mb-1.5">Display Name</label>
+                  <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
                   <input type="text" value={inviteName} onChange={(e) => setInviteName(e.target.value)}
                     placeholder="Jan Janssens" required className={inputCls} />
                 </div>
               </div>
               <div>
-                <label className="block text-label-lg text-on-surface mb-1.5">Role</label>
-                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}
-                  className={inputCls}>
+                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Role</label>
+                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)} className={inputCls}>
                   <option value="admin">Admin — full access</option>
                   <option value="analyst">Analyst — query, dashboards, products</option>
                   <option value="viewer">Viewer — ask questions, view dashboards</option>
                 </select>
               </div>
               <button type="submit" disabled={inviting}
-                className="px-5 py-2.5 gradient-primary text-on-primary rounded-xl text-title-md hover:opacity-90 disabled:opacity-50 transition-all">
-                {inviting ? 'Sending...' : 'Send Invite'}
+                className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50 transition-colors">
+                {inviting ? 'Sending…' : 'Send invite'}
               </button>
             </form>
 
             {inviteResult?.url && (
-              <div className="mt-5 p-4 bg-green-50 rounded-xl text-body-sm text-green-800">
-                <p className="font-semibold">Invite created!</p>
-                <code className="block mt-2 text-label-sm bg-green-100 p-2 rounded-lg break-all">{inviteResult.url}</code>
+              <div className="mt-5 p-4 bg-ok-soft border border-line rounded-md text-[12px] text-ink-2">
+                <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-ok mb-1">Invite created</p>
+                <code className="block mt-2 text-[11px] font-mono bg-raised border border-line text-ink-3 p-2 rounded break-all">{inviteResult.url}</code>
               </div>
             )}
             {inviteResult?.error && (
-              <div className="mt-5 p-4 bg-error-container/30 rounded-xl text-body-sm text-error">
+              <div className="mt-5 p-4 bg-err-soft border border-line rounded-md text-[12px] text-err">
                 {inviteResult.error}
               </div>
             )}
@@ -259,5 +290,18 @@ export default function UsersPage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+function extractError(err: unknown): string {
+  const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  return e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? 'Please try again.';
+}
+
+export default function UsersPage() {
+  return (
+    <RequireRole roles={['admin']}>
+      <UsersPageInner />
+    </RequireRole>
   );
 }

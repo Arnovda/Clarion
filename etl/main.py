@@ -9,7 +9,7 @@ import re
 import sqlite3
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from contextlib import contextmanager
 
 import pandas as pd
@@ -385,7 +385,10 @@ def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int
     storage_opts = _azure_storage_options() if USE_BLOB else None
 
     if is_incremental and _is_existing_delta(delta_path):
+        # schema_mode="merge" lets the Delta write add new columns from the
+        # source without a manual overwrite. Existing columns keep their type.
         write_deltalake(delta_path, arrow_table, mode="append",
+                        schema_mode="merge",
                         storage_options=storage_opts)
         dt = DeltaTable(delta_path, storage_options=storage_opts)
         row_count = len(dt.to_pandas())
@@ -394,6 +397,42 @@ def _write_delta(df: pd.DataFrame, delta_path: str, is_incremental: bool) -> int
                         schema_mode="overwrite", storage_options=storage_opts)
 
     return row_count
+
+
+# ---------------------------------------------------------------------------
+# Delta hygiene — compaction + vacuum
+# ---------------------------------------------------------------------------
+
+def _optimize_and_vacuum(delta_path: str, retention_hours: int = 168) -> Dict[str, Any]:
+    """Compact small files via Delta's OPTIMIZE and purge old versions via VACUUM.
+
+    retention_hours: Delta default is 168h (7d). VACUUM errors if you ask for
+    less than the configured retention unless you enforce override — we stay
+    at the safe default.
+    """
+    storage_opts = _azure_storage_options() if USE_BLOB else None
+    dt = DeltaTable(delta_path, storage_options=storage_opts)
+
+    compact_result: Dict[str, Any] = {}
+    try:
+        compact_result = dt.optimize.compact()
+    except Exception as e:  # noqa: BLE001 — surface as data, not failure
+        compact_result = {"error": str(e)}
+
+    try:
+        # `dry_run=False` is required to actually delete old Parquet files.
+        vacuum_result = dt.vacuum(retention_hours=retention_hours, dry_run=False,
+                                  enforce_retention_duration=True)
+    except Exception as e:  # noqa: BLE001
+        vacuum_result = {"error": str(e)}
+
+    return {
+        "delta_path": delta_path,
+        "compact": compact_result,
+        "vacuum_files_removed": (
+            len(vacuum_result) if isinstance(vacuum_result, list) else vacuum_result
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +537,89 @@ def ingest_tables(req: IngestRequest):
                 ))
 
     return IngestResponse(ok=True, warehouse_path=wh_path, results=results)
+
+
+class DbtRunRequest(BaseModel):
+    project_dir: str
+    target: str = "dev"
+    select: Optional[str] = None
+    full_refresh: bool = False
+    # Optional path to the DuckDB state file. When provided, /dbt/test
+    # will fetch failure sample rows from dbt_test__audit tables.
+    state_path: Optional[str] = None
+
+
+@app.post("/dbt/run")
+def dbt_run(req: DbtRunRequest):
+    """Run `dbt run` against a dbt project already generated on disk.
+
+    The backend `dbtProjectBuilder` writes the project to a shared warehouse
+    path; both the backend and ETL containers mount the warehouse volume, so
+    `req.project_dir` is reachable from here.
+    """
+    from dbt_runner import run_dbt_project
+    return run_dbt_project(
+        req.project_dir,
+        target=req.target,
+        select=req.select,
+        full_refresh=req.full_refresh,
+    )
+
+
+@app.post("/dbt/test")
+def dbt_test(req: DbtRunRequest):
+    """Run `dbt test` (quality tests) against a dbt project on disk."""
+    from dbt_runner import run_dbt_test
+    return run_dbt_test(req.project_dir, target=req.target, state_path=req.state_path)
+
+
+class OptimizeRequest(BaseModel):
+    connection_id: int
+    tenant_id: Optional[int] = None
+    table_names: Optional[List[str]] = None
+    retention_hours: int = 168  # Delta default: 7 days
+
+
+@app.post("/optimize")
+def optimize_warehouse(req: OptimizeRequest):
+    """Run OPTIMIZE (file compaction) + VACUUM (remove old Parquet files past
+    retention) on one connection's Delta tables.
+
+    If `table_names` is omitted, operates on every Delta table in the warehouse.
+    Returns a per-table report; the endpoint itself never fails the whole call
+    if a single table errors — the per-table error is surfaced in the response.
+    """
+    wh_path = _warehouse_path(req.tenant_id, req.connection_id)
+
+    if USE_BLOB:
+        # In blob mode we need the explicit table list from the caller.
+        if not req.table_names:
+            raise HTTPException(
+                status_code=400,
+                detail="table_names required in blob/Azure mode",
+            )
+        targets = [f"{wh_path}/{t}" for t in req.table_names]
+    else:
+        if not os.path.isdir(wh_path):
+            return {"ok": True, "results": [], "warehouse_path": wh_path}
+        if req.table_names:
+            targets = [os.path.join(wh_path, t) for t in req.table_names]
+        else:
+            targets = [
+                os.path.join(wh_path, entry)
+                for entry in sorted(os.listdir(wh_path))
+                if os.path.isdir(os.path.join(wh_path, entry))
+                and os.path.exists(os.path.join(wh_path, entry, "_delta_log"))
+            ]
+
+    results = []
+    for tp in targets:
+        try:
+            results.append(_optimize_and_vacuum(tp, retention_hours=req.retention_hours))
+        except Exception as e:  # noqa: BLE001
+            results.append({"delta_path": tp, "error": str(e)})
+
+    return {"ok": True, "results": results, "warehouse_path": wh_path}
 
 
 @app.get("/tables/{connection_id}")

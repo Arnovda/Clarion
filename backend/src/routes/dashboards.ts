@@ -2,12 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
-import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, SqlDialect } from '../ai/AIService';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
 import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBuilder';
+import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 
 const router = Router();
 
@@ -85,6 +86,24 @@ function fixDuckDbDialect(sql: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Helper — resolve filter placeholders in widget SQL and normalise dialect
+// ---------------------------------------------------------------------------
+
+function resolveWidgetFilters(sql: string, filterValues: Record<string, string>): string {
+  let resolved = sql;
+  for (const [key, value] of Object.entries(filterValues)) {
+    const replacement = value || (key.endsWith('_from') ? '1900-01-01' : key.endsWith('_to') ? '2099-12-31' : 'all');
+    resolved = resolved.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), replacement);
+  }
+  return fixDuckDbDialect(
+    resolved
+      .replace(/\{\{[^}]+_from\}\}/g, '1900-01-01')
+      .replace(/\{\{[^}]+_to\}\}/g, '2099-12-31')
+      .replace(/\{\{[^}]+\}\}/g, 'all'),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Helper — execute all widgets with default filters, return results for validation
 // ---------------------------------------------------------------------------
 
@@ -107,37 +126,36 @@ async function executeSpecForValidation(
     : await createConnector(connection);
   await connector.connect();
 
-  const results: WidgetExecutionResult[] = [];
-
   try {
-    for (const widget of spec.widgets) {
-      const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
-      try {
-        const result = await connector.executeQuery(resolvedSql);
-        const rows = result.rows as Record<string, unknown>[];
-        results.push({
-          id: widget.id,
-          title: widget.title,
-          type: widget.type,
-          rowCount: rows.length,
-          sampleRows: rows.slice(0, 3),
-        });
-      } catch (err: unknown) {
-        results.push({
-          id: widget.id,
-          title: widget.title,
-          type: widget.type,
-          rowCount: 0,
-          error: err instanceof Error ? err.message : String(err),
-          sampleRows: [],
-        });
-      }
-    }
+    const results = await Promise.all(
+      spec.widgets.map(async (widget) => {
+        const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
+        try {
+          const result = await connector.executeQuery(resolvedSql);
+          const rows = result.rows as Record<string, unknown>[];
+          return {
+            id: widget.id,
+            title: widget.title,
+            type: widget.type,
+            rowCount: rows.length,
+            sampleRows: rows.slice(0, 3),
+          } satisfies WidgetExecutionResult;
+        } catch (err: unknown) {
+          return {
+            id: widget.id,
+            title: widget.title,
+            type: widget.type,
+            rowCount: 0,
+            error: err instanceof Error ? err.message : String(err),
+            sampleRows: [],
+          } satisfies WidgetExecutionResult;
+        }
+      }),
+    );
+    return results;
   } finally {
     connector.disconnect();
   }
-
-  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +342,79 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
           ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
           : 'This chart could not load data. Try regenerating the dashboard.';
       res.json({ ok: false, error: friendly });
+    } finally {
+      connector.disconnect();
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/batch-execute — run all widget SQLs in one request
+// ---------------------------------------------------------------------------
+
+router.post('/batch-execute', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, widgets } = req.body as {
+      connectionId: number;
+      widgets: Array<{ id: string; sql: string; filterValues: Record<string, string> }>;
+    };
+
+    if (!Array.isArray(widgets) || widgets.length === 0) {
+      res.status(400).json({ ok: false, error: 'widgets array required' });
+      return;
+    }
+
+    const tenantId = req.user!.tenantId;
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const connector = productPath
+      ? await createProductConnector(productPath, connection.id, tenantId)
+      : await createConnector(connection);
+    await connector.connect();
+
+    try {
+      const results: Record<string, { rows?: Record<string, unknown>[]; error?: string }> = {};
+
+      await Promise.all(
+        widgets.map(async ({ id, sql, filterValues }) => {
+          const resolvedSql = resolveWidgetFilters(sql, filterValues ?? {});
+
+          const cached = tenantId ? getWidgetCache(tenantId, resolvedSql) : null;
+          if (cached) {
+            results[id] = { rows: cached };
+            return;
+          }
+
+          try {
+            const result = await connector.executeQuery(resolvedSql);
+            const rows = result.rows as Record<string, unknown>[];
+            if (tenantId) putWidgetCache(tenantId, resolvedSql, rows);
+            results[id] = { rows };
+          } catch (err: unknown) {
+            const raw = err instanceof Error ? err.message : String(err);
+            const friendly = raw.includes('does not exist')
+              ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
+              : raw.includes('Serialization')
+                ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
+                : 'This chart could not load data. Try regenerating the dashboard.';
+            results[id] = { error: friendly };
+          }
+        }),
+      );
+
+      res.json({ ok: true, data: { results } });
     } finally {
       connector.disconnect();
     }
@@ -961,6 +1052,175 @@ router.get('/:id/export/xlsx', requireAuth, async (req: Request, res: Response, 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(xlsx);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /investigate  — SSE: plan + execute + synthesize causal investigation
+// ---------------------------------------------------------------------------
+
+router.post('/investigate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, widgetTitle, widgetSql, widgetRows, question, filterValues } = req.body as {
+      connectionId: number;
+      widgetTitle: string;
+      widgetSql: string;
+      widgetRows: Record<string, unknown>[];
+      question: string;
+      filterValues?: Record<string, string>;
+    };
+
+    if (!widgetTitle || !widgetSql || !question) {
+      res.status(400).json({ ok: false, error: 'widgetTitle, widgetSql, and question are required' });
+      return;
+    }
+
+    // Set up SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    function emit(obj: Record<string, unknown>) {
+      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    }
+
+    try {
+      // Step 1 — Plan
+      emit({ type: 'status', text: 'Planning investigation…' });
+      const plan = await planInvestigation(widgetTitle, widgetSql, widgetRows ?? [], question);
+      emit({ type: 'hypothesis', text: plan.hypothesis });
+
+      if (!plan.queries.length) {
+        emit({ type: 'conclusion', text: 'Not enough context to run diagnostic queries.' });
+        emit({ type: 'done' });
+        res.end();
+        return;
+      }
+
+      // Step 2 — Connect to data source
+      const tenantId = req.user!.tenantId;
+      const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+        if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+        const conn = await trx('connections').where({ id: connectionId }).first();
+        const pp = await getProductWarehousePath(connectionId, trx);
+        return { connection: conn, productPath: pp };
+      });
+
+      if (!connection) {
+        emit({ type: 'error', text: 'Connection not found.' });
+        emit({ type: 'done' });
+        res.end();
+        return;
+      }
+
+      const connector = productPath
+        ? await createProductConnector(productPath, connection.id, tenantId)
+        : await createConnector(connection);
+      await connector.connect();
+
+      // Step 3 — Execute diagnostic queries
+      const diagnosticResults: { label: string; rows: Record<string, unknown>[]; error?: string }[] = [];
+
+      try {
+        await Promise.all(
+          plan.queries.map(async ({ label, sql }) => {
+            emit({ type: 'querying', label });
+            try {
+              const resolved = resolveWidgetFilters(sql, filterValues ?? {});
+              const result = await connector.executeQuery(resolved);
+              const rows = (result.rows as Record<string, unknown>[]).slice(0, 20);
+              diagnosticResults.push({ label, rows });
+              emit({ type: 'result', label, rows });
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              diagnosticResults.push({ label, error: msg });
+              emit({ type: 'result', label, rows: [], error: msg });
+            }
+          }),
+        );
+      } finally {
+        connector.disconnect();
+      }
+
+      // Step 4 — Synthesize
+      emit({ type: 'status', text: 'Synthesizing findings…' });
+      const conclusion = await synthesizeInvestigation(question, plan.hypothesis, diagnosticResults);
+      emit({ type: 'conclusion', text: conclusion });
+      emit({ type: 'done' });
+      res.end();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Investigation failed.';
+      emit({ type: 'error', text: msg });
+      emit({ type: 'done' });
+      res.end();
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /narrate  — AI-written executive narrative for the full dashboard
+// ---------------------------------------------------------------------------
+
+router.post('/narrate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { dashboardTitle, widgets } = req.body as {
+      dashboardTitle: string;
+      widgets: { title: string; type: string; rows: Record<string, unknown>[] }[];
+    };
+    if (!dashboardTitle || !Array.isArray(widgets) || widgets.length === 0) {
+      res.status(400).json({ ok: false, error: 'dashboardTitle and widgets are required' });
+      return;
+    }
+    const narrative = await narrateDashboard(dashboardTitle, widgets);
+    res.json({ ok: true, data: { narrative } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /explain-widget  — 2-sentence plain-language explanation for a widget
+// ---------------------------------------------------------------------------
+
+router.post('/explain-widget', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { title, type, rows } = req.body as {
+      title: string;
+      type: string;
+      rows: Record<string, unknown>[];
+    };
+    if (!title || !type || !Array.isArray(rows)) {
+      res.status(400).json({ ok: false, error: 'title, type, and rows are required' });
+      return;
+    }
+    const explanation = await explainWidget(title, type, rows);
+    res.json({ ok: true, data: { explanation } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /insights  — 3 automated observations across all widgets in a dashboard
+// ---------------------------------------------------------------------------
+
+router.post('/insights', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { dashboardTitle, widgets } = req.body as {
+      dashboardTitle: string;
+      widgets: { title: string; type: string; rows: Record<string, unknown>[] }[];
+    };
+    if (!dashboardTitle || !Array.isArray(widgets) || widgets.length === 0) {
+      res.status(400).json({ ok: false, error: 'dashboardTitle and widgets are required' });
+      return;
+    }
+    const insights = await generateDashboardInsights(dashboardTitle, widgets);
+    res.json({ ok: true, data: { insights } });
   } catch (err) {
     next(err);
   }

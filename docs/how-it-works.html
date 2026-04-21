@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DataBridge — How It Works</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', fontFamily: 'Source Serif 4, Georgia, serif', flowchart: { curve: 'basis' } });
+</script>
+<style>
+  @page { size: A4; margin: 22mm 18mm; }
+  html { font-size: 10.5pt; }
+  body {
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+    color: #0f1a22;
+    line-height: 1.55;
+    max-width: none;
+    margin: 0;
+  }
+  .mono, code, pre, kbd { font-family: 'Geist Mono', Menlo, Consolas, monospace; }
+  h1, h2, h3, h4 { font-family: 'Source Serif 4', Georgia, serif; color: #0f1a22; line-height: 1.2; }
+  h1 { font-size: 34pt; font-weight: 500; letter-spacing: -0.02em; margin: 0 0 8pt 0; }
+  h2 { font-size: 20pt; font-weight: 500; letter-spacing: -0.015em; margin: 28pt 0 10pt 0; padding-top: 6pt; border-top: 1px solid #d0d5da; }
+  h3 { font-size: 14pt; font-weight: 500; margin: 20pt 0 6pt 0; }
+  h4 { font-size: 11pt; font-weight: 600; margin: 14pt 0 4pt 0; text-transform: uppercase; letter-spacing: 0.08em; color: #334049; font-family: 'Geist Mono', monospace; }
+  p { margin: 0 0 8pt 0; }
+  ul, ol { margin: 4pt 0 8pt 0; padding-left: 18pt; }
+  li { margin: 2pt 0; }
+  strong { font-weight: 600; color: #0f1a22; }
+  em { color: #334049; }
+  code {
+    background: #edeff2; padding: 1px 5px; border-radius: 3px;
+    font-size: 9.5pt; color: #334049;
+  }
+  pre {
+    background: #0f1a22; color: rgba(255,255,255,0.92);
+    padding: 10pt 14pt; border-radius: 4px;
+    font-size: 8.5pt; line-height: 1.5;
+    overflow-x: auto; margin: 8pt 0;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+  table {
+    border-collapse: collapse; width: 100%;
+    margin: 10pt 0; font-size: 9.5pt;
+  }
+  th, td { border-bottom: 1px solid #d0d5da; padding: 5pt 8pt; text-align: left; vertical-align: top; }
+  th {
+    font-family: 'Geist Mono', monospace; font-size: 8.5pt;
+    font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #6b7680; background: #edeff2; border-bottom: 1px solid #b8bec5;
+  }
+  .cover {
+    height: 100vh; display: flex; flex-direction: column; justify-content: space-between;
+    page-break-after: always;
+  }
+  .cover-top .eyebrow {
+    font-family: 'Geist Mono', monospace; font-size: 10pt; letter-spacing: 0.14em;
+    text-transform: uppercase; color: #6b7680; margin-bottom: 28pt;
+  }
+  .cover-top h1 { font-size: 44pt; line-height: 1.05; }
+  .cover-top h1 em { font-style: italic; color: #334049; font-weight: 400; }
+  .cover-top .subtitle { font-size: 14pt; color: #4a5660; margin-top: 12pt; max-width: 420pt; line-height: 1.45; }
+  .cover-bottom {
+    font-family: 'Geist Mono', monospace; font-size: 9pt;
+    color: #6b7680; letter-spacing: 0.06em;
+  }
+  .cover-bottom .audience { border-top: 1px solid #d0d5da; padding-top: 12pt; margin-top: 18pt; }
+  .cover-bottom strong { color: #0f1a22; font-family: 'Source Serif 4', serif; font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 11pt; }
+  .audience-block {
+    background: #e8f0f3; border-left: 3px solid #164e63;
+    padding: 8pt 12pt; margin: 14pt 0 10pt 0;
+    font-size: 9.5pt;
+  }
+  .audience-block .label {
+    font-family: 'Geist Mono', monospace; font-size: 8pt;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    color: #164e63; font-weight: 600; margin-bottom: 3pt;
+  }
+  .diagram {
+    margin: 14pt 0; padding: 8pt; background: #f8f9fa;
+    border: 1px solid #d0d5da; border-radius: 6px;
+    text-align: center;
+    page-break-inside: avoid;
+  }
+  .diagram .mermaid { font-family: 'Source Serif 4', serif; }
+  blockquote {
+    border-left: 3px solid #c08a5e; padding: 6pt 14pt;
+    margin: 10pt 0; color: #334049; background: #f1e4d6;
+    font-style: italic; font-size: 10pt;
+  }
+  h2, h3, .diagram, table, pre { page-break-inside: avoid; }
+  h2 { page-break-before: always; }
+  h2:first-of-type, .cover + h2 { page-break-before: auto; }
+  .toc { margin: 20pt 0; font-size: 10pt; }
+  .toc ol { list-style: none; padding-left: 0; }
+  .toc ol ol { padding-left: 18pt; }
+  .toc li { padding: 2pt 0; border-bottom: 1px dotted #d0d5da; display: flex; justify-content: space-between; }
+  .toc a { color: #0f1a22; text-decoration: none; }
+  .footnote { font-size: 9pt; color: #6b7680; font-style: italic; margin-top: -4pt; margin-bottom: 10pt; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- COVER                                                              -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<div class="cover">
+  <div class="cover-top">
+    <div class="eyebrow">DataBridge Platform</div>
+    <h1><em>How it</em> works.</h1>
+    <p class="subtitle">A layered guide to what DataBridge does, how users experience it, and what happens under the hood.</p>
+  </div>
+  <div class="cover-bottom">
+    <div class="audience">
+      <p><strong>Part I — At a glance</strong> &nbsp; one-page summary</p>
+      <p><strong>Part II — The user journey</strong> &nbsp; for business users &amp; admins</p>
+      <p><strong>Part III — Under the hood</strong> &nbsp; for data engineers &amp; technical readers</p>
+      <p><strong>Part IV — Architecture</strong> &nbsp; for developers joining the codebase</p>
+      <p style="margin-top: 20pt;">April 2026 — platform v0.2</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART I — AT A GLANCE                                                -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part I &mdash; At a glance</h2>
+
+<div class="audience-block">
+  <div class="label">Audience</div>
+  Anyone. If you only read one section, read this one.
+</div>
+
+<p><strong>DataBridge is an AI-native semantic data platform.</strong> Business users connect their operational databases (their ERP, CRM, whatever they already run), let the AI understand the data, and then ask questions in plain English or build dashboards by describing them. The platform turns natural language into SQL, executes it against a purpose-built analytics warehouse, and renders the answer. No SQL expertise required to use it, no data team required to set it up.</p>
+
+<p>From a user's perspective, there are four moments:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A[1. Connect<br/>a source] --> B[2. AI designs<br/>a data model]
+    B --> C[3. Run the<br/>transformations]
+    C --> D[4. Ask questions<br/>&amp; build dashboards]
+
+    style A fill:#e8f0f3,stroke:#164e63,color:#0f1a22
+    style B fill:#f1e4d6,stroke:#c08a5e,color:#0f1a22
+    style C fill:#e8f0f3,stroke:#164e63,color:#0f1a22
+    style D fill:#dbe8e0,stroke:#3f7a5c,color:#0f1a22
+</pre>
+</div>
+
+<p>Three kinds of users experience the platform differently:</p>
+
+<table>
+  <tr><th>Role</th><th>Sees</th><th>Does</th></tr>
+  <tr>
+    <td><strong>Admin</strong></td>
+    <td>Connection setup, semantic model editor, transformation runs, team management</td>
+    <td>One-time setup; reviews AI-drafted definitions; approves the schema the AI designs</td>
+  </tr>
+  <tr>
+    <td><strong>Analyst</strong></td>
+    <td>Chat, dashboards, notebooks, star-schema diagrams</td>
+    <td>Asks questions, builds dashboards, designs data products alongside the admin</td>
+  </tr>
+  <tr>
+    <td><strong>Viewer</strong></td>
+    <td>Chat, dashboards, reports</td>
+    <td>Consumes — asks questions, views dashboards; can't edit the model</td>
+  </tr>
+</table>
+
+<p>The platform is <strong>multi-tenant</strong> (each company's data is isolated from every other company's) and the AI is <strong>Claude from Anthropic</strong>, used at every stage where understanding or generation of SQL is needed.</p>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART II — USER JOURNEY                                              -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part II &mdash; The user journey</h2>
+
+<div class="audience-block">
+  <div class="label">Audience</div>
+  Business users and admins. No code, no infrastructure talk.
+</div>
+
+<h3>1. Connecting a source</h3>
+
+<p>An admin opens <strong>Sources</strong>, provides connection details for the client's operational database (SQLite, PostgreSQL, MySQL, or SQL Server), and DataBridge tests the connection. Credentials are encrypted at rest with AES-256-GCM before being stored.</p>
+
+<p>Once connected, the admin clicks <strong>Profile</strong>. In the background, DataBridge reads every table and column in the source, runs statistical analysis (null rates, distinct values, minimum/maximum), then asks Claude to generate plain-English descriptions of every table and column. The admin gets a ready-to-review <em>data dictionary</em>, usually within a minute or two.</p>
+
+<p>The admin then opens <strong>Semantics</strong> to read through the AI's draft, correct anything that's wrong, and confirm. This is the one-time upfront cost. After this, the platform knows what the data <em>means</em> &mdash; which is the foundation everything else rests on.</p>
+
+<h3>2. Designing a data model</h3>
+
+<p>An admin (or analyst) creates a <strong>data product</strong> &mdash; a coherent slice of the business like "Sales", "Customers", or "Inventory". The admin types a short description. The AI reads the source schema + the confirmed semantic definitions, then designs a <em>Kimball star schema</em>: fact tables (e.g. sales transactions) surrounded by dimension tables (customers, products, dates). It also writes the SQL to transform raw source data into these tables.</p>
+
+<p>The admin reviews the proposed schema on a visual diagram (<strong>ReactFlow</strong>-rendered), tweaks descriptions or column roles if needed, and approves. The AI drafts the schema; the human confirms it &mdash; never the other way around.</p>
+
+<h3>3. Running the transformations</h3>
+
+<p>The admin clicks <strong>Run transformation</strong>. DataBridge takes the approved SQL for each table, executes it against the source data, and writes the results as Parquet files (a fast, compressed analytical format) into a warehouse. This happens either on local disk (for dev) or in Azure Blob Storage (for production). After each table materialises, automated <strong>quality gates</strong> run &mdash; checking for things like duplicate business keys or JOINs that silently multiply rows. Failures block the run and surface as specific error messages in the UI.</p>
+
+<p>The admin can set a schedule (e.g. "rebuild every night at 3 am") so the data products stay fresh without manual intervention.</p>
+
+<h3>4. Asking questions and building dashboards</h3>
+
+<p>Any user &mdash; viewer, analyst, admin &mdash; opens <strong>Ask</strong> and types a question in plain English:</p>
+
+<blockquote>"Who are our top 10 customers by revenue in 2025, and how does that compare to last year?"</blockquote>
+
+<p>Behind the scenes, the platform turns that into SQL, runs it, and responds with both a natural-language answer and the underlying data. If the AI isn't confident enough, it says so rather than guessing &mdash; and quietly logs the question as a gap to improve.</p>
+
+<p>The <strong>Dashboards</strong> builder works similarly: describe what you want to see ("sales overview with monthly trend and top products"), answer a few clarifying questions the AI asks, and it generates a full interactive dashboard. <strong>Notebooks</strong> provide a Python + SQL editor in the browser for power users.</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    U[User types<br/>question] --> P[Platform builds<br/>semantic context]
+    P --> C{Claude<br/>generates SQL}
+    C -->|confidence &lt; 0.7| B[Blocks,<br/>logs a gap,<br/>asks user to refine]
+    C -->|confidence &ge; 0.7| E[Executes SQL<br/>against warehouse]
+    E --> F[Claude formats answer<br/>in plain language]
+    F --> A[User sees answer<br/>+ optional raw rows]
+
+    style U fill:#e8f0f3,stroke:#164e63
+    style C fill:#f1e4d6,stroke:#c08a5e
+    style F fill:#f1e4d6,stroke:#c08a5e
+    style B fill:#f1e4c8,stroke:#a06a1c
+    style E fill:#dbe8e0,stroke:#3f7a5c
+    style A fill:#e8f0f3,stroke:#164e63
+</pre>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART III — UNDER THE HOOD                                           -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part III &mdash; Under the hood</h2>
+
+<div class="audience-block">
+  <div class="label">Audience</div>
+  Data engineers and technical readers. Some SQL + distributed systems assumed.
+</div>
+
+<h3>The two-layer data model</h3>
+
+<p>DataBridge maintains data at two layers. The <strong>source layer</strong> is a faithful ingested copy of the client's operational database, stored as Delta Lake tables. The <strong>product layer</strong> is the materialised Kimball star schemas, stored as Parquet files. Queries prefer the product layer when it exists (cleaner model, purpose-built for analytics) and fall back to the source layer when a product doesn't cover the question.</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    S[(Source DBs<br/>SQLite, Postgres,<br/>MySQL, MSSQL)] -->|ETL ingest| D[(Delta Lake<br/>source layer)]
+    D -->|AI-designed<br/>transformations| P[(Parquet<br/>product layer<br/>star schemas)]
+    P --> Q[DuckDB<br/>query engine]
+    D -.fallback.-> Q
+    Q --> A[Answer]
+
+    style S fill:#edeff2,stroke:#6b7680
+    style D fill:#e8f0f3,stroke:#164e63
+    style P fill:#dbe8e0,stroke:#3f7a5c
+    style Q fill:#f1e4d6,stroke:#c08a5e
+    style A fill:#e3e6ea,stroke:#334049
+</pre>
+</div>
+
+<h3>Ingestion: source databases to Delta Lake</h3>
+
+<p>Ingestion runs as a separate Python FastAPI service (the <strong>ETL service</strong>). When the backend triggers an ingest, the ETL reads table data from the source connector (it supports all 4 source types), converts to Apache Arrow, and writes Delta Lake tables via the <code>deltalake</code> library. Delta Lake gives us ACID transactions, schema evolution, and time-travel &mdash; modern table format essentials, with a <code>_delta_log/</code> directory per table storing the transaction history.</p>
+
+<p>Ingests can be full (overwrite) or incremental (watermark-based append). For incremental, the ETL tracks a high-water-mark column per table (e.g. <code>updated_at</code>) and only loads rows past the previous run's max.</p>
+
+<h3>Transformations: Delta Lake to Parquet star schemas</h3>
+
+<p>Star-schema materialisation runs through <strong>dbt-duckdb</strong>. When an admin clicks <em>Run</em>, the backend generates a complete dbt project on disk &mdash; one SQL file per table, a YAML file declaring sources, and custom test macros for quality gates. It POSTs to the ETL service which shells out to <code>dbt run</code> followed by <code>dbt test</code>. dbt figures out the DAG order from <code>{{ ref() }}</code> macros in the SQL, builds dimensions before facts, runs the tests, and exports the results as Parquet files.</p>
+
+<p>If the source schema already covers what analysts need, the product layer is optional &mdash; queries fall back to reading Delta tables directly via DuckDB's <code>delta_scan()</code> function.</p>
+
+<h3>Querying: DuckDB reads Parquet</h3>
+
+<p>All analytical queries run through <strong>DuckDB</strong> &mdash; an embedded OLAP engine. The backend maintains a pool of in-memory DuckDB instances, each with views pre-registered over the relevant Delta/Parquet files. When a query comes in, the pool serves it a ready-to-execute instance; the instance is reused across concurrent queries. Pools invalidate automatically when an ingest or transformation writes new data.</p>
+
+<p>Reads are cheap because Parquet is column-oriented &mdash; for a query like "sum of revenue by month", DuckDB reads only the <code>revenue</code> + <code>date</code> columns, skipping everything else.</p>
+
+<h3>Natural language to SQL</h3>
+
+<p>When a user types a question, the platform:</p>
+
+<ol>
+  <li>Extracts referenced entities from the question (e.g. "customers", "orders")</li>
+  <li>Retrieves relevant table + column definitions from the semantic graph</li>
+  <li>Sends question + context + past conversation history to Claude</li>
+  <li>Claude returns SQL, a confidence score (0&ndash;1), and the list of tables it used</li>
+  <li>If confidence &ge; 0.7, the platform executes the SQL; otherwise it blocks, logs a <em>definition gap</em>, and asks the user to refine</li>
+  <li>On result, Claude is called a second time to format a plain-language answer</li>
+</ol>
+
+<p>Repeated questions hit a <strong>query cache</strong>: the hash of (question + context + domain filters) is looked up first; on match, the cached SQL + confidence is reused. This typically serves cache-hit questions in under 100&nbsp;ms instead of the 2&ndash;5&nbsp;s a fresh Claude call takes.</p>
+
+<h3>Definition gaps: when the AI doesn't know enough</h3>
+
+<p>If Claude's confidence is below threshold, the system doesn't guess. It surfaces a polite <em>I don't have enough context for this yet</em> message and silently logs a <strong>definition gap</strong> to the admin. The gaps page shows questions the platform couldn't answer and points admins at which definitions to improve. Over time the gaps list shrinks as the semantic model tightens.</p>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART IV — ARCHITECTURE                                              -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part IV &mdash; Architecture</h2>
+
+<div class="audience-block">
+  <div class="label">Audience</div>
+  Developers joining the codebase or reasoning about deployment.
+</div>
+
+<h3>Component overview</h3>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph Browser
+        FE[Frontend<br/>Next.js 14 App Router<br/>Tailwind + Recharts]
+    end
+
+    subgraph Backend
+        API[Express API<br/>Node.js + TypeScript<br/>JWT auth + RLS context]
+        AI[AIService<br/>single entry point for<br/>every Claude call]
+        JOBS[BullMQ workers<br/>profiling, ingestion,<br/>transformations, maintenance]
+        DUCK[DuckDBPool<br/>in-memory analytical<br/>query engine]
+        API --> AI
+        API --> JOBS
+        API --> DUCK
+    end
+
+    subgraph Python
+        ETL[ETL Service<br/>FastAPI + deltalake + dbt-duckdb]
+    end
+
+    subgraph Stores
+        PG[(Postgres<br/>semantic layer<br/>RLS-isolated tenants)]
+        N4J[(Neo4j<br/>knowledge graph<br/>relationships + KPIs)]
+        REDIS[(Redis<br/>job queues<br/>+ caches)]
+        WH[(Warehouse<br/>Delta Lake +<br/>Parquet files)]
+    end
+
+    CLAUDE[Claude API]
+
+    FE -->|HTTPS + JWT| API
+    AI --> CLAUDE
+    API --> PG
+    API --> N4J
+    JOBS --> REDIS
+    JOBS --> ETL
+    ETL --> WH
+    DUCK -.reads.-> WH
+    ETL -.reads.-> SRC[(Source DBs<br/>at client)]
+
+    style FE fill:#e8f0f3,stroke:#164e63
+    style API fill:#e8f0f3,stroke:#164e63
+    style ETL fill:#f1e4c8,stroke:#a06a1c
+    style CLAUDE fill:#f1e4d6,stroke:#c08a5e
+    style WH fill:#dbe8e0,stroke:#3f7a5c
+    style PG fill:#edeff2,stroke:#6b7680
+    style N4J fill:#edeff2,stroke:#6b7680
+    style REDIS fill:#edeff2,stroke:#6b7680
+    style SRC fill:#edeff2,stroke:#6b7680
+</pre>
+</div>
+
+<h3>Multi-tenancy</h3>
+
+<p>Every row in every Postgres table carries a <code>tenant_id</code>. PostgreSQL's <strong>Row-Level Security (RLS)</strong> policies enforce that queries only see rows matching the caller's tenant. The backend sets <code>SET app.current_tenant = &lt;id&gt;</code> on each request from the JWT, and uses a non-superuser role (<code>databridge_app</code>) so the policies are enforced. A migrations role (<code>databridge</code>) bypasses RLS for schema changes.</p>
+
+<p>The warehouse is tenant-isolated by path convention: <code>warehouse/_dbt_state/tenant_&lt;id&gt;/…</code>, <code>az://warehouse/tenant_&lt;id&gt;/…</code>. Tenant boundaries carry through to background jobs via job-data payloads.</p>
+
+<h3>AI service: one call site, one SDK</h3>
+
+<p>Every Claude API call in the backend goes through <code>backend/src/ai/AIService.ts</code>. Prompts live next to it in <code>ai/prompts/</code>, one file per call type:</p>
+
+<table>
+  <tr><th>Call type</th><th>Purpose</th></tr>
+  <tr><td><code>schemaDraftPrompt</code></td><td>AI describes every table / column during profiling</td></tr>
+  <tr><td><code>nlToSqlPrompt</code></td><td>Natural language &rarr; SQL for source-layer questions</td></tr>
+  <tr><td><code>nlToSqlPromptDuckDB</code></td><td>Same for product-layer queries (DuckDB dialect)</td></tr>
+  <tr><td><code>starSchemaPrompt</code></td><td>Designs star schema + transformation SQL, per data product</td></tr>
+  <tr><td><code>dashboardPrompt</code></td><td>Generates dashboard specs (widgets + filters + SQL)</td></tr>
+  <tr><td><code>answerFormatterPrompt</code></td><td>Summarises a query result in 1&ndash;3 business sentences</td></tr>
+  <tr><td><code>repairPrompt</code></td><td>Agentic SQL repair loop when a result looks suspicious</td></tr>
+</table>
+
+<p>Centralising every Claude call means token counts, latency, retries, and cost tracking are all measured in one place.</p>
+
+<h3>Background jobs</h3>
+
+<p>Long-running work uses <strong>BullMQ</strong> queues backed by Redis. If Redis isn't configured, jobs fall back to inline execution (synchronous). Four queues exist:</p>
+
+<ul>
+  <li><code>schema-profiling</code> &mdash; kicked off when an admin connects a source</li>
+  <li><code>ingestion</code> &mdash; triggered manually or on a schedule; shells out to the ETL service</li>
+  <li><code>transformation</code> &mdash; builds a data product's star schema (now via dbt)</li>
+  <li><code>warehouse-maintenance</code> &mdash; weekly Delta <code>OPTIMIZE</code> + <code>VACUUM</code> to keep file counts bounded and query times stable</li>
+</ul>
+
+<h3>Observability</h3>
+
+<p>When <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> is set, structured metrics flow into Azure Application Insights:</p>
+
+<ul>
+  <li><code>nl_to_sql_ms</code> &mdash; NL&rarr;SQL latency, tagged with <code>layer</code> (product/source) and <code>cache</code> (hit/miss)</li>
+  <li><code>duckdb_query_ms</code> &mdash; analytical query execution latency</li>
+  <li><code>ingestion_ms</code> &mdash; ETL duration per run</li>
+  <li><code>transformation_ms</code> &mdash; product-materialisation duration</li>
+  <li><code>ai_input_tokens</code> / <code>ai_output_tokens</code> &mdash; per-call Claude token counts</li>
+</ul>
+
+<p>When App Insights isn't configured, all of these silently no-op &mdash; it's optional infrastructure.</p>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART V — DEEP DIVES                                                 -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part V &mdash; Flow deep-dives</h2>
+
+<h3>A single query, end to end</h3>
+
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User browser
+    participant API as Backend API
+    participant SEM as Semantic context<br/>(Postgres + Neo4j)
+    participant CACHE as Query cache<br/>(Postgres)
+    participant AI as Claude
+    participant D as DuckDB pool
+    participant W as Warehouse<br/>(Parquet)
+
+    U->>API: POST /query {question, connectionId}
+    API->>SEM: Build context (tables, columns, relationships, KPIs)
+    SEM-->>API: semanticContext, layer = 'product'
+    API->>CACHE: Lookup (tenant, connectionId, layer, question, context-hash)
+    alt Cache hit
+        CACHE-->>API: Cached {sql, confidence, tables}
+    else Cache miss
+        API->>AI: generateSql(question, context, dialect='duckdb')
+        AI-->>API: {sql, confidence, uncertainty_notes}
+        API->>CACHE: Store result (if confidence &ge; 0.7)
+    end
+    alt confidence &lt; 0.7
+        API->>SEM: Log as definition gap
+        API-->>U: Blocked — please refine
+    else
+        API->>D: Get pooled instance
+        D->>W: delta_scan / read_parquet
+        D-->>API: rows
+        API->>AI: formatAnswer(question, rows)
+        AI-->>API: plain-language answer
+        API-->>U: {answer, rows, confidence, sql?}
+    end
+</pre>
+</div>
+
+<h3>A product transformation, end to end</h3>
+
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant A as Admin
+    participant API as Backend
+    participant BLD as dbt project builder
+    participant FS as Warehouse FS
+    participant ETL as ETL service (Python)
+    participant DBT as dbt-duckdb CLI
+    participant PG as Postgres
+
+    A->>API: POST /products/:id/run
+    API->>PG: Fetch product, tables, columns
+    API->>BLD: Generate dbt project
+    BLD->>FS: Write dbt_project.yml, profiles.yml, models/*.sql, test macros
+    API->>ETL: POST /dbt/run {project_dir}
+    ETL->>DBT: dbt run
+    DBT->>FS: Build each model<br/>(delta_scan → transform → COPY TO Parquet)
+    DBT-->>ETL: run_results.json
+    ETL->>DBT: dbt test
+    DBT-->>ETL: test results + failure samples
+    ETL-->>API: aggregated results
+    API->>PG: Update product_tables status, transformation_checks
+    API->>API: Invalidate DuckDB pool for this warehouse
+    API-->>A: success/failure per table + quality gates
+</pre>
+</div>
+
+<h3>Per-tenant path convention</h3>
+
+<p>Everything that lives on disk (or Blob) is partitioned by tenant:</p>
+
+<pre><code>warehouse/
+├── conn_22/                             ← ingested source layer
+│   ├── customers/_delta_log/...
+│   └── orders/_delta_log/...
+├── product/                             ← product layer
+│   └── articles/
+│       ├── dim_article/data.parquet
+│       └── fact_sales/data.parquet
+├── _dbt_projects/tenant_63/articles/    ← generated dbt project
+│   ├── dbt_project.yml
+│   ├── profiles.yml
+│   └── models/
+└── _dbt_state/tenant_63/articles/       ← persistent DuckDB state for incremental
+    └── state.duckdb
+</code></pre>
+
+<!-- ══════════════════════════════════════════════════════════════════ -->
+<!-- PART VI — RECENT WORK                                               -->
+<!-- ══════════════════════════════════════════════════════════════════ -->
+
+<h2>Part VI &mdash; Recent architecture work</h2>
+
+<div class="audience-block">
+  <div class="label">Audience</div>
+  Dev team reference for what changed in April 2026.
+</div>
+
+<h3>Infrastructure hardening (6 focused phases)</h3>
+
+<table>
+  <tr><th>#</th><th>Change</th><th>Win</th></tr>
+  <tr>
+    <td>1</td>
+    <td>Persistent DuckDB pool with pre-registered views + invalidation on ingestion/transformation</td>
+    <td>Analytical queries after the first skip the DuckDB spin-up cost; enables query caching</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>Delta Lake <code>mergeSchema=True</code> on incremental appends + weekly <code>OPTIMIZE</code>/<code>VACUUM</code> scheduled job</td>
+    <td>Source schema can evolve without manual migrations; small-file accumulation never kills query performance</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>Removed regex-based SQL auto-fix in transformation runner</td>
+    <td>Silent wrong fixes eliminated; errors surface DuckDB's own candidate-binding suggestions</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>NL&rarr;SQL query cache keyed on (tenant, connection, layer, question, context-hash) with 24h TTL</td>
+    <td>Repeat questions serve in &lt;100&thinsp;ms instead of 2&ndash;5&thinsp;s; cuts dominant Claude API cost</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>Observability metrics across NL&rarr;SQL, DuckDB execution, ETL, transformations, Claude tokens</td>
+    <td>p95 latencies and error rates measurable per-layer; cache hit rate is a dashboard metric</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>Two design RFCs filed: dbt migration, and Python kernel for notebooks</td>
+    <td>Big architectural bets have written context, not tribal knowledge</td>
+  </tr>
+</table>
+
+<h3>dbt migration (RFC-001 shipped)</h3>
+
+<p>The homegrown <code>transformationRunner.ts</code> (620 lines) was replaced by a dbt-duckdb integration. A feature flag <code>USE_DBT_TRANSFORMATIONS</code> routes between the two engines; both coexist while the rollout is validated. The new engine gains:</p>
+
+<ul>
+  <li><strong>Real DAG resolution</strong> from <code>{{ ref() }}</code> macros in model SQL &mdash; dbt figures out build order, we don't</li>
+  <li><strong>Incremental loads</strong> via <code>materialized='incremental'</code> + <code>unique_key</code> + delete+insert strategy, with a persistent DuckDB state file that survives across runs</li>
+  <li><strong>Quality gates as dbt tests</strong> &mdash; <code>unique</code>, <code>not_null</code>, <code>relationships</code>, plus custom generic tests <code>unique_combination_of_columns</code>, <code>fan_out_no_surplus</code>, <code>value_range_outlier</code></li>
+  <li><strong>Rich failure diagnostics</strong> via <code>store_failures_as: table</code> &mdash; the exact rows that failed a test get persisted and shown in the UI</li>
+  <li><strong>Cross-product references</strong> as real dbt sources &mdash; shared conformed dimensions from dependency products show up in the lineage graph</li>
+  <li><strong>AI emits macros natively</strong> &mdash; <code>starSchemaPrompt</code> tells Claude to produce <code>{{ source() }}</code> and <code>{{ ref() }}</code> instead of bare table names</li>
+</ul>
+
+<p>The migration was validated end-to-end: on a real product (Articles, 4 tables, Belgian SMB data), both engines produce byte-level equivalent Parquet output (same schema, same 119 + 2922 + 7 + 7 rows, zero rows in either-engine-only set). Four path-resolution bugs were caught during the real-data shadow run and fixed before any production cutover.</p>
+
+<h3>Frontend: the Observatory design system</h3>
+
+<p>The frontend went through a full visual overhaul: editorial serif display font (Source Serif 4), mono eyebrows (Geist Mono), neutral light surfaces, single accent colour (<code>ocean</code>, a muted teal). The <code>/query</code> page was split from one 2190-line file into seven focused files. Icon system migrated to <code>lucide-react</code>. Legacy CSS classes (<code>.glass-card</code>, <code>.gradient-mesh</code>, etc.) deleted from <code>globals.css</code> once their call-sites were ported.</p>
+
+<p>Underlying principle: editorial typography for content, mono tracked-out uppercase for metadata, a single accent for interactive emphasis. The app looks calm, not busy.</p>
+
+</body>
+</html>

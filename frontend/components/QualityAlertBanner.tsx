@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { AlertTriangle, ChevronDown } from 'lucide-react';
 import api from '@/lib/api';
 
 interface QualityAlert {
@@ -10,6 +11,7 @@ interface QualityAlert {
   alert_type: string;
   severity: 'info' | 'warning' | 'critical';
   message: string;
+  ai_context: string | null;
   previous_score: number | null;
   current_score: number | null;
   threshold: number | null;
@@ -74,9 +76,7 @@ export default function QualityAlertBanner() {
         onClick={() => setExpanded(!expanded)}
       >
         <div className="flex items-center gap-2">
-          <svg className={`w-4 h-4 ${iconColor}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-          </svg>
+          <AlertTriangle className={`w-4 h-4 ${iconColor}`} strokeWidth={2} />
           <span className="text-sm font-medium text-slate-700">
             {alerts.length} quality alert{alerts.length !== 1 ? 's' : ''}
             {critical.length > 0 && (
@@ -94,12 +94,10 @@ export default function QualityAlertBanner() {
           >
             Dismiss all
           </button>
-          <svg
+          <ChevronDown
             className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
+            strokeWidth={2}
+          />
         </div>
       </div>
 
@@ -113,6 +111,9 @@ export default function QualityAlertBanner() {
               }`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-slate-700">{alert.message}</p>
+                {alert.ai_context && (
+                  <p className="text-xs text-slate-600 italic mt-1 leading-relaxed">{alert.ai_context}</p>
+                )}
                 <p className="text-xs text-slate-400 mt-0.5">
                   {alert.table_name} &middot;{' '}
                   {new Date(alert.created_at).toLocaleString('en-GB', {

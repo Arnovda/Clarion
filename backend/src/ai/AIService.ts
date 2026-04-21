@@ -65,6 +65,31 @@ import {
   buildForecastUser,
   ForecastQueryOutput,
 } from './prompts/forecastPrompt';
+import {
+  QUALITY_ALERT_SYSTEM,
+  buildQualityAlertUser,
+  QualityAlertInput,
+} from './prompts/qualityAlertPrompt';
+import {
+  EXPLAIN_WIDGET_SYSTEM,
+  buildExplainWidgetUser,
+  INSIGHTS_SYSTEM,
+  buildInsightsUser,
+  WidgetSummary,
+} from './prompts/insightsPrompt';
+import {
+  INVESTIGATE_PLAN_SYSTEM,
+  buildInvestigatePlanUser,
+  INVESTIGATE_SYNTHESIZE_SYSTEM,
+  buildInvestigateSynthesizeUser,
+  DiagnosticResult,
+} from './prompts/investigatePrompt';
+import {
+  NARRATE_SYSTEM,
+  buildNarrateUser,
+  NarrativeOutput,
+  WidgetNarrativeInput,
+} from './prompts/narratePrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -73,6 +98,12 @@ export type SqlDialect = 'sqlite' | 'duckdb';
 
 import { logger } from '../utils/logger';
 import { trackMetric, trackEvent } from '../utils/monitoring';
+import {
+  getTenantAiContext,
+  checkTenantAiBudget,
+  recordTenantAiUsage,
+  AiBudgetExceededError,
+} from '../services/aiBudget';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
@@ -91,6 +122,8 @@ function getClient(): Anthropic {
   return _client;
 }
 const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+/** Cheaper model for summarisation-class calls (formatAnswer, validateQueryResult). ~12× cheaper than Sonnet. */
+const MODEL_HAIKU = process.env.CLAUDE_MODEL_HAIKU ?? 'claude-haiku-4-5-20251001';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -99,17 +132,74 @@ const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 const MAX_RETRIES = 3;
 const RETRY_DELAYS = [2000, 5000, 10000]; // ms — exponential-ish backoff
 
-async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 4096, callLabel?: string): Promise<string> {
-  // Auto-derive label from system prompt if not provided
+/**
+ * Check the tenant AI budget BEFORE a Claude call. Throws
+ * AiBudgetExceededError if this tenant has hit its monthly cap. No-ops when
+ * there's no tenant context (CLI scripts, workers that didn't opt in).
+ */
+async function enforceAiBudget(callLabel: string): Promise<number | null> {
+  const tenantId = getTenantAiContext();
+  if (!tenantId) return null;
+  const status = await checkTenantAiBudget(tenantId);
+  if (!status.allowed) {
+    trackEvent('ai_budget_blocked', { tenantId: String(tenantId), callLabel, used: String(status.used), budget: String(status.budget ?? -1) });
+    throw new AiBudgetExceededError(tenantId, status.used, status.budget ?? 0);
+  }
+  return tenantId;
+}
+
+interface CallClaudeOptions {
+  /** Max output tokens. Default 4096. */
+  maxTokens?: number;
+  /** Telemetry label. Auto-derived from system prompt if omitted. */
+  callLabel?: string;
+  /**
+   * Mark the system prompt as cacheable via Anthropic prompt caching.
+   * When true the system content is wrapped in a `cache_control: ephemeral`
+   * block so identical system prompts across calls re-use a cached version
+   * at 10% of normal input cost. Anthropic requires ≥1024 tokens of stable
+   * content to cache — our system prompts clear that comfortably.
+   * Callers should set this to true for stable prompts (NL→SQL, dashboard,
+   * star schema) and false for dynamic one-shot prompts.
+   */
+  cacheSystem?: boolean;
+  /** Override the model — e.g. Haiku for summarisation-class calls. */
+  model?: string;
+}
+
+async function callClaude(
+  systemPrompt: string,
+  userPrompt: string,
+  optsOrMaxTokens: CallClaudeOptions | number = {},
+  legacyCallLabel?: string,
+): Promise<string> {
+  // Backwards compat: old signature was (system, user, maxTokens, callLabel)
+  const opts: CallClaudeOptions = typeof optsOrMaxTokens === 'number'
+    ? { maxTokens: optsOrMaxTokens, callLabel: legacyCallLabel }
+    : optsOrMaxTokens;
+
+  const maxTokens = opts.maxTokens ?? 4096;
+  const model     = opts.model ?? MODEL;
+  let callLabel   = opts.callLabel;
   if (!callLabel) callLabel = systemPrompt.slice(0, 60).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
+
+  // Build system parameter: plain string (default) or cacheable content array.
+  const systemParam = opts.cacheSystem
+    ? [{ type: 'text' as const, text: systemPrompt, cache_control: { type: 'ephemeral' as const } }]
+    : systemPrompt;
+
+  // Per-tenant budget gate (throws AiBudgetExceededError if capped).
+  const tenantId = await enforceAiBudget(callLabel);
+
   const start = Date.now();
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const message = await getClient().messages.create({
-        model: MODEL,
+        model,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: userPrompt }],
-        system: systemPrompt,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        system: systemParam as any,
       });
 
       const block = message.content[0];
@@ -117,16 +207,30 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
         throw new Error('AIService: unexpected non-text response from Claude');
       }
 
-      // Track AI call metrics
+      // Track AI call metrics, including cache hit/miss breakdown.
       const durationMs = Date.now() - start;
       const inputTokens  = message.usage?.input_tokens  ?? 0;
       const outputTokens = message.usage?.output_tokens ?? 0;
-      const props = { callLabel, model: MODEL, attempt: String(attempt + 1) };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const usage: any = message.usage ?? {};
+      const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
+      const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+      const props = { callLabel, model, attempt: String(attempt + 1) };
       trackMetric('ai_call_duration_ms', durationMs, props);
       trackMetric('ai_input_tokens',     inputTokens, props);
       trackMetric('ai_output_tokens',    outputTokens, props);
       trackMetric('ai_total_tokens',     inputTokens + outputTokens, props);
-      logger.info({ callLabel, durationMs, inputTokens, outputTokens, attempt: attempt + 1 }, 'AI call completed');
+      if (cacheReadTokens > 0)     trackMetric('ai_cache_read_tokens',     cacheReadTokens, props);
+      if (cacheCreationTokens > 0) trackMetric('ai_cache_creation_tokens', cacheCreationTokens, props);
+      logger.info({
+        callLabel, model, durationMs, inputTokens, outputTokens,
+        cacheReadTokens, cacheCreationTokens, attempt: attempt + 1,
+      }, 'AI call completed');
+
+      // Record against the tenant's monthly budget (best-effort, never throws).
+      if (tenantId) {
+        recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
+      }
 
       return block.text;
     } catch (err: unknown) {
@@ -139,8 +243,8 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
         continue;
       }
       const durationMs = Date.now() - start;
-      logger.error({ callLabel, status, durationMs, err }, 'AI call failed');
-      trackEvent('ai_call_failed', { callLabel, model: MODEL, status: String(status ?? 'unknown'), durationMs: String(durationMs) });
+      logger.error({ callLabel, model, status, durationMs, err }, 'AI call failed');
+      trackEvent('ai_call_failed', { callLabel, model, status: String(status ?? 'unknown'), durationMs: String(durationMs) });
       throw err;
     }
   }
@@ -149,14 +253,23 @@ async function callClaude(systemPrompt: string, userPrompt: string, maxTokens = 
 
 // Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses
 // but collects the full text and returns it as a string (no event callbacks).
-async function callClaudeStreaming(systemPrompt: string, userPrompt: string, maxTokens = 4096, callLabel?: string): Promise<string> {
+async function callClaudeStreaming(
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens = 4096,
+  callLabel?: string,
+  cacheSystem = true,
+): Promise<string> {
   if (!callLabel) callLabel = 'stream_' + systemPrompt.slice(0, 50).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
+  const tenantId = await enforceAiBudget(callLabel);
   const start = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: maxTokens,
-    system: systemPrompt,
+    system: cacheSystem
+      ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
+      : systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
   };
 
@@ -174,10 +287,24 @@ async function callClaudeStreaming(systemPrompt: string, userPrompt: string, max
   }
 
   const durationMs = Date.now() - start;
-  // Stream API doesn't return usage easily; log what we can
   const props = { callLabel, model: MODEL, streaming: 'true' };
   trackMetric('ai_call_duration_ms', durationMs, props);
-  logger.info({ callLabel, durationMs, outputChars: fullText.length, streaming: true }, 'AI streaming call completed');
+
+  // Usage attribution for streaming: the final message on the stream
+  // carries the complete usage object. Record best-effort.
+  try {
+    const final = await stream.finalMessage();
+    const inputTokens  = final.usage?.input_tokens  ?? 0;
+    const outputTokens = final.usage?.output_tokens ?? 0;
+    trackMetric('ai_input_tokens',  inputTokens,  props);
+    trackMetric('ai_output_tokens', outputTokens, props);
+    if (tenantId) {
+      recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
+    }
+    logger.info({ callLabel, durationMs, outputChars: fullText.length, inputTokens, outputTokens, streaming: true }, 'AI streaming call completed');
+  } catch {
+    logger.info({ callLabel, durationMs, outputChars: fullText.length, streaming: true }, 'AI streaming call completed (usage unavailable)');
+  }
 
   return fullText;
 }
@@ -187,6 +314,7 @@ export async function callClaudeMultiTurn(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<string> {
+  const tenantId = await enforceAiBudget('multi_turn');
   const message = await getClient().messages.create({
     model: MODEL,
     max_tokens: 4096,
@@ -198,6 +326,13 @@ export async function callClaudeMultiTurn(
   if (block.type !== 'text') {
     throw new Error('AIService: unexpected non-text response from Claude');
   }
+
+  if (tenantId) {
+    const inputTokens  = message.usage?.input_tokens  ?? 0;
+    const outputTokens = message.usage?.output_tokens ?? 0;
+    recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
+  }
+
   return block.text;
 }
 
@@ -291,7 +426,9 @@ export async function generateSchemaDraft(
     const raw = await callClaude(
       SCHEMA_DRAFT_SYSTEM,
       buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates),
-      16000,
+      // SCHEMA_DRAFT_SYSTEM is identical across every batch in this source's
+      // profile — caching keeps the per-batch cost at just the user prompt.
+      { maxTokens: 16000, cacheSystem: true },
     );
     const partial = parseJson<SchemaDraftOutput>(raw);
     merged.tables.push(...partial.tables);
@@ -310,7 +447,7 @@ export async function suggestRelationships(
   const raw = await callClaude(
     RELATIONSHIP_SUGGEST_SYSTEM,
     buildRelationshipSuggestUser(ctx),
-    8000,
+    { maxTokens: 8000, cacheSystem: true },
   );
   return parseJson<RelationshipSuggestOutput>(raw);
 }
@@ -464,13 +601,18 @@ export async function generateSql(
     return defaultSubScores(parseJson<Record<string, unknown>>(raw));
   }
 
-  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question));
+  // cacheSystem: the NL→SQL system prompt embeds the full semantic context
+  // + relationship context + KPI formulas — identical across back-to-back
+  // questions from the same tenant. Cache hit rate here is very high.
+  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question), { cacheSystem: true });
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
 // ---------------------------------------------------------------------------
 // Call Type 2c — Result sanity check
 // Lightweight: runs fast, failure is non-blocking (returns a warning, not an error)
+// Uses Haiku: this is a summarisation/classification task over small rows —
+// frontier quality not required, and the call runs on every query.
 // ---------------------------------------------------------------------------
 
 export async function validateQueryResult(
@@ -482,12 +624,38 @@ export async function validateQueryResult(
     const raw = await callClaude(
       RESULT_VALIDATION_SYSTEM,
       buildResultValidationUser(question, sql, rows, rows.length),
+      { model: MODEL_HAIKU, cacheSystem: true },
     );
     return parseJson<ResultValidationOutput>(raw);
   } catch {
     // Validation is best-effort — never let it break a successful query response
     return { ok: true };
   }
+}
+
+/**
+ * Confidence-gated wrapper around validateQueryResult.
+ *
+ * When Claude is already ≥ 0.9 confident in the SQL, the second sanity-check
+ * call rarely finds anything — skipping saves an API round-trip (and a
+ * Haiku call's cost) on every high-confidence query. Below the threshold
+ * we still run the validator because that's exactly where it earns its keep.
+ *
+ * Returns a synthetic `{ ok: true }` on skip so downstream code doesn't
+ * need to branch.
+ */
+export async function validateQueryResultIfNeeded(
+  confidence: number,
+  question: string,
+  sql: string,
+  rows: Record<string, unknown>[],
+  skipThreshold = 0.9,
+): Promise<ResultValidationOutput> {
+  if (confidence >= skipThreshold) {
+    trackEvent('ai_validation_skipped', { reason: 'high_confidence', threshold: String(skipThreshold) });
+    return { ok: true };
+  }
+  return validateQueryResult(question, sql, rows);
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +686,8 @@ export async function generateCrossSourceSql(
     return defaultSubScores(parseJson<Record<string, unknown>>(raw));
   }
 
-  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question));
+  // Cross-source system prompt is stable per tenant — cache same as single-source.
+  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question), { cacheSystem: true });
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
@@ -537,6 +706,7 @@ export async function generateSqlStreaming(
   dialect: SqlDialect = 'sqlite',
   conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
+  const tenantId = await enforceAiBudget('generate_sql_streaming');
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
@@ -555,7 +725,9 @@ export async function generateSqlStreaming(
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'enabled', budget_tokens: 8000 },
-    system: systemPrompt,
+    // cache_control on the NL→SQL system prompt — same big context that's
+    // stable across all questions from a tenant.
+    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages,
   };
 
@@ -575,6 +747,14 @@ export async function generateSqlStreaming(
     }
   }
 
+  if (tenantId) {
+    try {
+      const final = await stream.finalMessage();
+      recordTenantAiUsage(tenantId, final.usage?.input_tokens ?? 0, final.usage?.output_tokens ?? 0)
+        .catch(() => { /* logged inside */ });
+    } catch { /* usage attribution is best-effort for streaming */ }
+  }
+
   return defaultSubScores(parseJson<Record<string, unknown>>(fullText));
 }
 
@@ -586,7 +766,15 @@ export async function formatAnswer(
   question: string,
   rows: Record<string, unknown>[],
 ): Promise<string> {
-  return callClaude(ANSWER_FORMAT_SYSTEM, buildAnswerFormatUser(question, rows));
+  // Haiku: summarisation of query results into 1–3 plain sentences doesn't
+  // need frontier-model quality; Haiku is ~12× cheaper and runs on every
+  // successful query. cacheSystem: the ANSWER_FORMAT_SYSTEM prompt is a
+  // small stable string — marginal caching value but zero downside.
+  return callClaude(
+    ANSWER_FORMAT_SYSTEM,
+    buildAnswerFormatUser(question, rows),
+    { model: MODEL_HAIKU, cacheSystem: true },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +804,7 @@ export async function generateDashboardRefinement(
   const raw = await callClaude(
     REFINEMENT_SYSTEM,
     buildRefinementUser(request, semanticContext, relationshipContext),
+    { cacheSystem: true },
   );
   return parseJson<RefinementOutput>(raw);
 }
@@ -633,6 +822,7 @@ export async function refineDashboardSpec(
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext),
+    { cacheSystem: true },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -650,7 +840,7 @@ export async function generateDashboardSpec(
   const raw = await callClaude(
     getDashboardSystem(dialect),
     buildDashboardUser(request, semanticContext, relationshipContext),
-    16000,
+    { maxTokens: 16000, cacheSystem: true },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -668,7 +858,7 @@ export async function validateAndFixDashboardSpec(
   const raw = await callClaude(
     VALIDATE_DASHBOARD_SYSTEM,
     buildValidateUser(spec, executionResults, semanticContext, relationshipContext),
-    16000,
+    { maxTokens: 16000, cacheSystem: true },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -700,12 +890,17 @@ export async function generateStarSchemaDesignStreaming(
   sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
 ): Promise<StarSchemaDesignOutput> {
+  const tenantId = await enforceAiBudget('star_schema_streaming');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 64000,
     thinking: { type: 'enabled', budget_tokens: 4000 },
-    system: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
+    system: [{
+      type: 'text',
+      text: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
+      cache_control: { type: 'ephemeral' },
+    }],
     messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
   };
 
@@ -725,6 +920,14 @@ export async function generateStarSchemaDesignStreaming(
     }
   }
 
+  if (tenantId) {
+    try {
+      const final = await stream.finalMessage();
+      recordTenantAiUsage(tenantId, final.usage?.input_tokens ?? 0, final.usage?.output_tokens ?? 0)
+        .catch(() => { /* logged inside */ });
+    } catch { /* best-effort */ }
+  }
+
   return parseJson<StarSchemaDesignOutput>(fullText);
 }
 
@@ -742,13 +945,18 @@ export async function generateBusMatrixStreaming(
   sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
 ): Promise<BusMatrixOutput> {
+  const tenantId = await enforceAiBudget('bus_matrix_streaming');
   const currentDate = currentDateStr();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
     max_tokens: 128000,
     thinking: { type: 'enabled', budget_tokens: 12000 },
-    system: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
+    system: [{
+      type: 'text',
+      text: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
+      cache_control: { type: 'ephemeral' },
+    }],
     messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
 
@@ -774,6 +982,14 @@ export async function generateBusMatrixStreaming(
         logger.warn({ stop_reason: md.delta.stop_reason }, 'Bus matrix stream stopped unexpectedly');
       }
     }
+  }
+
+  if (tenantId) {
+    try {
+      const final = await stream.finalMessage();
+      recordTenantAiUsage(tenantId, final.usage?.input_tokens ?? 0, final.usage?.output_tokens ?? 0)
+        .catch(() => { /* logged inside */ });
+    } catch { /* best-effort */ }
   }
 
   if (!fullText.trim()) {
@@ -833,8 +1049,119 @@ export async function forecastQuery(
   const raw = await callClaude(
     FORECAST_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), dialect),
     buildForecastUser(question),
-    4096,
-    'forecast_query',
+    { maxTokens: 4096, callLabel: 'forecast_query', cacheSystem: true },
   );
   return parseJson<ForecastQueryOutput>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Quality Alert Context — 2-sentence business explanation for a quality alert
+// ---------------------------------------------------------------------------
+
+export async function generateQualityAlertContext(input: QualityAlertInput): Promise<string> {
+  return callClaude(
+    QUALITY_ALERT_SYSTEM,
+    buildQualityAlertUser(input),
+    { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'quality_alert_context' },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 3.1 — Explain widget + Dashboard insights
+// ---------------------------------------------------------------------------
+
+export async function explainWidget(
+  title: string,
+  chartType: string,
+  rows: Record<string, unknown>[],
+): Promise<string> {
+  return callClaude(
+    EXPLAIN_WIDGET_SYSTEM,
+    buildExplainWidgetUser(title, chartType, rows),
+    { model: MODEL_HAIKU, maxTokens: 150, callLabel: 'explain_widget' },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 3.2 — Causal investigation
+// ---------------------------------------------------------------------------
+
+export interface InvestigationPlan {
+  hypothesis: string;
+  queries: { label: string; sql: string }[];
+}
+
+export async function planInvestigation(
+  widgetTitle: string,
+  widgetSql: string,
+  widgetRows: Record<string, unknown>[],
+  question: string,
+): Promise<InvestigationPlan> {
+  const raw = await callClaude(
+    INVESTIGATE_PLAN_SYSTEM,
+    buildInvestigatePlanUser(widgetTitle, widgetSql, widgetRows, question),
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'investigate_plan' },
+  );
+  try {
+    return parseJson<InvestigationPlan>(raw);
+  } catch {
+    return { hypothesis: 'Investigating…', queries: [] };
+  }
+}
+
+export async function synthesizeInvestigation(
+  question: string,
+  hypothesis: string,
+  results: DiagnosticResult[],
+): Promise<string> {
+  return callClaude(
+    INVESTIGATE_SYNTHESIZE_SYSTEM,
+    buildInvestigateSynthesizeUser(question, hypothesis, results),
+    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'investigate_synthesize' },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 3.3 — Dashboard story narration
+// ---------------------------------------------------------------------------
+
+export async function narrateDashboard(
+  dashboardTitle: string,
+  widgets: WidgetNarrativeInput[],
+): Promise<NarrativeOutput> {
+  const raw = await callClaude(
+    NARRATE_SYSTEM,
+    buildNarrateUser(dashboardTitle, widgets),
+    { maxTokens: 1200, callLabel: 'narrate_dashboard' },
+  );
+  try {
+    return parseJson<NarrativeOutput>(raw);
+  } catch {
+    return {
+      headline: dashboardTitle,
+      period: 'Current period',
+      summary: raw.slice(0, 500),
+      sections: [],
+      recommendation: '',
+    };
+  }
+}
+
+export async function generateDashboardInsights(
+  dashboardTitle: string,
+  widgets: WidgetSummary[],
+): Promise<string[]> {
+  const raw = await callClaude(
+    INSIGHTS_SYSTEM,
+    buildInsightsUser(dashboardTitle, widgets),
+    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'dashboard_insights' },
+  );
+  try {
+    const parsed = JSON.parse(raw.trim());
+    if (Array.isArray(parsed) && parsed.length >= 1) {
+      return parsed.slice(0, 3).map(String);
+    }
+  } catch { /* fall through */ }
+  // Fallback: split by newline if JSON parse fails
+  return raw.split('\n').filter(Boolean).slice(0, 3);
 }

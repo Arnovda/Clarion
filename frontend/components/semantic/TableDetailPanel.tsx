@@ -6,6 +6,7 @@ import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import HelpTooltip from '@/components/HelpTooltip';
+import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable } from './shared';
 
 interface Props {
   table: SourceTable;
@@ -15,130 +16,12 @@ interface Props {
   onSaved: () => void;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function parseDomains(raw: SourceTable['domains']): string[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.filter(Boolean);
-  try { return JSON.parse(raw as unknown as string) ?? []; } catch { return []; }
-}
-
-function parseExamples(raw: SourceColumn['example_values']): string[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.map(String).filter(Boolean);
-  } catch {}
-  return [];
-}
-
-/** Classify a SQL data type into a visual category */
-function classifyType(dt: string): { cls: string; icon: string } {
-  const t = (dt ?? '').toLowerCase();
-  if (/^(varchar|char|text|string|nvarchar|nchar|clob)/.test(t))  return { cls: 'dtype-text',    icon: 'Aa' };
-  if (/^(int|big|small|tiny|float|double|decimal|numeric|real|money|serial)/.test(t)) return { cls: 'dtype-numeric', icon: '#' };
-  if (/^(date|time|timestamp|datetime|interval)/.test(t))         return { cls: 'dtype-date',    icon: '&#128197;' };
-  if (/^(bool|boolean|bit)/.test(t))                               return { cls: 'dtype-bool',    icon: '&#10003;' };
-  if (/^(json|jsonb|xml|array)/.test(t))                           return { cls: 'dtype-json',    icon: '{ }' };
-  return { cls: 'dtype-other', icon: '?' };
-}
-
-/** Column completeness score (0-3) */
-function columnCompleteness(col: SourceColumn): 'complete' | 'partial' | 'incomplete' {
-  let score = 0;
-  if (col.description && col.description.trim().length > 0) score++;
-  if (col.is_dimension || col.is_measure) score++;
-  if (!col.ai_draft) score++;
-  return score >= 3 ? 'complete' : score >= 1 ? 'partial' : 'incomplete';
-}
-
-// ---------------------------------------------------------------------------
-// PreviewTable — dark terminal-style data preview
-// ---------------------------------------------------------------------------
-
-function PreviewTable({ connectionId, tableName }: { connectionId: number; tableName: string }) {
-  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [rows, setRows]   = useState<Record<string, unknown>[]>([]);
-  const [cols, setCols]   = useState<string[]>([]);
-
-  async function load() {
-    setState('loading');
-    try {
-      const res = await api.get(`/semantic/preview?connectionId=${connectionId}&table=${encodeURIComponent(tableName)}&limit=10`);
-      setRows(res.data.data.rows);
-      setCols(res.data.data.columns);
-      setState('done');
-    } catch {
-      setState('error');
-    }
-  }
-
-  if (state === 'idle') {
-    return (
-      <button
-        onClick={load}
-        className="inline-flex items-center gap-2 text-xs text-cyan-600 hover:text-cyan-500 font-semibold group transition-colors"
-      >
-        <span className="w-5 h-5 rounded-md bg-cyan-500/10 group-hover:bg-cyan-500/20 flex items-center justify-center transition-colors">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-          </svg>
-        </span>
-        Preview data
-      </button>
-    );
-  }
-
-  if (state === 'loading') {
-    return (
-      <div className="flex items-center gap-2 text-xs text-slate-400">
-        <span className="w-3 h-3 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-        Loading preview...
-      </div>
-    );
-  }
-
-  if (state === 'error') {
-    return <p className="text-xs text-red-400">Could not load preview.</p>;
-  }
-
-  return (
-    <div className="mt-3 panel-enter">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">First {rows.length} rows</span>
-        <button onClick={() => setState('idle')} className="text-[10px] text-slate-400 hover:text-slate-600 transition-colors">Hide</button>
-      </div>
-      <div className="preview-terminal rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr>
-                {cols.map((c) => (
-                  <th key={c} className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">{c}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} className="border-t border-white/[0.04]">
-                  {cols.map((c) => (
-                    <td key={c} className="px-3 py-2 whitespace-nowrap max-w-[200px] truncate" title={String(row[c] ?? '')}>
-                      {row[c] == null ? <span className="text-white/20 italic">null</span> : String(row[c])}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+const columnCompleteness = (col: SourceColumn) =>
+  completenessBucket(
+    !!col.description && col.description.trim().length > 0,
+    !!(col.is_dimension || col.is_measure),
+    !col.ai_draft,
   );
-}
 
 // ---------------------------------------------------------------------------
 // Main panel
@@ -211,29 +94,26 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-gradient-to-br from-surface via-surface to-surface-container-low/30 panel-enter">
+    <div className="flex-1 overflow-y-auto bg-bg panel-enter">
       <div className="px-6 py-6 space-y-6 pb-24">
 
-        {/* ── Gradient mesh header ────────────────────────────────────────── */}
-        <section className="gradient-mesh rounded-2xl p-6 relative overflow-hidden">
-          {/* Decorative circles */}
-          <div className="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-white/[0.04]" />
-          <div className="absolute -bottom-4 -left-4 w-20 h-20 rounded-full bg-white/[0.03]" />
-
-          <div className="relative flex items-start justify-between">
-            <div>
-              <h2 className="text-xl font-headline font-bold text-white tracking-tight">
+        {/* ── Table header ────────────────────────────────────────────────── */}
+        <section className="bg-raised border border-line rounded-lg px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Table</p>
+              <h2 className="font-display text-[24px] text-ink leading-tight tracking-[-0.02em] truncate">
                 {tbl.display_name || tbl.table_name}
               </h2>
-              <p className="text-sm font-mono text-white/40 mt-1">{tbl.table_name}</p>
-              <div className="flex items-center gap-3 mt-3">
-                <span className="text-[10px] font-semibold text-white/50 bg-white/10 px-2.5 py-1 rounded-lg">
+              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+              <div className="flex items-center gap-2 mt-3">
+                <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
                   {cols.length} columns
                 </span>
                 {tbl.is_active ? (
-                  <span className="text-[10px] font-semibold text-emerald-300 bg-emerald-500/15 px-2.5 py-1 rounded-lg">Active</span>
+                  <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ok bg-ok-soft border border-line px-2 py-0.5 rounded">Active</span>
                 ) : (
-                  <span className="text-[10px] font-semibold text-white/30 bg-white/5 px-2.5 py-1 rounded-lg">Inactive</span>
+                  <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 bg-softer border border-line px-2 py-0.5 rounded">Inactive</span>
                 )}
               </div>
             </div>
@@ -249,23 +129,23 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
         </section>
 
         {/* ── Table details — glass card ──────────────────────────────────── */}
-        <section className="glass-card rounded-2xl p-6 space-y-5">
+        <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
           <div className="grid grid-cols-2 gap-5">
             <div>
-              <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Display name</label>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
               <input
                 value={tbl.display_name ?? ''}
                 onChange={(e) => updateTbl({ display_name: e.target.value })}
-                className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all placeholder:text-slate-300"
+                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
                 placeholder="Human-readable name"
               />
             </div>
             <div>
-              <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Active in AI context</label>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Active in AI context</label>
               <select
                 value={tbl.is_active ? 'yes' : 'no'}
                 onChange={(e) => updateTbl({ is_active: e.target.value === 'yes' })}
-                className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all"
+                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
               >
                 <option value="yes">Yes — include in AI context</option>
                 <option value="no">No — exclude from AI context</option>
@@ -274,18 +154,18 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           </div>
 
           <div>
-            <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Description</label>
+            <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Description</label>
             <textarea
               value={tbl.description ?? ''}
               onChange={(e) => updateTbl({ description: e.target.value })}
               rows={2}
-              className="w-full bg-white/60 border border-white/80 rounded-xl px-4 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all resize-none placeholder:text-slate-300"
+              className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none placeholder:text-muted-2"
               placeholder="What does this table contain?"
             />
           </div>
 
           <div>
-            <label className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            <label className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">
               Data domains
               <HelpTooltip text="Tags that categorize this table by business area (e.g. sales, hr, finance). Helps scope AI queries to relevant tables." />
             </label>
@@ -293,9 +173,9 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
             {connectionDomains.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {connectionDomains.map((tag) => (
-                  <span key={tag} title="Inherited from source" className="inline-flex items-center gap-1 text-[10px] bg-slate-100/80 text-slate-500 rounded-lg px-2.5 py-1 font-medium">
+                  <span key={tag} title="Inherited from source" className="inline-flex items-center gap-1 text-[10px] bg-softer text-muted border border-line rounded-md px-2 py-0.5">
                     {tag}
-                    <span className="text-[9px] text-slate-300 italic">source</span>
+                    <span className="text-[9px] text-muted-2 italic">source</span>
                   </span>
                 ))}
               </div>
@@ -304,9 +184,9 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
               {parseDomains(tbl.domains)
                 .filter((tag) => !connectionDomains.includes(tag))
                 .map((tag) => (
-                  <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-gradient-to-r from-violet-100 to-purple-50 text-violet-700 border border-violet-200/50 rounded-lg px-2.5 py-1 font-semibold shadow-sm">
+                  <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-ai-soft text-ai border border-line rounded-md px-2 py-0.5">
                     {tag}
-                    <button onClick={() => removeDomain(tag)} className="hover:text-violet-900 leading-none text-violet-400">&times;</button>
+                    <button onClick={() => removeDomain(tag)} className="hover:text-ai/80 leading-none">&times;</button>
                   </span>
                 ))}
             </div>
@@ -316,11 +196,11 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                 onChange={(e) => setDomainInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
                 placeholder="Add domain tag..."
-                className="flex-1 bg-white/60 border border-white/80 rounded-xl px-4 py-2 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all placeholder:text-slate-300"
+                className="flex-1 bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
               />
               <button
                 onClick={() => addDomain(domainInput)}
-                className="px-4 py-2 text-sm bg-slate-100/80 hover:bg-slate-200/80 text-slate-600 rounded-xl transition-colors font-medium"
+                className="px-4 py-2 text-sm bg-softer hover:bg-bg text-ink-2 border border-line rounded-md transition-colors"
               >Add</button>
             </div>
           </div>
@@ -328,12 +208,12 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           <div className="flex items-center gap-3 pt-2">
             <button
               onClick={() => setShowTableHistory(!showTableHistory)}
-              className="px-4 py-2 text-xs text-slate-500 bg-white/60 border border-white/60 rounded-xl hover:bg-white/80 transition-all font-medium"
+              className="px-4 py-2 text-xs text-muted bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong transition-colors font-medium"
             >
               {showTableHistory ? 'Hide History' : 'History'}
             </button>
             {savedMsg && (
-              <span className="text-xs text-emerald-600 font-semibold flex items-center gap-1">
+              <span className="text-xs text-ok font-semibold flex items-center gap-1">
                 <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
               </span>
             )}
@@ -346,22 +226,22 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           )}
 
           {/* Data preview */}
-          <div className="pt-4 border-t border-slate-200/30">
-            <PreviewTable connectionId={tbl.connection_id} tableName={tbl.table_name} />
+          <div className="pt-4 border-t border-line">
+            <PreviewTable url={`/semantic/preview?connectionId=${tbl.connection_id}&table=${encodeURIComponent(tbl.table_name)}&limit=10`} />
           </div>
         </section>
 
         {/* ── Columns ────────────────────────────────────────────────────── */}
         <section>
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-headline font-bold text-slate-800 flex items-center gap-2">
+            <h3 className="text-sm font-display font-bold text-ink-2 flex items-center gap-2">
               Columns
-              <span className="text-xs font-normal text-slate-400 bg-slate-100/80 px-2 py-0.5 rounded-lg">{cols.length}</span>
+              <span className="text-xs font-normal text-muted-2 bg-softer border border-line px-2 py-0.5 rounded-lg">{cols.length}</span>
             </h3>
-            <div className="flex items-center bg-white/60 border border-white/80 rounded-xl overflow-hidden shadow-sm">
+            <div className="flex items-center bg-raised border border-line rounded-md overflow-hidden">
               <button
                 onClick={() => setColView('grid')}
-                className={`px-3 py-1.5 text-xs transition-all ${colView === 'grid' ? 'bg-primary text-white shadow-glow-primary' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-3 py-1.5 text-xs transition-all ${colView === 'grid' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
                 title="Compact grid"
               >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -370,7 +250,7 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
               </button>
               <button
                 onClick={() => setColView('cards')}
-                className={`px-3 py-1.5 text-xs transition-all border-l border-white/60 ${colView === 'cards' ? 'bg-primary text-white shadow-glow-primary' : 'text-slate-400 hover:text-slate-600'}`}
+                className={`px-3 py-1.5 text-xs transition-all border-l border-line ${colView === 'cards' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
                 title="Expanded cards"
               >
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -383,20 +263,20 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
 
           {/* ── Compact grid view with heatmap ────────────────────────────── */}
           {colView === 'grid' && (
-            <div className="glass-card rounded-2xl overflow-hidden">
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200/40">
-                    <th className="text-left px-4 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Column</th>
-                    <th className="text-left px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Type</th>
-                    <th className="text-left px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Description</th>
-                    <th className="text-center px-2 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">
+                  <tr className="bg-softer border-b border-line">
+                    <th className="text-left px-4 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Column</th>
+                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Type</th>
+                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Description</th>
+                    <th className="text-center px-2 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">
                       <span className="inline-flex items-center gap-0.5">Dim <HelpTooltip text="Dimension columns are used for grouping and filtering (e.g. country, category, date)." /></span>
                     </th>
-                    <th className="text-center px-2 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">
+                    <th className="text-center px-2 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">
                       <span className="inline-flex items-center gap-0.5">Mea <HelpTooltip text="Measure columns contain numeric values that can be aggregated (e.g. revenue, quantity, cost)." /></span>
                     </th>
-                    <th className="text-center px-3 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">Status</th>
+                    <th className="text-center px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Status</th>
                     <th className="text-right px-4 py-3"></th>
                   </tr>
                 </thead>
@@ -413,13 +293,13 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                         key={col.id}
                         id={`col-${col.id}`}
                         className={`border-b border-slate-100/50 last:border-0 transition-all ${heatClass} ${
-                          isFocused ? 'ring-2 ring-inset ring-cyan-400/30' : 'hover:bg-white/40'
+                          isFocused ? 'ring-1 ring-inset ring-ocean/30' : 'hover:bg-softer'
                         }`}
                       >
                         <td className="px-4 py-2.5">
-                          <span className="font-mono text-slate-700 text-[12px]">{col.column_name}</span>
+                          <span className="font-mono text-ink-2 text-[12px]">{col.column_name}</span>
                           {col.display_name && col.display_name !== col.column_name && (
-                            <span className="block text-[10px] text-slate-400 truncate max-w-[140px]">{col.display_name}</span>
+                            <span className="block text-[10px] text-muted-2 truncate max-w-[140px]">{col.display_name}</span>
                           )}
                         </td>
                         <td className="px-3 py-2.5">
@@ -433,18 +313,18 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                             value={col.description ?? ''}
                             onChange={(e) => updateCol(col.id, { description: e.target.value })}
                             placeholder="Add description..."
-                            className="w-full bg-transparent text-slate-600 placeholder:text-slate-300 focus:outline-none focus:bg-white focus:ring-1 focus:ring-cyan-400/50 rounded-md px-2 py-1 -ml-2 text-xs transition-all"
+                            className="w-full bg-transparent text-ink-2 placeholder:text-muted-2 focus:outline-none focus:bg-raised focus:ring-1 focus:ring-ocean/50 rounded-md px-2 py-1 -ml-2 text-xs transition-all"
                           />
                         </td>
                         <td className="text-center px-2 py-2.5">
                           <input type="checkbox" checked={col.is_dimension}
                             onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 text-indigo-600 border-slate-300 focus:ring-indigo-400" />
+                            className="rounded w-3.5 h-3.5 accent-ocean border-line" />
                         </td>
                         <td className="text-center px-2 py-2.5">
                           <input type="checkbox" checked={col.is_measure}
                             onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 text-emerald-600 border-slate-300 focus:ring-emerald-400" />
+                            className="rounded w-3.5 h-3.5 accent-ocean border-line" />
                         </td>
                         <td className="text-center px-3 py-2.5">
                           <ApprovalBadge
@@ -456,7 +336,7 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                         </td>
                         <td className="px-4 py-2.5 text-right">
                           <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                            className="px-2.5 py-1 bg-primary/90 text-white text-[10px] rounded-lg hover:bg-primary disabled:opacity-50 transition-all font-semibold shadow-sm hover:shadow-glow-primary">
+                            className="px-2.5 py-1 bg-ocean text-white text-[10px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
                             {savingCol === col.id ? '...' : 'Save'}
                           </button>
                         </td>
@@ -480,19 +360,19 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                   <div
                     key={col.id}
                     id={`col-${col.id}`}
-                    className={`glass-card rounded-2xl p-5 transition-all panel-enter ${
-                      isFocused ? 'ring-2 ring-cyan-400/40 shadow-glow-teal' : ''
+                    className={`bg-raised border border-line rounded-lg p-5 transition-all panel-enter ${
+                      isFocused ? 'ring-1 ring-ocean/40 border-ocean/40' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2.5 flex-wrap">
-                        <span className="font-mono text-sm text-slate-800 font-semibold">{col.column_name}</span>
+                        <span className="font-mono text-sm text-ink-2 font-semibold">{col.column_name}</span>
                         <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
                           <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
                           {col.data_type}
                         </span>
-                        {col.is_dimension && <span className="text-[10px] text-indigo-600 bg-indigo-50/80 px-2 py-0.5 rounded-md font-semibold">dimension</span>}
-                        {col.is_measure   && <span className="text-[10px] text-emerald-600 bg-emerald-50/80 px-2 py-0.5 rounded-md font-semibold">measure</span>}
+                        {col.is_dimension && <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-ocean bg-ocean-softer border border-line px-2 py-0.5 rounded">dimension</span>}
+                        {col.is_measure   && <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-ok bg-ok-soft border border-line px-2 py-0.5 rounded">measure</span>}
                       </div>
                       <ApprovalBadge
                         entityType="column" entityId={col.id}
@@ -504,7 +384,7 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                     {examples.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mb-3">
                         {examples.map((v, i) => (
-                          <span key={i} className="text-[10px] bg-slate-100/60 text-slate-500 px-2.5 py-0.5 rounded-md font-mono border border-slate-200/40">
+                          <span key={i} className="text-[10px] bg-softer text-muted px-2 py-0.5 rounded font-mono border border-line">
                             {v}
                           </span>
                         ))}
@@ -513,45 +393,45 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
 
                     <div className="grid grid-cols-2 gap-4 mb-4">
                       <div>
-                        <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Display name</label>
+                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Display name</label>
                         <input
                           value={col.display_name ?? ''}
                           onChange={(e) => updateCol(col.id, { display_name: e.target.value })}
-                          className="w-full bg-white/60 border border-white/80 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all"
+                          className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
                         />
                       </div>
                       <div className="flex items-end gap-4 pb-1">
                         <label className="flex items-center gap-1.5 text-sm cursor-pointer">
                           <input type="checkbox" checked={col.is_dimension}
                             onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded text-indigo-600" />
-                          <span className="text-slate-600 text-xs">Dimension</span>
+                            className="rounded accent-ocean" />
+                          <span className="text-ink-2 text-xs">Dimension</span>
                         </label>
                         <label className="flex items-center gap-1.5 text-sm cursor-pointer">
                           <input type="checkbox" checked={col.is_measure}
                             onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded text-emerald-600" />
-                          <span className="text-slate-600 text-xs">Measure</span>
+                            className="rounded accent-ocean" />
+                          <span className="text-ink-2 text-xs">Measure</span>
                         </label>
                       </div>
                     </div>
 
                     <div className="mb-4">
-                      <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Description</label>
+                      <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Description</label>
                       <input
                         value={col.description ?? ''}
                         onChange={(e) => updateCol(col.id, { description: e.target.value })}
-                        className="w-full bg-white/60 border border-white/80 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/30 transition-all"
+                        className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
                       />
                     </div>
 
                     <div className="flex items-center gap-2">
                       <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                        className="px-4 py-1.5 bg-primary text-white text-xs rounded-xl hover:bg-primary-container disabled:opacity-50 transition-all font-semibold shadow-sm hover:shadow-glow-primary">
+                        className="px-4 py-1.5 bg-ocean text-white text-[12px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
                         {savingCol === col.id ? 'Saving...' : 'Confirm column'}
                       </button>
                       <button onClick={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
-                        className="px-3 py-1.5 text-xs text-slate-400 bg-white/60 border border-white/60 rounded-xl hover:bg-white/80 transition-all">
+                        className="px-3 py-1.5 text-xs text-muted-2 bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong transition-colors">
                         {showColHistory === col.id ? 'Hide' : 'History'}
                       </button>
                     </div>
@@ -572,11 +452,11 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
       <div className="fixed bottom-0 left-[460px] right-0 z-20 floating-bar px-6 py-3">
         <div className="max-w-3xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-muted-2">
               {cols.filter((c) => !c.ai_draft).length}/{cols.length} columns confirmed
             </span>
             {savedMsg && (
-              <span className="text-xs text-emerald-600 font-semibold flex items-center gap-1.5 animate-fadeIn">
+              <span className="text-xs text-ok font-semibold flex items-center gap-1.5 animate-fadeIn">
                 <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
               </span>
             )}
@@ -584,7 +464,7 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           <button
             onClick={saveTable}
             disabled={savingTable}
-            className="px-6 py-2.5 gradient-primary text-white text-sm font-semibold rounded-xl hover:opacity-90 disabled:opacity-50 transition-all shadow-glow-primary hover:shadow-glow-teal-md"
+            className="px-6 py-2.5 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
           >
             {savingTable ? (
               <span className="flex items-center gap-2">

@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import AppShell from '@/components/layout/AppShell';
+import RequireRole from '@/components/RequireRole';
 import Pagination from '@/components/Pagination';
 import api from '@/lib/api';
-import { getTokenPayload } from '@/lib/auth';
 import { usePagination } from '@/lib/hooks/useDebounce';
+import { useToast } from '@/components/ui/Toast';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -46,23 +47,24 @@ function formatSql(sql: string): string {
   return result.trim();
 }
 
+const BADGE_CLS = 'text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line';
+
 function ConfidenceBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
-  const cls = pct >= 85 ? 'bg-amber-500/10 text-amber-700' : pct >= 70 ? 'bg-amber-500/10 text-amber-600' : 'bg-error/10 text-error';
-  return <span className={`text-label-md px-2 py-0.5 rounded-pill font-semibold ${cls}`}>{pct}%</span>;
+  const cls = pct >= 85 ? 'bg-ok-soft text-ok' : pct >= 70 ? 'bg-warn-soft text-warn' : 'bg-err-soft text-err';
+  return <span className={`${BADGE_CLS} ${cls}`}>{pct}%</span>;
 }
 
 function StatusBadge({ row }: { row: QueryLogRow }) {
-  if (row.was_flagged) return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-error/10 text-error">Flagged</span>;
-  if (row.executed) return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-green-100 text-green-700">Executed</span>;
-  return <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-amber-100 text-amber-700">Blocked</span>;
+  if (row.was_flagged) return <span className={`${BADGE_CLS} bg-err-soft text-err`}>Flagged</span>;
+  if (row.executed) return <span className={`${BADGE_CLS} bg-ok-soft text-ok`}>Executed</span>;
+  return <span className={`${BADGE_CLS} bg-warn-soft text-warn`}>Blocked</span>;
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function GapsPage() {
-  const role = getTokenPayload()?.role;
-  const isAdminUser = role === 'admin';
+function GapsPageInner() {
+  const toast = useToast();
 
   const [activePill, setActivePill] = useState('gaps');
   const [gaps, setGaps] = useState<Gap[]>([]);
@@ -104,11 +106,20 @@ export default function GapsPage() {
     } catch { setPendingItems([]); } finally { setPendingLoading(false); }
   }, []);
 
-  useEffect(() => { if (isAdminUser) loadGaps(gapsPag.page); }, [isAdminUser, gapsPag.page, loadGaps]);
-  useEffect(() => { if (isAdminUser) loadLog(logPag.page); }, [isAdminUser, logPag.page, loadLog]);
-  useEffect(() => { if (isAdminUser) loadPending(); }, [isAdminUser, loadPending]);
+  useEffect(() => { loadGaps(gapsPag.page); }, [gapsPag.page, loadGaps]);
+  useEffect(() => { loadLog(logPag.page); }, [logPag.page, loadLog]);
+  useEffect(() => { loadPending(); }, [loadPending]);
 
-  async function resolveGap(id: number) { await api.patch(`/reports/gaps/${id}/resolve`); await loadGaps(); }
+  async function resolveGap(id: number) {
+    try {
+      await api.patch(`/reports/gaps/${id}/resolve`);
+      await loadGaps();
+      toast.success('Gap resolved');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Please try again.';
+      toast.error('Could not resolve gap', { description: msg });
+    }
+  }
 
   const unresolvedCount = gaps.filter((g) => !g.resolved).length;
   const totalLog = logRows.length;
@@ -117,35 +128,32 @@ export default function GapsPage() {
   const avgConf = totalLog > 0 ? Math.round((logRows.reduce((s, r) => s + (r.confidence_score ?? 0), 0) / totalLog) * 100) : 0;
 
   const contextPanel = (
-    <div className="p-4 space-y-6">
-      <div>
-        <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider mb-3">Summary</div>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between px-2">
-            <span className="text-body-sm text-on-surface-variant">Open gaps</span>
-            <span className={`text-body-sm font-bold ${unresolvedCount > 0 ? 'text-error' : 'text-on-surface'}`}>{unresolvedCount}</span>
+    <div className="flex flex-col h-full">
+      <div className="px-4 pt-5 pb-3">
+        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Summary</p>
+      </div>
+      <div className="px-4 space-y-2">
+        {[
+          { label: 'Open gaps',        value: unresolvedCount,   alert: unresolvedCount > 0 ? 'err' : null },
+          { label: 'AI suggestions',   value: pendingItems.length, alert: pendingItems.length > 0 ? 'warn' : null },
+          { label: 'Queries logged',   value: logPag.total,      alert: null },
+          { label: 'Avg confidence',   value: `${avgConf}%`,     alert: null },
+        ].map((row) => (
+          <div key={row.label} className="flex items-center justify-between">
+            <span className="text-[12px] text-ink-3">{row.label}</span>
+            <span className={`text-[13px] font-medium tabular-nums ${
+              row.alert === 'err' ? 'text-err' : row.alert === 'warn' ? 'text-warn' : 'text-ink'
+            }`}>
+              {row.value}
+            </span>
           </div>
-          <div className="flex items-center justify-between px-2">
-            <span className="text-body-sm text-on-surface-variant">AI suggestions</span>
-            <span className={`text-body-sm font-bold ${pendingItems.length > 0 ? 'text-amber-600' : 'text-on-surface'}`}>{pendingItems.length}</span>
-          </div>
-          <div className="flex items-center justify-between px-2">
-            <span className="text-body-sm text-on-surface-variant">Queries logged</span>
-            <span className="text-body-sm font-bold text-on-surface">{logPag.total}</span>
-          </div>
-          <div className="flex items-center justify-between px-2">
-            <span className="text-body-sm text-on-surface-variant">Avg confidence</span>
-            <span className="text-body-sm font-bold text-on-surface">{avgConf}%</span>
-          </div>
-        </div>
+        ))}
       </div>
     </div>
   );
 
   return (
     <AppShell
-      title="AI Suggestions"
-      subtitle="Questions the AI couldn't answer, AI suggestions, and query history"
       contextPanel={contextPanel}
       pills={[
         { key: 'gaps', label: `Gaps${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}` },
@@ -155,177 +163,198 @@ export default function GapsPage() {
       activePill={activePill}
       onPillChange={setActivePill}
     >
-      {activePill === 'approvals' ? (
-        <div className="p-6 max-w-4xl">
-          {pendingLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
+      <div className="max-w-4xl mx-auto px-6 pt-10 pb-10 space-y-6">
+        <header>
+          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">
+            {activePill === 'gaps' ? 'Gaps' : activePill === 'approvals' ? 'AI suggestions' : 'Query log'}
+          </p>
+          <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+            {activePill === 'gaps'
+              ? "Questions the AI couldn't answer"
+              : activePill === 'approvals'
+                ? 'AI-generated definitions pending review'
+                : 'Full query history'}
+          </h1>
+        </header>
 
-          {!pendingLoading && pendingItems.length === 0 && (
-            <div className="text-center py-16">
-              <div className="text-4xl mb-3">&#10003;</div>
-              <h3 className="text-title-md font-semibold text-on-surface mb-1">All caught up!</h3>
-              <p className="text-body-sm text-on-surface-variant max-w-sm mx-auto">
-                No AI suggestions pending. New AI-generated definitions will appear here for optional review. Suggestions are auto-confirmed if not reviewed.
-              </p>
-            </div>
-          )}
+        {activePill === 'approvals' ? (
+          <>
+            {pendingLoading && <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted text-center py-8">Loading…</p>}
 
-          {!pendingLoading && pendingItems.length > 0 && (
-            <div className="space-y-2">
-              {pendingItems.map((item) => (
-                <div key={`${item.type}-${item.id}`}
-                  className="flex items-center gap-4 rounded-2xl bg-surface-container-lowest shadow-ambient p-4 hover:bg-surface-container-low transition-colors cursor-pointer"
-                  onClick={() => {
-                    window.location.href = '/semantic';
-                  }}
-                >
-                  <div className="flex-shrink-0">
-                    <span className={`inline-block text-label-md px-2 py-0.5 rounded-pill font-semibold capitalize ${
-                      item.type === 'table' ? 'bg-blue-100 text-blue-700' :
-                      item.type === 'column' ? 'bg-purple-100 text-purple-700' :
-                      'bg-amber-100 text-amber-700'
+            {!pendingLoading && pendingItems.length === 0 && (
+              <div className="bg-raised border border-line rounded-lg p-12 text-center">
+                <p className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] mb-2">All caught up.</p>
+                <p className="text-[13px] text-ink-3 max-w-md mx-auto leading-relaxed">
+                  No AI suggestions pending. New AI-generated definitions will appear here for optional review. Suggestions are auto-confirmed if not reviewed.
+                </p>
+              </div>
+            )}
+
+            {!pendingLoading && pendingItems.length > 0 && (
+              <div className="space-y-2">
+                {pendingItems.map((item) => (
+                  <button
+                    key={`${item.type}-${item.id}`}
+                    onClick={() => { window.location.href = '/semantic'; }}
+                    className="w-full flex items-center gap-4 rounded-lg bg-raised border border-line hover:border-line-strong hover:bg-softer p-4 text-left transition-colors"
+                  >
+                    <span className={`${BADGE_CLS} capitalize flex-shrink-0 ${
+                      item.type === 'table' ? 'bg-ocean-softer text-ocean' :
+                      item.type === 'column' ? 'bg-ai-soft text-ai' :
+                      'bg-warn-soft text-warn'
                     }`}>{item.type}</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-body-sm font-semibold text-on-surface truncate">{item.name}</p>
-                    {item.description && (
-                      <p className="text-label-md text-on-surface-variant truncate">{item.description}</p>
-                    )}
-                  </div>
-                  <div className="flex-shrink-0">
-                    <span className={`text-label-md px-2 py-0.5 rounded-pill font-semibold ${
-                      item.status === 'ai_draft' ? 'bg-amber-500/10 text-amber-600' :
-                      item.status === 'pending' ? 'bg-blue-500/10 text-blue-600' :
-                      'bg-slate-100 text-slate-500'
-                    }`}>{item.status === 'ai_draft' ? 'AI Suggested' : item.status === 'pending' ? 'AI Suggested' : item.status}</span>
-                  </div>
-                  <div className="flex-shrink-0 text-label-sm text-on-surface-variant/50">
-                    {relativeTime(item.updated_at)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : activePill === 'gaps' ? (
-        <div className="p-6 max-w-4xl">
-          {gapsLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
-
-          {!gapsLoading && gaps.length === 0 && (
-            <div className="text-center text-on-surface-variant text-body-md py-16">
-              No definition gaps yet. They'll appear here as users ask questions.
-            </div>
-          )}
-
-          {!gapsLoading && gaps.length > 0 && (
-            <div className="space-y-3">
-              {gaps.map((g) => (
-                <div key={g.id}
-                  className={`rounded-2xl p-5 transition-opacity ${
-                    g.resolved ? 'bg-surface-container-low opacity-50' : 'bg-surface-container-lowest shadow-ambient'
-                  }`}>
-                  <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
-                      <p className="text-body-md font-semibold text-on-surface leading-snug">&ldquo;{g.question_text}&rdquo;</p>
-                      <p className="text-body-sm text-on-surface-variant mt-1">{g.gap_description}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        {g.hit_count > 1 && (
-                          <span className="text-label-md px-2 py-0.5 rounded-pill font-semibold bg-primary/10 text-primary">
-                            blocked {g.hit_count} questions
-                          </span>
-                        )}
-                        <span className="text-label-sm text-on-surface-variant/50">{new Date(g.created_at).toLocaleDateString('nl-BE')}</span>
-                      </div>
-                    </div>
-                    <div className="shrink-0">
-                      {!g.resolved ? (
-                        <button onClick={() => resolveGap(g.id)}
-                          className="px-3.5 py-1.5 text-label-lg font-semibold bg-green-600 text-white rounded-xl hover:bg-green-700 transition-colors">
-                          Mark resolved
-                        </button>
-                      ) : (
-                        <span className="text-label-md px-2.5 py-1 rounded-pill font-semibold bg-green-100 text-green-700">Resolved</span>
+                      <p className="text-[13px] font-medium text-ink truncate">{item.name}</p>
+                      {item.description && (
+                        <p className="text-[12px] text-ink-3 truncate mt-0.5">{item.description}</p>
                       )}
                     </div>
+                    <span className={`${BADGE_CLS} flex-shrink-0 ${
+                      item.status === 'ai_draft' || item.status === 'pending'
+                        ? 'bg-warn-soft text-warn'
+                        : 'bg-softer text-muted'
+                    }`}>{item.status === 'ai_draft' ? 'AI Suggested' : item.status === 'pending' ? 'AI Suggested' : item.status}</span>
+                    <span className="flex-shrink-0 text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
+                      {relativeTime(item.updated_at)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : activePill === 'gaps' ? (
+          <>
+            {gapsLoading && <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted text-center py-8">Loading…</p>}
+
+            {!gapsLoading && gaps.length === 0 && (
+              <div className="bg-raised border border-line rounded-lg p-12 text-center">
+                <p className="text-[13px] text-ink-3 leading-relaxed">
+                  No definition gaps yet. They&rsquo;ll appear here as users ask questions.
+                </p>
+              </div>
+            )}
+
+            {!gapsLoading && gaps.length > 0 && (
+              <div className="space-y-3">
+                {gaps.map((g) => (
+                  <div key={g.id}
+                    className={`rounded-lg p-5 border border-line transition-opacity ${
+                      g.resolved ? 'bg-softer opacity-60' : 'bg-raised'
+                    }`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-display text-[18px] italic text-ink-2 leading-snug">&ldquo;{g.question_text}&rdquo;</p>
+                        <p className="text-[13px] text-ink-3 mt-2 leading-relaxed">{g.gap_description}</p>
+                        <div className="flex items-center gap-2 mt-3">
+                          {g.hit_count > 1 && (
+                            <span className={`${BADGE_CLS} bg-ocean-softer text-ocean`}>
+                              blocked {g.hit_count} questions
+                            </span>
+                          )}
+                          <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2">{new Date(g.created_at).toLocaleDateString('nl-BE')}</span>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {!g.resolved ? (
+                          <button onClick={() => resolveGap(g.id)}
+                            className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors">
+                            Mark resolved
+                          </button>
+                        ) : (
+                          <span className={`${BADGE_CLS} bg-ok-soft text-ok`}>Resolved</span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            )}
+            <div>
+              <Pagination page={gapsPag.page} totalPages={gapsPag.totalPages} hasNext={gapsPag.hasNext}
+                hasPrev={gapsPag.hasPrev} onPrev={gapsPag.prevPage} onNext={gapsPag.nextPage}
+                onGoTo={gapsPag.goToPage} total={gapsPag.total} />
             </div>
-          )}
-          <div className="mt-4">
-            <Pagination page={gapsPag.page} totalPages={gapsPag.totalPages} hasNext={gapsPag.hasNext}
-              hasPrev={gapsPag.hasPrev} onPrev={gapsPag.prevPage} onNext={gapsPag.nextPage}
-              onGoTo={gapsPag.goToPage} total={gapsPag.total} />
-          </div>
-        </div>
-      ) : (
-        <div className="p-6 max-w-5xl">
-          {/* Stats bar */}
-          {!logLoading && totalLog > 0 && (
-            <div className="flex gap-6 mb-5">
-              {[
-                { label: 'Total', value: totalLog, cls: 'text-on-surface' },
-                { label: 'Executed', value: executedLog, cls: 'text-green-700' },
-                { label: 'Flagged', value: flaggedLog, cls: 'text-error' },
-                { label: 'Avg confidence', value: `${avgConf}%`, cls: 'text-on-surface' },
-              ].map((s) => (
-                <div key={s.label} className="text-body-sm">
-                  <span className="text-on-surface-variant">{s.label} </span>
-                  <span className={`font-bold ${s.cls}`}>{s.value}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          </>
+        ) : (
+          <>
+            {/* Stats bar */}
+            {!logLoading && totalLog > 0 && (
+              <div className="flex gap-6 pb-3 border-b border-line">
+                {[
+                  { label: 'Total',          value: totalLog,    tone: 'text-ink' },
+                  { label: 'Executed',       value: executedLog, tone: 'text-ok' },
+                  { label: 'Flagged',        value: flaggedLog,  tone: 'text-err' },
+                  { label: 'Avg confidence', value: `${avgConf}%`, tone: 'text-ink' },
+                ].map((s) => (
+                  <div key={s.label} className="flex flex-col">
+                    <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted">{s.label}</span>
+                    <span className={`text-[18px] font-medium tabular-nums mt-1 ${s.tone}`}>{s.value}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
-          {logLoading && <p className="text-body-sm text-on-surface-variant text-center py-8">Loading...</p>}
-          {!logLoading && logRows.length === 0 && (
-            <div className="text-center text-on-surface-variant text-body-md py-16">No queries logged yet.</div>
-          )}
+            {logLoading && <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted text-center py-8">Loading…</p>}
+            {!logLoading && logRows.length === 0 && (
+              <div className="bg-raised border border-line rounded-lg p-12 text-center">
+                <p className="text-[13px] text-ink-3">No queries logged yet.</p>
+              </div>
+            )}
 
-          {!logLoading && logRows.length > 0 && (
-            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">
-              <table className="w-full text-body-sm">
-                <thead>
-                  <tr className="bg-surface-container-low">
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Question</th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Confidence</th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">Status</th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">When</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {logRows.map((row) => (
-                    <tr key={row.id} onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
-                      className="border-t border-outline-variant/10 hover:bg-surface-container-low cursor-pointer transition-colors">
-                      <td className="px-5 py-3 text-on-surface max-w-xs truncate">{row.question_text}</td>
-                      <td className="px-5 py-3"><ConfidenceBadge score={row.confidence_score ?? 0} /></td>
-                      <td className="px-5 py-3"><StatusBadge row={row} /></td>
-                      <td className="px-5 py-3 text-on-surface-variant">{relativeTime(row.created_at)}</td>
+            {!logLoading && logRows.length > 0 && (
+              <div className="bg-raised border border-line rounded-lg overflow-hidden">
+                <table className="w-full text-[13px]">
+                  <thead>
+                    <tr className="bg-softer border-b border-line">
+                      <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Question</th>
+                      <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Confidence</th>
+                      <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Status</th>
+                      <th className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">When</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {logRows.map((row) => (
+                      <tr key={row.id} onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
+                        className="border-b border-line last:border-b-0 hover:bg-softer cursor-pointer transition-colors">
+                        <td className="px-5 py-3 text-ink-2 max-w-xs truncate">{row.question_text}</td>
+                        <td className="px-5 py-3"><ConfidenceBadge score={row.confidence_score ?? 0} /></td>
+                        <td className="px-5 py-3"><StatusBadge row={row} /></td>
+                        <td className="px-5 py-3 text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">{relativeTime(row.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
 
-              {expandedRow && (() => {
-                const row = logRows.find((r) => r.id === expandedRow);
-                if (!row) return null;
-                return (
-                  <div className="bg-inverse-surface p-5">
-                    <pre className="text-green-400 font-mono text-label-md overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                      {row.generated_sql ? formatSql(row.generated_sql) : '-- No SQL generated'}
-                    </pre>
-                    {row.flag_reason && <p className="mt-2 text-label-md text-error font-medium">Flag: {row.flag_reason}</p>}
-                  </div>
-                );
-              })()}
+                {expandedRow && (() => {
+                  const row = logRows.find((r) => r.id === expandedRow);
+                  if (!row) return null;
+                  return (
+                    <div className="bg-ink p-5 border-t border-line">
+                      <pre className="text-white/80 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                        {row.generated_sql ? formatSql(row.generated_sql) : '-- No SQL generated'}
+                      </pre>
+                      {row.flag_reason && <p className="mt-2 text-[11px] text-err">Flag: {row.flag_reason}</p>}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+            <div>
+              <Pagination page={logPag.page} totalPages={logPag.totalPages} hasNext={logPag.hasNext}
+                hasPrev={logPag.hasPrev} onPrev={logPag.prevPage} onNext={logPag.nextPage}
+                onGoTo={logPag.goToPage} total={logPag.total} />
             </div>
-          )}
-          <div className="mt-4">
-            <Pagination page={logPag.page} totalPages={logPag.totalPages} hasNext={logPag.hasNext}
-              hasPrev={logPag.hasPrev} onPrev={logPag.prevPage} onNext={logPag.nextPage}
-              onGoTo={logPag.goToPage} total={logPag.total} />
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </AppShell>
+  );
+}
+
+export default function GapsPage() {
+  return (
+    <RequireRole roles={['admin']}>
+      <GapsPageInner />
+    </RequireRole>
   );
 }

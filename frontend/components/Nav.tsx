@@ -58,7 +58,7 @@ export default function Nav() {
     : 'No data synced yet';
 
   return (
-    <div className="flex items-center justify-end gap-3 px-5 py-2.5 bg-surface ghost-border-b flex-shrink-0">
+    <div className="flex items-center justify-end gap-3 px-5 py-2.5 bg-surface border-b border-line flex-shrink-0">
       {freshness && (
         <div className="flex items-center gap-1.5 mr-1" title={tooltip}>
           <FreshnessDot status={overallStatus} tooltip={tooltip} />

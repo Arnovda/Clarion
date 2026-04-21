@@ -31,9 +31,35 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-04-08
+**Last updated:** 2026-04-21
 
 **Status:** All original POC build steps (1–11) are complete. The platform has grown significantly beyond the initial POC into a multi-tenant, multi-connector data platform with ETL ingestion, star schema products, quality profiling, background job queues, user management, and Azure production deployment.
+
+**SMB competitive speed layer — Sprint 1.1–1.3 (April 2026):**
+- Sprint 1.1a: `POST /api/dashboards/batch-execute` — single request for all widgets, `Promise.all` execution, one DuckDB connector shared across all widgets. Frontend `executeAllWidgets` replaced per-widget calls with one batch call. `executeSpecForValidation` also parallelised.
+- Sprint 1.1b: After transformation success, DuckDB pool is immediately re-warmed (fire-and-forget `connect()`/`disconnect()`) so the next dashboard load hits a hot pool.
+- Sprint 1.1c: `backend/src/services/widgetCache.ts` — 5-minute in-memory widget result cache keyed on `(tenantId, sha256(resolvedSql))`. Cache is invalidated on transformation and ingestion success. Integrated into `batch-execute` endpoint.
+- Sprint 1.2: `generateMonthlyRollup()` in `transformationRunner.ts` — after each fact table materialises, a `rollup_monthly_<fact>` Parquet is auto-generated (monthly grain, SUM measures, FK dims, surrogate keys excluded via `product_columns` query). Detected by `detectRollupTables()` in `productContext.ts` and injected into semantic context. Dashboard prompt updated to always prefer rollup tables for aggregate/time-series queries.
+- Sprint 1.3: Client-side filter cache via `widgetCacheRef` in `dashboards/page.tsx`.
+- Sprint 2.2: Quality alerts enriched with Claude Haiku–written 2-sentence business context. New `ai_context` column on `quality_alerts`. Fires fire-and-forget after each critical/rule_fail alert insert. `QualityAlertBanner` shows it as italic text below the raw metric.
+- Sprint 2.3: `pivot_table` widget type — cross-tab matrix.
+- Sprint 2.4: KPI drill-to-detail — `DrillDetailModal.tsx` (overlay data table, Escape to close, row count footer). `KpiCard` shows "View detail →" when `spec.drillDownSql` exists; click calls `openDrillDetail()` in `page.tsx` which executes drill SQL via batch-execute and opens modal. Dashboard prompt updated: KPI cards now always include `drillDownSql`. Calculated measures in `DataTableWidget`: "+ formula" button opens inline form, formula evaluated safely via `new Function()` with column names as args, calc columns rendered in ocean colour with row-level computed values. — cross-tab matrix (row_label × col_label → value), heat-mapped cells, auto row/col totals. Wired end-to-end: `types.ts`, `ChartWidgets.tsx` (`PivotTableWidget`), `page.tsx` switch, `dashboardPrompt.ts` (type decision table + full example SQL). KPI delta (`value` + `delta` + `delta_label`) was already in the prompt and KpiCard — no changes needed. Stale-while-revalidate: filter changes show cached data instantly, server revalidates in background. For SELECT filters where `filter.column === widget.crossFilterKey`: pure JavaScript label-match filtering with zero server round-trips. `WidgetData` extended with `revalidating?: boolean`; `WidgetCard` shows a subtle pulse dot while stale data is shown.
+
+**Recent frontend refactor (April 2026 — "Observatory" design system):**
+- Full visual overhaul: editorial serif display font (Source Serif 4), mono eyebrows (Geist Mono), neutral light surfaces, single `ocean` accent. Replaces earlier Material-ish / glass / gradient styles. Tokens live in `frontend/lib/observatory.ts` (JS/SVG mirror) and `frontend/app/globals.css` (CSS variables).
+- New shared primitives in `frontend/components/ui/` (Toast + global `<Toaster />`, NotificationBell, JobProgressBanner, ChartCard, EmptyState).
+- Shell chrome is `AppShell` + `IconRail` + `TopBar` + optional `ContextPanel`; pages slot content via `children`/`contextPanel` props.
+- `/query` page split across 7 files: `page.tsx` (orchestrator), `types.ts`, `utils.ts`, `components.tsx` (leaf UI), `MessageBubble.tsx`, `thinking.tsx`, `ChatSidebar.tsx`, `EmptyState.tsx`. Dropped from 2267 → 859 lines.
+- `/dashboards` page modularized into `./components/` (10 widget files + header + KPI card + filter bar + CreateInput + EmptyDashboardHero), `./utils/` (format, motion, chart-theme, download), `./types.ts`. `page.tsx` is 1471 lines of mode-driven orchestration.
+- `/products` page extracted to `./types.ts`, `./helpers.ts`, `./badges.tsx`; tabs (Schema/Lineage/Bus-Matrix/Kpis) remain inline. `page.tsx` is 1449 lines.
+- `/semantic` table/product detail panels de-duplicated into `components/semantic/shared.tsx` (parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable).
+- Legacy CSS removed from `globals.css`: `.glass-card*`, `.gradient-mesh`, `.gradient-primary`, `.glass-sidebar`, `.widget-card*`, `.dashboard-topbar`, `.ghost-border*`, `.pill-active/inactive`, `.focus-teal/primary`, `.tonal-shift`, `.accent-bar`, `.glow-*`. Went from ~461 → 320 lines.
+- Icon system: `lucide-react` added (v1.8.0). Migrated ~40 inline `<svg>` blocks across shared layout chrome (IconRail, TopBar, NotificationBell, CommandPalette), `/query`, `/dashboards`, `/health`, `/products` to named Lucide components. Remaining inline SVGs are diagram geometry (RelationshipCanvas, StarSchemaFlow, LineageFlow) or legacy panels not yet touched.
+- Auth gating: `components/RequireRole.tsx` wraps admin pages (`/setup`, `/users`, `/gaps`, `/policies`, `/products`); shows a "Restricted" card rather than router-push to avoid disruption.
+- Date formatting consolidated: `frontend/lib/dates.ts` (formatDate/formatDateTime/formatRelative/formatRelativeShort, `en-GB` locale).
+- Tenant chip in TopBar fetches real org name from `/users/profile` (cached in sessionStorage), no longer derived from email domain.
+- Deleted routes: `/connect`, `/cross-views`, `/dictionary`, `/quality`, `/reports`, `/review`, `/team` (consolidated into `/setup`, `/semantic`, `/users`, `/health`).
+- New routes: `/dev/*` (internal playground), `/onboarding` (new-user wizard).
 
 **Neo4j integration status:**
 - All phases complete (0–6). Phase 7 (drop Postgres semantic tables) deferred.
@@ -211,7 +237,8 @@ databridge/
 │       │       ├── dashboardPrompt.ts        ← dashboard generation + refinement
 │       │       ├── starSchemaPrompt.ts       ← star schema design + transformation SQL
 │       │       ├── answerFormatterPrompt.ts   ← report narrative generation
-│       │       └── repairPrompt.ts           ← agentic SQL repair loop
+│       │       ├── repairPrompt.ts           ← agentic SQL repair loop
+│       │       └── qualityAlertPrompt.ts     ← 2-sentence business context for quality alerts (Haiku)
 │       │
 │       ├── connectors/
 │       │   ├── BaseConnector.ts      ← abstract interface + FK detection + table classification
@@ -232,9 +259,10 @@ databridge/
 │       │
 │       ├── jobs/
 │       │   ├── redis.ts              ← IORedis singleton (optional)
-│       │   ├── queues.ts             ← BullMQ queue definitions (3 queues)
-│       │   ├── workers.ts            ← schema-profiling, ingestion, transformation workers
-│       │   └── scheduler.ts          ← repeatable job manager for cron-based schedules
+│       │   ├── queues.ts             ← BullMQ queue definitions (4 queues: profiling, ingestion, transformation, email-report)
+│       │   ├── workers.ts            ← schema-profiling, ingestion, transformation, email-report workers
+│       │   ├── scheduler.ts          ← repeatable job manager for cron-based transformation schedules
+│       │   └── emailScheduler.ts     ← repeatable job manager for email report schedules
 │       │
 │       ├── middleware/
 │       │   ├── auth.ts               ← JWT verify, password hash, role checks (admin/analyst/viewer)
@@ -259,13 +287,17 @@ databridge/
 │       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
 │       │   ├── users.ts              ← admin-only user management; invites; role updates
 │       │   ├── conversations.ts      ← chat history persistence; export results
-│       │   └── notifications.ts      ← user notifications (job complete, quality alerts, invites)
+│       │   ├── notifications.ts      ← user notifications (job complete, quality alerts, invites)
+│       │   └── emailSchedules.ts     ← CRUD dashboard email schedules; send-now trigger
 │       │
 │       ├── services/
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
-│       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL
-│       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet)
-│       │   └── transformationChecks.ts     ← BK uniqueness + fan-out quality gates
+│       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
+│       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
+│       │   ├── transformationChecks.ts     ← BK uniqueness + fan-out quality gates
+│       │   ├── widgetCache.ts             ← 5-min in-memory widget result cache (tenantId + sql_hash keyed)
+│       │   ├── emailService.ts            ← nodemailer wrapper; no-op when SMTP_HOST not configured
+│       │   └── reportEmailService.ts      ← execute dashboard widgets + AI summary + HTML email builder
 │       │
 │       ├── quality/
 │       │   └── QualityProfiler.ts    ← per-field stats: nulls, distinct, min/max, histograms
@@ -308,54 +340,116 @@ databridge/
     ├── public/
     │   └── logo.svg
     ├── app/
-    │   ├── layout.tsx                ← root layout
-    │   ├── globals.css
+    │   ├── layout.tsx                ← root layout + <Toaster /> mount
+    │   ├── globals.css               ← Observatory CSS variables, scrollbar utilities, orbs, heatmap
     │   ├── page.tsx                  ← login / landing page
     │   ├── register/page.tsx         ← new user registration form
     │   ├── forgot-password/page.tsx  ← password reset request
     │   ├── reset-password/page.tsx   ← password reset confirmation (token-based)
     │   ├── profile/page.tsx          ← user profile: display name, password change
-    │   ├── setup/page.tsx            ← connect sources, trigger AI schema profiling
-    │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/KPIs
-    │   │                                (also hosts Quality + Integrations as tabs)
-    │   ├── products/page.tsx         ← data products: star schema design, lineage, quality
-    │   ├── query/page.tsx            ← NL chat interface, repair loop, disambiguation
-    │   ├── dashboards/page.tsx       ← AI dashboard builder, filters, drill-down
-    │   ├── reports/page.tsx          ← KPI selector, bar chart, executive summary
-    │   ├── gaps/page.tsx             ← admin: definition gaps + query log tabs
-    │   ├── users/page.tsx            ← admin: team management, invites, roles
-    │   ├── cross-views/page.tsx      ← redirect → /semantic (consolidated)
-    │   └── quality/page.tsx          ← redirect → /semantic (consolidated)
+    │   ├── onboarding/page.tsx       ← new-user onboarding wizard
+    │   ├── setup/page.tsx            ← admin: connect sources, trigger AI schema profiling (RequireRole)
+    │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/KPIs + Quality + Integrations tabs
+    │   ├── products/                 ← admin-only data products (star schemas, lineage)
+    │   │   ├── page.tsx              ← orchestrator + tabs (overview, bus-matrix, schema, lineage, kpis)
+    │   │   ├── types.ts              ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab
+    │   │   ├── helpers.ts            ← statusBorderColor, productIcon, cleanTopicName
+    │   │   └── badges.tsx            ← StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner
+    │   ├── query/                    ← NL chat with repair loop + disambiguation
+    │   │   ├── page.tsx              ← stateful orchestrator
+    │   │   ├── types.ts              ← Message, DebugInfo, Conversation, RepairState, EntityMismatch/Ambiguity, ForecastData
+    │   │   ├── utils.ts              ← formatSql, formatCellValue
+    │   │   ├── components.tsx        ← SourceSelector, BoldText, ConfidenceBadge, QueryLayerBadge
+    │   │   ├── MessageBubble.tsx     ← main bubble + ResultVisualizer + ForecastChart + LowConfidenceGuide + AdminDebugPanel
+    │   │   ├── thinking.tsx          ← ThinkingBubble (live reasoning) + ThinkingPanel (repair-loop events)
+    │   │   ├── ChatSidebar.tsx       ← conversation list (slots into AppShell contextPanel)
+    │   │   └── EmptyState.tsx        ← pre-chat landing with STARTERS
+    │   ├── dashboards/               ← AI dashboard builder with filters + drill-down
+    │   │   ├── page.tsx              ← orchestrator (mode: empty | choosing | refining | creating | viewing)
+    │   │   ├── layout.tsx            ← app shell wrap
+    │   │   ├── types.ts              ← FilterSpec, WidgetSpec, DashboardSpec, SavedDashboard, DashboardTemplate, DrillState, RefinementQuestion, ChatMessage, WidgetData
+    │   │   ├── utils/
+    │   │   │   ├── format.ts         ← buildDefaultFilters, relTime, formatValue
+    │   │   │   ├── motion.ts         ← Framer Motion variants (containerVariants, slideUp, shimmerClass)
+    │   │   │   ├── chart-theme.ts    ← Recharts palette + style helpers
+    │   │   │   └── download.ts       ← authenticated file-download helper (CSV/XLSX/PDF)
+    │   │   └── components/
+    │   │       ├── CreateInput.tsx           ← reusable text-input + Go button
+    │   │       ├── EmptyDashboardHero.tsx    ← empty-state hero + suggestion chips
+    │   │       ├── DashboardHeader.tsx       ← title + save/discard + dark-mode toggle
+    │   │       ├── FilterBar.tsx             ← dashboard filter row
+    │   │       ├── MarkdownAnswer.tsx        ← streaming markdown renderer
+    │   │       ├── KpiCard.tsx               ← KPI tile with trend + sparkline
+    │   │       ├── ChartWidgets.tsx          ← Bar/Line/Pie/Stacked/Combo/Radar/Treemap/TopList/DataTable
+    │   │       ├── WidgetCard.tsx            ← widget container (header + body + error state)
+    │   │       ├── WidgetSkeletons.tsx       ← shimmer placeholders while loading
+    │   │       ├── Sparkline.tsx             ← compact trend line for KPI cards
+    │   │       ├── PremiumTooltip.tsx        ← styled Recharts tooltip
+    │   │       ├── AnimatedNumber.tsx        ← counting animation for KPI values
+    │   │       └── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
+    │   ├── health/page.tsx           ← data-quality dashboard (split-pane: sidebar + overview/detail pills)
+    │   ├── gaps/page.tsx             ← admin: definition gaps + query log tabs (RequireRole)
+    │   ├── users/page.tsx            ← admin: team management, invites, roles (RequireRole)
+    │   ├── policies/page.tsx        ← admin: data policies (RequireRole)
+    │   ├── notebooks/                ← interactive Python notebooks (Pyodide)
+    │   │   ├── page.tsx              ← list + create notebook
+    │   │   └── [id]/page.tsx         ← editor with cells, schema explorer
+    │   └── dev/                      ← internal-only playground (UI, tokens, icons)
+    │       └── ui/page.tsx
     │
     ├── components/
-    │   ├── Nav.tsx                   ← role-aware nav (admin: Sources, Semantics, Products,
-    │   │                                Gaps, Team; all: Ask, Dashboards) + NotificationBell
+    │   ├── Nav.tsx                   ← legacy role-aware nav (kept for non-shell pages)
+    │   ├── RequireRole.tsx           ← admin gate wrapper (shows "Restricted" card instead of redirecting)
     │   ├── IngestionWizard.tsx       ← step-by-step data ingestion setup
     │   ├── IntegrationsPanel.tsx     ← integration management UI
-    │   ├── JobProgressBanner.tsx     ← background job progress display
-    │   ├── NotificationBell.tsx      ← notification icon + dropdown
+    │   ├── JobProgressBanner.tsx     ← (legacy) background job progress (prefer components/ui/JobProgressBanner)
+    │   ├── NotificationBell.tsx      ← notification icon + dropdown (used by TopBar)
     │   ├── Pagination.tsx            ← generic pagination component
     │   ├── QualityAlertBanner.tsx    ← data quality issue alerts
     │   ├── QualityPanel.tsx          ← quality profiling dashboard
+    │   ├── EmptyState.tsx            ← Observatory empty state (eyebrow/title/description/actions)
     │   ├── SchedulePanel.tsx         ← transformation schedule management
+    │   ├── layout/
+    │   │   ├── AppShell.tsx          ← Observatory chrome (IconRail + TopBar + ContextPanel + children)
+    │   │   ├── AuthLayout.tsx        ← auth-page chrome (login/register/reset)
+    │   │   ├── ShellLayout.tsx       ← legacy shell (superseded by AppShell)
+    │   │   ├── IconRail.tsx          ← leftmost icon nav (Lucide icons, role-aware)
+    │   │   ├── TopBar.tsx            ← header: wordmark + tenant chip + search + notifications + avatar menu
+    │   │   ├── ContextPanel.tsx      ← optional left context panel (sits between IconRail and main)
+    │   │   ├── CommandPalette.tsx    ← Cmd+K palette (nav + actions)
+    │   │   └── PillNav.tsx           ← pill-style tab switcher
     │   ├── products/
-    │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram
-    │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization
-    │   └── semantic/
-    │       ├── ApprovalBadge.tsx     ← approval status indicator
-    │       ├── AuditPanel.tsx        ← audit trail viewer
-    │       ├── BulkImportModal.tsx   ← bulk definition import
-    │       ├── DatabaseTree.tsx      ← database schema tree view
-    │       ├── HistoryPanel.tsx      ← change history tracking
-    │       ├── KpiPanel.tsx          ← KPI definitions management
-    │       ├── PathFinderPanel.tsx   ← relationship path finder
-    │       ├── RelationshipCanvas.tsx ← relationship mapping visualization
-    │       ├── TableDetailPanel.tsx  ← table metadata/details panel
-    │       └── types.ts             ← shared TypeScript types for semantic components
+    │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram (Observatory palette)
+    │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
+    │   ├── semantic/
+    │   │   ├── ApprovalBadge.tsx     ← approval status indicator
+    │   │   ├── AuditPanel.tsx        ← audit trail viewer
+    │   │   ├── BulkImportModal.tsx   ← bulk definition import
+    │   │   ├── DatabaseTree.tsx      ← database schema tree (Observatory light tokens)
+    │   │   ├── HistoryPanel.tsx      ← change history tracking
+    │   │   ├── KpiPanel.tsx          ← KPI definitions management
+    │   │   ├── PathFinderPanel.tsx   ← relationship path finder
+    │   │   ├── RelationshipCanvas.tsx ← relationship mapping visualization
+    │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
+    │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel
+    │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
+    │   │   └── types.ts             ← shared TypeScript types for semantic components
+    │   ├── notebooks/
+    │   │   ├── SchemaExplorer.tsx    ← left sidebar table/schema tree
+    │   │   └── usePyodide.ts         ← Pyodide runtime hook (loads from CDN)
+    │   └── ui/                       ← Observatory primitives (preferred callsites)
+    │       ├── Toast.tsx             ← <Toast> + <Toaster /> + useToast() hook (module-level dispatch queue)
+    │       ├── NotificationBell.tsx  ← (newer variant, dev use)
+    │       ├── JobProgressBanner.tsx ← background job progress (Observatory tokens)
+    │       └── ChartCard.tsx         ← card wrapper for Recharts embeds
     │
     └── lib/
         ├── api.ts                   ← Axios client; JWT interceptor; 401 → redirect to /
         ├── auth.ts                  ← JWT storage, getTokenPayload, isAdmin, setToken
+        ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)
+        ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeShort (en-GB)
+        ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
+        ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
         └── hooks/
             └── useDebounce.ts       ← custom debounce hook
 ```
@@ -393,6 +487,8 @@ databridge/
 20260403000028  create_notifications
 20260404000029  performance_indexes
 20260407000030  add_profiling_status
+20260421000037  create_email_schedules
+20260421000038  add_ai_context_to_quality_alerts
 ```
 
 ---
@@ -573,6 +669,15 @@ CORS_ORIGINS=http://localhost:3000
 # Redis — optional; enables BullMQ job queues + caching
 # If not set, jobs execute inline (synchronous)
 REDIS_URL=redis://localhost:6379
+
+# SMTP — Scheduled email reports (Sprint 2.1)
+# Leave SMTP_HOST blank to disable email sending (no-op in dev)
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM=DataBridge <noreply@yourdomain.com>
 
 # Azure (optional — only needed for production / Azure deployment)
 # AZURE_STORAGE_CONNECTION_STRING=

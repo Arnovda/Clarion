@@ -26,7 +26,8 @@ export interface WidgetSpec {
     | 'data_table'
     | 'combo_chart'
     | 'radar_chart'
-    | 'treemap_chart';
+    | 'treemap_chart'
+    | 'pivot_table';
   title: string;
   sql: string;
   drillDownSql?: string;
@@ -76,6 +77,8 @@ export interface DashboardTemplate {
 export interface WidgetData {
   rows: Record<string, unknown>[];
   loading: boolean;
+  /** true while background revalidation is in flight (data is stale but shown) */
+  revalidating?: boolean;
   error?: string;
 }
 
@@ -116,4 +119,6 @@ export interface WidgetExecutionProps {
   isCrossFilterActive?: boolean;
   /** Human-readable label for the active drill-down value (shown in widget header) */
   drillLabel?: string;
+  /** Called when the user clicks a KPI card to view the underlying records */
+  onDrillDetail?: () => void;
 }

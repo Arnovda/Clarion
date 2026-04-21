@@ -6,27 +6,25 @@ import TopBar from './TopBar';
 import PillNav, { Pill } from './PillNav';
 
 interface AppShellProps {
-  /** Page title for the top bar */
-  title: string;
-  /** Optional subtitle */
+  /** Legacy prop — ignored under Observatory chrome. Page titles live in the page body now. */
+  title?: string;
+  /** Legacy prop — ignored. */
   subtitle?: string;
-  /** Content for the context panel (left sidebar) */
+  /** Content for the context panel (left secondary sidebar). */
   contextPanel?: React.ReactNode;
-  /** Pill navigation items */
+  /** Pill navigation items (rendered below the chrome when provided). */
   pills?: Pill[];
-  /** Currently active pill key */
+  /** Currently active pill key. */
   activePill?: string;
-  /** Callback when pill changes */
+  /** Callback when pill changes. */
   onPillChange?: (key: string) => void;
-  /** Whether to show the global search bar (default: true) */
+  /** Whether to show the command-palette search trigger in the top bar. */
   showSearch?: boolean;
-  /** Main content */
+  /** Main content. */
   children: React.ReactNode;
 }
 
 export default function AppShell({
-  title,
-  subtitle,
   contextPanel,
   pills = [],
   activePill,
@@ -35,29 +33,18 @@ export default function AppShell({
   children,
 }: AppShellProps) {
   return (
-    <div className="flex h-screen overflow-hidden bg-surface">
-      {/* Panel 1: Icon Rail (48px, always visible) */}
-      <IconRail />
-
-      {/* Panel 2: Context Panel (240px, resizable, collapsible) */}
-      {contextPanel && (
-        <ContextPanel>
-          {contextPanel}
-        </ContextPanel>
-      )}
-
-      {/* Panel 3: Main Content (remaining width) */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Top bar with title, pills, search, notifications */}
-        <TopBar title={title} subtitle={subtitle} showSearch={showSearch}>
+    <div className="flex h-screen flex-col overflow-hidden bg-bg">
+      <TopBar showSearch={showSearch} />
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <IconRail />
+        {contextPanel && <ContextPanel>{contextPanel}</ContextPanel>}
+        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {pills.length > 0 && activePill && onPillChange && (
-            <PillNav pills={pills} activePill={activePill} onChange={onPillChange} />
+            <div className="border-b border-line bg-raised px-6 py-2 shrink-0">
+              <PillNav pills={pills} activePill={activePill} onChange={onPillChange} />
+            </div>
           )}
-        </TopBar>
-
-        {/* Scrollable content area */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          {children}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden">{children}</div>
         </div>
       </div>
     </div>

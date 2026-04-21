@@ -110,16 +110,18 @@ Return JSON only — no prose, no markdown fences, no explanation outside the JS
 | Single KPI headline | kpi_card | — |
 | Ranked list with values | top_list or bar_chart | pie_chart |
 | Record-level detail | data_table | — |
+| Two-dimension cross-tab (rows × cols) | pivot_table | data_table |
 
 NEVER use pie_chart with more than 3 data points — use bar_chart instead.
 NEVER use vertical_bar_chart for ranked categories — use bar_chart (horizontal).
 
 ━━━ WIDGET TYPES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-kpi_card — headline number with optional delta. SQL must return ONE row.
-  Required column: "value". Optional: "delta" (% change as number, e.g. 12.5 for +12.5%), "delta_label" (string, e.g. "vs last month").
-  Always try to compute delta against prior period using a subquery with INTERVAL for date math.
-  { "id": "w_revenue", "type": "kpi_card", "title": "Total Revenue", "sql": "WITH curr AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}'), prev AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= CAST('{{date_filter_from}}' AS DATE) - INTERVAL '1 year' AND order_date <= CAST('{{date_filter_to}}' AS DATE) - INTERVAL '1 year') SELECT curr.val as value, ROUND((curr.val - prev.val) / NULLIF(prev.val,0) * 100, 1) as delta, 'vs prior year period' as delta_label FROM curr, prev", "format": "currency", "colSpan": 1 }
+kpi_card — headline number with optional delta AND drill-through.
+  SQL must return ONE row. Required column: "value". Optional: "delta" (% change as number, e.g. 12.5 for +12.5%), "delta_label" (string, e.g. "vs last month").
+  Always compute delta against prior period using a WITH clause and INTERVAL date math.
+  Always add "drillDownSql" — the detail query shown when the user clicks "View detail →". It returns the underlying records (no LIMIT) and uses the same date filter placeholders.
+  { "id": "w_revenue", "type": "kpi_card", "title": "Total Revenue", "sql": "WITH curr AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}'), prev AS (SELECT ROUND(SUM(amount),2) as val FROM orders WHERE order_date >= CAST('{{date_filter_from}}' AS DATE) - INTERVAL '1 year' AND order_date <= CAST('{{date_filter_to}}' AS DATE) - INTERVAL '1 year') SELECT curr.val as value, ROUND((curr.val - prev.val) / NULLIF(prev.val,0) * 100, 1) as delta, 'vs prior year period' as delta_label FROM curr, prev", "drillDownSql": "SELECT id, customer_name, amount, order_date FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}' ORDER BY order_date DESC LIMIT 500", "drillDownLabel": "Orders in period", "format": "currency", "colSpan": 1 }
 
 vertical_bar_chart — monthly/quarterly time series. SQL returns "label" (period string) and "value", ordered chronologically. Optional "target" column for a reference line.
   { "id": "w_monthly", "type": "vertical_bar_chart", "title": "Monthly Revenue — 2025 vs Prior Year", "sql": "SELECT strftime('%Y-%m', order_date) as label, ROUND(SUM(amount),2) as value FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}' GROUP BY 1 ORDER BY 1", "format": "currency", "colSpan": 2 }
@@ -142,6 +144,9 @@ top_list — ranked list. SQL returns "label" and "value".
 data_table — tabular detail. SQL returns multiple named columns. Always colSpan 3.
   { "id": "w_table", "type": "data_table", "title": "Recent Orders Detail", "sql": "...", "colSpan": 3 }
 
+pivot_table — cross-tab matrix (rows × columns → values). Use when the user wants to compare a measure across TWO dimensions simultaneously (e.g. revenue by month × category, headcount by department × role). SQL MUST return exactly three columns: "row_label", "col_label", "value". Always colSpan 3. Cells are heat-mapped by intensity automatically. Row and column totals are added automatically.
+  { "id": "w_pivot", "type": "pivot_table", "title": "Revenue by Month × Category", "sql": "SELECT strftime('%Y-%m', o.order_date) AS row_label, p.category AS col_label, ROUND(SUM(ol.quantity * ol.unit_price),2) AS value FROM order_lines ol JOIN orders o ON ol.order_id = o.id JOIN products p ON ol.product_id = p.id WHERE o.order_date >= '{{date_filter_from}}' AND o.order_date <= '{{date_filter_to}}' GROUP BY 1, 2 ORDER BY 1, 2", "format": "currency", "colSpan": 3 }
+
 ━━━ FILTER SPEC FORMAT (REQUIRED FIELDS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Date range filter — use for any date/time column:
@@ -153,6 +158,15 @@ Select filter — use for low-cardinality categorical columns (status, category,
 CRITICAL: Both filter types MUST include "table" and "column" — they are used to load dropdown options.
 Never omit "table". Never omit "column". Never set them to null or undefined.
 Use exactly the real table name and column name from the schema context provided.
+
+━━━ PERFORMANCE — USE ROLLUP TABLES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+If the schema context lists any tables whose names begin with rollup_monthly_,
+ALWAYS use them instead of the raw fact table for time-series and aggregate queries.
+Rollup tables are 100–1000× smaller than fact tables and already contain SUMmed measures.
+They expose: month (TIMESTAMP), dimension columns, measure columns (already summed), _row_count.
+NEVER wrap rollup measures in an additional SUM — they are already aggregated per month.
+Use the raw fact table ONLY for record-level detail (data_table widgets showing individual rows).
 
 ━━━ FILTER PLACEHOLDER RULES (CRITICAL) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -263,7 +277,7 @@ export interface FilterSpec {
 
 export interface WidgetSpec {
   id: string;
-  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table';
+  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart' | 'pivot_table';
   title: string;
   sql: string;
   drillDownSql?: string;

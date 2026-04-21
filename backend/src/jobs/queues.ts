@@ -36,6 +36,11 @@ export interface TransformationJobData {
   triggeredBy: string;
 }
 
+export interface EmailReportJobData {
+  scheduleId: number;
+  tenantId: number;
+}
+
 // ---------------------------------------------------------------------------
 // Queue instances (null if Redis not configured)
 // ---------------------------------------------------------------------------
@@ -43,6 +48,7 @@ export interface TransformationJobData {
 let schemaProfilingQueue: Queue<SchemaProfilingJobData> | null = null;
 let ingestionQueue: Queue<IngestionJobData> | null = null;
 let transformationQueue: Queue<TransformationJobData> | null = null;
+let emailReportQueue: Queue<EmailReportJobData> | null = null;
 
 export function getSchemaProfilingQueue(): Queue<SchemaProfilingJobData> | null {
   if (schemaProfilingQueue) return schemaProfilingQueue;
@@ -68,6 +74,14 @@ export function getTransformationQueue(): Queue<TransformationJobData> | null {
   return transformationQueue;
 }
 
+export function getEmailReportQueue(): Queue<EmailReportJobData> | null {
+  if (emailReportQueue) return emailReportQueue;
+  const conn = getRedisConnection();
+  if (!conn) return null;
+  emailReportQueue = new Queue<EmailReportJobData>('email-report', { connection: conn });
+  return emailReportQueue;
+}
+
 /**
  * Close all queues gracefully.
  */
@@ -76,8 +90,10 @@ export async function closeQueues(): Promise<void> {
     schemaProfilingQueue?.close(),
     ingestionQueue?.close(),
     transformationQueue?.close(),
+    emailReportQueue?.close(),
   ]);
   schemaProfilingQueue = null;
   ingestionQueue = null;
   transformationQueue = null;
+  emailReportQueue = null;
 }

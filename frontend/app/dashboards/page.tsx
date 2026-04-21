@@ -2,9 +2,10 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Nav from '@/components/Nav';
+import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react';
 import api from '@/lib/api';
-import { getToken, getTokenPayload } from '@/lib/auth';
+import { getTokenPayload } from '@/lib/auth';
+import { useToast } from '@/components/ui/Toast';
 
 // ─── Extracted types ─────────────────────────────────────────────────────────
 import type {
@@ -37,82 +38,27 @@ import {
   ComboChartWidget,
   RadarChartWidget,
   TreemapWidget,
+  PivotTableWidget,
 } from './components/ChartWidgets';
 import { FilterBar } from './components/FilterBar';
-import { DashboardHeader } from './components/DashboardHeader';
 import { MarkdownAnswer } from './components/MarkdownAnswer';
+import { CreateInput } from './components/CreateInput';
+import { EmptyDashboardHero } from './components/EmptyDashboardHero';
+import { EmailSchedulePanel } from './components/EmailSchedulePanel';
+import { DrillDetailModal } from './components/DrillDetailModal';
+import { InsightsStrip, InsightsStripSkeleton } from './components/InsightsStrip';
+import { InvestigationPanel } from './components/InvestigationPanel';
+import { StoryModal } from './components/StoryModal';
+import { downloadFile } from './utils/download';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
-/** Authenticated file download helper */
-function downloadFile(url: string, filename: string) {
-  const token = getToken();
-  fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-    .then((r) => {
-      if (!r.ok) throw new Error('Export failed');
-      return r.blob();
-    })
-    .then((blob) => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    })
-    .catch(() => alert('Export failed'));
-}
-
-// ─── CreateInput (kept inline — tightly coupled to page state) ───────────────
-
-function CreateInput({
-  value, onChange, onSubmit, loading, compact, inputRef,
-}: {
-  value:     string;
-  onChange:  (v: string) => void;
-  onSubmit:  () => void;
-  loading:   boolean;
-  compact?:  boolean;
-  inputRef?: React.RefObject<HTMLInputElement>;
-}) {
-  return (
-    <div className={`flex gap-2 ${compact ? '' : 'w-full max-w-lg'}`}>
-      <input
-        ref={compact ? undefined : inputRef}
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && onSubmit()}
-        placeholder={compact ? 'Describe a dashboard...' : 'e.g. Sales overview by product and region'}
-        className={`flex-1 px-3 py-2 text-sm rounded-xl border transition-all
-          ${compact
-            ? 'bg-white/8 border-white/10 text-slate-200 placeholder-slate-500 focus:ring-cyan-400/30 focus:border-cyan-400/30'
-            : 'bg-white/60 border-white/80 text-slate-800 placeholder-slate-400 focus:ring-cyan-400/30 focus:border-cyan-400/40'
-          }
-          focus:outline-none focus:ring-2
-          shadow-sm disabled:opacity-50`}
-        disabled={loading}
-      />
-      <button
-        onClick={onSubmit}
-        disabled={loading || !value.trim()}
-        className={`px-4 py-2 text-sm font-bold rounded-xl transition-all
-          ${compact
-            ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/30'
-            : 'gradient-primary text-white shadow-lg shadow-[#003358]/20 hover:shadow-xl hover:scale-[1.02]'
-          }
-          disabled:opacity-50 disabled:cursor-not-allowed`}
-      >
-        {loading ? '...' : 'Go'}
-      </button>
-    </div>
-  );
-}
-
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 export default function DashboardsPage() {
+  const toast = useToast();
   const [dashboards, setDashboards] = useState<SavedDashboard[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [currentSpec, setCurrentSpec] = useState<DashboardSpec | null>(null);
@@ -147,9 +93,16 @@ export default function DashboardsPage() {
   const [autoRefreshActive, setAutoRefreshActive] = useState(false);
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [drillModal, setDrillModal] = useState<{ title: string; loading: boolean; rows: Record<string, unknown>[] } | null>(null);
+  const [insights, setInsights] = useState<string[] | null>(null);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsDismissed, setInsightsDismissed] = useState(false);
+  const [investigationTarget, setInvestigationTarget] = useState<{ spec: WidgetSpec; data: WidgetData } | null>(null);
+  const [storyOpen, setStoryOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const dashboardGridRef = useRef<HTMLDivElement>(null);
+  const widgetCacheRef = useRef<Record<string, WidgetData>>({});
 
   // ── Load saved dashboards ──────────────────────────────────────────────────
 
@@ -166,29 +119,7 @@ export default function DashboardsPage() {
     }
   }, []);
 
-  // ── Execute a single widget ────────────────────────────────────────────────
-
-  async function executeWidget(widgetId: string, sql: string, filters: Record<string, string>, connId: number) {
-    setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: [], loading: true } }));
-    try {
-      const res = await api.post('/dashboards/execute', {
-        connectionId: connId,
-        sql,
-        filterValues: filters,
-      });
-      if (res.data.ok === false) {
-        setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: [], loading: false, error: res.data.error ?? 'Query failed' } }));
-      } else {
-        setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: res.data.data?.rows ?? [], loading: false } }));
-      }
-    } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Query failed';
-      setWidgetData((prev) => ({ ...prev, [widgetId]: { rows: [], loading: false, error: msg } }));
-    }
-  }
-
-  // ── Execute all widgets ───────────────────────────────────────────────────
+  // ── Execute all widgets in a single batch request ─────────────────────────
 
   const executeAllWidgets = useCallback(
     async (
@@ -197,18 +128,95 @@ export default function DashboardsPage() {
       xFilter: DrillState | null,
       connId: number,
     ) => {
-      for (const widget of spec.widgets) {
+      const hasCachedData = Object.keys(widgetCacheRef.current).length > 0;
+
+      // First load: show skeletons. Subsequent calls (filter changes): keep showing
+      // cached data while the background request is in flight (stale-while-revalidate).
+      if (!hasCachedData) {
+        setWidgetData((prev) => {
+          const next = { ...prev };
+          for (const w of spec.widgets) next[w.id] = { rows: [], loading: true };
+          return next;
+        });
+      } else {
+        // Mark cached entries as revalidating so widgets can show a subtle indicator
+        setWidgetData((prev) => {
+          const next = { ...prev };
+          for (const w of spec.widgets) {
+            const cached = next[w.id];
+            if (cached && !cached.loading) next[w.id] = { ...cached, revalidating: true };
+          }
+          return next;
+        });
+      }
+
+      const widgetsPayload = spec.widgets.map((widget) => {
         const isDrilled = xFilter?.widgetId === widget.id && widget.drillDownSql;
         const sql = isDrilled ? widget.drillDownSql! : widget.sql;
-        const filterPayload: Record<string, string> = {
-          ...filters,
-          ...(isDrilled ? { drill_value: xFilter!.value } : {}),
-          ...(xFilter ? { [`xf_${xFilter.key}`]: xFilter.value } : {}),
+        return {
+          id: widget.id,
+          sql,
+          filterValues: {
+            ...filters,
+            ...(isDrilled ? { drill_value: xFilter!.value } : {}),
+            ...(xFilter ? { [`xf_${xFilter.key}`]: xFilter.value } : {}),
+          },
         };
-        executeWidget(widget.id, sql, filterPayload, connId);
+      });
+
+      try {
+        const res = await api.post('/dashboards/batch-execute', {
+          connectionId: connId,
+          widgets: widgetsPayload,
+        });
+
+        if (res.data.ok) {
+          const results = res.data.data.results as Record<string, { rows?: Record<string, unknown>[]; error?: string }>;
+          const newEntries: Record<string, WidgetData> = {};
+          for (const [id, r] of Object.entries(results)) {
+            newEntries[id] = r.error
+              ? { rows: [], loading: false, error: r.error }
+              : { rows: r.rows ?? [], loading: false };
+          }
+          // Update the client-side cache with fresh data
+          widgetCacheRef.current = { ...widgetCacheRef.current, ...newEntries };
+          setWidgetData((prev) => ({ ...prev, ...newEntries }));
+
+          // Fire insights once on first load (not on filter/drill changes)
+          if (!hasCachedData) {
+            const summaries = spec.widgets.map((w) => ({
+              title: w.title,
+              type: w.type,
+              rows: (results[w.id]?.rows ?? []).slice(0, 5),
+            }));
+            setInsights(null);
+            setInsightsDismissed(false);
+            setInsightsLoading(true);
+            api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
+              .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
+              .catch(() => {})
+              .finally(() => setInsightsLoading(false));
+          }
+        } else {
+          setWidgetData((prev) => {
+            const next = { ...prev };
+            for (const w of spec.widgets) next[w.id] = { rows: [], loading: false, error: res.data.error ?? 'Query failed' };
+            return next;
+          });
+        }
+      } catch (err: unknown) {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Query failed';
+        // On error, clear the revalidating flag but keep showing cached data
+        setWidgetData((prev) => {
+          const next = { ...prev };
+          for (const w of spec.widgets) {
+            const cached = widgetCacheRef.current[w.id];
+            next[w.id] = cached ? { ...cached, revalidating: false } : { rows: [], loading: false, error: msg };
+          }
+          return next;
+        });
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -308,11 +316,19 @@ export default function DashboardsPage() {
         description: currentSpec.description,
         spec: currentSpec,
       });
+      const savedId = res.data?.data?.id ?? res.data?.id;
       setIsUnsaved(false);
-      setActiveId(res.data.data.id);
+      if (savedId) setActiveId(savedId);
       await loadDashboards();
-    } catch {
-      // ignore
+      toast.success('Dashboard saved');
+    } catch (err) {
+      const msg =
+        (err as { response?: { data?: { error?: string; message?: string } } })?.response?.data?.error
+        ?? (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+        ?? (err as { message?: string })?.message
+        ?? 'Please try again.';
+      console.error('[saveDashboard]', err);
+      toast.error('Could not save dashboard', { description: msg });
     } finally {
       setSaving(false);
     }
@@ -327,6 +343,8 @@ export default function DashboardsPage() {
       const spec: DashboardSpec =
         typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
       const defaults = buildDefaultFilters(spec.filters);
+      // Clear client-side cache so new dashboard shows skeletons, not stale data
+      widgetCacheRef.current = {};
       setCurrentSpec(spec);
       setFilterValues(defaults);
       setCrossFilter(null);
@@ -374,11 +392,41 @@ export default function DashboardsPage() {
     }
   }
 
+  // ── Drill-to-detail (KPI cards) ──────────────────────────────────────────
+
+  async function openDrillDetail(widget: { id: string; title: string; drillDownSql?: string; drillDownLabel?: string }) {
+    if (!widget.drillDownSql || !connectionId) return;
+    const title = widget.drillDownLabel ?? `${widget.title} — detail`;
+    setDrillModal({ title, loading: true, rows: [] });
+    try {
+      const res = await api.post('/dashboards/batch-execute', {
+        connectionId,
+        widgets: [{ id: widget.id, sql: widget.drillDownSql, filterValues }],
+      });
+      const rows = res.data.data?.results?.[widget.id]?.rows ?? [];
+      setDrillModal({ title, loading: false, rows });
+    } catch {
+      setDrillModal({ title, loading: false, rows: [] });
+    }
+  }
+
   // ── Handle cross-filter / drill-down ─────────────────────────────────────
 
   function handleCrossFilter(widgetId: string, xfKey: string, value: string | null) {
     if (!value || (crossFilter?.widgetId === widgetId && crossFilter?.value === value)) {
       setCrossFilter(null);
+      // Instantly restore cached data while server revalidates
+      const cache = widgetCacheRef.current;
+      if (Object.keys(cache).length > 0 && currentSpec) {
+        setWidgetData((prev) => {
+          const next = { ...prev };
+          for (const w of currentSpec.widgets) {
+            const cached = cache[w.id];
+            if (cached) next[w.id] = { ...cached, revalidating: true };
+          }
+          return next;
+        });
+      }
       if (currentSpec) executeAllWidgets(currentSpec, filterValues, null, connectionId);
       return;
     }
@@ -394,7 +442,39 @@ export default function DashboardsPage() {
   function handleFilterChange(key: string, value: string) {
     const newFilters = { ...filterValues, [key]: value };
     setFilterValues(newFilters);
-    if (currentSpec) executeAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
+
+    if (!currentSpec) return;
+
+    const cache = widgetCacheRef.current;
+    const hasCache = Object.keys(cache).length > 0;
+
+    if (hasCache) {
+      // Find if this is a select filter whose column matches a widget's crossFilterKey.
+      // If so, apply the filter to cached rows instantly — zero server round-trip.
+      const filterSpec = currentSpec.filters.find((f) => f.id === key && f.type === 'select');
+
+      setWidgetData((prev) => {
+        const next = { ...prev };
+        for (const widget of currentSpec.widgets) {
+          const cached = cache[widget.id];
+          if (!cached || cached.error) continue;
+
+          if (filterSpec && widget.crossFilterKey === filterSpec.column && value !== 'all') {
+            // Exact label-match filter — zero latency, no server needed for this widget
+            next[widget.id] = {
+              rows: cached.rows.filter((r) => String(r.label) === value),
+              loading: false,
+            };
+          } else {
+            // Show stale data while revalidating (will be updated by executeAllWidgets)
+            next[widget.id] = { ...cached, revalidating: true };
+          }
+        }
+        return next;
+      });
+    }
+
+    executeAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
   }
 
   // ── Intent detection -- routes to query or refine ─────────────────────────
@@ -493,6 +573,7 @@ export default function DashboardsPage() {
   // ── Helper: discard unsaved dashboard ────────────────────────────────────
 
   function discardDashboard() {
+    widgetCacheRef.current = {};
     setCurrentSpec(null);
     setIsUnsaved(false);
     setActiveId(null);
@@ -648,22 +729,22 @@ export default function DashboardsPage() {
     return (
       <button
         onClick={() => openDashboard(d.id)}
-        className={`w-full text-left px-3 py-2.5 rounded-xl group flex items-start justify-between gap-1 transition-all duration-200 ${
+        className={`w-full text-left px-3 py-2.5 group flex items-start justify-between gap-1 transition-colors border-l-2 ${
           isActive
-            ? 'bg-cyan-500/10 border-l-2 border-cyan-400 pl-2.5'
-            : 'hover:bg-white/5 border-l-2 border-transparent'
+            ? 'bg-ocean-softer border-ocean'
+            : 'border-transparent hover:bg-softer'
         }`}
       >
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
-            <p className={`text-[13px] font-medium truncate ${isActive ? 'text-cyan-300' : 'text-slate-300'}`}>
+            <p className={`text-[13px] truncate leading-snug ${isActive ? 'text-ink font-medium' : 'text-ink-2'}`}>
               {d.title}
             </p>
-            {d.is_shared && <span className="shrink-0 text-[9px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-full font-semibold">shared</span>}
-            {!d.is_owner && <span className="shrink-0 text-[9px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded-full font-semibold">{d.permission}</span>}
+            {d.is_shared && <span className="shrink-0 text-[9px] font-mono tracking-[0.08em] uppercase bg-softer text-muted px-1.5 py-0.5 rounded border border-line">shared</span>}
+            {!d.is_owner && <span className="shrink-0 text-[9px] font-mono tracking-[0.08em] uppercase bg-ai-soft text-ai px-1.5 py-0.5 rounded border border-line">{d.permission}</span>}
           </div>
-          <p className="text-[11px] text-slate-600 mt-0.5">
-            {d.folder && <span className="text-slate-600 mr-1">{d.folder} /</span>}
+          <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-1">
+            {d.folder && <span className="mr-1">{d.folder} /</span>}
             {relTime(d.updated_at)}
           </p>
         </div>
@@ -672,42 +753,34 @@ export default function DashboardsPage() {
             <>
               <button
                 onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
-                className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-cyan-400 rounded text-xs transition-colors"
+                className="w-5 h-5 flex items-center justify-center text-muted-2 hover:text-ocean rounded transition-colors"
                 title="Duplicate"
               >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
+                <Copy className="w-3.5 h-3.5" strokeWidth={2} />
               </button>
               <button
                 onClick={(e) => toggleFavorite(d.id, e)}
-                className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${d.is_favorite ? 'text-amber-400' : 'text-slate-500 hover:text-amber-400'}`}
+                className={`w-5 h-5 flex items-center justify-center rounded transition-colors ${d.is_favorite ? 'text-amber-500' : 'text-muted-2 hover:text-amber-500'}`}
                 title={d.is_favorite ? 'Remove from favorites' : 'Add to favorites'}
               >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill={d.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.5}>
-                  <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                </svg>
+                <Star className="w-3.5 h-3.5" strokeWidth={1.5} fill={d.is_favorite ? 'currentColor' : 'none'} />
               </button>
               <button
                 onClick={(e) => deleteDashboard(d.id, e)}
-                className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-red-400 rounded text-xs transition-colors"
+                className="w-5 h-5 flex items-center justify-center text-muted-2 hover:text-err rounded transition-colors"
                 title="Delete"
               >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                <X className="w-3.5 h-3.5" strokeWidth={2} />
               </button>
             </>
           )}
           {!d.is_owner && (
             <button
               onClick={(e) => { e.stopPropagation(); duplicateDashboard(d.id); }}
-              className="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-cyan-400 rounded text-xs transition-colors"
+              className="w-5 h-5 flex items-center justify-center text-muted-2 hover:text-ocean rounded transition-colors"
               title="Duplicate to my dashboards"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
+              <Copy className="w-3.5 h-3.5" strokeWidth={2} />
             </button>
           )}
         </div>
@@ -723,7 +796,7 @@ export default function DashboardsPage() {
     const defaultCols: Record<string, number> = {
       kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
       line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
-      combo_chart: 6, radar_chart: 6, treemap_chart: 6,
+      combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
     };
     const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
     const col12 = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
@@ -749,21 +822,31 @@ export default function DashboardsPage() {
     } : undefined;
 
     const widgetProps = { spec: widget, data };
+    const canInvestigate = widget.type !== 'kpi_card' && widget.type !== 'pivot_table';
     const cardProps = {
       key: widget.id,
       spec: widget,
+      data,
       colSpan: col12,
       isFiltered,
       isCrossFilterSource,
+      revalidating: data.revalidating,
       onExportCsv: exportCsv,
       onExportXlsx: exportXlsx,
+      onInvestigate: canInvestigate ? () => setInvestigationTarget(
+        investigationTarget?.spec.id === widget.id ? null : { spec: widget, data }
+      ) : undefined,
+      isInvestigating: investigationTarget?.spec.id === widget.id,
     };
 
     switch (widget.type) {
       case 'kpi_card':
         return (
           <WidgetCard {...cardProps}>
-            <KpiCard {...widgetProps} />
+            <KpiCard
+              {...widgetProps}
+              onDrillDetail={widget.drillDownSql ? () => openDrillDetail(widget) : undefined}
+            />
           </WidgetCard>
         );
       case 'bar_chart':
@@ -831,6 +914,12 @@ export default function DashboardsPage() {
             <TreemapWidget {...widgetProps} />
           </WidgetCard>
         );
+      case 'pivot_table':
+        return (
+          <WidgetCard {...cardProps}>
+            <PivotTableWidget {...widgetProps} />
+          </WidgetCard>
+        );
       default:
         return null;
     }
@@ -838,155 +927,150 @@ export default function DashboardsPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  const sidebarContent = (
+    <div className="flex flex-col h-full">
+      {/* Sidebar header */}
+      <div className="px-4 pt-5 pb-3">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Dashboards</span>
+          <button
+            onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
+            className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors"
+          >
+            + New
+          </button>
+        </div>
+        <CreateInput
+          compact
+          value={createInput}
+          onChange={setCreateInput}
+          onSubmit={initiateCreate}
+          loading={createLoading}
+        />
+        {createError && <p className="text-[11px] text-err mt-1.5">{createError}</p>}
+      </div>
+
+      {/* My / Shared / Templates toggle */}
+      <div className="px-3 flex gap-1">
+        <button
+          onClick={() => { setShowShared(false); setActiveFolder(null); }}
+          className={`flex-1 text-[11px] font-mono tracking-[0.08em] uppercase py-1.5 rounded-md transition-colors ${!showShared ? 'text-ocean bg-ocean-softer' : 'text-muted hover:text-ink-2 hover:bg-softer'}`}
+        >
+          My
+        </button>
+        <button
+          onClick={() => { setShowShared(true); setActiveFolder(null); }}
+          className={`flex-1 text-[11px] font-mono tracking-[0.08em] uppercase py-1.5 rounded-md transition-colors ${showShared ? 'text-ocean bg-ocean-softer' : 'text-muted hover:text-ink-2 hover:bg-softer'}`}
+        >
+          Shared
+        </button>
+        <button
+          onClick={() => setShowTemplates(true)}
+          className="flex-1 text-[11px] font-mono tracking-[0.08em] uppercase py-1.5 rounded-md text-muted hover:text-ink-2 hover:bg-softer transition-colors"
+          title="Browse templates"
+        >
+          Templates
+        </button>
+      </div>
+
+      {/* Folder filter */}
+      {!showShared && folders.length > 0 && (
+        <div className="px-3 pt-3 flex flex-wrap gap-1">
+          <button
+            onClick={() => setActiveFolder(null)}
+            className={`text-[10px] font-mono tracking-[0.06em] uppercase px-2.5 py-0.5 rounded-full border transition-colors ${activeFolder === null ? 'bg-ocean-softer text-ocean border-ocean/30' : 'text-muted border-line hover:border-line-strong hover:text-ink-2'}`}
+          >
+            All
+          </button>
+          {folders.map((f) => (
+            <button
+              key={f}
+              onClick={() => setActiveFolder(activeFolder === f ? null : f)}
+              className={`text-[10px] font-mono tracking-[0.06em] uppercase px-2.5 py-0.5 rounded-full border transition-colors ${activeFolder === f ? 'bg-ocean-softer text-ocean border-ocean/30' : 'text-muted border-line hover:border-line-strong hover:text-ink-2'}`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Dashboard list */}
+      <div className="flex-1 overflow-y-auto py-2 scrollbar-thin">
+        {favorites.length > 0 && (
+          <>
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 px-4 py-1.5">Favorites</p>
+            {favorites.map((d) => <DashboardListItem key={d.id} d={d} />)}
+            {regular.length > 0 && <div className="my-2 border-t border-line mx-3" />}
+          </>
+        )}
+        {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
+        {visibleDashboards.length === 0 && (
+          <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted-2 text-center mt-6 px-4 leading-relaxed">
+            {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
   return (
-    <div className="h-screen overflow-hidden flex flex-col"
-      style={{ background: 'linear-gradient(135deg, #eef2ff 0%, #f8faff 40%, #f3f0ff 100%)' }}>
-      <Nav />
+    <div className="flex flex-1 overflow-hidden min-h-0 relative">
 
-      <div className="flex flex-1 overflow-hidden" style={{ height: 'calc(100vh - 57px)' }}>
+      {/* Story modal */}
+      {storyOpen && currentSpec && (
+        <StoryModal
+          dashboardTitle={currentSpec.title}
+          widgets={currentSpec.widgets}
+          widgetData={widgetData}
+          dashboardGridRef={dashboardGridRef}
+          onClose={() => setStoryOpen(false)}
+        />
+      )}
 
-        {/* ── Left sidebar ── */}
-        <aside className="w-60 glass-sidebar flex flex-col shrink-0 overflow-hidden">
-          {/* Sidebar header */}
-          <div className="px-4 py-4 border-b border-white/8">
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-[11px] font-bold text-cyan-400/80 uppercase tracking-[0.15em]">Dashboards</span>
-              <button
-                onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
-                className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold transition-colors"
-              >
-                + New
-              </button>
-            </div>
-            <CreateInput
-              compact
-              value={createInput}
-              onChange={setCreateInput}
-              onSubmit={initiateCreate}
-              loading={createLoading}
-            />
-            {createError && <p className="text-xs text-red-400 mt-1">{createError}</p>}
-          </div>
+      {/* Drill-to-detail modal */}
+      {drillModal && (
+        <DrillDetailModal
+          title={drillModal.title}
+          loading={drillModal.loading}
+          rows={drillModal.rows}
+          onClose={() => setDrillModal(null)}
+        />
+      )}
 
-          {/* My / Shared toggle */}
-          <div className="px-3 pt-3 flex gap-1">
-            <button
-              onClick={() => { setShowShared(false); setActiveFolder(null); }}
-              className={`flex-1 text-[11px] py-1.5 rounded-lg font-semibold transition-all ${!showShared ? 'bg-cyan-500/15 text-cyan-400 shadow-sm ring-1 ring-cyan-500/20' : 'text-slate-500 hover:bg-white/5 hover:text-slate-400'}`}
-            >
-              My
-            </button>
-            <button
-              onClick={() => { setShowShared(true); setActiveFolder(null); }}
-              className={`flex-1 text-[11px] py-1.5 rounded-lg font-semibold transition-all ${showShared ? 'bg-cyan-500/15 text-cyan-400 shadow-sm ring-1 ring-cyan-500/20' : 'text-slate-500 hover:bg-white/5 hover:text-slate-400'}`}
-            >
-              Shared
-            </button>
-            <button
-              onClick={() => setShowTemplates(true)}
-              className="flex-1 text-[11px] py-1.5 rounded-lg font-semibold text-slate-500 hover:bg-white/5 hover:text-slate-400 transition-all"
-              title="Browse templates"
-            >
-              Templates
-            </button>
-          </div>
+      {/* ── Left sidebar ── */}
+      <aside className="w-60 bg-soft border-r border-line flex flex-col shrink-0 overflow-hidden">
+        {sidebarContent}
+      </aside>
 
-          {/* Folder filter */}
-          {!showShared && folders.length > 0 && (
-            <div className="px-3 pt-2 flex flex-wrap gap-1">
-              <button
-                onClick={() => setActiveFolder(null)}
-                className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all ${activeFolder === null ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'text-slate-500 border-white/8 hover:border-cyan-500/30 hover:text-cyan-400'}`}
-              >
-                All
-              </button>
-              {folders.map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setActiveFolder(activeFolder === f ? null : f)}
-                  className={`text-[10px] px-2.5 py-0.5 rounded-full border transition-all ${activeFolder === f ? 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30' : 'text-slate-500 border-white/8 hover:border-cyan-500/30 hover:text-cyan-400'}`}
-                >
-                  {f}
-                </button>
-              ))}
-            </div>
-          )}
+      {/* ── Main area ── */}
+      <main className="flex-1 overflow-hidden flex flex-col bg-bg">
 
-          {/* Dashboard list */}
-          <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5 scrollbar-thin">
-            {favorites.length > 0 && (
-              <>
-                <p className="text-[10px] text-slate-600 uppercase tracking-[0.15em] px-2 py-1.5 font-bold">Favorites</p>
-                {favorites.map((d) => <DashboardListItem key={d.id} d={d} />)}
-                {regular.length > 0 && <div className="my-2 border-t border-white/5" />}
-              </>
-            )}
-            {regular.map((d) => <DashboardListItem key={d.id} d={d} />)}
-            {visibleDashboards.length === 0 && (
-              <p className="text-xs text-slate-600 text-center mt-6 px-2">
-                {showShared ? 'No shared dashboards yet' : 'No saved dashboards yet'}
-              </p>
-            )}
-          </div>
-        </aside>
-
-        {/* ── Main area ── */}
-        <main className="flex-1 overflow-hidden flex flex-col">
-
-          {/* Empty state */}
+          {/* Empty state — Observatory hero */}
           {mode === 'empty' && (
-            <div className="flex items-center justify-center h-full p-8">
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                className="widget-card rounded-2xl p-10 max-w-md w-full text-center"
-              >
-                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-lg shadow-indigo-500/25">
-                  <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-                  </svg>
-                </div>
-                <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-2">Build your first dashboard</h2>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-                  Describe what you want to see and let AI design it for you.
-                </p>
-                <div className="flex justify-center mb-6">
-                  <CreateInput
-                    value={createInput}
-                    onChange={setCreateInput}
-                    onSubmit={initiateCreate}
-                    loading={createLoading}
-                    inputRef={inputRef}
-                  />
-                </div>
-                {createError && <p className="text-xs text-red-500 mb-4">{createError}</p>}
-                <div className="flex flex-wrap justify-center gap-2">
-                  {['Sales overview', 'Customer analysis', 'Product performance'].map((prompt) => (
-                    <button
-                      key={prompt}
-                      onClick={() => { setCreateInput(prompt); setMode('choosing'); }}
-                      className="px-3.5 py-1.5 text-xs bg-slate-100/80 dark:bg-slate-700/50 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 text-slate-600 dark:text-slate-300 hover:text-indigo-700 dark:hover:text-indigo-300 rounded-full transition-all shadow-sm border border-slate-200/60 dark:border-slate-600/40"
-                    >
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            </div>
+            <EmptyDashboardHero
+              createInput={createInput}
+              setCreateInput={setCreateInput}
+              onInitiate={initiateCreate}
+              onChooseDirect={() => setMode('choosing')}
+              loading={createLoading}
+              error={createError}
+              inputRef={inputRef}
+            />
           )}
 
           {/* Choosing: refine first or generate now */}
           {mode === 'choosing' && (
-            <div className="flex items-center justify-center h-full p-8">
+            <div className="flex-1 overflow-y-auto">
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                className="widget-card rounded-2xl p-8 max-w-lg w-full"
+                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                className="max-w-lg w-full mx-auto px-6 pt-14 pb-10"
               >
-                <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Your request</p>
-                <p className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-4 leading-snug">&ldquo;{createInput}&rdquo;</p>
+                <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Your request</p>
+                <p className="font-display text-[28px] leading-[1.15] tracking-[-0.02em] text-ink mb-8 [&_em]:italic [&_em]:text-ink-2">
+                  <em>&ldquo;{createInput}&rdquo;</em>
+                </p>
 
                 {/* Data domain selector */}
                 {connections.length > 1 && (() => {
@@ -999,17 +1083,17 @@ export default function DashboardsPage() {
                     }
                   }
                   return (
-                    <div className="mb-5">
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 font-medium">Data domain</p>
-                      <div className="flex flex-wrap gap-2">
+                    <div className="mb-6">
+                      <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data domain</p>
+                      <div className="flex flex-wrap gap-1.5">
                         {chips.map((chip) => (
                           <button
                             key={`${chip.connId}-${chip.label}`}
                             onClick={() => setConnectionId(chip.connId)}
-                            className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium capitalize shadow-sm ${
+                            className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors capitalize ${
                               connectionId === chip.connId
-                                ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
-                                : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
+                                ? 'bg-ocean text-white border-ocean'
+                                : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                             }`}
                           >
                             {chip.label}
@@ -1022,15 +1106,15 @@ export default function DashboardsPage() {
 
                 {/* Data product selector */}
                 {products.length > 0 && (
-                  <div className="mb-5">
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mb-1.5 font-medium">Data model(s)</p>
-                    <div className="flex flex-wrap gap-2">
+                  <div className="mb-6">
+                    <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data model(s)</p>
+                    <div className="flex flex-wrap gap-1.5">
                       <button
                         onClick={() => setSelectedProductIds([])}
-                        className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium shadow-sm ${
+                        className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
                           selectedProductIds.length === 0
-                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
-                            : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
+                            ? 'bg-ocean text-white border-ocean'
+                            : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                         }`}
                       >
                         All products
@@ -1045,10 +1129,10 @@ export default function DashboardsPage() {
                                 : [...prev, p.id],
                             );
                           }}
-                          className={`px-3 py-1.5 text-xs rounded-full border transition-all font-medium shadow-sm ${
+                          className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
                             selectedProductIds.includes(p.id)
-                              ? 'bg-violet-600 text-white border-violet-600 shadow-violet-500/20'
-                              : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-violet-400 hover:text-violet-600 dark:hover:text-violet-300'
+                              ? 'bg-ai text-white border-ai'
+                              : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                           }`}
                         >
                           {p.name}
@@ -1056,85 +1140,73 @@ export default function DashboardsPage() {
                       ))}
                     </div>
                     {selectedProductIds.length > 0 && (
-                      <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
-                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected -- dashboard will only use tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
+                      <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-2">
+                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard limited to tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
                       </p>
                     )}
                   </div>
                 )}
 
-                <p className="text-sm text-slate-500 dark:text-slate-400 mb-5">How would you like to proceed?</p>
-                <div className="grid grid-cols-2 gap-3">
+                <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-3">How would you like to proceed?</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <button
                     onClick={askForRefinement}
-                    className="flex flex-col items-start gap-2 p-4 rounded-xl transition-all text-left
-                      border-2 border-indigo-200/60 dark:border-indigo-700/40
-                      bg-indigo-50/50 dark:bg-indigo-900/10
-                      hover:border-indigo-400 dark:hover:border-indigo-500
-                      hover:bg-indigo-50 dark:hover:bg-indigo-900/20
-                      hover:shadow-lg hover:shadow-indigo-500/10"
+                    className="flex flex-col items-start gap-2 p-4 rounded-lg bg-raised border border-line hover:border-ocean/40 hover:bg-ocean-softer text-left transition-colors group"
                   >
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-600 flex items-center justify-center shadow-md shadow-indigo-500/20">
-                      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                      </svg>
+                    <div className="w-9 h-9 rounded-md bg-ocean-softer text-ocean border border-line flex items-center justify-center group-hover:bg-ocean group-hover:text-white group-hover:border-ocean transition-colors">
+                      <Lightbulb className="w-[18px] h-[18px]" strokeWidth={1.5} />
                     </div>
-                    <span className="text-sm font-semibold text-indigo-800 dark:text-indigo-200">Refine with AI first</span>
-                    <span className="text-xs text-indigo-600/80 dark:text-indigo-400/80">Answer a few questions so AI can tailor the dashboard exactly to your needs</span>
+                    <span className="text-[14px] font-medium text-ink">Refine with AI first</span>
+                    <span className="text-[12px] text-ink-3 leading-relaxed">Answer a few questions so AI can tailor the dashboard exactly to your needs.</span>
                   </button>
                   <button
                     onClick={() => createDashboard()}
-                    className="flex flex-col items-start gap-2 p-4 rounded-xl transition-all text-left
-                      border-2 border-slate-200/60 dark:border-slate-600/40
-                      bg-slate-50/50 dark:bg-slate-800/30
-                      hover:border-slate-400 dark:hover:border-slate-500
-                      hover:bg-slate-50 dark:hover:bg-slate-800/50
-                      hover:shadow-lg hover:shadow-slate-500/10"
+                    className="flex flex-col items-start gap-2 p-4 rounded-lg bg-raised border border-line hover:border-line-strong hover:bg-softer text-left transition-colors group"
                   >
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-500 to-slate-700 flex items-center justify-center shadow-md shadow-slate-500/20">
-                      <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
+                    <div className="w-9 h-9 rounded-md bg-softer text-ink-2 border border-line flex items-center justify-center group-hover:bg-ink group-hover:text-white group-hover:border-ink transition-colors">
+                      <Zap className="w-[18px] h-[18px]" strokeWidth={1.5} />
                     </div>
-                    <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Generate now</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">Let AI decide what to include based on best practices and your schema</span>
+                    <span className="text-[14px] font-medium text-ink">Generate now</span>
+                    <span className="text-[12px] text-ink-3 leading-relaxed">Let AI decide what to include based on best practices and your schema.</span>
                   </button>
                 </div>
                 <button
                   onClick={() => setMode('empty')}
-                  className="mt-4 text-xs text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                  className="mt-5 text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 transition-colors"
                 >
-                  &larr; Back
+                  ← Back
                 </button>
-                {createError && <p className="text-xs text-red-500 mt-3">{createError}</p>}
+                {createError && <p className="text-[12px] text-err mt-3">{createError}</p>}
               </motion.div>
             </div>
           )}
 
           {/* Refining: AI questions */}
           {mode === 'refining' && (
-            <div className="flex items-center justify-center h-full p-8">
+            <div className="flex-1 overflow-y-auto">
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
+                initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-                className="widget-card rounded-2xl p-8 max-w-xl w-full"
+                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                className="max-w-xl w-full mx-auto px-6 pt-14 pb-10"
               >
-                <p className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Refining</p>
-                <p className="text-base font-semibold text-slate-800 dark:text-slate-200 mb-1">&ldquo;{createInput}&rdquo;</p>
-                <p className="text-xs text-slate-400 dark:text-slate-500 mb-6">Answer what you can -- skip anything that doesn&apos;t apply</p>
+                <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Refining</p>
+                <p className="font-display text-[28px] leading-[1.15] tracking-[-0.02em] text-ink mb-1.5 [&_em]:italic [&_em]:text-ink-2">
+                  <em>&ldquo;{createInput}&rdquo;</em>
+                </p>
+                <p className="text-[12px] text-ink-3 mb-7 leading-relaxed">Answer what you can — skip anything that doesn&apos;t apply.</p>
 
                 {refinementLoading ? (
                   <div className="flex items-center gap-3 py-8 justify-center">
-                    <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                    <span className="text-sm text-slate-500 dark:text-slate-400">Thinking of the right questions...</span>
+                    <div className="w-4 h-4 border-2 border-ocean border-t-transparent rounded-full animate-spin" />
+                    <span className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">Thinking of the right questions…</span>
                   </div>
                 ) : (
                   <div className="space-y-6">
                     {refinementQuestions.map((q, idx) => (
                       <div key={idx}>
-                        <p className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-2">
-                          <span className="text-indigo-500 font-bold mr-1.5">{idx + 1}.</span>
+                        <p className="text-[14px] text-ink mb-2 leading-relaxed">
+                          <span className="text-muted font-mono mr-1.5">{String(idx + 1).padStart(2, '0')}</span>
                           {q.question}
                         </p>
                         {/* Suggestion chips */}
@@ -1146,10 +1218,10 @@ export default function DashboardsPage() {
                                 ...prev,
                                 [idx]: prev[idx] === s ? '' : s,
                               }))}
-                              className={`px-3 py-1.5 text-xs rounded-full border transition-all shadow-sm ${
+                              className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
                                 refinementAnswers[idx] === s
-                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-indigo-500/20'
-                                  : 'bg-white/80 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 border-slate-200/60 dark:border-slate-600/40 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
+                                  ? 'bg-ocean text-white border-ocean'
+                                  : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                               }`}
                             >
                               {s}
@@ -1160,33 +1232,24 @@ export default function DashboardsPage() {
                           type="text"
                           value={refinementAnswers[idx] ?? ''}
                           onChange={(e) => setRefinementAnswers((prev) => ({ ...prev, [idx]: e.target.value }))}
-                          placeholder="Or type your own answer..."
-                          className="w-full px-3 py-1.5 text-xs rounded-lg border
-                            border-slate-200/60 dark:border-slate-600/40
-                            bg-white/70 dark:bg-slate-800/60
-                            focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400
-                            text-slate-700 dark:text-slate-200 placeholder-slate-300 dark:placeholder-slate-600
-                            transition-all"
+                          placeholder="Or type your own answer…"
+                          className="w-full px-3 py-2 text-[13px] rounded-md border border-line bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
                         />
                       </div>
                     ))}
 
-                    <div className="flex gap-3 pt-2">
+                    <div className="flex gap-2 pt-2">
                       <button
                         onClick={() => createDashboard(Object.values(refinementAnswers).filter(Boolean))}
                         disabled={createLoading}
-                        className="flex-1 py-2.5 text-sm font-semibold rounded-xl text-white transition-all
-                          bg-gradient-to-r from-indigo-600 to-blue-600
-                          hover:from-indigo-700 hover:to-blue-700
-                          shadow-md shadow-indigo-500/20
-                          disabled:opacity-50"
+                        className="flex-1 py-2.5 text-[13px] font-medium rounded-md text-white bg-ocean hover:bg-ocean-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {createLoading ? 'Generating...' : 'Generate Dashboard'}
+                        {createLoading ? 'Generating…' : 'Generate Dashboard'}
                       </button>
                       <button
                         onClick={() => createDashboard()}
                         disabled={createLoading}
-                        className="px-4 py-2.5 border border-slate-200/60 dark:border-slate-600/40 hover:bg-slate-50 dark:hover:bg-slate-700/30 text-slate-500 dark:text-slate-400 text-sm rounded-xl transition-all"
+                        className="px-4 py-2.5 text-[13px] rounded-md border border-line text-ink-2 hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50"
                         title="Skip refinement and generate now"
                       >
                         Skip
@@ -1194,9 +1257,9 @@ export default function DashboardsPage() {
                     </div>
                     <button
                       onClick={() => setMode('choosing')}
-                      className="text-xs text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+                      className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 transition-colors"
                     >
-                      &larr; Back
+                      ← Back
                     </button>
                   </div>
                 )}
@@ -1204,59 +1267,59 @@ export default function DashboardsPage() {
             </div>
           )}
 
-          {/* Generating state -- wireframe preview */}
+          {/* Generating state — wireframe preview */}
           {mode === 'creating' && (
-            <div className="flex items-center justify-center h-full px-8">
-              <div className="w-full max-w-3xl">
-                <div className="text-center mb-6">
-                  <div className="flex justify-center mb-3">
-                    <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <div className="flex-1 overflow-y-auto">
+              <div className="w-full max-w-3xl mx-auto px-6 pt-12 pb-10">
+                <div className="mb-8 flex items-center gap-3">
+                  <div className="w-4 h-4 border-2 border-ocean border-t-transparent rounded-full animate-spin" />
+                  <div>
+                    <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Generating</p>
+                    <p className="text-[15px] text-ink leading-snug">AI is designing widgets, filters, and SQL queries…</p>
                   </div>
-                  <p className="text-base font-semibold text-slate-700 dark:text-slate-200">Generating your dashboard...</p>
-                  <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">AI is designing widgets, filters, and SQL queries</p>
                 </div>
 
                 {/* Wireframe skeleton preview */}
-                <div className="widget-card rounded-2xl p-6 space-y-4">
+                <div className="bg-raised border border-line rounded-lg p-6 space-y-5">
                   <div className="flex items-center justify-between">
-                    <div className={`${shimmerClass} h-5 w-48`} />
+                    <div className={`${shimmerClass} h-4 w-44 rounded`} />
                     <div className="flex gap-2">
-                      <div className={`${shimmerClass} h-7 w-20 rounded-lg`} />
-                      <div className={`${shimmerClass} h-7 w-20 rounded-lg`} />
+                      <div className={`${shimmerClass} h-7 w-20 rounded-md`} />
+                      <div className={`${shimmerClass} h-7 w-20 rounded-md`} />
                     </div>
                   </div>
                   <div className="grid grid-cols-4 gap-3">
                     {[0.8, 1.0, 0.6, 0.9].map((delay, i) => (
-                      <div key={i} className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-2">
-                        <div className={`${shimmerClass} h-3 w-16`} style={{ animationDelay: `${delay}s` }} />
-                        <div className={`${shimmerClass} h-6 w-20`} style={{ animationDelay: `${delay + 0.2}s` }} />
+                      <div key={i} className="rounded-md border border-line p-4 space-y-2">
+                        <div className={`${shimmerClass} h-3 w-16 rounded`} style={{ animationDelay: `${delay}s` }} />
+                        <div className={`${shimmerClass} h-6 w-20 rounded`} style={{ animationDelay: `${delay + 0.2}s` }} />
                       </div>
                     ))}
                   </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-3">
-                      <div className={`${shimmerClass} h-3 w-24`} />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-md border border-line p-4 space-y-3">
+                      <div className={`${shimmerClass} h-3 w-24 rounded`} />
                       <div className="flex items-end gap-2 h-24">
                         {[40, 65, 45, 80, 55, 70, 50].map((h, i) => (
                           <div key={i} className={`flex-1 ${shimmerClass} rounded-t`} style={{ height: `${h}%`, animationDelay: `${i * 0.15}s` }} />
                         ))}
                       </div>
                     </div>
-                    <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-3">
-                      <div className={`${shimmerClass} h-3 w-28`} />
+                    <div className="rounded-md border border-line p-4 space-y-3">
+                      <div className={`${shimmerClass} h-3 w-28 rounded`} />
                       <div className="flex items-center justify-center h-24">
-                        <div className="w-20 h-20 border-8 border-slate-100/60 dark:border-slate-700/30 border-t-indigo-200 dark:border-t-indigo-500/30 rounded-full animate-spin" style={{ animationDuration: '3s' }} />
+                        <div className="w-20 h-20 border-[6px] border-line border-t-ocean rounded-full animate-spin" style={{ animationDuration: '3s' }} />
                       </div>
                     </div>
                   </div>
-                  <div className="rounded-xl border border-slate-100/60 dark:border-slate-700/30 p-4 space-y-2">
-                    <div className={`${shimmerClass} h-3 w-20`} />
+                  <div className="rounded-md border border-line p-4 space-y-2">
+                    <div className={`${shimmerClass} h-3 w-20 rounded`} />
                     <div className="space-y-1.5">
                       {[1, 2, 3].map((i) => (
                         <div key={i} className="flex gap-4">
-                          <div className={`${shimmerClass} h-3 w-24`} style={{ animationDelay: `${i * 0.2}s` }} />
-                          <div className={`${shimmerClass} h-3 w-16`} style={{ animationDelay: `${i * 0.2 + 0.1}s` }} />
-                          <div className={`${shimmerClass} h-3 flex-1`} style={{ animationDelay: `${i * 0.2 + 0.2}s` }} />
+                          <div className={`${shimmerClass} h-3 w-24 rounded`} style={{ animationDelay: `${i * 0.2}s` }} />
+                          <div className={`${shimmerClass} h-3 w-16 rounded`} style={{ animationDelay: `${i * 0.2 + 0.1}s` }} />
+                          <div className={`${shimmerClass} h-3 flex-1 rounded`} style={{ animationDelay: `${i * 0.2 + 0.2}s` }} />
                         </div>
                       ))}
                     </div>
@@ -1269,15 +1332,15 @@ export default function DashboardsPage() {
           {/* Dashboard view */}
           {mode === 'viewing' && currentSpec && (
             <div className="flex-1 flex flex-col overflow-hidden">
-              {/* Top bar — gradient mesh header */}
-              <div className="dashboard-topbar px-6 py-4 flex items-center justify-between gap-4 shrink-0 shadow-lg">
+              {/* Top bar */}
+              <div className="px-6 py-4 flex items-center justify-between gap-4 shrink-0 border-b border-line bg-raised">
                 <div className="min-w-0">
-                  <h1 className="font-bold text-lg text-white leading-tight tracking-tight">{currentSpec.title}</h1>
+                  <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">{currentSpec.title}</h1>
                   {currentSpec.description && (
-                    <p className="text-sm text-white/70 mt-0.5 truncate">{currentSpec.description}</p>
+                    <p className="text-[12px] text-ink-3 mt-0.5 truncate leading-relaxed">{currentSpec.description}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {/* Settings dropdown (share, folder, auto-refresh) */}
                   {activeId && !isUnsaved && (() => {
                     const activeDash = dashboards.find((d) => d.id === activeId);
@@ -1286,28 +1349,21 @@ export default function DashboardsPage() {
                       <div className="relative">
                         <button
                           onClick={() => setSettingsOpen(!settingsOpen)}
-                          className="w-8 h-8 flex items-center justify-center rounded-lg
-                            border border-white/20
-                            bg-white/10
-                            hover:bg-white/20
-                            transition-colors"
+                          className="w-8 h-8 flex items-center justify-center rounded-md border border-line text-ink-3 hover:bg-softer hover:text-ink-2 hover:border-line-strong transition-colors"
                           title="Dashboard settings"
                         >
-                          <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                          </svg>
+                          <Settings className="w-4 h-4" strokeWidth={1.5} />
                         </button>
                         {settingsOpen && (
-                          <div className="absolute right-0 top-10 z-50 w-64 bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/60 dark:border-slate-700/40 rounded-xl shadow-2xl p-3 space-y-3"
+                          <div className="absolute right-0 top-10 z-50 w-80 bg-raised border border-line rounded-lg shadow-2 p-4 space-y-4"
                                onClick={(e) => e.stopPropagation()}>
                             <div>
-                              <label className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-300">
+                              <label className="flex items-center gap-2 text-[12px] text-ink-2">
                                 <input
                                   type="checkbox"
                                   checked={activeDash.is_shared}
                                   onChange={() => toggleSharing(activeId)}
-                                  className="rounded border-slate-300"
+                                  className="rounded border-line accent-ocean"
                                 />
                                 Share with team
                               </label>
@@ -1315,7 +1371,7 @@ export default function DashboardsPage() {
                                 <select
                                   value={activeDash.shared_permission}
                                   onChange={(e) => updateSharedPermission(activeId, e.target.value)}
-                                  className="mt-1 w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
+                                  className="mt-2 w-full text-[12px] border border-line rounded-md px-2 py-1.5 bg-raised text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
                                 >
                                   <option value="viewer">Team can view</option>
                                   <option value="editor">Team can edit</option>
@@ -1323,18 +1379,18 @@ export default function DashboardsPage() {
                               )}
                             </div>
                             <div>
-                              <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Folder</label>
+                              <label className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted block mb-1.5">Folder</label>
                               <input
                                 type="text"
                                 defaultValue={activeDash.folder ?? ''}
                                 placeholder="Uncategorized"
                                 onBlur={(e) => moveToFolder(activeId, e.target.value || null)}
                                 onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                                className="w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
+                                className="w-full text-[12px] border border-line rounded-md px-2 py-1.5 bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
                               />
                             </div>
                             <div>
-                              <label className="text-xs font-medium text-slate-600 dark:text-slate-300 block mb-1">Auto-refresh</label>
+                              <label className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted block mb-1.5">Auto-refresh</label>
                               <select
                                 value={activeDash.auto_refresh_seconds ?? 0}
                                 onChange={(e) => {
@@ -1342,7 +1398,7 @@ export default function DashboardsPage() {
                                   setAutoRefresh(activeId, v || null);
                                   setAutoRefreshActive(v > 0);
                                 }}
-                                className="w-full text-xs border border-slate-200/60 dark:border-slate-600/40 rounded-lg px-2 py-1 bg-white/80 dark:bg-slate-700/60"
+                                className="w-full text-[12px] border border-line rounded-md px-2 py-1.5 bg-raised text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
                               >
                                 <option value={0}>Off</option>
                                 <option value={30}>Every 30 seconds</option>
@@ -1352,9 +1408,10 @@ export default function DashboardsPage() {
                                 <option value={1800}>Every 30 minutes</option>
                               </select>
                             </div>
+                            <EmailSchedulePanel dashboardId={activeId as number} />
                             <button
                               onClick={() => setSettingsOpen(false)}
-                              className="w-full text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 pt-1 transition-colors"
+                              className="w-full text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 pt-1 transition-colors"
                             >
                               Close
                             </button>
@@ -1368,21 +1425,22 @@ export default function DashboardsPage() {
                   {!isUnsaved && (
                     <>
                       <button
+                        onClick={() => setStoryOpen(true)}
+                        className="h-8 px-2.5 flex items-center gap-1.5 rounded-md border border-ocean/40 bg-ocean-softer text-[10px] font-mono tracking-[0.1em] uppercase text-ocean hover:bg-ocean/10 transition-colors"
+                        title="Generate AI story report"
+                      >
+                        Story
+                      </button>
+                      <button
                         onClick={exportPdf}
-                        className="h-8 px-3 flex items-center justify-center rounded-lg
-                          border border-white/20 bg-white/10
-                          hover:bg-white/20
-                          transition-colors text-[10px] font-bold text-white/80 tracking-wide"
+                        className="h-8 px-2.5 flex items-center justify-center rounded-md border border-line text-[10px] font-mono tracking-[0.1em] uppercase text-ink-3 hover:bg-softer hover:text-ink-2 hover:border-line-strong transition-colors"
                         title="Export as PDF"
                       >
                         PDF
                       </button>
                       <button
                         onClick={exportAllXlsx}
-                        className="h-8 px-3 flex items-center justify-center rounded-lg
-                          border border-white/20 bg-white/10
-                          hover:bg-white/20
-                          transition-colors text-[10px] font-bold text-white/80 tracking-wide"
+                        className="h-8 px-2.5 flex items-center justify-center rounded-md border border-line text-[10px] font-mono tracking-[0.1em] uppercase text-ink-3 hover:bg-softer hover:text-ink-2 hover:border-line-strong transition-colors"
                         title="Export all widgets as Excel"
                       >
                         XLSX
@@ -1394,23 +1452,18 @@ export default function DashboardsPage() {
                   {activeId && !isUnsaved && (
                     <button
                       onClick={() => duplicateDashboard(activeId)}
-                      className="w-8 h-8 flex items-center justify-center rounded-lg
-                        border border-white/20 bg-white/10
-                        hover:bg-white/20
-                        transition-colors"
+                      className="w-8 h-8 flex items-center justify-center rounded-md border border-line text-ink-3 hover:bg-softer hover:text-ink-2 hover:border-line-strong transition-colors"
                       title="Duplicate dashboard"
                     >
-                      <svg className="w-4 h-4 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
+                      <Copy className="w-4 h-4" strokeWidth={1.5} />
                     </button>
                   )}
 
                   {/* Auto-refresh indicator */}
                   {autoRefreshActive && (
-                    <span className="px-2.5 py-1 text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-bold flex items-center gap-1.5 tracking-wide">
-                      <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-                      LIVE
+                    <span className="px-2.5 py-1 text-[10px] font-mono tracking-[0.1em] uppercase bg-ok-soft text-ok border border-line rounded-md flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 bg-ok rounded-full animate-pulse" />
+                      Live
                     </span>
                   )}
 
@@ -1418,25 +1471,20 @@ export default function DashboardsPage() {
                     <>
                       <button
                         onClick={discardDashboard}
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg
-                          text-white/70 hover:text-white hover:bg-white/10
-                          transition-colors"
+                        className="px-3 py-1.5 text-[12px] rounded-md text-muted hover:text-ink-2 hover:bg-softer transition-colors"
                       >
                         Discard
                       </button>
                       <button
                         onClick={saveDashboard}
                         disabled={saving}
-                        className="px-4 py-1.5 text-xs font-bold rounded-lg text-white transition-all
-                          bg-white/20 hover:bg-white/30 border border-white/30
-                          shadow-lg shadow-black/10
-                          disabled:opacity-50"
+                        className="px-4 py-1.5 text-[12px] font-medium rounded-md text-white bg-ocean hover:bg-ocean-hover transition-colors disabled:opacity-50"
                       >
-                        {saving ? 'Saving...' : 'Save'}
+                        {saving ? 'Saving…' : 'Save'}
                       </button>
                     </>
                   ) : (
-                    <span className="px-3 py-1 text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full font-bold tracking-wide">
+                    <span className="px-2.5 py-1 text-[10px] font-mono tracking-[0.1em] uppercase bg-ok-soft text-ok border border-line rounded-md">
                       Saved
                     </span>
                   )}
@@ -1451,50 +1499,79 @@ export default function DashboardsPage() {
                 onFilterChange={handleFilterChange}
               />
 
-              {/* Widget grid with stagger animation */}
-              <div className="flex-1 overflow-y-auto">
-                <motion.div
-                  ref={dashboardGridRef}
-                  className="dashboard-canvas grid gap-5 p-6"
-                  style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}
-                  variants={containerVariants}
-                  initial="hidden"
-                  animate="visible"
-                  key={currentSpec.title}
-                >
-                  {currentSpec.widgets.map((widget) => renderWidget(widget))}
-                </motion.div>
+              {/* Widget grid + investigation panel */}
+              <div className="flex-1 flex min-h-0 overflow-hidden">
+                {/* Grid area */}
+                <div className="flex-1 overflow-y-auto bg-bg min-w-0">
+                  {/* Insights strip */}
+                  {!insightsDismissed && (insightsLoading || (insights && insights.length > 0)) && (
+                    <div className="px-6 pt-6">
+                      {insightsLoading ? (
+                        <InsightsStripSkeleton />
+                      ) : insights && insights.length > 0 ? (
+                        <InsightsStrip insights={insights} onDismiss={() => setInsightsDismissed(true)} />
+                      ) : null}
+                    </div>
+                  )}
+                  <motion.div
+                    ref={dashboardGridRef}
+                    className="grid gap-4 p-6"
+                    style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}
+                    variants={containerVariants}
+                    initial="hidden"
+                    animate="visible"
+                    key={currentSpec.title}
+                  >
+                    {currentSpec.widgets.map((widget) => renderWidget(widget))}
+                  </motion.div>
+                </div>
+
+                {/* Investigation panel — slides in on the right */}
+                {investigationTarget && (
+                  <div className="w-[360px] shrink-0 overflow-y-auto">
+                    <InvestigationPanel
+                      widgetTitle={investigationTarget.spec.title}
+                      widgetSql={investigationTarget.spec.sql}
+                      widgetRows={investigationTarget.data.rows}
+                      connectionId={connectionId!}
+                      filterValues={filterValues}
+                      onClose={() => setInvestigationTarget(null)}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Bottom chat bar */}
-              <div className="bg-white/80 backdrop-blur-xl border-t border-slate-200/50 shrink-0 shadow-[0_-4px_24px_rgba(0,51,88,0.04)]">
+              <div className="bg-raised border-t border-line shrink-0">
                 {/* Chat history */}
                 {chatMessages.length > 0 && (
                   <div className="px-6 pt-3 pb-1 max-h-52 overflow-y-auto space-y-2">
                     {chatMessages.map((msg) => (
                       <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl ${
-                          msg.role === 'user'
-                            ? 'gradient-primary text-white rounded-br-sm text-sm shadow-lg shadow-[#003358]/20'
-                            : msg.type === 'refine'
-                            ? 'bg-emerald-50/80 text-emerald-800 border border-emerald-200/60 rounded-bl-sm'
-                            : 'glass-card text-slate-800 rounded-bl-sm ai-accent'
-                        }`}>
-                          {msg.role === 'assistant' && msg.type === 'refine' && (
-                            <span className="text-xs font-semibold block mb-0.5 text-emerald-600 dark:text-emerald-400">Dashboard updated</span>
-                          )}
-                          {msg.role === 'assistant'
-                            ? <MarkdownAnswer text={msg.text} />
-                            : msg.text}
-                        </div>
+                        {msg.role === 'user' ? (
+                          <p className="max-w-[75%] text-[14px] text-right text-ink-2 font-display italic leading-relaxed py-1.5">
+                            {msg.text}
+                          </p>
+                        ) : (
+                          <div className={`max-w-[85%] px-4 py-2.5 rounded-lg border text-[13px] ${
+                            msg.type === 'refine'
+                              ? 'bg-ok-soft border-line text-ink-2'
+                              : 'bg-softer border-line text-ink'
+                          }`}>
+                            {msg.type === 'refine' && (
+                              <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-ok">Dashboard updated</span>
+                            )}
+                            <MarkdownAnswer text={msg.text} />
+                          </div>
+                        )}
                       </div>
                     ))}
                     {chatLoading && (
                       <div className="flex justify-start">
-                        <div className="glass-card rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-2">
-                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
-                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
-                          <span className="w-2 h-2 bg-cyan-500 rounded-full thinking-dot" />
+                        <div className="bg-softer border border-line rounded-lg px-4 py-3 flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
+                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
+                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
                         </div>
                       </div>
                     )}
@@ -1508,32 +1585,22 @@ export default function DashboardsPage() {
                     value={refineInput}
                     onChange={(e) => setRefineInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
-                    placeholder='Ask about the data or say how to improve this dashboard...'
+                    placeholder="Ask about the data or say how to improve this dashboard…"
                     disabled={chatLoading}
-                    className="flex-1 px-4 py-2.5 text-sm rounded-xl
-                      bg-white/60 border border-white/80
-                      focus:outline-none focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-400/40
-                      text-slate-800
-                      placeholder-slate-400
-                      disabled:opacity-50 transition-all"
+                    className="flex-1 px-3 py-2 text-[13px] rounded-md border border-line bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 transition-colors"
                   />
                   <button
                     onClick={handleChatSubmit}
                     disabled={chatLoading || !refineInput.trim()}
-                    className="px-5 py-2.5 text-sm font-bold text-white rounded-xl
-                      gradient-primary
-                      shadow-lg shadow-[#003358]/20
-                      hover:shadow-xl hover:shadow-[#003358]/25 hover:scale-[1.02]
-                      disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap"
+                    className="px-4 py-2 text-[13px] font-medium text-white rounded-md bg-ocean hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
                   >
-                    {chatLoading ? '...' : 'Send'}
+                    {chatLoading ? '…' : 'Send'}
                   </button>
                 </div>
               </div>
             </div>
           )}
         </main>
-      </div>
 
       {/* Template gallery modal */}
       <AnimatePresence>
@@ -1542,50 +1609,55 @@ export default function DashboardsPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-[2px] p-6"
+            onClick={() => setShowTemplates(false)}
           >
             <motion.div
               variants={slideUp}
               initial="hidden"
               animate="visible"
               exit="exit"
-              className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-slate-200/60 dark:border-slate-700/40 shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
+              className="bg-raised rounded-lg border border-line shadow-2 w-full max-w-2xl max-h-[82vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-6 py-4 border-b border-slate-100/60 dark:border-slate-700/30 flex items-center justify-between">
-                <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">Dashboard Templates</h2>
-                <button onClick={() => setShowTemplates(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 text-xl transition-colors">&times;</button>
+              <div className="px-6 py-4 border-b border-line flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Templates</p>
+                  <h2 className="font-display text-[20px] text-ink leading-tight tracking-[-0.01em]">Dashboard gallery</h2>
+                </div>
+                <button
+                  onClick={() => setShowTemplates(false)}
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-ink-2 hover:bg-softer transition-colors"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" strokeWidth={2} />
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto p-6">
                 {templates.length === 0 ? (
-                  <div className="text-center py-12">
-                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-800 dark:to-slate-700 flex items-center justify-center">
-                      <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
+                  <div className="text-center py-16">
+                    <div className="w-14 h-14 mx-auto mb-4 rounded-md bg-softer border border-line flex items-center justify-center">
+                      <FileText className="w-6 h-6 text-muted" strokeWidth={1.5} />
                     </div>
-                    <p className="text-sm text-slate-500 dark:text-slate-400">No templates available yet.</p>
-                    <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Admins can save dashboard specs as templates.</p>
+                    <p className="text-[14px] text-ink-2">No templates available yet.</p>
+                    <p className="text-[12px] text-ink-3 mt-1">Admins can save dashboard specs as templates.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-6">
                     {(() => {
                       const categories = Array.from(new Set(templates.map((t) => t.category)));
                       return categories.map((cat) => (
-                        <div key={cat} className="col-span-2">
-                          <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">{cat}</p>
-                          <div className="grid grid-cols-2 gap-3">
+                        <div key={cat}>
+                          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">{cat}</p>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                             {templates.filter((t) => t.category === cat).map((t) => (
                               <button
                                 key={t.id}
                                 onClick={() => createFromTemplate(t.id)}
-                                className="text-left p-4 rounded-xl transition-all group
-                                  border border-slate-200/60 dark:border-slate-700/40
-                                  hover:border-indigo-400 dark:hover:border-indigo-500
-                                  hover:shadow-lg hover:shadow-indigo-500/10
-                                  bg-white/60 dark:bg-slate-800/40"
+                                className="text-left p-4 rounded-md bg-softer border border-line hover:border-line-strong hover:bg-bg transition-colors"
                               >
-                                <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 group-hover:text-indigo-700 dark:group-hover:text-indigo-300 transition-colors">{t.name}</p>
-                                {t.description && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{t.description}</p>}
+                                <p className="text-[13px] font-medium text-ink">{t.name}</p>
+                                {t.description && <p className="text-[12px] text-ink-3 mt-1 leading-relaxed">{t.description}</p>}
                               </button>
                             ))}
                           </div>

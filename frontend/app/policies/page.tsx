@@ -2,9 +2,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import AppShell from '@/components/layout/AppShell';
+import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
-import { isAdmin } from '@/lib/auth';
-import { useRouter } from 'next/navigation';
+import { useToast } from '@/components/ui/Toast';
 
 interface Policy {
   id: number;
@@ -55,40 +55,35 @@ const emptyForm: PolicyForm = {
 };
 
 const inputCls =
-  'w-full px-3.5 py-2.5 rounded-xl text-body-md bg-surface-container-low text-on-surface placeholder:text-on-surface-variant/40 border-b-2 border-transparent focus:border-primary focus:outline-none transition-colors';
+  'w-full px-3 py-2 rounded-md text-[13px] bg-raised border border-line text-ink-2 placeholder-muted-2 ' +
+  'focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors';
+
+const BADGE_CLS = 'text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line';
 
 function TypeBadge({ type }: { type: string }) {
   const isMask = type === 'column_mask';
   return (
-    <span
-      className={`text-label-md px-2.5 py-0.5 rounded-pill font-semibold ${
-        isMask ? 'bg-purple-500/10 text-purple-400' : 'bg-cyan-500/10 text-cyan-400'
-      }`}
-    >
-      {isMask ? 'Column Mask' : 'Row Filter'}
+    <span className={`${BADGE_CLS} ${isMask ? 'bg-ai-soft text-ai' : 'bg-ocean-softer text-ocean'}`}>
+      {isMask ? 'Column mask' : 'Row filter'}
     </span>
   );
 }
 
 function RoleBadge({ role }: { role: string }) {
   const colors: Record<string, string> = {
-    admin: 'bg-primary/10 text-primary',
-    analyst: 'bg-cyan-500/10 text-cyan-400',
-    viewer: 'bg-amber-500/10 text-amber-400',
+    admin:   'bg-ocean-softer text-ocean',
+    analyst: 'bg-ai-soft text-ai',
+    viewer:  'bg-softer text-muted',
   };
   return (
-    <span
-      className={`text-label-md px-2.5 py-0.5 rounded-pill font-semibold ${
-        colors[role] ?? 'bg-surface-container text-on-surface-variant'
-      }`}
-    >
+    <span className={`${BADGE_CLS} ${colors[role] ?? 'bg-softer text-muted'}`}>
       {role}
     </span>
   );
 }
 
-export default function PoliciesPage() {
-  const router = useRouter();
+function PoliciesPageInner() {
+  const toast = useToast();
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,12 +94,9 @@ export default function PoliciesPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!isAdmin()) {
-      router.push('/query');
-      return;
-    }
     loadData();
-  }, [router]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -170,16 +162,17 @@ export default function PoliciesPage() {
     try {
       if (editingId) {
         await api.put(`/policies/${editingId}`, payload);
+        toast.success('Policy updated');
       } else {
         await api.post('/policies', payload);
+        toast.success('Policy created');
       }
       setShowModal(false);
       loadData();
-    } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-        'Failed to save policy';
+    } catch (err) {
+      const msg = extractErr(err);
       setError(msg);
+      toast.error('Could not save policy', { description: msg });
     } finally {
       setSaving(false);
     }
@@ -190,8 +183,9 @@ export default function PoliciesPage() {
     try {
       await api.delete(`/policies/${id}`);
       loadData();
-    } catch {
-      alert('Failed to delete policy');
+      toast.success('Policy deleted');
+    } catch (err) {
+      toast.error('Could not delete policy', { description: extractErr(err) });
     }
   }
 
@@ -199,8 +193,9 @@ export default function PoliciesPage() {
     try {
       await api.put(`/policies/${p.id}`, { is_active: !p.is_active });
       loadData();
-    } catch {
-      alert('Failed to update policy');
+      toast.success(p.is_active ? 'Policy disabled' : 'Policy enabled');
+    } catch (err) {
+      toast.error('Could not update policy', { description: extractErr(err) });
     }
   }
 
@@ -209,141 +204,120 @@ export default function PoliciesPage() {
   }
 
   const contextPanel = (
-    <div className="p-4 space-y-4">
-      <div className="text-label-md text-on-surface-variant font-semibold uppercase tracking-wider">
-        Summary
+    <div className="flex flex-col h-full">
+      <div className="px-4 pt-5 pb-3">
+        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Summary</p>
       </div>
-      <div className="space-y-2">
-        <div className="flex justify-between text-body-sm">
-          <span className="text-on-surface-variant">Total</span>
-          <span className="text-on-surface font-semibold">{policies.length}</span>
-        </div>
-        <div className="flex justify-between text-body-sm">
-          <span className="text-on-surface-variant">Active</span>
-          <span className="text-on-surface font-semibold">
-            {policies.filter((p) => p.is_active).length}
-          </span>
-        </div>
-        <div className="flex justify-between text-body-sm">
-          <span className="text-on-surface-variant">Row Filters</span>
-          <span className="text-on-surface font-semibold">
-            {policies.filter((p) => p.policy_type === 'row_filter').length}
-          </span>
-        </div>
-        <div className="flex justify-between text-body-sm">
-          <span className="text-on-surface-variant">Column Masks</span>
-          <span className="text-on-surface font-semibold">
-            {policies.filter((p) => p.policy_type === 'column_mask').length}
-          </span>
-        </div>
+      <div className="px-4 space-y-2">
+        {[
+          { label: 'Total',         value: policies.length },
+          { label: 'Active',        value: policies.filter((p) => p.is_active).length },
+          { label: 'Row filters',   value: policies.filter((p) => p.policy_type === 'row_filter').length },
+          { label: 'Column masks',  value: policies.filter((p) => p.policy_type === 'column_mask').length },
+        ].map((row) => (
+          <div key={row.label} className="flex justify-between items-center">
+            <span className="text-[12px] text-ink-3">{row.label}</span>
+            <span className="text-[13px] font-medium text-ink tabular-nums">{row.value}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
 
   return (
-    <AppShell
-      title="Data Policies"
-      subtitle="Control which data rows and columns users can access"
-      contextPanel={contextPanel}
-    >
+    <AppShell contextPanel={contextPanel}>
       {loading ? (
-        <div className="p-8 text-on-surface-variant">Loading...</div>
+        <div className="p-8 text-[11px] font-mono tracking-[0.08em] uppercase text-muted">Loading…</div>
       ) : (
-        <div className="p-6 max-w-5xl">
-          {/* Header action */}
-          <div className="flex justify-end mb-5">
+        <div className="max-w-5xl mx-auto px-6 pt-10 pb-10 space-y-6">
+          <header className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Policies</p>
+              <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+                Data access control
+              </h1>
+              <p className="text-[13px] text-ink-3 mt-2 leading-relaxed">
+                Control which rows and columns users can access.
+              </p>
+            </div>
             <button
               onClick={openCreate}
-              className="px-5 py-2.5 gradient-primary text-on-primary rounded-xl text-title-md hover:opacity-90 transition-all"
+              className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover transition-colors"
             >
-              Create Policy
+              Create policy
             </button>
-          </div>
+          </header>
 
           {policies.length === 0 ? (
-            <div className="text-center py-16 text-on-surface-variant">
-              <p className="text-headline-sm font-headline mb-2">No policies yet</p>
-              <p className="text-body-md">
-                Create your first data access policy to control who sees what.
+            <div className="bg-raised border border-line rounded-lg p-12 text-center">
+              <p className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] mb-2">No policies yet</p>
+              <p className="text-[13px] text-ink-3 leading-relaxed max-w-md mx-auto">
+                Create your first data-access policy to control who sees what.
               </p>
             </div>
           ) : (
-            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient overflow-hidden">
+            <div className="bg-raised border border-line rounded-lg overflow-hidden">
               <table className="w-full">
                 <thead>
-                  <tr className="bg-surface-container-low">
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Policy
-                    </th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Target
-                    </th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Table
-                    </th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="text-left px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Filter
-                    </th>
-                    <th className="text-right px-5 py-3 text-label-md font-semibold text-on-surface-variant uppercase tracking-wider">
-                      Actions
-                    </th>
+                  <tr className="bg-softer border-b border-line">
+                    {['Policy', 'Target', 'Table', 'Type', 'Filter'].map((h) => (
+                      <th key={h} className="text-left px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">{h}</th>
+                    ))}
+                    <th className="text-right px-5 py-3 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {policies.map((p, i) => (
+                  {policies.map((p) => (
                     <tr
                       key={p.id}
-                      className={`transition-colors hover:bg-surface-container-low ${
-                        i % 2 === 1 ? 'bg-surface/50' : ''
-                      } ${!p.is_active ? 'opacity-50' : ''}`}
+                      className={`border-b border-line last:border-b-0 transition-colors hover:bg-softer ${
+                        !p.is_active ? 'opacity-50' : ''
+                      }`}
                     >
-                      <td className="px-5 py-3.5">
-                        <p className="text-body-sm font-semibold text-on-surface">{p.name}</p>
+                      <td className="px-5 py-3">
+                        <p className="text-[13px] font-medium text-ink">{p.name}</p>
                         {p.description && (
-                          <p className="text-label-sm text-on-surface-variant mt-0.5 line-clamp-1">
+                          <p className="text-[11px] text-ink-3 mt-0.5 line-clamp-1">
                             {p.description}
                           </p>
                         )}
                       </td>
-                      <td className="px-5 py-3.5">
+                      <td className="px-5 py-3">
                         {p.user_display_name ? (
                           <div>
-                            <p className="text-body-sm text-on-surface">{p.user_display_name}</p>
-                            <p className="text-label-sm text-on-surface-variant">{p.user_email}</p>
+                            <p className="text-[13px] text-ink-2">{p.user_display_name}</p>
+                            <p className="text-[11px] text-muted">{p.user_email}</p>
                           </div>
                         ) : p.role ? (
                           <RoleBadge role={p.role} />
                         ) : (
-                          <span className="text-on-surface-variant text-body-sm">--</span>
+                          <span className="text-muted-2 text-[13px]">—</span>
                         )}
                       </td>
-                      <td className="px-5 py-3.5">
-                        <span className="text-body-sm text-on-surface font-mono">{p.table_name}</span>
+                      <td className="px-5 py-3">
+                        <span className="text-[12px] text-ink-2 font-mono">{p.table_name}</span>
                         {p.column_name && (
-                          <span className="text-label-sm text-on-surface-variant font-mono ml-1">
+                          <span className="text-[11px] text-muted font-mono ml-1">
                             .{p.column_name}
                           </span>
                         )}
                       </td>
-                      <td className="px-5 py-3.5">
+                      <td className="px-5 py-3">
                         <TypeBadge type={p.policy_type} />
                       </td>
-                      <td className="px-5 py-3.5">
-                        <code className="text-label-sm text-on-surface-variant bg-surface-container px-2 py-1 rounded-lg font-mono">
+                      <td className="px-5 py-3">
+                        <code className="text-[11px] text-ink-3 bg-softer border border-line px-2 py-0.5 rounded font-mono">
                           {p.filter_expression}
                         </code>
                       </td>
-                      <td className="px-5 py-3.5 text-right">
+                      <td className="px-5 py-3 text-right">
                         <div className="flex items-center justify-end gap-2">
                           <button
                             onClick={() => handleToggle(p)}
-                            className={`text-label-md font-medium transition-colors ${
+                            className={`text-[11px] font-mono tracking-[0.08em] uppercase transition-colors ${
                               p.is_active
-                                ? 'text-on-surface-variant/60 hover:text-on-surface-variant'
-                                : 'text-secondary hover:text-primary'
+                                ? 'text-muted hover:text-ink-2'
+                                : 'text-ocean hover:text-ocean-hover'
                             }`}
                             title={p.is_active ? 'Deactivate' : 'Activate'}
                           >
@@ -351,13 +325,13 @@ export default function PoliciesPage() {
                           </button>
                           <button
                             onClick={() => openEdit(p)}
-                            className="text-label-md text-secondary font-medium hover:text-primary transition-colors"
+                            className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors"
                           >
                             Edit
                           </button>
                           <button
                             onClick={() => handleDelete(p.id)}
-                            className="text-label-md text-error/60 hover:text-error font-medium transition-colors"
+                            className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-err transition-colors"
                           >
                             Delete
                           </button>
@@ -375,21 +349,22 @@ export default function PoliciesPage() {
       {/* Create / Edit Modal */}
       {showModal && (
         <>
-          <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" onClick={() => setShowModal(false)} />
+          <div className="fixed inset-0 z-40 bg-ink/40 backdrop-blur-[2px]" onClick={() => setShowModal(false)} />
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div
-              className="bg-surface-container-lowest rounded-2xl shadow-ambient w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="bg-raised border border-line rounded-lg shadow-2 w-full max-w-lg max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="p-6">
-                <h2 className="font-headline text-headline-sm font-bold text-on-surface mb-5">
-                  {editingId ? 'Edit Policy' : 'Create Policy'}
+                <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-1">Policy</p>
+                <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.01em] mb-5">
+                  {editingId ? 'Edit policy' : 'Create policy'}
                 </h2>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   {/* Name */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">Name</label>
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Name</label>
                     <input
                       type="text"
                       required
@@ -402,8 +377,8 @@ export default function PoliciesPage() {
 
                   {/* Description */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">
-                      Description <span className="text-on-surface-variant/40">(optional)</span>
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                      Description <span className="text-muted-2 normal-case">(optional)</span>
                     </label>
                     <textarea
                       value={form.description}
@@ -416,29 +391,29 @@ export default function PoliciesPage() {
 
                   {/* Target type */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">Apply to</label>
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Apply to</label>
                     <div className="flex gap-4">
-                      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+                      <label className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer">
                         <input
                           type="radio"
                           name="targetType"
                           value="role"
                           checked={form.targetType === 'role'}
                           onChange={() => updateForm({ targetType: 'role' })}
-                          className="accent-cyan-400"
+                          className="accent-ocean"
                         />
                         Role
                       </label>
-                      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+                      <label className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer">
                         <input
                           type="radio"
                           name="targetType"
                           value="user"
                           checked={form.targetType === 'user'}
                           onChange={() => updateForm({ targetType: 'user' })}
-                          className="accent-cyan-400"
+                          className="accent-ocean"
                         />
-                        Specific User
+                        Specific user
                       </label>
                     </div>
                   </div>
@@ -446,7 +421,7 @@ export default function PoliciesPage() {
                   {/* Role or User select */}
                   {form.targetType === 'role' ? (
                     <div>
-                      <label className="block text-label-lg text-on-surface mb-1.5">Role</label>
+                      <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Role</label>
                       <select
                         value={form.role}
                         onChange={(e) => updateForm({ role: e.target.value })}
@@ -458,14 +433,14 @@ export default function PoliciesPage() {
                     </div>
                   ) : (
                     <div>
-                      <label className="block text-label-lg text-on-surface mb-1.5">User</label>
+                      <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">User</label>
                       <select
                         required
                         value={form.user_id}
                         onChange={(e) => updateForm({ user_id: e.target.value })}
                         className={inputCls}
                       >
-                        <option value="">Select a user...</option>
+                        <option value="">Select a user…</option>
                         {users.map((u) => (
                           <option key={u.id} value={u.id}>
                             {u.display_name} ({u.email})
@@ -477,42 +452,42 @@ export default function PoliciesPage() {
 
                   {/* Table name */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">Table Name</label>
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Table name</label>
                     <input
                       type="text"
                       required
                       value={form.table_name}
                       onChange={(e) => updateForm({ table_name: e.target.value })}
                       placeholder="e.g., orders"
-                      className={inputCls}
+                      className={`${inputCls} font-mono`}
                     />
                   </div>
 
                   {/* Policy type */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">Policy Type</label>
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Policy type</label>
                     <div className="flex gap-4">
-                      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+                      <label className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer">
                         <input
                           type="radio"
                           name="policyType"
                           value="row_filter"
                           checked={form.policy_type === 'row_filter'}
                           onChange={() => updateForm({ policy_type: 'row_filter' })}
-                          className="accent-cyan-400"
+                          className="accent-ocean"
                         />
-                        Row Filter
+                        Row filter
                       </label>
-                      <label className="flex items-center gap-2 text-body-sm text-on-surface cursor-pointer">
+                      <label className="flex items-center gap-2 text-[13px] text-ink-2 cursor-pointer">
                         <input
                           type="radio"
                           name="policyType"
                           value="column_mask"
                           checked={form.policy_type === 'column_mask'}
                           onChange={() => updateForm({ policy_type: 'column_mask' })}
-                          className="accent-cyan-400"
+                          className="accent-ocean"
                         />
-                        Column Mask
+                        Column mask
                       </label>
                     </div>
                   </div>
@@ -520,22 +495,22 @@ export default function PoliciesPage() {
                   {/* Column name (only for column mask) */}
                   {form.policy_type === 'column_mask' && (
                     <div>
-                      <label className="block text-label-lg text-on-surface mb-1.5">Column Name</label>
+                      <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Column name</label>
                       <input
                         type="text"
                         required
                         value={form.column_name}
                         onChange={(e) => updateForm({ column_name: e.target.value })}
                         placeholder="e.g., salary"
-                        className={inputCls}
+                        className={`${inputCls} font-mono`}
                       />
                     </div>
                   )}
 
                   {/* Filter expression */}
                   <div>
-                    <label className="block text-label-lg text-on-surface mb-1.5">
-                      Filter Expression
+                    <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                      Filter expression
                     </label>
                     <input
                       type="text"
@@ -545,33 +520,33 @@ export default function PoliciesPage() {
                       placeholder="e.g., region = 'EMEA'"
                       className={`${inputCls} font-mono`}
                     />
-                    <p className="text-label-sm text-on-surface-variant/50 mt-1">
-                      SQL WHERE clause fragment that restricts data access
+                    <p className="text-[11px] text-muted mt-1 leading-relaxed">
+                      SQL WHERE clause fragment that restricts data access.
                     </p>
                   </div>
 
                   {/* Error */}
                   {error && (
-                    <div className="p-3 bg-error-container/30 rounded-xl text-body-sm text-error">
+                    <div className="p-3 bg-err-soft border border-line rounded-md text-[12px] text-err">
                       {error}
                     </div>
                   )}
 
                   {/* Actions */}
-                  <div className="flex justify-end gap-3 pt-2">
+                  <div className="flex justify-end gap-2 pt-2">
                     <button
                       type="button"
                       onClick={() => setShowModal(false)}
-                      className="px-4 py-2.5 rounded-xl text-body-sm text-on-surface-variant hover:bg-surface-container transition-colors"
+                      className="px-3 py-2 rounded-md text-[13px] text-muted hover:text-ink-2 hover:bg-softer transition-colors"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
                       disabled={saving}
-                      className="px-5 py-2.5 gradient-primary text-on-primary rounded-xl text-title-md hover:opacity-90 disabled:opacity-50 transition-all"
+                      className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50 transition-colors"
                     >
-                      {saving ? 'Saving...' : editingId ? 'Update' : 'Create'}
+                      {saving ? 'Saving…' : editingId ? 'Update' : 'Create'}
                     </button>
                   </div>
                 </form>
@@ -581,5 +556,18 @@ export default function PoliciesPage() {
         </>
       )}
     </AppShell>
+  );
+}
+
+function extractErr(err: unknown): string {
+  const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  return e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? 'Please try again.';
+}
+
+export default function PoliciesPage() {
+  return (
+    <RequireRole roles={['admin']}>
+      <PoliciesPageInner />
+    </RequireRole>
   );
 }

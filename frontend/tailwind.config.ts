@@ -11,8 +11,42 @@ const config: Config = {
     extend: {
       /* ── Nexus Cobalt palette with warm accents ───────────────── */
       colors: {
+        /* ── Observatory tokens (presentation-layer restyle) ──── */
+        bg:      'var(--bg)',
+        raised:  'var(--surface-raised)',
+        soft:    'var(--soft)',
+        softer:  'var(--softer)',
+        line:    'var(--line)',
+        'line-strong': 'var(--line-strong)',
+        ink: {
+          DEFAULT: 'var(--ink)',
+          2: 'var(--ink-2)',
+          3: 'var(--ink-3)',
+        },
+        muted: {
+          DEFAULT: 'var(--muted)',
+          2: 'var(--muted-2)',
+        },
+        ocean: {
+          DEFAULT: 'var(--ocean)',
+          hover:   'var(--ocean-hover)',
+          soft:    'var(--ocean-soft)',
+          softer:  'var(--ocean-softer)',
+        },
+        ai: {
+          DEFAULT: 'var(--ai)',
+          soft:    'var(--ai-soft)',
+        },
+        ok:   { DEFAULT: 'var(--ok)',   soft: 'var(--ok-soft)'   },
+        warn: { DEFAULT: 'var(--warn)', soft: 'var(--warn-soft)' },
+        err:  { DEFAULT: 'var(--err)',  soft: 'var(--err-soft)'  },
+        chart: {
+          1: 'var(--c1)', 2: 'var(--c2)', 3: 'var(--c3)',
+          4: 'var(--c4)', 5: 'var(--c5)', 6: 'var(--c6)',
+        },
+
         // Surface hierarchy (tonal architecture — no borders, use color shifts)
-        surface:                    '#f8f9ff',
+        surface:                    'var(--surface)',
         'surface-bright':           '#f8f9ff',
         'surface-dim':              '#ccdbf4',
         'surface-container-lowest': '#ffffff',
@@ -72,9 +106,13 @@ const config: Config = {
       },
 
       fontFamily: {
+        /* Observatory */
+        display: ['var(--font-display)'],
+        sans:    ['var(--font-sans)'],
+        mono:    ['var(--font-mono)'],
+        /* Legacy (kept for existing call sites) */
         headline: ['var(--font-manrope)', 'system-ui', 'sans-serif'],
         body:     ['var(--font-inter)', 'system-ui', 'sans-serif'],
-        mono:     ['var(--font-geist-mono)', 'ui-monospace', 'monospace'],
       },
 
       fontSize: {
@@ -94,17 +132,24 @@ const config: Config = {
       },
 
       borderRadius: {
-        'xs':   '0.125rem',
-        'sm':   '0.25rem',
-        'md':   '0.375rem',
-        'lg':   '0.5rem',
-        'xl':   '0.75rem',
+        /* Observatory radii */
+        'xs':   'var(--radius-xs)',
+        'sm':   'var(--radius-sm)',
+        'md':   'var(--radius-md)',
+        'lg':   'var(--radius-lg)',
+        'xl':   'var(--radius-xl)',
+        /* Legacy (kept for existing call sites) */
         '2xl':  '1rem',
         '3xl':  '1.5rem',
         'pill': '9999px',
       },
 
       boxShadow: {
+        /* Observatory shadows */
+        '1': 'var(--shadow-1)',
+        '2': 'var(--shadow-2)',
+        '3': 'var(--shadow-3)',
+        /* Legacy */
         'ambient':  '0px 12px 32px rgba(13, 28, 47, 0.06)',
         'ambient-lg': '0px 16px 48px rgba(13, 28, 47, 0.08)',
         'glow-teal': '0 0 16px rgba(6, 183, 212, 0.15)',
@@ -173,6 +218,16 @@ const config: Config = {
       spacing: {
         'rail':    '200px',
         'context': '240px',
+      },
+
+      transitionTimingFunction: {
+        observatory: 'var(--ease)',
+      },
+
+      transitionDuration: {
+        1: '120ms',
+        2: '240ms',
+        3: '420ms',
       },
     },
   },

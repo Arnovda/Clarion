@@ -6,24 +6,24 @@ import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { setToken } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
-
-const inputCls = "w-full px-3.5 py-2.5 rounded-xl text-body-md bg-surface-container-low text-on-surface placeholder:text-on-surface-variant/40 border-b-2 border-transparent focus:border-primary focus:outline-none transition-colors";
+import { Input } from '@/components/ui/Input';
+import { Button } from '@/components/ui/Button';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const [companyName, setCompanyName]   = useState('');
-  const [displayName, setDisplayName]   = useState('');
-  const [email, setEmail]               = useState('');
-  const [password, setPassword]         = useState('');
+  const [companyName, setCompanyName]         = useState('');
+  const [displayName, setDisplayName]         = useState('');
+  const [email, setEmail]                     = useState('');
+  const [password, setPassword]               = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError]               = useState('');
-  const [loading, setLoading]           = useState(false);
+  const [error, setError]                     = useState('');
+  const [loading, setLoading]                 = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
-    if (password.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (password.length < 8)          { setError('Password must be at least 8 characters.'); return; }
 
     setLoading(true);
     try {
@@ -39,57 +39,77 @@ export default function RegisterPage() {
   }
 
   return (
-    <AuthLayout subtitle="Create your account">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-label-lg text-on-surface mb-1.5">Company name</label>
-          <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="Acme BV" className={inputCls} required />
-        </div>
-        <div>
-          <label className="block text-label-lg text-on-surface mb-1.5">Your name</label>
-          <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Jan Janssens" className={inputCls} required />
-        </div>
-        <div>
-          <label className="block text-label-lg text-on-surface mb-1.5">Email</label>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@company.com" className={inputCls} required />
-        </div>
-        <div>
-          <label className="block text-label-lg text-on-surface mb-1.5">Password</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-            placeholder="Minimum 8 characters" className={inputCls} required />
-        </div>
-        <div>
-          <label className="block text-label-lg text-on-surface mb-1.5">Confirm password</label>
-          <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-            className={inputCls} required />
-        </div>
+    <AuthLayout
+      eyebrow="Create workspace"
+      title={<em>Start observing.</em>}
+      lede="A workspace is your company's private view. Invite teammates after you connect your first source."
+      footer={
+        <>
+          Already have an account?{' '}
+          <Link href="/" className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1">
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
+        <Input
+          label="Workspace name"
+          value={companyName}
+          onChange={(e) => setCompanyName(e.target.value)}
+          placeholder="Acme BV"
+          autoComplete="organization"
+          required
+          disabled={loading}
+        />
+        <Input
+          label="Your name"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="Jan Janssens"
+          autoComplete="name"
+          required
+          disabled={loading}
+        />
+        <Input
+          label="Work email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@company.com"
+          autoComplete="email"
+          required
+          disabled={loading}
+        />
+        <Input
+          label="Password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Minimum 8 characters"
+          autoComplete="new-password"
+          required
+          disabled={loading}
+        />
+        <Input
+          label="Confirm password"
+          type="password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+          autoComplete="new-password"
+          required
+          disabled={loading}
+        />
 
         {error && (
-          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-error-container/30 text-error text-body-sm">
-            <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-            </svg>
+          <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
             {error}
           </div>
         )}
 
-        <button type="submit" disabled={loading}
-          className="w-full py-3 rounded-xl text-title-md gradient-primary text-on-primary hover:opacity-90 disabled:opacity-50 transition-all shadow-glow-primary">
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Creating account...
-            </span>
-          ) : 'Create account'}
-        </button>
-
-        <p className="text-center text-label-md text-on-surface-variant pt-1">
-          Already have an account?{' '}
-          <Link href="/" className="text-secondary font-semibold hover:text-primary transition-colors">Sign in</Link>
-        </p>
+        <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
+          {loading ? 'Creating workspace…' : 'Create workspace'}
+        </Button>
       </form>
     </AuthLayout>
   );

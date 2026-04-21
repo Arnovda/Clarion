@@ -169,7 +169,7 @@ export default function IngestionWizard({
   // ── Loading state ──────────────────────────────────────────────────────────
   if (step === 'loading') {
     return (
-      <div className="glass-card rounded-2xl p-8 text-center">
+      <div className="bg-raised border border-line rounded-md p-8 text-center">
         <div className="w-6 h-6 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
         <p className="text-sm text-on-surface-variant">Discovering tables in source...</p>
       </div>
@@ -210,7 +210,7 @@ export default function IngestionWizard({
   // ── Ingestion in progress ──────────────────────────────────────────────────
   if (step === 'ingesting') {
     return (
-      <div className="glass-card rounded-2xl p-6">
+      <div className="bg-raised border border-line rounded-md p-6">
         <div className="flex items-center gap-2 mb-4">
           <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
           <p className="text-sm font-semibold text-on-surface">
@@ -270,7 +270,7 @@ export default function IngestionWizard({
         )}
         <button
           onClick={onIngestionDone}
-          className="w-full px-4 py-2.5 text-sm font-medium gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md transition-all"
+          className="w-full px-4 py-2.5 text-sm font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-all"
         >
           Continue to profiling
         </button>
@@ -280,8 +280,8 @@ export default function IngestionWizard({
 
   // ── Table picker ───────────────────────────────────────────────────────────
   return (
-    <div className="glass-card rounded-2xl">
-      <div className="px-6 py-4 ghost-border-b">
+    <div className="bg-raised border border-line rounded-md">
+      <div className="px-6 py-4 border-b border-line">
         <h3 className="font-semibold text-on-surface text-sm">
           Select tables to ingest
         </h3>
@@ -290,7 +290,7 @@ export default function IngestionWizard({
         </p>
       </div>
 
-      <div className="px-6 py-3 ghost-border-b flex items-center gap-3">
+      <div className="px-6 py-3 border-b border-line flex items-center gap-3">
         <button onClick={selectAll} className="text-xs text-cyan-600 hover:text-cyan-700 transition-colors">
           Select all
         </button>
@@ -346,7 +346,7 @@ export default function IngestionWizard({
         <button
           onClick={startIngestion}
           disabled={selected.size === 0}
-          className="flex-1 px-4 py-2.5 text-sm gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-40 transition-all font-medium"
+          className="flex-1 px-4 py-2.5 text-sm bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-40 transition-all font-medium"
         >
           Ingest {selected.size} table{selected.size !== 1 ? 's' : ''}
         </button>

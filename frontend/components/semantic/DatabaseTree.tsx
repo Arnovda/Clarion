@@ -29,13 +29,13 @@ interface Props {
   loadingProductIds?: Set<number>;
 }
 
-// ── Icons (teal-tinted for dark background) ─────────────────────────────────
+// ── Icons (Observatory: ocean when active, muted when idle) ─────────────────
 
 const DbIcon = ({ active }: { active?: boolean }) => (
-  <svg className={`w-4 h-4 flex-shrink-0 transition-colors ${active ? 'text-cyan-400' : 'text-cyan-600/60'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <ellipse cx="12" cy="6" rx="8" ry="3" strokeWidth={2} />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6" />
+  <svg className={`w-4 h-4 flex-shrink-0 transition-colors ${active ? 'text-ocean' : 'text-muted'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <ellipse cx="12" cy="6" rx="8" ry="3" strokeWidth={1.5} />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6" />
   </svg>
 );
 
@@ -46,23 +46,23 @@ const ChevronIcon = ({ expanded }: { expanded: boolean }) => (
 );
 
 const TableIcon = ({ active }: { active: boolean }) => (
-  <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-colors ${active ? 'text-cyan-400' : 'text-slate-500'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+  <svg className={`w-3.5 h-3.5 flex-shrink-0 transition-colors ${active ? 'text-ocean' : 'text-muted-2'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
       d="M3 10h18M3 14h18M10 4v16M3 4h18a1 1 0 011 1v14a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1z" />
   </svg>
 );
 
 // ── Health ring (circular progress indicator) ───────────────────────────────
 
-function HealthRing({ percent, size = 18 }: { percent: number; size?: number }) {
+function HealthRing({ percent, size = 16 }: { percent: number; size?: number }) {
   const r = (size - 4) / 2;
   const circumference = 2 * Math.PI * r;
   const offset = circumference - (percent / 100) * circumference;
-  const color = percent >= 80 ? '#10b981' : percent >= 50 ? '#f59e0b' : '#64748b';
+  const color = percent >= 80 ? '#3f7a5c' : percent >= 50 ? '#a06a1c' : '#a43a3a';
 
   return (
     <svg className="health-ring flex-shrink-0" width={size} height={size}>
-      <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(255,255,255,0.08)" />
+      <circle cx={size / 2} cy={size / 2} r={r} stroke="rgba(13,28,47,0.08)" />
       <circle cx={size / 2} cy={size / 2} r={r} stroke={color}
         strokeDasharray={circumference} strokeDashoffset={offset}
         style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
@@ -70,15 +70,15 @@ function HealthRing({ percent, size = 18 }: { percent: number; size?: number }) 
   );
 }
 
-// ── Role color (for dark background) ────────────────────────────────────────
+// ── Role color (Observatory tokens) ─────────────────────────────────────────
 
 const roleColor = (role: string | null): string => {
   switch (role) {
-    case 'fact':       return 'bg-cyan-500/15 text-cyan-400';
-    case 'dimension':  return 'bg-purple-500/15 text-purple-400';
-    case 'bridge':     return 'bg-amber-500/15 text-amber-400';
-    case 'junk':       return 'bg-slate-500/15 text-slate-400';
-    default:           return 'bg-slate-500/15 text-slate-400';
+    case 'fact':       return 'bg-ocean-softer text-ocean';
+    case 'dimension':  return 'bg-ai-soft text-ai';
+    case 'bridge':     return 'bg-warn-soft text-warn';
+    case 'junk':       return 'bg-softer text-muted';
+    default:           return 'bg-softer text-muted';
   }
 };
 
@@ -176,12 +176,12 @@ export default function DatabaseTree({
   }
 
   return (
-    <div className="dark-tree flex flex-col h-full min-h-0 text-white/80">
+    <div className="flex flex-col h-full min-h-0 bg-soft text-ink-2">
       <div className="flex-1 overflow-y-auto py-1 min-h-0">
 
         {/* ── Data Sources ── */}
         <div className="px-4 pt-4 pb-2 flex-shrink-0">
-          <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+          <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">
             Data sources
           </p>
         </div>
@@ -196,30 +196,30 @@ export default function DatabaseTree({
             <div key={conn.id}>
               <button
                 onClick={() => onToggleConnection(conn.id)}
-                className={`w-full flex items-center gap-2.5 px-4 py-2.5 transition-all group select-none ${
+                className={`w-full flex items-center gap-2.5 px-4 py-2 transition-colors group select-none border-l-2 ${
                   activeConnectionId === conn.id
-                    ? 'bg-white/[0.07] border-l-2 border-cyan-400'
-                    : 'border-l-2 border-transparent hover:bg-white/[0.04]'
+                    ? 'bg-ocean-softer border-ocean'
+                    : 'border-transparent hover:bg-softer'
                 }`}
               >
                 <ChevronIcon expanded={isConnExpanded} />
                 <DbIcon active={activeConnectionId === conn.id} />
-                <span className={`text-body-sm font-medium truncate flex-1 text-left ${
-                  activeConnectionId === conn.id ? 'text-white' : 'text-white/70'
+                <span className={`text-[13px] truncate flex-1 text-left ${
+                  activeConnectionId === conn.id ? 'text-ink font-medium' : 'text-ink-2'
                 }`}>
                   {conn.name}
                 </span>
                 {isLoading ? (
-                  <div className="w-3 h-3 border border-cyan-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  <div className="w-3 h-3 border border-ocean border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 ) : tables.length > 0 ? (
                   <HealthRing percent={health} />
                 ) : null}
               </button>
 
               {isConnExpanded && !isLoading && (
-                <div className="ml-5 border-l border-white/[0.06]">
+                <div className="ml-5 border-l border-line">
                   {tables.length === 0 ? (
-                    <p className="pl-4 py-3 text-xs text-white/30 italic">
+                    <p className="pl-4 py-3 text-[11px] font-mono tracking-[0.06em] uppercase text-muted-2 italic">
                       No tables found
                     </p>
                   ) : (
@@ -228,10 +228,10 @@ export default function DatabaseTree({
                       return (
                         <div
                           key={table.id}
-                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-colors ${
                             isSelected
-                              ? 'bg-cyan-500/10 border-r-2 border-cyan-400'
-                              : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                              ? 'bg-ocean-softer'
+                              : 'hover:bg-softer'
                           }`}
                           draggable
                           onDragStart={(e) => {
@@ -243,17 +243,17 @@ export default function DatabaseTree({
                           onClick={() => onSelectTable(conn.id, table.id)}
                         >
                           <TableIcon active={isSelected} />
-                          <span className={`text-body-sm truncate flex-1 ${
-                            isSelected ? 'text-cyan-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                          <span className={`text-[13px] truncate flex-1 ${
+                            isSelected ? 'text-ocean font-medium' : 'text-ink-3 group-hover:text-ink-2'
                           }`}>
                             {table.display_name || table.table_name}
                           </span>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {table.ai_draft && (
-                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
+                              <span className="orb-draft" title="AI Suggested" />
                             )}
                             {!table.is_active && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-white/5 text-white/30 rounded font-medium">off</span>
+                              <span className="text-[9px] px-1.5 py-0.5 bg-softer text-muted-2 border border-line rounded font-mono tracking-[0.06em] uppercase">off</span>
                             )}
                           </div>
                         </div>
@@ -270,7 +270,7 @@ export default function DatabaseTree({
         {hasProducts && (
           <>
             <div className="px-4 pt-5 pb-2 flex-shrink-0">
-              <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">
                 Organized data
               </p>
             </div>
@@ -284,41 +284,41 @@ export default function DatabaseTree({
                     className="flex items-center gap-2 w-full text-left group"
                   >
                     <ChevronIcon expanded={expandedSections.has('dims')} />
-                    <p className="text-[10px] font-semibold text-purple-400/70 uppercase tracking-[0.15em]">
-                      Reference Tables
+                    <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-ai">
+                      Reference tables
                     </p>
-                    <span className="text-[10px] text-white/20 ml-auto">{sharedDimensions.length}</span>
+                    <span className="text-[10px] font-mono text-muted-2 ml-auto tabular-nums">{sharedDimensions.length}</span>
                   </button>
                 </div>
 
                 {expandedSections.has('dims') && (
-                  <div className="ml-5 border-l border-white/[0.06]">
+                  <div className="ml-5 border-l border-line">
                     {sharedDimensions.map((dim) => {
                       const isSelected = selectedProductTableId === dim.bestTable.id;
                       return (
                         <div
                           key={dim.tableName}
-                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                          className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-colors ${
                             isSelected
-                              ? 'bg-purple-500/10 border-r-2 border-purple-400'
-                              : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                              ? 'bg-ai-soft'
+                              : 'hover:bg-softer'
                           }`}
                           onClick={() => onSelectProductTable?.(dim.bestProductId, dim.bestTable.id)}
                         >
                           <TableIcon active={isSelected} />
-                          <span className={`text-body-sm truncate flex-1 ${
-                            isSelected ? 'text-purple-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                          <span className={`text-[13px] truncate flex-1 ${
+                            isSelected ? 'text-ai font-medium' : 'text-ink-3 group-hover:text-ink-2'
                           }`}>
                             {dim.bestTable.display_name || dim.tableName}
                           </span>
                           <div className="flex items-center gap-1.5 flex-shrink-0">
                             {dim.usedByProducts.length > 1 && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-cyan-500/15 text-cyan-400 rounded font-medium" title={`Used in: ${dim.usedByProducts.join(', ')}`}>
+                              <span className="text-[9px] px-1.5 py-0.5 bg-ocean-softer text-ocean border border-line rounded font-mono tabular-nums" title={`Used in: ${dim.usedByProducts.join(', ')}`}>
                                 {dim.usedByProducts.length}x
                               </span>
                             )}
                             {dim.bestTable.ai_draft && (
-                              <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
+                              <span className="orb-draft" title="AI Suggested" />
                             )}
                           </div>
                         </div>
@@ -338,21 +338,21 @@ export default function DatabaseTree({
                     className="flex items-center gap-2 w-full text-left group"
                   >
                     <ChevronIcon expanded={expandedSections.has('facts')} />
-                    <p className="text-[10px] font-semibold text-cyan-500/60 uppercase tracking-[0.15em]">
+                    <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-ocean">
                       Transaction tables
                     </p>
-                    <span className="text-[10px] text-white/20 ml-auto">
+                    <span className="text-[10px] font-mono text-muted-2 ml-auto tabular-nums">
                       {factsByProduct.reduce((n, g) => n + g.tables.length, 0)}
                     </span>
                   </button>
                 </div>
 
                 {expandedSections.has('facts') && (
-                  <div className="ml-5 border-l border-white/[0.06]">
+                  <div className="ml-5 border-l border-line">
                     {factsByProduct.map((group) => (
                       <div key={group.product.productId}>
                         <div className="pl-4 pr-3 pt-3 pb-1">
-                          <span className="text-[10px] font-semibold text-white/25 uppercase tracking-wide">
+                          <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted-2">
                             {group.product.productName}
                           </span>
                         </div>
@@ -361,21 +361,21 @@ export default function DatabaseTree({
                           return (
                             <div
                               key={table.id}
-                              className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-all ${
+                              className={`flex items-center gap-2 pl-4 pr-3 py-[7px] cursor-pointer group select-none transition-colors ${
                                 isSelected
-                                  ? 'bg-cyan-500/10 border-r-2 border-cyan-400'
-                                  : 'border-r-2 border-transparent hover:bg-white/[0.04]'
+                                  ? 'bg-ocean-softer'
+                                  : 'hover:bg-softer'
                               }`}
                               onClick={() => onSelectProductTable?.(group.product.productId, table.id)}
                             >
                               <TableIcon active={isSelected} />
-                              <span className={`text-body-sm truncate flex-1 ${
-                                isSelected ? 'text-cyan-300 font-semibold' : 'text-white/60 group-hover:text-white/80'
+                              <span className={`text-[13px] truncate flex-1 ${
+                                isSelected ? 'text-ocean font-medium' : 'text-ink-3 group-hover:text-ink-2'
                               }`}>
                                 {table.display_name || table.table_name}
                               </span>
                               {table.ai_draft && (
-                                <span className="orb-draft" style={{ width: 6, height: 6 }} title="AI Suggested" />
+                                <span className="orb-draft" title="AI Suggested" />
                               )}
                             </div>
                           );

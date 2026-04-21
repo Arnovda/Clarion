@@ -11,6 +11,7 @@ import { getRedisConnection } from './redis';
 import { TransformationJobData } from './queues';
 import { semanticDb } from '../db/knex';
 import { trackEvent } from '../utils/monitoring';
+import { registerWeeklyMaintenance } from './warehouseMaintenance';
 
 const QUEUE_NAME = 'scheduled-transformation';
 let schedulerQueue: Queue<TransformationJobData> | null = null;
@@ -102,6 +103,10 @@ export async function loadSchedules(): Promise<void> {
   for (const s of schedules) {
     await registerSchedule(s);
   }
+
+  // Weekly warehouse OPTIMIZE + VACUUM — prevents small-file accumulation
+  // from incremental loads. Idempotent; replaces any existing entry.
+  await registerWeeklyMaintenance();
 }
 
 /**

@@ -1,104 +1,182 @@
 'use client';
 
-import { type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
+import { Lightbulb, Search, X } from 'lucide-react';
 import { widgetVariants } from '../utils/motion';
-import { getTypeAccent } from '../utils/chart-theme';
-import type { WidgetSpec } from '../types';
+import type { WidgetSpec, WidgetData } from '../types';
+import api from '../../../lib/api';
 
 interface WidgetCardProps {
   spec: WidgetSpec;
+  data?: WidgetData;
   colSpan: number;
   children: ReactNode;
   isFiltered?: boolean;
   isCrossFilterSource?: boolean;
+  revalidating?: boolean;
   onExportCsv?: () => void;
   onExportXlsx?: () => void;
+  onInvestigate?: () => void;
+  isInvestigating?: boolean;
 }
 
 export function WidgetCard({
   spec,
+  data,
   colSpan,
   children,
   isFiltered,
   isCrossFilterSource,
+  revalidating,
   onExportCsv,
   onExportXlsx,
+  onInvestigate,
+  isInvestigating,
 }: WidgetCardProps) {
   const isKpi = spec.type === 'kpi_card';
-  const accent = getTypeAccent(spec.type);
   const featured = spec.featured;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [explaining, setExplaining] = useState(false);
+
+  async function fetchExplanation() {
+    if (explaining || !data?.rows?.length) return;
+    if (explanation) { setExplanation(null); return; } // toggle off
+    setExplaining(true);
+    try {
+      const res = await api.post('/dashboards/explain-widget', {
+        title: spec.title,
+        type: spec.type,
+        rows: data.rows,
+      });
+      setExplanation(res.data?.data?.explanation ?? null);
+    } catch { /* silent — Explain is best-effort */ }
+    finally { setExplaining(false); }
+  }
+
+  async function exportWidgetPdf() {
+    if (!cardRef.current || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf'),
+      ]);
+      const canvas = await html2canvas(cardRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const w = canvas.width / 2;
+      const h = canvas.height / 2;
+      const pdf = new jsPDF({
+        orientation: w > h ? 'landscape' : 'portrait',
+        unit: 'px',
+        format: [w, h],
+      });
+      pdf.addImage(imgData, 'PNG', 0, 0, w, h);
+      pdf.save(`${spec.title.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+    } finally {
+      setExportingPdf(false);
+    }
+  }
 
   return (
     <motion.div
+      ref={cardRef}
       variants={widgetVariants}
       style={{
         gridColumn: `span ${colSpan}`,
         gridRow: featured ? 'span 2' : undefined,
       }}
-      className={`group/widget rounded-[20px] overflow-hidden flex flex-col transition-all duration-300
-        ${isCrossFilterSource
-          ? 'widget-card-active bg-white/95'
+      className={`group/widget rounded-lg overflow-hidden flex flex-col bg-raised border transition-colors duration-200 ${
+        isCrossFilterSource
+          ? 'border-ocean/40 ring-1 ring-ocean/20'
           : isFiltered
-            ? 'widget-card opacity-40 scale-[0.98]'
-            : 'widget-card'
-        }`}
+            ? 'border-line opacity-50'
+            : 'border-line hover:border-line-strong'
+      }`}
     >
-      {/* Animated gradient accent bar */}
-      <div
-        className="h-1.5 w-full shrink-0 accent-bar"
-        style={{
-          background: isCrossFilterSource
-            ? 'linear-gradient(90deg, #6366f1, #8b5cf6, #06b6d4, #6366f1)'
-            : `linear-gradient(90deg, ${accent}, ${accent}bb, ${accent})`,
-          backgroundSize: '200% 100%',
-        }}
-      />
-
       {/* Card header (non-KPI only) */}
       {!isKpi && (
-        <div className="px-6 py-4 flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <span
-              className="w-3 h-3 rounded-full shrink-0"
-              style={{
-                background: accent,
-                boxShadow: `0 0 12px ${accent}40, 0 0 0 4px ${accent}15`,
-              }}
-            />
-            <h3 className="text-sm font-bold text-slate-800 tracking-tight truncate">
+        <div className="px-5 pt-4 pb-3 flex items-center justify-between gap-3 shrink-0 border-b border-line">
+          <div className="flex items-center gap-2 min-w-0">
+            <h3 className="text-[13px] font-medium text-ink tracking-[-0.01em] truncate">
               {spec.title}
             </h3>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            {(onExportCsv || onExportXlsx) && (
-              <span className="flex items-center gap-1 opacity-0 group-hover/widget:opacity-100 transition-opacity duration-300">
-                {onExportCsv && (
-                  <button
-                    onClick={onExportCsv}
-                    className="p-2 rounded-xl hover:bg-slate-100/80 text-slate-400 hover:text-slate-600 transition-all hover:scale-110"
-                    title="Export CSV"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
-                    </svg>
-                  </button>
-                )}
-                {onExportXlsx && (
-                  <button
-                    onClick={onExportXlsx}
-                    className="p-2 rounded-xl hover:bg-slate-100/80 text-slate-400 hover:text-slate-600 transition-all hover:scale-110"
-                    title="Export Excel"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                  </button>
-                )}
-              </span>
+            {revalidating && (
+              <span className="w-1.5 h-1.5 rounded-full bg-ocean/50 animate-pulse shrink-0" title="Updating…" />
             )}
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="flex items-center gap-0.5 opacity-0 group-hover/widget:opacity-100 transition-opacity duration-200">
+              {onExportCsv && (
+                <button
+                  onClick={onExportCsv}
+                  className="p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors"
+                  title="Export CSV"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                  </svg>
+                </button>
+              )}
+              {onExportXlsx && (
+                <button
+                  onClick={onExportXlsx}
+                  className="p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors"
+                  title="Export Excel"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                </button>
+              )}
+              {data && !data.loading && !data.error && data.rows.length > 0 && (
+                <button
+                  onClick={fetchExplanation}
+                  disabled={explaining}
+                  className={`p-1.5 rounded transition-colors disabled:opacity-40 ${explanation ? 'text-ocean bg-ocean-softer' : 'text-muted-2 hover:text-ink-2 hover:bg-softer'}`}
+                  title={explanation ? 'Hide explanation' : 'Explain this chart'}
+                >
+                  {explaining ? (
+                    <Lightbulb className="w-3.5 h-3.5 animate-pulse" strokeWidth={2} />
+                  ) : (
+                    <Lightbulb className="w-3.5 h-3.5" strokeWidth={2} />
+                  )}
+                </button>
+              )}
+              {onInvestigate && data && !data.loading && !data.error && (
+                <button
+                  onClick={onInvestigate}
+                  className={`p-1.5 rounded transition-colors ${isInvestigating ? 'text-ocean bg-ocean-softer' : 'text-muted-2 hover:text-ink-2 hover:bg-softer'}`}
+                  title="Investigate — ask why"
+                >
+                  <Search className="w-3.5 h-3.5" strokeWidth={2} />
+                </button>
+              )}
+              <button
+                onClick={exportWidgetPdf}
+                disabled={exportingPdf}
+                className="p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors disabled:opacity-40"
+                title="Export widget as PDF"
+              >
+                {exportingPdf ? (
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 12a8 8 0 018-8v4m0 0l-2-2m2 2l2-2" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                  </svg>
+                )}
+              </button>
+            </span>
             {isCrossFilterSource && (
-              <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-indigo-500/10 text-indigo-600 border border-indigo-500/15 backdrop-blur-sm">
+              <span className="text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line bg-ocean-softer text-ocean">
                 Filtering
               </span>
             )}
@@ -106,7 +184,22 @@ export function WidgetCard({
         </div>
       )}
 
-      <div className={`flex-1 ${isKpi ? 'p-6' : 'px-6 pb-5 pt-0'}`}>{children}</div>
+      <div className={`flex-1 ${isKpi ? 'p-5' : 'px-5 py-4'}`}>{children}</div>
+
+      {explanation && (
+        <div className="px-5 pb-4 pt-0 border-t border-line mt-0">
+          <div className="mt-3 bg-ocean-softer rounded-md px-4 py-3 flex items-start gap-3">
+            <Lightbulb className="w-3.5 h-3.5 text-ocean mt-0.5 shrink-0" strokeWidth={2} />
+            <p className="text-[12px] text-ink-2 leading-relaxed flex-1">{explanation}</p>
+            <button
+              onClick={() => setExplanation(null)}
+              className="text-muted-2 hover:text-ink-2 transition-colors shrink-0"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

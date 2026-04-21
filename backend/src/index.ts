@@ -40,11 +40,14 @@ import notebooksRouter     from './routes/notebooks';
 import notificationsRouter from './routes/notifications';
 import policiesRouter      from './routes/policies';
 import settingsRouter      from './routes/settings';
+import emailSchedulesRouter from './routes/emailSchedules';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
 import { loadSchedules, closeScheduler } from './jobs/scheduler';
+import { loadEmailSchedules } from './jobs/emailScheduler';
 import { drainPool } from './connectors/ConnectorPool';
+import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
 const app = express();
 
@@ -136,8 +139,9 @@ app.use('/api/users',       usersRouter);
 app.use('/api/conversations', conversationsRouter);
 app.use('/api/notebooks',     notebooksRouter);
 app.use('/api/notifications', notificationsRouter);
-app.use('/api/policies',      policiesRouter);
-app.use('/api/settings',      settingsRouter);
+app.use('/api/policies',        policiesRouter);
+app.use('/api/settings',        settingsRouter);
+app.use('/api/email-schedules', emailSchedulesRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
@@ -186,6 +190,8 @@ if (!process.env.VITEST) {
     startWorkers();
     // Load scheduled transformations from DB into BullMQ
     loadSchedules().catch(err => console.error('Schedule loading error:', err));
+    // Load email report schedules from DB into BullMQ
+    loadEmailSchedules().catch(err => console.error('Email schedule loading error:', err));
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
@@ -245,6 +251,7 @@ if (!process.env.VITEST) {
   async function shutdown() {
     server.close();
     await drainPool();
+    await drainDuckDBPool();
     await stopWorkers();
     await closeScheduler();
     await closeQueues();

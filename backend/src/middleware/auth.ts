@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
+import { withTenantAiContext } from '../services/aiBudget';
 
 // ---------------------------------------------------------------------------
 // Re-export types for convenience
@@ -94,7 +95,15 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
     }
 
-    next();
+    // Run the rest of the request in an AsyncLocalStorage scope carrying the
+    // tenantId — AIService.callClaude reads this to enforce + record the
+    // per-tenant AI token budget. Every async operation inside `next()`
+    // inherits the scope automatically.
+    if (payload.tenantId) {
+      withTenantAiContext(payload.tenantId, async () => { next(); }).catch(next);
+    } else {
+      next();
+    }
   } catch {
     res.status(401).json({ ok: false, error: 'Invalid or expired token' });
   }

@@ -1,5 +1,7 @@
 'use client';
 
+import { Sun, Moon } from 'lucide-react';
+
 interface DashboardHeaderProps {
   title: string;
   description: string;
@@ -24,31 +26,27 @@ export function DashboardHeader({
   return (
     <div className="flex items-start justify-between gap-4 mb-4">
       <div className="min-w-0">
-        <h2 className="text-xl font-semibold text-slate-900 truncate">
+        <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
           {title}
         </h2>
         {description && (
-          <p className="text-sm text-slate-500 truncate mt-0.5">
+          <p className="text-[12px] text-ink-3 truncate mt-0.5 leading-relaxed">
             {description}
           </p>
         )}
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         {/* Dark mode toggle */}
         <button
           onClick={onToggleDark}
-          className="p-2 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-black/5 transition-colors"
+          className="w-8 h-8 flex items-center justify-center rounded-md border border-line text-ink-3 hover:bg-softer hover:text-ink-2 hover:border-line-strong transition-colors"
           title={darkMode ? 'Light mode' : 'Dark mode'}
         >
           {darkMode ? (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-            </svg>
+            <Sun className="w-4 h-4" strokeWidth={1.5} />
           ) : (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
+            <Moon className="w-4 h-4" strokeWidth={1.5} />
           )}
         </button>
 
@@ -57,9 +55,7 @@ export function DashboardHeader({
           <button
             onClick={onDiscard}
             disabled={saving}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg text-slate-600
-              hover:bg-slate-100/80 transition-colors
-              disabled:opacity-50"
+            className="px-3 py-1.5 text-[12px] rounded-md text-muted hover:text-ink-2 hover:bg-softer transition-colors disabled:opacity-50"
           >
             Discard
           </button>
@@ -69,14 +65,9 @@ export function DashboardHeader({
         <button
           onClick={onSave}
           disabled={saving}
-          className={`px-4 py-1.5 text-xs font-semibold rounded-lg text-white transition-all
-            disabled:opacity-50
-            ${isUnsaved
-              ? 'bg-indigo-600 hover:bg-indigo-700 shadow-md shadow-indigo-500/25 animate-pulse'
-              : 'bg-indigo-600 hover:bg-indigo-700 shadow-sm'
-            }`}
+          className="px-4 py-1.5 text-[12px] font-medium rounded-md text-white bg-ocean hover:bg-ocean-hover transition-colors disabled:opacity-50"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>

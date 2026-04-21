@@ -145,9 +145,9 @@ export default function SchedulePanel({ productId }: { productId: number }) {
   if (loading) return <div className="text-xs text-on-surface-variant py-2">Loading schedule…</div>;
 
   return (
-    <div className="glass-card rounded-2xl">
+    <div className="bg-raised border border-line rounded-md">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 ghost-border-b bg-surface-container rounded-t-2xl">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-line bg-softer rounded-t-md">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-on-surface">Schedule</span>
           {schedule && (
@@ -270,7 +270,7 @@ export default function SchedulePanel({ productId }: { productId: number }) {
             <button
               onClick={handleSave}
               disabled={saving || !cronInput.trim()}
-              className="px-3 py-1.5 text-xs gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-50 transition-all"
+              className="px-3 py-1.5 text-xs bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
             >
               {saving ? 'Saving…' : 'Save schedule'}
             </button>

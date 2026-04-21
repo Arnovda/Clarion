@@ -13,6 +13,9 @@ import { semanticDb } from '../db/knex';
 import { runTransformationChecks } from './transformationChecks';
 import { tenantQuery } from './tenantQuery';
 import { syncProductToNeo4j } from './productGraphSync';
+import { DuckDBConnector } from '../connectors/DuckDBConnector';
+import { invalidateWidgetCache } from './widgetCache';
+import { trackMetric, trackEvent } from '../utils/monitoring';
 
 interface ProductRow {
   id: number;
@@ -111,130 +114,6 @@ async function syncProductColumns(
     console.log(`[transformationRunner] Synced product_columns for table ${productTableId}: ` +
       `removed ${toRemove.length}, added ${actualCols.filter((ac) => !existingMap.has(ac.column_name)).length}`);
   }
-}
-
-/**
- * Deterministic SQL auto-fixer — parses DuckDB error messages and applies
- * the suggested corrections without needing an AI call.
- *
- * Handles:
- * 1. "Referenced column X not found, Candidate bindings: Y" → replace X with best match Y
- * 2. "Table with name X does not exist! Did you mean Y?" → replace X with best available view
- * 3. "Values list alias does not have a column named X" + candidate → replace
- */
-function autoFixSql(sql: string, errorMessage: string, availableViews?: string[]): string {
-  let fixed = sql;
-
-  // Pattern 1: "Referenced column "X" not found ... Candidate bindings: "Y", "Z"
-  const colNotFound = errorMessage.match(
-    /Referenced column "([^"]+)" not found[\s\S]*?Candidate bindings:\s*"([^"]+)"/
-  );
-  if (colNotFound) {
-    const [, badCol, suggestedCol] = colNotFound;
-    const escaped = badCol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
-    fixed = sql.replace(pattern, suggestedCol);
-    if (fixed !== sql) return fixed;
-  }
-
-  // Pattern 2: "Table with name X does not exist!"
-  // DuckDB's "Did you mean" suggestion is often wrong (picks alphabetically closest).
-  // Instead, find the best semantic match from available DuckDB views using JOIN context.
-  const tableNotFound = errorMessage.match(
-    /Table with name (\w+) does not exist!/
-  );
-  if (tableNotFound && availableViews && availableViews.length > 0) {
-    const badTable = tableNotFound[1];
-    const bestMatch = findBestTableMatch(badTable, availableViews, sql);
-    if (bestMatch) {
-      const escaped = badTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
-      fixed = sql.replace(pattern, bestMatch);
-      if (fixed !== sql) return fixed;
-    }
-  }
-
-  // Pattern 3: "Binder Error: column X not found" with "Candidate bindings" (alternate format)
-  const binderCol = errorMessage.match(
-    /column "([^"]+)" not found[\s\S]*?Candidate bindings:\s*"([^"]+)"/i
-  );
-  if (binderCol) {
-    const [, badCol, suggestedCol] = binderCol;
-    const escaped = badCol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`\\b${escaped}\\b`, 'g');
-    fixed = sql.replace(pattern, suggestedCol);
-    if (fixed !== sql) return fixed;
-  }
-
-  return fixed; // No fix found — return unchanged
-}
-
-/**
- * Find the best matching view name for a missing table reference.
- * Uses the SQL context to match JOIN column references against available views.
- * e.g., "LEFT JOIN dim_klant dc ON ... = dc.customer_key" → finds dim_customer
- * because dim_customer has a customer_key column.
- */
-function findBestTableMatch(badTable: string, availableViews: string[], sql?: string, db?: Database): string | null {
-  const badParts = badTable.toLowerCase().split('_');
-  const badPrefix = badParts[0]; // "dim", "fact", etc.
-
-  // Filter to same prefix only
-  const candidates = availableViews.filter(v => v.toLowerCase().startsWith(badPrefix + '_'));
-  if (candidates.length === 0) return null;
-  if (candidates.length === 1) return candidates[0]; // Only one option — use it
-
-  // Try to extract alias and referenced columns from the SQL JOIN clause
-  if (sql) {
-    // Find: "JOIN dim_klant <alias>" or "JOIN dim_klant AS <alias>"
-    const joinPattern = new RegExp(
-      `JOIN\\s+${badTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(?:AS\\s+)?(\\w+)`,
-      'i'
-    );
-    const joinMatch = sql.match(joinPattern);
-    if (joinMatch) {
-      const alias = joinMatch[1];
-      // Find all column references using this alias: alias.column_name
-      const colRefs = [...sql.matchAll(new RegExp(`${alias}\\.(\\w+)`, 'g'))].map(m => m[1]);
-      if (colRefs.length > 0) {
-        // The candidate with a column matching one of these references is our target
-        // Check column names by looking at the candidate view names
-        // e.g., if alias refs "customer_key", the view dim_customer likely has it
-        for (const candidate of candidates) {
-          const entityPart = candidate.split('_').slice(1).join('_'); // "customer"
-          for (const col of colRefs) {
-            if (col.toLowerCase().includes(entityPart) || entityPart.includes(col.toLowerCase().replace('_key', ''))) {
-              return candidate;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Fallback: longest common substring on the entity portion
-  const badSuffix = badParts.slice(1).join('_');
-  let bestMatch: string | null = null;
-  let bestScore = 0;
-  for (const view of candidates) {
-    const viewSuffix = view.toLowerCase().split('_').slice(1).join('_');
-    let score = 0;
-    // Exact part matches
-    for (const part of badParts.slice(1)) {
-      for (const vPart of view.toLowerCase().split('_').slice(1)) {
-        if (part === vPart) score += 10;
-        else if (vPart.includes(part) || part.includes(vPart)) score += 5;
-      }
-    }
-    // LCS bonus
-    let max = 0;
-    for (let i = 0; i < badSuffix.length; i++)
-      for (let j = i + 1; j <= badSuffix.length; j++)
-        if (viewSuffix.includes(badSuffix.substring(i, j)) && j - i > max) max = j - i;
-    score += max;
-    if (score > bestScore) { bestScore = score; bestMatch = view; }
-  }
-  return bestScore >= 3 ? bestMatch : null;
 }
 
 /** Check if a path is an Azure Blob URI. */
@@ -349,6 +228,103 @@ async function loadDependencyDimensions(
 }
 
 /**
+ * Generate a monthly pre-aggregated rollup Parquet for a fact table.
+ *
+ * Auto-detects: the first DATE/TIMESTAMP column becomes the time grain;
+ * numeric non-PK/FK-key columns become SUMmed measures; FK _id columns
+ * become GROUP BY dimensions; surrogate/natural keys are excluded entirely.
+ * Writes to `<productDir>/rollup_monthly_<tableName>/data.parquet`.
+ * Non-fatal: logs and returns null on any error or when no date column exists.
+ */
+async function generateMonthlyRollup(
+  db: Database,
+  tableId: number,
+  tableName: string,
+  parquetPath: string,
+  productDir: string,
+  useAzure: boolean,
+  tenantId?: number,
+): Promise<{ rollupName: string; rowCount: number } | null> {
+  const safeAlias = tableName.replace(/[^a-zA-Z0-9_]/g, '_');
+  const descView = `__rd_${safeAlias}`;
+  const escaped = parquetPath.replace(/'/g, "''");
+
+  await db.exec(`CREATE OR REPLACE VIEW "${descView}" AS SELECT * FROM read_parquet('${escaped}');`);
+  const cols = await db.all(`DESCRIBE "${descView}"`) as Array<{ column_name: string; column_type: string }>;
+  await db.exec(`DROP VIEW IF EXISTS "${descView}";`);
+
+  const DATE_TYPES = ['DATE', 'TIMESTAMP', 'TIMESTAMP WITH TIME ZONE', 'TIMESTAMPTZ'];
+  const NUMERIC_TYPES = ['BIGINT', 'INTEGER', 'DOUBLE', 'FLOAT', 'DECIMAL', 'HUGEINT', 'UBIGINT', 'UINTEGER', 'INT4', 'INT8', 'INT2', 'TINYINT', 'SMALLINT', 'REAL', 'NUMERIC'];
+
+  const dateCol = cols.find((c) =>
+    DATE_TYPES.some((t) => c.column_type.toUpperCase().split('(')[0].trim() === t),
+  );
+  if (!dateCol) return null;
+
+  // Exclude surrogate/natural key columns (PKs) from GROUP BY to ensure real aggregation.
+  const pkRows = await (tenantId
+    ? tenantQuery(tenantId, (trx) =>
+        trx('product_columns')
+          .where({ product_table_id: tableId })
+          .whereIn('column_role', ['surrogate_key', 'natural_key'])
+          .select('column_name'))
+    : semanticDb('product_columns')
+        .where({ product_table_id: tableId })
+        .whereIn('column_role', ['surrogate_key', 'natural_key'])
+        .select('column_name')
+  ) as Array<{ column_name: string }>;
+  const pkSet = new Set(pkRows.map((r) => r.column_name));
+
+  const measures = cols.filter(
+    (c) =>
+      c.column_name !== dateCol.column_name &&
+      !pkSet.has(c.column_name) &&
+      !c.column_name.toLowerCase().endsWith('_id') &&
+      !c.column_name.toLowerCase().endsWith('_key') &&
+      NUMERIC_TYPES.some((t) => c.column_type.toUpperCase().startsWith(t)),
+  );
+  if (measures.length === 0) return null;
+
+  // Dims: everything that is not the date col, not a PK, and not a measure
+  const dims = cols.filter(
+    (c) =>
+      c.column_name !== dateCol.column_name &&
+      !pkSet.has(c.column_name) &&
+      !measures.find((m) => m.column_name === c.column_name),
+  );
+
+  const rollupName = `rollup_monthly_${tableName}`;
+  const rollupDir = useAzure ? null : path.join(productDir, rollupName);
+  if (rollupDir) fs.mkdirSync(rollupDir, { recursive: true });
+
+  const rollupPath = useAzure
+    ? `${productDir.replace(/\\/g, '/')}/${rollupName}/data.parquet`
+    : path.join(rollupDir!, 'data.parquet').replace(/\\/g, '/');
+
+  const escapedRollup = rollupPath.replace(/'/g, "''");
+
+  const selects = [
+    `date_trunc('month', "${dateCol.column_name}") AS month`,
+    ...dims.map((c) => `"${c.column_name}"`),
+    ...measures.map((c) => `SUM("${c.column_name}") AS "${c.column_name}"`),
+    `COUNT(*) AS _row_count`,
+  ];
+  const groupBy = [
+    `date_trunc('month', "${dateCol.column_name}")`,
+    ...dims.map((c) => `"${c.column_name}"`),
+  ].join(', ');
+
+  await db.exec(
+    `COPY (SELECT ${selects.join(', ')} FROM read_parquet('${escaped}') GROUP BY ${groupBy} ORDER BY month) TO '${escapedRollup}' (FORMAT PARQUET);`,
+  );
+
+  const cnt = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${escapedRollup}');`);
+  const rowCount = Number((cnt[0] as { n: unknown }).n ?? 0);
+
+  return { rollupName, rowCount };
+}
+
+/**
  * Runs transformations for a data product's tables, respecting DAG order.
  */
 export async function runProductTransformation(
@@ -356,6 +332,24 @@ export async function runProductTransformation(
   tables: TableRow[],
   tenantId?: number,
 ): Promise<TransformResult[]> {
+  // Feature flag: route through the new dbt-duckdb engine instead.
+  // Phase 1 default: OFF. Set USE_DBT_TRANSFORMATIONS=true to opt a backend
+  // instance into the dbt path for every transformation run.
+  // See docs/rfc-001-dbt-transformations.md.
+  if (process.env.USE_DBT_TRANSFORMATIONS === 'true' && tenantId) {
+    const { runProductTransformationDbt } = await import('./dbtRunner');
+    const dbtResults = await runProductTransformationDbt(product, tables, tenantId);
+    // Map DbtTransformResult to the legacy TransformResult shape so callers
+    // are unaffected by the engine swap.
+    return dbtResults.map((r) => ({
+      table_name: r.table_name,
+      status: r.status,
+      row_count: r.row_count,
+      error: r.error,
+    }));
+  }
+
+  const runStart = Date.now();
   const connection = await tenantQuery(tenantId, (trx) =>
     trx('connections').where({ id: product.connection_id }).first()
   );
@@ -477,36 +471,12 @@ export async function runProductTransformation(
           }
         }
 
-        // ── Deterministic auto-fix: retry with DuckDB's own column/table suggestions ──
-        // Collect available view/table names in DuckDB for table name resolution
-        let availableViews: string[] = [];
-        try {
-          const viewRows = await db.all("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'");
-          availableViews = viewRows.map((r: { table_name: string }) => r.table_name);
-        } catch { /* best-effort */ }
-
-        let sql = table.transformation_sql;
-        const MAX_AUTOFIX = 5;
-        for (let fix = 0; fix < MAX_AUTOFIX; fix++) {
-          try {
-            await db.all(sql);
-            break; // SQL is valid
-          } catch (sqlErr: unknown) {
-            const errMsg = sqlErr instanceof Error ? sqlErr.message : String(sqlErr);
-            const patched = autoFixSql(sql, errMsg, availableViews);
-            if (patched === sql) throw sqlErr; // No fix found — rethrow
-            console.log(`[transformationRunner] Auto-fixed SQL for ${table.table_name} (attempt ${fix + 1}): ${errMsg.substring(0, 80)}`);
-            sql = patched;
-          }
-        }
-        // Update table SQL if it was patched
-        if (sql !== table.transformation_sql) {
-          table.transformation_sql = sql;
-          await tenantQuery(tenantId, (trx) =>
-            trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql, updated_at: new Date().toISOString() })
-          );
-        }
-
+        // Execute the transformation SQL as authored. Failures surface the
+        // DuckDB error (which includes "Candidate bindings:" suggestions) so
+        // the user can fix the SQL deliberately — previously we silently
+        // regex-patched column/table names, which sometimes produced a
+        // successful run on the wrong data.
+        const sql = table.transformation_sql;
         const rows = await db.all(sql);
         let rowCount = rows.length;
 
@@ -597,6 +567,18 @@ export async function runProductTransformation(
         }
 
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
+
+        // Generate monthly rollup for fact tables — best-effort, non-fatal
+        if (table.table_role === 'fact') {
+          try {
+            const rollup = await generateMonthlyRollup(db, table.id, table.table_name, parquetPath, productDir, useAzure, tenantId);
+            if (rollup) {
+              console.log(`[transformationRunner] Rollup: ${rollup.rollupName} (${rollup.rowCount} rows)`);
+            }
+          } catch (rollupErr) {
+            console.warn(`[transformationRunner] Rollup generation skipped for ${table.table_name}:`, rollupErr);
+          }
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         await tenantQuery(tenantId, (trx) =>
@@ -620,7 +602,36 @@ export async function runProductTransformation(
     } catch (neo4jErr) {
       console.warn(`[transformationRunner] Neo4j product sync failed (non-fatal):`, neo4jErr);
     }
+
+    // Invalidate pooled DuckDB instances so subsequent queries see fresh tables.
+    try {
+      await DuckDBConnector.invalidateWarehouse(warehousePath);
+    } catch (invErr) {
+      console.warn(`[transformationRunner] DuckDB pool invalidation failed (non-fatal):`, invErr);
+    }
+
+    // Pre-warm the pool so the first post-transformation dashboard request
+    // doesn't pay the view-registration cost (~500ms on a cold pool).
+    const warmConn = new DuckDBConnector(warehousePath);
+    warmConn.connect()
+      .then(() => { warmConn.disconnect(); })
+      .catch((err) => console.warn('[transformationRunner] DuckDB pool warm-up failed (non-fatal):', err));
+
+    // Bust the widget result cache so stale rows aren't served from memory.
+    if (tenantId) {
+      invalidateWidgetCache(tenantId);
+    }
   }
+
+  const successCount = results.filter((r) => r.status === 'success').length;
+  trackMetric('transformation_ms', Date.now() - runStart, {
+    productId: String(product.id),
+    tables: String(tables.length),
+  });
+  trackEvent('transformation_complete', {
+    productId: String(product.id),
+    outcome: successCount === tables.length ? 'success' : successCount > 0 ? 'partial' : 'failure',
+  }, { succeeded: successCount, total: tables.length });
 
   return results;
 }

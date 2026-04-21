@@ -33,10 +33,10 @@ export function ChartSkeleton({ height = 200 }: { height?: number }) {
 export function WidgetError({ msg }: { msg: string }) {
   return (
     <div className="flex items-center gap-2 py-4 px-2">
-      <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <svg className="w-4 h-4 text-err shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
-      <p className="text-xs text-red-500">{msg}</p>
+      <p className="text-[12px] text-err">{msg}</p>
     </div>
   );
 }
@@ -45,10 +45,10 @@ export function WidgetError({ msg }: { msg: string }) {
 export function EmptyWidget() {
   return (
     <div className="flex flex-col items-center justify-center py-8 gap-2">
-      <svg className="w-8 h-8 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <svg className="w-6 h-6 text-muted-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
       </svg>
-      <p className="text-xs text-slate-400">No data available</p>
+      <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted-2">No data available</p>
     </div>
   );
 }

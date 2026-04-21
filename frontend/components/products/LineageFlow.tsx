@@ -25,6 +25,32 @@ const hR = (id: string) => `R_${id}`;
 const hL = (id: string) => `L_${id}`;
 
 // ---------------------------------------------------------------------------
+// Observatory palette (mirrors CSS vars in globals.css)
+// ---------------------------------------------------------------------------
+const OBS = {
+  ink:          '#0f1a22',
+  ink2:         '#334049',
+  muted:        '#6b7680',
+  muted2:       '#8891a0',
+  line:         '#d0d5da',
+  softer:       '#edeff2',
+  raised:       '#ffffff',
+  ocean:        '#164e63',
+  oceanHover:   '#103d4f',
+  oceanSoft:    '#d0e1e6',
+  oceanSofter:  '#e8f0f3',
+  ai:           '#c08a5e',
+  aiSoft:       '#f1e4d6',
+  ok:           '#3f7a5c',
+  okSoft:       '#dbe8e0',
+  warn:         '#a06a1c',
+  warnSoft:     '#f1e4c8',
+  err:          '#a43a3a',
+  errSoft:      '#f1d7d7',
+  plum:         '#6b4e8c',
+} as const;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 export interface LineageColumn {
@@ -70,14 +96,14 @@ const HANDLE_STYLE = {
 function SourceNode({ data }: NodeProps<SrcNodeData>) {
   const { tableName, columns, focused, highlighted, dimmed, highlightedCols, showColumns } = data;
   const visibleH = showColumns ? HEADER_H + columns.length * ROW_H : HEADER_H;
-  const opacity = dimmed ? 0.2 : 1;
-  const borderColor = focused ? '#334155' : highlighted ? '#94a3b8' : '#e2e8f0';
+  const opacity = dimmed ? 0.25 : 1;
+  const borderColor = focused ? OBS.ink2 : highlighted ? OBS.muted : OBS.line;
 
   return (
     <div style={{ position: 'relative', width: SRC_W, height: visibleH, opacity, transition: 'opacity 0.2s, height 0.3s ease' }}>
       {/* Table-level handle (always present, at header center-right) */}
       <Handle type="source" position={Position.Right} id={hR(`table:${tableName}`)}
-        style={{ ...HANDLE_STYLE, background: highlighted ? '#3b82f6' : '#94a3b8', position: 'absolute', top: HEADER_H / 2, right: -4, transform: 'translateY(-50%)' }} />
+        style={{ ...HANDLE_STYLE, background: highlighted ? OBS.ocean : OBS.muted2, position: 'absolute', top: HEADER_H / 2, right: -4, transform: 'translateY(-50%)' }} />
       {/* Column-level handles (only when expanded) */}
       {showColumns && columns.map((col, i) => {
         const top = HEADER_H + i * ROW_H + ROW_H / 2;
@@ -85,34 +111,34 @@ function SourceNode({ data }: NodeProps<SrcNodeData>) {
         return (
           <Fragment key={col}>
             <Handle type="source" position={Position.Right} id={hR(`${tableName}.${col}`)}
-              style={{ ...HANDLE_STYLE, background: isHl ? '#3b82f6' : '#94a3b8', position: 'absolute', top, right: -4, transform: 'translateY(-50%)' }} />
+              style={{ ...HANDLE_STYLE, background: isHl ? OBS.ocean : OBS.muted2, position: 'absolute', top, right: -4, transform: 'translateY(-50%)' }} />
           </Fragment>
         );
       })}
       <div style={{
-        position: 'absolute', inset: 0, border: `2px solid ${borderColor}`, borderRadius: 10,
-        overflow: 'hidden', background: '#fff',
-        boxShadow: focused ? '0 0 0 3px #cbd5e1, 0 4px 16px rgba(0,0,0,.12)' : '0 2px 6px rgba(0,0,0,.05)',
+        position: 'absolute', inset: 0, border: `1px solid ${borderColor}`, borderRadius: 8,
+        overflow: 'hidden', background: OBS.raised,
+        boxShadow: focused ? `0 0 0 2px ${OBS.oceanSoft}, 0 6px 20px rgba(13,28,47,0.1)` : '0 2px 6px rgba(13,28,47,0.04)',
       }}>
         <div style={{
-          height: HEADER_H, background: focused ? '#334155' : '#475569',
+          height: HEADER_H, background: focused ? OBS.ink : OBS.ink2,
           padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
         }}>
-          <p style={{ margin: 0, color: '#fff', fontSize: 12, fontWeight: 700,
+          <p style={{ margin: 0, color: '#fff', fontSize: 12, fontWeight: 500,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tableName}</p>
-          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.6)', flexShrink: 0 }}>{columns.length} cols</span>
+          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.6)', fontFamily: 'var(--font-mono), monospace', flexShrink: 0 }}>{columns.length} cols</span>
         </div>
         {showColumns && columns.map((col, i) => {
           const isHl = highlightedCols.has(col);
           return (
             <div key={col} style={{
               height: ROW_H, display: 'flex', alignItems: 'center', gap: 5, padding: '0 10px',
-              background: isHl ? '#dbeafe' : i % 2 === 0 ? '#fff' : '#f8fafc',
-              borderTop: '1px solid #f1f5f9',
-              borderLeft: isHl ? '3px solid #3b82f6' : '3px solid transparent',
+              background: isHl ? OBS.oceanSofter : i % 2 === 0 ? OBS.raised : OBS.softer,
+              borderTop: `1px solid ${OBS.line}`,
+              borderLeft: isHl ? `2px solid ${OBS.ocean}` : '2px solid transparent',
             }}>
-              <span style={{ fontSize: 11, color: isHl ? '#1d4ed8' : '#334155',
-                fontWeight: isHl ? 700 : 500, flex: 1,
+              <span style={{ fontSize: 11, color: isHl ? OBS.ocean : OBS.ink2,
+                fontWeight: isHl ? 600 : 400, flex: 1,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{col}</span>
             </div>
@@ -140,34 +166,35 @@ interface ProdNodeData {
 function ColRoleBadge({ role }: { role: string | null }) {
   if (!role) return null;
   const m: Record<string, { bg: string; text: string; label: string }> = {
-    surrogate_key: { bg: '#fef3c7', text: '#92400e', label: 'SK' },
-    natural_key: { bg: '#dbeafe', text: '#1e40af', label: 'NK' },
-    foreign_key: { bg: '#ede9fe', text: '#6d28d9', label: 'FK' },
-    degenerate_dimension: { bg: '#fce7f3', text: '#9d174d', label: 'DD' },
-    measure: { bg: '#d1fae5', text: '#065f46', label: 'M' },
-    attribute: { bg: '#f1f5f9', text: '#475569', label: 'attr' },
+    surrogate_key:        { bg: OBS.warnSoft,    text: OBS.warn,  label: 'SK' },
+    natural_key:          { bg: OBS.oceanSofter, text: OBS.ocean, label: 'NK' },
+    foreign_key:          { bg: OBS.aiSoft,      text: OBS.ai,    label: 'FK' },
+    degenerate_dimension: { bg: OBS.errSoft,     text: OBS.err,   label: 'DD' },
+    measure:              { bg: OBS.okSoft,      text: OBS.ok,    label: 'M' },
+    attribute:            { bg: OBS.softer,      text: OBS.muted, label: 'attr' },
   };
   const s = m[role];
   if (!s) return null;
   return (
-    <span style={{ fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 4,
-      background: s.bg, color: s.text, flexShrink: 0, lineHeight: '14px' }}>{s.label}</span>
+    <span style={{ fontSize: 8, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
+      background: s.bg, color: s.text, flexShrink: 0, lineHeight: '14px',
+      border: `1px solid ${OBS.line}` }}>{s.label}</span>
   );
 }
 
 function ProductNode({ data }: NodeProps<ProdNodeData>) {
   const { tableName, tableRole, columns, focused, highlighted, dimmed, highlightedCols, showColumns } = data;
   const visibleH = showColumns ? HEADER_H + columns.length * ROW_H : HEADER_H;
-  const opacity = dimmed ? 0.2 : 1;
+  const opacity = dimmed ? 0.25 : 1;
   const isDim = tableRole !== 'fact';
-  const headerBg = isDim ? (focused ? '#1e40af' : '#2563eb') : (focused ? '#6d28d9' : '#7c3aed');
-  const borderColor = focused ? (isDim ? '#2563eb' : '#7c3aed') : highlighted ? (isDim ? '#93c5fd' : '#c4b5fd') : '#e2e8f0';
+  const headerBg = isDim ? (focused ? OBS.oceanHover : OBS.ocean) : (focused ? '#4e3a66' : OBS.plum);
+  const borderColor = focused ? (isDim ? OBS.ocean : OBS.plum) : highlighted ? (isDim ? OBS.oceanSoft : '#c8bcd6') : OBS.line;
 
   return (
     <div style={{ position: 'relative', width: PROD_W, height: visibleH, opacity, transition: 'opacity 0.2s, height 0.3s ease' }}>
       {/* Table-level handle */}
       <Handle type="source" position={Position.Left} id={hL(`table:${tableName}`)}
-        style={{ ...HANDLE_STYLE, background: highlighted ? '#3b82f6' : '#93c5fd', position: 'absolute', top: HEADER_H / 2, left: -4, transform: 'translateY(-50%)' }} />
+        style={{ ...HANDLE_STYLE, background: highlighted ? OBS.ocean : OBS.oceanSoft, position: 'absolute', top: HEADER_H / 2, left: -4, transform: 'translateY(-50%)' }} />
       {/* Column-level handles (only when expanded) */}
       {showColumns && columns.map((col, i) => {
         const top = HEADER_H + i * ROW_H + ROW_H / 2;
@@ -175,39 +202,41 @@ function ProductNode({ data }: NodeProps<ProdNodeData>) {
         return (
           <Fragment key={col.name}>
             <Handle type="source" position={Position.Left} id={hL(`${tableName}.${col.name}`)}
-              style={{ ...HANDLE_STYLE, background: isHl ? '#3b82f6' : '#93c5fd', position: 'absolute', top, left: -4, transform: 'translateY(-50%)' }} />
+              style={{ ...HANDLE_STYLE, background: isHl ? OBS.ocean : OBS.oceanSoft, position: 'absolute', top, left: -4, transform: 'translateY(-50%)' }} />
           </Fragment>
         );
       })}
       <div style={{
-        position: 'absolute', inset: 0, border: `2px solid ${borderColor}`, borderRadius: 10,
-        overflow: 'hidden', background: '#fff',
-        boxShadow: focused ? `0 0 0 3px ${isDim ? '#bfdbfe' : '#ddd6fe'}, 0 4px 16px rgba(0,0,0,.12)` : '0 2px 6px rgba(0,0,0,.05)',
+        position: 'absolute', inset: 0, border: `1px solid ${borderColor}`, borderRadius: 8,
+        overflow: 'hidden', background: OBS.raised,
+        boxShadow: focused ? `0 0 0 2px ${isDim ? OBS.oceanSoft : '#d6ccdf'}, 0 6px 20px rgba(13,28,47,0.1)` : '0 2px 6px rgba(13,28,47,0.04)',
       }}>
         <div style={{
           height: HEADER_H, background: headerBg,
           padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
         }}>
           <span style={{
-            fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 99,
-            background: isDim ? 'rgba(147,197,253,0.3)' : 'rgba(196,181,253,0.3)', color: '#fff',
+            fontSize: 9, fontWeight: 500, padding: '1px 6px', borderRadius: 3,
+            background: 'rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.9)',
+            letterSpacing: '0.08em', textTransform: 'uppercase',
+            fontFamily: 'var(--font-mono), monospace',
           }}>{isDim ? 'dim' : 'fact'}</span>
-          <p style={{ margin: 0, color: '#fff', fontSize: 12, fontWeight: 700,
+          <p style={{ margin: 0, color: '#fff', fontSize: 12, fontWeight: 500,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tableName}</p>
-          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.6)', flexShrink: 0 }}>{columns.length} cols</span>
+          <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.6)', fontFamily: 'var(--font-mono), monospace', flexShrink: 0 }}>{columns.length} cols</span>
         </div>
         {showColumns && columns.map((col, i) => {
           const isHl = highlightedCols.has(col.name);
           return (
             <div key={col.name} style={{
               height: ROW_H, display: 'flex', alignItems: 'center', gap: 5, padding: '0 10px',
-              background: isHl ? '#dbeafe' : i % 2 === 0 ? '#fff' : '#f8fafc',
-              borderTop: '1px solid #f1f5f9',
-              borderLeft: isHl ? '3px solid #3b82f6' : '3px solid transparent',
+              background: isHl ? OBS.oceanSofter : i % 2 === 0 ? OBS.raised : OBS.softer,
+              borderTop: `1px solid ${OBS.line}`,
+              borderLeft: isHl ? `2px solid ${OBS.ocean}` : '2px solid transparent',
             }}>
               <ColRoleBadge role={col.role} />
-              <span style={{ fontSize: 11, color: isHl ? '#1d4ed8' : '#334155',
-                fontWeight: isHl ? 700 : 500, flex: 1,
+              <span style={{ fontSize: 11, color: isHl ? OBS.ocean : OBS.ink2,
+                fontWeight: isHl ? 600 : 400, flex: 1,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{col.name}</span>
             </div>
@@ -240,9 +269,9 @@ function LineageEdge({
   const isDimmed = data?.dimmed ?? false;
   const isHovered = data?.hovered ?? false;
   const active = isHighlighted || isHovered;
-  const color = active ? '#3b82f6' : isDimmed ? '#e2e8f0' : '#94a3b8';
+  const color = active ? OBS.ocean : isDimmed ? OBS.line : OBS.muted2;
   const strokeW = active ? 2.5 : isDimmed ? 1 : 1.5;
-  const opacity = isDimmed ? 0.15 : 1;
+  const opacity = isDimmed ? 0.25 : 1;
   const markerId = `arr-lin-${id}`;
 
   const [edgePath, labelX, labelY] = getBezierPath({
@@ -280,19 +309,20 @@ function LineageEdge({
             zIndex: 9999,
           }}>
             <div style={{
-              background: '#1e293b', color: '#f1f5f9', borderRadius: 8,
+              background: OBS.ink, color: 'rgba(255,255,255,0.92)', borderRadius: 6,
               padding: '6px 10px', maxWidth: 300,
-              boxShadow: '0 4px 16px rgba(0,0,0,.25)', fontSize: 10, lineHeight: 1.4,
+              border: '1px solid rgba(255,255,255,0.08)',
+              boxShadow: '0 4px 16px rgba(13,28,47,0.18)', fontSize: 10, lineHeight: 1.4,
             }}>
-              <div style={{ color: '#94a3b8', fontSize: 9, marginBottom: 3 }}>
+              <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 9, marginBottom: 3, letterSpacing: '0.06em', fontFamily: 'var(--font-mono), monospace' }}>
                 {data.fromLabel} &#8594; {data.toLabel}
               </div>
-              <div style={{ color: '#e2e8f0', fontStyle: 'italic' }}>{data.transform}</div>
+              <div style={{ color: 'rgba(255,255,255,0.92)', fontStyle: 'italic' }}>{data.transform}</div>
               <div style={{
                 position: 'absolute', bottom: -5, left: '50%', transform: 'translateX(-50%)',
                 width: 0, height: 0,
                 borderLeft: '5px solid transparent', borderRight: '5px solid transparent',
-                borderTop: '5px solid #1e293b',
+                borderTop: `5px solid ${OBS.ink}`,
               }} />
             </div>
           </div>
@@ -303,9 +333,8 @@ function LineageEdge({
             transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
           }}>
             <span style={{
-              fontSize: 9, fontWeight: 600, color: '#fff',
-              background: '#3b82f6', padding: '2px 6px', borderRadius: 99,
-              boxShadow: '0 1px 3px rgba(0,0,0,.15)',
+              fontSize: 9, fontWeight: 500, color: '#fff',
+              background: OBS.ocean, padding: '2px 6px', borderRadius: 3,
             }}>&#8594;</span>
           </div>
         )}
@@ -647,12 +676,12 @@ function LineageFlowInner({ data }: { data: LineageData }) {
         nodesDraggable nodesConnectable={false} elementsSelectable
         panOnScroll zoomOnScroll={false}
       >
-        <Background color="#e2e8f0" gap={20} size={1} />
+        <Background color={OBS.line} gap={20} size={1} />
         <Controls showInteractive={false} />
         <MiniMap
-          nodeColor={(n) => n.id.startsWith('src-') ? '#94a3b8' : '#93c5fd'}
-          maskColor="rgba(0,0,0,.08)"
-          style={{ borderRadius: 8, border: '1px solid #e2e8f0' }}
+          nodeColor={(n) => n.id.startsWith('src-') ? OBS.muted2 : OBS.oceanSoft}
+          maskColor="rgba(13,28,47,0.06)"
+          style={{ borderRadius: 6, border: `1px solid ${OBS.line}` }}
         />
       </ReactFlow>
     </div>

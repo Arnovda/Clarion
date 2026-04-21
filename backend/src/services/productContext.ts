@@ -7,6 +7,8 @@
  * and dimensions with clear grain, relationships, and KPI definitions.
  */
 
+import fs from 'fs';
+import path from 'path';
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
 
@@ -55,6 +57,22 @@ export interface ProductSemanticContext {
   isProductLayer: boolean;
   /** For entity matching */
   catalog: { tableName: string; displayName: string; columnNames: string[] }[];
+}
+
+/**
+ * Scan a local product warehouse directory for pre-aggregated rollup tables.
+ * Rollups are written by the transformation runner to `rollup_monthly_<fact_table>/`.
+ * Returns an empty array for Azure paths or missing directories.
+ */
+function detectRollupTables(productDir: string): { name: string; factTable: string }[] {
+  if (!productDir || productDir.startsWith('az://') || !fs.existsSync(productDir)) return [];
+  try {
+    return fs.readdirSync(productDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith('rollup_monthly_'))
+      .map((e) => ({ name: e.name, factTable: e.name.replace('rollup_monthly_', '') }));
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -222,6 +240,25 @@ export async function buildProductSemanticContext(
         .join('\n\n')
     : 'No KPIs defined yet.';
 
+  // --- Detect pre-aggregated rollup tables (local warehouse only) ---
+  const productSlugs = products.map(
+    (p: { name: string }) => p.name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+  );
+  const rollupLines: string[] = [];
+  for (const slug of productSlugs) {
+    const productDir = path.resolve('./warehouse/product', slug);
+    for (const rollup of detectRollupTables(productDir)) {
+      rollupLines.push(
+        `- ${rollup.name}: monthly pre-aggregation of ${rollup.factTable}. ` +
+        `Contains: month (TIMESTAMP, first day of month), all dimension columns, SUM of all measures, _row_count. ` +
+        `USE THIS table instead of ${rollup.factTable} for any monthly/quarterly/yearly time-series query.`,
+      );
+    }
+  }
+  const rollupSection = rollupLines.length > 0
+    ? `\n\n## ROLLUP TABLES — always prefer for aggregate time-series queries\n${rollupLines.join('\n')}`
+    : '';
+
   // --- Build catalog for entity matching ---
   const catalog = tables.map((t) => ({
     tableName: t.table_name,
@@ -232,7 +269,7 @@ export async function buildProductSemanticContext(
   }));
 
   return {
-    semanticContext,
+    semanticContext: semanticContext + rollupSection,
     relationshipContext,
     kpiFormulas,
     isProductLayer: true,

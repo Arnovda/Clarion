@@ -48,17 +48,17 @@ export function MarkdownAnswer({ text }: { text: string }) {
       });
 
       elements.push(
-        <div key={`t${i}`} className="overflow-x-auto mt-2 mb-1 rounded-lg">
-          <table className="text-xs w-full border-collapse">
+        <div key={`t${i}`} className="overflow-x-auto mt-2 mb-1 rounded-md border border-line">
+          <table className="text-[12px] w-full border-collapse">
             <thead>
               <tr>
                 {headers.map((h, j) => (
                   <th
                     key={j}
-                    className={`px-3 py-2 font-semibold
-                      bg-slate-50/80
-                      border-b border-slate-200/60
-                      text-slate-600 whitespace-nowrap
+                    className={`px-3 py-2 font-mono font-medium text-[10px] uppercase tracking-[0.08em]
+                      bg-softer
+                      border-b border-line
+                      text-muted whitespace-nowrap
                       ${isNumCol[j] ? 'text-right' : 'text-left'}`}
                   >
                     {renderInline(h)}
@@ -70,16 +70,12 @@ export function MarkdownAnswer({ text }: { text: string }) {
               {rows.map((row, j) => (
                 <tr
                   key={j}
-                  className={`border-b border-slate-100/40
-                    ${j % 2 === 0
-                      ? 'bg-white'
-                      : 'bg-slate-50/40'
-                    }`}
+                  className="border-b border-line last:border-b-0"
                 >
                   {row.map((cell, k) => (
                     <td
                       key={k}
-                      className={`px-3 py-1.5 whitespace-nowrap text-slate-700
+                      className={`px-3 py-1.5 whitespace-nowrap text-ink-2
                         ${isNumCol[k] ? 'text-right font-mono tabular-nums' : ''}`}
                     >
                       {renderInline(cell)}
@@ -103,5 +99,5 @@ export function MarkdownAnswer({ text }: { text: string }) {
     }
   }
 
-  return <div className="text-sm leading-relaxed">{elements}</div>;
+  return <div className="text-[13px] leading-relaxed">{elements}</div>;
 }

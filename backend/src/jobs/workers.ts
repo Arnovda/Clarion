@@ -9,12 +9,14 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
-import { SchemaProfilingJobData, IngestionJobData, TransformationJobData } from './queues';
+import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData } from './queues';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { trackEvent, trackException } from '../utils/monitoring';
+import { startMaintenanceWorker, stopMaintenanceWorker } from './warehouseMaintenance';
+import { withTenantAiContext } from '../services/aiBudget';
 
 const workers: Worker[] = [];
 
@@ -161,7 +163,7 @@ export function startWorkers(): void {
   // Schema profiling worker
   const schemaWorker = new Worker<SchemaProfilingJobData>(
     'schema-profiling',
-    async (job) => processSchemaProfilingJob(job),
+    async (job) => withTenantAiContext(job.data.tenantId, () => processSchemaProfilingJob(job)),
     { ...defaultOpts, concurrency: 1 }, // AI calls are expensive, limit to 1
   );
   schemaWorker.on('failed', (job, err) => {
@@ -173,7 +175,7 @@ export function startWorkers(): void {
   // Ingestion worker
   const ingestionWorker = new Worker<IngestionJobData>(
     'ingestion',
-    async (job) => processIngestionJob(job),
+    async (job) => withTenantAiContext(job.data.tenantId, () => processIngestionJob(job)),
     defaultOpts,
   );
   ingestionWorker.on('failed', (job, err) => {
@@ -185,7 +187,7 @@ export function startWorkers(): void {
   // Transformation worker
   const transformationWorker = new Worker<TransformationJobData>(
     'transformation',
-    async (job) => processTransformationJob(job),
+    async (job) => withTenantAiContext(job.data.tenantId, () => processTransformationJob(job)),
     defaultOpts,
   );
   transformationWorker.on('failed', (job, err) => {
@@ -197,7 +199,7 @@ export function startWorkers(): void {
   // Scheduled transformation worker (same logic, separate queue for repeatable jobs)
   const scheduledTransWorker = new Worker<TransformationJobData>(
     'scheduled-transformation',
-    async (job) => {
+    async (job) => withTenantAiContext(job.data.tenantId, async () => {
       // Record run start
       const { productId, tenantId } = job.data;
       await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
@@ -264,7 +266,7 @@ export function startWorkers(): void {
 
         throw err;
       }
-    },
+    }),
     { ...defaultOpts, concurrency: 1 },
   );
   scheduledTransWorker.on('failed', (job, err) => {
@@ -273,7 +275,32 @@ export function startWorkers(): void {
   });
   workers.push(scheduledTransWorker);
 
-  console.log(`[workers] Started 4 workers (schema-profiling, ingestion, transformation, scheduled-transformation)`);
+  // Email report worker
+  const emailReportWorker = new Worker<EmailReportJobData>(
+    'email-report',
+    async (job) => {
+      const { scheduleId } = job.data;
+      const { sendScheduledReport } = await import('../services/reportEmailService');
+      await sendScheduledReport(scheduleId);
+    },
+    { ...defaultOpts, concurrency: 3 },
+  );
+  emailReportWorker.on('failed', (job, err) => {
+    console.error(`[worker] email-report job ${job?.id} failed:`, err.message);
+    trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown' });
+  });
+  workers.push(emailReportWorker);
+
+  // Warehouse maintenance — weekly OPTIMIZE + VACUUM
+  const maintenanceWorker = startMaintenanceWorker();
+  if (maintenanceWorker) {
+    maintenanceWorker.on('failed', (job, err) => {
+      trackException(err, { queue: 'warehouse-maintenance', jobId: job?.id ?? 'unknown' });
+    });
+    workers.push(maintenanceWorker);
+  }
+
+  console.log(`[workers] Started ${workers.length} workers`);
 }
 
 /**
@@ -282,4 +309,5 @@ export function startWorkers(): void {
 export async function stopWorkers(): Promise<void> {
   await Promise.all(workers.map((w) => w.close()));
   workers.length = 0;
+  await stopMaintenanceWorker();
 }

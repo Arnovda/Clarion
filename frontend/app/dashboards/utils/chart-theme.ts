@@ -1,52 +1,52 @@
 // ─── chart-theme.ts ──────────────────────────────────────────────────────────
-// Premium "Ocean" color palette and chart theming for DataBridge dashboards.
+// Observatory chart palette for DataBridge dashboards.
+// Muted, editorial tones aligned with --c1 through --c6 in globals.css.
 // All chart components should import colors from here — never hardcode hex values.
 
 // ─── Series Palette ───────────────────────────────────────────────────────────
 
 export const PALETTE = {
-  // Primary series colors (8 coordinated colors, each with a gradient pair)
+  // Primary series colors (6 coordinated Observatory tones).
+  // Each entry's `gradient` pair derives a brighter/darker shade of the solid.
   series: [
-    { solid: '#4F46E5', gradient: ['#6366F1', '#4338CA'] as [string, string] },  // Indigo
-    { solid: '#0EA5E9', gradient: ['#38BDF8', '#0284C7'] as [string, string] },  // Sky
-    { solid: '#10B981', gradient: ['#34D399', '#059669'] as [string, string] },  // Emerald
-    { solid: '#F59E0B', gradient: ['#FBBF24', '#D97706'] as [string, string] },  // Amber
-    { solid: '#8B5CF6', gradient: ['#A78BFA', '#7C3AED'] as [string, string] },  // Violet
-    { solid: '#EC4899', gradient: ['#F472B6', '#DB2777'] as [string, string] },  // Pink
-    { solid: '#06B6D4', gradient: ['#22D3EE', '#0891B2'] as [string, string] },  // Cyan
-    { solid: '#F97316', gradient: ['#FB923C', '#EA580C'] as [string, string] },  // Orange
+    { solid: '#164e63', gradient: ['#1f6379', '#103d4f'] as [string, string] },  // ocean
+    { solid: '#3f7a5c', gradient: ['#5a8f72', '#315f49'] as [string, string] },  // ok green
+    { solid: '#a06a1c', gradient: ['#b27f37', '#7f5416'] as [string, string] },  // warn amber
+    { solid: '#6b4e8c', gradient: ['#8567a7', '#553c70'] as [string, string] },  // plum
+    { solid: '#8c5a3c', gradient: ['#a37151', '#6f4730'] as [string, string] },  // terracotta
+    { solid: '#2d6e78', gradient: ['#3e8590', '#20555c'] as [string, string] },  // teal
   ],
 
   // Semantic colors for positive/negative/neutral deltas and badges
-  positive: { solid: '#10B981', light: '#D1FAE5', text: '#065F46' },
-  negative: { solid: '#EF4444', light: '#FEE2E2', text: '#991B1B' },
-  neutral:  { solid: '#6B7280', light: '#F3F4F6', text: '#374151' },
+  positive: { solid: '#3f7a5c', light: '#dbe8e0', text: '#2b5a43' },
+  negative: { solid: '#a43a3a', light: '#f1d7d7', text: '#7d2929' },
+  neutral:  { solid: '#6b7680', light: '#edeff2', text: '#4a5660' },
 
   // KPI card background tints (very subtle, based on delta direction)
-  kpiPositiveTint: 'rgba(16, 185, 129, 0.04)',
-  kpiNegativeTint: 'rgba(239, 68, 68, 0.03)',
-  kpiNeutralTint:  'rgba(99, 102, 241, 0.03)',
+  kpiPositiveTint: 'rgba(63, 122, 92, 0.04)',
+  kpiNegativeTint: 'rgba(164, 58, 58, 0.04)',
+  kpiNeutralTint:  'rgba(22, 78, 99, 0.03)',
 
   // Chart structural colors
-  grid:      'rgba(148, 163, 184, 0.08)',
-  axis:      '#CBD5E1',
-  axisLabel: '#94A3B8',
+  grid:      'rgba(13, 28, 47, 0.06)',
+  axis:      '#b8bec5',
+  axisLabel: '#6b7680',
 } as const;
 
 // ─── Widget Type → Accent Color Mapping ──────────────────────────────────────
 
 export const TYPE_ACCENT: Record<string, string> = {
-  kpi_card:           '#6366F1',
-  bar_chart:          '#4F46E5',
-  vertical_bar_chart: '#10B981',
-  stacked_bar_chart:  '#F59E0B',
-  line_chart:         '#0EA5E9',
-  pie_chart:          '#8B5CF6',
-  top_list:           '#EC4899',
-  data_table:         '#64748B',
-  combo_chart:        '#06B6D4',
-  radar_chart:        '#A855F7',
-  treemap_chart:      '#10B981',
+  kpi_card:           '#164e63',
+  bar_chart:          '#164e63',
+  vertical_bar_chart: '#3f7a5c',
+  stacked_bar_chart:  '#a06a1c',
+  line_chart:         '#2d6e78',
+  pie_chart:          '#6b4e8c',
+  top_list:           '#8c5a3c',
+  data_table:         '#6b7680',
+  combo_chart:        '#2d6e78',
+  radar_chart:        '#6b4e8c',
+  treemap_chart:      '#3f7a5c',
 };
 
 // ─── Series Helpers ───────────────────────────────────────────────────────────

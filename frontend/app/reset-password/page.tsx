@@ -5,18 +5,18 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
 import AuthLayout from '@/components/layout/AuthLayout';
-
-const inputCls = "w-full px-3.5 py-2.5 rounded-xl text-body-md bg-surface-container-low text-on-surface placeholder:text-on-surface-variant/40 border-b-2 border-transparent focus:border-primary focus:outline-none transition-colors";
+import { Input } from '@/components/ui/Input';
+import { Button } from '@/components/ui/Button';
 
 function ResetPasswordForm() {
   const searchParams = useSearchParams();
-  const [token, setTokenVal]            = useState('');
-  const [email, setEmail]               = useState('');
-  const [newPassword, setNewPassword]   = useState('');
+  const [token, setTokenVal]                  = useState('');
+  const [email, setEmail]                     = useState('');
+  const [newPassword, setNewPassword]         = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [success, setSuccess]           = useState(false);
-  const [error, setError]               = useState('');
-  const [loading, setLoading]           = useState(false);
+  const [success, setSuccess]                 = useState(false);
+  const [error, setError]                     = useState('');
+  const [loading, setLoading]                 = useState(false);
 
   useEffect(() => {
     setTokenVal(searchParams.get('token') ?? '');
@@ -27,7 +27,7 @@ function ResetPasswordForm() {
     e.preventDefault();
     setError('');
     if (newPassword !== confirmPassword) { setError('Passwords do not match.'); return; }
-    if (newPassword.length < 8) { setError('Password must be at least 8 characters.'); return; }
+    if (newPassword.length < 8)          { setError('Password must be at least 8 characters.'); return; }
 
     setLoading(true);
     try {
@@ -42,55 +42,75 @@ function ResetPasswordForm() {
 
   if (success) {
     return (
-      <div className="text-center space-y-4 py-4">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto">
-          <svg className="w-7 h-7 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
+      <div className="flex flex-col gap-3">
+        <div className="font-display text-[17px] leading-[1.55] text-ink-2">
+          Your password has been updated. You can sign in with your new password now.
         </div>
-        <h2 className="font-headline text-headline-sm font-bold text-on-surface">Password reset</h2>
-        <p className="text-body-md text-on-surface-variant">Your password has been updated. You can now sign in.</p>
-        <Link href="/" className="inline-block mt-2 text-label-lg text-secondary font-semibold hover:text-primary transition-colors">
-          Sign in
+        <Link
+          href="/"
+          className="mt-2 inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[9px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory w-fit"
+        >
+          Sign in →
         </Link>
       </div>
     );
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
-      <div>
-        <label className="block text-label-lg text-on-surface mb-1.5">New password</label>
-        <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
-          placeholder="Minimum 8 characters" className={inputCls} required />
-      </div>
-      <div>
-        <label className="block text-label-lg text-on-surface mb-1.5">Confirm new password</label>
-        <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
-          className={inputCls} required />
-      </div>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <Input
+        label="New password"
+        type="password"
+        value={newPassword}
+        onChange={(e) => setNewPassword(e.target.value)}
+        placeholder="Minimum 8 characters"
+        autoComplete="new-password"
+        required
+        disabled={loading}
+      />
+      <Input
+        label="Confirm new password"
+        type="password"
+        value={confirmPassword}
+        onChange={(e) => setConfirmPassword(e.target.value)}
+        autoComplete="new-password"
+        required
+        disabled={loading}
+      />
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-error-container/30 text-error text-body-sm">
-          <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
+        <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
           {error}
         </div>
       )}
 
-      <button type="submit" disabled={loading}
-        className="w-full py-3 rounded-xl text-title-md gradient-primary text-on-primary hover:opacity-90 disabled:opacity-50 transition-all shadow-glow-primary">
-        {loading ? 'Resetting...' : 'Reset password'}
-      </button>
+      <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
+        {loading ? 'Resetting…' : 'Reset password'}
+      </Button>
     </form>
   );
 }
 
 export default function ResetPasswordPage() {
   return (
-    <AuthLayout subtitle="Set a new password">
-      <Suspense fallback={<div className="text-center text-body-sm text-on-surface-variant py-8">Loading...</div>}>
+    <AuthLayout
+      eyebrow="Reset password"
+      title={<em>Set a new one.</em>}
+      lede="Pick something you haven't used before. At least eight characters."
+      footer={
+        <Link
+          href="/"
+          className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1"
+        >
+          ← Back to sign in
+        </Link>
+      }
+    >
+      <Suspense fallback={
+        <div className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-2 py-6">
+          Loading…
+        </div>
+      }>
         <ResetPasswordForm />
       </Suspense>
     </AuthLayout>

@@ -23,6 +23,7 @@ import { runQualityProfile, runQualityProfileWithConnector } from '../quality/Qu
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
+import { generateQualityAlertContext } from '../ai/AIService';
 
 const router = Router();
 
@@ -208,7 +209,7 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
       .where('current_score', '<', ALERT_THRESHOLD)
       .first();
     if (!existing) {
-      await semanticDb('quality_alerts').insert({
+      const [alertRow] = await semanticDb('quality_alerts').insert({
         tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
@@ -218,11 +219,23 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
         previous_score: previous?.overall_score ?? null,
         current_score: currentScore,
         threshold: ALERT_THRESHOLD,
-      });
+      }).returning('id');
+      const alertId: number = typeof alertRow === 'object' ? (alertRow as { id: number }).id : alertRow;
+
+      // Fire-and-forget: enrich with Claude context
+      generateQualityAlertContext({
+        alertType: 'score_drop',
+        tableName,
+        currentScore,
+        previousScore: previous?.overall_score ?? undefined,
+      }).then((ctx) =>
+        semanticDb('quality_alerts').where({ id: alertId }).update({ ai_context: ctx }),
+      ).catch(() => {});
+
       if (tenantId) {
         notifyTenant(tenantId, 'quality_alert', `Quality alert: ${tableName}`, {
           message: `Score is ${(currentScore * 100).toFixed(0)}%, below ${(ALERT_THRESHOLD * 100).toFixed(0)}% threshold`,
-          link: `/semantic?tab=quality`,
+          link: `/health`,
         }).catch(() => {});
       }
     }
@@ -233,17 +246,36 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
     const prevScore = previous.overall_score as number;
     const drop = prevScore - currentScore;
     if (drop >= DROP_THRESHOLD) {
-      await semanticDb('quality_alerts').insert({
+      const severity = drop >= 0.20 ? 'critical' : 'warning';
+      const [dropRow] = await semanticDb('quality_alerts').insert({
         tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
         alert_type: 'score_drop',
-        severity: drop >= 0.20 ? 'critical' : 'warning',
+        severity,
         message: `Quality score for "${tableName}" dropped ${(drop * 100).toFixed(0)}% (from ${(prevScore * 100).toFixed(0)}% to ${(currentScore * 100).toFixed(0)}%).`,
         previous_score: prevScore,
         current_score: currentScore,
         threshold: DROP_THRESHOLD,
-      });
+      }).returning('id');
+      const dropAlertId: number = typeof dropRow === 'object' ? (dropRow as { id: number }).id : dropRow;
+
+      generateQualityAlertContext({
+        alertType: 'score_drop',
+        tableName,
+        currentScore,
+        previousScore: prevScore,
+        drop,
+      }).then((ctx) =>
+        semanticDb('quality_alerts').where({ id: dropAlertId }).update({ ai_context: ctx }),
+      ).catch(() => {});
+
+      if (tenantId && severity === 'critical') {
+        notifyTenant(tenantId, 'quality_alert', `Quality dropped: ${tableName}`, {
+          message: `Score fell ${(drop * 100).toFixed(0)}% to ${(currentScore * 100).toFixed(0)}%`,
+          link: `/health`,
+        }).catch(() => {});
+      }
     }
   }
 
@@ -267,7 +299,9 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
       .whereRaw(`details->>'rule_id' = ?`, [String(fr.rule_id)])
       .first();
     if (!existing) {
-      await semanticDb('quality_alerts').insert({
+      // Load rule type for the Claude prompt
+      const ruleRow = await semanticDb('quality_rules').where({ id: fr.rule_id }).first();
+      const [ruleAlertRow] = await semanticDb('quality_alerts').insert({
         tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
@@ -276,7 +310,18 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
         message: `Rule "${fr.rule_name}" failed with ${(fr.pass_rate * 100).toFixed(1)}% pass rate.`,
         current_score: fr.pass_rate,
         details: JSON.stringify({ rule_id: fr.rule_id, rule_name: fr.rule_name }),
-      });
+      }).returning('id');
+      const ruleAlertId: number = typeof ruleAlertRow === 'object' ? (ruleAlertRow as { id: number }).id : ruleAlertRow;
+
+      generateQualityAlertContext({
+        alertType: 'rule_fail',
+        tableName,
+        currentScore: fr.pass_rate,
+        ruleName: fr.rule_name,
+        ruleType: ruleRow?.rule_type ?? undefined,
+      }).then((ctx) =>
+        semanticDb('quality_alerts').where({ id: ruleAlertId }).update({ ai_context: ctx }),
+      ).catch(() => {});
     }
   }
 }

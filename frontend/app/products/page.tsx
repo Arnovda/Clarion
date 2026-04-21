@@ -1,9 +1,25 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { Database, X, ChevronRight } from 'lucide-react';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
+import RequireRole from '@/components/RequireRole';
 import dynamic from 'next/dynamic';
+import type {
+  Connection,
+  DataProduct,
+  StarSchema,
+  QualityCheck,
+  ProductTable,
+  ProductColumn,
+  ProductRelationship,
+  FullDataProduct,
+  ProductKpi,
+  ActiveTab,
+} from './types';
+import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner } from './badges';
+import { statusBorderColor, productIcon, cleanTopicName } from './helpers';
 
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
@@ -11,216 +27,10 @@ const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), {
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
 // ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface Connection { id: number; name: string; }
-
-interface DataProduct {
-  id: number;
-  connection_id: number;
-  name: string;
-  description: string | null;
-  status: string;
-  created_at: string;
-  star_schema_count?: number;
-}
-
-interface StarSchema {
-  id: number;
-  data_product_id: number;
-  name: string;
-  description: string | null;
-  grain: string | null;
-  fact_table_type: string;
-}
-
-interface QualityCheck {
-  id: number;
-  product_table_id: number;
-  check_type: 'bk_uniqueness' | 'fan_out';
-  status: 'pass' | 'fail' | 'skip' | 'error';
-  bk_columns: string | string[];
-  total_rows: number;
-  distinct_bk_rows: number;
-  duplicate_count: number;
-  sample_duplicates: string | Record<string, unknown>[];
-  message: string;
-  executed_at: string;
-}
-
-interface ProductTable {
-  id: number;
-  star_schema_id: number;
-  table_name: string;
-  display_name: string | null;
-  description: string | null;
-  table_role: string;
-  transformation_sql: string | null;
-  transformation_status: string;
-  dag_order: number;
-  row_count: number | null;
-  last_run_at: string | null;
-  last_run_error: string | null;
-  load_mode: string;
-  quality_checks?: QualityCheck[];
-}
-
-interface ProductColumn {
-  id: number;
-  product_table_id: number;
-  column_name: string;
-  data_type: string | null;
-  display_name: string | null;
-  description: string | null;
-  column_role: string | null;
-  fk_target_table: string | null;
-  fk_target_column: string | null;
-  transformation_expression: string | null;
-  additivity: string | null;
-  scd_type: number;
-  lineage?: { source_table_name: string; source_column_name: string; transformation_description: string }[];
-}
-
-interface ProductRelationship {
-  id: number;
-  from_table_name: string;
-  from_column_name: string;
-  to_table_name: string;
-  to_column_name: string;
-  relationship_type: string;
-}
-
-interface FullDataProduct extends DataProduct {
-  star_schemas: (StarSchema & {
-    tables: (ProductTable & { columns: ProductColumn[] })[];
-    relationships: ProductRelationship[];
-  })[];
-}
-
-interface ProductKpi {
-  id: number;
-  data_product_id: number;
-  name: string;
-  description: string | null;
-  formula_plain_text: string | null;
-  formula_sql: string | null;
-  ai_draft: boolean;
-  owner_name: string | null;
-}
-
-type ActiveTab = 'overview' | 'bus-matrix' | 'schema' | 'lineage' | 'kpis';
-
-// ---------------------------------------------------------------------------
-// Small UI components
-// ---------------------------------------------------------------------------
-
-function StatusDot({ status }: { status: string }) {
-  const color: Record<string, string> = {
-    draft: 'bg-slate-300',
-    designing: 'bg-blue-400 animate-pulse',
-    approved: 'bg-emerald-400',
-    running: 'bg-amber-400 animate-pulse',
-    success: 'bg-emerald-500',
-    error: 'bg-red-500',
-    pending: 'bg-slate-300',
-  };
-  return (
-    <span
-      className={`inline-block w-2.5 h-2.5 rounded-full ${color[status] ?? 'bg-slate-300'}`}
-      title={status}
-    />
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    draft: 'bg-surface-container text-on-surface-variant',
-    designing: 'bg-cyan-500/15 text-cyan-700',
-    approved: 'bg-emerald-500/15 text-emerald-600',
-    running: 'bg-amber-500/15 text-amber-700',
-    success: 'bg-emerald-500/15 text-emerald-600',
-    error: 'bg-red-500/15 text-red-600',
-  };
-  return (
-    <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${colors[status] ?? 'bg-surface-container text-on-surface-variant'}`}>
-      {status}
-    </span>
-  );
-}
-
-function RoleBadge({ role }: { role: string }) {
-  const config: Record<string, { bg: string; label: string }> = {
-    fact: { bg: 'bg-violet-500/15 text-violet-700', label: 'Measures' },
-    dimension: { bg: 'bg-cyan-500/15 text-cyan-700', label: 'Lookup' },
-    bridge: { bg: 'bg-amber-500/15 text-amber-700', label: 'Bridge' },
-    junk: { bg: 'bg-surface-container text-on-surface-variant', label: 'Flags' },
-  };
-  const c = config[role] ?? { bg: 'bg-surface-container text-on-surface-variant', label: role };
-  return <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${c.bg}`}>{c.label}</span>;
-}
-
-function ColumnRoleBadge({ role }: { role: string | null }) {
-  if (!role) return null;
-  const colors: Record<string, string> = {
-    surrogate_key: 'bg-amber-500/15 text-amber-700',
-    natural_key: 'bg-orange-500/15 text-orange-700',
-    foreign_key: 'bg-purple-500/15 text-purple-700',
-    measure: 'bg-emerald-500/15 text-emerald-700',
-    attribute: 'bg-blue-500/15 text-blue-700',
-    degenerate_dimension: 'bg-surface-container text-on-surface-variant',
-  };
-  return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-semibold ${colors[role] ?? 'bg-surface-container text-on-surface-variant'}`}>
-      {role.replace(/_/g, ' ')}
-    </span>
-  );
-}
-
-function Spinner({ className = 'w-4 h-4' }: { className?: string }) {
-  return (
-    <svg className={`animate-spin text-current ${className}`} fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-    </svg>
-  );
-}
-
-function statusBorderColor(status: string): string {
-  switch (status) {
-    case 'approved': case 'success': return 'border-l-emerald-500';
-    case 'error': return 'border-l-red-500';
-    case 'designing': case 'running': return 'border-l-blue-500';
-    default: return 'border-l-slate-300';
-  }
-}
-
-function productIcon(name: string): string {
-  const n = name.toLowerCase();
-  if (n.includes('sales') || n.includes('revenue') || n.includes('order')) return '\u{1F4B0}';
-  if (n.includes('customer') || n.includes('client') || n.includes('crm')) return '\u{1F465}';
-  if (n.includes('product') || n.includes('article') || n.includes('item') || n.includes('catalogue')) return '\u{1F4E6}';
-  if (n.includes('supplier') || n.includes('vendor') || n.includes('purchas')) return '\u{1F3ED}';
-  if (n.includes('hr') || n.includes('employee') || n.includes('staff') || n.includes('payroll') || n.includes('people')) return '\u{1F9D1}\u{200D}\u{1F4BC}';
-  if (n.includes('finance') || n.includes('accounting') || n.includes('budget') || n.includes('cost')) return '\u{1F4CA}';
-  if (n.includes('inventory') || n.includes('stock') || n.includes('warehouse') || n.includes('logistic')) return '\u{1F3EA}';
-  if (n.includes('market') || n.includes('campaign') || n.includes('lead')) return '\u{1F4E3}';
-  if (n.includes('delivery') || n.includes('ship') || n.includes('transport')) return '\u{1F69A}';
-  if (n.includes('project') || n.includes('task') || n.includes('time') || n.includes('hour')) return '\u{1F4CB}';
-  return '\u{1F4C8}';
-}
-
-function cleanTopicName(name: string): string {
-  return name
-    .replace(/\s+(Analytics|360|Domain|Product|Data Product|Kimball)$/i, '')
-    .trim();
-}
-
-// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
-export default function ProductsPage() {
+function ProductsPageInner() {
   const [tab, setTab] = useState<ActiveTab>('overview');
   const [connections, setConnections] = useState<Connection[]>([]);
   const [products, setProducts] = useState<DataProduct[]>([]);
@@ -516,24 +326,22 @@ export default function ProductsPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* ── Top bar — gradient mesh ────────────────────────────────── */}
-      <div className="gradient-mesh px-6 py-4 flex items-center justify-between flex-shrink-0 relative overflow-hidden">
-        <div className="absolute -top-6 -left-6 w-24 h-24 rounded-full bg-white/[0.03]" />
-        <div className="absolute -bottom-4 right-1/4 w-16 h-16 rounded-full bg-white/[0.02]" />
-        <div className="relative">
-          <h1 className="text-lg font-headline font-bold text-white tracking-tight">Organized Data</h1>
-          <p className="text-sm text-white/50">Organize and transform your source data</p>
+      {/* ── Top bar ─────────────────────────────────────────────────── */}
+      <div className="bg-raised border-b border-line px-6 py-4 flex items-center justify-between flex-shrink-0">
+        <div>
+          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Products</p>
+          <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">Organized data</h1>
         </div>
-        <div className="relative flex items-center gap-2">
+        <div className="flex items-center gap-2">
           {connections.length > 1 && (
             <select
               value={buildConnId ?? ''}
               onChange={(e) => setBuildConnId(Number(e.target.value))}
-              className="text-sm bg-white/10 border border-white/15 text-white rounded-xl px-3 py-2.5 backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-cyan-400/30"
+              className="text-[13px] bg-raised border border-line text-ink-2 rounded-md px-3 py-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
             >
-              <option value="" className="text-on-surface bg-white">Select connection...</option>
+              <option value="">Select connection…</option>
               {connections.map((c) => (
-                <option key={c.id} value={c.id} className="text-on-surface bg-white">{c.name}</option>
+                <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
           )}
@@ -544,67 +352,70 @@ export default function ProductsPage() {
                 if (connId) handleAutoBuild(connId);
               }}
               disabled={building || (connections.length > 1 && !buildConnId)}
-              className="px-5 py-2.5 bg-white/15 border border-white/20 text-white text-sm font-semibold rounded-xl hover:bg-white/25 disabled:opacity-50 transition-all flex items-center gap-2 backdrop-blur-sm"
+              className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors flex items-center gap-2"
             >
               {building && <Spinner />}
-              {building ? 'Building...' : 'Prepare my data'}
+              {building ? 'Building…' : 'Prepare my data'}
             </button>
           )}
         </div>
       </div>
 
       {/* ── Tab bar ──────────────────────────────────────────────────── */}
-      <div className="bg-surface-container-low ghost-border-b px-6 flex-shrink-0">
-        <div className="flex gap-1 -mb-px">
+      <div className="bg-raised border-b border-line px-6 flex-shrink-0">
+        <div className="flex gap-1">
           {tabs.map((t) => (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-all ${
+              className={`px-4 py-3 text-[13px] transition-colors relative ${
                 tab === t.key
-                  ? 'border-cyan-500 text-on-surface font-semibold'
-                  : 'border-transparent text-on-surface-variant hover:text-on-surface'
+                  ? 'text-ink font-medium'
+                  : 'text-muted hover:text-ink-2'
               }`}
             >
               {t.label}
+              {tab === t.key && (
+                <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />
+              )}
             </button>
           ))}
         </div>
       </div>
 
       {/* ── Content ──────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto bg-gradient-to-br from-surface via-surface to-surface-container-low/30">
+      <div className="flex-1 overflow-y-auto bg-bg">
         <div className="p-6 max-w-5xl mx-auto">
 
           {/* ── Build Terminal ──────────────────────────────────────── */}
           {(building || buildDone) && (
-            <div className="mb-6 bg-slate-900 rounded-2xl border border-slate-700 shadow-xl overflow-hidden">
-              <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700">
+            <div className="mb-6 bg-ink rounded-lg border border-line overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-3 border-b border-white/10">
                 <div className="flex items-center gap-3">
                   {building ? (
-                    <div className="w-3 h-3 bg-emerald-400 rounded-full animate-pulse" />
+                    <div className="w-2 h-2 bg-ok rounded-full animate-pulse" />
                   ) : buildSuccess ? (
-                    <span className="text-cyan-400 text-sm font-bold">OK</span>
+                    <span className="text-ok text-[10px] font-mono tracking-[0.08em] uppercase">OK</span>
                   ) : (
-                    <span className="text-red-400 text-sm font-bold">!</span>
+                    <span className="text-err text-[10px] font-mono tracking-[0.08em] uppercase">Error</span>
                   )}
-                  <span className="text-sm font-semibold text-white">
-                    {building ? 'Preparing your data...' : buildSuccess ? 'Your data warehouse is ready' : 'Build completed with errors'}
+                  <span className="text-[13px] font-medium text-white">
+                    {building ? 'Preparing your data…' : buildSuccess ? 'Your data warehouse is ready' : 'Build completed with errors'}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
                   {buildThinking && (
                     <button
                       onClick={() => setShowThinking((v) => !v)}
-                      className="text-xs text-slate-400 hover:text-slate-300 transition-colors"
+                      className="text-[11px] font-mono tracking-[0.08em] uppercase text-white/60 hover:text-white/90 transition-colors"
                     >
-                      {showThinking ? 'Hide' : 'Show'} AI reasoning
+                      {showThinking ? 'Hide' : 'Show'} reasoning
                     </button>
                   )}
                   {buildDone && (
                     <button
                       onClick={() => { setBuildDone(false); setBuildLog([]); setBuildThinking(''); }}
-                      className="text-xs text-slate-400 hover:text-slate-300"
+                      className="text-[11px] font-mono tracking-[0.08em] uppercase text-white/60 hover:text-white/90 transition-colors"
                     >
                       Dismiss
                     </button>
@@ -613,18 +424,18 @@ export default function ProductsPage() {
               </div>
 
               {showThinking && buildThinking && (
-                <div ref={thinkingRef} className="px-5 py-3 max-h-48 overflow-y-auto border-b border-slate-800">
-                  <pre className="text-xs text-cyan-400 font-mono whitespace-pre-wrap leading-relaxed">{buildThinking}</pre>
+                <div ref={thinkingRef} className="px-5 py-3 max-h-48 overflow-y-auto border-b border-white/10">
+                  <pre className="text-[11px] text-white/70 font-mono whitespace-pre-wrap leading-relaxed">{buildThinking}</pre>
                 </div>
               )}
 
               <div ref={buildTermRef} className="px-5 py-3 max-h-64 overflow-y-auto">
                 {buildLog.map((line, i) => (
-                  <div key={i} className={`text-sm font-mono py-0.5 ${
-                    line.startsWith('Error') ? 'text-red-400'
-                    : line.startsWith('All done') ? 'text-cyan-400 font-semibold'
-                    : line.startsWith('  ') ? 'text-slate-400'
-                    : 'text-slate-300'
+                  <div key={i} className={`text-[12px] font-mono py-0.5 ${
+                    line.startsWith('Error') ? 'text-err'
+                    : line.startsWith('All done') ? 'text-ok'
+                    : line.startsWith('  ') ? 'text-white/50'
+                    : 'text-white/80'
                   }`}>
                     {line}
                   </div>
@@ -638,22 +449,20 @@ export default function ProductsPage() {
             <>
               {/* Loading */}
               {loading && (
-                <div className="text-center py-16 text-slate-400">
+                <div className="text-center py-16">
                   <Spinner className="mx-auto mb-3" />
-                  <p className="text-sm">Loading products...</p>
+                  <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">Loading products…</p>
                 </div>
               )}
 
               {/* Empty state */}
               {!loading && products.length === 0 && !building && !buildDone && (
-                <div className="glass-card rounded-2xl p-12 text-center animate-fadeIn">
-                  <div className="w-16 h-16 mx-auto mb-4 gradient-mesh rounded-2xl flex items-center justify-center shadow-glow-teal">
-                    <svg className="w-8 h-8 text-white/80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
-                    </svg>
+                <div className="bg-raised border border-line rounded-lg p-14 text-center animate-fadeIn">
+                  <div className="w-14 h-14 mx-auto mb-5 bg-ocean-softer text-ocean border border-line rounded-md flex items-center justify-center">
+                    <Database className="w-7 h-7" strokeWidth={1.3} />
                   </div>
-                  <h3 className="text-lg font-headline font-bold text-on-surface mb-1">No organized data yet</h3>
-                  <p className="text-sm text-on-surface-variant mb-6">
+                  <h3 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] mb-2">No organized data yet</h3>
+                  <p className="text-[13px] text-ink-3 mb-6 max-w-md mx-auto leading-relaxed">
                     Organized data turns your source tables into clean, query-ready datasets.
                   </p>
                   <p className="text-xs text-on-surface-variant/50">Click &quot;Prepare my data&quot; above to get started.</p>
@@ -674,7 +483,7 @@ export default function ProductsPage() {
                     <button
                       key={product.id}
                       onClick={() => openProduct(product.id)}
-                      className="text-left glass-card rounded-2xl hover:shadow-glow-teal transition-all overflow-hidden group"
+                      className="text-left bg-raised border border-line rounded-lg hover:border-line-strong transition-all overflow-hidden group"
                     >
                       {/* Icon + name header */}
                       <div className="px-5 pt-5 pb-3">
@@ -714,7 +523,7 @@ export default function ProductsPage() {
                           {tables.length > 0 ? `${tables.length} tables` : ''}
                           {detail && totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
                         </span>
-                        <span className="text-xs font-semibold text-cyan-600 group-hover:text-cyan-500 transition-colors">
+                        <span className="text-xs font-semibold text-ocean group-hover:text-ocean-hover transition-colors">
                           Ask questions &rarr;
                         </span>
                       </div>
@@ -817,7 +626,7 @@ function TopicSlideOver({
       {/* Panel */}
       <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-surface-container-lowest/95 backdrop-blur-xl shadow-ambient-lg z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
-        <div className="px-6 py-5 ghost-border-b flex items-start gap-4 flex-shrink-0">
+        <div className="px-6 py-5 border-b border-line flex items-start gap-4 flex-shrink-0">
           <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-2xl flex-shrink-0">
             {icon}
           </div>
@@ -836,9 +645,7 @@ function TopicSlideOver({
             )}
           </div>
           <button onClick={onClose} className="text-on-surface-variant/50 hover:text-on-surface transition-colors flex-shrink-0 mt-1">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <X className="w-5 h-5" strokeWidth={2} />
           </button>
         </div>
 
@@ -846,7 +653,7 @@ function TopicSlideOver({
         <div className="flex-1 overflow-y-auto">
           {/* KPIs section */}
           {productKpis.length > 0 && (
-            <div className="px-6 py-4 ghost-border-b">
+            <div className="px-6 py-4 border-b border-line">
               <p className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider mb-2">What you can ask</p>
               <div className="space-y-1.5">
                 {productKpis.map((kpi) => (
@@ -866,10 +673,10 @@ function TopicSlideOver({
           {!detail ? (
             <div className="px-6 py-10 text-center">
               <Spinner className="mx-auto mb-2" />
-              <p className="text-sm text-slate-400">Loading tables...</p>
+              <p className="text-sm text-muted-2">Loading tables...</p>
             </div>
           ) : tables.length === 0 ? (
-            <div className="px-6 py-10 text-center text-sm text-slate-400">No tables designed yet.</div>
+            <div className="px-6 py-10 text-center text-sm text-muted-2">No tables designed yet.</div>
           ) : (
             <div className="divide-y divide-slate-200/20">
               {tables.map((table) => {
@@ -882,12 +689,10 @@ function TopicSlideOver({
                       onClick={() => onToggleTable(table.id)}
                       className="w-full text-left px-6 py-3 flex items-center gap-3 hover:bg-surface-container-low/50 transition-colors"
                     >
-                      <svg
+                      <ChevronRight
                         className={`w-3.5 h-3.5 text-on-surface-variant/30 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
-                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
+                        strokeWidth={2}
+                      />
                       <RoleBadge role={table.table_role} />
                       <div className="flex-1 min-w-0">
                         <span className="text-sm font-medium text-on-surface">{table.display_name ?? table.table_name}</span>
@@ -907,8 +712,8 @@ function TopicSlideOver({
                     {isTableExpanded && (
                       <div className="px-6 pb-4 bg-surface-container-low/20 panel-enter">
                         {/* Columns */}
-                        <div className="glass-card rounded-xl overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 ghost-border-b">
+                        <div className="bg-raised border border-line rounded-md overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 border-b border-line">
                             <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">
                               Columns ({table.columns.length})
                             </span>
@@ -926,18 +731,18 @@ function TopicSlideOver({
                         </div>
 
                         {/* SQL */}
-                        <div className="glass-card rounded-xl overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 ghost-border-b flex items-center justify-between">
+                        <div className="bg-raised border border-line rounded-md overflow-hidden mb-3">
+                          <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
                             <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">SQL</span>
                             <div className="flex gap-2">
                               {editingSql?.tableId !== table.id && table.transformation_sql && (
                                 <button onClick={() => onEditSql({ tableId: table.id, sql: table.transformation_sql! })}
-                                  className="text-[11px] text-cyan-600 hover:text-cyan-500 font-semibold transition-colors">Edit</button>
+                                  className="text-[11px] text-ocean hover:text-ocean-hover font-semibold transition-colors">Edit</button>
                               )}
                               <button
                                 onClick={() => onRunTable(table.id, product.id)}
                                 disabled={isTableRunning || !table.transformation_sql}
-                                className="text-[11px] text-emerald-600 hover:text-emerald-500 font-semibold disabled:opacity-50 flex items-center gap-1 transition-colors"
+                                className="text-[11px] text-ok hover:text-ok/80 font-semibold disabled:opacity-50 flex items-center gap-1 transition-colors"
                               >
                                 {isTableRunning && <Spinner className="w-3 h-3" />}
                                 {isTableRunning ? 'Running...' : 'Run'}
@@ -954,7 +759,7 @@ function TopicSlideOver({
                               />
                               <div className="flex gap-2 mt-2">
                                 <button onClick={onSaveSql} disabled={savingSql}
-                                  className="px-3 py-1.5 text-xs gradient-primary text-on-primary rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold shadow-sm">
+                                  className="px-3 py-1.5 text-xs bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 font-medium">
                                   {savingSql ? 'Saving...' : 'Save'}
                                 </button>
                                 <button onClick={onCancelEditSql}
@@ -970,9 +775,9 @@ function TopicSlideOver({
 
                         {/* Run info + quality checks */}
                         {(table.last_run_at || table.last_run_error) && (
-                          <div className="text-xs text-slate-500 px-1 mb-2">
+                          <div className="text-xs text-muted px-1 mb-2">
                             {table.last_run_at && <span>Last run: {new Date(table.last_run_at).toLocaleString()}</span>}
-                            {table.last_run_error && <span className="text-red-500 ml-3">{table.last_run_error}</span>}
+                            {table.last_run_error && <span className="text-err ml-3">{table.last_run_error}</span>}
                           </div>
                         )}
                         {table.quality_checks && table.quality_checks.length > 0 && (
@@ -980,7 +785,7 @@ function TopicSlideOver({
                             {table.quality_checks.map((chk) => (
                               <div key={chk.id} className="flex items-center gap-2 text-xs">
                                 <StatusDot status={chk.status === 'pass' ? 'success' : chk.status === 'fail' ? 'error' : 'draft'} />
-                                <span className={chk.status === 'pass' ? 'text-emerald-600' : chk.status === 'fail' ? 'text-red-600' : 'text-slate-500'}>
+                                <span className={chk.status === 'pass' ? 'text-ok' : chk.status === 'fail' ? 'text-err' : 'text-muted'}>
                                   {chk.check_type === 'bk_uniqueness' ? 'Key uniqueness' : 'Fan-out'}: {chk.message}
                                 </span>
                               </div>
@@ -997,9 +802,9 @@ function TopicSlideOver({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 ghost-border-b flex items-center justify-between flex-shrink-0 bg-white/60 backdrop-blur-xl border-t border-white/60">
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between flex-shrink-0 bg-white/60 backdrop-blur-xl border-t border-white/60">
           <div className="flex gap-2">
-            <a href={`/query?connectionId=${product.connection_id}&productId=${product.id}&productName=${encodeURIComponent(cleanTopicName(product.name))}`} className="px-4 py-2 text-sm font-medium text-cyan-700 bg-cyan-500/10 border border-cyan-500/20 rounded-xl hover:bg-cyan-500/20 transition-colors">
+            <a href={`/query?connectionId=${product.connection_id}&productId=${product.id}&productName=${encodeURIComponent(cleanTopicName(product.name))}`} className="px-4 py-2 text-[13px] font-medium text-ocean bg-ocean-softer border border-line rounded-md hover:bg-ocean-soft transition-colors">
               Ask questions &rarr;
             </a>
             {tables.length > 0 && (
@@ -1015,14 +820,14 @@ function TopicSlideOver({
             <button
               onClick={() => onRunProduct(product.id)}
               disabled={isRunning || tables.length === 0}
-              className="px-4 py-2 text-sm font-medium gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-50 flex items-center gap-1.5 transition-all"
+              className="px-4 py-2 text-sm font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 flex items-center gap-1.5 transition-all"
             >
               {isRunning && <Spinner className="w-3 h-3" />}
               {isRunning ? 'Running...' : 'Rebuild'}
             </button>
             <button
               onClick={() => onDelete(product.id)}
-              className="px-4 py-2 text-sm font-medium text-red-600 bg-red-500/10 border border-red-500/20 rounded-xl hover:bg-red-500/20 transition-colors"
+              className="px-4 py-2 text-sm font-medium text-err bg-err/10 border border-red-500/20 rounded-xl hover:bg-err/20 transition-colors"
             >
               Delete
             </button>
@@ -1059,13 +864,11 @@ function TopicSqlModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-      <div className="glass-card rounded-2xl shadow-ambient-lg w-full max-w-4xl max-h-[80vh] flex flex-col">
-        <div className="px-6 py-4 ghost-border-b flex items-center justify-between flex-shrink-0">
+      <div className="bg-raised border border-line rounded-lg shadow-ambient-lg w-full max-w-4xl max-h-[80vh] flex flex-col">
+        <div className="px-6 py-4 border-b border-line flex items-center justify-between flex-shrink-0">
           <h3 className="text-lg font-bold text-on-surface">All SQL — {productName}</h3>
-          <button onClick={onClose} className="text-on-surface-variant hover:text-on-surface transition-colors">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+          <button onClick={onClose} className="text-muted hover:text-ink-2 transition-colors">
+            <X className="w-5 h-5" strokeWidth={2} />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
@@ -1078,12 +881,12 @@ function TopicSqlModal({
                 </div>
                 <button
                   onClick={() => handleCopy(table.transformation_sql!, table.id)}
-                  className="text-xs text-cyan-400 hover:text-cyan-300 font-medium transition-colors"
+                  className="text-xs text-white/70 hover:text-white/90 font-medium transition-colors"
                 >
                   {copied === table.id ? 'Copied!' : 'Copy'}
                 </button>
               </div>
-              <pre className="p-4 text-xs font-mono text-cyan-300/80 overflow-x-auto whitespace-pre-wrap">
+              <pre className="p-4 text-xs font-mono text-white/80 overflow-x-auto whitespace-pre-wrap">
                 {table.transformation_sql}
               </pre>
             </div>
@@ -1189,15 +992,15 @@ function BusMatrixTab({
     <div className="space-y-8">
       {/* Bus matrix grid */}
       {dimensionNames.length > 0 && factRows.length > 0 && (
-        <div className="glass-card rounded-2xl overflow-hidden">
-          <div className="px-5 py-4 ghost-border-b">
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+          <div className="px-5 py-4 border-b border-line">
             <h3 className="text-sm font-bold text-on-surface">Coverage Map</h3>
             <p className="text-xs text-on-surface-variant mt-0.5">Which reference tables are shared across your transaction data</p>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-surface-container ghost-border-b">
+                <tr className="bg-surface-container border-b border-line">
                   <th className="text-left px-4 py-3 text-xs font-semibold text-on-surface-variant sticky left-0 bg-surface-container min-w-[200px]">Transaction Table</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-on-surface-variant min-w-[100px]">Product</th>
                   {dimensionNames.map((dim) => (
@@ -1227,7 +1030,7 @@ function BusMatrixTab({
                     {dimensionNames.map((dim) => (
                       <td key={dim} className="text-center px-2 py-2.5">
                         {row.usedDims.has(dim) ? (
-                          <span className="inline-block w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-600 text-xs leading-5 font-bold">&#10003;</span>
+                          <span className="inline-block w-5 h-5 rounded-full bg-ok-soft text-ok text-xs leading-5 font-bold">&#10003;</span>
                         ) : (
                           <span className="text-on-surface-variant/30">-</span>
                         )}
@@ -1242,8 +1045,8 @@ function BusMatrixTab({
       )}
 
       {/* Dimensions list — deduplicated */}
-      <div className="glass-card rounded-2xl overflow-hidden">
-        <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
+      <div className="bg-raised border border-line rounded-lg overflow-hidden">
+        <div className="px-5 py-4 border-b border-line flex items-center justify-between">
           <div>
             <h3 className="text-sm font-bold text-on-surface">Reference Tables ({uniqueDimensions.length})</h3>
             <p className="text-xs text-on-surface-variant mt-0.5">Shared reference data used across your models</p>
@@ -1286,8 +1089,8 @@ function BusMatrixTab({
       </div>
 
       {/* Facts list */}
-      <div className="glass-card rounded-2xl overflow-hidden">
-        <div className="px-5 py-4 ghost-border-b flex items-center justify-between">
+      <div className="bg-raised border border-line rounded-lg overflow-hidden">
+        <div className="px-5 py-4 border-b border-line flex items-center justify-between">
           <div>
             <h3 className="text-sm font-bold text-on-surface">Transaction Tables ({allFactEntries.length})</h3>
             <p className="text-xs text-on-surface-variant mt-0.5">Tables recording your business transactions</p>
@@ -1420,22 +1223,22 @@ function LineageTab({
         </div>
         <div className="flex bg-white/60 rounded-lg p-0.5 border border-white/80">
           <button onClick={() => setViewMode('flow')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'flow' ? 'bg-white shadow-sm text-cyan-700' : 'text-on-surface-variant hover:text-on-surface'}`}>
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'flow' ? 'bg-raised text-ocean border border-line' : 'text-muted hover:text-ink-2'}`}>
             Diagram
           </button>
           <button onClick={() => setViewMode('table')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table' ? 'bg-white shadow-sm text-cyan-700' : 'text-on-surface-variant hover:text-on-surface'}`}>
+            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${viewMode === 'table' ? 'bg-raised text-ocean border border-line' : 'text-muted hover:text-ink-2'}`}>
             Table
           </button>
         </div>
       </div>
 
       {viewMode === 'flow' ? (
-        <div className="glass-card rounded-2xl overflow-hidden">
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
           <LineageFlow data={{ tables: product.star_schemas.flatMap((s) => s.tables) }} />
         </div>
       ) : (
-        <div className="glass-card rounded-2xl overflow-hidden">
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-surface-container">
               <tr>
@@ -1550,7 +1353,7 @@ function KpisTab({
           )}
         </div>
         <button onClick={() => { resetForm(); setShowAdd(true); }}
-          className="px-4 py-2 gradient-primary text-on-primary text-sm font-medium rounded-xl shadow-glow-primary hover:shadow-glow-teal-md transition-all">
+          className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover transition-colors">
           + Add KPI
         </button>
       </div>
@@ -1562,25 +1365,25 @@ function KpisTab({
       )}
 
       {productKpis.length === 0 ? (
-        <div className="glass-card rounded-2xl p-10 text-center">
+        <div className="bg-raised border border-line rounded-lg p-10 text-center">
           <p className="text-on-surface-variant">No KPIs defined yet.</p>
           <p className="text-sm text-on-surface-variant/70 mt-1">KPIs proposed by the AI during design will appear here.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {productKpis.map((kpi) => (
-            <div key={kpi.id} className="glass-card rounded-2xl p-5 hover:shadow-glow-teal transition-all">
+            <div key={kpi.id} className="bg-raised border border-line rounded-lg p-5 hover:border-line-strong transition-all">
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <h3 className="font-semibold text-on-surface">{kpi.name}</h3>
-                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 font-medium">AI Suggested</span>}
+                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn-soft text-warn font-medium">AI Suggested</span>}
                 </div>
                 <div className="flex gap-1">
                   {kpi.ai_draft && (
-                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-emerald-500/15 text-emerald-600 rounded hover:bg-emerald-500/25 transition-colors">Confirm</button>
+                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-ok-soft text-ok rounded hover:bg-ok/25 transition-colors">Confirm</button>
                   )}
                   <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-white/60 text-on-surface-variant rounded hover:bg-white/80 transition-colors">Edit</button>
-                  <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-red-500/10 text-red-600 rounded hover:bg-red-500/20 transition-colors">Delete</button>
+                  <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-err/10 text-err rounded hover:bg-err/20 transition-colors">Delete</button>
                 </div>
               </div>
               {kpi.description && <p className="text-sm text-on-surface-variant mb-2">{kpi.description}</p>}
@@ -1593,7 +1396,7 @@ function KpisTab({
               {kpi.formula_sql && (
                 <div>
                   <p className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">SQL Formula</p>
-                  <pre className="text-xs font-mono bg-slate-900/90 text-cyan-300/80 rounded-lg px-3 py-2 mt-0.5 overflow-x-auto">{kpi.formula_sql}</pre>
+                  <pre className="text-xs font-mono bg-ink text-white/80 rounded-lg px-3 py-2 mt-0.5 overflow-x-auto">{kpi.formula_sql}</pre>
                 </div>
               )}
             </div>
@@ -1604,7 +1407,7 @@ function KpisTab({
       {/* Add/Edit KPI dialog */}
       {showAdd && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="glass-card rounded-2xl shadow-ambient-lg w-full max-w-lg p-6">
+          <div className="bg-raised border border-line rounded-lg shadow-ambient-lg w-full max-w-lg p-6">
             <h3 className="text-lg font-bold text-on-surface mb-4">{editingKpi ? 'Edit KPI' : 'New KPI'}</h3>
             <label className="block text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant mb-1">Name</label>
             <input value={formName} onChange={(e) => setFormName(e.target.value)}
@@ -1626,7 +1429,7 @@ function KpisTab({
             <div className="flex justify-end gap-2">
               <button onClick={resetForm} className="px-4 py-2 text-sm text-on-surface-variant bg-white/60 border border-white/80 rounded-xl hover:bg-white/80 transition-colors">Cancel</button>
               <button onClick={handleSave} disabled={!formName.trim() || saving}
-                className="px-4 py-2 text-sm gradient-primary text-on-primary rounded-xl shadow-glow-primary hover:shadow-glow-teal-md disabled:opacity-50 transition-all">
+                className="px-4 py-2 text-sm bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-all">
                 {saving ? 'Saving...' : editingKpi ? 'Update KPI' : 'Create KPI'}
               </button>
             </div>
@@ -1634,5 +1437,13 @@ function KpisTab({
         </div>
       )}
     </div>
+  );
+}
+
+export default function ProductsPage() {
+  return (
+    <RequireRole roles={['admin']}>
+      <ProductsPageInner />
+    </RequireRole>
   );
 }

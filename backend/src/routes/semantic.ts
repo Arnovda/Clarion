@@ -8,9 +8,34 @@ import type { SemanticContext } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 import { invalidateSemanticCache } from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
+import { invalidateTenantCache } from '../services/queryCache';
 import { buildXlsx, buildCsv, escapeCsvField } from '../utils/xlsxBuilder';
 
 const router = Router();
+
+/**
+ * Any successful write to the semantic layer (PATCH/POST/DELETE on a
+ * definition) can change the correct SQL for previously-cached questions.
+ * This middleware fires a tenant-wide query-cache invalidation after any
+ * 2xx response to a write request. Reads (GET/HEAD) are ignored.
+ *
+ * Runs BEFORE the route handlers so `res.on('finish', …)` registers the
+ * hook only once per response. Errors in invalidation are swallowed — a
+ * successful semantic write should never be blocked by a cache purge.
+ */
+router.use((req: Request, res: Response, next: NextFunction) => {
+  const method = req.method.toUpperCase();
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+    return next();
+  }
+  res.on('finish', () => {
+    if (res.statusCode < 200 || res.statusCode >= 300) return;
+    const tenantId = (req as unknown as { user?: { tenantId?: number } }).user?.tenantId;
+    if (!tenantId) return;
+    invalidateTenantCache(tenantId).catch(() => { /* already logged */ });
+  });
+  next();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers: version tracking + audit logging

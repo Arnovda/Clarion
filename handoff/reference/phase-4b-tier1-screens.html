@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>DataBridge · Tier 1 Screens</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400;1,8..60,500&family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg:#eef0f2;--surface:#f8f9fa;--raised:#ffffff;--soft:#e3e6ea;--softer:#edeff2;
+  --line:#d0d5da;--line-strong:#b8bec5;
+  --ink:#0f1a22;--ink-2:#334049;--ink-3:#4a5660;--muted:#6b7680;--muted-2:#8891a0;
+  --ocean:#164e63;--ocean-hover:#103d4f;--ocean-soft:#d0e1e6;--ocean-softer:#e8f0f3;
+  --ai:#c08a5e;--ai-soft:#f1e4d6;
+  --ok:#3f7a5c;--ok-soft:#dbe8e0;--warn:#a06a1c;--warn-soft:#f1e4c8;--err:#a43a3a;--err-soft:#f1d7d7;
+  --c1:#164e63;--c2:#3f7a5c;--c3:#a06a1c;--c4:#6b4e8c;
+  --r-sm:6px;--r-md:10px;--r-lg:14px;--r-pill:999px;
+  --e-1:0 1px 2px rgba(15,26,34,.04);
+  --e-2:0 1px 2px rgba(15,26,34,.04),0 4px 12px -4px rgba(15,26,34,.06);
+  --e-3:0 1px 2px rgba(15,26,34,.04),0 12px 40px -12px rgba(15,26,34,.12);
+  --f-d:"Source Serif 4",Georgia,serif;
+  --f-b:Inter,system-ui,sans-serif;
+  --f-m:"Geist Mono",ui-monospace,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{font-family:var(--f-b);background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;font-feature-settings:"ss01","cv11";line-height:1.55}
+
+.picker{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--raised);border:1px solid var(--line);border-radius:var(--r-pill);padding:4px;display:flex;gap:2px;z-index:100;box-shadow:var(--e-2);font-family:var(--f-b)}
+.picker button{background:transparent;border:none;padding:7px 14px;font-size:12.5px;font-family:var(--f-b);color:var(--muted);cursor:pointer;border-radius:var(--r-pill);transition:all 120ms}
+.picker button.on{background:var(--ocean);color:#fff}
+.picker button:hover:not(.on){color:var(--ink);background:var(--soft)}
+
+.stage{min-height:100vh;padding:80px 24px 60px}
+.label{font-family:var(--f-m);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:500}
+.btn{font-family:var(--f-b);font-weight:500;font-size:13.5px;padding:9px 16px;border-radius:var(--r-sm);border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:8px;transition:all 120ms;line-height:1;white-space:nowrap;text-decoration:none}
+.btn-primary{background:var(--ocean);color:#fff;border-color:var(--ocean)}
+.btn-primary:hover{background:var(--ocean-hover);border-color:var(--ocean-hover)}
+.btn-secondary{background:var(--raised);color:var(--ink);border-color:var(--line)}
+.btn-secondary:hover{border-color:var(--line-strong);background:var(--softer)}
+.btn-lg{padding:12px 22px;font-size:14.5px}
+.btn-ghost{background:transparent;color:var(--ink-2)}
+.btn-ghost:hover{background:var(--soft)}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:var(--r-pill);font-family:var(--f-m);font-size:10.5px;letter-spacing:.04em;font-weight:500;text-transform:uppercase}
+.b-ai{background:var(--ai-soft);color:var(--ai)}
+.b-ocean{background:var(--ocean-soft);color:var(--ocean)}
+.b-ok{background:var(--ok-soft);color:var(--ok)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-neu{background:var(--soft);color:var(--ink-3)}
+.badge .pip{width:6px;height:6px;border-radius:50%;background:currentColor}
+.input{font-family:var(--f-b);font-size:14px;padding:10px 13px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--raised);color:var(--ink);width:100%;outline:none;transition:all 120ms}
+.input:focus{border-color:var(--ocean);box-shadow:0 0 0 3px var(--ocean-soft)}
+
+.screen{display:none}
+.screen.on{display:block}
+
+/* ============ LOGIN ============ */
+.login-wrap{min-height:calc(100vh - 80px);display:grid;grid-template-columns:1.1fr 1fr;background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;max-width:1280px;margin:0 auto;box-shadow:var(--e-2)}
+.login-art{position:relative;background:#0f1a22;overflow:hidden;min-height:600px}
+.login-art svg{position:absolute;inset:0;width:100%;height:100%}
+.login-art .overlay{position:absolute;inset:0;padding:44px;display:flex;flex-direction:column;justify-content:space-between;color:#e3e6ea}
+.login-art .wm{font-family:var(--f-d);font-weight:500;font-size:22px;letter-spacing:-.02em;display:flex;align-items:center;gap:10px;color:#fff}
+.login-art .wm svg.m{color:var(--ocean-soft)}
+.login-art .quote{font-family:var(--f-d);font-style:italic;font-size:26px;line-height:1.35;letter-spacing:-.01em;color:#e3e6ea;max-width:440px}
+.login-art .quote b{font-style:normal;font-weight:500;color:#fff;display:block;margin-bottom:14px;font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-family:var(--f-m)}
+.login-art .foot{font-family:var(--f-m);font-size:10.5px;letter-spacing:.08em;color:#8891a0;text-transform:uppercase}
+
+.login-form{padding:56px 64px;display:flex;flex-direction:column;justify-content:center;min-height:600px}
+.login-form .eye{font-family:var(--f-m);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:18px}
+.login-form h2{font-family:var(--f-d);font-weight:500;font-size:38px;line-height:1.1;letter-spacing:-.025em;margin:0 0 10px}
+.login-form h2 em{font-style:italic;color:var(--ink-2)}
+.login-form .lede{font-size:14.5px;color:var(--muted);margin:0 0 36px;max-width:360px;line-height:1.55}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:18px}
+.field-lbl{font-family:var(--f-m);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:500;display:flex;justify-content:space-between}
+.field-lbl a{color:var(--ocean);text-decoration:none;font-size:10.5px}
+.login-form .actions{margin-top:12px;display:flex;flex-direction:column;gap:14px}
+.login-form .meta{margin-top:36px;font-size:13px;color:var(--muted);padding-top:20px;border-top:1px solid var(--softer)}
+.login-form .meta a{color:var(--ocean);text-decoration:none;font-weight:500}
+
+/* ============ EMPTY WORKSPACE ============ */
+.chrome{height:48px;background:var(--raised);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:12px}
+.chrome .wm{font-family:var(--f-d);font-weight:500;font-size:17px;letter-spacing:-.02em;color:var(--ink);display:flex;align-items:center;gap:9px}
+.chrome .wm svg{color:var(--ocean)}
+.chrome .workspace{font-family:var(--f-m);font-size:11px;color:var(--muted);letter-spacing:.06em;padding:4px 10px;border-left:1px solid var(--line);margin-left:6px}
+.chrome .spacer{flex:1}
+.chrome .user{width:26px;height:26px;border-radius:50%;background:var(--ocean-softer);color:var(--ocean);font-family:var(--f-b);font-weight:600;font-size:11px;display:flex;align-items:center;justify-content:center}
+
+.app-body{display:flex;min-height:calc(100vh - 80px - 48px)}
+.rail{width:220px;background:var(--raised);border-right:1px solid var(--line);padding:14px 10px;flex-shrink:0}
+.rail .sec{font-family:var(--f-m);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:12px 10px 6px}
+.rail .item{padding:8px 10px;color:var(--muted-2);font-size:13.5px;border-radius:var(--r-sm);display:flex;justify-content:space-between;cursor:not-allowed}
+.rail .item.active{background:var(--ocean-softer);color:var(--ocean);font-weight:500;cursor:pointer}
+.rail .item.lock{opacity:.5}
+.rail .item .lk{color:var(--muted-2);font-size:10px}
+
+.empty-main{flex:1;display:flex;align-items:center;justify-content:center;padding:60px 40px;background:var(--bg);position:relative;overflow:hidden}
+.empty-main::before{content:"";position:absolute;inset:0;background-image:radial-gradient(var(--line) 1px,transparent 1px);background-size:28px 28px;background-position:0 0;opacity:.5;mask-image:radial-gradient(ellipse at center,#000 30%,transparent 70%)}
+.empty-hero{max-width:560px;text-align:center;position:relative;z-index:1}
+.empty-hero .mark{width:72px;height:72px;margin:0 auto 32px;display:flex;align-items:center;justify-content:center;color:var(--ocean);position:relative}
+.empty-hero .mark::after{content:"";position:absolute;inset:-14px;border-radius:50%;border:1px solid var(--ocean-soft);animation:pulse-r 3s infinite}
+@keyframes pulse-r{0%,100%{opacity:.4;transform:scale(1)}50%{opacity:.15;transform:scale(1.08)}}
+.empty-hero h1{font-family:var(--f-d);font-weight:500;font-size:52px;letter-spacing:-.03em;line-height:1.05;margin:0 0 16px}
+.empty-hero h1 em{font-style:italic;color:var(--ink-2)}
+.empty-hero .sub{font-family:var(--f-d);font-size:19px;color:var(--muted);margin:0 0 38px;line-height:1.5;max-width:440px;margin-left:auto;margin-right:auto}
+.empty-ctas{display:flex;gap:12px;justify-content:center;margin-bottom:48px}
+.empty-steps{display:flex;gap:36px;justify-content:center;font-family:var(--f-m);font-size:10.5px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.empty-steps .s{display:flex;align-items:center;gap:8px}
+.empty-steps .s .n{width:18px;height:18px;border-radius:50%;border:1px solid var(--line-strong);display:inline-flex;align-items:center;justify-content:center;font-size:9.5px;color:var(--ink-2)}
+.empty-steps .s.cur .n{background:var(--ocean);color:#fff;border-color:var(--ocean)}
+.empty-steps .s.cur{color:var(--ocean)}
+
+/* ============ ONBOARDING ============ */
+.ob-shell{max-width:920px;margin:0 auto;background:var(--raised);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--e-2);overflow:hidden}
+.ob-head{padding:22px 36px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:24px}
+.ob-head .wm{font-family:var(--f-d);font-weight:500;font-size:18px;display:flex;align-items:center;gap:9px}
+.ob-head .wm svg{color:var(--ocean)}
+.ob-head .prog{flex:1;display:flex;gap:6px}
+.ob-head .prog .seg{flex:1;height:3px;border-radius:2px;background:var(--soft)}
+.ob-head .prog .seg.done{background:var(--ocean)}
+.ob-head .prog .seg.cur{background:var(--ocean)}
+.ob-head .step-n{font-family:var(--f-m);font-size:10.5px;letter-spacing:.1em;color:var(--muted)}
+.ob-body{padding:48px 56px 40px;min-height:440px}
+.ob-body .eye{font-family:var(--f-m);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--ocean);margin-bottom:14px}
+.ob-body h2{font-family:var(--f-d);font-weight:500;font-size:36px;letter-spacing:-.025em;line-height:1.1;margin:0 0 10px}
+.ob-body h2 em{font-style:italic;color:var(--ink-2)}
+.ob-body .lede{font-size:15px;color:var(--muted);margin:0 0 32px;max-width:540px;line-height:1.55}
+.ob-foot{padding:18px 36px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;background:var(--surface)}
+.ob-foot .back{font-size:13px;color:var(--muted);cursor:pointer;text-decoration:none}
+
+.src-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.src-card{border:1px solid var(--line);border-radius:var(--r-sm);padding:16px;cursor:pointer;transition:all 120ms;background:var(--raised)}
+.src-card:hover{border-color:var(--line-strong);background:var(--softer)}
+.src-card.on{border-color:var(--ocean);background:var(--ocean-softer);box-shadow:0 0 0 3px var(--ocean-soft)}
+.src-card .ico{width:32px;height:32px;background:var(--softer);border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;font-family:var(--f-m);font-size:13px;font-weight:600;color:var(--ink);margin-bottom:12px}
+.src-card .n{font-family:var(--f-m);font-size:12.5px;color:var(--ink);font-weight:500;margin-bottom:3px}
+.src-card .d{font-size:11.5px;color:var(--muted);letter-spacing:.02em}
+
+.ob-profile{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);padding:28px;margin-bottom:14px}
+.ob-profile-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.ob-profile-head .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.ob-profile-head .t{font-family:var(--f-d);font-size:17px;letter-spacing:-.01em}
+.ob-profile-head .m{margin-left:auto;font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.06em}
+.ob-profile-list{display:flex;flex-direction:column;gap:10px;font-size:13.5px;color:var(--ink-2)}
+.ob-profile-list .ln{display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid var(--softer)}
+.ob-profile-list .ln:last-child{border-bottom:none}
+.ob-profile-list .ln .tick{width:14px;height:14px;border-radius:50%;background:var(--ok-soft);color:var(--ok);display:flex;align-items:center;justify-content:center}
+.ob-profile-list .ln .tick.loading{background:var(--ocean-softer);color:var(--ocean)}
+.ob-profile-list .ln .tick.pending{background:var(--soft);color:var(--muted)}
+.ob-profile-list .ln .c{font-family:var(--f-m);font-size:12px;color:var(--ink);flex-shrink:0;min-width:170px}
+.ob-profile-list .ln .d{font-family:var(--f-d);color:var(--ink-2);font-size:14px}
+.ob-profile-list .ln .d.pending{color:var(--muted-2);font-style:italic}
+
+/* ============ NOTEBOOK ============ */
+.nb-wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:220px 1fr 240px;gap:20px;min-height:calc(100vh - 110px)}
+.nb-side{background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);padding:14px;height:fit-content;position:sticky;top:80px}
+.nb-side .sec{font-family:var(--f-m);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 8px}
+.nb-side .item{padding:7px 9px;font-size:12.5px;color:var(--ink-2);border-radius:var(--r-sm);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.nb-side .item:hover{background:var(--softer)}
+.nb-side .item.on{background:var(--ocean-softer);color:var(--ocean)}
+.nb-side .item .kb{font-family:var(--f-m);font-size:10px;color:var(--muted)}
+
+.nb-main{background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);padding:0;overflow:hidden}
+.nb-head{padding:22px 36px 8px;border-bottom:1px solid var(--softer)}
+.nb-head .crumb{font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.06em;margin-bottom:10px}
+.nb-head h1{font-family:var(--f-d);font-weight:500;font-size:32px;letter-spacing:-.02em;margin:0 0 6px;line-height:1.1}
+.nb-head h1 em{font-style:italic;color:var(--ink-2)}
+.nb-head .meta{display:flex;gap:14px;align-items:center;font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.04em;padding:8px 0 16px}
+.nb-cells{padding:16px 36px 40px}
+.cell{position:relative;padding:14px 0;border-radius:var(--r-sm)}
+.cell::before{content:"";position:absolute;left:-16px;top:14px;bottom:14px;width:2px;background:transparent;border-radius:1px;transition:background 120ms}
+.cell:hover::before{background:var(--line)}
+.cell.active::before{background:var(--ocean)}
+.cell-h{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-family:var(--f-m);font-size:10px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase}
+.cell-h .num{color:var(--muted-2);font-variant-numeric:tabular-nums}
+.cell-h .run{background:var(--ok-soft);color:var(--ok);padding:2px 7px;border-radius:var(--r-pill);letter-spacing:.04em}
+.cell-h .t{padding:2px 7px;border-radius:3px;background:var(--softer)}
+.cell-h .t.ask{background:var(--ai-soft);color:var(--ai)}
+.cell-h .t.sql{background:var(--softer);color:var(--ink-2)}
+.cell-h .t.chart{background:var(--ocean-softer);color:var(--ocean)}
+.cell-h .t.md{background:var(--softer);color:var(--ink-3)}
+.cell-h .t.kpi{background:var(--ocean-softer);color:var(--ocean)}
+.cell-h .spacer{flex:1}
+.cell-h .tool{padding:2px 5px;cursor:pointer;color:var(--muted-2);border-radius:3px}
+.cell-h .tool:hover{background:var(--softer);color:var(--ink)}
+
+.cell-q{font-family:var(--f-d);font-size:22px;letter-spacing:-.01em;color:var(--ink);line-height:1.3;padding:6px 0 14px}
+.cell-q em{font-style:italic}
+.cell-ai{background:var(--surface);border:1px solid var(--softer);border-left:2px solid var(--ai);border-radius:var(--r-sm);padding:16px 20px}
+.cell-ai .body{font-family:var(--f-d);font-size:16px;line-height:1.5;color:var(--ink)}
+.cell-ai .body em{font-style:italic}
+.cell-ai .body b{font-weight:600}
+.cell-ai .foot{margin-top:12px;padding-top:10px;border-top:1px solid var(--softer);font-family:var(--f-m);font-size:10px;letter-spacing:.06em;color:var(--muted);display:flex;gap:12px}
+.cell-ai .foot a{color:var(--ink-2);text-decoration:underline;text-decoration-color:var(--line-strong);cursor:pointer}
+
+.cell-sql{background:#0f1a22;border-radius:var(--r-sm);padding:16px 20px;font-family:var(--f-m);font-size:12.5px;color:#e3e6ea;line-height:1.6}
+.cell-sql .kw{color:#c08a5e}
+.cell-sql .str{color:#3f7a5c}
+.cell-sql .c{color:#8891a0;font-style:italic}
+.cell-sql-out{margin-top:10px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:8px}
+.nb-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.nb-tbl th{font-family:var(--f-m);font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:500;padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);background:var(--softer)}
+.nb-tbl td{padding:7px 12px;border-bottom:1px solid var(--softer);font-family:var(--f-m);color:var(--ink-2);font-size:11.5px}
+.nb-tbl td.num{text-align:right;color:var(--ink)}
+.nb-tbl tr:last-child td{border-bottom:none}
+
+.cell-chart{background:var(--surface);border:1px solid var(--softer);border-radius:var(--r-sm);padding:20px}
+.cell-chart .ch-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:14px}
+.cell-chart .ch-h .t{font-family:var(--f-b);font-weight:600;font-size:13px}
+.cell-chart .ch-h .s{font-family:var(--f-m);font-size:10px;color:var(--muted);letter-spacing:.04em}
+
+.cell-kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.kpi-m{background:var(--surface);border:1px solid var(--softer);border-radius:var(--r-sm);padding:16px 18px}
+.kpi-m .l{font-family:var(--f-m);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.kpi-m .n{font-family:var(--f-d);font-weight:500;font-size:28px;letter-spacing:-.02em;line-height:1;font-variant-numeric:tabular-nums}
+.kpi-m .d{font-family:var(--f-m);font-size:11px;margin-top:6px}
+.kpi-m .d.up{color:var(--ok)}.kpi-m .d.down{color:var(--err)}
+
+.cell-md{font-family:var(--f-d);font-size:17px;line-height:1.55;color:var(--ink-2);padding:4px 0}
+.cell-md b{font-weight:600;color:var(--ink)}
+
+.cell-filter{display:flex;gap:10px;align-items:center;padding:10px 16px;background:var(--softer);border-radius:var(--r-sm);font-size:13px}
+.cell-filter .lbl{font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+.cell-filter select{font-family:var(--f-m);font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:4px;background:var(--raised);color:var(--ink)}
+
+.cell-add{display:flex;gap:6px;padding:12px 0;justify-content:center;opacity:.6;transition:opacity 120ms}
+.cell-add:hover{opacity:1}
+.cell-add .chip{font-family:var(--f-m);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;padding:5px 11px;border-radius:var(--r-pill);background:var(--raised);border:1px solid var(--line);color:var(--muted);cursor:pointer}
+.cell-add .chip:hover{border-color:var(--ocean);color:var(--ocean)}
+
+.nb-right{background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);padding:16px;height:fit-content;position:sticky;top:80px}
+.nb-right .sec{font-family:var(--f-m);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+.nb-right .outline-item{padding:6px 10px;font-size:12px;color:var(--ink-2);border-left:2px solid var(--softer);margin-left:-2px;cursor:pointer}
+.nb-right .outline-item:hover{color:var(--ocean);border-left-color:var(--line-strong)}
+.nb-right .outline-item.on{color:var(--ocean);border-left-color:var(--ocean);font-weight:500}
+.nb-right .outline-item .t{display:block;font-family:var(--f-m);font-size:9.5px;color:var(--muted-2);letter-spacing:.04em;margin-bottom:2px;text-transform:uppercase}
+
+/* chart area helper */
+.ca .grid{stroke:var(--line);stroke-width:.5;stroke-dasharray:2 3}
+.ca .ax{font-family:var(--f-m);font-size:9px;fill:var(--muted)}
+
+/* interactive state demo — "Book a tour" */
+body.demo-onboard .ob-body{animation:none}
+</style>
+</head>
+<body>
+<div class="picker" id="picker"></div>
+
+<!-- ═══════════════════ LOGIN ═══════════════════ -->
+<div class="screen on" id="s-login">
+  <div class="stage">
+    <div class="login-wrap">
+      <div class="login-art">
+        <svg viewBox="0 0 600 800" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <radialGradient id="glow" cx="50%" cy="42%" r="55%">
+              <stop offset="0%" stop-color="#164e63" stop-opacity="0.6"/>
+              <stop offset="45%" stop-color="#164e63" stop-opacity="0.2"/>
+              <stop offset="100%" stop-color="#0f1a22" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="amb" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#c08a5e" stop-opacity="0.14"/>
+              <stop offset="100%" stop-color="#0f1a22" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <rect width="600" height="800" fill="#0f1a22"/>
+          <circle cx="300" cy="340" r="420" fill="url(#glow)"/>
+          <circle cx="300" cy="340" r="240" fill="url(#amb)"/>
+
+          <!-- concentric observatory rings -->
+          <g transform="translate(300 340)" fill="none" stroke="#d0e1e6" stroke-opacity="0.28" stroke-width="0.6">
+            <circle r="40"/><circle r="80"/><circle r="130"/><circle r="190"/><circle r="260"/><circle r="340"/>
+          </g>
+          <!-- axis lines -->
+          <g transform="translate(300 340)" stroke="#d0e1e6" stroke-opacity="0.14" stroke-width="0.5">
+            <line x1="-340" y1="0" x2="340" y2="0"/>
+            <line x1="0" y1="-340" x2="0" y2="340"/>
+            <line x1="-280" y1="-160" x2="280" y2="160"/>
+            <line x1="-280" y1="160" x2="280" y2="-160"/>
+          </g>
+          <!-- tick marks on main axes -->
+          <g transform="translate(300 340)" stroke="#d0e1e6" stroke-opacity="0.35" stroke-width="0.8">
+            <g><line x1="40" y1="-3" x2="40" y2="3"/><line x1="80" y1="-3" x2="80" y2="3"/><line x1="130" y1="-3" x2="130" y2="3"/><line x1="190" y1="-3" x2="190" y2="3"/><line x1="260" y1="-3" x2="260" y2="3"/></g>
+            <g><line x1="-40" y1="-3" x2="-40" y2="3"/><line x1="-80" y1="-3" x2="-80" y2="3"/><line x1="-130" y1="-3" x2="-130" y2="3"/><line x1="-190" y1="-3" x2="-190" y2="3"/><line x1="-260" y1="-3" x2="-260" y2="3"/></g>
+          </g>
+          <!-- orbit points representing data -->
+          <g transform="translate(300 340)" fill="#c08a5e">
+            <circle cx="112" cy="-56" r="2"/><circle cx="-92" cy="80" r="2.5"/>
+            <circle cx="175" cy="95" r="2"/><circle cx="-210" cy="-42" r="2"/>
+            <circle cx="50" cy="-180" r="2.5"/><circle cx="-140" cy="-180" r="2"/>
+            <circle cx="230" cy="-80" r="2"/>
+          </g>
+          <!-- central mark -->
+          <g transform="translate(300 340)">
+            <circle r="18" fill="none" stroke="#d0e1e6" stroke-width="1.2"/>
+            <circle r="6" fill="#d0e1e6"/>
+          </g>
+          <!-- faint curves -->
+          <g transform="translate(300 340)" fill="none" stroke="#c08a5e" stroke-opacity="0.25" stroke-width="0.8">
+            <path d="M-340,60 Q-100,-40 100,-10 T340,-80"/>
+            <path d="M-340,140 Q-50,60 140,90 T340,40"/>
+          </g>
+        </svg>
+        <div class="overlay">
+          <div class="wm">
+            <svg width="26" height="26" viewBox="0 0 32 32" fill="none" class="m"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1.2"/><circle cx="16" cy="16" r="3" fill="currentColor"/></svg>
+            Databridge
+          </div>
+          <div class="quote">
+            <b>OBSERVATORY · EST. 2025</b>
+            The quiet place from which you see your company's data in full — and act on what you see.
+          </div>
+          <div class="foot">SOC 2 TYPE II · EU-HOSTED · AES-256</div>
+        </div>
+      </div>
+      <div class="login-form">
+        <div class="eye">SIGN IN</div>
+        <h2><em>Welcome back.</em></h2>
+        <p class="lede">Your workspace is one step away.</p>
+        <div class="field">
+          <label class="field-lbl">Work email</label>
+          <input class="input" type="email" value="marijn@acme.com" />
+        </div>
+        <div class="field">
+          <label class="field-lbl"><span>Password</span><a>Forgot?</a></label>
+          <input class="input" type="password" value="••••••••••••" />
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary btn-lg" style="justify-content:center;width:100%">Sign in</button>
+        </div>
+        <div class="meta">New to DataBridge? <a>Request an invite →</a></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ EMPTY WORKSPACE ═══════════════════ -->
+<div class="screen" id="s-empty">
+  <header class="chrome">
+    <div class="wm"><svg width="22" height="22" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1.2"/><circle cx="16" cy="16" r="3" fill="currentColor"/></svg> Databridge</div>
+    <div class="workspace">ACME · WHOLESALE</div>
+    <div class="spacer"></div>
+    <div class="user">ML</div>
+  </header>
+  <div class="app-body">
+    <aside class="rail">
+      <div class="sec">WORKSPACE</div>
+      <div class="item lock"><span>Ask</span><span class="lk">⌸</span></div>
+      <div class="item lock"><span>Dashboards</span><span class="lk">⌸</span></div>
+      <div class="item lock"><span>Notebooks</span><span class="lk">⌸</span></div>
+      <div class="item lock"><span>Reports</span><span class="lk">⌸</span></div>
+      <div class="sec">MODEL</div>
+      <div class="item lock"><span>Semantic</span><span class="lk">⌸</span></div>
+      <div class="item lock"><span>Quality</span><span class="lk">⌸</span></div>
+      <div class="sec">ADMIN</div>
+      <div class="item active"><span>Sources</span><span style="color:var(--ocean);font-family:var(--f-m);font-size:10px">START</span></div>
+    </aside>
+    <main class="empty-main">
+      <div class="empty-hero">
+        <div class="mark">
+          <svg width="64" height="64" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.3"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1"/><circle cx="16" cy="16" r="3" fill="currentColor"/></svg>
+        </div>
+        <h1><em>Let's look inside</em><br/>your company.</h1>
+        <p class="sub">Connect a source and DataBridge will profile it, learn what every column means, and make it ready for plain-language questions.</p>
+        <div class="empty-ctas">
+          <button class="btn btn-primary btn-lg">Connect your first source</button>
+          <button class="btn btn-secondary btn-lg">Explore with sample data</button>
+        </div>
+        <div class="empty-steps">
+          <div class="s cur"><span class="n">1</span>CONNECT</div>
+          <div class="s"><span class="n">2</span>PROFILE</div>
+          <div class="s"><span class="n">3</span>ASK</div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ═══════════════════ ONBOARDING ═══════════════════ -->
+<div class="screen" id="s-onboard">
+  <div class="stage" style="padding-top:60px">
+    <div class="ob-shell">
+      <div class="ob-head">
+        <div class="wm"><svg width="20" height="20" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1.2"/><circle cx="16" cy="16" r="3" fill="currentColor"/></svg> Databridge</div>
+        <div class="prog">
+          <div class="seg done"></div><div class="seg done"></div><div class="seg cur"></div><div class="seg"></div><div class="seg"></div>
+        </div>
+        <div class="step-n">STEP 3 / 5</div>
+      </div>
+      <div class="ob-body">
+        <div class="eye">PROFILING</div>
+        <h2><em>Reading your data.</em></h2>
+        <p class="lede">We're scanning wholesale-erp-prod to learn its shape — tables, relationships, and what each column likely means. This takes about two minutes.</p>
+
+        <div class="ob-profile">
+          <div class="ob-profile-head">
+            <span class="dot"></span>
+            <span class="t">wholesale-erp-prod</span>
+            <span class="badge b-ai"><span class="pip"></span>CLAUDE · 62%</span>
+            <span class="m">0:48 ELAPSED · 1:12 LEFT</span>
+          </div>
+          <div class="ob-profile-list">
+            <div class="ln"><span class="tick">✓</span><span class="c">fact_sales</span><span class="d">Transactional sales by order line · 1.25M rows</span></div>
+            <div class="ln"><span class="tick">✓</span><span class="c">dim_customer</span><span class="d">One row per customer, all channels · 84K rows</span></div>
+            <div class="ln"><span class="tick">✓</span><span class="c">dim_product</span><span class="d">Product catalog with category hierarchy · 12.8K rows</span></div>
+            <div class="ln"><span class="tick loading"><svg width="9" height="9" viewBox="0 0 10 10"><circle cx="5" cy="5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="8 20" transform="rotate(-90 5 5)"><animateTransform attributeName="transform" type="rotate" from="0 5 5" to="360 5 5" dur="1s" repeatCount="indefinite"/></circle></svg></span><span class="c">dim_region</span><span class="d">Analyzing column semantics…</span></div>
+            <div class="ln"><span class="tick pending">·</span><span class="c">dim_date</span><span class="d pending">Queued</span></div>
+            <div class="ln"><span class="tick pending">·</span><span class="c">dim_employee</span><span class="d pending">Queued</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ob-foot">
+        <a class="back">← Back to connection details</a>
+        <div style="display:flex;gap:10px;align-items:center">
+          <span style="font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.06em">YOU CAN SKIP — WE'LL FINISH IN THE BACKGROUND</span>
+          <button class="btn btn-secondary">Skip to workspace</button>
+          <button class="btn btn-primary">Continue →</button>
+        </div>
+      </div>
+    </div>
+    <div style="max-width:920px;margin:20px auto 0;display:flex;gap:36px;justify-content:center;font-family:var(--f-m);font-size:10.5px;letter-spacing:.08em;color:var(--muted);text-transform:uppercase">
+      <span>1 · CONNECT</span>
+      <span>2 · PERMISSIONS</span>
+      <span style="color:var(--ocean)">3 · PROFILE</span>
+      <span>4 · FIRST QUESTION</span>
+      <span>5 · INVITE TEAM</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════ NOTEBOOK ═══════════════════ -->
+<div class="screen" id="s-notebook">
+  <header class="chrome">
+    <div class="wm"><svg width="22" height="22" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1.2"/><circle cx="16" cy="16" r="3" fill="currentColor"/></svg> Databridge</div>
+    <div class="workspace">ACME · WHOLESALE</div>
+    <div class="spacer"></div>
+    <div class="badge b-ocean"><span class="pip"></span>SAVED · 14:22</div>
+    <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px">Share</button>
+    <button class="btn btn-primary" style="padding:5px 12px;font-size:12px">Run all</button>
+  </header>
+  <div style="padding:20px 24px">
+    <div class="nb-wrap">
+      <aside class="nb-side">
+        <div class="sec">NOTEBOOKS</div>
+        <div class="item on"><span>Q3 deep dive</span></div>
+        <div class="item"><span>Wholesale churn risk</span></div>
+        <div class="item"><span>Product margin audit</span></div>
+        <div class="item"><span>Customer cohort — 2024</span></div>
+        <div class="item"><span>Weekly exec brief</span></div>
+        <div class="sec" style="margin-top:12px">TEMPLATES</div>
+        <div class="item" style="color:var(--muted-2)"><span>+ New blank</span><span class="kb">⌘N</span></div>
+        <div class="item" style="color:var(--muted-2)"><span>From a question</span></div>
+        <div class="item" style="color:var(--muted-2)"><span>Duplicate current</span></div>
+      </aside>
+
+      <section class="nb-main">
+        <div class="nb-head">
+          <div class="crumb">NOTEBOOKS › Q3 DEEP DIVE</div>
+          <h1><em>What drove Q3?</em> A wholesale story.</h1>
+          <div class="meta">
+            <span>M. LEJEUNE</span>
+            <span>·</span>
+            <span>EDITED 14:22 CEST</span>
+            <span>·</span>
+            <span>9 CELLS · 3 RUNNING</span>
+            <span>·</span>
+            <span>SOURCE: fact_sales + dim_customer</span>
+          </div>
+        </div>
+
+        <div class="nb-cells">
+          <!-- markdown intro -->
+          <div class="cell" id="c1">
+            <div class="cell-h"><span class="num">01</span><span class="t md">MARKDOWN</span><span class="spacer"></span><span class="tool">⋯</span></div>
+            <div class="cell-md">Q3 closed ahead of plan. This notebook works through <b>why</b> — channel by channel, customer by customer — so we can go into Q4 with eyes open on where the growth actually came from.</div>
+          </div>
+
+          <!-- filter -->
+          <div class="cell" id="c2">
+            <div class="cell-h"><span class="num">02</span><span class="t">FILTER</span><span class="run">GLOBAL</span><span class="spacer"></span><span class="tool">⋯</span></div>
+            <div class="cell-filter">
+              <span class="lbl">Period</span>
+              <select><option>Q3 2025</option></select>
+              <span class="lbl">Channel</span>
+              <select><option>All</option></select>
+              <span class="lbl">Segment</span>
+              <select><option>All</option></select>
+              <span style="flex:1"></span>
+              <span style="font-family:var(--f-m);font-size:10.5px;color:var(--muted);letter-spacing:.04em">APPLIES TO ALL CELLS BELOW</span>
+            </div>
+          </div>
+
+          <!-- KPI -->
+          <div class="cell active" id="c3">
+            <div class="cell-h"><span class="num">03</span><span class="t kpi">KPI</span><span class="run">1.2s</span><span class="spacer"></span><span class="tool">Run</span><span class="tool">⋯</span></div>
+            <div class="cell-kpi">
+              <div class="kpi-m"><div class="l">Gross revenue</div><div class="n">€4.82M</div><div class="d up">↑ 12.4%</div></div>
+              <div class="kpi-m"><div class="l">Gross margin</div><div class="n">42.8%</div><div class="d up">↑ 0.8pp</div></div>
+              <div class="kpi-m"><div class="l">Active customers</div><div class="n">1,284</div><div class="d up">↑ 3.1%</div></div>
+            </div>
+          </div>
+
+          <!-- Ask cell -->
+          <div class="cell" id="c4">
+            <div class="cell-h"><span class="num">04</span><span class="t ask">ASK</span><span class="run">4.2s</span><span class="spacer"></span><span class="tool">Re-run</span><span class="tool">⋯</span></div>
+            <div class="cell-q"><em>Which channel drove the quarter?</em></div>
+            <div class="cell-ai">
+              <div class="body"><em>Wholesale carried Q3.</em> It added <b>€420K</b> year-over-year — concentrated in three customers. Direct held steady (+€18K). Partner revenue fell <b>3%</b>, with Voltara SA the main cause.</div>
+              <div class="foot"><span>94% · 3 tables</span><span>·</span><a>show SQL</a><a>pin</a><a>↳ convert to chart</a></div>
+            </div>
+          </div>
+
+          <!-- chart -->
+          <div class="cell" id="c5">
+            <div class="cell-h"><span class="num">05</span><span class="t chart">CHART</span><span class="run">0.8s</span><span class="spacer"></span><span class="tool">Re-run</span><span class="tool">⋯</span></div>
+            <div class="cell-chart">
+              <div class="ch-h"><span class="t">Revenue by channel — Q3 vs Q2</span><span class="s">EUR · source: fact_sales</span></div>
+              <svg viewBox="0 0 700 220" class="ca" style="width:100%;height:220px;display:block">
+                <line x1="40" x2="700" y1="40" y2="40" class="grid"/>
+                <line x1="40" x2="700" y1="90" y2="90" class="grid"/>
+                <line x1="40" x2="700" y1="140" y2="140" class="grid"/>
+                <line x1="40" x2="700" y1="190" y2="190" class="grid"/>
+                <text x="4" y="44" class="ax">€4M</text><text x="4" y="94" class="ax">€3M</text><text x="4" y="144" class="ax">€2M</text><text x="4" y="194" class="ax">€1M</text>
+                <g>
+                  <rect x="100" y="85" width="50" height="115" fill="#d0e1e6"/>
+                  <rect x="160" y="40" width="50" height="160" fill="#164e63"/>
+                  <text x="155" y="215" text-anchor="middle" class="ax">WHOLESALE</text>
+                  <rect x="290" y="125" width="50" height="75" fill="#d0e1e6"/>
+                  <rect x="350" y="123" width="50" height="77" fill="#3f7a5c"/>
+                  <text x="345" y="215" text-anchor="middle" class="ax">DIRECT</text>
+                  <rect x="480" y="145" width="50" height="55" fill="#d0e1e6"/>
+                  <rect x="540" y="150" width="50" height="50" fill="#a06a1c"/>
+                  <text x="535" y="215" text-anchor="middle" class="ax">PARTNER</text>
+                </g>
+                <text x="185" y="34" class="ax" style="fill:var(--ink);font-weight:500">€3.1M</text>
+              </svg>
+            </div>
+          </div>
+
+          <!-- SQL -->
+          <div class="cell" id="c6">
+            <div class="cell-h"><span class="num">06</span><span class="t sql">SQL</span><span class="run">0.4s</span><span class="spacer"></span><span class="tool">Run</span><span class="tool">⋯</span></div>
+            <div class="cell-sql"><span class="c">-- top customers that moved by ≥ €50K, Q3 vs Q2</span><br/><span class="kw">SELECT</span> c.name, sum(q3.amt) <span class="kw">AS</span> q3_rev, sum(q2.amt) <span class="kw">AS</span> q2_rev<br/><span class="kw">FROM</span> dim_customer c <span class="kw">JOIN</span> fact_sales q3 <span class="kw">ON</span> q3.customer_id = c.id<br/><span class="kw">WHERE</span> q3.quarter = <span class="str">'Q3 2025'</span><br/><span class="kw">GROUP BY</span> c.name <span class="kw">HAVING</span> abs(q3_rev - q2_rev) &gt;= <span class="str">50000</span><br/><span class="kw">ORDER BY</span> abs(q3_rev - q2_rev) <span class="kw">DESC</span></div>
+            <div class="cell-sql-out">
+              <table class="nb-tbl">
+                <thead><tr><th>CUSTOMER</th><th class="num">Q2</th><th class="num">Q3</th><th class="num">Δ</th></tr></thead>
+                <tbody>
+                  <tr><td>Nordstern GmbH</td><td class="num">€520K</td><td class="num">€842K</td><td class="num" style="color:var(--ok)">+€322K</td></tr>
+                  <tr><td>Atlas Retail</td><td class="num">€480K</td><td class="num">€620K</td><td class="num" style="color:var(--ok)">+€140K</td></tr>
+                  <tr><td>Voltara SA</td><td class="num">€395K</td><td class="num">€281K</td><td class="num" style="color:var(--err)">−€114K</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- markdown conclusion -->
+          <div class="cell" id="c7">
+            <div class="cell-h"><span class="num">07</span><span class="t md">MARKDOWN</span><span class="spacer"></span><span class="tool">⋯</span></div>
+            <div class="cell-md"><b>Takeaway.</b> Concentration risk is the headline. The top three wholesale customers now represent <b>41%</b> of total revenue (34% last quarter). We should treat Nordstern as strategic and reach out to Voltara before end of October.</div>
+          </div>
+
+          <div class="cell-add">
+            <span class="chip">+ ASK</span><span class="chip">+ SQL</span><span class="chip">+ CHART</span><span class="chip">+ KPI</span><span class="chip">+ TABLE</span><span class="chip">+ PYTHON</span><span class="chip">+ MARKDOWN</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="nb-right">
+        <div class="sec">OUTLINE</div>
+        <div class="outline-item on"><span class="t">MARKDOWN · 01</span>Q3 closed ahead of plan…</div>
+        <div class="outline-item"><span class="t">FILTER · 02</span>Period · Channel · Segment</div>
+        <div class="outline-item"><span class="t">KPI · 03</span>Gross revenue, margin, customers</div>
+        <div class="outline-item"><span class="t">ASK · 04</span>Which channel drove the quarter?</div>
+        <div class="outline-item"><span class="t">CHART · 05</span>Revenue by channel</div>
+        <div class="outline-item"><span class="t">SQL · 06</span>Top customer deltas</div>
+        <div class="outline-item"><span class="t">MARKDOWN · 07</span>Takeaway</div>
+
+        <div class="sec" style="margin-top:20px">SHARED WITH</div>
+        <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--ink-2)">
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--ocean-softer);color:var(--ocean);display:inline-flex;align-items:center;justify-content:center;font-family:var(--f-b);font-weight:600;font-size:9px">ML</span>Marijn · <span style="color:var(--muted);font-family:var(--f-m);font-size:10px;letter-spacing:.04em">AUTHOR</span></div>
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--softer);color:var(--ink-2);display:inline-flex;align-items:center;justify-content:center;font-family:var(--f-b);font-weight:600;font-size:9px">JD</span>Julie · <span style="color:var(--muted);font-family:var(--f-m);font-size:10px;letter-spacing:.04em">VIEWER</span></div>
+          <div style="display:flex;align-items:center;gap:8px"><span style="width:20px;height:20px;border-radius:50%;background:var(--softer);color:var(--ink-2);display:inline-flex;align-items:center;justify-content:center;font-family:var(--f-b);font-weight:600;font-size:9px">SB</span>Sam · <span style="color:var(--muted);font-family:var(--f-m);font-size:10px;letter-spacing:.04em">COMMENTER</span></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<script>
+  const screens = [
+    {id:'login', label:'Login'},
+    {id:'empty', label:'Empty workspace'},
+    {id:'onboard', label:'Onboarding'},
+    {id:'notebook', label:'Notebook'},
+  ];
+  const picker = document.getElementById('picker');
+  const initial = localStorage.getItem('db_tier1') || 'login';
+  screens.forEach(s => {
+    const b = document.createElement('button');
+    b.textContent = s.label;
+    if (s.id === initial) b.classList.add('on');
+    b.onclick = () => {
+      document.querySelectorAll('.screen').forEach(x => x.classList.remove('on'));
+      document.getElementById('s-' + s.id).classList.add('on');
+      picker.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      localStorage.setItem('db_tier1', s.id);
+      window.scrollTo(0,0);
+    };
+    picker.appendChild(b);
+  });
+  // apply initial
+  document.querySelectorAll('.screen').forEach(x => x.classList.remove('on'));
+  const init = document.getElementById('s-' + initial);
+  if (init) init.classList.add('on');
+</script>
+</body>
+</html>

@@ -187,16 +187,51 @@ Your audience is a business owner, not a data engineer. All display_name and des
 
 ━━━ DuckDB SQL RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables are pre-loaded as views.
+Each table needs a standalone SELECT statement (no CREATE TABLE).
 
 - Dimensions (dag_order=0) execute FIRST; facts (dag_order=1) execute SECOND
-- After a dim materializes, it's available as a view for fact JOINs
 - Dimension SQL: ROW_NUMBER() OVER (ORDER BY natural_key) AS {entity}_key, then attributes
 - Fact SQL: JOIN to materialized dims to resolve natural keys → surrogate keys
 - ALWAYS use TRY_CAST (not CAST) for type conversions — source data has 'None', 'null', '', 'N/A'
 - Use NULLIF(TRIM(col), '') before TRY_CAST for string columns
 - strftime(value, format) — DuckDB arg order
 - extract(year FROM col), extract(month FROM col)
+
+━━━ TABLE REFERENCES — USE DBT MACROS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All table references inside transformation_sql MUST use dbt macros. This is
+required for the new execution engine — lineage and dependency resolution
+break without them.
+
+1. **Source-layer tables** (raw ingested tables from the upstream source):
+   \`\`\`
+   FROM {{ source('source_layer', 'customers') }}
+   \`\`\`
+   Use this for every table listed in the "SOURCE SCHEMA" section above.
+
+2. **Sibling product tables** (dimensions you are generating in THIS schema,
+   referenced from facts):
+   \`\`\`
+   JOIN {{ ref('dim_customer') }} dc ON ...
+   \`\`\`
+   Use this whenever a fact table joins to a dimension also being built in
+   this schema. dbt uses these refs to order the DAG automatically — that's
+   why dag_order + ref() together are how execution order is determined.
+
+3. **Shared/conformed dims from OTHER products** (only if the context
+   explicitly lists them as shared dims):
+   \`\`\`
+   JOIN {{ source('shared_dims', 'dim_customer') }} dc ON ...
+   \`\`\`
+
+**DO NOT** use bare table names like \`FROM customers\` or \`JOIN dim_customer\`
+— the macro form is mandatory. Bare refs will compile but break lineage.
+
+**DO NOT** alias the macro in a way that creates parsing ambiguity —
+always put the alias immediately after \`}}\`:
+   \`\`\`
+   FROM {{ source('source_layer', 'orders') }} o
+   \`\`\`
 
 ━━━ OUTPUT FORMAT — Return ONLY valid JSON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -213,7 +248,7 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
         "description": "Your customers — everyone who has placed an order.",
         "table_role": "dimension",
         "dag_order": 0,
-        "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY ...) AS customer_key, ... FROM source_table LEFT JOIN ...",
+        "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY c.customer_id) AS customer_key, c.customer_id, c.name, g.group_name FROM {{ source('source_layer', 'customers') }} c LEFT JOIN {{ source('source_layer', 'customer_groups') }} g ON c.group_id = g.id",
         "columns": [{
           "column_name": "customer_key",
           "data_type": "INTEGER",
@@ -235,7 +270,7 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
         "description": "Your sales transactions — one line for each product sold.",
         "table_role": "fact",
         "dag_order": 1,
-        "transformation_sql": "SELECT COALESCE(dc.customer_key, -1) AS customer_key, ... FROM source LEFT JOIN dim_customer dc ON ...",
+        "transformation_sql": "SELECT COALESCE(dc.customer_key, -1) AS customer_key, s.order_id, s.line_total FROM {{ source('source_layer', 'orders') }} s LEFT JOIN {{ ref('dim_customer') }} dc ON s.customer_id = dc.customer_id",
         "columns": [...]
       }
     ],
@@ -265,7 +300,9 @@ Rules reminder:
 - Do NOT include dim_date (auto-generated)
 - Use ONLY the exact source column names from the schema above
 - Include transformation_sql for every table
-- Fact SQL must JOIN to dims for surrogate key resolution`;
+- Fact SQL must JOIN to dims for surrogate key resolution
+- ALL table references in transformation_sql must use {{ source('source_layer', 'name') }}
+  for raw source tables or {{ ref('name') }} for sibling product tables`;
 }
 
 // ---------------------------------------------------------------------------

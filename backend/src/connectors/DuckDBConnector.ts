@@ -2,6 +2,7 @@ import { Database } from 'duckdb-async';
 import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
+import { getOrInit, invalidateByPrefix } from './DuckDBPool';
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -23,6 +24,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  *
  * When using Azure, the azure + delta extensions are loaded and an Azure secret
  * is created using the AZURE_STORAGE_CONNECTION_STRING env var.
+ *
+ * Connection lifecycle:
+ * - Default (hot path): `connect()` fetches a shared, view-prepared DuckDB
+ *   instance from `DuckDBPool`. `disconnect()` releases the reference without
+ *   closing the underlying DB — the pool manages lifecycle (idle eviction +
+ *   explicit `invalidateWarehouse()` after writes).
+ * - Ephemeral: `DuckDBConnector.ephemeral(...)` returns a connector that
+ *   owns its own throwaway instance. Used for introspection / schema profiling
+ *   where we create temp views with per-table timeouts.
  */
 export class DuckDBConnector extends BaseConnector {
   private readonly warehousePath: string;
@@ -32,6 +42,7 @@ export class DuckDBConnector extends BaseConnector {
   private readonly tablePaths: Map<string, string>;
   private db: Database | null = null;
   private viewsCreated = false;
+  private ownsDb = false;
 
   /**
    * @param warehousePath - Local path or az:// blob URI
@@ -50,39 +61,87 @@ export class DuckDBConnector extends BaseConnector {
     this.tablePaths = tablePaths ?? new Map();
   }
 
+  /**
+   * Opt-in ephemeral mode: this instance will create and close its own DuckDB,
+   * bypassing the shared pool. Used by introspection paths that set up
+   * per-table scratch views.
+   */
+  static ephemeral(
+    warehousePath: string,
+    tableNames?: string[],
+    tablePaths?: Map<string, string>,
+  ): DuckDBConnector {
+    const c = new DuckDBConnector(warehousePath, tableNames, tablePaths);
+    c.ownsDb = true;
+    return c;
+  }
+
+  /** Invalidate any pooled entries whose key begins with this warehouse path. */
+  static async invalidateWarehouse(warehousePath: string): Promise<void> {
+    const normalised = warehousePath.startsWith('az://')
+      ? warehousePath
+      : path.resolve(warehousePath);
+    await invalidateByPrefix(`duckdb:${normalised}`);
+  }
+
   async connect(): Promise<void> {
     // Skip warehouse path check if we have explicit table paths (cross-product mode)
     if (!this.isAzure && this.tablePaths.size === 0 && !fs.existsSync(this.warehousePath)) {
       throw new Error(`Warehouse directory not found: ${this.warehousePath}`);
     }
 
-    this.db = await Database.create(':memory:');
+    if (this.ownsDb) {
+      this.db = await Database.create(':memory:');
+      await this.loadExtensions(this.db);
+      return;
+    }
 
+    // Pooled path — views are pre-registered during init, so executeQuery is immediate.
+    const cacheKey = this.cacheKey();
+    this.db = await getOrInit(cacheKey, async (db) => {
+      await this.loadExtensions(db);
+      await this.createAllViews(db);
+    });
+    this.viewsCreated = true;
+  }
+
+  /** Build a stable cache key covering warehouse + every table path this connector exposes. */
+  private cacheKey(): string {
+    const mode = this.isAzure ? 'az' : 'local';
+    const names = [...this.tableNames].sort().join(',');
+    const explicit = [...this.tablePaths.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([n, p]) => `${n}=${p}`)
+      .join(',');
+    return `duckdb:${this.warehousePath}|${mode}|n:${names}|x:${explicit}`;
+  }
+
+  private async loadExtensions(db: Database): Promise<void> {
     // Use LOAD (not INSTALL+LOAD) if extensions are pre-installed in Docker image.
     // Fall back to INSTALL+LOAD for local dev.
     try {
-      await this.db.exec('LOAD delta;');
+      await db.exec('LOAD delta;');
     } catch {
-      await this.db.exec('INSTALL delta; LOAD delta;');
+      await db.exec('INSTALL delta; LOAD delta;');
     }
 
     if (this.isAzure) {
       try {
-        await this.db.exec('LOAD azure;');
+        await db.exec('LOAD azure;');
       } catch {
-        await this.db.exec('INSTALL azure; LOAD azure;');
+        await db.exec('INSTALL azure; LOAD azure;');
       }
 
       // Use curl transport — avoids SSL CA cert path issues in Docker containers
       // where DuckDB's default transport expects RHEL cert paths
-      await this.db.exec("SET azure_transport_option_type = 'curl';");
+      await db.exec("SET azure_transport_option_type = 'curl';");
 
       const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
       if (connStr) {
         // Escape single quotes in connection string
         const escaped = connStr.replace(/'/g, "''");
-        await this.db.exec(`
-          CREATE SECRET azure_secret (
+        await db.exec(`
+          CREATE OR REPLACE SECRET azure_secret (
             TYPE AZURE,
             CONNECTION_STRING '${escaped}'
           );
@@ -91,6 +150,28 @@ export class DuckDBConnector extends BaseConnector {
         console.warn('[DuckDBConnector] AZURE_STORAGE_CONNECTION_STRING not set — blob reads will fail');
       }
     }
+  }
+
+  private async createAllViews(db: Database): Promise<void> {
+    const tableNames = this.getTableNames();
+    let created = 0;
+    let failed = 0;
+    for (const tableName of tableNames) {
+      const tPath = this.tablePath(tableName);
+      try {
+        await this.createDeltaView(db, tableName, tPath);
+        created++;
+      } catch (err) {
+        failed++;
+        console.warn(
+          `[DuckDBConnector] Failed to create view for ${tableName} (path: ${tPath}):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    console.log(
+      `[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''} (pooled)`,
+    );
   }
 
   async testConnection(): Promise<{ ok: boolean; message: string }> {
@@ -114,80 +195,90 @@ export class DuckDBConnector extends BaseConnector {
   }
 
   async introspectSchema(): Promise<SchemaResult> {
-    const db = this.requireDb();
-    const tables: TableInfo[] = [];
+    // Introspection mutates scratch views on the DB — always use a fresh
+    // ephemeral instance so we never touch the pooled query DB.
+    const db = await Database.create(':memory:');
+    try {
+      await this.loadExtensions(db);
+      const tables: TableInfo[] = [];
 
-    // Get table names: from constructor arg or filesystem scan
-    const tableNames = this.getTableNames();
+      const tableNames = this.getTableNames();
+      // Timeout per table: 60s for Azure (network I/O), 30s for local
+      const perTableTimeout = this.isAzure ? 60_000 : 30_000;
 
-    // Timeout per table: 60s for Azure (network I/O), 30s for local
-    const perTableTimeout = this.isAzure ? 60_000 : 30_000;
+      for (let ti = 0; ti < tableNames.length; ti++) {
+        const tableName = tableNames[ti];
+        const deltaPath = this.tablePath(tableName);
 
-    for (let ti = 0; ti < tableNames.length; ti++) {
-      const tableName = tableNames[ti];
-      const deltaPath = this.tablePath(tableName);
+        try {
+          console.log(`[DuckDBConnector] introspecting table ${ti + 1}/${tableNames.length}: ${tableName} (${deltaPath})`);
+          const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+          const viewStart = Date.now();
+          await withTimeout(
+            this.createDeltaView(db, viewName, deltaPath),
+            perTableTimeout,
+            `createDeltaView(${tableName})`,
+          );
+          console.log(`[DuckDBConnector] view created for ${tableName} in ${Date.now() - viewStart}ms`);
 
-      try {
-        console.log(`[DuckDBConnector] introspecting table ${ti + 1}/${tableNames.length}: ${tableName} (${deltaPath})`);
-        const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-        const viewStart = Date.now();
-        await withTimeout(
-          this.createDeltaView(db, viewName, deltaPath),
-          perTableTimeout,
-          `createDeltaView(${tableName})`,
-        );
-        console.log(`[DuckDBConnector] view created for ${tableName} in ${Date.now() - viewStart}ms`);
+          const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
+            column_name: string;
+            column_type: string;
+          }>;
 
-        const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
-          column_name: string;
-          column_type: string;
-        }>;
+          const columns: ColumnInfo[] = [];
+          for (const col of colRows) {
+            let sampleValues: unknown[] = [];
+            try {
+              const samples = await withTimeout(
+                db.all(
+                  `SELECT DISTINCT "${col.column_name}" AS val
+                   FROM "${viewName}"
+                   WHERE "${col.column_name}" IS NOT NULL
+                   LIMIT 5`,
+                ),
+                perTableTimeout,
+                `sample ${tableName}.${col.column_name}`,
+              );
+              sampleValues = samples.map((r: { val: unknown }) => {
+                const v = (r as { val: unknown }).val;
+                return typeof v === 'bigint' ? Number(v) : v;
+              });
+            } catch {
+              // Sampling is best-effort
+            }
 
-        const columns: ColumnInfo[] = [];
-        for (const col of colRows) {
-          let sampleValues: unknown[] = [];
-          try {
-            const samples = await withTimeout(
-              db.all(
-                `SELECT DISTINCT "${col.column_name}" AS val
-                 FROM "${viewName}"
-                 WHERE "${col.column_name}" IS NOT NULL
-                 LIMIT 5`,
-              ),
-              perTableTimeout,
-              `sample ${tableName}.${col.column_name}`,
-            );
-            sampleValues = samples.map((r: { val: unknown }) => {
-              const v = (r as { val: unknown }).val;
-              return typeof v === 'bigint' ? Number(v) : v;
+            columns.push({
+              name: col.column_name,
+              type: col.column_type || 'VARCHAR',
+              sampleValues,
             });
-          } catch {
-            // Sampling is best-effort
           }
 
-          columns.push({
-            name: col.column_name,
-            type: col.column_type || 'VARCHAR',
-            sampleValues,
-          });
+          tables.push({ tableName, columns });
+          await db.exec(`DROP VIEW IF EXISTS "${viewName}"`);
+        } catch (err) {
+          console.warn(`[DuckDBConnector] Failed to introspect table ${tableName}:`, err);
         }
-
-        tables.push({ tableName, columns });
-        await db.exec(`DROP VIEW IF EXISTS "${viewName}"`);
-      } catch (err) {
-        console.warn(`[DuckDBConnector] Failed to introspect table ${tableName}:`, err);
       }
+
+      const { candidates: fkCandidates, classifications: tableClassifications } =
+        await this.detectForeignKeys(tables);
+
+      return { tables, fkCandidates, tableClassifications };
+    } finally {
+      try { await db.close(); } catch { /* ignore */ }
     }
-
-    const { candidates: fkCandidates, classifications: tableClassifications } =
-      await this.detectForeignKeys(tables);
-
-    return { tables, fkCandidates, tableClassifications };
   }
 
   async executeQuery(sql: string): Promise<QueryResult> {
     const db = this.requireDb();
-    await this.ensureDeltaViews(db);
+    // For ephemeral instances, views are created lazily on first executeQuery.
+    // Pooled instances already have all views pre-registered during init.
+    if (this.ownsDb && !this.viewsCreated) {
+      await this.createAllViews(db);
+      this.viewsCreated = true;
+    }
 
     const rawRows = await db.all(sql) as Record<string, unknown>[];
     const rows = rawRows.map((row) => {
@@ -201,11 +292,12 @@ export class DuckDBConnector extends BaseConnector {
   }
 
   disconnect(): void {
-    if (this.db) {
+    if (this.ownsDb && this.db) {
       this.db.close().catch(() => {});
-      this.db = null;
-      this.viewsCreated = false;
     }
+    // Pooled mode: just release our reference; the pool owns the DB.
+    this.db = null;
+    this.viewsCreated = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -283,27 +375,4 @@ export class DuckDBConnector extends BaseConnector {
     }
   }
 
-  /**
-   * Creates DuckDB views for every table in the warehouse,
-   * so plain SQL queries like `SELECT * FROM orders` work transparently.
-   */
-  private async ensureDeltaViews(db: Database): Promise<void> {
-    if (this.viewsCreated) return;
-    const tableNames = this.getTableNames();
-
-    let created = 0;
-    let failed = 0;
-    for (const tableName of tableNames) {
-      const tPath = this.tablePath(tableName);
-      try {
-        await this.createDeltaView(db, tableName, tPath);
-        created++;
-      } catch (err) {
-        failed++;
-        console.warn(`[DuckDBConnector] Failed to create view for ${tableName} (path: ${tPath}):`, err instanceof Error ? err.message : err);
-      }
-    }
-    this.viewsCreated = true;
-    console.log(`[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''} (cached for reuse)`);
-  }
 }

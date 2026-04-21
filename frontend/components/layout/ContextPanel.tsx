@@ -56,7 +56,7 @@ export default function ContextPanel({
   return (
     <div
       ref={panelRef}
-      className="relative h-screen flex-shrink-0 bg-surface-container-low overflow-hidden transition-[width] duration-200 ease-out"
+      className="relative h-full flex-shrink-0 bg-soft border-r border-line overflow-hidden transition-[width] duration-200 ease-out"
       style={{ width: collapsed ? 0 : width }}
     >
       {/* Content */}
@@ -71,8 +71,8 @@ export default function ContextPanel({
         <div
           className={`
             absolute top-0 right-0 w-1 h-full cursor-col-resize z-10
-            hover:bg-cyan-500/20 transition-colors
-            ${isDragging ? 'bg-cyan-500/30' : ''}
+            hover:bg-ocean/20 transition-colors
+            ${isDragging ? 'bg-ocean/30' : ''}
           `}
           onMouseDown={onMouseDown}
         />
@@ -83,10 +83,10 @@ export default function ContextPanel({
         onClick={() => setCollapsed(!collapsed)}
         className={`
           absolute top-3 z-20 w-5 h-5 rounded-full
-          bg-surface-container-highest text-on-surface-variant
+          bg-raised border border-line text-ink-3
           flex items-center justify-center
-          shadow-ambient text-[10px] font-bold
-          hover:bg-surface-variant transition-colors
+          text-[10px] font-mono
+          hover:border-line-strong hover:text-ink-2 transition-colors
           ${collapsed ? '-right-2.5 translate-x-full' : 'right-1'}
         `}
         title={collapsed ? 'Expand panel' : 'Collapse panel'}

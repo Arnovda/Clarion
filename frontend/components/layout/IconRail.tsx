@@ -1,281 +1,138 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { clearToken, getTokenPayload, TokenPayload } from '@/lib/auth';
+import { usePathname } from 'next/navigation';
+import {
+  MessageSquare, LayoutGrid, Code2, BookOpen, Star, Heart,
+  Plug, Inbox, Users, Shield,
+} from 'lucide-react';
+import { getTokenPayload, TokenPayload } from '@/lib/auth';
+import { cn } from '@/lib/cn';
 
-/* ── Icon SVGs (inline for zero-dependency, 20x20) ──────────────────── */
+type Role = 'admin' | 'analyst' | 'viewer';
+type Group = 'workspace' | 'model' | 'admin';
 
-function IconChat({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-function IconDashboard({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-    </svg>
-  );
-}
-function IconBook({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-    </svg>
-  );
-}
-function IconHeart({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-    </svg>
-  );
-}
-function IconStar({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-    </svg>
-  );
-}
-function IconPlug({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z" />
-      <path d="M8 12h8" /><path d="M12 8v8" />
-    </svg>
-  );
-}
-function IconInbox({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
-      <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-    </svg>
-  );
-}
-function IconUsers({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" />
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-    </svg>
-  );
-}
-function IconCode({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="16 18 22 12 16 6" />
-      <polyline points="8 6 2 12 8 18" />
-    </svg>
-  );
-}
-function IconShield({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-  );
-}
-function IconSettings({ className }: { className?: string }) {
-  return (
-    <svg className={className} width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-function IconChevron({ className, expanded }: { className?: string; expanded: boolean }) {
-  return (
-    <svg className={`${className} transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 18l6-6-6-6" />
-    </svg>
-  );
-}
+const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
-/* ── Nav items ───────────────────────────────────────────────────────── */
+const ICONS = {
+  chat:   <MessageSquare className={ICON_CLASS} strokeWidth={1.5} />,
+  grid:   <LayoutGrid    className={ICON_CLASS} strokeWidth={1.5} />,
+  code:   <Code2         className={ICON_CLASS} strokeWidth={1.5} />,
+  book:   <BookOpen      className={ICON_CLASS} strokeWidth={1.5} />,
+  star:   <Star          className={ICON_CLASS} strokeWidth={1.5} />,
+  heart:  <Heart         className={ICON_CLASS} strokeWidth={1.5} />,
+  plug:   <Plug          className={ICON_CLASS} strokeWidth={1.5} />,
+  inbox:  <Inbox         className={ICON_CLASS} strokeWidth={1.5} />,
+  users:  <Users         className={ICON_CLASS} strokeWidth={1.5} />,
+  shield: <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
+};
+
+/* ── Nav model ──────────────────────────────────────────────────────── */
 
 interface NavItem {
   key: string;
   href: string;
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  roles: Array<'admin' | 'analyst' | 'viewer'>;
-  /** If true, this item is in the collapsible "Admin" group */
-  admin?: boolean;
+  icon: React.ReactNode;
+  roles: Role[];
+  group: Group;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // ── Main nav (everyone) ──
-  { key: 'ask',        href: '/query',      label: 'Ask',            icon: IconChat,      roles: ['admin', 'analyst', 'viewer'] },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',     icon: IconDashboard, roles: ['admin', 'analyst', 'viewer'] },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',      icon: IconCode,      roles: ['admin', 'analyst'] },
-  // ── Admin group ──
-  { key: 'dictionary', href: '/semantic',   label: 'Data Dictionary', icon: IconBook,      roles: ['admin', 'analyst'], admin: true },
-  { key: 'health',     href: '/health',     label: 'Data Health',    icon: IconHeart,     roles: ['admin', 'analyst'], admin: true },
-  { key: 'products',   href: '/products',   label: 'Organized Data', icon: IconStar,      roles: ['admin'],            admin: true },
-  { key: 'connect',    href: '/setup',      label: 'Connect',        icon: IconPlug,      roles: ['admin'],            admin: true },
-  { key: 'review',     href: '/gaps',       label: 'AI Suggestions', icon: IconInbox,     roles: ['admin'],            admin: true },
-  { key: 'team',       href: '/users',      label: 'Team',           icon: IconUsers,     roles: ['admin'],            admin: true },
-  { key: 'policies',   href: '/policies',   label: 'Policies',       icon: IconShield,    roles: ['admin'],            admin: true },
+  // Workspace
+  { key: 'ask',        href: '/query',      label: 'Ask',        icon: ICONS.chat,  roles: ['admin', 'analyst', 'viewer'], group: 'workspace' },
+  { key: 'dashboards', href: '/dashboards', label: 'Dashboards', icon: ICONS.grid,  roles: ['admin', 'analyst', 'viewer'], group: 'workspace' },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',  icon: ICONS.code,  roles: ['admin', 'analyst'],            group: 'workspace' },
+
+  // Model
+  { key: 'semantic',   href: '/semantic',   label: 'Semantic',   icon: ICONS.book,  roles: ['admin', 'analyst'],            group: 'model' },
+  { key: 'products',   href: '/products',   label: 'Products',   icon: ICONS.star,  roles: ['admin'],                       group: 'model' },
+  { key: 'quality',    href: '/health',     label: 'Quality',    icon: ICONS.heart, roles: ['admin', 'analyst'],            group: 'model' },
+
+  // Admin
+  { key: 'sources',    href: '/setup',      label: 'Sources',     icon: ICONS.plug,   roles: ['admin'], group: 'admin' },
+  { key: 'suggestions',href: '/gaps',       label: 'Suggestions', icon: ICONS.inbox,  roles: ['admin'], group: 'admin' },
+  { key: 'team',       href: '/users',      label: 'Team',        icon: ICONS.users,  roles: ['admin'], group: 'admin' },
+  { key: 'policies',   href: '/policies',   label: 'Policies',    icon: ICONS.shield, roles: ['admin'], group: 'admin' },
 ];
 
-/* ── Component ───────────────────────────────────────────────────────── */
+const ROUTE_ALIASES: Record<string, string[]> = {
+  '/query':      ['/query', '/ask'],
+  '/dashboards': ['/dashboards'],
+  '/notebooks':  ['/notebooks'],
+  '/semantic':   ['/semantic'],
+  '/products':   ['/products'],
+  '/health':     ['/health'],
+  '/setup':      ['/setup', '/sources'],
+  '/gaps':       ['/gaps', '/suggestions'],
+  '/users':      ['/users'],
+  '/policies':   ['/policies'],
+};
+
+const GROUP_LABELS: Record<Group, string> = {
+  workspace: 'Workspace',
+  model:     'Model',
+  admin:     'Admin',
+};
 
 export default function IconRail() {
   const pathname = usePathname();
-  const router = useRouter();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
-  const [showUserMenu, setShowUserMenu] = useState(false);
-  const [adminExpanded, setAdminExpanded] = useState(true);
 
   useEffect(() => {
     setPayload(getTokenPayload());
   }, []);
 
-  const role = payload?.role ?? 'viewer';
-
-  const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(role as 'admin' | 'analyst' | 'viewer'));
-  const mainItems = visibleItems.filter((i) => !i.admin);
-  const adminItems = visibleItems.filter((i) => i.admin);
-
-  // Auto-expand admin section if current page is an admin page
-  useEffect(() => {
-    if (adminItems.some((i) => isActive(i.href))) {
-      setAdminExpanded(true);
-    }
-  }, [pathname]);
-
-  const ROUTE_ALIASES: Record<string, string[]> = {
-    '/query':     ['/query', '/ask'],
-    '/notebooks': ['/notebooks'],
-    '/semantic':  ['/semantic', '/dictionary'],
-    '/setup':     ['/setup', '/connect'],
-    '/gaps':      ['/gaps', '/review'],
-    '/users':     ['/users', '/team'],
-    '/health':    ['/health'],
-    '/policies':  ['/policies'],
-  };
+  const role: Role = payload?.role ?? 'viewer';
+  const visible = NAV_ITEMS.filter((i) => i.roles.includes(role));
 
   function isActive(href: string) {
     const aliases = ROUTE_ALIASES[href] ?? [href];
     return aliases.some((a) => pathname === a || pathname.startsWith(a + '/'));
   }
 
-  function logout() {
-    clearToken();
-    router.push('/');
-  }
-
-  function NavLink({ item }: { item: NavItem }) {
-    const active = isActive(item.href);
-    return (
-      <Link
-        href={item.href}
-        className={`
-          relative w-full flex items-center gap-3 h-10 px-2.5 rounded-lg
-          transition-all duration-200
-          ${active
-            ? 'text-white bg-white/12'
-            : 'text-white/50 hover:text-white/80 hover:bg-white/5'
-          }
-        `}
-      >
-        {active && (
-          <div className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-cyan-400" />
-        )}
-        <item.icon className="w-5 h-5 flex-shrink-0" />
-        <span className="text-[13px] font-medium truncate">{item.label}</span>
-      </Link>
-    );
-  }
+  const groups: Group[] = ['workspace', 'model', 'admin'];
 
   return (
-    <div className="w-[200px] min-w-[200px] h-screen flex flex-col bg-primary py-4 px-3 flex-shrink-0 relative">
-      {/* Logo */}
-      <Link href="/query" className="mb-6 flex items-center gap-2.5 px-2">
-        <span className="w-8 h-8 rounded-lg bg-white/15 flex items-center justify-center text-white font-headline font-bold text-lg flex-shrink-0">D</span>
-        <span className="text-white font-headline font-semibold text-sm tracking-tight">DataBridge</span>
-      </Link>
-
-      {/* Main nav */}
-      <nav className="flex-1 flex flex-col gap-0.5 w-full overflow-y-auto scrollbar-thin">
-        {mainItems.map((item) => (
-          <NavLink key={item.key} item={item} />
-        ))}
-
-        {/* Admin section — collapsible */}
-        {adminItems.length > 0 && (
-          <div className="mt-3">
-            <button
-              onClick={() => setAdminExpanded(!adminExpanded)}
-              className="w-full flex items-center gap-2 px-2.5 py-1.5 text-white/30 hover:text-white/50 transition-colors"
-            >
-              <IconChevron className="w-3.5 h-3.5 flex-shrink-0" expanded={adminExpanded} />
-              <span className="text-[10px] font-semibold uppercase tracking-widest">Manage</span>
-            </button>
-            {adminExpanded && (
-              <div className="flex flex-col gap-0.5 mt-0.5">
-                {adminItems.map((item) => (
-                  <NavLink key={item.key} item={item} />
-                ))}
+    <aside
+      aria-label="Primary navigation"
+      className="w-[220px] min-w-[220px] h-screen flex flex-col bg-raised border-r border-line shrink-0 overflow-y-auto"
+    >
+      <nav className="flex-1 flex flex-col gap-0.5 px-2.5 py-3.5">
+        {groups.map((g) => {
+          const items = visible.filter((i) => i.group === g);
+          if (items.length === 0) return null;
+          return (
+            <div key={g} className="contents">
+              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted px-2.5 pt-3 pb-1.5 font-medium">
+                {GROUP_LABELS[g]}
               </div>
-            )}
-          </div>
-        )}
-      </nav>
-
-      {/* Bottom section */}
-      <div className="flex flex-col gap-0.5 w-full pt-4 border-t border-white/10">
-        <Link
-          href="/profile"
-          className="w-full flex items-center gap-3 h-10 px-2.5 rounded-lg text-white/50 hover:text-white/80 hover:bg-white/5 transition-colors"
-        >
-          <IconSettings className="w-5 h-5 flex-shrink-0" />
-          <span className="text-[13px] font-medium">Settings</span>
-        </Link>
-
-        <button
-          onClick={() => setShowUserMenu(!showUserMenu)}
-          className="w-full flex items-center gap-3 h-10 px-2.5 rounded-lg text-white/60 hover:text-white/90 hover:bg-white/5 transition-colors"
-        >
-          <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-white text-[11px] font-semibold flex-shrink-0">
-            {(payload?.displayName ?? 'U').charAt(0).toUpperCase()}
-          </div>
-          <span className="text-[13px] font-medium truncate">{payload?.displayName ?? 'Profile'}</span>
-        </button>
-      </div>
-
-      {/* User dropdown menu */}
-      {showUserMenu && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setShowUserMenu(false)} />
-          <div className="absolute bottom-4 left-full ml-2 z-50 bg-surface-container-lowest rounded-xl shadow-ambient py-2 min-w-[180px] animate-fadeIn">
-            <div className="px-4 py-2 border-b border-outline-variant/15">
-              <div className="text-body-sm font-semibold text-on-surface">{payload?.displayName}</div>
-              <div className="text-label-sm text-on-surface-variant">{payload?.email}</div>
+              {items.map((it) => {
+                const active = isActive(it.href);
+                return (
+                  <Link
+                    key={it.key}
+                    href={it.href}
+                    className={cn(
+                      'flex items-center gap-2.5 px-2.5 py-2 rounded-sm text-[13.5px]',
+                      'transition-colors duration-1 ease-observatory',
+                      'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]',
+                      active
+                        ? 'bg-ocean-softer text-ocean font-medium'
+                        : 'text-ink-2 hover:bg-soft hover:text-ink'
+                    )}
+                    aria-current={active ? 'page' : undefined}
+                  >
+                    <span className={cn('opacity-85', active && 'opacity-100')}>{it.icon}</span>
+                    <span className="truncate">{it.label}</span>
+                  </Link>
+                );
+              })}
             </div>
-            <Link
-              href="/profile"
-              onClick={() => setShowUserMenu(false)}
-              className="block px-4 py-2 text-body-sm text-on-surface hover:bg-surface-container-low transition-colors"
-            >
-              Profile
-            </Link>
-            <button
-              onClick={logout}
-              className="w-full text-left px-4 py-2 text-body-sm text-error hover:bg-error-container/30 transition-colors"
-            >
-              Sign out
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+          );
+        })}
+      </nav>
+    </aside>
   );
 }

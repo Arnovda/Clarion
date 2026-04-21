@@ -8,7 +8,7 @@ import { createConnector, createProductConnector } from '../connectors/Connector
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { applyDataPolicies } from '../services/policyEngine';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
-import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResult, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
+import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResultIfNeeded, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
 import { isForecastQuestion } from '../ai/prompts/forecastPrompt';
 import { computeForecast, TimeSeriesPoint } from '../services/forecastEngine';
 import {
@@ -38,6 +38,8 @@ function getDialect(connection: { query_engine?: string } | undefined): SqlDiale
 
 // Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
 import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
+import { buildCacheKey, getCachedSql, putCachedSql } from '../services/queryCache';
+import { trackMetric, trackEvent } from '../utils/monitoring';
 
 function shouldBlockQuery(r: NlToSqlOutput): { blocked: boolean; reason: string } {
   if (r.confidence < 0.7)
@@ -174,10 +176,35 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const connection = await semanticDb('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb'; // product layer always uses DuckDB
 
-      const nlResult = await generateSql(
-        question, productCtx.semanticContext, productCtx.relationshipContext, productCtx.kpiFormulas, dialect,
-        conversationHistory,
-      );
+      // Skip the Claude round-trip if the same question against an
+      // unchanged semantic context has already been answered recently.
+      // Clarifying follow-ups (conversationHistory present) bypass cache —
+      // the history changes the intended SQL even when the tail question is identical.
+      const productCacheKey = buildCacheKey({
+        tenantId, connectionId, layer: 'product',
+        domains,
+        question,
+        semanticContext:     productCtx.semanticContext,
+        relationshipContext: productCtx.relationshipContext,
+        kpiFormulas:         productCtx.kpiFormulas,
+      });
+      const useCache = !conversationHistory || conversationHistory.length === 0;
+      const nlStart = Date.now();
+      let nlResult: NlToSqlOutput | null = useCache
+        ? await getCachedSql(tenantId, productCacheKey)
+        : null;
+      const cacheHit = !!nlResult;
+      if (!nlResult) {
+        nlResult = await generateSql(
+          question, productCtx.semanticContext, productCtx.relationshipContext, productCtx.kpiFormulas, dialect,
+          conversationHistory,
+        );
+        if (useCache) {
+          await putCachedSql(tenantId, productCacheKey, question, nlResult);
+        }
+      }
+      trackMetric('nl_to_sql_ms', Date.now() - nlStart, { layer: 'product', cache: cacheHit ? 'hit' : 'miss' });
+      trackEvent(cacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'product' });
 
       const blockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await semanticDb('query_log')
@@ -217,16 +244,18 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       let execRows: Record<string, unknown>[];
+      const execStart = Date.now();
       try {
         const result = await connector.executeQuery(productExecSql);
         execRows = result.rows;
+        trackMetric('duckdb_query_ms', Date.now() - execStart, { layer: 'product' });
       } finally {
         connector.disconnect();
       }
 
       const [answer, validation] = await Promise.all([
         formatAnswer(question, execRows),
-        validateQueryResult(question, productExecSql, execRows),
+        validateQueryResultIfNeeded(nlResult.confidence, question, productExecSql, execRows),
       ]);
 
       await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
@@ -584,9 +613,40 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     const dialect = getDialect(connection);
 
-    const nlResult = isCrossSourceQuery
-      ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory)
-      : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory);
+    // Check the NL→SQL cache first (source-layer, same-tenant, same context).
+    // Cross-source queries and clarifying follow-ups bypass cache — both produce
+    // different SQL for the same question text depending on integration state /
+    // conversation history.
+    const srcCacheKey = buildCacheKey({
+      tenantId, connectionId, layer: 'source',
+      domains,
+      question,
+      semanticContext:     enrichedSemanticContext,
+      relationshipContext: enrichedRelationshipContext,
+      kpiFormulas,
+    });
+    const useSrcCache =
+      !isCrossSourceQuery && (!conversationHistory || conversationHistory.length === 0);
+    const nlStart = Date.now();
+    let nlResult: NlToSqlOutput | null = useSrcCache
+      ? await getCachedSql(tenantId, srcCacheKey)
+      : null;
+    const srcCacheHit = !!nlResult;
+
+    if (!nlResult) {
+      nlResult = isCrossSourceQuery
+        ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory)
+        : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory);
+      if (useSrcCache) {
+        await putCachedSql(tenantId, srcCacheKey, question, nlResult);
+      }
+    }
+    trackMetric('nl_to_sql_ms', Date.now() - nlStart, {
+      layer: 'source',
+      cache: srcCacheHit ? 'hit' : 'miss',
+      cross: String(isCrossSourceQuery),
+    });
+    trackEvent(srcCacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'source' });
 
     // 3. Log the query regardless of outcome
     const blockCheck = shouldBlockQuery(nlResult);
@@ -802,7 +862,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // Non-blocking: a failed validation adds a warning but never hides the answer
     const [answer, validation] = await Promise.all([
       formatAnswer(question, execRows),
-      validateQueryResult(question, nlResult.sql, execRows),
+      validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, execRows),
     ]);
 
     // 8. Update query log as executed
@@ -937,7 +997,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       emit({ type: 'phase', text: 'Formatting answer…' });
       const [answer, validation] = await Promise.all([
         formatAnswer(question, queryRows),
-        validateQueryResult(question, nlResult.sql, queryRows),
+        validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryRows),
       ]);
       await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
@@ -1176,7 +1236,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     emit({ type: 'phase', text: 'Formatting answer…' });
     const [answer, validation] = await Promise.all([
       formatAnswer(question, queryResult.rows),
-      validateQueryResult(question, nlResult.sql, queryResult.rows),
+      validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryResult.rows),
     ]);
 
     await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
@@ -1378,7 +1438,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
         const [answer, validation] = await Promise.all([
           formatAnswer(question, result.rows),
-          validateQueryResult(question, action.sql, result.rows),
+          validateQueryResultIfNeeded(action.confidence, question, action.sql, result.rows),
         ]);
 
         send('revised_answer', {
@@ -1554,7 +1614,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
     // 11. Format answer + validate
     const [answer, validation] = await Promise.all([
       formatAnswer(question, rows),
-      validateQueryResult(question, nlResult.sql, rows),
+      validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, rows),
     ]);
 
     await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });

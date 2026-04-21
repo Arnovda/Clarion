@@ -10,6 +10,17 @@ interface FilterBarProps {
   loading?: boolean;
 }
 
+/** Shared Observatory input/select styling for the filter bar. */
+const INPUT_CLASS =
+  'text-[12px] px-2.5 py-1.5 rounded-md border border-line bg-raised text-ink-2 ' +
+  'focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 ' +
+  'disabled:opacity-50 transition-colors';
+
+const SELECT_CHEVRON_BG =
+  "appearance-none pr-7 " +
+  "bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22%236b7680%22%3E%3Cpath%20d%3D%22M10%2014l-5-5h10l-5%205z%22%2F%3E%3C%2Fsvg%3E')] " +
+  'bg-[length:16px] bg-[right_6px_center] bg-no-repeat';
+
 export function FilterBar({
   filters,
   filterValues,
@@ -20,14 +31,14 @@ export function FilterBar({
   if (!filters.length) return null;
 
   return (
-    <div className="filter-bar sticky top-0 z-20 flex flex-wrap items-center gap-3 px-4 py-3 mb-4 rounded-xl">
+    <div className="flex flex-wrap items-center gap-4 px-6 py-3 border-b border-line bg-raised shrink-0">
       {filters.map((f) => {
         if (f.type === 'date_range') {
           const fromKey = `${f.id}_from`;
           const toKey = `${f.id}_to`;
           return (
             <div key={f.id} className="flex items-center gap-2">
-              <label className="text-xs font-medium text-slate-500 whitespace-nowrap">
+              <label className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted whitespace-nowrap">
                 {f.label}
               </label>
               <input
@@ -35,21 +46,15 @@ export function FilterBar({
                 value={filterValues[fromKey] ?? ''}
                 onChange={(e) => onFilterChange(fromKey, e.target.value)}
                 disabled={loading}
-                className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200/60
-                  bg-white/70 text-slate-700
-                  shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400
-                  disabled:opacity-50 transition-all"
+                className={INPUT_CLASS}
               />
-              <span className="text-xs text-slate-400">to</span>
+              <span className="text-[11px] text-muted-2">to</span>
               <input
                 type="date"
                 value={filterValues[toKey] ?? ''}
                 onChange={(e) => onFilterChange(toKey, e.target.value)}
                 disabled={loading}
-                className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200/60
-                  bg-white/70 text-slate-700
-                  shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400
-                  disabled:opacity-50 transition-all"
+                className={INPUT_CLASS}
               />
             </div>
           );
@@ -59,19 +64,14 @@ export function FilterBar({
         const opts = filterOptions[f.id] ?? [];
         return (
           <div key={f.id} className="flex items-center gap-2">
-            <label className="text-xs font-medium text-slate-500 whitespace-nowrap">
+            <label className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted whitespace-nowrap">
               {f.label}
             </label>
             <select
               value={filterValues[f.id] ?? 'all'}
               onChange={(e) => onFilterChange(f.id, e.target.value)}
               disabled={loading}
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200/60
-                bg-white/70 text-slate-700
-                shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400
-                disabled:opacity-50 transition-all appearance-none pr-7
-                bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22%2394a3b8%22%3E%3Cpath%20d%3D%22M10%2014l-5-5h10l-5%205z%22%2F%3E%3C%2Fsvg%3E')]
-                bg-[length:16px] bg-[right_4px_center] bg-no-repeat"
+              className={`${INPUT_CLASS} ${SELECT_CHEVRON_BG}`}
             >
               <option value="all">{f.allLabel ?? 'All'}</option>
               {opts.map((o) => (

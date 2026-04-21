@@ -65,18 +65,44 @@ export interface StarSchemaData {
 }
 
 // ---------------------------------------------------------------------------
+// Observatory palette for the schema diagram
+// ---------------------------------------------------------------------------
+const OBS = {
+  ink:          '#0f1a22',
+  ink2:         '#334049',
+  muted:        '#6b7680',
+  muted2:       '#8891a0',
+  line:         '#d0d5da',
+  softer:       '#edeff2',
+  raised:       '#ffffff',
+  ocean:        '#164e63',
+  oceanHover:   '#103d4f',
+  oceanSoft:    '#d0e1e6',
+  oceanSofter:  '#e8f0f3',
+  ai:           '#c08a5e',
+  aiSoft:       '#f1e4d6',
+  ok:           '#3f7a5c',
+  okSoft:       '#dbe8e0',
+  warn:         '#a06a1c',
+  warnSoft:     '#f1e4c8',
+  err:          '#a43a3a',
+  errSoft:      '#f1d7d7',
+  plum:         '#6b4e8c',
+} as const;
+
+// ---------------------------------------------------------------------------
 // Relationship type metadata (matches RelationshipCanvas)
 // ---------------------------------------------------------------------------
 const TYPE_META: Record<string, { color: string; label: string; src: string; tgt: string }> = {
-  many_to_one:  { color: '#d97706', label: 'Many -> One',  src: 'N', tgt: '1' },
-  one_to_many:  { color: '#2563eb', label: 'One -> Many',  src: '1', tgt: 'N' },
-  one_to_one:   { color: '#059669', label: 'One -> One',   src: '1', tgt: '1' },
-  many_to_many: { color: '#7c3aed', label: 'Many <-> Many', src: 'N', tgt: 'N' },
-  fact_to_dim:  { color: '#2563eb', label: 'Fact -> Dim',  src: 'N', tgt: '1' },
-  dim_to_fact:  { color: '#2563eb', label: 'Dim -> Fact',  src: '1', tgt: 'N' },
+  many_to_one:  { color: OBS.warn,  label: 'Many -> One',  src: 'N', tgt: '1' },
+  one_to_many:  { color: OBS.ocean, label: 'One -> Many',  src: '1', tgt: 'N' },
+  one_to_one:   { color: OBS.ok,    label: 'One -> One',   src: '1', tgt: '1' },
+  many_to_many: { color: OBS.plum,  label: 'Many <-> Many', src: 'N', tgt: 'N' },
+  fact_to_dim:  { color: OBS.ocean, label: 'Fact -> Dim',  src: 'N', tgt: '1' },
+  dim_to_fact:  { color: OBS.ocean, label: 'Dim -> Fact',  src: '1', tgt: 'N' },
 };
 const getMeta = (t: string) =>
-  TYPE_META[t] ?? { color: '#64748b', label: t, src: '?', tgt: '?' };
+  TYPE_META[t] ?? { color: OBS.muted, label: t, src: '?', tgt: '?' };
 
 // ---------------------------------------------------------------------------
 // Column role badge
@@ -84,19 +110,20 @@ const getMeta = (t: string) =>
 function ColRoleBadge({ role }: { role: string | null }) {
   if (!role) return null;
   const m: Record<string, { bg: string; text: string; label: string }> = {
-    surrogate_key:         { bg: '#fef3c7', text: '#92400e', label: 'SK' },
-    natural_key:           { bg: '#dbeafe', text: '#1e40af', label: 'NK' },
-    foreign_key:           { bg: '#ede9fe', text: '#6d28d9', label: 'FK' },
-    degenerate_dimension:  { bg: '#fce7f3', text: '#9d174d', label: 'DD' },
-    measure:               { bg: '#d1fae5', text: '#065f46', label: 'M' },
-    attribute:             { bg: '#f1f5f9', text: '#475569', label: 'attr' },
+    surrogate_key:         { bg: OBS.warnSoft,    text: OBS.warn,  label: 'SK' },
+    natural_key:           { bg: OBS.oceanSofter, text: OBS.ocean, label: 'NK' },
+    foreign_key:           { bg: OBS.aiSoft,      text: OBS.ai,    label: 'FK' },
+    degenerate_dimension:  { bg: OBS.errSoft,     text: OBS.err,   label: 'DD' },
+    measure:               { bg: OBS.okSoft,      text: OBS.ok,    label: 'M' },
+    attribute:             { bg: OBS.softer,      text: OBS.muted, label: 'attr' },
   };
   const s = m[role];
   if (!s) return null;
   return (
     <span style={{
-      fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 4,
+      fontSize: 8, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
       background: s.bg, color: s.text, flexShrink: 0, lineHeight: '14px',
+      border: `1px solid ${OBS.line}`,
     }}>{s.label}</span>
   );
 }
@@ -125,9 +152,9 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
   const cols = table.columns;
   const totalH = HEADER_H + cols.length * ROW_H;
 
-  const headerBg = isDim ? (focused ? '#1e40af' : '#2563eb') : (focused ? '#6d28d9' : '#7c3aed');
-  const borderColor = focused ? (isDim ? '#2563eb' : '#7c3aed') : highlighted ? (isDim ? '#93c5fd' : '#c4b5fd') : '#e2e8f0';
-  const opacity = dimmed ? 0.25 : 1;
+  const headerBg = isDim ? (focused ? OBS.oceanHover : OBS.ocean) : (focused ? '#4e3a66' : OBS.plum);
+  const borderColor = focused ? (isDim ? OBS.ocean : OBS.plum) : highlighted ? (isDim ? OBS.oceanSoft : '#c8bcd6') : OBS.line;
+  const opacity = dimmed ? 0.3 : 1;
 
   return (
     <div style={{
@@ -140,7 +167,7 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
       {/* Handles — column-level */}
       {cols.map((col, i) => {
         const top = HEADER_H + i * ROW_H + ROW_H / 2;
-        const handleBg = highlightedFkCols.has(col.column_name) ? '#f59e0b' : '#93c5fd';
+        const handleBg = highlightedFkCols.has(col.column_name) ? OBS.warn : OBS.oceanSoft;
         return (
           <Fragment key={col.id}>
             <Handle type="source" position={Position.Left} id={hL(col.id)}
@@ -154,15 +181,15 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
       {/* Visual box */}
       <div style={{
         position: 'absolute', inset: 0,
-        border: `2px solid ${borderColor}`,
-        borderRadius: 12,
+        border: `1px solid ${borderColor}`,
+        borderRadius: 8,
         overflow: 'hidden',
-        background: '#fff',
+        background: OBS.raised,
         boxShadow: focused
-          ? `0 0 0 3px ${isDim ? '#bfdbfe' : '#ddd6fe'}, 0 4px 20px rgba(0,0,0,.15)`
+          ? `0 0 0 2px ${isDim ? OBS.oceanSoft : '#d6ccdf'}, 0 6px 20px rgba(13,28,47,0.1)`
           : highlighted
-          ? `0 0 0 2px ${isDim ? '#bfdbfe66' : '#ddd6fe66'}`
-          : '0 2px 8px rgba(0,0,0,.06)',
+          ? `0 0 0 1px ${isDim ? OBS.oceanSoft : '#d6ccdf'}`
+          : '0 2px 6px rgba(13,28,47,0.04)',
       }}>
         {/* Header */}
         <div style={{
@@ -173,13 +200,16 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <span style={{
-              fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 99,
-              background: isDim ? 'rgba(147,197,253,0.3)' : 'rgba(196,181,253,0.3)',
-              color: '#fff',
+              fontSize: 9, fontWeight: 500, padding: '1px 6px', borderRadius: 3,
+              background: 'rgba(255,255,255,0.18)',
+              color: 'rgba(255,255,255,0.9)',
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              fontFamily: 'var(--font-mono)',
             }}>{isDim ? 'dimension' : 'fact'}</span>
           </div>
           <p style={{
-            margin: '2px 0 0', color: '#fff', fontSize: 12, fontWeight: 700,
+            margin: '2px 0 0', color: '#fff', fontSize: 12, fontWeight: 500,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{table.display_name || table.table_name}</p>
         </div>
@@ -187,8 +217,8 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
         {/* Column rows */}
         {cols.map((col, i) => {
           const isFkHighlighted = highlightedFkCols.has(col.column_name);
-          const rowBg = isFkHighlighted ? '#fef3c7' : i % 2 === 0 ? '#fff' : '#f8fafc';
-          const leftBdr = isFkHighlighted ? '3px solid #f59e0b' : '3px solid transparent';
+          const rowBg = isFkHighlighted ? OBS.warnSoft : i % 2 === 0 ? OBS.raised : OBS.softer;
+          const leftBdr = isFkHighlighted ? `2px solid ${OBS.warn}` : '2px solid transparent';
 
           return (
             <div key={col.id} style={{
@@ -196,23 +226,23 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '0 10px',
               background: rowBg,
-              borderTop: '1px solid #f1f5f9',
+              borderTop: `1px solid ${OBS.line}`,
               borderLeft: leftBdr,
             }}>
               <ColRoleBadge role={col.column_role} />
               <span style={{
-                fontSize: 11, color: isFkHighlighted ? '#92400e' : '#334155',
-                fontWeight: isFkHighlighted ? 700 : 500,
+                fontSize: 11, color: isFkHighlighted ? OBS.warn : OBS.ink2,
+                fontWeight: isFkHighlighted ? 600 : 400,
                 flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{col.column_name}</span>
               {col.fk_target_table && (
                 <span style={{
-                  fontSize: 9, color: '#7c3aed', fontFamily: 'monospace', flexShrink: 0,
+                  fontSize: 9, color: OBS.plum, fontFamily: 'var(--font-mono), monospace', flexShrink: 0,
                 }}>&#8594; {col.fk_target_table}</span>
               )}
               {!col.fk_target_table && (
                 <span style={{
-                  fontSize: 9, color: '#94a3b8', fontFamily: 'monospace', flexShrink: 0,
+                  fontSize: 9, color: OBS.muted2, fontFamily: 'var(--font-mono), monospace', flexShrink: 0,
                 }}>{col.data_type?.toLowerCase().slice(0, 8)}</span>
               )}
             </div>
@@ -246,13 +276,13 @@ function RelEdge({
   const isDimmed = data?.dimmed ?? false;
   const isHovered = data?.hovered ?? false;
   const active = isHighlighted || isHovered;
-  const color = active ? '#1d4ed8' : isDimmed ? '#e2e8f0' : meta.color;
-  const strokeW = active ? 3 : isDimmed ? 1 : 2;
-  const opacity = isDimmed ? 0.2 : 1;
+  const color = active ? OBS.ocean : isDimmed ? OBS.line : meta.color;
+  const strokeW = active ? 2.5 : isDimmed ? 1 : 1.5;
+  const opacity = isDimmed ? 0.25 : 1;
   const markerId = `arr-star-${id}`;
 
-  const nColor = active ? '#2563eb' : '#94a3b8';
-  const oColor = active ? '#f97316' : '#94a3b8';
+  const nColor = active ? OBS.ocean : OBS.muted2;
+  const oColor = active ? OBS.warn : OBS.muted2;
   const srcLabelColor = meta.src === 'N' ? nColor : oColor;
   const tgtLabelColor = meta.tgt === 'N' ? nColor : oColor;
 
@@ -326,11 +356,10 @@ function RelEdge({
           onMouseLeave={() => data?.onHover(null)}
         >
           <span style={{
-            fontSize: 10, fontWeight: 700, color: 'white',
-            background: color, padding: '2px 8px', borderRadius: 99,
-            border: `1.5px solid ${color}`,
+            fontSize: 10, fontWeight: 500, color: 'white',
+            background: color, padding: '2px 8px', borderRadius: 3,
             whiteSpace: 'nowrap',
-            boxShadow: '0 1px 4px rgba(0,0,0,.12)',
+            letterSpacing: '0.04em',
             opacity: active ? 1 : 0,
             transition: 'opacity 0.15s',
             pointerEvents: active ? 'all' : 'none',
@@ -345,32 +374,33 @@ function RelEdge({
             zIndex: 9999,
           }}>
             <div style={{
-              background: '#1e293b', color: '#f1f5f9',
-              borderRadius: 10, padding: '8px 12px',
+              background: OBS.ink, color: 'rgba(255,255,255,0.9)',
+              borderRadius: 6, padding: '8px 12px',
               minWidth: 180, maxWidth: 280,
-              boxShadow: '0 4px 20px rgba(0,0,0,.25)',
+              boxShadow: '0 4px 16px rgba(13,28,47,0.18)',
+              border: '1px solid rgba(255,255,255,0.08)',
               fontSize: 11, lineHeight: 1.5, whiteSpace: 'nowrap',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span style={{ color: '#94a3b8', fontSize: 10 }}>FROM</span>
-                <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{data?.fromLabel}</span>
+                <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.08em' }}>FROM</span>
+                <span style={{ fontWeight: 500, color: 'rgba(255,255,255,0.92)' }}>{data?.fromLabel}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span style={{ color: meta.color, fontWeight: 800, fontSize: 13 }}>{meta.src}</span>
-                <div style={{ flex: 1, height: 1.5, background: meta.color, borderRadius: 1 }} />
-                <span style={{ fontSize: 10, color: meta.color, fontWeight: 700 }}>{meta.label}</span>
-                <div style={{ flex: 1, height: 1.5, background: meta.color, borderRadius: 1 }} />
-                <span style={{ color: meta.color, fontWeight: 800, fontSize: 13 }}>{meta.tgt}</span>
+                <span style={{ color: meta.color, fontWeight: 600, fontSize: 13 }}>{meta.src}</span>
+                <div style={{ flex: 1, height: 1, background: meta.color, borderRadius: 1 }} />
+                <span style={{ fontSize: 10, color: meta.color, fontWeight: 500, letterSpacing: '0.04em' }}>{meta.label}</span>
+                <div style={{ flex: 1, height: 1, background: meta.color, borderRadius: 1 }} />
+                <span style={{ color: meta.color, fontWeight: 600, fontSize: 13 }}>{meta.tgt}</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: '#94a3b8', fontSize: 10 }}>TO</span>
-                <span style={{ fontWeight: 600, color: '#e2e8f0' }}>{data?.toLabel}</span>
+                <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.08em' }}>TO</span>
+                <span style={{ fontWeight: 500, color: 'rgba(255,255,255,0.92)' }}>{data?.toLabel}</span>
               </div>
               <div style={{
                 position: 'absolute', bottom: -6, left: '50%', transform: 'translateX(-50%)',
                 width: 0, height: 0,
                 borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
-                borderTop: '6px solid #1e293b',
+                borderTop: `6px solid ${OBS.ink}`,
               }} />
             </div>
           </div>
@@ -607,15 +637,15 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
         panOnScroll={true}
         zoomOnScroll={false}
       >
-        <Background color="#e2e8f0" gap={20} size={1} />
+        <Background color={OBS.line} gap={20} size={1} />
         <Controls showInteractive={false} />
         <MiniMap
           nodeColor={(n) => {
             const isDim = n.data?.isDim;
-            return isDim ? '#93c5fd' : '#c4b5fd';
+            return isDim ? OBS.oceanSoft : '#d6ccdf';
           }}
-          maskColor="rgba(0,0,0,.08)"
-          style={{ borderRadius: 8, border: '1px solid #e2e8f0' }}
+          maskColor="rgba(13,28,47,0.06)"
+          style={{ borderRadius: 6, border: `1px solid ${OBS.line}` }}
         />
       </ReactFlow>
     </div>

@@ -3,7 +3,12 @@ import path from 'path';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
+import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
+import { triggerMaintenanceNow } from '../jobs/warehouseMaintenance';
+import { invalidateTenantCache } from '../services/queryCache';
+import { invalidateWidgetCache } from '../services/widgetCache';
+import { trackMetric, trackEvent } from '../utils/monitoring';
 import axios from 'axios';
 
 const router = Router();
@@ -184,6 +189,8 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
 
     // SSE streaming response
     const wantsStream = req.headers.accept?.includes('text/event-stream');
+    const streamStart = Date.now();
+    const syncStart = streamStart;
     if (wantsStream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
@@ -262,9 +269,32 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           query_engine: allDone ? 'duckdb' : 'source',
         });
 
+        // Invalidate any pooled DuckDB instances for this warehouse so the next
+        // query rebuilds views over the new table set.
+        await DuckDBConnector.invalidateWarehouse(warehousePath);
+
+        // Fresh ingestion may add new tables → cached SQL context + widget results are stale.
+        const streamTenantId = (req as unknown as { user?: { tenantId?: number } }).user?.tenantId;
+        if (streamTenantId) {
+          await invalidateTenantCache(streamTenantId);
+          invalidateWidgetCache(streamTenantId);
+        }
+
+        const succeeded = results.filter((r: { status: string }) => r.status === 'done').length;
+        trackMetric('ingestion_ms', Date.now() - streamStart, {
+          connectionId: String(connectionId),
+          tables: String(tables.length),
+          mode: 'stream',
+        });
+        trackEvent('ingestion_complete', {
+          connectionId: String(connectionId),
+          mode: 'stream',
+          outcome: succeeded === tables.length ? 'success' : 'partial',
+        }, { succeeded, total: tables.length });
+
         emit({
           phase: 'done',
-          message: `Ingestion complete — ${results.filter((r: { status: string }) => r.status === 'done').length}/${tables.length} tables ingested`,
+          message: `Ingestion complete — ${succeeded}/${tables.length} tables ingested`,
           warehouse_path: warehousePath,
         });
       } catch (err) {
@@ -325,6 +355,26 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           warehouse_path: warehousePath,
           query_engine: allDone ? 'duckdb' : 'source',
         });
+
+        await DuckDBConnector.invalidateWarehouse(warehousePath);
+
+        const syncTenantId2 = (req as unknown as { user?: { tenantId?: number } }).user?.tenantId;
+        if (syncTenantId2) {
+          await invalidateTenantCache(syncTenantId2);
+          invalidateWidgetCache(syncTenantId2);
+        }
+
+        const syncSucceeded = results.filter((r: { status: string }) => r.status === 'done').length;
+        trackMetric('ingestion_ms', Date.now() - syncStart, {
+          connectionId: String(connectionId),
+          tables: String(tables.length),
+          mode: 'sync',
+        });
+        trackEvent('ingestion_complete', {
+          connectionId: String(connectionId),
+          mode: 'sync',
+          outcome: syncSucceeded === tables.length ? 'success' : 'partial',
+        }, { succeeded: syncSucceeded, total: tables.length });
 
         res.json({ ok: true, data: { results, warehouse_path: warehousePath } });
       } catch (err) {
@@ -446,6 +496,27 @@ router.post('/reset-watermark', requireAuth, requireRole('admin'), async (req: R
       .update({ watermark_value: null });
 
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Manual trigger for Delta OPTIMIZE + VACUUM. The cron-scheduled worker runs
+ * weekly; this endpoint is for one-off runs after a large ingest or to
+ * reclaim space on demand.
+ */
+router.post('/optimize', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId } = req.body as { connectionId?: number };
+    const email = (req as unknown as { user?: { email?: string } }).user?.email ?? 'admin';
+
+    const outcome = await triggerMaintenanceNow({
+      connectionId,
+      triggeredBy: email,
+    });
+
+    res.json({ ok: true, ...outcome });
   } catch (err) {
     next(err);
   }

@@ -21,10 +21,10 @@ export default function PillNav({ pills, activePill, onChange }: PillNavProps) {
           key={pill.key}
           onClick={() => onChange(pill.key)}
           className={`
-            px-3.5 py-1.5 rounded-pill text-label-lg transition-all duration-150
+            px-3.5 py-1.5 rounded-full text-[12px] font-medium transition-colors duration-150
             ${pill.key === activePill
-              ? 'pill-active'
-              : 'pill-inactive'
+              ? 'bg-ocean-softer text-ocean'
+              : 'bg-transparent text-muted hover:bg-softer hover:text-ink-2'
             }
           `}
         >

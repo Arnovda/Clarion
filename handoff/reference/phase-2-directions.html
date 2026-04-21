@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DataBridge — Phase 2: Four Directions</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Instrument+Serif&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=GT+Sectra+Display&family=Newsreader:opsz,wght@6..72,300;6..72,400;6..72,500;6..72,600&display=swap" rel="stylesheet" />
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:Inter,system-ui,sans-serif;background:#f5f4f1;color:#1a1815;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1400px;margin:0 auto;padding:80px 40px 120px}
+  .intro{max-width:760px;margin-bottom:88px}
+  .eyebrow{font-family:"Geist Mono",ui-monospace,monospace;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#756f63;margin-bottom:18px}
+  .intro h1{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:52px;line-height:1.02;letter-spacing:-0.025em;margin:0 0 20px}
+  .intro h1 em{font-style:italic;font-weight:400}
+  .intro p{font-size:15.5px;line-height:1.65;color:#4a463e;margin:0 0 12px;max-width:680px}
+  .brief{margin-top:32px;padding:22px 26px;background:#ebe8e1;border-radius:10px;font-size:13.5px;line-height:1.7;color:#3a3630}
+  .brief b{color:#1a1815;font-weight:600}
+  .brief ul{margin:10px 0 0;padding-left:18px}
+  .brief li{margin-bottom:4px}
+
+  .direction{margin-bottom:110px}
+  .dir-head{margin-bottom:28px}
+  .dir-num{font-family:"Geist Mono",ui-monospace,monospace;font-size:11px;color:#a39c8e;letter-spacing:0.1em;margin-bottom:10px}
+  .dir-title{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:42px;letter-spacing:-0.025em;margin:0;line-height:1}
+  .dir-title em{font-style:italic}
+  .dir-sub{font-family:Fraunces,Georgia,serif;font-size:19px;font-style:italic;color:#6b6458;margin:10px 0 0}
+  .pitch{max-width:760px;font-size:15px;line-height:1.65;color:#3a3630;margin:22px 0 24px}
+  .tags{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 24px}
+  .tag{font-family:"Geist Mono",ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:5px 9px;background:#e8e4db;color:#5a5346;border-radius:999px}
+
+  /* the stage wrapper contains each direction's own theme */
+  .stage{border-radius:18px;overflow:hidden;border:1px solid #e0dcd2;box-shadow:0 1px 2px rgba(0,0,0,0.03),0 20px 60px -20px rgba(0,0,0,0.08)}
+  .stage-head{padding:14px 22px;font-family:"Geist Mono",ui-monospace,monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase;border-bottom:1px solid rgba(0,0,0,0.06);display:flex;justify-content:space-between}
+  .stage-body{padding:48px}
+
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:40px}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .col-label{font-family:"Geist Mono",ui-monospace,monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;margin:0 0 14px}
+
+  /* type spec */
+  .type-sample{margin-bottom:18px}
+  .type-sample .meta{font-family:"Geist Mono",ui-monospace,monospace;font-size:10px;letter-spacing:0.06em;margin-bottom:6px}
+
+  /* swatches */
+  .swatches{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
+  .sw{aspect-ratio:1;border-radius:8px;position:relative;display:flex;align-items:flex-end;padding:7px}
+  .sw span{font-family:"Geist Mono",ui-monospace,monospace;font-size:9px;letter-spacing:0.04em}
+
+  /* wordmarks */
+  .wordmark-row{display:flex;align-items:center;gap:32px;padding:28px 0;border-top:1px solid rgba(0,0,0,0.06);border-bottom:1px solid rgba(0,0,0,0.06);margin-bottom:28px}
+
+  /* shared chart container */
+  .chart{height:110px;width:100%;display:block}
+  .ai-avatar{width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;flex-shrink:0}
+
+  /* direction footer */
+  .ratio{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:32px;padding:24px 28px;background:#ebe8e1;border-radius:12px}
+  .ratio div h5{font-family:"Geist Mono",ui-monospace,monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#6b6458;margin:0 0 8px;font-weight:500}
+  .ratio div p{margin:0;font-size:13px;line-height:1.6;color:#3a3630}
+
+  .footer{position:sticky;bottom:24px;margin-top:40px;padding:20px 26px;background:#1a1815;color:#f5f4f1;border-radius:12px;display:flex;align-items:center;justify-content:space-between;gap:20px;box-shadow:0 12px 40px rgba(0,0,0,0.18)}
+  .footer p{margin:0;font-size:14px}
+  .footer code{background:rgba(255,255,255,0.1);padding:3px 10px;border-radius:5px;font-family:"Geist Mono",ui-monospace,monospace;font-size:12px}
+
+  /* ─────────────────────────────────────────────────── */
+  /* D1 · ATELIER — paper, Fraunces + Space Grotesk, terra */
+  /* ─────────────────────────────────────────────────── */
+  .d1{--bg:#f4ede1;--surface:#fbf6ec;--soft:#ebe1cf;--line:#dccdb0;--ink:#231c12;--ink2:#4a4035;--muted:#7d7260;--accent:#b45229;--accent-soft:#f1d9c6;--ok:#5f7c3a;--warn:#a8761e;--err:#a8392e;font-family:"Space Grotesk",Inter,sans-serif;background:var(--bg);color:var(--ink)}
+  .d1 .stage-head{background:#ecd9b9;color:#7d6e56;border-color:rgba(0,0,0,0.05)}
+  .d1 .stage-body{background:var(--bg)}
+  .d1 .col-label{color:var(--muted)}
+  .d1 .disp{font-family:Fraunces,Georgia,serif;font-weight:400;letter-spacing:-0.02em;line-height:1.05}
+  .d1 .card{background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:22px;box-shadow:0 1px 0 rgba(0,0,0,0.02)}
+  .d1 .label{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
+  .d1 .btn{font-family:"Space Grotesk",Inter;font-size:13.5px;font-weight:500;padding:10px 18px;border-radius:4px;border:1px solid var(--line);cursor:pointer;background:var(--surface);color:var(--ink)}
+  .d1 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .d1 .nav{display:flex;gap:22px;border-bottom:1px solid var(--line)}
+  .d1 .nav a{font-size:14px;padding:11px 0;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .d1 .nav a.active{color:var(--ink);border-bottom-color:var(--accent)}
+  .d1 .kpi-num{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:54px;letter-spacing:-0.025em;line-height:0.95}
+  .d1 .kpi-delta{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ok)}
+  .d1 .wordmark{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:34px;letter-spacing:-0.025em;color:var(--ink)}
+  .d1 .wordmark span{font-style:italic;color:var(--accent)}
+  .d1 .wordmark-alt{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:0.22em;text-transform:uppercase;color:var(--ink);border:1px solid var(--ink);padding:8px 14px;display:inline-flex;align-items:center;gap:10px}
+  .d1 .wordmark-alt::before{content:"";width:8px;height:8px;border:1px solid var(--accent);background:var(--accent-soft);transform:rotate(45deg);display:inline-block}
+
+  /* ─────────────────────────────────────────────────── */
+  /* D2 · OBSERVATORY — tinted cool off-white, Source Serif + Inter, deep ocean */
+  /* ─────────────────────────────────────────────────── */
+  .d2{--bg:#eef0f2;--surface:#f8f9fa;--soft:#e3e6ea;--line:#d0d5da;--ink:#0f1a22;--ink2:#334049;--muted:#6b7680;--accent:#164e63;--accent-soft:#d0e1e6;--ai:#c08a5e;--ok:#3f7a5c;--warn:#a06a1c;--err:#a43a3a;font-family:Inter,sans-serif;background:var(--bg);color:var(--ink)}
+  .d2 .stage-head{background:#dde1e6;color:#6b7680;border-color:rgba(0,0,0,0.05)}
+  .d2 .stage-body{background:var(--bg)}
+  .d2 .col-label{color:var(--muted)}
+  .d2 .disp{font-family:"Source Serif 4",Georgia,serif;font-weight:400;letter-spacing:-0.02em;line-height:1.05}
+  .d2 .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:22px}
+  .d2 .label{font-family:"Geist Mono",monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)}
+  .d2 .btn{font-family:Inter;font-size:13.5px;font-weight:500;padding:9px 16px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:var(--surface);color:var(--ink)}
+  .d2 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .d2 .nav{display:flex;flex-direction:column;gap:2px;min-width:180px}
+  .d2 .nav a{font-size:13.5px;padding:8px 12px;color:var(--muted);text-decoration:none;border-radius:6px;display:flex;justify-content:space-between;align-items:center}
+  .d2 .nav a.active{background:var(--accent-soft);color:var(--accent)}
+  .d2 .kpi-num{font-family:"Source Serif 4",Georgia,serif;font-weight:500;font-size:44px;letter-spacing:-0.02em;line-height:1}
+  .d2 .kpi-delta{font-family:"Geist Mono",monospace;font-size:11px;color:var(--ok)}
+  .d2 .wordmark{font-family:"Source Serif 4",Georgia,serif;font-weight:500;font-size:32px;letter-spacing:-0.02em;color:var(--ink);display:flex;align-items:center;gap:10px}
+  .d2 .wordmark svg{color:var(--accent)}
+  .d2 .wordmark-alt{font-family:Inter,sans-serif;font-weight:600;font-size:15px;letter-spacing:-0.005em;color:var(--ink);display:flex;align-items:center;gap:8px}
+  .d2 .wordmark-alt .m{width:22px;height:22px;border-radius:50%;border:1.5px solid var(--accent);position:relative;display:inline-block}
+  .d2 .wordmark-alt .m::before{content:"";position:absolute;inset:3px;border-radius:50%;border:1px solid var(--accent);opacity:0.5}
+
+  /* ─────────────────────────────────────────────────── */
+  /* D3 · CARTOGRAPHER — warm ivory, Newsreader + Inter, brass accent */
+  /* ─────────────────────────────────────────────────── */
+  .d3{--bg:#f6f1e6;--surface:#fcf9f0;--soft:#ebe3d1;--line:#d9cfb8;--ink:#1f1a11;--ink2:#42382a;--muted:#7a7060;--accent:#9a6a1a;--accent-soft:#f0e3c4;--brass:#b8903f;--ok:#5e7b3e;--warn:#a57016;--err:#9f3e2d;font-family:Inter,sans-serif;background:var(--bg);color:var(--ink)}
+  .d3 .stage-head{background:#ede3c9;color:#7a7060;border-color:rgba(0,0,0,0.05)}
+  .d3 .stage-body{background:var(--bg)}
+  .d3 .col-label{color:var(--muted)}
+  .d3 .disp{font-family:Newsreader,Georgia,serif;font-weight:400;letter-spacing:-0.015em;line-height:1.05}
+  .d3 .card{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:22px;background-image:radial-gradient(circle at 1px 1px,rgba(154,106,26,0.06) 1px,transparent 0);background-size:14px 14px}
+  .d3 .card-clean{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:22px}
+  .d3 .label{font-family:"Geist Mono",monospace;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:var(--muted)}
+  .d3 .btn{font-family:Inter;font-size:13.5px;font-weight:500;padding:9px 16px;border-radius:6px;border:1px solid var(--line);cursor:pointer;background:var(--surface);color:var(--ink)}
+  .d3 .btn-primary{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+  .d3 .btn-accent{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .d3 .nav{display:flex;gap:24px;padding-bottom:10px;border-bottom:1px solid var(--line);position:relative}
+  .d3 .nav a{font-family:Inter;font-size:13.5px;padding:4px 0;color:var(--muted);text-decoration:none;position:relative}
+  .d3 .nav a.active{color:var(--ink)}
+  .d3 .nav a.active::after{content:"";position:absolute;left:0;right:0;bottom:-11px;height:2px;background:var(--brass)}
+  .d3 .kpi-num{font-family:Newsreader,Georgia,serif;font-weight:400;font-size:52px;letter-spacing:-0.02em;line-height:0.95;font-variant-numeric:oldstyle-nums}
+  .d3 .kpi-delta{font-family:"Geist Mono",monospace;font-size:11px;color:var(--ok)}
+  .d3 .wordmark{font-family:Newsreader,Georgia,serif;font-weight:400;font-size:36px;letter-spacing:-0.02em;color:var(--ink);display:flex;align-items:center;gap:14px}
+  .d3 .wordmark .compass{width:28px;height:28px;border:1.5px solid var(--brass);border-radius:50%;position:relative}
+  .d3 .wordmark .compass::before{content:"";position:absolute;inset:4px;border-top:1.5px solid var(--brass);border-right:1.5px solid var(--brass);transform:rotate(45deg);border-radius:0}
+  .d3 .wordmark .compass::after{content:"";position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:var(--brass);opacity:0.35}
+  .d3 .wordmark-alt{font-family:Inter,sans-serif;font-weight:500;font-size:13px;letter-spacing:0.28em;text-transform:uppercase;color:var(--ink)}
+
+  /* ─────────────────────────────────────────────────── */
+  /* D4 · LABORATORY — tinted white, GT Sectra / Source Serif + IBM Plex Sans, teal */
+  /* ─────────────────────────────────────────────────── */
+  .d4{--bg:#f0f3f2;--surface:#fafcfb;--soft:#e4e9e8;--line:#d0d7d5;--ink:#0d1513;--ink2:#364441;--muted:#6a7875;--accent:#0e7c6b;--accent-soft:#cde7e1;--ok:#0e7c6b;--warn:#a06a1c;--err:#a43a3a;font-family:"IBM Plex Sans",Inter,sans-serif;background:var(--bg);color:var(--ink)}
+  .d4 .stage-head{background:#dfe5e3;color:#6a7875;border-color:rgba(0,0,0,0.05)}
+  .d4 .stage-body{background:var(--bg)}
+  .d4 .col-label{color:var(--muted)}
+  .d4 .disp{font-family:"Source Serif 4",Georgia,serif;font-weight:400;letter-spacing:-0.02em;line-height:1.05}
+  .d4 .card{background:var(--surface);border:1px solid var(--line);border-radius:2px;padding:22px}
+  .d4 .label{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--muted)}
+  .d4 .btn{font-family:"IBM Plex Sans",Inter;font-size:13px;font-weight:500;padding:9px 16px;border-radius:2px;border:1px solid var(--line);cursor:pointer;background:var(--surface);color:var(--ink)}
+  .d4 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .d4 .nav{display:flex;gap:0;border-bottom:1px solid var(--line)}
+  .d4 .nav a{font-family:"IBM Plex Mono",monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.12em;padding:14px 18px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .d4 .nav a.active{color:var(--ink);border-bottom-color:var(--accent)}
+  .d4 .kpi-num{font-family:"Source Serif 4",Georgia,serif;font-weight:500;font-size:44px;letter-spacing:-0.02em;line-height:1;font-variant-numeric:tabular-nums}
+  .d4 .kpi-delta{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ok)}
+  .d4 .wordmark{font-family:"Source Serif 4",Georgia,serif;font-weight:500;font-size:30px;letter-spacing:-0.015em;display:flex;align-items:center;gap:12px;color:var(--ink)}
+  .d4 .wordmark .m{width:24px;height:24px;position:relative}
+  .d4 .wordmark .m::before,.d4 .wordmark .m::after{content:"";position:absolute;background:var(--accent)}
+  .d4 .wordmark .m::before{left:0;right:0;top:50%;height:1.5px;transform:translateY(-50%)}
+  .d4 .wordmark .m::after{top:0;bottom:0;left:50%;width:1.5px;transform:translateX(-50%)}
+  .d4 .wordmark-alt{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:0.22em;text-transform:uppercase;color:var(--ink);display:flex;align-items:center;gap:8px}
+  .d4 .wordmark-alt .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+
+  /* shimmer (AI presence) */
+  @keyframes shimmerDot{0%,100%{opacity:0.4}50%{opacity:1}}
+  .shimmer-dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;margin-right:3px;animation:shimmerDot 1.4s infinite}
+  .shimmer-dot:nth-child(2){animation-delay:0.2s}
+  .shimmer-dot:nth-child(3){animation-delay:0.4s}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <section class="intro">
+    <div class="eyebrow">Phase 2 — Brand direction exploration</div>
+    <h1>Four directions — each a different metaphor for <em>what DataBridge is</em>.</h1>
+    <p>You asked to stand out. So none of these live in the Linear / Stripe / Vercel neighborhood. Each proposes a different metaphor for the product — a workbench, an observatory, a cartographer's desk, a laboratory — and the metaphor drives type, color, tone, and detail.</p>
+    <p>All four are light-first, trustworthy, premium, tinted-neutral, and designed for the least-technical user. The same DataBridge surfaces — wordmark, KPI card, navigation, AI message, buttons — repeat in each so you can compare like for like.</p>
+    <div class="brief">
+      <b>Your brief, summarized:</b>
+      <ul>
+        <li>Calm + quietly competent · Serious + trustworthy · Premium</li>
+        <li>Emotional job: <em>data superpowers; master of your company's data</em></li>
+        <li>AI is subtle — a shimmer, not a mascot</li>
+        <li>Avoid: blue-SaaS, enterprise-BI, AI-slop purple, dark-hacker, cluttered</li>
+        <li>Light-first · Tinted neutrals · Balanced density · Boldness ≈ 60</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- D1 · ATELIER -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="direction">
+    <div class="dir-head">
+      <div class="dir-num">01 / 04 · METAPHOR · THE WORKBENCH</div>
+      <h2 class="dir-title"><em>Atelier</em></h2>
+      <p class="dir-sub">"A craftsman's workbench, not a SaaS app."</p>
+    </div>
+    <p class="pitch">Warm paper surface, Fraunces serif paired with Space Grotesk, one muted terra accent that's earthy not corporate. The whole UI feels like a leather-bound journal — considered, tactile, quiet. This is the strongest "craftsman with superpowers" direction: you are not a user, you are a master at your bench.</p>
+    <div class="tags">
+      <span class="tag">Tactile paper</span><span class="tag">Serif display</span><span class="tag">Terra accent</span><span class="tag">Editorial headlines</span><span class="tag">Boldness 65</span>
+    </div>
+
+    <div class="stage d1">
+      <div class="stage-head"><span>01 · Atelier</span><span>warm paper · light surface</span></div>
+      <div class="stage-body">
+
+        <div class="wordmark-row">
+          <div class="wordmark">Data<span>bridge</span></div>
+          <div style="width:1px;height:38px;background:#dccdb0"></div>
+          <div class="wordmark-alt">DATABRIDGE</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <p class="col-label">Typography</p>
+            <div class="type-sample">
+              <div class="meta">Fraunces · 400 · italic — display &amp; moments of voice</div>
+              <div class="disp" style="font-size:46px"><em>Ask anything</em> about your data.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">Space Grotesk · 15 / 1.65 — body &amp; UI</div>
+              <div style="font-size:15px;line-height:1.65;color:#4a4035;max-width:520px">A quiet workbench for your company's data. Define once what every table and column means, then ask anything — in plain language.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">IBM Plex Mono · 11 — technical labels</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7d7260">PRODUCT · FACT_SALES · 1,248,392 ROWS</div>
+            </div>
+          </div>
+          <div>
+            <p class="col-label">Color system</p>
+            <div class="swatches" style="margin-bottom:5px">
+              <div class="sw" style="background:#f4ede1;border:1px solid #dccdb0"><span style="color:#7d7260">bg</span></div>
+              <div class="sw" style="background:#fbf6ec;border:1px solid #dccdb0"><span style="color:#7d7260">surface</span></div>
+              <div class="sw" style="background:#ebe1cf"><span style="color:#7d7260">soft</span></div>
+              <div class="sw" style="background:#231c12"><span style="color:#fbf6ec">ink</span></div>
+              <div class="sw" style="background:#b45229"><span style="color:#fff">terra</span></div>
+              <div class="sw" style="background:#f1d9c6"><span style="color:#b45229">terra-soft</span></div>
+            </div>
+            <div class="swatches">
+              <div class="sw" style="background:#5f7c3a"><span style="color:#fff">ok</span></div>
+              <div class="sw" style="background:#a8761e"><span style="color:#fff">warn</span></div>
+              <div class="sw" style="background:#a8392e"><span style="color:#fff">err</span></div>
+              <div class="sw" style="background:#7d7260"><span style="color:#fff">muted</span></div>
+              <div class="sw" style="background:#4a4035"><span style="color:#fff">ink-2</span></div>
+              <div class="sw" style="background:#dccdb0"><span style="color:#7d7260">line</span></div>
+            </div>
+            <div style="margin-top:12px;font-size:12px;color:#7d7260;line-height:1.55">All neutrals carry the same warm tint (≈40° hue). One accent — terra — signals primary action. AI shimmer uses the ink color at reduced opacity, not a second color.</div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <p class="label" style="margin:0 0 10px">Gross revenue · Q3</p>
+            <div class="kpi-num">€4.82M</div>
+            <div style="margin-top:10px"><span class="kpi-delta">↑ 12.4%</span> <span class="label" style="letter-spacing:0.08em">VS LQ</span></div>
+            <svg class="chart" viewBox="0 0 300 110" preserveAspectRatio="none" style="margin-top:14px">
+              <g stroke="#dccdb0" stroke-dasharray="2 3" stroke-width="0.5"><line x1="0" x2="300" y1="28" y2="28"/><line x1="0" x2="300" y1="80" y2="80"/></g>
+              <polyline fill="none" stroke="#b45229" stroke-width="1.25" points="0,78 30,68 60,72 90,60 120,64 150,52 180,54 210,42 240,36 270,26 300,20"/>
+            </svg>
+          </div>
+          <div class="card">
+            <p class="label" style="margin:0 0 14px">Navigation</p>
+            <div class="nav">
+              <a href="#" class="active">Ask</a><a href="#">Dashboards</a><a href="#">Semantic</a><a href="#">Sources</a>
+            </div>
+            <div style="margin-top:24px;display:flex;gap:10px"><button class="btn btn-primary">Connect source</button><button class="btn">Cancel</button></div>
+          </div>
+          <div class="card" style="background:#f1d9c6;border-color:#e8c3a7">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div class="ai-avatar" style="background:#b45229;color:#fff;font-family:Fraunces,serif;font-weight:400"><em>d</em></div>
+              <div>
+                <p class="label" style="margin:0 0 6px">Noted · 94% confident</p>
+                <div style="font-family:Fraunces,Georgia,serif;font-size:20px;line-height:1.35;color:#231c12;letter-spacing:-0.01em">Q3 revenue grew <em>12.4%</em> YoY, driven mostly by wholesale.</div>
+                <div style="margin-top:10px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7d7260;letter-spacing:0.12em">3 TABLES · 4.2S · SHOW SQL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ratio">
+      <div><h5>Why this works</h5><p>Memorable. Warm paper in a sea of cool SaaS makes DataBridge instantly distinct. The italic serif gives you voice — "ask anything" becomes a gesture, not a button label.</p></div>
+      <div><h5>What to watch</h5><p>Requires typographic discipline. Serif is reserved for display, KPI numbers, and AI messages; Space Grotesk handles everything else. Chart palette must stay earthy.</p></div>
+      <div><h5>Closest neighbors</h5><p>Readwise · Are.na · Basecamp editorial · Ghost CMS. None are BI tools — that's the point.</p></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- D2 · OBSERVATORY -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="direction">
+    <div class="dir-head">
+      <div class="dir-num">02 / 04 · METAPHOR · THE OBSERVATORY</div>
+      <h2 class="dir-title"><em>Observatory</em></h2>
+      <p class="dir-sub">"You are looking at your company from above."</p>
+    </div>
+    <p class="pitch">Cool tinted off-white (the faintest pewter-cyan), Source Serif paired with Inter, one deep ocean accent. Data visualization is the main character — charts are framed like specimens, KPIs like readings on an instrument. Premium, calm, serious. More restrained than Atelier but with the same "this is for grownups" confidence.</p>
+    <div class="tags">
+      <span class="tag">Tinted pewter</span><span class="tag">Serif KPI numbers</span><span class="tag">Deep ocean accent</span><span class="tag">Chart-first</span><span class="tag">Boldness 55</span>
+    </div>
+
+    <div class="stage d2">
+      <div class="stage-head"><span>02 · Observatory</span><span>cool pewter · light surface</span></div>
+      <div class="stage-body">
+
+        <div class="wordmark-row">
+          <div class="wordmark">
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="16" cy="16" r="8" stroke="currentColor" stroke-width="1"/><line x1="16" y1="2" x2="16" y2="30" stroke="currentColor" stroke-width="0.5" opacity="0.4"/><line x1="2" y1="16" x2="30" y2="16" stroke="currentColor" stroke-width="0.5" opacity="0.4"/></svg>
+            Databridge
+          </div>
+          <div style="width:1px;height:38px;background:#d0d5da"></div>
+          <div class="wordmark-alt"><span class="m"></span>Databridge</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <p class="col-label">Typography</p>
+            <div class="type-sample">
+              <div class="meta">Source Serif 4 · 500 — display &amp; numbers</div>
+              <div class="disp" style="font-size:42px">Ask anything about your data.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">Inter · 15 / 1.6 — body &amp; UI</div>
+              <div style="font-size:15px;line-height:1.6;color:#334049;max-width:520px">A calm observatory for your company. Every table and metric has a meaning — defined once, trusted forever, answered in seconds.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">Geist Mono · 11 — technical labels &amp; SQL</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:#6b7680">Last reading · 14 minutes ago</div>
+            </div>
+          </div>
+          <div>
+            <p class="col-label">Color system</p>
+            <div class="swatches" style="margin-bottom:5px">
+              <div class="sw" style="background:#eef0f2;border:1px solid #d0d5da"><span style="color:#6b7680">bg</span></div>
+              <div class="sw" style="background:#f8f9fa;border:1px solid #d0d5da"><span style="color:#6b7680">surface</span></div>
+              <div class="sw" style="background:#e3e6ea"><span style="color:#6b7680">soft</span></div>
+              <div class="sw" style="background:#0f1a22"><span style="color:#f8f9fa">ink</span></div>
+              <div class="sw" style="background:#164e63"><span style="color:#fff">ocean</span></div>
+              <div class="sw" style="background:#d0e1e6"><span style="color:#164e63">ocean-soft</span></div>
+            </div>
+            <div class="swatches">
+              <div class="sw" style="background:#3f7a5c"><span style="color:#fff">ok</span></div>
+              <div class="sw" style="background:#a06a1c"><span style="color:#fff">warn</span></div>
+              <div class="sw" style="background:#a43a3a"><span style="color:#fff">err</span></div>
+              <div class="sw" style="background:#c08a5e"><span style="color:#fff">ai</span></div>
+              <div class="sw" style="background:#334049"><span style="color:#fff">ink-2</span></div>
+              <div class="sw" style="background:#6b7680"><span style="color:#fff">muted</span></div>
+            </div>
+            <div style="margin-top:12px;font-size:12px;color:#6b7680;line-height:1.55">Neutrals tinted 210° ≈ 5% chroma — it reads neutral but radiates calm-cool. Ocean accent feels substantive (not blue-SaaS). Warm "ai" tone is used only for AI-authored content.</div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <p class="label" style="margin:0 0 10px">Gross revenue · Q3</p>
+            <div class="kpi-num">€4.82M</div>
+            <div style="margin-top:10px"><span class="kpi-delta">↑ 12.4%</span> <span class="label" style="letter-spacing:0.06em;text-transform:none">vs last quarter</span></div>
+            <svg class="chart" viewBox="0 0 300 110" preserveAspectRatio="none" style="margin-top:14px">
+              <defs><linearGradient id="o2" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#164e63" stop-opacity="0.18"/><stop offset="100%" stop-color="#164e63" stop-opacity="0"/></linearGradient></defs>
+              <path fill="url(#o2)" d="M0,78 L30,68 L60,72 L90,60 L120,64 L150,52 L180,54 L210,42 L240,36 L270,26 L300,20 L300,110 L0,110 Z"/>
+              <polyline fill="none" stroke="#164e63" stroke-width="1.5" points="0,78 30,68 60,72 90,60 120,64 150,52 180,54 210,42 240,36 270,26 300,20"/>
+            </svg>
+          </div>
+          <div class="card">
+            <p class="label" style="margin:0 0 12px">Navigation</p>
+            <div class="nav">
+              <a href="#" class="active"><span>Ask</span></a><a href="#"><span>Dashboards</span></a><a href="#"><span>Semantic</span></a><a href="#"><span>Quality</span></a><a href="#"><span>Sources</span></a>
+            </div>
+            <div style="margin-top:20px;display:flex;gap:10px"><button class="btn btn-primary">Connect source</button><button class="btn">Cancel</button></div>
+          </div>
+          <div class="card">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div class="ai-avatar" style="background:#c08a5e;color:#fff"><span class="shimmer-dot"></span><span class="shimmer-dot"></span><span class="shimmer-dot"></span></div>
+              <div>
+                <p class="label" style="margin:0 0 6px;color:#c08a5e">READING · 94% · 4.2s</p>
+                <div style="font-family:'Source Serif 4',Georgia,serif;font-size:17px;line-height:1.45;color:#0f1a22;font-weight:400">Q3 revenue grew <b>12.4%</b> year over year, driven mostly by wholesale (+€420K).</div>
+                <div style="margin-top:10px;font-family:'Geist Mono',monospace;font-size:10px;color:#6b7680;letter-spacing:0.1em">3 TABLES · SHOW SQL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ratio">
+      <div><h5>Why this works</h5><p>"Looking from above" is exactly the superpower feeling. Serif KPI numbers feel like measurements in a scientific paper — authoritative, not decorated.</p></div>
+      <div><h5>What to watch</h5><p>The safest of the four — risk is it drifts toward "nice Stripe-lite" if we're not deliberate. Ocean accent must be used sparingly or it becomes "blue SaaS" again.</p></div>
+      <div><h5>Closest neighbors</h5><p>Kepler.gl · Datawrapper · New York Times Interactive · Posit Connect.</p></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- D3 · CARTOGRAPHER -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="direction">
+    <div class="dir-head">
+      <div class="dir-num">03 / 04 · METAPHOR · THE CARTOGRAPHER</div>
+      <h2 class="dir-title"><em>Cartographer</em></h2>
+      <p class="dir-sub">"Mapping what your company knows."</p>
+    </div>
+    <p class="pitch">Warm ivory paper, Newsreader (contemporary serif) paired with Inter, brass-and-ink accent palette. Subtle dot grids live inside cards, echoing map plotting paper. Feels like an old-world explorer's desk — compass, ledger, plotted coordinates — but rendered with clean modern typography. Deeply on-brief: "the master of your data" is literally a cartographer.</p>
+    <div class="tags">
+      <span class="tag">Ivory paper</span><span class="tag">Brass accent</span><span class="tag">Dot-grid detail</span><span class="tag">Oldstyle numerals</span><span class="tag">Boldness 70</span>
+    </div>
+
+    <div class="stage d3">
+      <div class="stage-head"><span>03 · Cartographer</span><span>ivory paper · light surface</span></div>
+      <div class="stage-body">
+
+        <div class="wordmark-row">
+          <div class="wordmark"><span class="compass"></span>Databridge</div>
+          <div style="width:1px;height:38px;background:#d9cfb8"></div>
+          <div class="wordmark-alt">D · B · ESTD 2026</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <p class="col-label">Typography</p>
+            <div class="type-sample">
+              <div class="meta">Newsreader · 400 — display &amp; KPI numbers</div>
+              <div class="disp" style="font-size:44px">Ask anything about your data.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">Inter · 15 / 1.6 — body &amp; UI</div>
+              <div style="font-size:15px;line-height:1.6;color:#42382a;max-width:520px">A map of what your company knows. Define the territory once — every table, every metric, every relationship — then chart answers in seconds.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">Geist Mono · 11 — coordinates &amp; labels</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:#7a7060">51.2°N · LAST CHARTED 14M AGO</div>
+            </div>
+          </div>
+          <div>
+            <p class="col-label">Color system</p>
+            <div class="swatches" style="margin-bottom:5px">
+              <div class="sw" style="background:#f6f1e6;border:1px solid #d9cfb8"><span style="color:#7a7060">ivory</span></div>
+              <div class="sw" style="background:#fcf9f0;border:1px solid #d9cfb8"><span style="color:#7a7060">surface</span></div>
+              <div class="sw" style="background:#ebe3d1"><span style="color:#7a7060">soft</span></div>
+              <div class="sw" style="background:#1f1a11"><span style="color:#fcf9f0">ink</span></div>
+              <div class="sw" style="background:#9a6a1a"><span style="color:#fff">brass</span></div>
+              <div class="sw" style="background:#f0e3c4"><span style="color:#9a6a1a">brass-soft</span></div>
+            </div>
+            <div class="swatches">
+              <div class="sw" style="background:#5e7b3e"><span style="color:#fff">ok</span></div>
+              <div class="sw" style="background:#a57016"><span style="color:#fff">warn</span></div>
+              <div class="sw" style="background:#9f3e2d"><span style="color:#fff">err</span></div>
+              <div class="sw" style="background:#b8903f"><span style="color:#fff">brass-2</span></div>
+              <div class="sw" style="background:#42382a"><span style="color:#fff">ink-2</span></div>
+              <div class="sw" style="background:#7a7060"><span style="color:#fff">muted</span></div>
+            </div>
+            <div style="margin-top:12px;font-size:12px;color:#7a7060;line-height:1.55">Hues cluster around 40–45° (warm ivory + brass). Dot-grid textures on "map" surfaces (canvas, dashboards); plain surfaces stay clean. Oldstyle numerals throughout for personality.</div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <p class="label" style="margin:0 0 10px">Gross revenue · Q3</p>
+            <div class="kpi-num">€4.82M</div>
+            <div style="margin-top:10px"><span class="kpi-delta">↑ 12.4%</span> <span class="label" style="letter-spacing:0.12em">VS LQ</span></div>
+            <svg class="chart" viewBox="0 0 300 110" preserveAspectRatio="none" style="margin-top:14px">
+              <g stroke="#d9cfb8" stroke-dasharray="1 3" stroke-width="0.5"><line x1="0" x2="300" y1="28" y2="28"/><line x1="0" x2="300" y1="56" y2="56"/><line x1="0" x2="300" y1="84" y2="84"/></g>
+              <polyline fill="none" stroke="#9a6a1a" stroke-width="1.5" points="0,78 30,68 60,72 90,60 120,64 150,52 180,54 210,42 240,36 270,26 300,20"/>
+              <g fill="#9a6a1a"><circle cx="0" cy="78" r="1.5"/><circle cx="60" cy="72" r="1.5"/><circle cx="150" cy="52" r="1.5"/><circle cx="240" cy="36" r="1.5"/><circle cx="300" cy="20" r="1.5"/></g>
+            </svg>
+          </div>
+          <div class="card-clean">
+            <p class="label" style="margin:0 0 12px">Navigation</p>
+            <div class="nav">
+              <a href="#" class="active">Ask</a><a href="#">Dashboards</a><a href="#">Semantic</a><a href="#">Sources</a>
+            </div>
+            <div style="margin-top:24px;display:flex;gap:10px"><button class="btn btn-primary">Connect source</button><button class="btn">Cancel</button></div>
+          </div>
+          <div class="card-clean" style="background:#f0e3c4;border-color:#e0d0a5">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div class="ai-avatar" style="background:#9a6a1a;color:#fff;font-family:Newsreader,serif;font-weight:400">d</div>
+              <div>
+                <p class="label" style="margin:0 0 6px;color:#9a6a1a">CHARTED · 94% · 4.2s</p>
+                <div style="font-family:Newsreader,Georgia,serif;font-size:18px;line-height:1.4;color:#1f1a11;font-variant-numeric:oldstyle-nums">Q3 revenue grew 12.4% YoY, driven mostly by wholesale.</div>
+                <div style="margin-top:10px;font-family:'Geist Mono',monospace;font-size:10px;color:#7a7060;letter-spacing:0.14em">3 TABLES · SHOW SQL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ratio">
+      <div><h5>Why this works</h5><p>The strongest conceptual match for your brief. A cartographer IS the master of a territory. Brass-and-ivory is premium the way a good pen is premium — not flashy, earned.</p></div>
+      <div><h5>What to watch</h5><p>Boldest direction. Needs strict rules: dot-grid only on "map" surfaces, oldstyle numerals in display contexts only (not in table cells — they'd slow scanning).</p></div>
+      <div><h5>Closest neighbors</h5><p>Arc Atlas · Gather · Field Notes · McSweeney's. No B2B peers — biggest swing, highest distinctiveness.</p></div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <!-- D4 · LABORATORY -->
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <section class="direction">
+    <div class="dir-head">
+      <div class="dir-num">04 / 04 · METAPHOR · THE INSTRUMENT</div>
+      <h2 class="dir-title"><em>Laboratory</em></h2>
+      <p class="dir-sub">"A precision instrument for your business."</p>
+    </div>
+    <p class="pitch">Tinted-cool white (faint sage-green), Source Serif for numbers paired with IBM Plex Sans for UI. Single deep teal accent. Near-zero corner radius, thin rules, fixed gutters. Every number is tabular; every KPI feels like a reading on a lab instrument. Restrained but sharp. More architectural than Observatory, more utilitarian than Atelier.</p>
+    <div class="tags">
+      <span class="tag">Sage-white</span><span class="tag">Deep teal</span><span class="tag">Tabular numerals</span><span class="tag">Sharp rules</span><span class="tag">Boldness 55</span>
+    </div>
+
+    <div class="stage d4">
+      <div class="stage-head"><span>04 · Laboratory</span><span>sage white · light surface</span></div>
+      <div class="stage-body">
+
+        <div class="wordmark-row">
+          <div class="wordmark"><span class="m"></span>Databridge</div>
+          <div style="width:1px;height:38px;background:#d0d7d5"></div>
+          <div class="wordmark-alt"><span class="dot"></span>DB · INSTRUMENT</div>
+        </div>
+
+        <div class="row">
+          <div>
+            <p class="col-label">Typography</p>
+            <div class="type-sample">
+              <div class="meta">Source Serif 4 · 500 — display &amp; numbers only</div>
+              <div class="disp" style="font-size:40px">Ask anything about your data.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">IBM Plex Sans · 14.5 / 1.6 — body &amp; UI</div>
+              <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14.5px;line-height:1.6;color:#364441;max-width:520px">A precision instrument for your company's data. Calibrate once — connect, define, verify — then read the answer to any question.</div>
+            </div>
+            <div class="type-sample">
+              <div class="meta">IBM Plex Mono · 11 — labels &amp; technical data</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#6a7875">MEASUREMENT · 14M AGO · 99.98% UP</div>
+            </div>
+          </div>
+          <div>
+            <p class="col-label">Color system</p>
+            <div class="swatches" style="margin-bottom:5px">
+              <div class="sw" style="background:#f0f3f2;border:1px solid #d0d7d5"><span style="color:#6a7875">bg</span></div>
+              <div class="sw" style="background:#fafcfb;border:1px solid #d0d7d5"><span style="color:#6a7875">surface</span></div>
+              <div class="sw" style="background:#e4e9e8"><span style="color:#6a7875">soft</span></div>
+              <div class="sw" style="background:#0d1513"><span style="color:#fafcfb">ink</span></div>
+              <div class="sw" style="background:#0e7c6b"><span style="color:#fff">teal</span></div>
+              <div class="sw" style="background:#cde7e1"><span style="color:#0e7c6b">teal-soft</span></div>
+            </div>
+            <div class="swatches">
+              <div class="sw" style="background:#0e7c6b"><span style="color:#fff">ok</span></div>
+              <div class="sw" style="background:#a06a1c"><span style="color:#fff">warn</span></div>
+              <div class="sw" style="background:#a43a3a"><span style="color:#fff">err</span></div>
+              <div class="sw" style="background:#364441"><span style="color:#fff">ink-2</span></div>
+              <div class="sw" style="background:#6a7875"><span style="color:#fff">muted</span></div>
+              <div class="sw" style="background:#d0d7d5"><span style="color:#6a7875">line</span></div>
+            </div>
+            <div style="margin-top:12px;font-size:12px;color:#6a7875;line-height:1.55">Neutrals tinted 165° ≈ 3% chroma — subliminally green-leaning "calm". Teal is the brand color AND the ok-state — one color does double duty. Zero corner radius; rules instead of shadows.</div>
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="card">
+            <p class="label" style="margin:0 0 10px">Gross revenue · Q3</p>
+            <div class="kpi-num">€4,823,190</div>
+            <div style="margin-top:10px"><span class="kpi-delta">↑ 12.4%</span> <span class="label" style="letter-spacing:0.1em">VS LQ</span></div>
+            <svg class="chart" viewBox="0 0 300 110" preserveAspectRatio="none" style="margin-top:14px">
+              <g stroke="#d0d7d5" stroke-width="0.5"><line x1="0" x2="300" y1="28" y2="28"/><line x1="0" x2="300" y1="56" y2="56"/><line x1="0" x2="300" y1="84" y2="84"/></g>
+              <polyline fill="none" stroke="#0e7c6b" stroke-width="1.5" points="0,78 30,68 60,72 90,60 120,64 150,52 180,54 210,42 240,36 270,26 300,20"/>
+              <rect x="296" y="16" width="8" height="8" fill="#0e7c6b"/>
+            </svg>
+          </div>
+          <div class="card">
+            <p class="label" style="margin:0 0 0">Navigation</p>
+            <div class="nav" style="margin:12px -22px 0">
+              <a href="#" class="active">Ask</a><a href="#">Dashboards</a><a href="#">Semantic</a><a href="#">Sources</a>
+            </div>
+            <div style="margin-top:24px;display:flex;gap:10px"><button class="btn btn-primary">Connect source</button><button class="btn">Cancel</button></div>
+          </div>
+          <div class="card">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div class="ai-avatar" style="background:#cde7e1;color:#0e7c6b;border:1px solid #0e7c6b"><span class="shimmer-dot"></span></div>
+              <div>
+                <p class="label" style="margin:0 0 6px;color:#0e7c6b">READING · 94% · 4.2s</p>
+                <div style="font-family:'IBM Plex Sans',sans-serif;font-size:14.5px;line-height:1.55;color:#0d1513">Q3 revenue grew <b style="font-family:'Source Serif 4',serif;font-weight:600">12.4%</b> YoY, driven mostly by wholesale (+€420K).</div>
+                <div style="margin-top:10px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6a7875;letter-spacing:0.12em">3 TABLES · SHOW SQL</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ratio">
+      <div><h5>Why this works</h5><p>"Instrument" is the most literal take on "I am the master". Precision typography + tabular numerals feels measured and trustworthy without being cold.</p></div>
+      <div><h5>What to watch</h5><p>Risk is landing too close to IBM Carbon / Bloomberg Terminal — fine references, but we'd lose a bit of warmth. Needs the sage tint and serif numbers to stay human.</p></div>
+      <div><h5>Closest neighbors</h5><p>Bloomberg Pro · IBM Carbon · NASA mission control · FT Alphaville.</p></div>
+    </div>
+  </section>
+
+  <div class="footer">
+    <p>Pick a direction — or hybrid (e.g. <code>03 metaphor + 02 color calm</code>) — and I'll build the full design system in Phase 3.</p>
+  </div>
+
+</div>
+</body>
+</html>

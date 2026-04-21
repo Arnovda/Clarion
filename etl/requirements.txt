@@ -5,3 +5,6 @@ pyarrow==18.1.0
 pandas==2.2.3
 psycopg2-binary==2.9.10
 pymysql==1.1.1
+# dbt — transformation engine (Phase 1 foundation; off by default via USE_DBT_TRANSFORMATIONS)
+dbt-core==1.9.0
+dbt-duckdb==1.9.0

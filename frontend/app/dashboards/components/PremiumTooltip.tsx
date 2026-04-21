@@ -1,6 +1,7 @@
 'use client';
 
 import { formatValue } from '../utils/format';
+import { PALETTE } from '../utils/chart-theme';
 
 interface PremiumTooltipProps {
   active?: boolean;
@@ -13,28 +14,23 @@ export function PremiumTooltip({ active, payload, label, format }: PremiumToolti
   if (!active || !payload?.length) return null;
 
   return (
-    <div
-      className="bg-white/95 backdrop-blur-xl rounded-xl
-        shadow-2xl border border-white/60
-        px-4 py-3 text-xs
-        animate-in fade-in duration-150"
-    >
+    <div className="bg-raised border border-line rounded-md shadow-2 px-3 py-2.5 text-[12px]">
       {label && (
-        <p className="font-semibold text-slate-700 mb-2 text-[13px]">
+        <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted mb-1.5">
           {label}
         </p>
       )}
-      <div className="space-y-1.5">
+      <div className="space-y-1">
         {payload.map((p, i) => (
           <div key={i} className="flex items-center gap-2">
             <span
-              className="w-2.5 h-2.5 rounded-full shrink-0"
-              style={{ backgroundColor: p.color ?? '#6366F1' }}
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ backgroundColor: p.color ?? PALETTE.series[0].solid }}
             />
-            <span className="text-slate-500">
+            <span className="text-ink-3">
               {p.name ?? p.dataKey ?? ''}
             </span>
-            <span className="ml-auto font-semibold text-slate-800 tabular-nums">
+            <span className="ml-auto font-medium text-ink tabular-nums">
               {formatValue(p.value, format)}
             </span>
           </div>

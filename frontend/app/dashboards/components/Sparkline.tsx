@@ -1,5 +1,7 @@
 'use client';
 
+import { PALETTE } from '../utils/chart-theme';
+
 interface SparklineProps {
   data: number[];
   width?: number;
@@ -13,7 +15,7 @@ export function Sparkline({
   data,
   width = 120,
   height = 32,
-  color = '#10B981',
+  color = PALETTE.series[0].solid,
   fillColor,
   showDot = true,
 }: SparklineProps) {

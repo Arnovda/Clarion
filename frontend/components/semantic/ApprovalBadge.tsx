@@ -81,7 +81,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
           {current !== 'approved' && (
             <button
               onClick={() => doAction('approve')}
-              className="text-[10px] px-2.5 py-1 bg-emerald-500/10 text-emerald-600 rounded-lg hover:bg-emerald-500/20 font-semibold transition-all hover:shadow-glow-green"
+              className="text-[10px] px-2.5 py-1 bg-ok-soft text-ok border border-line rounded-md hover:bg-ok/15 font-semibold transition-colors"
             >
               Confirm
             </button>
@@ -89,7 +89,7 @@ export default function ApprovalBadge({ entityType, entityId, status, aiDraft, r
           {current !== 'rejected' && (
             <button
               onClick={() => setShowReject(!showReject)}
-              className="text-[10px] px-2.5 py-1 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 font-semibold transition-all hover:shadow-glow-red"
+              className="text-[10px] px-2.5 py-1 bg-err-soft text-err border border-line rounded-md hover:bg-err/15 font-semibold transition-colors"
             >
               Flag Issue
             </button>
