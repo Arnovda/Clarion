@@ -603,12 +603,13 @@ router.post('/:id/cells', async (req: Request, res: Response, next: NextFunction
     };
 
     // If position specified, shift existing cells down
-    const actualPosition = position ?? (
-      await semanticDb('notebook_cells')
-        .where({ notebook_id: notebookId })
-        .max('position as max')
-        .first()
-    )?.max + 1 ?? 0;
+    let actualPosition: number;
+    if (position !== undefined) {
+      actualPosition = position;
+    } else {
+      const maxRow = await semanticDb('notebook_cells').where({ notebook_id: notebookId }).max('position as max').first();
+      actualPosition = (maxRow?.max ?? -1) + 1;
+    }
 
     if (position !== undefined) {
       await semanticDb('notebook_cells')

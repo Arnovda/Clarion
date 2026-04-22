@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
-import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
 import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
@@ -194,11 +194,24 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 
     let spec = await generateDashboardSpec(fullRequest, semanticCtx.semanticContext, semanticCtx.relationshipContext, dialect);
 
-    // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets
+    // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets.
+    // Also runs a cheap Haiku-based semantic check: does each widget's data match its title?
     try {
       const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId);
+
+      // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
+      const semanticIssues = await Promise.all(
+        executionResults.map(async (r) => {
+          if (r.error || r.rowCount === 0) return null;
+          return checkWidgetSemantics(r.title, r.type, r.sampleRows);
+        }),
+      );
+      semanticIssues.forEach((issue, idx) => {
+        if (issue) executionResults[idx].semanticIssue = issue;
+      });
+
       const hasIssues = executionResults.some(
-        (r) => r.error || r.rowCount === 0 || (r.type === 'pie_chart' && r.rowCount > 3),
+        (r) => r.error || r.rowCount === 0 || r.semanticIssue || (r.type === 'pie_chart' && r.rowCount > 3),
       );
       if (hasIssues) {
         spec = await validateAndFixDashboardSpec(spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext);
@@ -404,6 +417,9 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
             results[id] = { rows };
           } catch (err: unknown) {
             const raw = err instanceof Error ? err.message : String(err);
+            // Log raw error + SQL for diagnosis (truncated to avoid log flood)
+            console.error(`[batch-execute] widget ${id} FAILED: ${raw.slice(0, 400)}`);
+            console.error(`[batch-execute] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
             const friendly = raw.includes('does not exist')
               ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
               : raw.includes('Serialization')
@@ -480,38 +496,52 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.user!.sub;
+    const tenantId = req.user!.tenantId;
     const folder = req.query.folder as string | undefined;
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
 
-    // Own dashboards + shared dashboards from same tenant (RLS handles tenant isolation)
-    let baseQuery = semanticDb('dashboards')
-      .where(function () {
-        this.where({ user_id: userId }).orWhere({ is_shared: true });
-      });
+    console.log(`[dashboards GET /] userId=${userId} tenantId=${tenantId} folder=${folder ?? 'none'} NEW_CODE_V2`);
 
-    if (folder) {
-      baseQuery = baseQuery.where({ folder });
-    }
+    // Wrap in a transaction with SET LOCAL tenant so RLS consistently applies
+    // (session-level SET from auth middleware can be lost across pool connections).
+    const { total, rows } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
 
-    const [{ count: total }] = await baseQuery.clone().count('* as count');
+      let baseQuery = trx('dashboards')
+        .where(function () {
+          this.where({ user_id: userId }).orWhere({ is_shared: true });
+        });
 
-    const rows = await baseQuery
-      .select(
-        'id', 'title', 'description', 'is_favorite', 'is_shared',
-        'shared_permission', 'folder', 'auto_refresh_seconds',
-        'user_id', 'created_at', 'updated_at',
-      )
-      .orderBy('is_favorite', 'desc')
-      .orderBy('updated_at', 'desc')
-      .limit(limit)
-      .offset(offset);
+      if (folder) {
+        baseQuery = baseQuery.where({ folder });
+      }
 
-    // Tag each row with is_owner so the frontend knows permission level
-    const tagged = rows.map((r: Record<string, unknown>) => ({
-      ...r,
-      is_owner: r.user_id === userId,
-      permission: r.user_id === userId ? 'owner' : (r.shared_permission ?? 'viewer'),
-    }));
+      const [{ count }] = await baseQuery.clone().count('* as count');
+
+      const selected = await baseQuery
+        .select(
+          'id', 'title', 'description', 'is_favorite', 'is_shared',
+          'shared_permission', 'folder', 'auto_refresh_seconds',
+          'user_id', 'created_at', 'updated_at',
+        )
+        .orderBy('is_favorite', 'desc')
+        .orderBy('updated_at', 'desc')
+        .limit(limit)
+        .offset(offset);
+
+      return { total: count, rows: selected };
+    });
+
+    console.log(`[dashboards GET /] returned ${rows.length} rows (total=${total}) for userId=${userId} tenantId=${tenantId}`);
+
+    const tagged = rows.map((r: Record<string, unknown>) => {
+      const isOwner = Number(r.user_id) === Number(userId);
+      return {
+        ...r,
+        is_owner: isOwner,
+        permission: isOwner ? 'owner' : (r.shared_permission ?? 'viewer'),
+      };
+    });
 
     res.json(paginatedResponse(tagged, Number(total), page, limit));
   } catch (err) {
@@ -523,12 +553,16 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 // GET /api/dashboards/folders — list distinct folders
 // ---------------------------------------------------------------------------
 
-router.get('/folders', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/folders', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rows = await semanticDb('dashboards')
-      .whereNotNull('folder')
-      .distinct('folder')
-      .orderBy('folder');
+    const tenantId = req.user!.tenantId;
+    const rows = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      return trx('dashboards')
+        .whereNotNull('folder')
+        .distinct('folder')
+        .orderBy('folder');
+    });
 
     res.json({ ok: true, data: rows.map((r: { folder: string }) => r.folder) });
   } catch (err) {
@@ -940,7 +974,7 @@ router.get('/:id/widget/:widgetIndex/export/csv', requireAuth, async (req: Reque
     res.send('\uFEFF' + csv); // BOM for Excel UTF-8 compat
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'status' in err) {
-      res.status((err as { status: number }).status).json({ ok: false, error: (err as Error).message });
+      res.status((err as { status: number }).status).json({ ok: false, error: (err as { status: number; message: string }).message });
     } else {
       next(err);
     }
@@ -974,7 +1008,7 @@ router.get('/:id/widget/:widgetIndex/export/xlsx', requireAuth, async (req: Requ
     res.send(xlsx);
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'status' in err) {
-      res.status((err as { status: number }).status).json({ ok: false, error: (err as Error).message });
+      res.status((err as { status: number }).status).json({ ok: false, error: (err as { status: number; message: string }).message });
     } else {
       next(err);
     }
@@ -1136,7 +1170,7 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
               emit({ type: 'result', label, rows });
             } catch (err: unknown) {
               const msg = err instanceof Error ? err.message : String(err);
-              diagnosticResults.push({ label, error: msg });
+              diagnosticResults.push({ label, rows: [], error: msg });
               emit({ type: 'result', label, rows: [], error: msg });
             }
           }),

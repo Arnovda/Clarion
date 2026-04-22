@@ -152,7 +152,7 @@ export async function createProductConnector(productWarehousePath: string, conne
       .where('data_products.connection_id', connectionId)
       .where('product_tables.transformation_status', 'success')
       .whereNotNull('product_tables.delta_path')
-      .select('product_tables.table_name', 'product_tables.delta_path');
+      .select<Array<{ table_name: string; delta_path: string }>>('product_tables.table_name', 'product_tables.delta_path');
   });
 
   // Build explicit table → path mapping

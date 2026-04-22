@@ -143,7 +143,7 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
 
   // 2. Resolve connection / product path and execute widget SQLs
   const connectionId: number = spec.connectionId ?? dashboard.connection_id;
-  let connector: ReturnType<typeof createConnector> | ReturnType<typeof createProductConnector>;
+  let connector: Awaited<ReturnType<typeof createProductConnector>>;
 
   // Detect product-layer dashboards (spec carries productId)
   if (spec.productId) {
@@ -153,14 +153,14 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
       return;
     }
     const warehousePath = await import('./productContext').then((m) => m.getProductWarehousePath(product));
-    connector = createProductConnector(warehousePath);
+    connector = await createProductConnector(warehousePath, product.connection_id as number);
   } else {
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
     if (!connection) {
       logger.warn({ scheduleId }, '[report-email] Connection not found');
       return;
     }
-    connector = createConnector(connection);
+    connector = await createConnector(connection);
   }
 
   await connector.connect();
@@ -186,7 +186,7 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
         }
         const resolvedSql = resolveFilters(w.sql, defaultFilters);
         try {
-          const rows = await connector.executeQuery(resolvedSql) as Record<string, unknown>[];
+          const rows = (await connector.executeQuery(resolvedSql) as unknown) as Record<string, unknown>[];
           widgetResults.push({ title: w.title, rows });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

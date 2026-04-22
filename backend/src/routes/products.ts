@@ -1140,13 +1140,18 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));
 
-    const { proposeSingleDataProduct } = await import('../ai/AIService');
+    const { generateStarSchemaDesign } = await import('../ai/AIService');
 
-    const proposal = await proposeSingleDataProduct(
-      tableContexts,
-      existingWithDims,
-      connection.name as string,
-      description.trim().slice(0, 500),
+    const sourceTablesContext = (tableContexts as Array<{ table_name: string; description: string; columns: Array<{ column_name: string; data_type: string; description: string; is_primary_key: boolean; is_foreign_key: boolean; fk_references?: string }> }>).map((t) =>
+      `Table: ${t.table_name} — ${t.description || 'No description'}\n  Columns:\n${t.columns.map((c) =>
+        `    ${c.column_name} (${c.data_type})${c.is_primary_key ? ' [PK]' : ''}${c.is_foreign_key ? ` [FK→${c.fk_references}]` : ''}: ${c.description || ''}`
+      ).join('\n')}`
+    ).join('\n\n');
+    const desc = description.trim().slice(0, 500);
+    const proposal = await generateStarSchemaDesign(
+      desc || connection.name as string,
+      desc,
+      sourceTablesContext,
     );
 
     return res.json({ ok: true, data: proposal });
@@ -1599,7 +1604,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       const count = Number(tableCount?.count ?? 0);
       console.log(`[build-bus-matrix] Product "${dp.name}" (id=${pid}): ${count} tables created (owned_dims: ${dp.owned_dimensions.length}, facts: ${dp.fact_tables.length})`);
 
-      _results.push({ name: dp.name, id: pid, status: 'created', build_order: dp.build_order });
+      _results.push({ name: dp.name, id: pid, status: 'created' });
     }
 
     // Summary
@@ -1686,15 +1691,18 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));
 
-    const { proposeDataProductsStreaming } = await import('../ai/AIService');
+    const { generateBusMatrixStreaming } = await import('../ai/AIService');
 
-    const proposal = await proposeDataProductsStreaming(
-      tableContexts,
-      existingWithDims,
+    const sourceTablesContextStream = (tableContexts as Array<{ table_name: string; description: string; columns: Array<{ column_name: string; data_type: string; description: string; is_primary_key: boolean; is_foreign_key: boolean; fk_references?: string }> }>).map((t) =>
+      `Table: ${t.table_name} — ${t.description || 'No description'}\n  Columns:\n${t.columns.map((c) =>
+        `    ${c.column_name} (${c.data_type})${c.is_primary_key ? ' [PK]' : ''}${c.is_foreign_key ? ` [FK→${c.fk_references}]` : ''}: ${c.description || ''}`
+      ).join('\n')}`
+    ).join('\n\n');
+    const proposal = await generateBusMatrixStreaming(
       connection.name as string,
+      sourceTablesContextStream,
       (type, delta) => {
         if (type === 'thinking') emit({ type: 'thinking', text: delta });
-        // text events are the JSON being built — don't forward (it's raw partial JSON)
       },
     );
 
@@ -1773,8 +1781,13 @@ router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, 
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));
 
-    const { proposeDataProducts } = await import('../ai/AIService');
-    const proposal = await proposeDataProducts(tableContexts, existingWithDims, connection.name as string);
+    const { generateBusMatrixStreaming: generateBusMatrix } = await import('../ai/AIService');
+    const sourceTablesContextProp = (tableContexts as Array<{ table_name: string; description: string; columns: Array<{ column_name: string; data_type: string; description: string; is_primary_key: boolean; is_foreign_key: boolean; fk_references?: string }> }>).map((t) =>
+      `Table: ${t.table_name} — ${t.description || 'No description'}\n  Columns:\n${t.columns.map((c) =>
+        `    ${c.column_name} (${c.data_type})${c.is_primary_key ? ' [PK]' : ''}${c.is_foreign_key ? ` [FK→${c.fk_references}]` : ''}: ${c.description || ''}`
+      ).join('\n')}`
+    ).join('\n\n');
+    const proposal = await generateBusMatrix(connection.name as string, sourceTablesContextProp, () => {});
 
     res.json({ ok: true, data: proposal });
   } catch (err) { next(err); }
@@ -1891,9 +1904,12 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
 
     // Queue transformations in build_order (one job per product)
     try {
-      const { enqueueTransformation } = await import('../jobs/queues');
-      for (const r of results) {
-        await enqueueTransformation({ productId: r.id, tenantId });
+      const { getTransformationQueue } = await import('../jobs/queues');
+      const tQueue = getTransformationQueue();
+      if (tQueue) {
+        for (const r of results) {
+          await tQueue.add('transform', { productId: r.id, tenantId, triggeredBy: 'system' });
+        }
       }
     } catch {
       // Redis not available — caller can trigger manually
