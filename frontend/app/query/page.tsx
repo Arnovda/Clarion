@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
@@ -28,7 +28,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'htt
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
-export default function QueryPage() {
+function QueryPageInner() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId,      setActiveId]      = useState<number | null>(null);
   const [messages,      setMessages]      = useState<Message[]>([]);
@@ -851,3 +851,5 @@ export default function QueryPage() {
     </AppShell>
   );
 }
+
+export default function QueryPage() { return <Suspense><QueryPageInner /></Suspense>; }
