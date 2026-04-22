@@ -112,7 +112,7 @@ export function WidgetCard({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <span className="flex items-center gap-0.5 opacity-0 group-hover/widget:opacity-100 transition-opacity duration-200">
+            <span className="flex items-center gap-0.5 overflow-hidden max-w-0 opacity-0 group-hover/widget:max-w-[160px] group-hover/widget:opacity-100 transition-all duration-200">
               {onExportCsv && (
                 <button
                   onClick={onExportCsv}

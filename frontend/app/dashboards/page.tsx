@@ -799,7 +799,15 @@ export default function DashboardsPage() {
       combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
     };
     const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
-    const col12 = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
+    // Minimum width per type — guards against AI emitting too-narrow specs on
+    // widgets whose contents need room (labels, tables, multi-series charts).
+    const minCols: Record<string, number> = {
+      top_list: 6, data_table: 12, pivot_table: 12, treemap_chart: 6,
+      radar_chart: 6, stacked_bar_chart: 6, combo_chart: 6, line_chart: 6,
+      bar_chart: 6, vertical_bar_chart: 6,
+    };
+    const requested = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
+    const col12 = Math.max(requested, minCols[widget.type] ?? 3);
 
     const isCrossFilterSource = crossFilter?.widgetId === widget.id;
     const isFiltered = crossFilter !== null && !isCrossFilterSource;

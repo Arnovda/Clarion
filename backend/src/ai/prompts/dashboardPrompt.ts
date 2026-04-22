@@ -138,14 +138,14 @@ line_chart — continuous trend over time. SQL returns "label" and "value", orde
 pie_chart — ONLY <=3 slices. SQL returns "label" and "value".
   { "id": "w_status", "type": "pie_chart", "title": "Orders by Status (Active vs Fulfilled vs Cancelled)", "sql": "...", "colSpan": 1 }
 
-top_list — ranked list. SQL returns "label" and "value".
-  { "id": "w_top", "type": "top_list", "title": "Top 10 Products by Units Sold", "sql": "...", "format": "number", "colSpan": 1 }
+top_list — ranked list. SQL returns "label" and "value". Prefer colSpan 2; use colSpan 3 if labels are long or >8 rows.
+  { "id": "w_top", "type": "top_list", "title": "Top 10 Products by Units Sold", "sql": "...", "format": "number", "colSpan": 2 }
 
-data_table — tabular detail. SQL returns multiple named columns. Always colSpan 3.
-  { "id": "w_table", "type": "data_table", "title": "Recent Orders Detail", "sql": "...", "colSpan": 3 }
+data_table — tabular detail. SQL returns multiple named columns. Always colSpan 4 (full width).
+  { "id": "w_table", "type": "data_table", "title": "Recent Orders Detail", "sql": "...", "colSpan": 4 }
 
-pivot_table — cross-tab matrix (rows × columns → values). Use when the user wants to compare a measure across TWO dimensions simultaneously (e.g. revenue by month × category, headcount by department × role). SQL MUST return exactly three columns: "row_label", "col_label", "value". Always colSpan 3. Cells are heat-mapped by intensity automatically. Row and column totals are added automatically.
-  { "id": "w_pivot", "type": "pivot_table", "title": "Revenue by Month × Category", "sql": "SELECT strftime('%Y-%m', o.order_date) AS row_label, p.category AS col_label, ROUND(SUM(ol.quantity * ol.unit_price),2) AS value FROM order_lines ol JOIN orders o ON ol.order_id = o.id JOIN products p ON ol.product_id = p.id WHERE o.order_date >= '{{date_filter_from}}' AND o.order_date <= '{{date_filter_to}}' GROUP BY 1, 2 ORDER BY 1, 2", "format": "currency", "colSpan": 3 }
+pivot_table — cross-tab matrix (rows × columns → values). Use when the user wants to compare a measure across TWO dimensions simultaneously (e.g. revenue by month × category, headcount by department × role). SQL MUST return exactly three columns: "row_label", "col_label", "value". Always colSpan 4 (full width). Cells are heat-mapped by intensity automatically. Row and column totals are added automatically.
+  { "id": "w_pivot", "type": "pivot_table", "title": "Revenue by Month × Category", "sql": "SELECT strftime('%Y-%m', o.order_date) AS row_label, p.category AS col_label, ROUND(SUM(ol.quantity * ol.unit_price),2) AS value FROM order_lines ol JOIN orders o ON ol.order_id = o.id JOIN products p ON ol.product_id = p.id WHERE o.order_date >= '{{date_filter_from}}' AND o.order_date <= '{{date_filter_to}}' GROUP BY 1, 2 ORDER BY 1, 2", "format": "currency", "colSpan": 4 }
 
 ━━━ FILTER SPEC FORMAT (REQUIRED FIELDS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -196,13 +196,28 @@ This enables clicking a customer bar to instantly cross-filter all other charts 
 
 ━━━ LAYOUT RULES — INVERTED PYRAMID ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Row 1: 3–4 kpi_card widgets (colSpan 1 each) — ALWAYS first, most important metrics
-Row 2: Primary chart (the main story) — colSpan 2 + supporting metric colSpan 1
-Row 3: Secondary chart — colSpan 2 + another supporting view colSpan 1
-Row 4 (optional): data_table colSpan 3 — evidence and drill-through detail
+Grid is 12 columns. colSpan maps: 1→3 cols (quarter), 2→6 cols (half), 3→9 cols, 4→12 cols (full).
 
-Total: 6–9 widgets. KPI cards always first. data_table always last if present.
-Max 3 colSpan-1 widgets per row. Charts: prefer colSpan 2.
+CRITICAL: Every row MUST sum to exactly 12 columns. No gaps, no overflow.
+  Valid row patterns: 1+1+1+1, 2+2, 2+1+1, 3+1, 4.
+  INVALID: 2+1 (sums to 9, leaves a gap) — do not emit this.
+
+Widget order is top-to-bottom, left-to-right. The grid auto-flows: plan widgets in rows.
+
+Row 1: 4× kpi_card (colSpan 1 each) = 1+1+1+1 — ALWAYS first.
+Row 2: Primary chart colSpan 2 + secondary chart colSpan 2 = 2+2. Use 2+2 whenever both widgets benefit from ≥6 cols (line charts, stacked bars, bar charts with >5 categories, top_list with long labels).
+Row 3: EITHER another 2+2 row OR 3+1 (wide chart + small KPI/pie) OR 4 (full-width table/pivot).
+Row 4 (optional): data_table OR pivot_table colSpan 4 = full width.
+
+Widget width guidance:
+  - top_list: colSpan 2 minimum (labels need room). colSpan 3 if >8 rows or long names.
+  - pie_chart: colSpan 1 or 2. Never larger — pies waste space.
+  - line_chart / stacked_bar_chart / combo_chart: prefer colSpan 2 or 3.
+  - data_table: ALWAYS colSpan 4 (full width).
+  - pivot_table: ALWAYS colSpan 4 (full width).
+  - treemap_chart / radar_chart: colSpan 2 minimum.
+
+Total: 6–9 widgets. KPI cards always first. data_table/pivot_table always last.
 
 ━━━ TITLE RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -283,7 +298,7 @@ export interface WidgetSpec {
   drillDownSql?: string;
   drillDownLabel?: string;
   format?: 'currency' | 'number' | 'percentage';
-  colSpan?: 1 | 2 | 3;
+  colSpan?: 1 | 2 | 3 | 4;
   crossFilterKey?: string;  // column name emitted as xf_<key> placeholder when a value is clicked
 }
 
@@ -385,6 +400,45 @@ export interface WidgetExecutionResult {
   rowCount: number;
   error?: string;
   sampleRows: Record<string, unknown>[];
+  semanticIssue?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Semantic alignment check — does the SQL's grouping/output match the title?
+// Cheap Haiku call. Runs in parallel per widget after execution succeeds.
+// ---------------------------------------------------------------------------
+
+export const SEMANTIC_CHECK_SYSTEM =
+`You are a BI quality reviewer. Given a chart's title and 3 sample rows of its data,
+decide if the data clearly matches what the title promises.
+
+Look for OBVIOUS mismatches only:
+- Title says "by Product" but labels are dates/months
+- Title says "Revenue" but values are counts (small integers like 1, 2, 5)
+- Title says "Top Customers" but labels are product names
+- Title says "Monthly" but there is only one row / labels are not dates
+
+DO NOT flag:
+- Minor wording differences
+- Different aggregations that are still plausible
+- Missing data (empty results — handled elsewhere)
+- Anything you are unsure about — err toward "ok"
+
+Return JSON only, no markdown:
+{ "ok": true }  OR
+{ "ok": false, "issue": "One short sentence explaining the mismatch." }`;
+
+export function buildSemanticCheckUser(
+  title: string,
+  chartType: string,
+  sampleRows: Record<string, unknown>[],
+): string {
+  return `Title: "${title}"
+Chart type: ${chartType}
+Sample rows (first 3):
+${JSON.stringify(sampleRows.slice(0, 3), null, 2)}
+
+Does the data match what the title promises? Return JSON.`;
 }
 
 export const VALIDATE_DASHBOARD_SYSTEM =
@@ -410,6 +464,8 @@ Return the complete fixed DashboardSpec as JSON only — no prose, no markdown f
 5. STACKED BAR WITH MISSING "series" COLUMN → Fix SQL to return label, series, value.
 
 6. WIDGET WITH NULL/UNDEFINED VALUES → Add COALESCE or NULLIF guards.
+
+7. SEMANTIC MISMATCH (semanticIssue present) → Rewrite the SQL so the GROUP BY column and the returned "label" match what the title promises. Example: title says "Revenue by Product Group" but SQL groups by strftime('%Y-%m', order_date) → rewrite to GROUP BY product_group. Use the schema context to find the correct column. Keep the title unchanged.
 
 PRESERVE: Keep all filter specs, widget order, colSpan, titles, and drillDownSql unless broken.
 Only change what is broken. Do not invent new widgets or remove working widgets.`;

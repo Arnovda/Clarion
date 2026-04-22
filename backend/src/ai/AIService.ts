@@ -47,6 +47,8 @@ import {
   VALIDATE_DASHBOARD_SYSTEM,
   buildValidateUser,
   WidgetExecutionResult,
+  SEMANTIC_CHECK_SYSTEM,
+  buildSemanticCheckUser,
 } from './prompts/dashboardPrompt';
 import {
   STAR_SCHEMA_DESIGN_SYSTEM,
@@ -864,6 +866,31 @@ export async function validateAndFixDashboardSpec(
 }
 
 // ---------------------------------------------------------------------------
+// Semantic alignment check — cheap Haiku call per widget. Returns null if ok,
+// otherwise a short sentence describing the mismatch. Fails open on any error
+// (never blocks dashboard generation).
+// ---------------------------------------------------------------------------
+
+export async function checkWidgetSemantics(
+  title: string,
+  chartType: string,
+  sampleRows: Record<string, unknown>[],
+): Promise<string | null> {
+  if (!sampleRows.length) return null;
+  try {
+    const raw = await callClaude(
+      SEMANTIC_CHECK_SYSTEM,
+      buildSemanticCheckUser(title, chartType, sampleRows),
+      { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'widget_semantic_check' },
+    );
+    const parsed = parseJson<{ ok: boolean; issue?: string }>(raw);
+    return parsed.ok ? null : (parsed.issue ?? 'Data does not match the title.');
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Star Schema Design — AI designs a Kimball star schema from source tables
 // ---------------------------------------------------------------------------
 
@@ -1157,11 +1184,20 @@ export async function generateDashboardInsights(
     { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'dashboard_insights' },
   );
   try {
-    const parsed = JSON.parse(raw.trim());
+    // Strip markdown code fences, then extract the outermost [...] array
+    let cleaned = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    if (start !== -1 && end > start) cleaned = cleaned.slice(start, end + 1);
+    const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed) && parsed.length >= 1) {
       return parsed.slice(0, 3).map(String);
     }
   } catch { /* fall through */ }
-  // Fallback: split by newline if JSON parse fails
-  return raw.split('\n').filter(Boolean).slice(0, 3);
+  // Fallback: extract quoted strings from the raw response
+  const matches = raw.match(/"([^"]{20,})"/g);
+  if (matches && matches.length >= 1) {
+    return matches.slice(0, 3).map((s) => s.slice(1, -1));
+  }
+  return [];
 }
