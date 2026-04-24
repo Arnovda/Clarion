@@ -977,8 +977,8 @@ export async function generateBusMatrixStreaming(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
-    max_tokens: 128000,
-    thinking: { type: 'enabled', budget_tokens: 12000 },
+    max_tokens: 32000,
+    thinking: { type: 'enabled', budget_tokens: 8000 },
     system: [{
       type: 'text',
       text: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),

@@ -1183,7 +1183,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
 
     emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
 
-    // Build FULL source context (with columns + samples) for the AI
+    // Build source context WITHOUT example values to keep the prompt compact
     const sourceTables = await semanticDb('source_tables as st')
       .where({ 'st.connection_id': connectionId, 'st.is_active': true })
       .select('st.*');
@@ -1196,16 +1196,19 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
     const sourceContext = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
       const cols = sourceColumns
         .filter((c: { table_id: number }) => c.table_id === t.id)
-        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean; example_values: unknown }) => {
-          const examples = c.example_values
-            ? ` — samples: ${JSON.stringify(typeof c.example_values === 'string' ? JSON.parse(c.example_values) : c.example_values)}`
-            : '';
-          return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}${examples}`;
+        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
+          return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
         }).join('\n');
       return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
     emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables — designing bus matrix…` });
+
+    // Send SSE keepalive comments every 20 seconds to prevent Azure / proxy timeout
+    // during the (potentially long) AI generation phase.
+    const keepaliveInterval = setInterval(() => {
+      try { res.write(': keepalive\n\n'); } catch { /* connection already closed */ }
+    }, 20_000);
 
     const { generateBusMatrixStreaming } = await import('../ai/AIService');
 
@@ -1219,6 +1222,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
         },
       );
     } catch (aiErr) {
+      clearInterval(keepaliveInterval);
       console.error('[products/bus-matrix-stream] AI call failed:', aiErr);
       const msg = aiErr instanceof Error ? aiErr.message : 'AI call failed';
       emit({ type: 'error', message: `AI design failed: ${msg}` });
@@ -1226,8 +1230,10 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
       return;
     }
 
+    clearInterval(keepaliveInterval);
     emit({ type: 'done', busMatrix });
   } catch (err) {
+    clearInterval(keepaliveInterval);
     console.error('[products/bus-matrix-stream] Error:', err);
     try {
       emit({ type: 'error', message: err instanceof Error ? err.message : 'Bus matrix design failed' });
