@@ -50,6 +50,7 @@ import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
 const app = express();
+app.set('trust proxy', 1); // trust Azure Container Apps / load balancer X-Forwarded-For
 
 // ---------------------------------------------------------------------------
 // Security middleware
