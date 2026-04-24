@@ -8,6 +8,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
 import { runTransformationChecks } from './transformationChecks';
@@ -130,9 +131,57 @@ async function setupAzure(db: Database): Promise<void> {
     await db.exec(`
       CREATE SECRET azure_secret (
         TYPE AZURE,
+        PROVIDER config,
         CONNECTION_STRING '${escaped}'
       );
     `);
+  }
+  try {
+    const ver = await db.all(
+      `SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'azure'`,
+    );
+    console.log(`[transformationRunner] azure ext: ${JSON.stringify(ver)}`);
+  } catch { /* non-fatal */ }
+}
+
+/** Parse an Azure Blob URI like `az://<container>/<path>` into parts. */
+function parseAzurePath(azPath: string): { container: string; blob: string } {
+  const match = azPath.match(/^az:\/\/([^/]+)\/(.+)$/);
+  if (!match) throw new Error(`Invalid Azure path: ${azPath}`);
+  return { container: match[1], blob: match[2] };
+}
+
+/**
+ * Write the result of a SELECT to Azure Blob Storage as Parquet.
+ *
+ * DuckDB's azure extension (v1.4) returns "Writing to Azure containers is
+ * currently not supported" on COPY TO az://... — so we stage Parquet to a
+ * local temp file and upload via @azure/storage-blob.
+ */
+async function writeParquetToAzure(
+  db: Database,
+  selectSql: string,
+  azurePath: string,
+): Promise<void> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbridge-pq-'));
+  const tmpFile = path.join(tmpDir, 'data.parquet').replace(/\\/g, '/');
+  const escaped = tmpFile.replace(/'/g, "''");
+  try {
+    await db.exec(`COPY (${selectSql}) TO '${escaped}' (FORMAT PARQUET);`);
+
+    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
+    if (!connStr) throw new Error('AZURE_STORAGE_CONNECTION_STRING not set');
+
+    const { container, blob } = parseAzurePath(azurePath);
+    const { BlobServiceClient } = await import('@azure/storage-blob');
+    const svc = BlobServiceClient.fromConnectionString(connStr);
+    const containerClient = svc.getContainerClient(container);
+    await containerClient.createIfNotExists();
+    const blobClient = containerClient.getBlockBlobClient(blob);
+    await blobClient.uploadFile(tmpFile);
+    console.log(`[transformationRunner] uploaded parquet → ${azurePath}`);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
@@ -314,9 +363,12 @@ async function generateMonthlyRollup(
     ...dims.map((c) => `"${c.column_name}"`),
   ].join(', ');
 
-  await db.exec(
-    `COPY (SELECT ${selects.join(', ')} FROM read_parquet('${escaped}') GROUP BY ${groupBy} ORDER BY month) TO '${escapedRollup}' (FORMAT PARQUET);`,
-  );
+  const rollupSelectSql = `SELECT ${selects.join(', ')} FROM read_parquet('${escaped}') GROUP BY ${groupBy} ORDER BY month`;
+  if (useAzure) {
+    await writeParquetToAzure(db, rollupSelectSql, rollupPath);
+  } else {
+    await db.exec(`COPY (${rollupSelectSql}) TO '${escapedRollup}' (FORMAT PARQUET);`);
+  }
 
   const cnt = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${escapedRollup}');`);
   const rowCount = Number((cnt[0] as { n: unknown }).n ?? 0);
@@ -540,8 +592,13 @@ export async function runProductTransformation(
             await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
           }
         } else {
-          // Full overwrite (works for both local and Azure)
-          await db.exec(`COPY ${tempTable} TO '${escapedPath}' (FORMAT PARQUET);`);
+          // Full overwrite — Azure requires staging-then-upload (DuckDB azure
+          // ext can't COPY TO az://); local writes stay direct.
+          if (useAzure) {
+            await writeParquetToAzure(db, `SELECT * FROM ${tempTable}`, parquetPath);
+          } else {
+            await db.exec(`COPY ${tempTable} TO '${escapedPath}' (FORMAT PARQUET);`);
+          }
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
         }
 
