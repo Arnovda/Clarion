@@ -167,9 +167,20 @@ function ProductsPageInner() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let busMatrix: any = null;
 
+      // Diagnostic counters — so the "Stream ended without result" message can
+      // tell us WHY: how many events arrived, what the last one was, elapsed time.
+      const streamStart = Date.now();
+      const eventCounts: Record<string, number> = {};
+      let lastEventType = 'none';
+      let lastDiag = '';
+      let totalBytes = 0;
+
       while (true) {
         const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
+        if (value) {
+          totalBytes += value.byteLength;
+          buffer += decoder.decode(value, { stream: !done });
+        }
 
         const lines = buffer.split('\n');
         buffer = done ? '' : (lines.pop() ?? '');
@@ -181,6 +192,9 @@ function ProductsPageInner() {
           catch { continue; }
 
           const type = event.type as string;
+          lastEventType = type;
+          eventCounts[type] = (eventCounts[type] ?? 0) + 1;
+
           if (type === 'phase') {
             addBuildLog(event.text as string);
           } else if (type === 'thinking') {
@@ -188,6 +202,9 @@ function ProductsPageInner() {
             setTimeout(() => {
               if (thinkingRef.current) thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
             }, 10);
+          } else if (type === 'diag') {
+            lastDiag = event.text as string;
+            addBuildLog(`[diag] ${lastDiag}`);
           } else if (type === 'error') {
             addBuildLog(`Error: ${event.message as string}`);
             setBuildDone(true);
@@ -201,7 +218,11 @@ function ProductsPageInner() {
       }
 
       if (!busMatrix) {
-        addBuildLog('Error: Stream ended without result');
+        const elapsed = ((Date.now() - streamStart) / 1000).toFixed(1);
+        const counts = Object.entries(eventCounts).map(([k, v]) => `${k}=${v}`).join(' ');
+        addBuildLog(`Error: Stream ended without result after ${elapsed}s (events: ${counts || 'none'}, last=${lastEventType}, bytes=${totalBytes})`);
+        if (lastDiag) addBuildLog(`Last diag: ${lastDiag}`);
+        addBuildLog('Check backend logs with the reqId prefix [bms-...] in Azure Log Stream.');
         setBuildDone(true);
         setBuilding(false);
         return;

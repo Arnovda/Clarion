@@ -1167,12 +1167,34 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 // ---------------------------------------------------------------------------
 
 router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  const reqId = `bms-${Date.now().toString(36)}`;
+  const startTs = Date.now();
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable any proxy buffering
   res.flushHeaders();
 
-  const emit = (data: Record<string, unknown>) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  console.log(`[${reqId}] bus-matrix-stream START (connectionId=${(req.body as { connectionId?: number })?.connectionId})`);
+
+  let clientDisconnected = false;
+  req.on('close', () => {
+    clientDisconnected = true;
+    console.warn(`[${reqId}] CLIENT DISCONNECTED after ${Date.now() - startTs}ms`);
+  });
+
+  const emit = (data: Record<string, unknown>) => {
+    try {
+      const written = res.write(`data: ${JSON.stringify(data)}\n\n`);
+      if (!written) {
+        console.warn(`[${reqId}] res.write returned false (backpressure) type=${data.type as string}`);
+      }
+    } catch (err) {
+      console.error(`[${reqId}] res.write failed type=${data.type as string}:`, err instanceof Error ? err.message : err);
+    }
+  };
+
+  let keepaliveInterval: NodeJS.Timeout | null = null;
 
   try {
     const { connectionId } = req.body as { connectionId: number };
@@ -1206,39 +1228,45 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
 
     // Send SSE keepalive comments every 20 seconds to prevent Azure / proxy timeout
     // during the (potentially long) AI generation phase.
-    const keepaliveInterval = setInterval(() => {
+    keepaliveInterval = setInterval(() => {
       try { res.write(': keepalive\n\n'); } catch { /* connection already closed */ }
     }, 20_000);
 
     const { generateBusMatrixStreaming } = await import('../ai/AIService');
 
     let busMatrix: Awaited<ReturnType<typeof generateBusMatrixStreaming>>;
+    const aiStart = Date.now();
     try {
       busMatrix = await generateBusMatrixStreaming(
         connection.name as string,
         sourceContext,
         (type, delta) => {
+          if (clientDisconnected) return; // don't fight with a dead socket
           if (type === 'thinking') emit({ type: 'thinking', text: delta });
+          else if (type === 'diag') emit({ type: 'diag', text: delta });
         },
       );
+      console.log(`[${reqId}] AI call completed in ${Date.now() - aiStart}ms`);
     } catch (aiErr) {
-      clearInterval(keepaliveInterval);
-      console.error('[products/bus-matrix-stream] AI call failed:', aiErr);
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
       const msg = aiErr instanceof Error ? aiErr.message : 'AI call failed';
+      console.error(`[${reqId}] AI call FAILED after ${Date.now() - aiStart}ms:`, msg, aiErr instanceof Error ? aiErr.stack : '');
       emit({ type: 'error', message: `AI design failed: ${msg}` });
       res.end();
       return;
     }
 
-    clearInterval(keepaliveInterval);
+    if (keepaliveInterval) clearInterval(keepaliveInterval);
+    console.log(`[${reqId}] Emitting 'done' (total ${Date.now() - startTs}ms, dims=${busMatrix.conformed_dimensions?.length ?? 0}, facts=${busMatrix.fact_tables?.length ?? 0})`);
     emit({ type: 'done', busMatrix });
   } catch (err) {
-    clearInterval(keepaliveInterval);
-    console.error('[products/bus-matrix-stream] Error:', err);
+    if (keepaliveInterval) clearInterval(keepaliveInterval);
+    console.error(`[${reqId}] Outer error after ${Date.now() - startTs}ms:`, err instanceof Error ? err.message : err, err instanceof Error ? err.stack : '');
     try {
       emit({ type: 'error', message: err instanceof Error ? err.message : 'Bus matrix design failed' });
     } catch { /* response already closed */ }
   }
+  console.log(`[${reqId}] res.end() (total ${Date.now() - startTs}ms, clientDisconnected=${clientDisconnected})`);
   res.end();
 });
 

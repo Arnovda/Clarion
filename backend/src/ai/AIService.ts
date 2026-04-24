@@ -970,10 +970,13 @@ export async function generateStarSchemaDesignStreaming(
 export async function generateBusMatrixStreaming(
   connectionName: string,
   sourceTablesContext: string,
-  onEvent: (type: 'thinking' | 'text', delta: string) => void,
+  onEvent: (type: 'thinking' | 'text' | 'diag', delta: string) => void,
 ): Promise<BusMatrixOutput> {
   const tenantId = await enforceAiBudget('bus_matrix_streaming');
   const currentDate = currentDateStr();
+  const corrId = `bm-${Date.now().toString(36)}`;
+  const t0 = Date.now();
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
@@ -987,29 +990,69 @@ export async function generateBusMatrixStreaming(
     messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
 
+  const sendDiag = (msg: string) => {
+    logger.info({ corrId, elapsedMs: Date.now() - t0, msg }, '[bus-matrix]');
+    try { onEvent('diag', msg); } catch { /* ignore */ }
+  };
+
+  sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking_budget=${params.thinking.budget_tokens}, contextChars=${sourceTablesContext.length})`);
+
   const stream = getClient().messages.stream(params);
   let fullText = '';
+  let thinkingChars = 0;
+  let textDeltaCount = 0;
+  let thinkingDeltaCount = 0;
+  let lastStopReason: string | null = null;
+  let sawMessageStart = false;
+  let sawMessageStop = false;
+  let sawTextBlockStart = false;
 
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta') {
+  try {
+    for await (const event of stream) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const delta = (event as any).delta as Record<string, unknown>;
-      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        onEvent('thinking', delta.thinking);
-      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        fullText += delta.text;
-        onEvent('text', delta.text);
+      const ev = event as any;
+
+      if (ev.type === 'message_start') {
+        sawMessageStart = true;
+        sendDiag(`message_start (model=${ev.message?.model ?? 'unknown'})`);
+      } else if (ev.type === 'content_block_start') {
+        const blockType = ev.content_block?.type;
+        if (blockType === 'text') sawTextBlockStart = true;
+        sendDiag(`content_block_start (index=${ev.index}, type=${blockType})`);
+      } else if (ev.type === 'content_block_delta') {
+        const delta = ev.delta as Record<string, unknown>;
+        if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+          thinkingChars += delta.thinking.length;
+          thinkingDeltaCount += 1;
+          onEvent('thinking', delta.thinking);
+        } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+          fullText += delta.text;
+          textDeltaCount += 1;
+          if (textDeltaCount === 1) sendDiag('first text_delta received (JSON output starting)');
+          onEvent('text', delta.text);
+        }
+      } else if (ev.type === 'content_block_stop') {
+        sendDiag(`content_block_stop (index=${ev.index})`);
+      } else if (ev.type === 'message_delta') {
+        if (ev.delta?.stop_reason) {
+          lastStopReason = ev.delta.stop_reason as string;
+          sendDiag(`message_delta stop_reason=${lastStopReason} output_tokens=${ev.usage?.output_tokens ?? '?'}`);
+        }
+      } else if (ev.type === 'message_stop') {
+        sawMessageStop = true;
+        sendDiag('message_stop');
       }
     }
-    // Capture stop reason from message_delta events
-    if (event.type === 'message_delta') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const md = event as any;
-      if (md.delta?.stop_reason && md.delta.stop_reason !== 'end_turn') {
-        logger.warn({ stop_reason: md.delta.stop_reason }, 'Bus matrix stream stopped unexpectedly');
-      }
-    }
+  } catch (streamErr) {
+    const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
+    logger.error({ corrId, elapsedMs: Date.now() - t0, err: msg, stack: streamErr instanceof Error ? streamErr.stack : undefined }, '[bus-matrix] Anthropic SDK stream threw');
+    sendDiag(`Anthropic SDK stream threw: ${msg}`);
+    throw new Error(`Anthropic stream error: ${msg}`);
   }
+
+  const streamSummary = `stream finished: msg_start=${sawMessageStart} text_block_start=${sawTextBlockStart} msg_stop=${sawMessageStop} stop_reason=${lastStopReason ?? 'null'} thinking_chars=${thinkingChars} (${thinkingDeltaCount} deltas) text_chars=${fullText.length} (${textDeltaCount} deltas) duration=${Date.now() - t0}ms`;
+  sendDiag(streamSummary);
+  logger.info({ corrId, streamSummary }, '[bus-matrix] stream summary');
 
   if (tenantId) {
     try {
@@ -1020,29 +1063,30 @@ export async function generateBusMatrixStreaming(
   }
 
   if (!fullText.trim()) {
-    logger.error({ sourceContextLength: sourceTablesContext.length }, 'Bus matrix AI returned no text output');
-    throw new Error('AI returned no text output — the source schema may be too large or the model encountered an error. Check the backend logs.');
+    logger.error({ corrId, sourceContextLength: sourceTablesContext.length, thinkingChars, stopReason: lastStopReason, sawTextBlockStart }, 'Bus matrix AI returned no text output');
+    throw new Error(`AI returned no text output (thinking_chars=${thinkingChars}, stop_reason=${lastStopReason}, text_block_started=${sawTextBlockStart}). Likely the model exhausted its token budget on thinking, or was blocked by Anthropic. Try reducing input size.`);
   }
 
-  logger.info({ textLength: fullText.length, preview: fullText.slice(0, 300) }, 'Bus matrix AI raw output preview');
+  logger.info({ corrId, textLength: fullText.length, preview: fullText.slice(0, 300) }, 'Bus matrix AI raw output preview');
 
   try {
     return parseJson<BusMatrixOutput>(fullText);
   } catch (parseErr) {
-    logger.warn({ textLength: fullText.length, last200: fullText.slice(-200) }, 'Bus matrix JSON parse failed — attempting truncation repair');
+    logger.warn({ corrId, textLength: fullText.length, last200: fullText.slice(-200) }, 'Bus matrix JSON parse failed — attempting truncation repair');
 
-    // Try to repair truncated JSON by closing open brackets/braces
     const repaired = repairTruncatedJson(fullText);
     if (repaired) {
       try {
         const result = parseJson<BusMatrixOutput>(repaired);
-        logger.info('Bus matrix JSON repaired after truncation');
+        logger.info({ corrId }, 'Bus matrix JSON repaired after truncation');
+        sendDiag('JSON was truncated but auto-repaired successfully');
         return result;
       } catch { /* fall through to error */ }
     }
 
-    logger.error({ textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON repair also failed');
-    throw new Error(`Failed to parse AI output as JSON: ${parseErr instanceof Error ? parseErr.message : 'unknown parse error'}`);
+    logger.error({ corrId, textLength: fullText.length, first500: fullText.slice(0, 500), last500: fullText.slice(-500) }, 'Bus matrix JSON repair also failed');
+    const preview = fullText.slice(-200).replace(/\n/g, ' ');
+    throw new Error(`Failed to parse AI output as JSON (stop_reason=${lastStopReason}, text_chars=${fullText.length}). Likely truncated. Tail: "${preview}"`);
   }
 }
 
