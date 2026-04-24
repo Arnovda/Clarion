@@ -1276,6 +1276,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
 // ---------------------------------------------------------------------------
 
 router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  const reqId = `bm-save-${Date.now().toString(36)}`;
   try {
     const { connectionId, busMatrix } = req.body as {
       connectionId: number;
@@ -1283,6 +1284,46 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
     };
     if (!connectionId || !busMatrix) {
       res.status(400).json({ ok: false, error: 'connectionId and busMatrix required' });
+      return;
+    }
+
+    // Pre-flight: validate the bus matrix shape so we fail fast with a readable
+    // message instead of a cryptic DB constraint error. Any of these being wrong
+    // means the AI output was truncated/malformed and the auto-repair produced
+    // incomplete data.
+    const validationErrors: string[] = [];
+    if (!Array.isArray(busMatrix.conformed_dimensions)) validationErrors.push('conformed_dimensions missing or not an array');
+    if (!Array.isArray(busMatrix.fact_tables)) validationErrors.push('fact_tables missing or not an array');
+    if (!Array.isArray(busMatrix.data_products)) validationErrors.push('data_products missing or not an array');
+    (busMatrix.data_products ?? []).forEach((dp, i) => {
+      if (!dp.name) validationErrors.push(`data_products[${i}].name missing`);
+      if (!Array.isArray(dp.owned_dimensions)) validationErrors.push(`data_products[${i}] "${dp.name}": owned_dimensions missing`);
+      if (!Array.isArray(dp.fact_tables)) validationErrors.push(`data_products[${i}] "${dp.name}": fact_tables missing`);
+      if (typeof dp.build_order !== 'number') validationErrors.push(`data_products[${i}] "${dp.name}": build_order missing`);
+    });
+    (busMatrix.conformed_dimensions ?? []).forEach((d, i) => {
+      if (!d.table_name) validationErrors.push(`conformed_dimensions[${i}].table_name missing`);
+      if (!Array.isArray(d.columns)) validationErrors.push(`conformed_dimensions[${i}] "${d.table_name}": columns missing`);
+      if (!Array.isArray(d.source_tables)) validationErrors.push(`conformed_dimensions[${i}] "${d.table_name}": source_tables missing`);
+      if (!d.transformation_sql) validationErrors.push(`conformed_dimensions[${i}] "${d.table_name}": transformation_sql missing`);
+    });
+    (busMatrix.fact_tables ?? []).forEach((f, i) => {
+      if (!f.table_name) validationErrors.push(`fact_tables[${i}].table_name missing`);
+      if (!Array.isArray(f.columns)) validationErrors.push(`fact_tables[${i}] "${f.table_name}": columns missing`);
+      if (!Array.isArray(f.source_tables)) validationErrors.push(`fact_tables[${i}] "${f.table_name}": source_tables missing`);
+      if (!Array.isArray(f.dimensions_used)) validationErrors.push(`fact_tables[${i}] "${f.table_name}": dimensions_used missing`);
+      if (!f.transformation_sql) validationErrors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql missing`);
+    });
+
+    console.log(`[${reqId}] build-bus-matrix START: ${busMatrix.conformed_dimensions?.length ?? 0} dims, ${busMatrix.fact_tables?.length ?? 0} facts, ${busMatrix.data_products?.length ?? 0} products, ${validationErrors.length} validation errors`);
+
+    if (validationErrors.length > 0) {
+      console.error(`[${reqId}] bus matrix failed validation:`, validationErrors.slice(0, 20));
+      res.status(400).json({
+        ok: false,
+        error: 'Bus matrix is incomplete — the AI output was likely truncated. Retry the design.',
+        details: validationErrors.slice(0, 10),
+      });
       return;
     }
 
@@ -1648,8 +1689,28 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
 
     }); // end transaction
 
+    console.log(`[${reqId}] build-bus-matrix SUCCESS: ${results.length} products created`);
     res.json({ ok: true, data: { products: results } });
-  } catch (err) { next(err); }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const code = (err as any)?.code ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const detail = (err as any)?.detail ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const constraint = (err as any)?.constraint ?? null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const table = (err as any)?.table ?? null;
+    console.error(`[${reqId}] build-bus-matrix FAILED: ${msg}`, { code, detail, constraint, table, stack });
+    if (!res.headersSent) {
+      res.status(500).json({
+        ok: false,
+        error: `Failed to save bus matrix: ${msg}`,
+        details: { code, constraint, table, detail },
+      });
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------

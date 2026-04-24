@@ -279,7 +279,22 @@ function ProductsPageInner() {
         loadKpis(p.id);
       }
     } catch (err) {
-      addBuildLog(`Error: ${err instanceof Error ? err.message : 'Build failed'}`);
+      // Surface the backend's actual error message + any details it included
+      // (Axios stashes server response under err.response.data).
+      const axiosErr = err as { response?: { data?: { error?: string; details?: unknown } }; message?: string };
+      const serverError = axiosErr?.response?.data?.error;
+      const serverDetails = axiosErr?.response?.data?.details;
+      if (serverError) {
+        addBuildLog(`Error: ${serverError}`);
+        if (serverDetails) {
+          const detailsStr = Array.isArray(serverDetails)
+            ? serverDetails.slice(0, 5).join('; ')
+            : JSON.stringify(serverDetails);
+          addBuildLog(`Details: ${detailsStr}`);
+        }
+      } else {
+        addBuildLog(`Error: ${axiosErr?.message ?? 'Build failed'}`);
+      }
     }
     setBuildDone(true);
     setBuilding(false);
