@@ -1007,8 +1007,30 @@ export async function generateBusMatrixStreaming(
   let sawMessageStop = false;
   let sawTextBlockStart = false;
 
+  // Watchdog + heartbeat: emit periodic progress diag so the client can SEE
+  // whether the stream is still making progress, and abort if Anthropic goes
+  // silent for IDLE_ABORT_MS (otherwise the for-await hangs forever).
+  let lastEventAt = Date.now();
+  const IDLE_ABORT_MS = 90_000;
+  const HEARTBEAT_MS = 10_000;
+  let watchdogFired = false;
+
+  const heartbeat = setInterval(() => {
+    const idle = Date.now() - lastEventAt;
+    sendDiag(`progress thinking=${thinkingChars}c/${thinkingDeltaCount}d text=${fullText.length}c/${textDeltaCount}d idle=${Math.round(idle / 1000)}s`);
+    if (idle > IDLE_ABORT_MS && !watchdogFired) {
+      watchdogFired = true;
+      sendDiag(`watchdog: no Anthropic event for ${Math.round(idle / 1000)}s — aborting stream`);
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (stream as any).controller?.abort?.();
+      } catch { /* best-effort */ }
+    }
+  }, HEARTBEAT_MS);
+
   try {
     for await (const event of stream) {
+      lastEventAt = Date.now();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ev = event as any;
 
@@ -1044,11 +1066,17 @@ export async function generateBusMatrixStreaming(
       }
     }
   } catch (streamErr) {
+    clearInterval(heartbeat);
     const msg = streamErr instanceof Error ? streamErr.message : String(streamErr);
-    logger.error({ corrId, elapsedMs: Date.now() - t0, err: msg, stack: streamErr instanceof Error ? streamErr.stack : undefined }, '[bus-matrix] Anthropic SDK stream threw');
+    logger.error({ corrId, elapsedMs: Date.now() - t0, err: msg, watchdogFired, stack: streamErr instanceof Error ? streamErr.stack : undefined }, '[bus-matrix] Anthropic SDK stream threw');
     sendDiag(`Anthropic SDK stream threw: ${msg}`);
-    throw new Error(`Anthropic stream error: ${msg}`);
+    // If we already have usable text, fall through and try to parse+repair it.
+    if (!fullText.trim()) {
+      throw new Error(`Anthropic stream error: ${msg}`);
+    }
+    sendDiag(`recovering with partial text (${fullText.length} chars) — will attempt JSON repair`);
   }
+  clearInterval(heartbeat);
 
   const streamSummary = `stream finished: msg_start=${sawMessageStart} text_block_start=${sawTextBlockStart} msg_stop=${sawMessageStop} stop_reason=${lastStopReason ?? 'null'} thinking_chars=${thinkingChars} (${thinkingDeltaCount} deltas) text_chars=${fullText.length} (${textDeltaCount} deltas) duration=${Date.now() - t0}ms`;
   sendDiag(streamSummary);
