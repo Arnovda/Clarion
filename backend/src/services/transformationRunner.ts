@@ -207,23 +207,38 @@ function productTablePath(productDir: string, tableName: string): string {
 async function createScanView(db: Database, viewName: string, scanPath: string, useAzure: boolean): Promise<void> {
   const escaped = scanPath.replace(/'/g, "''");
   // Always try delta_scan first (ingested tables are Delta format)
+  let deltaErr: unknown;
   try {
     await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${escaped}');`);
     return;
-  } catch {
+  } catch (e) {
+    deltaErr = e;
     // Fall through to parquet
   }
 
+  // Product tables are written as <dir>/data.parquet; try that first (works
+  // for both local and Azure — the azure extension supports parquet reads).
+  try {
+    await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
+    return;
+  } catch { /* skip */ }
+
+  // Glob fallback (local only — azure ext doesn't support globs reliably).
   if (!useAzure) {
-    // Local: try parquet glob
     try {
       await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
       return;
     } catch { /* skip */ }
-    // Try single file
-    try {
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}');`);
-    } catch { /* skip */ }
+  }
+
+  // Single-file fallback (path might already point at a .parquet file).
+  try {
+    await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}');`);
+    return;
+  } catch (parquetErr) {
+    const dMsg = deltaErr instanceof Error ? deltaErr.message : String(deltaErr);
+    const pMsg = parquetErr instanceof Error ? parquetErr.message : String(parquetErr);
+    console.warn(`[transformationRunner] createScanView("${viewName}") failed — path=${scanPath} delta=${dMsg} parquet=${pMsg}`);
   }
 }
 
