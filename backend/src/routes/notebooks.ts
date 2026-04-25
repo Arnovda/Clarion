@@ -48,13 +48,25 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
     }
   }
 
+  const registeredSchemas = new Set<string>();
   const createView = async (schema: string, viewName: string, tablePath: string) => {
     const safePath = tablePath.replace(/\\/g, '/').replace(/'/g, "''");
     const safeSchema = schema.replace(/"/g, '""');
     const safeView = viewName.replace(/"/g, '""');
     await db.exec(`CREATE SCHEMA IF NOT EXISTS "${safeSchema}";`);
+    registeredSchemas.add(safeSchema);
     if (isAzure) {
-      await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM delta_scan('${safePath}');`);
+      // ETL ingestion writes Delta; product transformations write Parquet
+      // (<dir>/data.parquet). Try delta_scan first, fall back to read_parquet.
+      try {
+        await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM delta_scan('${safePath}');`);
+        return;
+      } catch { /* try parquet */ }
+      try {
+        await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM read_parquet('${safePath}/data.parquet');`);
+        return;
+      } catch { /* fall through */ }
+      await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM read_parquet('${safePath}/*.parquet');`);
       return;
     }
     const fsPath = tablePath.replace(/\//g, path.sep);
@@ -102,6 +114,21 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
       } catch (err) {
         console.warn(`[notebooks] Failed to create view for product ${product.name}.${t.table_name}:`, err);
       }
+    }
+  }
+
+  // Allow unqualified table refs (e.g. `FROM fact_sales_order_lines`) to resolve
+  // against any registered schema — important so AI-generated SQL from the Ask
+  // page (which is unqualified) is paste-and-run in notebooks.
+  if (registeredSchemas.size > 0) {
+    const schemaList = [...registeredSchemas]
+      .map((s) => s.replace(/'/g, "''"))
+      .map((s) => `'${s}'`)
+      .join(',');
+    try {
+      await db.exec(`SET search_path = ${schemaList};`);
+    } catch (err) {
+      console.warn('[notebooks] Failed to set search_path:', err);
     }
   }
 
