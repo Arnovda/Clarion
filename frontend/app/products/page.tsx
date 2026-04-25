@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Database, X, ChevronRight } from 'lucide-react';
+import { Database, X, ChevronRight, Sparkles, Check, Pencil, Trash2, Code as CodeIcon } from 'lucide-react';
+import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import RequireRole from '@/components/RequireRole';
@@ -1368,6 +1369,23 @@ function KpisTab({
   const [formPlainText, setFormPlainText] = useState('');
   const [formSql, setFormSql] = useState('');
   const [saving, setSaving] = useState(false);
+  const [expandedSql, setExpandedSql] = useState<Set<number>>(new Set());
+
+  const toggleSql = (id: number) => {
+    setExpandedSql((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const prettySql = (raw: string): string => {
+    try {
+      return sqlFormatter(raw, { language: 'duckdb', keywordCase: 'upper', tabWidth: 2 });
+    } catch {
+      return raw;
+    }
+  };
 
   useEffect(() => {
     if (selectedId && !details.has(selectedId)) onLoadProduct(selectedId);
@@ -1418,64 +1436,148 @@ function KpisTab({
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
           {products.length > 1 && (
-            <select value={selectedId ?? ''} onChange={(e) => setSelectedId(Number(e.target.value))}
-              className="text-sm bg-white/60 border border-white/80 rounded-xl px-3 py-2 focus:ring-2 focus:ring-cyan-400/30">
+            <select
+              value={selectedId ?? ''}
+              onChange={(e) => setSelectedId(Number(e.target.value))}
+              className="text-[13px] bg-raised border border-line rounded-md px-3 py-2 text-ink-2 focus:outline-none focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] transition-colors"
+            >
               {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           )}
         </div>
-        <button onClick={() => { resetForm(); setShowAdd(true); }}
-          className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover transition-colors">
-          + Add KPI
+        <button
+          onClick={() => { resetForm(); setShowAdd(true); }}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-ocean text-white text-[12.5px] font-medium rounded-md hover:bg-ocean-hover transition-colors focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+        >
+          <span className="text-[14px] leading-none">+</span> Add KPI
         </button>
       </div>
 
       {tableNames.length > 0 && (
-        <div className="mb-4 bg-surface-container rounded-xl px-4 py-2.5 text-xs text-on-surface-variant">
-          <span className="font-semibold">Available tables: </span>{tableNames.join(', ')}
+        <div className="mb-6 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mr-1">
+            Available tables
+          </span>
+          {tableNames.map((n) => (
+            <span
+              key={n}
+              className="text-[10.5px] font-mono px-2 py-0.5 rounded-sm border border-line bg-softer text-ink-3"
+            >
+              {n}
+            </span>
+          ))}
         </div>
       )}
 
       {productKpis.length === 0 ? (
-        <div className="bg-raised border border-line rounded-lg p-10 text-center">
-          <p className="text-on-surface-variant">No KPIs defined yet.</p>
-          <p className="text-sm text-on-surface-variant/70 mt-1">KPIs proposed by the AI during design will appear here.</p>
+        <div className="bg-raised border border-line rounded-lg py-16 text-center">
+          <p className="font-display italic text-[18px] text-ink-2">No KPIs defined yet.</p>
+          <p className="text-[12.5px] text-muted mt-1.5">KPIs proposed by the AI during design will appear here.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {productKpis.map((kpi) => (
-            <div key={kpi.id} className="bg-raised border border-line rounded-lg p-5 hover:border-line-strong transition-all">
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-on-surface">{kpi.name}</h3>
-                  {kpi.ai_draft && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warn-soft text-warn font-medium">AI Suggested</span>}
+          {productKpis.map((kpi) => {
+            const isExpanded = expandedSql.has(kpi.id);
+            return (
+              <div
+                key={kpi.id}
+                className={`group relative bg-raised border rounded-lg p-5 transition-all hover:shadow-sm overflow-hidden ${
+                  kpi.ai_draft ? 'border-ai/30 hover:border-ai/50' : 'border-line hover:border-line-strong'
+                }`}
+              >
+                {/* AI accent stripe */}
+                {kpi.ai_draft && (
+                  <div className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-ai/30 via-ai to-ai/30" />
+                )}
+
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="flex-1 min-w-0">
+                    {kpi.ai_draft && (
+                      <div className="flex items-center gap-1.5 mb-1.5">
+                        <Sparkles className="w-3 h-3 text-ai" strokeWidth={2} />
+                        <span className="text-[10px] font-mono uppercase tracking-[0.12em] text-ai">
+                          AI suggested
+                        </span>
+                      </div>
+                    )}
+                    <h3 className="font-display font-medium text-[18px] text-ink leading-tight tracking-[-0.01em]">
+                      {kpi.name}
+                    </h3>
+                  </div>
+
+                  <div className="flex gap-0.5 opacity-50 group-hover:opacity-100 transition-opacity shrink-0">
+                    {kpi.ai_draft && (
+                      <button
+                        onClick={() => handleApproveKpi(kpi)}
+                        title="Confirm"
+                        className="p-1.5 rounded-sm text-muted hover:text-ok hover:bg-ok-soft transition-colors"
+                      >
+                        <Check className="w-3.5 h-3.5" strokeWidth={2} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => openEdit(kpi)}
+                      title="Edit"
+                      className="p-1.5 rounded-sm text-muted hover:text-ink-2 hover:bg-softer transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5" strokeWidth={2} />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteKpi(kpi.id)}
+                      title="Delete"
+                      className="p-1.5 rounded-sm text-muted hover:text-err hover:bg-err/5 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-1">
-                  {kpi.ai_draft && (
-                    <button onClick={() => handleApproveKpi(kpi)} className="text-[10px] px-2 py-1 bg-ok-soft text-ok rounded hover:bg-ok/25 transition-colors">Confirm</button>
-                  )}
-                  <button onClick={() => openEdit(kpi)} className="text-[10px] px-2 py-1 bg-white/60 text-on-surface-variant rounded hover:bg-white/80 transition-colors">Edit</button>
-                  <button onClick={() => handleDeleteKpi(kpi.id)} className="text-[10px] px-2 py-1 bg-err/10 text-err rounded hover:bg-err/20 transition-colors">Delete</button>
-                </div>
+
+                {/* Description */}
+                {kpi.description && (
+                  <p className="text-[13px] text-ink-3 leading-[1.55] mb-3.5">
+                    {kpi.description}
+                  </p>
+                )}
+
+                {/* Business Definition — quoted */}
+                {kpi.formula_plain_text && (
+                  <div className="border-l-2 border-ocean-soft pl-3 mb-1">
+                    <p className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-1">
+                      Definition
+                    </p>
+                    <p className="font-display italic text-[14.5px] text-ink-2 leading-[1.5]">
+                      {kpi.formula_plain_text}
+                    </p>
+                  </div>
+                )}
+
+                {/* SQL toggle */}
+                {kpi.formula_sql && (
+                  <div className="border-t border-line pt-3 mt-4">
+                    <button
+                      onClick={() => toggleSql(kpi.id)}
+                      className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.12em] text-muted hover:text-ocean transition-colors"
+                    >
+                      <CodeIcon className="w-3 h-3" strokeWidth={2} />
+                      SQL formula
+                      <span className="text-muted-2 font-sans text-[11px] leading-none">
+                        {isExpanded ? '−' : '+'}
+                      </span>
+                    </button>
+                    {isExpanded && (
+                      <pre className="text-[11.5px] font-mono bg-soft border border-line rounded-md px-3 py-2.5 mt-2 overflow-x-auto text-ink-2 leading-[1.55] whitespace-pre">
+{prettySql(kpi.formula_sql)}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </div>
-              {kpi.description && <p className="text-sm text-on-surface-variant mb-2">{kpi.description}</p>}
-              {kpi.formula_plain_text && (
-                <div className="mb-2">
-                  <p className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">Business Definition</p>
-                  <p className="text-sm text-on-surface">{kpi.formula_plain_text}</p>
-                </div>
-              )}
-              {kpi.formula_sql && (
-                <div>
-                  <p className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">SQL Formula</p>
-                  <pre className="text-xs font-mono bg-ink text-white/80 rounded-lg px-3 py-2 mt-0.5 overflow-x-auto">{kpi.formula_sql}</pre>
-                </div>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
