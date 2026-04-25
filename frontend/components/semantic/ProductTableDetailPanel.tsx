@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { format as formatSql } from 'sql-formatter';
 import api from '@/lib/api';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -590,6 +591,54 @@ export default function ProductTableDetailPanel({
   );
 }
 
+// ─── SQL syntax highlighting (lightweight, regex-based) ────────────────────
+const SQL_KEYWORDS = new Set([
+  'SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET',
+  'JOIN','LEFT','RIGHT','INNER','OUTER','FULL','CROSS','ON','USING',
+  'AS','AND','OR','NOT','IN','EXISTS','BETWEEN','LIKE','ILIKE','IS','NULL',
+  'CASE','WHEN','THEN','ELSE','END','UNION','ALL','DISTINCT','WITH','RECURSIVE',
+  'INSERT','INTO','VALUES','UPDATE','SET','DELETE','CREATE','TABLE','VIEW','OR','REPLACE',
+  'COPY','TO','FORMAT','PARQUET','CAST','TRY_CAST','OVER','PARTITION','ROW_NUMBER',
+  'COALESCE','IFNULL','NULLIF','GREATEST','LEAST','ASC','DESC',
+]);
+const SQL_FUNCS = new Set([
+  'COUNT','SUM','AVG','MIN','MAX','ROUND','ABS','CEIL','FLOOR',
+  'UPPER','LOWER','TRIM','LENGTH','SUBSTRING','SUBSTR','REPLACE','CONCAT',
+  'DATE','DATE_TRUNC','DATE_PART','EXTRACT','NOW','CURRENT_DATE','CURRENT_TIMESTAMP',
+  'STRFTIME','STRPTIME','MD5','HASH','LIST','STRUCT','JSON',
+]);
+
+function HighlightedSql({ sql }: { sql: string }) {
+  // Tokenize: comments, strings, numbers, identifiers/keywords, punctuation.
+  // Capturing groups in the regex are preserved by .split().
+  const re = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|\b\d+(?:\.\d+)?\b|\b\w+\b)/g;
+  const parts = sql.split(re);
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (!p) return null;
+        if (p.startsWith('--') || p.startsWith('/*')) {
+          return <span key={i} className="text-white/40 italic">{p}</span>;
+        }
+        if (p.startsWith("'") || p.startsWith('"')) {
+          return <span key={i} className="text-emerald-300">{p}</span>;
+        }
+        if (/^\d/.test(p)) {
+          return <span key={i} className="text-amber-300">{p}</span>;
+        }
+        const upper = p.toUpperCase();
+        if (SQL_KEYWORDS.has(upper)) {
+          return <span key={i} className="text-sky-300 font-semibold">{p}</span>;
+        }
+        if (SQL_FUNCS.has(upper)) {
+          return <span key={i} className="text-violet-300">{p}</span>;
+        }
+        return <span key={i}>{p}</span>;
+      })}
+    </>
+  );
+}
+
 // ─── SqlViewer — lazy-loaded "Show SQL" toggle ──────────────────────────────
 function SqlViewer({ pgTableId }: { pgTableId: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'open' | 'error'>('idle');
@@ -601,7 +650,16 @@ function SqlViewer({ pgTableId }: { pgTableId: number }) {
     setState('loading');
     try {
       const res = await api.get(`/semantic/product-tables/${pgTableId}/sql`);
-      setSql(res.data.data.transformation_sql ?? null);
+      const raw = res.data.data.transformation_sql ?? null;
+      let pretty = raw;
+      if (raw) {
+        try {
+          pretty = formatSql(raw, { language: 'duckdb', keywordCase: 'upper', tabWidth: 2 });
+        } catch {
+          pretty = raw;
+        }
+      }
+      setSql(pretty);
       setState('open');
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load SQL';
@@ -670,8 +728,8 @@ function SqlViewer({ pgTableId }: { pgTableId: number }) {
         </div>
       </div>
       {sql ? (
-        <pre className="preview-terminal rounded-md overflow-auto max-h-80 px-4 py-3 text-[12px] font-mono leading-relaxed whitespace-pre">
-          {sql}
+        <pre className="preview-terminal rounded-md overflow-auto max-h-96 px-4 py-3 text-[12px] font-mono leading-[1.55] whitespace-pre text-white/85">
+          <HighlightedSql sql={sql} />
         </pre>
       ) : (
         <p className="text-[12px] text-muted-2 italic">No transformation SQL is stored for this table.</p>

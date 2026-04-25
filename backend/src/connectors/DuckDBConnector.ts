@@ -359,8 +359,18 @@ export class DuckDBConnector extends BaseConnector {
   /** Create a DuckDB view for a Delta or Parquet table. */
   private async createDeltaView(db: Database, viewName: string, tablePath: string): Promise<void> {
     if (this.isAzure) {
-      // Azure: always use delta_scan (ETL writes Delta format)
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${tablePath.replace(/'/g, "''")}');`);
+      // Azure: ETL ingestion writes Delta; product transformations write Parquet
+      // (<dir>/data.parquet). Try delta_scan first, fall back to read_parquet.
+      const escaped = tablePath.replace(/'/g, "''");
+      try {
+        await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${escaped}');`);
+        return;
+      } catch { /* not a delta table — try parquet */ }
+      try {
+        await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
+        return;
+      } catch { /* fall through */ }
+      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
       return;
     }
 
