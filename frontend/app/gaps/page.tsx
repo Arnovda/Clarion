@@ -330,10 +330,15 @@ function GapsPageInner() {
                   if (!row) return null;
                   return (
                     <div className="bg-ink p-5 border-t border-line">
+                      {row.flag_reason && (
+                        <div className="mb-4 flex items-start gap-2 px-3 py-2 rounded-md bg-err-soft/15 border border-err/40">
+                          <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-err mt-0.5">Blocked</span>
+                          <p className="text-[12px] text-err/90 leading-relaxed">{row.flag_reason}</p>
+                        </div>
+                      )}
                       <pre className="text-white/80 font-mono text-[11px] overflow-x-auto whitespace-pre-wrap leading-relaxed">
                         {row.generated_sql ? formatSql(row.generated_sql) : '-- No SQL generated'}
                       </pre>
-                      {row.flag_reason && <p className="mt-2 text-[11px] text-err">Flag: {row.flag_reason}</p>}
                     </div>
                   );
                 })()}
