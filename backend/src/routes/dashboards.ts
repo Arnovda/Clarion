@@ -111,12 +111,14 @@ async function executeSpecForValidation(
   spec: DashboardSpec,
   connectionId: number,
   tenantId?: number,
+  dataLayer?: 'product' | 'source',
 ): Promise<WidgetExecutionResult[]> {
   // Wrap all RLS-dependent queries in a single transaction
+  const useSource = dataLayer === 'source';
   const { connection, productPath } = await semanticDb.transaction(async (trx) => {
     if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
     const conn = await trx('connections').where({ id: connectionId }).first();
-    const pp = await getProductWarehousePath(connectionId, trx);
+    const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
     return { connection: conn, productPath: pp };
   });
   if (!connection) return [];
@@ -164,11 +166,12 @@ async function executeSpecForValidation(
 
 router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, request, answers, productIds } = req.body as {
+    const { connectionId, request, answers, productIds, dataLayer } = req.body as {
       connectionId: number;
       request: string;
       answers?: string[];
       productIds?: number[];
+      dataLayer?: 'product' | 'source';
     };
 
     if (!request?.trim()) {
@@ -182,8 +185,11 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       ? `${request}\n\nAdditional requirements from the user:\n${nonEmptyAnswers.map((a) => `- ${a}`).join('\n')}`
       : request;
 
-    // Check for product layer first — star schema context is much better for dashboards
-    const productCtx = await buildProductSemanticContext(connectionId, productIds);
+    // Default = product layer (cleaner Kimball star schema). Honour explicit
+    // 'source' opt-in for users who want raw source-layer dashboards.
+    const productCtx = dataLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -197,7 +203,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets.
     // Also runs a cheap Haiku-based semantic check: does each widget's data match its title?
     try {
-      const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId);
+      const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId, dataLayer);
 
       // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
       const semanticIssues = await Promise.all(
@@ -232,14 +238,19 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 
 router.post('/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, request, productIds } = req.body as { connectionId: number; request: string; productIds?: number[] };
+    const { connectionId, request, productIds, dataLayer } = req.body as {
+      connectionId: number; request: string; productIds?: number[];
+      dataLayer?: 'product' | 'source';
+    };
 
     if (!request?.trim()) {
       res.status(400).json({ ok: false, error: 'request is required' });
       return;
     }
 
-    const productCtx = await buildProductSemanticContext(connectionId, productIds);
+    const productCtx = dataLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -257,11 +268,12 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
 
 router.post('/refine-spec', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, refinement, currentSpec, productIds } = req.body as {
+    const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
       connectionId: number;
       refinement: string;
       currentSpec: DashboardSpec;
       productIds?: number[];
+      dataLayer?: 'product' | 'source';
     };
 
     if (!refinement?.trim()) {
@@ -273,7 +285,9 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
       return;
     }
 
-    const productCtx = await buildProductSemanticContext(connectionId, productIds);
+    const productCtx = dataLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId, productIds);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -291,10 +305,11 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
 
 router.post('/execute', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, sql, filterValues = {} } = req.body as {
+    const { connectionId, sql, filterValues = {}, dataLayer } = req.body as {
       connectionId: number;
       sql: string;
       filterValues: Record<string, string>;
+      dataLayer?: 'product' | 'source';
     };
 
     // Substitute {{key}} placeholders with filter values
@@ -326,10 +341,11 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
 
     // Wrap all RLS-dependent queries in a single transaction to guarantee tenant context
     const tenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
     const { connection, productPath } = await semanticDb.transaction(async (trx) => {
       if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
       const conn = await trx('connections').where({ id: connectionId }).first();
-      const pp = await getProductWarehousePath(connectionId, trx);
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
       return { connection: conn, productPath: pp };
     });
 
@@ -369,9 +385,10 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
 
 router.post('/batch-execute', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, widgets } = req.body as {
+    const { connectionId, widgets, dataLayer } = req.body as {
       connectionId: number;
       widgets: Array<{ id: string; sql: string; filterValues: Record<string, string> }>;
+      dataLayer?: 'product' | 'source';
     };
 
     if (!Array.isArray(widgets) || widgets.length === 0) {
@@ -380,10 +397,11 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
     }
 
     const tenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
     const { connection, productPath } = await semanticDb.transaction(async (trx) => {
       if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
       const conn = await trx('connections').where({ id: connectionId }).first();
-      const pp = await getProductWarehousePath(connectionId, trx);
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
       return { connection: conn, productPath: pp };
     });
 
@@ -445,10 +463,11 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 
 router.post('/filter-options', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, table, column } = req.body as {
+    const { connectionId, table, column, dataLayer } = req.body as {
       connectionId: number;
       table: string;
       column: string;
+      dataLayer?: 'product' | 'source';
     };
 
     if (!table || !column) {
@@ -458,10 +477,11 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
 
     // Wrap all RLS-dependent queries in a single transaction
     const filterTenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
     const { connection: filterConn, productPath: filterProductPath } = await semanticDb.transaction(async (trx) => {
       if (filterTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(filterTenantId)}'`);
       const conn = await trx('connections').where({ id: connectionId }).first();
-      const pp = await getProductWarehousePath(connectionId, trx);
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
       return { connection: conn, productPath: pp };
     });
 

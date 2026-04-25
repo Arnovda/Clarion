@@ -36,6 +36,25 @@ function getDialect(connection: { query_engine?: string } | undefined): SqlDiale
   return connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite';
 }
 
+export type DataLayer = 'product' | 'source';
+
+/**
+ * Resolve which data layer to query.
+ *
+ * Default is 'product' whenever a product layer exists for this connection.
+ * The client can opt into 'source' explicitly (e.g. an admin debugging the raw
+ * source schema). When no product layer exists, source is the only option.
+ *
+ * No silent fallback: once we've decided 'product', the rest of the pipeline
+ * (including the repair loop) stays on the product layer. Earlier behaviour
+ * was to fall back to source when product SQL failed, which yielded
+ * inconsistent answers across follow-up questions.
+ */
+function resolveDataLayer(requested: unknown, hasProduct: boolean): DataLayer {
+  if (requested === 'source') return 'source';
+  return hasProduct ? 'product' : 'source';
+}
+
 // Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
 import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
 import { buildCacheKey, getCachedSql, putCachedSql } from '../services/queryCache';
@@ -146,8 +165,9 @@ async function upsertDefinitionGap(queryLogId: number, description: string, ques
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, question, domains, conversationId } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
+      dataLayer?: 'product' | 'source';
     };
 
     if (!question?.trim()) {
@@ -160,9 +180,11 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       ? await loadConversationHistory(conversationId)
       : undefined;
 
-    // 0. Check for product layer — if a star schema exists with transformed tables,
-    //    use product context (cleaner Kimball model) instead of raw source context.
-    const productCtx = await buildProductSemanticContext(connectionId);
+    // 0. Resolve data layer. Default = product (when one exists). Explicit
+    //    'source' is honoured for users who want to query raw source data.
+    const productCtx = requestedLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId);
     const tenantId = req.user!.tenantId;
     const productWarehouse = productCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -170,8 +192,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           return getProductWarehousePath(connectionId, trx);
         })
       : null;
+    const layer = resolveDataLayer(requestedLayer, !!(productCtx && productWarehouse));
 
-    if (productCtx && productWarehouse) {
+    if (layer === 'product' && productCtx && productWarehouse) {
       // ── PRODUCT LAYER QUERY PATH ──────────────────────────────────────
       const connection = await semanticDb('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb'; // product layer always uses DuckDB
@@ -928,8 +951,9 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
   };
 
   try {
-    const { connectionId, question, domains, conversationId } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
+      dataLayer?: 'product' | 'source';
     };
 
     if (!question?.trim()) {
@@ -942,9 +966,11 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       ? await loadConversationHistory(conversationId)
       : undefined;
 
-    // ── 0. Check for product layer ────────────────────────────────────────
+    // ── 0. Resolve data layer (default = product when available) ───────────
     emit({ type: 'phase', text: 'Loading context…' });
-    const thinkProductCtx = await buildProductSemanticContext(connectionId);
+    const thinkProductCtx = requestedLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId);
     const thinkTenantId = req.user!.tenantId;
     const thinkProductWarehouse = thinkProductCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -952,8 +978,9 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
           return getProductWarehousePath(connectionId, trx);
         })
       : null;
+    const thinkLayer = resolveDataLayer(requestedLayer, !!(thinkProductCtx && thinkProductWarehouse));
 
-    if (thinkProductCtx && thinkProductWarehouse) {
+    if (thinkLayer === 'product' && thinkProductCtx && thinkProductWarehouse) {
       // ── PRODUCT LAYER STREAMING PATH ──────────────────────────────────
       const connection = await semanticDb('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb';
@@ -1290,6 +1317,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     const {
       connectionId, question, originalSql, originalRows, warning,
       conversationHistory, clarificationAnswer,
+      dataLayer: requestedLayer,
     } = req.body as {
       connectionId: number;
       question: string;
@@ -1298,59 +1326,86 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
       warning: string;
       conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
       clarificationAnswer?: string;
+      dataLayer?: 'product' | 'source';
     };
 
-    // ── Rebuild semantic context ──
-    const tables = await semanticDb('source_tables')
-      .where({ connection_id: connectionId, is_active: true });
+    // ── Resolve data layer: stay on the same layer the original query used.
+    //    Earlier behaviour was to always rebuild source context + use a source
+    //    connector here, which silently dropped the user out of the product
+    //    layer mid-investigation and produced inconsistent answers across
+    //    follow-up turns.
+    const repairProductCtx = requestedLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId);
+    const repairTenantId = req.user!.tenantId;
+    const repairProductWarehouse = repairProductCtx
+      ? await semanticDb.transaction(async (trx) => {
+          if (repairTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(repairTenantId)}'`);
+          return getProductWarehousePath(connectionId, trx);
+        })
+      : null;
+    const repairLayer = resolveDataLayer(requestedLayer, !!(repairProductCtx && repairProductWarehouse));
 
-    const columns = await semanticDb('source_columns')
-      .join('source_tables', 'source_columns.table_id', 'source_tables.id')
-      .where('source_tables.connection_id', connectionId)
-      .where('source_tables.is_active', true)
-      .select('source_columns.*', 'source_tables.table_name');
+    let semanticContext: string;
+    let relationshipContext: string;
 
-    const tableIds = tables.map((t: { id: number }) => t.id);
-    const relationships = tableIds.length
-      ? await semanticDb('table_relationships')
-          .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
-          .leftJoin('source_columns as tc', 'table_relationships.to_column_id', 'tc.id')
-          .leftJoin('source_tables  as ft', 'table_relationships.from_table_id', 'ft.id')
-          .leftJoin('source_tables  as tt', 'table_relationships.to_table_id', 'tt.id')
-          .whereIn('table_relationships.from_table_id', tableIds)
-          .select(
-            'ft.table_name as from_table', 'fc.column_name as from_column',
-            'tt.table_name as to_table',   'tc.column_name as to_column',
-            'table_relationships.relationship_type', 'table_relationships.description',
-          )
-      : [];
+    if (repairLayer === 'product' && repairProductCtx) {
+      semanticContext     = repairProductCtx.semanticContext;
+      relationshipContext = repairProductCtx.relationshipContext;
+    } else {
+      // ── Source-layer context (legacy path) ──
+      const tables = await semanticDb('source_tables')
+        .where({ connection_id: connectionId, is_active: true });
 
-    const semanticContext = tables
-      .map((t: { id: number; table_name: string; description: string }) => {
-        const cols = columns
-          .filter((c: { table_id: number }) => c.table_id === t.id)
-          .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
-            `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
-          )
-          .join('\n');
-        return `Table: ${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
-      })
-      .join('\n\n');
+      const columns = await semanticDb('source_columns')
+        .join('source_tables', 'source_columns.table_id', 'source_tables.id')
+        .where('source_tables.connection_id', connectionId)
+        .where('source_tables.is_active', true)
+        .select('source_columns.*', 'source_tables.table_name');
 
-    const relationshipContext = relationships.length
-      ? relationships
-          .map((r: { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }) => {
-            const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
-            const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
-            return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
-          })
-          .join('\n')
-      : 'No relationships defined.';
+      const tableIds = tables.map((t: { id: number }) => t.id);
+      const relationships = tableIds.length
+        ? await semanticDb('table_relationships')
+            .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
+            .leftJoin('source_columns as tc', 'table_relationships.to_column_id', 'tc.id')
+            .leftJoin('source_tables  as ft', 'table_relationships.from_table_id', 'ft.id')
+            .leftJoin('source_tables  as tt', 'table_relationships.to_table_id', 'tt.id')
+            .whereIn('table_relationships.from_table_id', tableIds)
+            .select(
+              'ft.table_name as from_table', 'fc.column_name as from_column',
+              'tt.table_name as to_table',   'tc.column_name as to_column',
+              'table_relationships.relationship_type', 'table_relationships.description',
+            )
+        : [];
 
-    // ── SQLite connection ──
+      semanticContext = tables
+        .map((t: { id: number; table_name: string; description: string }) => {
+          const cols = columns
+            .filter((c: { table_id: number }) => c.table_id === t.id)
+            .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
+              `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
+            )
+            .join('\n');
+          return `Table: ${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+        })
+        .join('\n\n');
+
+      relationshipContext = relationships.length
+        ? relationships
+            .map((r: { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }) => {
+              const from = r.from_column ? `${r.from_table}.${r.from_column}` : r.from_table;
+              const to   = r.to_column   ? `${r.to_table}.${r.to_column}`     : r.to_table;
+              return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
+            })
+            .join('\n')
+        : 'No relationships defined.';
+    }
+
+    // ── Connection + connector for diagnostics — match the layer ──
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
-    const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
-    sqliteConnector = await createConnector(connection);
+    sqliteConnector = repairLayer === 'product' && repairProductWarehouse
+      ? await createProductConnector(repairProductWarehouse, connection.id, repairTenantId)
+      : await createConnector(connection);
     await sqliteConnector.connect();
 
     // ── Build initial conversation ──
@@ -1373,7 +1428,9 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     for (let turn = 0; turn < MAX_TURNS; turn++) {
       let raw: string;
       try {
-        const repairDialect = connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite';
+        const repairDialect: SqlDialect = repairLayer === 'product'
+          ? 'duckdb'
+          : (connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite');
         raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages);
       } catch (err: unknown) {
         send('error', { text: 'Claude API call failed. Please try again.' });

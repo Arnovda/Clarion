@@ -85,6 +85,8 @@ export default function DashboardsPage() {
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
   const [products, setProducts] = useState<{ id: number; name: string; description: string; status: string }[]>([]);
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  // Default = product layer. Toggle visible to admins for opt-in source-layer dashboards.
+  const [useSourceLayer, setUseSourceLayer] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [showShared, setShowShared] = useState(false);
@@ -168,6 +170,7 @@ export default function DashboardsPage() {
         const res = await api.post('/dashboards/batch-execute', {
           connectionId: connId,
           widgets: widgetsPayload,
+          ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
         });
 
         if (res.data.ok) {
@@ -222,7 +225,7 @@ export default function DashboardsPage() {
 
   // ── Load filter options ───────────────────────────────────────────────────
 
-  async function loadFilterOptions(filters: FilterSpec[], connId: number) {
+  async function loadFilterOptions(filters: FilterSpec[], connId: number, dataLayer?: 'product' | 'source') {
     for (const f of filters) {
       if (f.type === 'select' && f.table && f.column) {
         try {
@@ -230,6 +233,7 @@ export default function DashboardsPage() {
             connectionId: connId,
             table: f.table,
             column: f.column,
+            ...(dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
           });
           setFilterOptions((prev) => ({ ...prev, [f.id]: res.data.data.options }));
         } catch {
@@ -260,6 +264,7 @@ export default function DashboardsPage() {
         request: createInput.trim(),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
+        ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
       });
       setRefinementQuestions(res.data.data.questions ?? []);
     } catch {
@@ -284,8 +289,11 @@ export default function DashboardsPage() {
         answers: answers?.filter((a) => a.trim()),
         ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
+        ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
       });
       const spec: DashboardSpec = res.data.data.spec;
+      // Stamp the layer onto the spec so saves + re-executions stay consistent
+      spec.dataLayer = useSourceLayer ? 'source' : 'product';
       const defaults = buildDefaultFilters(spec.filters);
       setCurrentSpec(spec);
       setFilterValues(defaults);
@@ -293,7 +301,7 @@ export default function DashboardsPage() {
       setChatMessages([]);
       setIsUnsaved(true);
       setMode('viewing');
-      loadFilterOptions(spec.filters, connectionId);
+      loadFilterOptions(spec.filters, connectionId, spec.dataLayer);
       executeAllWidgets(spec, defaults, null, connectionId);
       setCreateInput('');
     } catch {
@@ -355,7 +363,7 @@ export default function DashboardsPage() {
       setSettingsOpen(false);
       const saved = dashboards.find((d) => d.id === id);
       setAutoRefreshActive(!!(saved?.auto_refresh_seconds && saved.auto_refresh_seconds > 0));
-      loadFilterOptions(spec.filters, connectionId);
+      loadFilterOptions(spec.filters, connectionId, spec.dataLayer);
       executeAllWidgets(spec, defaults, null, connectionId);
     } catch {
       // ignore
@@ -402,6 +410,7 @@ export default function DashboardsPage() {
       const res = await api.post('/dashboards/batch-execute', {
         connectionId,
         widgets: [{ id: widget.id, sql: widget.drillDownSql, filterValues }],
+        ...(currentSpec?.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
       });
       const rows = res.data.data?.results?.[widget.id]?.rows ?? [];
       setDrillModal({ title, loading: false, rows });
@@ -513,14 +522,22 @@ export default function DashboardsPage() {
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
-        const res = await api.post('/dashboards/refine-spec', { connectionId: connectionId, refinement: input, currentSpec, ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}) });
+        const res = await api.post('/dashboards/refine-spec', {
+          connectionId: connectionId,
+          refinement: input,
+          currentSpec,
+          ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
+          ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+        });
         const newSpec: DashboardSpec = res.data.data.spec;
+        // Preserve the layer across refinements
+        newSpec.dataLayer = currentSpec.dataLayer ?? 'product';
         const defaults = buildDefaultFilters(newSpec.filters);
         setCurrentSpec(newSpec);
         setFilterValues(defaults);
         setCrossFilter(null);
         setIsUnsaved(true);
-        loadFilterOptions(newSpec.filters, connectionId);
+        loadFilterOptions(newSpec.filters, connectionId, newSpec.dataLayer);
         executeAllWidgets(newSpec, defaults, null, connectionId);
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated -- "${newSpec.title}"`, type: 'refine' }]);
       }
@@ -1152,6 +1169,21 @@ export default function DashboardsPage() {
                         {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard limited to tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
                       </p>
                     )}
+                  </div>
+                )}
+
+                {/* Admin-only: query source data instead of data products */}
+                {isAdmin && (
+                  <div className="mb-6">
+                    <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={useSourceLayer}
+                        onChange={(e) => setUseSourceLayer(e.target.checked)}
+                        className="w-3 h-3 rounded-sm border border-line accent-ocean"
+                      />
+                      Query source data (skip data products)
+                    </label>
                   </div>
                 )}
 

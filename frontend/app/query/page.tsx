@@ -37,6 +37,9 @@ function QueryPageInner() {
   const [showSql,        setShowSql]        = useState(false);
   const [isAdmin,        setIsAdmin]        = useState(false);
   const [starFilter,     setStarFilter]     = useState(false);
+  // Default = product layer (cleaner star schema).
+  // Toggle visible to admin/analyst only — viewers always stay on the product layer.
+  const [useSourceLayer, setUseSourceLayer] = useState(false);
 
   // URL params (e.g. ?connectionId=5&productId=3&productName=Sales from Data Products)
   const searchParams = useSearchParams();
@@ -346,6 +349,7 @@ function QueryPageInner() {
           warning:             params.warning,
           conversationHistory: params.conversationHistory,
           clarificationAnswer: params.clarificationAnswer,
+          ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
         }),
       });
     } catch {
@@ -605,6 +609,7 @@ function QueryPageInner() {
           question:     q,
           ...(cid && cid > 0 ? { conversationId: cid } : {}),
           ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+          ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
         }),
       });
 
@@ -784,6 +789,9 @@ function QueryPageInner() {
                 setInput={setInput}
                 onSubmit={handleSubmit}
                 loading={loading}
+                isAdmin={isAdmin}
+                useSourceLayer={useSourceLayer}
+                setUseSourceLayer={setUseSourceLayer}
               />
             ) : (
               <div className="space-y-4">
@@ -850,6 +858,19 @@ function QueryPageInner() {
                 {loading ? 'Thinking…' : 'Ask'}
               </button>
             </form>
+            {isAdmin && (
+              <div className="max-w-2xl mx-auto mt-2 flex items-center justify-end gap-2">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={useSourceLayer}
+                    onChange={(e) => setUseSourceLayer(e.target.checked)}
+                    className="w-3 h-3 rounded-sm border border-line accent-ocean"
+                  />
+                  Query source data
+                </label>
+              </div>
+            )}
           </div>
         )}
       </div>

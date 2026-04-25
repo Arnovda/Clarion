@@ -46,6 +46,9 @@ export interface DashboardSpec {
   description: string;
   filters: FilterSpec[];
   widgets: WidgetSpec[];
+  // Which data layer the SQL was generated against. Persisted with the spec
+  // so subsequent re-executions hit the same connector. Default = 'product'.
+  dataLayer?: 'product' | 'source';
 }
 
 export interface SavedDashboard {

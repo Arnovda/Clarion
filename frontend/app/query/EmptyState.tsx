@@ -23,6 +23,9 @@ interface EmptyStateProps {
   setInput:       (v: string) => void;
   onSubmit:       (e: FormEvent) => void;
   loading?:       boolean;
+  isAdmin?:       boolean;
+  useSourceLayer?: boolean;
+  setUseSourceLayer?: (v: boolean) => void;
 }
 
 export default function EmptyState({
@@ -32,6 +35,9 @@ export default function EmptyState({
   setInput,
   onSubmit,
   loading,
+  isAdmin,
+  useSourceLayer,
+  setUseSourceLayer,
 }: EmptyStateProps) {
   // Build suggested questions: product KPIs first, then generic starters (capped at 4 per spec)
   const kpiQuestions = (productContext?.kpis ?? []).slice(0, 4).map((kpi) => `What is the ${kpi}?`);
@@ -76,13 +82,26 @@ export default function EmptyState({
           <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-2">
             ⌘ + Enter to send
           </span>
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-[18px] py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
-          >
-            {loading ? 'Thinking…' : 'Ask →'}
-          </button>
+          <div className="flex items-center gap-4">
+            {isAdmin && setUseSourceLayer && (
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[10.5px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={!!useSourceLayer}
+                  onChange={(e) => setUseSourceLayer(e.target.checked)}
+                  className="w-3 h-3 rounded-sm border border-line accent-ocean"
+                />
+                Query source data
+              </label>
+            )}
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-[18px] py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+            >
+              {loading ? 'Thinking…' : 'Ask →'}
+            </button>
+          </div>
         </div>
       </form>
 
