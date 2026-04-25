@@ -228,6 +228,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
             confidence: nlResult.confidence,
             subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
             uncertaintyNotes: nlResult.uncertainty_notes,
+            flagReason: blockCheck.reason,
             blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used,
             queryLayer: 'product',
             debug: { hint: blockCheck.reason, semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext, kpiFormulas: productCtx.kpiFormulas },
@@ -684,6 +685,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
             formula: nlResult.formula_confidence,
           },
           uncertaintyNotes: nlResult.uncertainty_notes,
+          flagReason: blockCheck.reason,
           blocked: true,
           sql:        nlResult.sql,
           tablesUsed: nlResult.tables_used,
@@ -978,6 +980,8 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         emit({ type: 'done', data: {
           answer: blockedUserMessage(nlResult), confidence: nlResult.confidence,
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+          uncertaintyNotes: nlResult.uncertainty_notes,
+          flagReason: thinkBlockCheck.reason,
           blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         }});
         res.end(); return;
@@ -1150,6 +1154,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         confidence: nlResult.confidence,
         subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
         uncertaintyNotes: nlResult.uncertainty_notes,
+        flagReason: thinkBlockCheck.reason,
         blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: thinkBlockCheck.reason, semanticContext, relationshipContext, kpiFormulas },
       }});

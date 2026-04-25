@@ -526,7 +526,8 @@ function QueryPageInner() {
         const assistantMsg: Message = {
           id: assistantId, role: 'assistant', text: d.answer, question: q,
           sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
-          blocked: d.blocked, needsClarification: d.needsClarification,
+          blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
+          needsClarification: d.needsClarification,
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
           queryLayer: d.queryLayer,
         };
@@ -646,12 +647,16 @@ function QueryPageInner() {
               debug?: DebugInfo; needsClarification?: boolean;
               ambiguities?: EntityAmbiguity[]; mismatches?: EntityMismatch[];
               queryLayer?: 'product' | 'source';
+              flagReason?: string;
+              subScores?: { schema?: number; join?: number; formula?: number };
+              uncertaintyNotes?: string[];
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
               id: assistantId, role: 'assistant', text: d.answer, question: q,
               sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
-              blocked: d.blocked, needsClarification: d.needsClarification,
+              blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
+              needsClarification: d.needsClarification,
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
               reasoning: accumulatedThinking || undefined,
               queryLayer: d.queryLayer,

@@ -264,6 +264,53 @@ function ForecastChart({ forecast }: { forecast: ForecastData }) {
   );
 }
 
+// ─── Block reason + sub-scores + uncertainty notes ──────────────────────────
+
+function BlockReasonPanel({ msg }: { msg: Message }) {
+  const sub = msg.subScores;
+  const subEntries = [
+    { label: 'Schema',  v: sub?.schema },
+    { label: 'Joins',   v: sub?.join },
+    { label: 'Formula', v: sub?.formula },
+  ].filter((e): e is { label: string; v: number } => typeof e.v === 'number');
+  const notes = msg.uncertaintyNotes ?? [];
+  if (!msg.flagReason && subEntries.length === 0 && notes.length === 0) return null;
+
+  return (
+    <div className="mt-3 rounded-md border border-line bg-raised px-4 py-3 text-[12px] text-ink-2 space-y-2">
+      {msg.flagReason && (
+        <div>
+          <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn">Why blocked</span>
+          <p className="mt-1 leading-relaxed">{msg.flagReason}</p>
+        </div>
+      )}
+      {subEntries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {subEntries.map((e) => {
+            const pct = Math.round(e.v * 100);
+            const low = e.v < 0.5;
+            return (
+              <span
+                key={e.label}
+                className={`px-2 py-0.5 rounded-md text-[11px] font-mono tracking-[0.04em] border ${
+                  low ? 'bg-err-soft/30 border-err/40 text-err' : 'bg-canvas border-line text-ink-3'
+                }`}
+              >
+                {e.label} {pct}%
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {notes.length > 0 && (
+        <ul className="space-y-1 list-disc pl-4 text-ink-3">
+          {notes.map((n, i) => (<li key={i}>{n}</li>))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // ─── Low-confidence guide — Observatory-styled ──────────────────────────────
 
 function LowConfidenceGuide({ confidence, debug }: { confidence?: number; debug?: DebugInfo }) {
@@ -596,6 +643,7 @@ export default function MessageBubble({
                 {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
               </div>
             )}
+            <BlockReasonPanel msg={msg} />
             <LowConfidenceGuide confidence={msg.confidence} debug={msg.debug} />
           </div>
           {isAdmin && <AdminDebugPanel msg={msg} />}

@@ -54,6 +54,9 @@ export interface Message {
   confidence?:         number;
   warning?:            string;
   blocked?:            boolean;
+  flagReason?:         string;             // why a query was blocked (sub-confidence breakdown)
+  subScores?:          { schema?: number; join?: number; formula?: number };
+  uncertaintyNotes?:   string[];
   needsClarification?: boolean;            // entity pre-flight: mismatch or ambiguity
   mismatches?:         EntityMismatch[];   // unrecognised literals + fuzzy alternatives
   ambiguities?:        EntityAmbiguity[];  // literals that matched multiple rows
