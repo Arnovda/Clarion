@@ -55,8 +55,10 @@ export class DuckDBConnector extends BaseConnector {
    */
   constructor(warehousePath: string, tableNames?: string[], tablePaths?: Map<string, string>) {
     super();
-    this.isAzure = warehousePath.startsWith('az://');
-    this.warehousePath = this.isAzure ? warehousePath : path.resolve(warehousePath);
+    const isAzureUri = (p: string) => p.startsWith('az://') || p.startsWith('abfss://');
+    const explicitHasAzure = !!tablePaths && [...tablePaths.values()].some(isAzureUri);
+    this.isAzure = isAzureUri(warehousePath) || explicitHasAzure;
+    this.warehousePath = isAzureUri(warehousePath) ? warehousePath : path.resolve(warehousePath);
     this.tableNames = tableNames ?? [];
     this.tablePaths = tablePaths ?? new Map();
   }
@@ -316,7 +318,7 @@ export class DuckDBConnector extends BaseConnector {
     // If explicit path mapping exists, use it (cross-product warehouse access)
     const explicit = this.tablePaths.get(tableName);
     if (explicit) {
-      if (this.isAzure) return explicit;
+      if (explicit.startsWith('az://') || explicit.startsWith('abfss://')) return explicit;
       return path.resolve(explicit).replace(/\\/g, '/');
     }
 
