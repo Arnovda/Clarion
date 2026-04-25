@@ -15,7 +15,7 @@ import {
 } from 'recharts';
 import { Code, ThumbsUp, ThumbsDown, FileDown } from 'lucide-react';
 import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
-import { formatSql, formatCellValue } from './utils';
+import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY } from '@/lib/observatory';
 import type { DebugInfo, ForecastData, Message } from './types';
 
@@ -32,9 +32,17 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
       (typeof r[col] === 'string' && !isNaN(Number(r[col])) && (r[col] as string) !== ''),
     ),
   );
-  const labelCol = columns.find((c) => !numericCols.includes(c));
-  const valueCol = numericCols.length > 0
-    ? numericCols.reduce((best, col) => {
+  const labelCol = pickLabelColumn(columns, numericCols);
+  // Prefer the most "interesting" numeric column for the chart bar:
+  //   - skip percentage/rate columns when an absolute-value column also exists
+  //   - skip id/key columns
+  const isPctCol = (c: string) => /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(c);
+  const isIdCol  = (c: string) => /(_id|_key|_nr|_number|_code)$/i.test(c);
+  const candidateValueCols = numericCols.filter((c) => !isIdCol(c));
+  const absoluteCols = candidateValueCols.filter((c) => !isPctCol(c));
+  const valueColPool = absoluteCols.length > 0 ? absoluteCols : candidateValueCols;
+  const valueCol = valueColPool.length > 0
+    ? valueColPool.reduce((best, col) => {
         const maxBest = Math.max(...rows.map((r) => Number(r[best]) || 0));
         const maxCol  = Math.max(...rows.map((r) => Number(r[col])  || 0));
         return maxCol > maxBest ? col : best;
@@ -52,10 +60,15 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
             <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(13,28,47,0.08)" />
               <XAxis type="number" tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false}
-                tickFormatter={(v) => Math.abs(v) >= 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v)} />
+                tickFormatter={(v) => {
+                  if (valueCol && /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(valueCol)) {
+                    return `${Number(v).toLocaleString('nl-BE', { maximumFractionDigits: 1 })}%`;
+                  }
+                  return Math.abs(v) >= 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v);
+                }} />
               <YAxis type="category" dataKey={labelCol} tick={{ fontSize: 10, fill: OBSERVATORY.ink }} width={130} axisLine={false} tickLine={false} />
               <Tooltip
-                formatter={(value: unknown) => [formatCellValue(value), valueCol!.replace(/_/g, ' ')]}
+                formatter={(value: unknown) => [formatCellValue(value, valueCol), valueCol!.replace(/_/g, ' ')]}
                 contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }}
               />
               <Bar dataKey={valueCol!} fill={OBSERVATORY.ocean} radius={[0, 4, 4, 0]} maxBarSize={22} />
@@ -79,7 +92,7 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
               <tr key={i} className={`border-b border-line last:border-0 ${i % 2 === 1 ? 'bg-softer/50' : ''}`}>
                 {columns.map((col) => (
                   <td key={col} className={`px-3 py-2 ${numericCols.includes(col) ? 'text-right font-mono text-ink' : 'text-ink'}`}>
-                    {formatCellValue(row[col])}
+                    {formatCellValue(row[col], col)}
                   </td>
                 ))}
               </tr>

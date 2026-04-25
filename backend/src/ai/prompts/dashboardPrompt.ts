@@ -181,6 +181,34 @@ Select filter (any select filter id, e.g. "status_filter"):
 
 Drill-down SQL: use {{drill_value}} as the clicked value placeholder.
 
+━━━ HUMAN-READABLE LABELS — CRITICAL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The dashboard is consumed by business users. They cannot read codes, SKUs, or surrogate keys.
+Every "label" column (the chart Y-axis / X-axis / category) MUST be a human-readable name.
+
+• ALWAYS use the human-readable name column as the label, NEVER the code column.
+  - GOOD: SELECT da.naam AS label, ...           (product name)
+  - GOOD: SELECT c.customer_name AS label, ...
+  - BAD:  SELECT da.artikelnr AS label, ...      (article number / SKU)
+  - BAD:  SELECT c.customer_id AS label, ...
+• If a code is genuinely needed (e.g. user explicitly asked for "the SKU"), include it AFTER the name in a data_table — never as the chart label.
+• For "row_label" / "col_label" in pivot_tables, the same rule applies: prefer names over codes.
+• "crossFilterKey" still uses the underlying SQL column name (before aliasing to "label").
+
+━━━ FORMAT FIELD — MATCH IT TO THE MEASURE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Set "format" on every non-string widget so values render correctly:
+• "currency"   — revenue, cost, profit, total, spend, budget, salary, invoice value, GMV. Renders as "€1.234,56".
+• "percentage" — margin %, growth %, conversion %, on-time rate, utilisation, share. Renders as "43.5%".
+• "number"     — counts (orders, customers, units), durations (days), scores. Renders as "1.234".
+
+Default heuristic when "format" is omitted: large decimals → currency. This is WRONG for percentages.
+ALWAYS set format='percentage' explicitly when the value is a rate / share / margin %, otherwise users see "€43,49" instead of "43.5%".
+
+When SQL emits both an absolute and a percentage column in a data_table or pivot, name them so the
+column header is unambiguous (e.g. gross_profit + gross_margin_pct). The frontend recognises the
+_pct / _percent / _rate suffix and renders those columns as percentages even inside data tables.
+
 ━━━ CROSS-FILTER RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Every non-kpi_card widget MUST declare "crossFilterKey": the SQL column name used as the main grouping dimension (the label column, before aliasing).

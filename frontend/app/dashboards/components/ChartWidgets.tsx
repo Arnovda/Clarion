@@ -10,7 +10,7 @@ import {
 } from 'recharts';
 import type { WidgetExecutionProps } from '../types';
 import { SERIES_COLORS, PALETTE, getSeriesColor } from '../utils/chart-theme';
-import { formatValue } from '../utils/format';
+import { formatValue, inferColumnFormat } from '../utils/format';
 import { PremiumTooltip } from './PremiumTooltip';
 import { ChartSkeleton, WidgetSkeleton, WidgetError, EmptyWidget } from './WidgetSkeletons';
 
@@ -522,12 +522,19 @@ export function DataTableWidget({
               {allKeys.map((k) => {
                 const calcDef = calcCols.find((c) => c.name === k);
                 const rawVal = calcDef ? evalFormula(calcDef.expr, row) : row[k];
-                const display = rawVal == null ? '—' : typeof rawVal === 'number' ? rawVal.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(rawVal);
+                // Column-aware formatting: detect %, €, ids, counts from header name
+                const colFormat = calcDef ? 'number' : inferColumnFormat(k);
+                const display =
+                  rawVal == null
+                    ? '—'
+                    : isNumeric(rawVal) || calcDef
+                      ? formatValue(rawVal, colFormat)
+                      : String(rawVal);
                 return (
                   <td
                     key={k}
                     className={`px-3 py-2 text-ink-2 whitespace-nowrap ${
-                      isNumeric(rawVal) || calcDef ? 'text-right font-mono tabular-nums' : ''
+                      (isNumeric(rawVal) || calcDef) && colFormat !== 'id' ? 'text-right font-mono tabular-nums' : ''
                     } ${calcDef ? 'text-ocean' : ''}`}
                   >
                     {display}

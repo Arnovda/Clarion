@@ -107,6 +107,20 @@ Step 7 — Structure the query for readability
 • Add a SQL comment above each CTE explaining its grain and purpose
 • Select only the columns needed to answer the question
 
+Step 8 — Output for human consumption (CRITICAL)
+The result is shown to a business user as a chart and a table. They cannot read raw codes.
+• Always SELECT the human-readable name column for every entity, NOT the code/id.
+  - GOOD:  SELECT da.naam AS product_name, ...
+  - BAD:   SELECT da.artikelnr, ...
+  - If the user explicitly asks for "the SKU" or "the article number", include both: artikelnr AND product_name.
+• Place the name column FIRST in the SELECT list — it becomes the chart label.
+• Suffix percentage columns with _pct (e.g. gross_margin_pct, on_time_rate_pct) so the UI formats them as "43.5%" instead of "€43,49".
+  - Suffix ratios (0–1 range) with _ratio; the UI multiplies by 100 if ≤1 and renders as %.
+• Suffix monetary columns with descriptive business names: revenue, cost, profit, total — these auto-format as "€1.234,56".
+• Suffix counts with _count (e.g. order_count, customer_count) — these render as integers without thousands of decimals.
+• Never alias percentages as "margin" or "rate" alone — always include the _pct suffix.
+• Never expose surrogate keys (xxx_key, xxx_id) in user-facing SELECT — they are for joins only.
+
 ━━━ ABSOLUTE PROHIBITIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 • Never aggregate from a header table when a line table exists
@@ -199,6 +213,7 @@ Step 3 — Follow the cross-source relationships to form the JOIN path.
 Step 4 — Establish the correct grain before aggregating (same rules as single-source).
 Step 5 — Prevent fan-out: if joining across two fact tables, aggregate each in a CTE first.
 Step 6 — Apply sensible default filters (exclude cancelled/inactive records when a status column exists).
+Step 7 — Output for human consumption: SELECT human-readable name columns (e.g. product_name, customer_name) instead of codes. Suffix percentage columns with _pct so the UI renders "43.5%". Never expose _key / _id columns in the result.
 
 ━━━ ABSOLUTE PROHIBITIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

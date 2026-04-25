@@ -8,6 +8,20 @@ import type { FilterSpec } from '../types';
 // ─── Value Formatter ──────────────────────────────────────────────────────────
 
 /**
+ * Detect the implied format from a column name.
+ * Returns 'percentage' | 'currency' | 'number' | 'id' | undefined.
+ */
+export function inferColumnFormat(col: string): 'percentage' | 'currency' | 'number' | 'id' | undefined {
+  const c = col.toLowerCase();
+  if (/(_pct|_percent|_percentage|_rate|_ratio|_share|_utilization|_occupancy)$/.test(c)) return 'percentage';
+  if (/percent/.test(c)) return 'percentage';
+  if (/(_id|_key|_nr|_number|_code|artikelnr|customer_nr|order_nr)$/.test(c)) return 'id';
+  if (/(_count|_qty|_quantity|^count$|_orders$|_items$|_units$)/.test(c)) return 'number';
+  if (/(revenue|amount|cost|price|total|profit|spend|budget|salary|turnover|sales|gross|net|invoice|cogs|payable|receivable|payment|expense)/.test(c)) return 'currency';
+  return undefined;
+}
+
+/**
  * Format a raw value for display in a widget cell or KPI card.
  *
  * - null / undefined  → em-dash
@@ -15,10 +29,15 @@ import type { FilterSpec } from '../types';
  * - format='currency' → € locale (nl-BE, 2 decimals)
  * - format='percentage' → locale number + %
  * - format='number'   → locale number, up to 2 decimals
+ * - format='id'       → raw string (no thousands separators, no €)
  * - no format + |n| ≥ 100 → treated as currency (heuristic)
  */
 export function formatValue(v: unknown, format?: string): string {
   if (v === null || v === undefined) return '—';
+
+  // Identifier columns: render as plain string regardless of numeric appearance
+  if (format === 'id') return String(v);
+
   const n = typeof v === 'number' ? v : Number(v);
   if (isNaN(n)) return String(v);
 
