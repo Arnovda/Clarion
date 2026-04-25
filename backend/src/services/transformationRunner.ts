@@ -203,6 +203,31 @@ function productTablePath(productDir: string, tableName: string): string {
   return path.join(productDir, tableName);
 }
 
+/**
+ * Collect a compact text listing of every table/view currently registered in
+ * the DuckDB session, with each one's columns. Used as context for the AI
+ * repair pass when a transformation fails with a Binder/Catalog error.
+ */
+async function collectAvailableSchemas(db: Database): Promise<string> {
+  // information_schema.tables covers both base tables and views.
+  const rows = await db.all(`
+    SELECT table_name FROM information_schema.tables
+    WHERE table_schema NOT IN ('information_schema', 'pg_catalog')
+      AND NOT table_name LIKE '\\_\\_%' ESCAPE '\\'
+    ORDER BY table_name
+  `) as Array<{ table_name: string }>;
+
+  const blocks: string[] = [];
+  for (const r of rows) {
+    try {
+      const cols = await db.all(`DESCRIBE "${r.table_name}"`) as Array<{ column_name: string; column_type: string }>;
+      const colList = cols.map((c) => `${c.column_name} ${c.column_type}`).join(', ');
+      blocks.push(`${r.table_name}: ${colList}`);
+    } catch { /* skip unreadable */ }
+  }
+  return blocks.join('\n');
+}
+
 /** Create a delta_scan or read_parquet view, handling both local and Azure paths. */
 async function createScanView(db: Database, viewName: string, scanPath: string, useAzure: boolean): Promise<void> {
   const escaped = scanPath.replace(/'/g, "''");
@@ -538,17 +563,50 @@ export async function runProductTransformation(
           }
         }
 
-        // Execute the transformation SQL as authored. Failures surface the
-        // DuckDB error (which includes "Candidate bindings:" suggestions) so
-        // the user can fix the SQL deliberately — previously we silently
-        // regex-patched column/table names, which sometimes produced a
-        // successful run on the wrong data.
-        const sql = table.transformation_sql;
-        const rows = await db.all(sql);
-        let rowCount = rows.length;
-
+        // Execute the transformation SQL. If it fails with a Binder Error
+        // (the AI referenced a column that doesn't exist on a dim/source),
+        // do a single AI repair pass with the actual schemas of every view
+        // currently registered in this DuckDB session, then retry. Persist
+        // the repaired SQL so subsequent runs use the fixed version.
+        let sql = table.transformation_sql;
+        let aiRepaired = false;
         const tempTable = `__temp_${table.table_name}`;
-        await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
+
+        try {
+          await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
+        } catch (firstErr) {
+          const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          const isBinder = /Binder Error|Catalog Error|Referenced column|does not have a column/i.test(errMsg);
+          if (!isBinder) throw firstErr;
+
+          console.warn(`[transformationRunner] ${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
+          const schemasText = await collectAvailableSchemas(db);
+          const { repairTransformationSql } = await import('../ai/AIService');
+          const repaired = await repairTransformationSql(
+            table.table_name,
+            table.table_role,
+            sql,
+            errMsg,
+            schemasText,
+          );
+          if (!repaired || repaired.trim() === sql.trim()) {
+            throw firstErr; // repair produced nothing useful
+          }
+          sql = repaired;
+          aiRepaired = true;
+          await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+          await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
+          console.log(`[transformationRunner] ${table.table_name} repaired by AI — retry succeeded`);
+        }
+
+        const rowResult = await db.all(`SELECT COUNT(*) AS cnt FROM ${tempTable}`);
+        let rowCount = Number((rowResult[0] as { cnt: number | bigint })?.cnt ?? 0);
+
+        if (aiRepaired) {
+          await tenantQuery(tenantId, (trx) =>
+            trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
+          );
+        }
 
         try {
           await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql, tenantId);

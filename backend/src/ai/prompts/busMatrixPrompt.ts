@@ -188,6 +188,28 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
 - strftime(value, format) — DuckDB arg order (not format, value)
 - extract(year FROM col), extract(month FROM col) for date parts
 
+━━━ COLUMN CONSISTENCY (CRITICAL — most common failure mode) ━━━━━━━━━━━━
+
+Every column referenced in a fact's JOIN ON, WHERE, or SELECT clause when
+qualified by a dim alias (e.g. \`dc.source_system\`, \`da.article_key\`)
+MUST exist in that dim's \`columns[]\` list. If you reference it, define it.
+
+Specifically forbidden patterns that crash the build:
+- \`LEFT JOIN dim_customer dc ON f.klant_id = dc.klant_id AND dc.source_system = 'klanten'\`
+  ↳ ONLY valid if dim_customer has a \`source_system\` column in its columns[].
+  ↳ Otherwise drop the AND clause entirely and just join on the natural key.
+- Filtering on a column that exists in the SOURCE table but you didn't carry into the dim.
+- Joining to a dim using a natural-key column you renamed in the dim's SELECT.
+
+When a single conformed dim is fed by multiple source tables (e.g. klanten + customers):
+  → EITHER include \`source_system\` (and any other distinguishing columns) in the dim's
+    columns[] AND in its transformation_sql SELECT, then filter on it in fact JOINs;
+  → OR pick one source as primary, omit \`source_system\` from the dim entirely, AND
+    do not reference it in any fact's JOIN/WHERE.
+Do NOT do half of one and half of the other — that is the #1 cause of "Binder Error:
+column does not exist" failures. The fact SQL must only reference columns you actually
+defined on the dim.
+
 ━━━ OUTPUT SIZE — CRITICAL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Your output MUST be complete valid JSON. Truncated output is fatal.

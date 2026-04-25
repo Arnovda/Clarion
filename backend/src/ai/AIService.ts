@@ -1135,6 +1135,56 @@ export async function editColumnExpression(
 }
 
 // ---------------------------------------------------------------------------
+// Transformation SQL repair — surgical fix for a failing dim/fact CREATE TABLE
+// ---------------------------------------------------------------------------
+
+const REPAIR_TRANSFORMATION_SYSTEM = `You repair a single failing DuckDB transformation SELECT for a Kimball dim or fact table. Output ONLY the corrected SELECT — no markdown, no commentary, no explanation, no CREATE TABLE wrapper.
+
+Common failure patterns and how to fix them:
+- "Values list X does not have a column named Y" — the SQL references dim_X.Y but Y was never defined in dim_X. Fix by REMOVING that reference (drop the AND clause, drop the SELECT column) — never invent a column.
+- "Referenced column X not found" — same root cause: the column doesn't exist on the table or alias used. Drop the reference or use a column that does exist.
+- "Conversion Error" / "Could not convert" — wrap the offending expression with TRY_CAST(... AS <type>) and NULLIF(TRIM(CAST(... AS VARCHAR)), '') for string→number paths.
+
+Hard rules:
+- Reference ONLY columns that appear in the AVAILABLE SCHEMAS section. If a column is not listed there, you may not reference it.
+- Preserve the table's intended grain and surrogate-key strategy (ROW_NUMBER for dims, COALESCE(dim_key, -1) for fact FKs).
+- Keep TRY_CAST for type conversions; never use plain CAST.
+- Output a single self-contained SELECT statement. No semicolons at the end. No comments.`;
+
+export async function repairTransformationSql(
+  tableName: string,
+  tableRole: string,
+  failingSql: string,
+  errorMessage: string,
+  availableSchemas: string,
+): Promise<string> {
+  const userPrompt = `Repair the transformation SELECT for ${tableRole} table "${tableName}".
+
+━━━ FAILING SQL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${failingSql}
+
+━━━ DUCKDB ERROR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${errorMessage}
+
+━━━ AVAILABLE SCHEMAS (these are the only tables/views/columns you may reference) ━━━
+${availableSchemas}
+
+Return only the corrected SELECT.`;
+
+  const raw = await callClaude(REPAIR_TRANSFORMATION_SYSTEM, userPrompt, {
+    model: MODEL,
+    maxTokens: 2048,
+    callLabel: 'transformation_repair',
+  });
+
+  // Strip any markdown code fences the model may add despite instructions.
+  return raw
+    .replace(/^```(?:sql)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Forecast Query — detect forecast intent and generate historical SQL
 // ---------------------------------------------------------------------------
 
