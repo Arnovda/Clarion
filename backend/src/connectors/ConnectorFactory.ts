@@ -152,23 +152,28 @@ export async function createProductConnector(productWarehousePath: string, conne
       .where('data_products.connection_id', connectionId)
       .where('product_tables.transformation_status', 'success')
       .whereNotNull('product_tables.delta_path')
-      .select<Array<{ table_name: string; delta_path: string }>>('product_tables.table_name', 'product_tables.delta_path');
+      .select<Array<{ table_name: string; delta_path: string; product_name: string }>>(
+        'product_tables.table_name',
+        'product_tables.delta_path',
+        'data_products.name as product_name',
+      );
   });
 
-  // Build explicit table → path mapping
+  // Build explicit table → path and table → schema mappings. The schema is the
+  // data product name, mirroring the notebook namespacing convention so SQL is
+  // copy-pasteable across surfaces (chat, dashboards, notebooks, quality).
   const tablePaths = new Map<string, string>();
+  const tableSchemas = new Map<string, string>();
   const tableNames: string[] = [];
   for (const t of productTables) {
     tablePaths.set(t.table_name, t.delta_path);
+    if (t.product_name) tableSchemas.set(t.table_name, t.product_name);
     tableNames.push(t.table_name);
   }
 
-  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${new Set(productTables.map((t: { delta_path: string }) => {
-    const parts = t.delta_path.replace(/\\/g, '/').split('/');
-    return parts[parts.length - 2]; // parent directory = product slug
-  })).size} product(s): ${tableNames.join(', ')}`);
+  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${new Set(productTables.map((t) => t.product_name)).size} product(s): ${tableNames.join(', ')}`);
 
-  return new DuckDBConnector(productWarehousePath, tableNames, tablePaths);
+  return new DuckDBConnector(productWarehousePath, tableNames, tablePaths, tableSchemas);
 }
 
 /**

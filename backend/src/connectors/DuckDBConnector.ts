@@ -40,6 +40,10 @@ export class DuckDBConnector extends BaseConnector {
   private readonly tableNames: string[];
   /** Explicit table → directory path mapping (used for cross-product warehouse access) */
   private readonly tablePaths: Map<string, string>;
+  /** Optional table → schema name mapping. When set, views are created as
+   *  "<schema>"."<table>" and `search_path` is set so unqualified queries also
+   *  resolve. Mirrors the notebook namespacing pattern. */
+  private readonly tableSchemas: Map<string, string>;
   private db: Database | null = null;
   private viewsCreated = false;
   private ownsDb = false;
@@ -52,8 +56,17 @@ export class DuckDBConnector extends BaseConnector {
    * @param tablePaths - Optional explicit mapping of table_name → directory path.
    *   When provided, takes precedence over warehousePath-based path building.
    *   Used for product layer queries where tables span multiple warehouse directories.
+   * @param tableSchemas - Optional mapping of table_name → schema name. When set,
+   *   each view is created as "<schema>"."<table>" and a `search_path` covering
+   *   all distinct schemas is set after view registration, so unqualified queries
+   *   continue to resolve.
    */
-  constructor(warehousePath: string, tableNames?: string[], tablePaths?: Map<string, string>) {
+  constructor(
+    warehousePath: string,
+    tableNames?: string[],
+    tablePaths?: Map<string, string>,
+    tableSchemas?: Map<string, string>,
+  ) {
     super();
     const isAzureUri = (p: string) => p.startsWith('az://') || p.startsWith('abfss://');
     const explicitHasAzure = !!tablePaths && [...tablePaths.values()].some(isAzureUri);
@@ -61,6 +74,7 @@ export class DuckDBConnector extends BaseConnector {
     this.warehousePath = isAzureUri(warehousePath) ? warehousePath : path.resolve(warehousePath);
     this.tableNames = tableNames ?? [];
     this.tablePaths = tablePaths ?? new Map();
+    this.tableSchemas = tableSchemas ?? new Map();
   }
 
   /**
@@ -72,8 +86,9 @@ export class DuckDBConnector extends BaseConnector {
     warehousePath: string,
     tableNames?: string[],
     tablePaths?: Map<string, string>,
+    tableSchemas?: Map<string, string>,
   ): DuckDBConnector {
-    const c = new DuckDBConnector(warehousePath, tableNames, tablePaths);
+    const c = new DuckDBConnector(warehousePath, tableNames, tablePaths, tableSchemas);
     c.ownsDb = true;
     return c;
   }
@@ -115,7 +130,11 @@ export class DuckDBConnector extends BaseConnector {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([n, p]) => `${n}=${p}`)
       .join(',');
-    return `duckdb:${this.warehousePath}|${mode}|n:${names}|x:${explicit}`;
+    const schemas = [...this.tableSchemas.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([n, s]) => `${n}=${s}`)
+      .join(',');
+    return `duckdb:${this.warehousePath}|${mode}|n:${names}|x:${explicit}|s:${schemas}`;
   }
 
   private async loadExtensions(db: Database): Promise<void> {
@@ -156,12 +175,18 @@ export class DuckDBConnector extends BaseConnector {
 
   private async createAllViews(db: Database): Promise<void> {
     const tableNames = this.getTableNames();
+    const registeredSchemas = new Set<string>();
     let created = 0;
     let failed = 0;
     for (const tableName of tableNames) {
       const tPath = this.tablePath(tableName);
+      const schema = this.tableSchemas.get(tableName);
       try {
-        await this.createDeltaView(db, tableName, tPath);
+        if (schema) {
+          await db.exec(`CREATE SCHEMA IF NOT EXISTS "${schema.replace(/"/g, '""')}";`);
+          registeredSchemas.add(schema);
+        }
+        await this.createDeltaView(db, tableName, tPath, schema);
         created++;
       } catch (err) {
         failed++;
@@ -171,8 +196,22 @@ export class DuckDBConnector extends BaseConnector {
         );
       }
     }
+
+    // After views are registered, set search_path so unqualified queries resolve
+    // against any of the schemas we just created. Mirrors the notebook pattern.
+    if (registeredSchemas.size > 0) {
+      const schemaList = [...registeredSchemas]
+        .map((s) => `'${s.replace(/'/g, "''")}'`)
+        .join(',');
+      try {
+        await db.exec(`SET search_path = ${schemaList};`);
+      } catch (err) {
+        console.warn('[DuckDBConnector] Failed to set search_path:', err instanceof Error ? err.message : err);
+      }
+    }
+
     console.log(
-      `[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''} (pooled)`,
+      `[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''}${registeredSchemas.size > 0 ? ` across ${registeredSchemas.size} schema(s)` : ''} (pooled)`,
     );
   }
 
@@ -358,21 +397,33 @@ export class DuckDBConnector extends BaseConnector {
       .map((e) => e.name);
   }
 
-  /** Create a DuckDB view for a Delta or Parquet table. */
-  private async createDeltaView(db: Database, viewName: string, tablePath: string): Promise<void> {
+  /** Create a DuckDB view for a Delta or Parquet table. If `schema` is provided
+   *  the view is qualified as "schema"."view"; otherwise it lands in the
+   *  default catalog (backward-compatible for callers that pass no schema). */
+  private async createDeltaView(
+    db: Database,
+    viewName: string,
+    tablePath: string,
+    schema?: string,
+  ): Promise<void> {
+    const safeView = viewName.replace(/"/g, '""');
+    const qualified = schema
+      ? `"${schema.replace(/"/g, '""')}"."${safeView}"`
+      : `"${safeView}"`;
+
     if (this.isAzure) {
       // Azure: ETL ingestion writes Delta; product transformations write Parquet
       // (<dir>/data.parquet). Try delta_scan first, fall back to read_parquet.
       const escaped = tablePath.replace(/'/g, "''");
       try {
-        await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${escaped}');`);
+        await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${escaped}');`);
         return;
       } catch { /* not a delta table — try parquet */ }
       try {
-        await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
+        await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
         return;
       } catch { /* fall through */ }
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
       return;
     }
 
@@ -381,9 +432,9 @@ export class DuckDBConnector extends BaseConnector {
     const deltaLogPath = tablePath.replace(/\//g, path.sep) + path.sep + '_delta_log';
 
     if (fs.existsSync(deltaLogPath)) {
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${localPath}');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${localPath}');`);
     } else {
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${localPath}/*.parquet');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${localPath}/*.parquet');`);
     }
   }
 
