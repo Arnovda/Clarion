@@ -62,7 +62,7 @@ function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
               <XAxis type="number" tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false}
                 tickFormatter={(v) => {
                   if (valueCol && /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(valueCol)) {
-                    return `${Number(v).toLocaleString('nl-BE', { maximumFractionDigits: 1 })}%`;
+                    return `${Number(v).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
                   }
                   return Math.abs(v) >= 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v);
                 }} />

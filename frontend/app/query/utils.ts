@@ -57,7 +57,7 @@ export function formatCellValue(v: unknown, column?: string): string {
     const n = Number(v);
 
     if (kind === 'percentage') {
-      return `${n.toLocaleString('nl-BE', { maximumFractionDigits: 1 })}%`;
+      return `${n.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
     }
     if (kind === 'currency') {
       return `\u20AC${n.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

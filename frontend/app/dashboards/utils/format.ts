@@ -55,7 +55,7 @@ export function formatValue(v: unknown, format?: string): string {
   }
 
   if (format === 'percentage') {
-    return n.toLocaleString('nl-BE', { maximumFractionDigits: 1 }) + '%';
+    return n.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
   }
 
   return n.toLocaleString('nl-BE', { maximumFractionDigits: 2 });
