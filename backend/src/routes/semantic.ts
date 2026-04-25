@@ -1191,25 +1191,36 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
     }
 
     if (!table.delta_path) {
-      res.status(400).json({ ok: false, error: 'Product table has no data yet — run the transformation first' });
+      res.status(400).json({ ok: false, error: 'No data yet — run the transformation for this table first.' });
       return;
     }
 
     // delta_path points to the table directory (e.g. ./warehouse/product/sales/fact_sales)
     // The parent directory is the product warehouse, and the table name is the last segment
     const deltaPath = String(table.delta_path);
-    const path = await import('path');
-    const parentDir = path.dirname(deltaPath);
+    const pathMod = await import('path');
+    const fsMod = await import('fs');
+    const isAzure = deltaPath.startsWith('az://');
+    const parentDir = pathMod.dirname(deltaPath);
     const tableName = String(table.table_name);
+
+    // Local-only sanity check — surface a clear message rather than a DuckDB error.
+    if (!isAzure && !fsMod.existsSync(deltaPath)) {
+      res.status(400).json({
+        ok: false,
+        error: `Data files not found at ${deltaPath}. Re-run the transformation, or check that the warehouse path is mounted on this host.`,
+      });
+      return;
+    }
 
     // Create DuckDB connector with the parent dir as warehouse and the table name
     const { DuckDBConnector } = await import('../connectors/DuckDBConnector');
     const tablePaths = new Map<string, string>();
     tablePaths.set(tableName, deltaPath);
     const connector = new DuckDBConnector(parentDir, [tableName], tablePaths);
-    await connector.connect();
 
     try {
+      await connector.connect();
       const result = await connector.executeQuery(
         `SELECT * FROM "${tableName}" LIMIT ${safeLimit}`,
       );
@@ -1221,9 +1232,51 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
           columns: result.rows.length ? Object.keys(result.rows[0] as object) : [],
         },
       });
+    } catch (queryErr) {
+      const msg = queryErr instanceof Error ? queryErr.message : 'Preview query failed';
+      res.status(400).json({
+        ok: false,
+        error: `Could not read "${tableName}" from ${deltaPath}: ${msg}`,
+      });
     } finally {
-      connector.disconnect();
+      try { connector.disconnect(); } catch { /* ignore */ }
     }
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/product-tables/:id/sql — Return transformation SQL for a product table.
+// Resolves by neo4j_pg_id first (frontend uses pgId), then falls back to native id.
+router.get('/product-tables/:id/sql', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const idNum = Number(req.params.id);
+    if (!idNum) {
+      res.status(400).json({ ok: false, error: 'id required' });
+      return;
+    }
+
+    let row = await semanticDb('product_tables')
+      .where({ neo4j_pg_id: idNum })
+      .first('id', 'table_name', 'transformation_sql', 'transformation_status', 'last_run_at', 'last_run_error');
+    if (!row) {
+      row = await semanticDb('product_tables')
+        .where({ id: idNum })
+        .first('id', 'table_name', 'transformation_sql', 'transformation_status', 'last_run_at', 'last_run_error');
+    }
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Product table not found' });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        table_name: row.table_name,
+        transformation_sql: row.transformation_sql ?? null,
+        transformation_status: row.transformation_status ?? null,
+        last_run_at: row.last_run_at ?? null,
+        last_run_error: row.last_run_error ?? null,
+      },
+    });
   } catch (err) { next(err); }
 });
 

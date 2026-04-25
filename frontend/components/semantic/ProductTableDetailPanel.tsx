@@ -327,9 +327,10 @@ export default function ProductTableDetailPanel({
             </div>
           )}
 
-          {/* Data preview */}
-          <div className="pt-4 border-t border-line">
+          {/* Data preview + SQL view */}
+          <div className="pt-4 border-t border-line space-y-3">
             <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
+            <SqlViewer pgTableId={pgTableId ?? tableId} />
           </div>
         </section>
 
@@ -585,6 +586,96 @@ export default function ProductTableDetailPanel({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── SqlViewer — lazy-loaded "Show SQL" toggle ──────────────────────────────
+function SqlViewer({ pgTableId }: { pgTableId: number }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'open' | 'error'>('idle');
+  const [sql, setSql] = useState<string | null>(null);
+  const [errMsg, setErr] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  async function load() {
+    setState('loading');
+    try {
+      const res = await api.get(`/semantic/product-tables/${pgTableId}/sql`);
+      setSql(res.data.data.transformation_sql ?? null);
+      setState('open');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load SQL';
+      setErr(msg);
+      setState('error');
+    }
+  }
+
+  async function copy() {
+    if (!sql) return;
+    try {
+      await navigator.clipboard.writeText(sql);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  }
+
+  if (state === 'idle') {
+    return (
+      <button
+        onClick={load}
+        className="inline-flex items-center gap-2 text-[12px] text-ocean hover:text-ocean-hover font-medium group transition-colors"
+      >
+        <span className="w-5 h-5 rounded-md bg-ocean-softer group-hover:bg-ocean-soft flex items-center justify-center transition-colors">
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
+        </span>
+        View SQL
+      </button>
+    );
+  }
+
+  if (state === 'loading') {
+    return (
+      <div className="flex items-center gap-2 text-[12px] text-muted-2">
+        <span className="w-3 h-3 border-2 border-ocean border-t-transparent rounded-full animate-spin" />
+        Loading SQL…
+      </div>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <div className="flex items-center gap-2 text-[12px] text-err">
+        {errMsg}
+        <button onClick={() => setState('idle')} className="text-muted-2 hover:text-ink-2 underline">retry</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel-enter">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted">Transformation SQL</span>
+        <div className="flex items-center gap-3">
+          {sql && (
+            <button onClick={copy} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          )}
+          <button onClick={() => setState('idle')} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">
+            Hide
+          </button>
+        </div>
+      </div>
+      {sql ? (
+        <pre className="preview-terminal rounded-md overflow-auto max-h-80 px-4 py-3 text-[12px] font-mono leading-relaxed whitespace-pre">
+          {sql}
+        </pre>
+      ) : (
+        <p className="text-[12px] text-muted-2 italic">No transformation SQL is stored for this table.</p>
+      )}
     </div>
   );
 }

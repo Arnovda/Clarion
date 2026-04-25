@@ -92,6 +92,10 @@ import {
   NarrativeOutput,
   WidgetNarrativeInput,
 } from './prompts/narratePrompt';
+import {
+  PRODUCT_ICON_SYSTEM,
+  buildProductIconUser,
+} from './prompts/productIconPrompt';
 
 // ---------------------------------------------------------------------------
 // SQL dialect type — used to select the correct prompt variant
@@ -971,6 +975,7 @@ export async function generateBusMatrixStreaming(
   connectionName: string,
   sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text' | 'diag', delta: string) => void,
+  abortSignal?: AbortSignal,
 ): Promise<BusMatrixOutput> {
   const tenantId = await enforceAiBudget('bus_matrix_streaming');
   const currentDate = currentDateStr();
@@ -998,6 +1003,19 @@ export async function generateBusMatrixStreaming(
   sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking_budget=${params.thinking.budget_tokens}, contextChars=${sourceTablesContext.length})`);
 
   const stream = getClient().messages.stream(params);
+
+  // Wire external abort (user-initiated cancel) into the Anthropic stream.
+  if (abortSignal) {
+    if (abortSignal.aborted) {
+      try { (stream as unknown as { controller?: { abort?: () => void } }).controller?.abort?.(); } catch { /* ignore */ }
+    } else {
+      abortSignal.addEventListener('abort', () => {
+        sendDiag('external abort received — aborting Anthropic stream');
+        try { (stream as unknown as { controller?: { abort?: () => void } }).controller?.abort?.(); } catch { /* ignore */ }
+      }, { once: true });
+    }
+  }
+
   let fullText = '';
   let thinkingChars = 0;
   let textDeltaCount = 0;
@@ -1213,6 +1231,59 @@ export async function generateQualityAlertContext(input: QualityAlertInput): Pro
     buildQualityAlertUser(input),
     { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'quality_alert_context' },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Product icon generation — single line-style SVG per data product
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that AI output is a clean, safe, single-element <svg> matching
+ * our line-icon contract. Returns the trimmed SVG string, or null if it
+ * fails sanitisation. Caller should fall back to a default icon when null.
+ */
+function sanitizeProductIconSvg(raw: string): string | null {
+  let text = raw.trim();
+  text = text.replace(/^```(?:svg|xml|html)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  text = text.replace(/^<\?xml[^?]*\?>\s*/i, '');
+  const start = text.indexOf('<svg');
+  const end = text.lastIndexOf('</svg>');
+  if (start === -1 || end === -1 || end <= start) return null;
+  text = text.slice(start, end + '</svg>'.length).trim();
+
+  // Reject anything dangerous or off-aesthetic.
+  const banned = /<\s*(script|foreignObject|image|iframe|style|defs|use|filter|text)\b/i;
+  if (banned.test(text)) return null;
+  if (/on\w+\s*=/i.test(text)) return null;        // inline event handlers
+  if (/javascript:/i.test(text)) return null;
+  if (/xlink:href|href\s*=/i.test(text)) return null;
+  if (/data:/i.test(text)) return null;
+  if (/url\s*\(/i.test(text)) return null;
+
+  // Must be a 24×24 viewBox icon.
+  if (!/viewBox\s*=\s*["']0 0 24 24["']/i.test(text)) return null;
+
+  // Cap size — a sane line icon is well under this.
+  if (text.length > 4000) return null;
+
+  return text;
+}
+
+export async function generateProductIcon(
+  name: string,
+  description?: string | null,
+): Promise<string | null> {
+  try {
+    const raw = await callClaude(
+      PRODUCT_ICON_SYSTEM,
+      buildProductIconUser(name, description),
+      { model: MODEL_HAIKU, maxTokens: 600, callLabel: 'product_icon', cacheSystem: true },
+    );
+    return sanitizeProductIconSvg(raw);
+  } catch (err) {
+    logger.warn({ name, err: err instanceof Error ? err.message : String(err) }, 'generateProductIcon failed');
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

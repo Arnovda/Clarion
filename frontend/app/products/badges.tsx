@@ -6,6 +6,37 @@
  */
 
 import { Loader2 } from 'lucide-react';
+import { productIconEmoji } from './helpers';
+
+/**
+ * AI-generated line-icon for a data product, with emoji fallback.
+ * The SVG arrives from the backend as plain markup; it has been validated
+ * server-side (see sanitizeProductIconSvg in AIService.ts) so it's safe to
+ * inject. Strokes inherit `currentColor` — wrap with text-ocean / text-on-surface
+ * to theme the icon.
+ */
+export function ProductIcon({
+  product,
+  name,
+  className = 'w-6 h-6 text-on-surface',
+}: {
+  product?: { name: string; icon_svg?: string | null } | null;
+  name?: string;
+  className?: string;
+}) {
+  const svg = product?.icon_svg;
+  if (svg) {
+    return (
+      <span
+        className={`inline-flex items-center justify-center ${className}`}
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+    );
+  }
+  const fallbackName = product?.name ?? name ?? '';
+  return <span className={`inline-flex items-center justify-center ${className}`} aria-hidden="true">{productIconEmoji(fallbackName)}</span>;
+}
 
 export function StatusDot({ status }: { status: string }) {
   const color: Record<string, string> = {

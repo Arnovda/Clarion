@@ -17,8 +17,8 @@ export function statusBorderColor(status: string): string {
   }
 }
 
-/** Pick an emoji icon based on a data-product name's keywords. */
-export function productIcon(name: string): string {
+/** Fallback emoji icon based on a data-product name's keywords (used when no AI SVG is stored). */
+export function productIconEmoji(name: string): string {
   const n = name.toLowerCase();
   if (n.includes('sales') || n.includes('revenue') || n.includes('order')) return '\u{1F4B0}';
   if (n.includes('customer') || n.includes('client') || n.includes('crm')) return '\u{1F465}';

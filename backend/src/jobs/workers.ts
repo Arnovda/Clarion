@@ -9,7 +9,8 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
-import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData } from './queues';
+import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData } from './queues';
+import { registerJobAbortController, unregisterJob, isJobCancelled } from './cancellation';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
@@ -140,6 +141,61 @@ async function processTransformationJob(job: Job<TransformationJobData>): Promis
   }, { tables: results.length });
 
   return { tablesTransformed: results.length };
+}
+
+// ---------------------------------------------------------------------------
+// Bus Matrix Worker — design + build + transform, all in one job.
+// ---------------------------------------------------------------------------
+
+async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ products: number; allOk: boolean }> {
+  const { connectionId, tenantId, triggeredBy } = job.data;
+  const jobId = String(job.id);
+
+  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+  const controller = new AbortController();
+  registerJobAbortController(jobId, controller);
+
+  // Bail early if cancel arrived while job was still waiting in the queue.
+  if (isJobCancelled(jobId)) {
+    unregisterJob(jobId);
+    throw new Error('Cancelled before start');
+  }
+
+  await job.updateProgress({ phase: 'starting', message: 'Starting bus matrix workflow…' });
+
+  try {
+    const { runBusMatrixWorkflow } = await import('../services/busMatrixOrchestrator');
+
+    const result = await runBusMatrixWorkflow({
+      connectionId,
+      tenantId,
+      userEmail: triggeredBy,
+      abortSignal: controller.signal,
+      isCancelled: () => isJobCancelled(jobId),
+      emit: (event) => {
+        // Persist every event into the job log so a re-attaching SSE client
+        // can replay the full history. Logs are size-bounded by BullMQ
+        // (default keepLogs).
+        job.log(JSON.stringify({ ts: Date.now(), ...event })).catch(() => { /* non-fatal */ });
+
+        // Mirror phase changes onto progress for snapshot consumers.
+        if (event.type === 'phase' && event.text) {
+          job.updateProgress({ phase: event.text }).catch(() => {});
+        }
+      },
+    });
+
+    trackEvent('bus_matrix_complete', {
+      connectionId: String(connectionId),
+      tenantId: String(tenantId),
+      allOk: String(result.allOk),
+    }, { products: result.products.length });
+
+    return { products: result.products.length, allOk: result.allOk };
+  } finally {
+    unregisterJob(jobId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +330,28 @@ export function startWorkers(): void {
     trackException(err, { queue: 'scheduled-transformation', jobId: job?.id ?? 'unknown' });
   });
   workers.push(scheduledTransWorker);
+
+  // Bus matrix worker — long-running (AI design + DB build + transformations).
+  // Concurrency 1: AI calls are expensive and the transformation phase already
+  // serialises product builds; running multiple in parallel offers no win.
+  const busMatrixWorker = new Worker<BusMatrixJobData>(
+    'bus-matrix',
+    async (job) => withTenantAiContext(job.data.tenantId, () => processBusMatrixJob(job)),
+    {
+      ...defaultOpts,
+      concurrency: 1,
+      // Allow long-running jobs without lock loss. Bus matrix builds can take
+      // many minutes on large schemas (AI design + N transformations).
+      lockDuration: 5 * 60 * 1000,        // 5 min lock
+      lockRenewTime: 60 * 1000,            // renew every 60s
+      stalledInterval: 60 * 1000,
+    },
+  );
+  busMatrixWorker.on('failed', (job, err) => {
+    console.error(`[worker] bus-matrix job ${job?.id} failed:`, err.message);
+    trackException(err, { queue: 'bus-matrix', jobId: job?.id ?? 'unknown' });
+  });
+  workers.push(busMatrixWorker);
 
   // Email report worker
   const emailReportWorker = new Worker<EmailReportJobData>(

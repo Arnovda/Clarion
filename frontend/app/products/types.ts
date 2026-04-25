@@ -15,6 +15,7 @@ export interface DataProduct {
   status: string;
   created_at: string;
   star_schema_count?: number;
+  icon_svg?: string | null;
 }
 
 export interface StarSchema {

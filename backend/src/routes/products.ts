@@ -1162,8 +1162,235 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 });
 
 // ---------------------------------------------------------------------------
+// Bus Matrix — job-based flow (survives browser close, supports cancel)
+//
+// Endpoints:
+//   POST /api/products/bus-matrix/start       → enqueue job, return { jobId }
+//   GET  /api/products/bus-matrix/active      → currently running/queued job for tenant
+//   GET  /api/products/bus-matrix/:jobId/stream → SSE: tail job logs + progress
+//   POST /api/products/bus-matrix/:jobId/cancel → cancel a running job
+// ---------------------------------------------------------------------------
+
+router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const { connectionId } = req.body as { connectionId: number };
+    if (!connectionId) {
+      res.status(400).json({ ok: false, error: 'connectionId required' });
+      return;
+    }
+
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      res.status(403).json({ ok: false, error: 'Tenant context required' });
+      return;
+    }
+
+    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const { getBusMatrixQueue } = await import('../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      res.status(503).json({
+        ok: false,
+        error: 'Job queue not available — Redis is not configured. Bus matrix builds require Redis to survive browser close.',
+      });
+      return;
+    }
+
+    // Refuse to enqueue a second active job for the same connection.
+    const activeJobs = await queue.getJobs(['waiting', 'active', 'delayed'], 0, 50);
+    const existing = activeJobs.find((j) => j.data.connectionId === connectionId && j.data.tenantId === tenantId);
+    if (existing) {
+      res.status(409).json({
+        ok: false,
+        error: 'A bus matrix build is already running for this connection.',
+        jobId: existing.id,
+      });
+      return;
+    }
+
+    const job = await queue.add('bus-matrix', {
+      connectionId,
+      tenantId,
+      triggeredBy: req.user?.email ?? 'unknown',
+    });
+
+    res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix' } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to start bus matrix job' });
+  }
+});
+
+router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
+
+    const { getBusMatrixQueue } = await import('../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      res.json({ ok: true, data: null });
+      return;
+    }
+
+    const jobs = await queue.getJobs(['waiting', 'active', 'delayed'], 0, 50);
+    const match = jobs.find((j) =>
+      j.data.tenantId === tenantId &&
+      (connectionId === undefined || j.data.connectionId === connectionId),
+    );
+
+    if (!match) { res.json({ ok: true, data: null }); return; }
+
+    const state = await match.getState();
+    res.json({
+      ok: true,
+      data: {
+        jobId: match.id,
+        state,
+        connectionId: match.data.connectionId,
+        progress: match.progress,
+        createdAt: match.timestamp,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to query active jobs' });
+  }
+});
+
+router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const { jobId } = req.params;
+
+    const { getBusMatrixQueue } = await import('../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      res.status(503).json({ ok: false, error: 'Job queue not available' });
+      return;
+    }
+
+    const job = await queue.getJob(jobId);
+    if (!job) { res.status(404).json({ ok: false, error: 'Job not found' }); return; }
+    if (job.data.tenantId !== tenantId) { res.status(403).json({ ok: false, error: 'Forbidden' }); return; }
+
+    const state = await job.getState();
+    const { cancelJob } = await import('../jobs/cancellation');
+    const aborted = cancelJob(jobId);
+
+    // If still waiting in the queue, remove it directly.
+    if (state === 'waiting' || state === 'delayed') {
+      try { await job.remove(); } catch { /* ignore */ }
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        jobId,
+        priorState: state,
+        aborted,
+        message: aborted
+          ? 'Cancellation signal sent — the worker will stop at the next safe checkpoint.'
+          : (state === 'waiting' || state === 'delayed')
+            ? 'Job removed from the queue before it started.'
+            : 'Cancellation flag set; worker is not currently active in this process.',
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to cancel job' });
+  }
+});
+
+router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const tenantId = req.user?.tenantId;
+  const { jobId } = req.params;
+
+  const emit = (data: Record<string, unknown>) => {
+    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ }
+  };
+
+  const { getBusMatrixQueue } = await import('../jobs/queues');
+  const queue = getBusMatrixQueue();
+  if (!queue) {
+    emit({ type: 'error', message: 'Job queue not available' });
+    res.end();
+    return;
+  }
+
+  const job = await queue.getJob(jobId);
+  if (!job) { emit({ type: 'error', message: 'Job not found' }); res.end(); return; }
+  if (job.data.tenantId !== tenantId) { emit({ type: 'error', message: 'Forbidden' }); res.end(); return; }
+
+  let clientClosed = false;
+  req.on('close', () => { clientClosed = true; });
+
+  // Track which logs we've already sent so polling can resume on reconnect.
+  let logCursor = 0;
+
+  const pollLogs = async () => {
+    try {
+      const { logs } = await queue.getJobLogs(jobId, logCursor, logCursor + 500);
+      if (logs.length > 0) {
+        for (const line of logs) {
+          let parsed: Record<string, unknown> | null = null;
+          try { parsed = JSON.parse(line) as Record<string, unknown>; } catch { /* ignore */ }
+          if (parsed) emit(parsed);
+          else emit({ type: 'log', text: line });
+        }
+        logCursor += logs.length;
+      }
+    } catch { /* job may have been removed */ }
+  };
+
+  const keepalive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { /* ignore */ }
+  }, 20_000);
+
+  // Poll loop — every 500ms, drain new logs + check state.
+  const POLL_MS = 500;
+  while (!clientClosed) {
+    await pollLogs();
+
+    let state: string;
+    try { state = await job.getState(); } catch { state = 'unknown'; }
+
+    if (state === 'completed') {
+      await pollLogs();
+      const updated = await queue.getJob(jobId);
+      emit({ type: 'completed', result: updated?.returnvalue ?? null });
+      break;
+    }
+    if (state === 'failed') {
+      await pollLogs();
+      const updated = await queue.getJob(jobId);
+      emit({ type: 'failed', error: updated?.failedReason ?? 'Job failed' });
+      break;
+    }
+    if (state === 'unknown') {
+      emit({ type: 'failed', error: 'Job vanished from queue' });
+      break;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+  }
+
+  clearInterval(keepalive);
+  res.end();
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/bus-matrix-stream — SSE streaming enterprise bus matrix
 // One AI call designs ALL dims + ALL facts + groupings. Replaces propose + design.
+// (LEGACY — kept for backward compat. New flow uses /bus-matrix/start.)
 // ---------------------------------------------------------------------------
 
 router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
@@ -1215,7 +1442,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
       ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
       : [];
 
-    const sourceContext = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
+    const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
       const cols = sourceColumns
         .filter((c: { table_id: number }) => c.table_id === t.id)
         .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
@@ -1224,7 +1451,30 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
       return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
-    emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables — designing bus matrix…` });
+    // Pull confirmed FK relationships from Neo4j so the AI knows the actual joins
+    // instead of inferring them from column names (root cause of phantom join cols
+    // like dc.source_system that crash the build).
+    let relationshipsText = '';
+    try {
+      const { getRelationshipsForContext } = await import('../db/semanticGraph');
+      const rels = await getRelationshipsForContext(connectionId);
+      if (rels.length > 0) {
+        const lines = rels.map((r) => {
+          const from = `${r.from_table as string}.${r.from_column as string}`;
+          const to = `${r.to_table as string}.${r.to_column as string}`;
+          const type = (r.relationship_type as string) || 'RELATES_TO';
+          const desc = (r.description as string) ? ` — ${r.description as string}` : '';
+          return `  ${from} → ${to} (${type})${desc}`;
+        }).join('\n');
+        relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
+      }
+    } catch (err) {
+      console.warn(`[${reqId}] Failed to load Neo4j relationships:`, err instanceof Error ? err.message : err);
+    }
+
+    const sourceContext = tablesText + relationshipsText;
+
+    emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables, ${relationshipsText ? relationshipsText.split('\n').length - 2 : 0} relationships — designing bus matrix…` });
 
     // Send SSE keepalive comments every 20 seconds to prevent Azure / proxy timeout
     // during the (potentially long) AI generation phase.

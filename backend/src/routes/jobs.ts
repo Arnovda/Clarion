@@ -10,7 +10,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { Queue, Job } from 'bullmq';
 import { requireAuth } from '../middleware/auth';
-import { getSchemaProfilingQueue, getIngestionQueue, getTransformationQueue } from '../jobs/queues';
+import { getSchemaProfilingQueue, getIngestionQueue, getTransformationQueue, getBusMatrixQueue } from '../jobs/queues';
 
 const router = Router();
 
@@ -19,6 +19,7 @@ function getQueue(name: string): Queue | null {
     case 'schema-profiling': return getSchemaProfilingQueue();
     case 'ingestion': return getIngestionQueue();
     case 'transformation': return getTransformationQueue();
+    case 'bus-matrix': return getBusMatrixQueue();
     default: return null;
   }
 }

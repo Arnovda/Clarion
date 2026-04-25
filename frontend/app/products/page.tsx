@@ -18,8 +18,8 @@ import type {
   ProductKpi,
   ActiveTab,
 } from './types';
-import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner } from './badges';
-import { statusBorderColor, productIcon, cleanTopicName } from './helpers';
+import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner, ProductIcon } from './badges';
+import { statusBorderColor, cleanTopicName } from './helpers';
 
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
@@ -53,8 +53,11 @@ function ProductsPageInner() {
   const [buildConnId, setBuildConnId] = useState<number | null>(null);
   const [buildDone, setBuildDone] = useState(false);
   const [buildSuccess, setBuildSuccess] = useState(false);
+  const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const buildTermRef = useRef<HTMLDivElement>(null);
   const thinkingRef = useRef<HTMLDivElement>(null);
+  const buildAbortRef = useRef<AbortController | null>(null);
 
   // Table action state
   const [runningTableId, setRunningTableId] = useState<number | null>(null);
@@ -129,58 +132,40 @@ function ProductsPageInner() {
     }, 20);
   }, []);
 
-  const handleAutoBuild = useCallback(async (connectionId: number) => {
-    setBuilding(true);
-    setBuildDone(false);
-    setBuildSuccess(false);
-    setBuildLog([]);
-    setBuildThinking('');
-    setShowThinking(false);
-    setBuildConnId(connectionId);
+  // Subscribe to a running bus-matrix job. Pulls events from the backend's
+  // SSE-tail-of-job-log endpoint so closing the browser doesn't interrupt
+  // the work — only the live view of it.
+  const attachToJob = useCallback(async (jobId: string) => {
+    setBuildJobId(jobId);
+    localStorage.setItem('busMatrixJobId', jobId);
 
-    const connName = connections.find((c) => c.id === connectionId)?.name ?? `Connection #${connectionId}`;
-    addBuildLog(`Starting bus matrix design for "${connName}"...`);
+    const token = getToken();
+    const abortController = new AbortController();
+    buildAbortRef.current = abortController;
 
     try {
-      // Phase 1: SSE stream — AI designs the bus matrix
-      addBuildLog('Phase 1: AI is designing all tables...');
-      const token = getToken();
-      const response = await fetch(`${BACKEND_URL}/api/products/bus-matrix-stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ connectionId }),
+      const response = await fetch(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
+        method: 'GET',
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
-        addBuildLog(`Error: Server returned ${response.status}`);
+        addBuildLog(`Error: stream returned ${response.status}`);
         setBuildDone(true);
         setBuilding(false);
+        localStorage.removeItem('busMatrixJobId');
         return;
       }
 
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let busMatrix: any = null;
-
-      // Diagnostic counters — so the "Stream ended without result" message can
-      // tell us WHY: how many events arrived, what the last one was, elapsed time.
-      const streamStart = Date.now();
-      const eventCounts: Record<string, number> = {};
-      let lastEventType = 'none';
-      let lastDiag = '';
-      let totalBytes = 0;
+      let allOk = true;
 
       while (true) {
         const { done, value } = await reader.read();
-        if (value) {
-          totalBytes += value.byteLength;
-          buffer += decoder.decode(value, { stream: !done });
-        }
+        if (value) buffer += decoder.decode(value, { stream: !done });
 
         const lines = buffer.split('\n');
         buffer = done ? '' : (lines.pop() ?? '');
@@ -192,8 +177,6 @@ function ProductsPageInner() {
           catch { continue; }
 
           const type = event.type as string;
-          lastEventType = type;
-          eventCounts[type] = (eventCounts[type] ?? 0) + 1;
 
           if (type === 'phase') {
             addBuildLog(event.text as string);
@@ -203,102 +186,145 @@ function ProductsPageInner() {
               if (thinkingRef.current) thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight;
             }, 10);
           } else if (type === 'diag') {
-            lastDiag = event.text as string;
-            addBuildLog(`[diag] ${lastDiag}`);
+            addBuildLog(`[diag] ${event.text as string}`);
+          } else if (type === 'log') {
+            addBuildLog(event.text as string);
+          } else if (type === 'product') {
+            const status = event.status as string;
+            const name = event.productName as string;
+            const text = event.text as string;
+            addBuildLog(`  "${name}": ${text}`);
+            if (status !== 'ok') allOk = false;
+          } else if (type === 'done') {
+            // orchestrator's own "done" — superseded by 'completed' below, but log it
+            if (event.text) addBuildLog(event.text as string);
+          } else if (type === 'completed') {
+            const result = event.result as { allOk?: boolean } | null;
+            if (result && typeof result.allOk === 'boolean') allOk = result.allOk;
+            setBuildSuccess(allOk);
+            setBuildDone(true);
+            setBuilding(false);
+            localStorage.removeItem('busMatrixJobId');
+
+            // Refresh product list
+            setDetails(new Map());
+            setKpis(new Map());
+            await loadProducts();
+          } else if (type === 'failed') {
+            const msg = event.error as string;
+            const cancelled = msg && /cancel/i.test(msg);
+            addBuildLog(cancelled ? 'Cancelled.' : `Error: ${msg}`);
+            setBuildSuccess(false);
+            setBuildDone(true);
+            setBuilding(false);
+            localStorage.removeItem('busMatrixJobId');
+            await loadProducts();
           } else if (type === 'error') {
             addBuildLog(`Error: ${event.message as string}`);
             setBuildDone(true);
             setBuilding(false);
-            return;
-          } else if (type === 'done') {
-            busMatrix = event.busMatrix;
+            localStorage.removeItem('busMatrixJobId');
           }
         }
         if (done) break;
       }
+    } catch (err) {
+      // AbortError means the user navigated away or cancelled — work continues server-side.
+      if ((err as { name?: string })?.name !== 'AbortError') {
+        addBuildLog(`Stream error: ${(err as Error)?.message ?? 'unknown'}`);
+        setBuildDone(true);
+        setBuilding(false);
+      }
+    } finally {
+      buildAbortRef.current = null;
+    }
+  }, [addBuildLog, loadProducts]);
 
-      if (!busMatrix) {
-        const elapsed = ((Date.now() - streamStart) / 1000).toFixed(1);
-        const counts = Object.entries(eventCounts).map(([k, v]) => `${k}=${v}`).join(' ');
-        addBuildLog(`Error: Stream ended without result after ${elapsed}s (events: ${counts || 'none'}, last=${lastEventType}, bytes=${totalBytes})`);
-        if (lastDiag) addBuildLog(`Last diag: ${lastDiag}`);
-        addBuildLog('Check backend logs with the reqId prefix [bms-...] in Azure Log Stream.');
+  const handleAutoBuild = useCallback(async (connectionId: number) => {
+    setBuilding(true);
+    setBuildDone(false);
+    setBuildSuccess(false);
+    setBuildLog([]);
+    setBuildThinking('');
+    setShowThinking(false);
+    setBuildConnId(connectionId);
+    setBuildJobId(null);
+
+    const connName = connections.find((c) => c.id === connectionId)?.name ?? `Connection #${connectionId}`;
+    addBuildLog(`Starting bus matrix design for "${connName}"...`);
+
+    try {
+      const startRes = await api.post('/products/bus-matrix/start', { connectionId });
+      const jobId = startRes.data?.data?.jobId as string | undefined;
+      if (!jobId) {
+        addBuildLog('Error: server did not return a jobId');
         setBuildDone(true);
         setBuilding(false);
         return;
       }
-
-      // Phase 2: Persist the bus matrix
-      addBuildLog(`Phase 2: Saving ${busMatrix.conformed_dimensions?.length ?? 0} dimensions and ${busMatrix.fact_tables?.length ?? 0} fact tables...`);
-
-      const buildRes = await api.post('/products/build-bus-matrix', { connectionId, busMatrix });
-      const createdProducts = buildRes.data?.data?.products ?? [];
-      addBuildLog(`Created ${createdProducts.length} data product(s)`);
-
-      // Phase 3: Run transformations per product in build_order
-      addBuildLog('Phase 3: Running transformations...');
-      const sortedProducts = [...createdProducts].sort(
-        (a: { build_order: number }, b: { build_order: number }) => a.build_order - b.build_order,
-      );
-
-      let allOk = true;
-      for (const p of sortedProducts) {
-        addBuildLog(`  Running "${p.name}"...`);
-        try {
-          const runRes = await api.post(`/products/${p.id}/run`);
-          const results = runRes.data?.data;
-          if (Array.isArray(results)) {
-            const failed = results.filter((r: { status: string }) => r.status === 'error');
-            if (failed.length > 0) {
-              addBuildLog(`  "${p.name}": ${results.length - failed.length} ok, ${failed.length} failed`);
-              allOk = false;
-            } else {
-              addBuildLog(`  "${p.name}": all ${results.length} tables ok`);
-            }
-          } else {
-            addBuildLog(`  "${p.name}": done`);
-          }
-        } catch (runErr) {
-          const msg = (runErr as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Run failed';
-          addBuildLog(`  "${p.name}" error: ${msg}`);
-          allOk = false;
-        }
-      }
-
-      addBuildLog(allOk ? 'All done!' : 'Build completed with some errors.');
-      setBuildSuccess(allOk);
-
-      // Clear caches so everything reloads fresh from DB
-      setDetails(new Map());
-      setKpis(new Map());
-      await loadProducts();
-
-      // Load all product details + KPIs (don't rely on useEffect — do it explicitly)
-      for (const p of createdProducts) {
-        loadFullProduct(p.id);
-        loadKpis(p.id);
-      }
+      addBuildLog(`Job ${jobId} started — running on the server (safe to close this tab).`);
+      await attachToJob(jobId);
     } catch (err) {
-      // Surface the backend's actual error message + any details it included
-      // (Axios stashes server response under err.response.data).
-      const axiosErr = err as { response?: { data?: { error?: string; details?: unknown } }; message?: string };
+      const axiosErr = err as { response?: { data?: { error?: string; jobId?: string } }; message?: string };
       const serverError = axiosErr?.response?.data?.error;
-      const serverDetails = axiosErr?.response?.data?.details;
-      if (serverError) {
-        addBuildLog(`Error: ${serverError}`);
-        if (serverDetails) {
-          const detailsStr = Array.isArray(serverDetails)
-            ? serverDetails.slice(0, 5).join('; ')
-            : JSON.stringify(serverDetails);
-          addBuildLog(`Details: ${detailsStr}`);
-        }
-      } else {
-        addBuildLog(`Error: ${axiosErr?.message ?? 'Build failed'}`);
+      const existingJobId = axiosErr?.response?.data?.jobId;
+      if (existingJobId) {
+        addBuildLog(`Reattaching to running job ${existingJobId}…`);
+        await attachToJob(existingJobId);
+        return;
       }
+      addBuildLog(`Error: ${serverError ?? axiosErr?.message ?? 'Failed to start build'}`);
+      setBuildDone(true);
+      setBuilding(false);
     }
-    setBuildDone(true);
-    setBuilding(false);
-  }, [connections, addBuildLog, loadProducts, loadFullProduct, loadKpis]);
+  }, [connections, addBuildLog, attachToJob]);
+
+  const handleCancelBuild = useCallback(async () => {
+    if (!buildJobId) return;
+    setCancelling(true);
+    addBuildLog('Cancelling…');
+    try {
+      const res = await api.post(`/products/bus-matrix/${buildJobId}/cancel`);
+      const message = res.data?.data?.message as string | undefined;
+      if (message) addBuildLog(message);
+    } catch (err) {
+      const axiosErr = err as { response?: { data?: { error?: string } }; message?: string };
+      addBuildLog(`Cancel failed: ${axiosErr?.response?.data?.error ?? axiosErr?.message ?? 'unknown'}`);
+    }
+    setCancelling(false);
+  }, [buildJobId, addBuildLog]);
+
+  // On mount: reattach to any active job for this user.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = typeof window !== 'undefined' ? localStorage.getItem('busMatrixJobId') : null;
+        const res = await api.get('/products/bus-matrix/active');
+        const active = res.data?.data as { jobId?: string; connectionId?: number; state?: string } | null;
+        if (cancelled) return;
+        if (active?.jobId) {
+          setBuilding(true);
+          setBuildDone(false);
+          setBuildSuccess(false);
+          setBuildLog([`Reattached to running job ${active.jobId} (state: ${active.state ?? 'unknown'})…`]);
+          setBuildThinking('');
+          setBuildConnId(active.connectionId ?? null);
+          await attachToJob(active.jobId);
+        } else if (stored) {
+          // Job finished server-side while we were away — nothing live to attach to.
+          localStorage.removeItem('busMatrixJobId');
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => {
+      cancelled = true;
+      if (buildAbortRef.current) {
+        try { buildAbortRef.current.abort(); } catch { /* ignore */ }
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ----------- Table actions -----------
 
@@ -448,6 +474,15 @@ function ProductsPageInner() {
                       {showThinking ? 'Hide' : 'Show'} reasoning
                     </button>
                   )}
+                  {building && buildJobId && (
+                    <button
+                      onClick={handleCancelBuild}
+                      disabled={cancelling}
+                      className="text-[11px] font-mono tracking-[0.08em] uppercase text-err/80 hover:text-err transition-colors disabled:opacity-50"
+                    >
+                      {cancelling ? 'Cancelling…' : 'Cancel'}
+                    </button>
+                  )}
                   {buildDone && (
                     <button
                       onClick={() => { setBuildDone(false); setBuildLog([]); setBuildThinking(''); }}
@@ -512,7 +547,6 @@ function ProductsPageInner() {
                   const tables = detail ? getAllTables(detail) : [];
                   const productKpis = kpis.get(product.id) ?? [];
                   const visibleKpis = productKpis.slice(0, 5);
-                  const icon = productIcon(product.name);
                   const name = cleanTopicName(product.name);
 
                   return (
@@ -523,8 +557,8 @@ function ProductsPageInner() {
                     >
                       {/* Icon + name header */}
                       <div className="px-5 pt-5 pb-3">
-                        <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-2xl mb-3 group-hover:scale-105 transition-transform">
-                          {icon}
+                        <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center mb-3 group-hover:scale-105 transition-transform text-ocean">
+                          <ProductIcon product={product} className="w-7 h-7" />
                         </div>
                         <div className="flex items-center gap-2 mb-1">
                           <h3 className="text-base font-semibold text-on-surface truncate">{name}</h3>
@@ -649,7 +683,6 @@ function TopicSlideOver({
   totalRows: (p: FullDataProduct) => number;
 }) {
   const tables = detail ? getAllTables(detail) : [];
-  const icon = productIcon(product.name);
   const name = cleanTopicName(product.name);
   const isRunning = runningProductId === product.id;
   const [showSqlModal, setShowSqlModal] = useState(false);
@@ -663,8 +696,8 @@ function TopicSlideOver({
       <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-surface-container-lowest/95 backdrop-blur-xl shadow-ambient-lg z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
         <div className="px-6 py-5 border-b border-line flex items-start gap-4 flex-shrink-0">
-          <div className="w-12 h-12 rounded-xl bg-surface-container flex items-center justify-center text-2xl flex-shrink-0">
-            {icon}
+          <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center flex-shrink-0 text-ocean">
+            <ProductIcon product={product} className="w-7 h-7" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
@@ -985,6 +1018,10 @@ function BusMatrixTab({
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([name, { best, products: prods }]) => ({ name, ...best, usedByProducts: [...prods].sort() }));
 
+  // Lookup map: clean topic name → product (for icon rendering in chips/badges).
+  const productByCleanName = new Map<string, DataProduct>();
+  products.forEach((p) => { productByCleanName.set(cleanTopicName(p.name), p); });
+
   // Build the bus matrix: deduplicated dimension names as columns
   const dimensionNames = uniqueDimensions.map((d) => d.name);
 
@@ -1058,8 +1095,8 @@ function BusMatrixTab({
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-on-surface-variant">
-                      <span className="inline-flex items-center gap-1">
-                        <span>{productIcon(row.product.name)}</span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <ProductIcon product={row.product} className="w-3.5 h-3.5 text-ocean" />
                         <span>{cleanTopicName(row.product.name)}</span>
                       </span>
                     </td>
@@ -1110,8 +1147,9 @@ function BusMatrixTab({
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   {d.usedByProducts.map((pName) => (
-                    <span key={pName} className="inline-flex items-center gap-1 text-[11px] bg-surface-container text-on-surface-variant px-2 py-0.5 rounded-full">
-                      {productIcon(pName)} {pName}
+                    <span key={pName} className="inline-flex items-center gap-1.5 text-[11px] bg-surface-container text-on-surface-variant px-2 py-0.5 rounded-full">
+                      <ProductIcon product={productByCleanName.get(pName) ?? null} name={pName} className="w-3.5 h-3.5 text-ocean" />
+                      {pName}
                     </span>
                   ))}
                 </div>
@@ -1155,8 +1193,9 @@ function BusMatrixTab({
                       <p className="text-xs text-on-surface-variant truncate mt-0.5">{f.table.description}</p>
                     )}
                   </div>
-                  <span className="text-xs text-on-surface-variant flex-shrink-0">
-                    {productIcon(f.product.name)} {cleanTopicName(f.product.name)}
+                  <span className="text-xs text-on-surface-variant flex-shrink-0 inline-flex items-center gap-1.5">
+                    <ProductIcon product={f.product} className="w-3.5 h-3.5 text-ocean" />
+                    {cleanTopicName(f.product.name)}
                   </span>
                   {f.table.row_count !== null && (
                     <span className="text-xs text-on-surface-variant/50 flex-shrink-0">{f.table.row_count.toLocaleString()} rows</span>
