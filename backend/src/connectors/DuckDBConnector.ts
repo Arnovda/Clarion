@@ -200,11 +200,12 @@ export class DuckDBConnector extends BaseConnector {
     // After views are registered, set search_path so unqualified queries resolve
     // against any of the schemas we just created. Mirrors the notebook pattern.
     if (registeredSchemas.size > 0) {
+      // DuckDB SET takes a single scalar string value: comma-separated names inside one quoted string.
       const schemaList = [...registeredSchemas]
-        .map((s) => `'${s.replace(/'/g, "''")}'`)
+        .map((s) => s.replace(/'/g, "''"))
         .join(',');
       try {
-        await db.exec(`SET search_path = ${schemaList};`);
+        await db.exec(`SET search_path = '${schemaList}';`);
       } catch (err) {
         console.warn('[DuckDBConnector] Failed to set search_path:', err instanceof Error ? err.message : err);
       }

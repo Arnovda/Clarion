@@ -132,12 +132,12 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
   // against any registered schema — important so AI-generated SQL from the Ask
   // page (which is unqualified) is paste-and-run in notebooks.
   if (registeredSchemas.size > 0) {
+    // DuckDB SET takes a single scalar string value: comma-separated names inside one quoted string.
     const schemaList = [...registeredSchemas]
       .map((s) => s.replace(/'/g, "''"))
-      .map((s) => `'${s}'`)
       .join(',');
     try {
-      await db.exec(`SET search_path = ${schemaList};`);
+      await db.exec(`SET search_path = '${schemaList}';`);
     } catch (err) {
       console.warn('[notebooks] Failed to set search_path:', err);
     }
