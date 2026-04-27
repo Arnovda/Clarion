@@ -6,7 +6,10 @@ import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import HelpTooltip from '@/components/HelpTooltip';
+import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable } from './shared';
+
+type ViewTab = 'definition' | 'quality';
 
 interface Props {
   table: SourceTable;
@@ -43,6 +46,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
 
   // Track unsaved changes for floating bar
   const [hasChanges, setHasChanges] = useState(false);
+
+  const [viewTab, setViewTab] = useState<ViewTab>('definition');
 
   function addDomain(value: string) {
     const tag = value.trim().toLowerCase();
@@ -93,9 +98,30 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
     setHasChanges(true);
   }
 
+  const subTabBtn = (t: ViewTab, label: string) => (
+    <button
+      onClick={() => setViewTab(t)}
+      className={`px-3 py-1.5 text-[12px] font-medium transition-colors relative ${
+        viewTab === t ? 'text-ink' : 'text-muted hover:text-ink-2'
+      }`}
+    >
+      {label}
+      {viewTab === t && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
+    </button>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg panel-enter">
-      <div className="px-6 py-6 space-y-6 pb-24">
+    <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
+      <div className="border-b border-line bg-raised px-4 flex items-center gap-1 flex-shrink-0">
+        {subTabBtn('definition', 'Definition')}
+        {subTabBtn('quality', 'Quality')}
+      </div>
+
+      {viewTab === 'quality' ? (
+        <QualityPanel connId={tbl.connection_id} tableName={tbl.table_name} />
+      ) : (
+      <>
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-24">
 
         {/* ── Table header ────────────────────────────────────────────────── */}
         <section className="bg-raised border border-line rounded-lg px-6 py-5">
@@ -477,6 +503,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

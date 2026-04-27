@@ -31,7 +31,11 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-04-21
+**Last updated:** 2026-04-27
+
+**IA cleanup — Phase 1 (2026-04-27):**
+- New tenant business glossary: `business_glossary` table (migration `20260427000040`), `/semantic/glossary` CRUD routes, `services/glossaryContext.ts` loads + formats entries for prompts, `AIService` injects the block into NL→SQL (source + cross + DuckDB), dashboard gen/refine, and schema-draft via `getTenantAiContext()`. New `Glossary` tab on `/semantic` (`components/semantic/GlossaryPanel.tsx`).
+- KPIs tab removed from `/semantic`. KPIs now live only at the product layer (`/products` → KPIs tab, `product_kpis` table consumed by `productContext.kpiFormulas`). The `kpi_definitions` table and `/semantic/kpis` route are kept (notebooks still reads them; no destructive migration) but no longer have a UI surface. Source-layer KPIs are deprecated.
 
 **Status:** All original POC build steps (1–11) are complete. The platform has grown significantly beyond the initial POC into a multi-tenant, multi-connector data platform with ETL ingestion, star schema products, quality profiling, background job queues, user management, and Azure production deployment.
 
@@ -349,7 +353,7 @@ databridge/
     │   ├── profile/page.tsx          ← user profile: display name, password change
     │   ├── onboarding/page.tsx       ← new-user onboarding wizard
     │   ├── setup/page.tsx            ← admin: connect sources, trigger AI schema profiling (RequireRole)
-    │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/KPIs + Quality + Integrations tabs
+    │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/glossary tabs (KPIs moved to /products)
     │   ├── products/                 ← admin-only data products (star schemas, lineage)
     │   │   ├── page.tsx              ← orchestrator + tabs (overview, bus-matrix, schema, lineage, kpis)
     │   │   ├── types.ts              ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab

@@ -7,16 +7,15 @@ import { parseIdFromSlug } from '@/lib/catalog';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
-import KpiPanel from '@/components/semantic/KpiPanel';
 import GlossaryPanel from '@/components/semantic/GlossaryPanel';
 import BulkImportModal from '@/components/semantic/BulkImportModal';
 import HelpTooltip from '@/components/HelpTooltip';
 import api from '@/lib/api';
 import { isAdmin, getToken, getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
-import { SourceTable, SourceColumn, KpiDefinition, CrossSourceView, ProductColumn, ProductTreeItem } from '@/components/semantic/types';
+import { SourceTable, SourceColumn, CrossSourceView, ProductColumn, ProductTreeItem } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'kpis' | 'glossary';
+type MainTab = 'definitions' | 'relationships' | 'glossary';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
@@ -39,9 +38,6 @@ function SemanticInner() {
   const [selectedTableId, setSelectedTableId]   = useState<number | null>(null);
   const [selectedColumnId, setSelectedColumnId] = useState<number | null>(null);
   const [zoomToTableId, setZoomToTableId]       = useState<number | null>(null);
-
-  // ── KPIs (for active connection) ───────────────────────────────────────────
-  const [kpis, setKpis] = useState<KpiDefinition[]>([]);
 
   const [tab, setTab] = useState<MainTab>('definitions');
 
@@ -252,15 +248,6 @@ function SemanticInner() {
     setColumnsByTable((prev) => ({ ...prev, ...colMap }));
   }, []);
 
-  // ── KPIs for active connection ─────────────────────────────────────────────
-  const loadKpis = useCallback(async () => {
-    if (!activeConnId) return;
-    const res = await api.get(`/semantic/kpis?connectionId=${activeConnId}`);
-    setKpis(res.data.data ?? []);
-  }, [activeConnId]);
-
-  useEffect(() => { loadKpis(); }, [loadKpis]);
-
   // ── Load cross-source views for active connection ─────────────────────────
   const loadViews = useCallback(async () => {
     if (!activeConnId) { setViews([]); return; }
@@ -331,7 +318,6 @@ function SemanticInner() {
     setSelectionLayer('source');
     setZoomToTableId(tableId);
     localStorage.setItem('databridge_last_conn', String(connId));
-    if (tab === 'kpis') setTab('definitions');
   }
 
   function handleSelectColumn(tableId: number, columnId: number) {
@@ -351,7 +337,6 @@ function SemanticInner() {
     setSelectedTableId(null);
     setSelectedColumnId(null);
     setSelectionLayer('product');
-    if (tab === 'kpis') setTab('definitions');
 
     // Lazy-load product columns
     if (!productColumnsByTable[tableId]) {
@@ -432,12 +417,6 @@ function SemanticInner() {
             </svg>
           ))}
           <HelpTooltip text="Define how tables relate to each other (foreign keys). This helps the AI write correct JOIN queries." />
-          {tabBtn('kpis', 'KPIs', (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-          ))}
-          <HelpTooltip text="Define business KPIs with SQL formulas. The AI uses these to answer metric questions accurately." />
           {tabBtn('glossary', 'Glossary', (
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
@@ -731,14 +710,6 @@ function SemanticInner() {
                 </button>
               </div>
             </div>
-          )}
-
-          {tab === 'kpis' && (
-            <KpiPanel
-              connectionId={String(activeConnId ?? '')}
-              kpis={kpis}
-              onSaved={loadKpis}
-            />
           )}
 
           {tab === 'glossary' && (
