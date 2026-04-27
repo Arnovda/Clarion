@@ -102,8 +102,10 @@ export function buildSchemaDraftUser(
   tables: TableInfo[],
   qualityStats?: TableQualityStat[],
   fkCandidates?: FkCandidate[],
+  glossaryContext = '',
 ): string {
-  const schemaSection = `Source type: ${sourceType}
+  const glossarySection = glossaryContext ? `${glossaryContext}\n\n` : '';
+  const schemaSection = `${glossarySection}Source type: ${sourceType}
 Schema: ${JSON.stringify(
     tables.map((t) => ({
       table_name: t.tableName,

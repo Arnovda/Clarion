@@ -474,6 +474,114 @@ router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request
 });
 
 // ---------------------------------------------------------------------------
+// Business Glossary — tenant-wide term/meaning store, fed into AI prompts.
+// admin + analyst can write; viewer is read-only.
+// ---------------------------------------------------------------------------
+
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v)).filter(Boolean);
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map((v) => String(v)).filter(Boolean) : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
+function normalizeGlossaryRow(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    term: row.term,
+    meaning: row.meaning,
+    examples: parseJsonArray(row.examples),
+    tags: parseJsonArray(row.tags),
+    ai_draft: row.ai_draft,
+    created_by_user_id: row.created_by_user_id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+// GET /api/semantic/glossary
+router.get('/glossary', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rows = await semanticDb('business_glossary').orderBy('term', 'asc');
+    res.json({ ok: true, data: rows.map(normalizeGlossaryRow) });
+  } catch (err) { next(err); }
+});
+
+// POST /api/semantic/glossary
+router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { term, meaning, examples, tags } = req.body as Record<string, unknown>;
+    const trimmedTerm = String(term ?? '').trim();
+    const trimmedMeaning = String(meaning ?? '').trim();
+    if (!trimmedTerm || !trimmedMeaning) {
+      res.status(400).json({ ok: false, error: 'term and meaning are required' });
+      return;
+    }
+    const [row] = await semanticDb('business_glossary')
+      .insert({
+        tenant_id: req.user!.tenantId,
+        term: trimmedTerm,
+        meaning: trimmedMeaning,
+        examples: JSON.stringify(parseJsonArray(examples)),
+        tags: JSON.stringify(parseJsonArray(tags)),
+        ai_draft: false,
+        created_by_user_id: req.user!.sub,
+      })
+      .returning('*');
+    res.status(201).json({ ok: true, data: normalizeGlossaryRow(row) });
+  } catch (err: unknown) {
+    const e = err as { code?: string };
+    if (e.code === '23505') {
+      res.status(409).json({ ok: false, error: 'A glossary entry with this term already exists' });
+      return;
+    }
+    next(err);
+  }
+});
+
+// PATCH /api/semantic/glossary/:id
+router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const body = req.body as Record<string, unknown>;
+    const update: Record<string, unknown> = { updated_at: new Date() };
+    if (typeof body.term === 'string')    update.term = body.term.trim();
+    if (typeof body.meaning === 'string') update.meaning = body.meaning.trim();
+    if (body.examples !== undefined)      update.examples = JSON.stringify(parseJsonArray(body.examples));
+    if (body.tags !== undefined)          update.tags = JSON.stringify(parseJsonArray(body.tags));
+    if (typeof body.ai_draft === 'boolean') update.ai_draft = body.ai_draft;
+
+    const [row] = await semanticDb('business_glossary')
+      .where({ id })
+      .update(update)
+      .returning('*');
+    if (!row) { res.status(404).json({ ok: false, error: 'Glossary entry not found' }); return; }
+    res.json({ ok: true, data: normalizeGlossaryRow(row) });
+  } catch (err: unknown) {
+    const e = err as { code?: string };
+    if (e.code === '23505') {
+      res.status(409).json({ ok: false, error: 'A glossary entry with this term already exists' });
+      return;
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/semantic/glossary/:id
+router.delete('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const deleted = await semanticDb('business_glossary').where({ id }).delete();
+    if (!deleted) { res.status(404).json({ ok: false, error: 'Glossary entry not found' }); return; }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/semantic/preview?connectionId=1&table=orders&limit=10
 // (reads from SQLite source — unchanged)
 // ---------------------------------------------------------------------------

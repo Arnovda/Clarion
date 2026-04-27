@@ -12,12 +12,13 @@ export const NL_TO_SQL_DUCKDB_SYSTEM = (
   relationshipContext: string,
   kpiFormulas: string,
   currentDate: string,
+  glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a DuckDB database.
 You only return valid DuckDB SQL and a confidence score between 0 and 1.
 Never explain. Never add commentary outside the JSON. Return JSON only.
 
-━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Available tables and their definitions:
 ${semanticContext}
@@ -171,12 +172,13 @@ export const NL_TO_SQL_CROSS_DUCKDB_SYSTEM = (
   relationshipContext: string,
   kpiFormulas: string,
   currentDate: string,
+  glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a multi-schema DuckDB session.
 You only return valid DuckDB SQL and a confidence score between 0 and 1.
 Never explain. Never add commentary outside the JSON. Return JSON only.
 
-━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Multiple data sources are loaded as DuckDB views in a single session.
 Every table MUST be referenced with its schema alias prefix: alias.table_name

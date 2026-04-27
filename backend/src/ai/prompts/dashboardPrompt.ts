@@ -301,12 +301,14 @@ export function buildDashboardUser(
   request: string,
   semanticContext: string,
   relationshipContext: string,
+  glossaryContext = '',
 ): string {
   const domainRef = detectDomain(request);
   const domainSection = domainRef
     ? `\n\n━━━ Domain-specific guidance (apply these recommendations) ━━━\n${domainRef}`
     : '';
-  return `User request: "${request}"${domainSection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
+  const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
+  return `User request: "${request}"${domainSection}${glossarySection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
 }
 
 export interface FilterSpec {
@@ -367,8 +369,10 @@ export function buildRefinementUser(
   request: string,
   semanticContext: string,
   relationshipContext: string,
+  glossaryContext = '',
 ): string {
-  return `Dashboard request: "${request}"\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
+  const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
+  return `Dashboard request: "${request}"${glossarySection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
 }
 
 export interface RefinementQuestion {
@@ -404,8 +408,10 @@ export function buildRefineSpecUser(
   currentSpec: DashboardSpec,
   semanticContext: string,
   relationshipContext: string,
+  glossaryContext = '',
 ): string {
-  return `Refinement request: "${refinement}"
+  const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
+  return `Refinement request: "${refinement}"${glossarySection}
 
 Current dashboard spec:
 ${JSON.stringify(currentSpec, null, 2)}

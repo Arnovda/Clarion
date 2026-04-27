@@ -110,6 +110,24 @@ import {
   recordTenantAiUsage,
   AiBudgetExceededError,
 } from '../services/aiBudget';
+import { getGlossaryPromptBlock } from '../services/glossaryContext';
+
+/**
+ * Load the tenant-wide business glossary block for inclusion in AI prompts.
+ * Returns "" when there's no tenant context (CLI scripts, workers without
+ * the wrapper) or when the glossary is empty. Failures are non-fatal —
+ * losing the glossary should never break a query.
+ */
+async function loadGlossaryBlock(): Promise<string> {
+  const tenantId = getTenantAiContext();
+  if (!tenantId) return '';
+  try {
+    return await getGlossaryPromptBlock(tenantId);
+  } catch (err) {
+    logger.warn({ err }, 'Failed to load business glossary for AI prompt');
+    return '';
+  }
+}
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
 
@@ -422,6 +440,8 @@ export async function generateSchemaDraft(
     batches.push(tables.slice(i, i + DRAFT_BATCH_SIZE));
   }
 
+  const glossary = await loadGlossaryBlock();
+
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
     const batchStats = qualityStats?.filter((s) =>
@@ -431,7 +451,7 @@ export async function generateSchemaDraft(
 
     const raw = await callClaude(
       SCHEMA_DRAFT_SYSTEM,
-      buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates),
+      buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates, glossary),
       // SCHEMA_DRAFT_SYSTEM is identical across every batch in this source's
       // profile — caching keeps the per-batch cost at just the user prompt.
       { maxTokens: 16000, cacheSystem: true },
@@ -590,9 +610,10 @@ export async function generateSql(
   dialect: SqlDialect = 'sqlite',
   conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
+  const glossary = await loadGlossaryBlock();
   const systemPrompt = dialect === 'duckdb'
-    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
-    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
+    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
 
   // If conversation history is provided, use multi-turn messages for follow-up context
   if (conversationHistory && conversationHistory.length > 0) {
@@ -676,9 +697,10 @@ export async function generateCrossSourceSql(
   dialect: SqlDialect = 'sqlite',
   conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
+  const glossary = await loadGlossaryBlock();
   const systemPrompt = dialect === 'duckdb'
-    ? NL_TO_SQL_CROSS_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
-    : NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+    ? NL_TO_SQL_CROSS_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
+    : NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
 
   if (conversationHistory && conversationHistory.length > 0) {
     const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
@@ -713,9 +735,10 @@ export async function generateSqlStreaming(
   conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
   const tenantId = await enforceAiBudget('generate_sql_streaming');
+  const glossary = await loadGlossaryBlock();
   const systemPrompt = dialect === 'duckdb'
-    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr())
-    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr());
+    ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
+    : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
 
   // Build messages array — prepend conversation history if available
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
@@ -807,9 +830,10 @@ export async function generateDashboardRefinement(
   semanticContext: string,
   relationshipContext: string,
 ): Promise<RefinementOutput> {
+  const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     REFINEMENT_SYSTEM,
-    buildRefinementUser(request, semanticContext, relationshipContext),
+    buildRefinementUser(request, semanticContext, relationshipContext, glossary),
     { cacheSystem: true },
   );
   return parseJson<RefinementOutput>(raw);
@@ -825,9 +849,10 @@ export async function refineDashboardSpec(
   semanticContext: string,
   relationshipContext: string,
 ): Promise<DashboardSpec> {
+  const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
-    buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext),
+    buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
     { cacheSystem: true },
   );
   return parseJson<DashboardSpec>(raw);
@@ -843,9 +868,10 @@ export async function generateDashboardSpec(
   relationshipContext: string,
   dialect: SqlDialect = 'sqlite',
 ): Promise<DashboardSpec> {
+  const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     getDashboardSystem(dialect),
-    buildDashboardUser(request, semanticContext, relationshipContext),
+    buildDashboardUser(request, semanticContext, relationshipContext, glossary),
     { maxTokens: 16000, cacheSystem: true },
   );
   return parseJson<DashboardSpec>(raw);

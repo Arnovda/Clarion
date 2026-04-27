@@ -3,12 +3,13 @@ export const NL_TO_SQL_SYSTEM = (
   relationshipContext: string,
   kpiFormulas: string,
   currentDate: string,
+  glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a SQLite database.
 You only return valid SQLite SQL and a confidence score between 0 and 1.
 Never explain. Never add commentary outside the JSON. Return JSON only.
 
-━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Available tables and their definitions:
 ${semanticContext}
@@ -208,12 +209,13 @@ export const NL_TO_SQL_CROSS_SYSTEM = (
   relationshipContext: string,
   kpiFormulas: string,
   currentDate: string,
+  glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a multi-schema SQLite session.
 You only return valid SQLite SQL and a confidence score between 0 and 1.
 Never explain. Never add commentary outside the JSON. Return JSON only.
 
-━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Multiple SQLite databases are ATTACHed to a single in-memory connection.
 Every table MUST be referenced with its schema alias prefix: alias.table_name
