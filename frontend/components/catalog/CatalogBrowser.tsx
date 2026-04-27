@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  ChevronRight, Database, Star, Layers,
+  ChevronRight, Database, Star, Folder,
   Table as TableIcon, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -269,7 +269,7 @@ export default function CatalogBrowser({ selected, onSelectTable, hide, showRowC
                           title={schema.description ?? schema.label}
                         >
                           <Chevron open={schemaOpen} />
-                          <Layers
+                          <Folder
                             className={cn('w-3.5 h-3.5 shrink-0', schemaOpen ? 'text-ocean' : 'text-muted-2')}
                             strokeWidth={1.5}
                           />
