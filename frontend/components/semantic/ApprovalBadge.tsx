@@ -4,7 +4,7 @@ import { useState } from 'react';
 import api from '@/lib/api';
 import { isAdmin } from '@/lib/auth';
 
-type ApprovalStatus = 'draft' | 'pending_review' | 'approved' | 'rejected';
+type ApprovalStatus = 'draft' | 'pending_review' | 'approved' | 'rejected' | 'flagged';
 
 interface Props {
   entityType: 'table' | 'column' | 'kpi' | 'product_table' | 'product_column';

@@ -87,6 +87,26 @@ router.get('/dependency-graph', requireAuth, async (req: Request, res: Response,
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/products/by-source-table/:sourceTableId — Products referencing a source table
+// Must be before /:id routes to avoid being captured by the param handler
+// ---------------------------------------------------------------------------
+
+router.get('/by-source-table/:sourceTableId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const sourceTableId = Number(req.params.sourceTableId);
+    if (!Number.isFinite(sourceTableId)) {
+      res.status(400).json({ ok: false, error: 'sourceTableId required' });
+      return;
+    }
+    const rows = await semanticDb('data_product_sources as dps')
+      .join('data_products as dp', 'dp.id', 'dps.data_product_id')
+      .where('dps.source_table_id', sourceTableId)
+      .select('dp.id', 'dp.name', 'dp.status');
+    res.json({ ok: true, data: rows });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/products/:id — Full data product with star schemas, tables, columns, lineage, relationships
 // ---------------------------------------------------------------------------
 
