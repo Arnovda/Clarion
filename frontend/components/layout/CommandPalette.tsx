@@ -46,7 +46,7 @@ const ACTIONS: SearchResult[] = [
   { type: 'action', id: 'ask',        title: 'Ask a question',    subtitle: 'Query your data with AI',  icon: 'chat',  href: '/query' },
   { type: 'action', id: 'dashboard',  title: 'Create dashboard',  subtitle: 'Build a new AI dashboard', icon: 'grid',  href: '/dashboards' },
   { type: 'action', id: 'connect',    title: 'Connect a source',  subtitle: 'Add a new database',       icon: 'plug',  href: '/setup' },
-  { type: 'action', id: 'dictionary', title: 'Semantic layer',    subtitle: 'Browse definitions',       icon: 'book',  href: '/semantic' },
+  { type: 'action', id: 'dictionary', title: 'Catalog',           subtitle: 'Browse tables & products', icon: 'book',  href: '/semantic' },
   { type: 'action', id: 'products',   title: 'Data products',     subtitle: 'Star-schema models',       icon: 'star',  href: '/products' },
   { type: 'action', id: 'team',       title: 'Team management',   subtitle: 'Users & invites',          icon: 'users', href: '/users' },
 ];

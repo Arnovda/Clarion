@@ -6,7 +6,10 @@ import api from '@/lib/api';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
+import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
+
+type ViewTab = 'definition' | 'quality';
 
 interface Props {
   tableId: number;
@@ -69,6 +72,7 @@ export default function ProductTableDetailPanel({
   let productName = '';
   let schemaName = '';
   let pgTableId: number | null = null;
+  let productConnectionId: number | null = null;
   const usedByProducts: string[] = [];
   for (const product of productTree) {
     for (const schema of product.starSchemas) {
@@ -77,7 +81,8 @@ export default function ProductTableDetailPanel({
         table = found;
         productName = product.productName;
         schemaName = schema.schemaName;
-        pgTableId = found.pg_table_id ?? tableId;
+        pgTableId = (found as { pg_table_id?: number }).pg_table_id ?? tableId;
+        productConnectionId = product.connectionId;
         break;
       }
     }
@@ -105,6 +110,7 @@ export default function ProductTableDetailPanel({
   const [savingCol, setSavingCol]     = useState<number | null>(null);
   const [savedMsg, setSavedMsg]       = useState('');
   const [colView, setColView]         = useState<'cards' | 'grid'>('grid');
+  const [viewTab, setViewTab]         = useState<ViewTab>('definition');
 
   // Keep local state in sync when parent switches table or columns arrive
   if (tableId !== prevTableId) {
@@ -181,9 +187,36 @@ export default function ProductTableDetailPanel({
     setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
   }
 
+  const subTabBtn = (t: ViewTab, label: string) => (
+    <button
+      onClick={() => setViewTab(t)}
+      className={`px-3 py-1.5 text-[12px] font-medium transition-colors relative ${
+        viewTab === t ? 'text-ink' : 'text-muted hover:text-ink-2'
+      }`}
+    >
+      {label}
+      {viewTab === t && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
+    </button>
+  );
+
   return (
-    <div className="flex-1 overflow-y-auto bg-gradient-to-br from-surface via-surface to-surface-container-low/30 panel-enter">
-      <div className="px-6 py-6 space-y-6 pb-24">
+    <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
+      <div className="border-b border-line bg-raised px-4 flex items-center gap-1 flex-shrink-0">
+        {subTabBtn('definition', 'Definition')}
+        {subTabBtn('quality', 'Quality')}
+      </div>
+
+      {viewTab === 'quality' ? (
+        productConnectionId != null ? (
+          <QualityPanel connId={productConnectionId} tableName={tbl.table_name} />
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-muted-2 text-sm p-6 text-center max-w-md mx-auto">
+            Quality requires a connection. This product is not yet linked to a source.
+          </div>
+        )
+      ) : (
+      <>
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-24">
 
         {/* ── Table header ────────────────────────────────────────────────── */}
         <section className="bg-raised border border-line rounded-lg px-6 py-5">
@@ -587,6 +620,8 @@ export default function ProductTableDetailPanel({
           </button>
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

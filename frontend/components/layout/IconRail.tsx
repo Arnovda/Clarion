@@ -46,7 +46,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',  icon: ICONS.code,  roles: ['admin', 'analyst'],            group: 'workspace' },
 
   // Model
-  { key: 'semantic',   href: '/semantic',   label: 'Semantic',   icon: ICONS.book,  roles: ['admin', 'analyst'],            group: 'model' },
+  { key: 'semantic',   href: '/semantic',   label: 'Catalog',    icon: ICONS.book,  roles: ['admin', 'analyst'],            group: 'model' },
   { key: 'products',   href: '/products',   label: 'Products',   icon: ICONS.star,  roles: ['admin'],                       group: 'model' },
   { key: 'quality',    href: '/health',     label: 'Quality',    icon: ICONS.heart, roles: ['admin', 'analyst'],            group: 'model' },
 

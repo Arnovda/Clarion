@@ -33,9 +33,11 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-04-27
 
-**IA cleanup — Phase 1 (2026-04-27):**
+**IA cleanup — 2026-04-27:**
 - New tenant business glossary: `business_glossary` table (migration `20260427000040`), `/semantic/glossary` CRUD routes, `services/glossaryContext.ts` loads + formats entries for prompts, `AIService` injects the block into NL→SQL (source + cross + DuckDB), dashboard gen/refine, and schema-draft via `getTenantAiContext()`. New `Glossary` tab on `/semantic` (`components/semantic/GlossaryPanel.tsx`).
 - KPIs tab removed from `/semantic`. KPIs now live only at the product layer (`/products` → KPIs tab, `product_kpis` table consumed by `productContext.kpiFormulas`). The `kpi_definitions` table and `/semantic/kpis` route are kept (notebooks still reads them; no destructive migration) but no longer have a UI surface. Source-layer KPIs are deprecated.
+- `TableDetailPanel` and `ProductTableDetailPanel` now have **Definition / Quality** sub-tabs. Quality reuses `QualityPanel` scoped to the selected table — for product tables it queries `(parent connectionId, product table_name)` since `POST /quality/product/:id/profile` already writes results under that key. `/health` stays as the cross-cutting "what's broken" dashboard.
+- Nav rename: IconRail "Semantic" → "Catalog"; CommandPalette entry retitled. The `/semantic` route is the entity browse + detail surface (CatalogBrowser sidebar + tabbed detail panels). `/products` is the authoring surface (star-schema design, transformations, schedules, KPIs).
 
 **Status:** All original POC build steps (1–11) are complete. The platform has grown significantly beyond the initial POC into a multi-tenant, multi-connector data platform with ETL ingestion, star schema products, quality profiling, background job queues, user management, and Azure production deployment.
 
