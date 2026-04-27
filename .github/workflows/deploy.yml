@@ -79,25 +79,25 @@ jobs:
           echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
 
       - name: Deploy backend
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ secrets.BACKEND_APP_NAME }}
-          imageToDeploy: ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
+        run: |
+          az containerapp update \
+            --name ${{ secrets.BACKEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
 
       - name: Deploy frontend
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ secrets.FRONTEND_APP_NAME }}
-          imageToDeploy: ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }}
+        run: |
+          az containerapp update \
+            --name ${{ secrets.FRONTEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }}
 
       - name: Deploy ETL
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          containerAppName: ${{ secrets.ETL_APP_NAME }}
-          imageToDeploy: ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
+        run: |
+          az containerapp update \
+            --name ${{ secrets.ETL_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
 
   # ── Run migrations after deploy ───────────────────────────────────────────
   migrate:
