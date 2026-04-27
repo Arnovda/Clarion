@@ -101,4 +101,4 @@ export interface ProductKpi {
   owner_name: string | null;
 }
 
-export type ActiveTab = 'overview' | 'bus-matrix' | 'schema' | 'lineage' | 'kpis';
+export type ActiveTab = 'overview' | 'bus-matrix' | 'schema' | 'lineage' | 'kpis' | 'quality';

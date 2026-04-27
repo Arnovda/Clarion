@@ -48,7 +48,6 @@ const NAV_ITEMS: NavItem[] = [
   // Model
   { key: 'semantic',   href: '/semantic',   label: 'Catalog',    icon: ICONS.book,  roles: ['admin', 'analyst'],            group: 'model' },
   { key: 'products',   href: '/products',   label: 'Products',   icon: ICONS.star,  roles: ['admin'],                       group: 'model' },
-  { key: 'quality',    href: '/health',     label: 'Quality',    icon: ICONS.heart, roles: ['admin', 'analyst'],            group: 'model' },
 
   // Admin
   { key: 'sources',    href: '/setup',      label: 'Sources',     icon: ICONS.plug,   roles: ['admin'], group: 'admin' },
@@ -63,7 +62,6 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/notebooks':  ['/notebooks'],
   '/semantic':   ['/semantic'],
   '/products':   ['/products'],
-  '/health':     ['/health'],
   '/setup':      ['/setup', '/sources'],
   '/gaps':       ['/gaps', '/suggestions'],
   '/users':      ['/users'],

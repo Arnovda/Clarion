@@ -24,6 +24,7 @@ import { statusBorderColor, cleanTopicName } from './helpers';
 
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
+const QualityTab = dynamic(() => import('./QualityTab'), { ssr: false });
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -385,6 +386,7 @@ function ProductsPageInner() {
     { key: 'schema', label: 'Schema Diagram' },
     { key: 'lineage', label: 'Data Flow' },
     { key: 'kpis', label: 'KPIs' },
+    { key: 'quality', label: 'Quality' },
   ];
 
   return (
@@ -648,6 +650,9 @@ function ProductsPageInner() {
           {tab === 'kpis' && (
             <KpisTab products={products} details={details} kpis={kpis} onLoadProduct={loadFullProduct} onLoadKpis={loadKpis} />
           )}
+
+          {/* ── Quality Tab ────────────────────────────────────────── */}
+          {tab === 'quality' && <QualityTab />}
         </div>
       </div>
     </div>
