@@ -733,7 +733,7 @@ function QueryPageInner() {
       showSearch={false}
       contextPanel={sidebarContent}
     >
-      <div className="flex flex-col h-full">
+      <div className="flex flex-col flex-1 min-h-0">
         {/* Sub-header: source selector + show SQL toggle */}
         <div className="flex-shrink-0 px-6 py-2.5 flex items-center justify-between border-b border-line bg-raised">
           <div className="flex items-center gap-3">
