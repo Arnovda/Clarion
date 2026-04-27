@@ -115,7 +115,7 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
 });
 
 // PATCH /api/semantic/tables/:id — confirm or edit a table definition
-router.patch('/tables/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
@@ -170,7 +170,7 @@ router.get('/columns', requireAuth, async (req: Request, res: Response, next: Ne
 });
 
 // PATCH /api/semantic/columns/:id
-router.patch('/columns/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;

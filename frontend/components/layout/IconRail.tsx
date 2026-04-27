@@ -4,31 +4,30 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  MessageSquare, LayoutGrid, Code2, BookOpen, Star, Heart,
-  Plug, Inbox, Users, Shield,
+  MessageSquare, LayoutGrid, Code2, BookOpen, Star,
+  Plug, Inbox, Users, Shield, Library,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
+import api from '@/lib/api';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-type Group = 'workspace' | 'model' | 'admin';
+type Group = 'discover' | 'work' | 'curate' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
 const ICONS = {
-  chat:   <MessageSquare className={ICON_CLASS} strokeWidth={1.5} />,
-  grid:   <LayoutGrid    className={ICON_CLASS} strokeWidth={1.5} />,
-  code:   <Code2         className={ICON_CLASS} strokeWidth={1.5} />,
-  book:   <BookOpen      className={ICON_CLASS} strokeWidth={1.5} />,
-  star:   <Star          className={ICON_CLASS} strokeWidth={1.5} />,
-  heart:  <Heart         className={ICON_CLASS} strokeWidth={1.5} />,
-  plug:   <Plug          className={ICON_CLASS} strokeWidth={1.5} />,
-  inbox:  <Inbox         className={ICON_CLASS} strokeWidth={1.5} />,
-  users:  <Users         className={ICON_CLASS} strokeWidth={1.5} />,
-  shield: <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
+  chat:    <MessageSquare className={ICON_CLASS} strokeWidth={1.5} />,
+  grid:    <LayoutGrid    className={ICON_CLASS} strokeWidth={1.5} />,
+  code:    <Code2         className={ICON_CLASS} strokeWidth={1.5} />,
+  book:    <BookOpen      className={ICON_CLASS} strokeWidth={1.5} />,
+  star:    <Star          className={ICON_CLASS} strokeWidth={1.5} />,
+  library: <Library       className={ICON_CLASS} strokeWidth={1.5} />,
+  plug:    <Plug          className={ICON_CLASS} strokeWidth={1.5} />,
+  inbox:   <Inbox         className={ICON_CLASS} strokeWidth={1.5} />,
+  users:   <Users         className={ICON_CLASS} strokeWidth={1.5} />,
+  shield:  <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
 };
-
-/* ── Nav model ──────────────────────────────────────────────────────── */
 
 interface NavItem {
   key: string;
@@ -37,23 +36,27 @@ interface NavItem {
   icon: React.ReactNode;
   roles: Role[];
   group: Group;
+  badgeKey?: 'review' | 'sources';
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // Workspace
-  { key: 'ask',        href: '/query',      label: 'Ask',        icon: ICONS.chat,  roles: ['admin', 'analyst', 'viewer'], group: 'workspace' },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards', icon: ICONS.grid,  roles: ['admin', 'analyst', 'viewer'], group: 'workspace' },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',  icon: ICONS.code,  roles: ['admin', 'analyst'],            group: 'workspace' },
+  // Discover — find your data
+  { key: 'catalog',    href: '/semantic',   label: 'Data catalog',    icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'discover' },
+  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.star,    roles: ['admin'],                       group: 'discover' },
+  { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
 
-  // Model
-  { key: 'semantic',   href: '/semantic',   label: 'Catalog',    icon: ICONS.book,  roles: ['admin', 'analyst'],            group: 'model' },
-  { key: 'products',   href: '/products',   label: 'Products',   icon: ICONS.star,  roles: ['admin'],                       group: 'model' },
+  // Work — use it
+  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
+  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 
-  // Admin
-  { key: 'sources',    href: '/setup',      label: 'Sources',     icon: ICONS.plug,   roles: ['admin'], group: 'admin' },
-  { key: 'suggestions',href: '/gaps',       label: 'Suggestions', icon: ICONS.inbox,  roles: ['admin'], group: 'admin' },
-  { key: 'team',       href: '/users',      label: 'Team',        icon: ICONS.users,  roles: ['admin'], group: 'admin' },
-  { key: 'policies',   href: '/policies',   label: 'Policies',    icon: ICONS.shield, roles: ['admin'], group: 'admin' },
+  // Curate — keep definitions correct (analyst+)
+  { key: 'sources',    href: '/setup',      label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
+  { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'review' },
+
+  // Settings — admin only
+  { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
+  { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {
@@ -62,25 +65,52 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/notebooks':  ['/notebooks'],
   '/semantic':   ['/semantic'],
   '/products':   ['/products'],
+  '/glossary':   ['/glossary'],
   '/setup':      ['/setup', '/sources'],
-  '/gaps':       ['/gaps', '/suggestions'],
+  '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],
 };
 
 const GROUP_LABELS: Record<Group, string> = {
-  workspace: 'Workspace',
-  model:     'Model',
-  admin:     'Admin',
+  discover: 'Discover',
+  work:     'Work',
+  curate:   'Curate',
+  settings: 'Settings',
 };
+
+const GROUP_ORDER: Group[] = ['discover', 'work', 'curate', 'settings'];
 
 export default function IconRail() {
   const pathname = usePathname();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
+  const [reviewCount, setReviewCount] = useState<number>(0);
+  const [sourcesCount, setSourcesCount] = useState<number>(0);
 
   useEffect(() => {
     setPayload(getTokenPayload());
   }, []);
+
+  // Load badge counts for analyst+
+  useEffect(() => {
+    const role = payload?.role;
+    if (role !== 'admin' && role !== 'analyst') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/semantic/pending-approvals');
+        if (!cancelled) setReviewCount((res.data.data ?? []).length);
+      } catch { /* noop */ }
+      try {
+        const res = await api.get('/connections');
+        const conns = (res.data.data ?? []) as Array<{ profiling_status?: string | null }>;
+        // "pending" sources = those without a successful profiling run
+        const pending = conns.filter((c) => !c.profiling_status || c.profiling_status === 'pending' || c.profiling_status === 'failed').length;
+        if (!cancelled) setSourcesCount(pending);
+      } catch { /* noop */ }
+    })();
+    return () => { cancelled = true; };
+  }, [payload?.role]);
 
   const role: Role = payload?.role ?? 'viewer';
   const visible = NAV_ITEMS.filter((i) => i.roles.includes(role));
@@ -90,7 +120,11 @@ export default function IconRail() {
     return aliases.some((a) => pathname === a || pathname.startsWith(a + '/'));
   }
 
-  const groups: Group[] = ['workspace', 'model', 'admin'];
+  function badgeFor(item: NavItem): number {
+    if (item.badgeKey === 'review') return reviewCount;
+    if (item.badgeKey === 'sources') return sourcesCount;
+    return 0;
+  }
 
   return (
     <aside
@@ -98,7 +132,7 @@ export default function IconRail() {
       className="w-[220px] min-w-[220px] h-screen flex flex-col bg-raised border-r border-line shrink-0 overflow-y-auto"
     >
       <nav className="flex-1 flex flex-col gap-0.5 px-2.5 py-3.5">
-        {groups.map((g) => {
+        {GROUP_ORDER.map((g) => {
           const items = visible.filter((i) => i.group === g);
           if (items.length === 0) return null;
           return (
@@ -108,6 +142,7 @@ export default function IconRail() {
               </div>
               {items.map((it) => {
                 const active = isActive(it.href);
+                const badge = badgeFor(it);
                 return (
                   <Link
                     key={it.key}
@@ -123,7 +158,15 @@ export default function IconRail() {
                     aria-current={active ? 'page' : undefined}
                   >
                     <span className={cn('opacity-85', active && 'opacity-100')}>{it.icon}</span>
-                    <span className="truncate">{it.label}</span>
+                    <span className="truncate flex-1">{it.label}</span>
+                    {badge > 0 && (
+                      <span className={cn(
+                        'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
+                        active ? 'bg-ocean text-white' : 'bg-ocean-softer text-ocean'
+                      )}>
+                        {badge > 99 ? '99+' : badge}
+                      </span>
+                    )}
                   </Link>
                 );
               })}

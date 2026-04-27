@@ -1198,7 +1198,7 @@ function SourcesPageInner() {
 
 export default function SourcesPage() {
   return (
-    <RequireRole roles={['admin']}>
+    <RequireRole roles={['admin', 'analyst']}>
       <SourcesPageInner />
     </RequireRole>
   );

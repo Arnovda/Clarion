@@ -7,15 +7,14 @@ import { parseIdFromSlug } from '@/lib/catalog';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
-import GlossaryPanel from '@/components/semantic/GlossaryPanel';
 import BulkImportModal from '@/components/semantic/BulkImportModal';
 import HelpTooltip from '@/components/HelpTooltip';
 import api from '@/lib/api';
-import { isAdmin, getToken, getTokenPayload } from '@/lib/auth';
+import { isAdmin, getToken } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
 import { SourceTable, SourceColumn, CrossSourceView, ProductColumn, ProductTreeItem } from '@/components/semantic/types';
 
-type MainTab = 'definitions' | 'relationships' | 'glossary';
+type MainTab = 'definitions' | 'relationships';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
@@ -417,12 +416,6 @@ function SemanticInner() {
             </svg>
           ))}
           <HelpTooltip text="Define how tables relate to each other (foreign keys). This helps the AI write correct JOIN queries." />
-          {tabBtn('glossary', 'Glossary', (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-            </svg>
-          ))}
-          <HelpTooltip text="Define abbreviations and company-specific wordings (e.g. 'QTD', 'Net New ARR'). The AI uses these as extra context across queries, dashboards, and definitions." />
         </div>
 
         {/* Spacer + action buttons */}
@@ -710,10 +703,6 @@ function SemanticInner() {
                 </button>
               </div>
             </div>
-          )}
-
-          {tab === 'glossary' && (
-            <GlossaryPanel canEdit={getTokenPayload()?.role !== 'viewer'} />
           )}
 
         </div>

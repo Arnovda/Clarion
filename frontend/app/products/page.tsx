@@ -382,9 +382,9 @@ function ProductsPageInner() {
   // Tab bar items
   const tabs: { key: ActiveTab; label: string }[] = [
     { key: 'overview', label: 'Overview' },
-    { key: 'bus-matrix', label: 'Coverage Map' },
-    { key: 'schema', label: 'Schema Diagram' },
-    { key: 'lineage', label: 'Data Flow' },
+    { key: 'bus-matrix', label: 'Data tables' },
+    { key: 'schema', label: 'Schema diagram' },
+    { key: 'lineage', label: 'Data flow' },
     { key: 'kpis', label: 'KPIs' },
     { key: 'quality', label: 'Quality' },
   ];
