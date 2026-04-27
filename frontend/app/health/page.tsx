@@ -5,6 +5,7 @@ import { ChevronRight, Database, Table2, Play, Loader2 } from 'lucide-react';
 import IconRail from '@/components/layout/IconRail';
 import ContextPanel from '@/components/layout/ContextPanel';
 import QualityPanel from '@/components/QualityPanel';
+import CatalogBrowser, { type CatalogSelection } from '@/components/catalog/CatalogBrowser';
 import api from '@/lib/api';
 import { formatRelativeTime, getFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
 
@@ -87,14 +88,37 @@ export default function HealthPage() {
   const [activePill, setActivePill] = useState('overview');
   const [profilingKey, setProfilingKey] = useState<string | null>(null); // e.g. "conn-22" or "product-Sales"
   const [profilingProgress, setProfilingProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+  const [catalogSelection, setCatalogSelection] = useState<CatalogSelection | null>(null);
 
-  function toggleSection(key: string) {
-    setExpandedSections((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
+  function handleCatalogSelect(sel: CatalogSelection) {
+    setCatalogSelection(sel);
+    setActivePill('detail');
+    if (sel.catalog === 'sources') {
+      // For source tables, schemaSlug encodes the connection id; resolve to a TableHealth row
+      const m = sel.schemaSlug.match(/_(\d+)$/);
+      const connId = m ? Number(m[1]) : null;
+      if (connId == null || sel.tableName == null) return;
+      setSelectedConnId(connId);
+      const t = tables.find((x) => (x.layer ?? 'source') === 'source'
+        && x.connection_id === connId && x.table_name === sel.tableName);
+      setSelectedTable({
+        connId,
+        tableName: sel.tableName,
+        displayName: t?.display_name ?? sel.tableLabel ?? undefined,
+      });
+    } else {
+      // Product tables: match by (product_name, table_name) so we get the right TableHealth row
+      const t = tables.find((x) => x.layer === 'product'
+        && x.product_name === sel.schemaLabel && x.table_name === sel.tableName);
+      if (!t) return;
+      setSelectedConnId(null);
+      setSelectedTable({
+        connId: t.connection_id,
+        tableName: t.table_name,
+        displayName: t.display_name ?? sel.tableLabel ?? undefined,
+        productTableId: t.product_table_id,
+      });
+    }
   }
 
   const loadData = useCallback(async () => {
@@ -163,215 +187,7 @@ export default function HealthPage() {
     : 0;
 
   const contextPanel = (
-    <div className="flex flex-col h-full min-h-0 bg-soft text-ink-2">
-      <div className="flex-1 overflow-y-auto px-2 py-3 space-y-0.5">
-        {/* "All sources" option */}
-        <button
-          onClick={() => { setSelectedConnId(null); setSelectedTable(null); setActivePill('overview'); }}
-          className={`w-full text-left px-3 py-2 rounded-md text-[12px] flex items-center gap-2.5 transition-colors ${
-            selectedConnId === null
-              ? 'bg-ocean-softer border-l-2 border-ocean text-ink font-medium'
-              : 'border-l-2 border-transparent text-ink-3 hover:bg-softer hover:text-ink-2'
-          }`}>
-          <DbIcon active={selectedConnId === null} />
-          <span className="truncate">All sources</span>
-          <span className="ml-auto text-[10px] font-mono tracking-[0.06em] text-muted-2 tabular-nums">{tables.length}</span>
-        </button>
-
-        {/* Sources section */}
-        <div className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted px-3 pt-4 pb-1.5">Sources</div>
-        {connections.map((conn) => {
-          const connTables = tables.filter((t) => t.connection_id === conn.id && (t.layer ?? 'source') === 'source');
-          if (connTables.length === 0) return null;
-          const connAvg = connTables.filter((t) => t.overall_score !== null);
-          const avg = connAvg.length > 0 ? Math.round((connAvg.reduce((s, t) => s + (t.overall_score ?? 0), 0) / connAvg.length) * 100) : null;
-          const isSelected = selectedConnId === conn.id;
-          return (
-            <div key={conn.id}>
-              <button
-                onClick={() => { setSelectedConnId(isSelected ? null : conn.id); setSelectedTable(null); setActivePill('overview'); }}
-                className={`w-full text-left px-3 py-2 rounded-md text-[12px] flex items-center gap-2 transition-colors ${
-                  isSelected
-                    ? 'bg-ocean-softer border-l-2 border-ocean text-ink font-medium'
-                    : 'border-l-2 border-transparent text-ink-3 hover:bg-softer hover:text-ink-2'
-                }`}>
-                <ChevronIcon expanded={isSelected} />
-                <DbIcon active={isSelected} />
-                <span className="truncate flex-1">{conn.name}</span>
-                {avg !== null && <HealthRing percent={avg} size={16} />}
-                <span className="text-[10px] font-mono tabular-nums text-muted-2">{connTables.length}</span>
-              </button>
-
-              {/* Nested table list */}
-              {isSelected && (
-                <div className="ml-5 border-l border-line mt-0.5 mb-1">
-                  {connTables.map((t) => {
-                    const isActive = selectedTable?.tableName === t.table_name && selectedTable?.connId === t.connection_id;
-                    return (
-                      <button key={t.id}
-                        onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, displayName: t.display_name || undefined }); setActivePill('detail'); }}
-                        className={`w-full text-left pl-4 pr-3 py-1.5 text-[12px] flex items-center gap-2 transition-colors ${
-                          isActive
-                            ? 'bg-ocean-softer text-ocean font-medium'
-                            : 'text-ink-3 hover:bg-softer hover:text-ink-2'
-                        }`}>
-                        <TableIcon active={isActive} />
-                        <span className="truncate flex-1">{t.display_name || t.table_name}</span>
-                        {t.profiled_at && (
-                          <span className={`text-[9px] font-mono ${getFreshnessTextColor(getFreshnessStatus(t.profiled_at))}`}>
-                            {formatRelativeTime(t.profiled_at)}
-                          </span>
-                        )}
-                        <ScoreDot score={t.overall_score} />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        {/* Fact & Dimension sections (matching Data Dictionary layout) */}
-        {(() => {
-          const productTables = tables.filter((t) => t.layer === 'product');
-          if (productTables.length === 0) return null;
-
-          // Deduplicate dimensions across products, collect facts grouped by product
-          const dimByName = new Map<string, { best: TableHealth; products: Set<string> }>();
-          const factsByProduct = new Map<string, TableHealth[]>();
-
-          for (const t of productTables) {
-            const pn = t.product_name ?? 'Unknown';
-            if (t.table_role === 'dimension' || t.table_role === 'bridge' || t.table_role === 'junk') {
-              const existing = dimByName.get(t.table_name);
-              if (!existing) {
-                dimByName.set(t.table_name, { best: t, products: new Set([pn]) });
-              } else {
-                existing.products.add(pn);
-                // Prefer tables with data: first by score, then by row_count (warehouse data exists)
-                const curHasData = existing.best.row_count != null && existing.best.row_count > 0;
-                const newHasData = t.row_count != null && t.row_count > 0;
-                if (
-                  (t.overall_score !== null && existing.best.overall_score === null) ||
-                  (!curHasData && newHasData)
-                ) {
-                  existing.best = t;
-                }
-              }
-            } else {
-              const arr = factsByProduct.get(pn);
-              if (arr) { if (!arr.find(x => x.table_name === t.table_name)) arr.push(t); }
-              else factsByProduct.set(pn, [t]);
-            }
-          }
-
-          const dimensions = [...dimByName.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([name, { best, products }]) => ({ name, table: best, usedBy: [...products].sort() }));
-
-          const factGroups = [...factsByProduct.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([productName, tbls]) => ({ productName, tables: tbls.sort((a, b) => a.table_name.localeCompare(b.table_name)) }));
-
-          return (<>
-            <div className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted px-3 pt-5 pb-1.5">Organized data</div>
-
-            {/* ── Dimensions (shared/deduplicated) ── */}
-            {dimensions.length > 0 && (
-              <>
-                <div className="px-3 pt-1 pb-1">
-                  <button onClick={() => toggleSection('dims')} className="flex items-center gap-2 w-full text-left">
-                    <ChevronIcon expanded={expandedSections.has('dims')} />
-                    <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-ai">Reference tables</span>
-                    <span className="text-[10px] font-mono text-muted-2 ml-auto tabular-nums">{dimensions.length}</span>
-                  </button>
-                </div>
-                {expandedSections.has('dims') && (
-                  <div className="ml-5 border-l border-line">
-                    {dimensions.map((dim) => {
-                      const isActive = selectedTable?.tableName === dim.name;
-                      return (
-                        <button key={dim.name}
-                          onClick={() => { setSelectedTable({ connId: dim.table.connection_id, tableName: dim.name, displayName: dim.table.display_name || undefined, productTableId: dim.table.product_table_id }); setActivePill('detail'); }}
-                          className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-[12px] transition-colors ${
-                            isActive
-                              ? 'bg-ai-soft text-ai font-medium'
-                              : 'text-ink-3 hover:bg-softer hover:text-ink-2'
-                          }`}>
-                          <TableIcon active={isActive} />
-                          <span className="truncate flex-1">{dim.table.display_name || dim.name}</span>
-                          {dim.usedBy.length > 1 && (
-                            <span className="text-[9px] px-1.5 py-0.5 bg-ocean-softer text-ocean border border-line rounded font-mono tabular-nums" title={`Used in: ${dim.usedBy.join(', ')}`}>
-                              {dim.usedBy.length}x
-                            </span>
-                          )}
-                          {dim.table.profiled_at && (
-                            <span className={`text-[9px] font-mono ${getFreshnessTextColor(getFreshnessStatus(dim.table.profiled_at))}`}>
-                              {formatRelativeTime(dim.table.profiled_at)}
-                            </span>
-                          )}
-                          <ScoreDot score={dim.table.overall_score} />
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* ── Transaction Tables (grouped by product) ── */}
-            {factGroups.length > 0 && (
-              <>
-                <div className="px-3 pt-4 pb-1">
-                  <button onClick={() => toggleSection('facts')} className="flex items-center gap-2 w-full text-left">
-                    <ChevronIcon expanded={expandedSections.has('facts')} />
-                    <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-ocean">Transaction tables</span>
-                    <span className="text-[10px] font-mono text-muted-2 ml-auto tabular-nums">{factGroups.reduce((n, g) => n + g.tables.length, 0)}</span>
-                  </button>
-                </div>
-                {expandedSections.has('facts') && (
-                  <div className="ml-5 border-l border-line">
-                    {factGroups.map((group) => (
-                      <div key={group.productName}>
-                        <div className="pl-4 pr-3 pt-3 pb-1">
-                          <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted-2">{group.productName}</span>
-                        </div>
-                        {group.tables.map((t) => {
-                          const isActive = selectedTable?.tableName === t.table_name && selectedTable?.productTableId === t.product_table_id;
-                          return (
-                            <button key={t.id}
-                              onClick={() => { setSelectedTable({ connId: t.connection_id, tableName: t.table_name, displayName: t.display_name || undefined, productTableId: t.product_table_id }); setActivePill('detail'); }}
-                              className={`w-full text-left flex items-center gap-2 pl-4 pr-3 py-[7px] text-[12px] transition-colors ${
-                                isActive
-                                  ? 'bg-ocean-softer text-ocean font-medium'
-                                  : 'text-ink-3 hover:bg-softer hover:text-ink-2'
-                              }`}>
-                              <TableIcon active={isActive} />
-                              <span className="truncate flex-1">{t.display_name || t.table_name}</span>
-                              {t.profiled_at && (
-                                <span className={`text-[9px] font-mono ${getFreshnessTextColor(getFreshnessStatus(t.profiled_at))}`}>
-                                  {formatRelativeTime(t.profiled_at)}
-                                </span>
-                              )}
-                              <ScoreDot score={t.overall_score} />
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </>);
-        })()}
-
-        {tables.length === 0 && !loading && (
-          <p className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted-2 px-3 py-4 text-center">No tables profiled yet</p>
-        )}
-      </div>
-    </div>
+    <CatalogBrowser selected={catalogSelection} onSelectTable={handleCatalogSelect} />
   );
 
   const pillBtn = (key: string, label: string) => (

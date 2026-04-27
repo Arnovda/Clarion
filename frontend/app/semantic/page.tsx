@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
-import DatabaseTree from '@/components/semantic/DatabaseTree';
+import CatalogBrowser, { type CatalogSelection } from '@/components/catalog/CatalogBrowser';
+import { parseIdFromSlug } from '@/lib/catalog';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import RelationshipCanvas from '@/components/semantic/RelationshipCanvas';
@@ -70,6 +71,9 @@ function SemanticInner() {
   const [loadingProductColumns, setLoadingProductColumns] = useState<Set<number>>(new Set());
   // Track which layer is active: source or product
   const [selectionLayer, setSelectionLayer] = useState<'source' | 'product'>('source');
+
+  // ── Catalog browser selection (mirrors current selection for the new tree) ──
+  const [catalogSelection, setCatalogSelection] = useState<CatalogSelection | null>(null);
 
   const hasAutoExpanded = useRef<Set<number>>(new Set());
 
@@ -365,6 +369,23 @@ function SemanticInner() {
     setSelectionLayer('product');
   }
 
+  // ── Catalog browser → existing handlers ──────────────────────────────────
+  async function handleCatalogSelect(sel: CatalogSelection) {
+    setCatalogSelection(sel);
+    const schemaId = parseIdFromSlug(sel.schemaSlug);
+    if (schemaId == null) return;
+    const tableId = Number(sel.tableId);
+    if (!Number.isFinite(tableId)) return;
+
+    if (sel.catalog === 'sources') {
+      // Make sure the connection's tables/columns are loaded so detail panel works
+      if (!tablesByConn[schemaId]) await loadConnectionTables(schemaId);
+      handleSelectTable(schemaId, tableId);
+    } else {
+      handleSelectProductTable(schemaId, tableId);
+    }
+  }
+
   function handleCanvasSelectTable(tableId: number) {
     setSelectedTableId(tableId);
     setSelectedColumnId(null);
@@ -583,26 +604,11 @@ function SemanticInner() {
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* Left sidebar — dark tree, no white bg or border */}
-        <div className="flex-shrink-0 overflow-y-auto" style={{ width: 260 }}>
-            <DatabaseTree
-              connections={connections}
-              tablesByConnection={tablesByConn}
-              columnsByTable={columnsByTable}
-              expandedConnectionIds={expandedConns}
-              loadingConnectionIds={loadingConns}
-              activeConnectionId={activeConnId}
-              selectedTableId={selectionLayer === 'source' ? selectedTableId : null}
-              selectedColumnId={selectionLayer === 'source' ? selectedColumnId : null}
-              onToggleConnection={handleToggleConnection}
-              onSelectTable={handleSelectTable}
-              onSelectColumn={handleSelectColumn}
-              productTree={productTree}
-              productColumnsByTable={productColumnsByTable}
-              selectedProductTableId={selectionLayer === 'product' ? selectedProductTableId : null}
-              selectedProductColumnId={selectionLayer === 'product' ? selectedProductColumnId : null}
-              onSelectProductTable={handleSelectProductTable}
-              onSelectProductColumn={handleSelectProductColumn}
+        {/* Left sidebar — Unity-Catalog-style three-level browser */}
+        <div className="flex-shrink-0 border-r border-line" style={{ width: 280 }}>
+            <CatalogBrowser
+              selected={catalogSelection}
+              onSelectTable={handleCatalogSelect}
             />
         </div>
 
