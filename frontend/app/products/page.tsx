@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Database, X, ChevronRight, Sparkles, Check, Pencil, Trash2, Code as CodeIcon } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -34,6 +35,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'htt
 // ---------------------------------------------------------------------------
 
 function ProductsPageInner() {
+  const router = useRouter();
   const [tab, setTab] = useState<ActiveTab>('overview');
   const [connections, setConnections] = useState<Connection[]>([]);
   const [products, setProducts] = useState<DataProduct[]>([]);
@@ -126,9 +128,8 @@ function ProductsPageInner() {
   }, [products.length, loadFullProduct, loadKpis]);
 
   const openProduct = useCallback((id: number) => {
-    setSelectedProductId(id);
-    setExpandedTableId(null);
-  }, []);
+    router.push(`/products/${id}`);
+  }, [router]);
 
   // ----------- Bus Matrix Auto-Build (SSE) -----------
 
@@ -628,29 +629,7 @@ function ProductsPageInner() {
                 })}
               </div>
 
-              {/* Slide-over detail panel */}
-              {selectedProductId !== null && (
-                <TopicSlideOver
-                  product={products.find((p) => p.id === selectedProductId)!}
-                  detail={details.get(selectedProductId)}
-                  productKpis={kpis.get(selectedProductId) ?? []}
-                  expandedTableId={expandedTableId}
-                  onToggleTable={(id) => setExpandedTableId(expandedTableId === id ? null : id)}
-                  runningTableId={runningTableId}
-                  runningProductId={runningProductId}
-                  editingSql={editingSql}
-                  savingSql={savingSql}
-                  onRunTable={handleRunTable}
-                  onRunProduct={handleRunProduct}
-                  onEditSql={setEditingSql}
-                  onSaveSql={handleSaveSql}
-                  onCancelEditSql={() => setEditingSql(null)}
-                  onDelete={handleDelete}
-                  onClose={() => { setSelectedProductId(null); setExpandedTableId(null); setEditingSql(null); }}
-                  getAllTables={getAllTables}
-                  totalRows={totalRows}
-                />
-              )}
+              {/* Card click now navigates to /products/[id] (full detail page with embedded AI chat). */}
             </>
           )}
 
@@ -686,6 +665,7 @@ function ProductsPageInner() {
         product={askProductId !== null ? (products.find((p) => p.id === askProductId) ?? null) : null}
         connections={connections}
         products={products}
+        onRefineApplied={() => { loadProducts(); }}
       />
     </div>
   );

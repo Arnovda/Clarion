@@ -4,6 +4,11 @@ import { semanticDb } from '../db/knex';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
+import { refineProduct } from '../ai/AIService';
+import type {
+  ProductSummary,
+  RefineChange,
+} from '../ai/prompts/refineProductPrompt';
 
 const router = Router();
 
@@ -915,6 +920,23 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 });
 
 // ---------------------------------------------------------------------------
+// PATCH /api/products/tables/:tableId — Update product table metadata
+// (currently: description, display_name)
+// ---------------------------------------------------------------------------
+
+router.patch('/tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const allowed = ['description', 'display_name'];
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    await semanticDb('product_tables').where({ id: req.params.tableId }).update(updates);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // PUT /api/products/tables/:tableId/sql — Update transformation SQL
 // ---------------------------------------------------------------------------
 
@@ -979,6 +1001,185 @@ router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: 
 
     await semanticDb('product_columns').where({ id: req.params.columnId }).update(updates);
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/:id/refine — Propose metadata changes from NL instruction
+// ---------------------------------------------------------------------------
+
+router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const productId = Number(req.params.id);
+    const { instruction } = req.body as { instruction: string };
+    if (!instruction?.trim()) {
+      res.status(400).json({ ok: false, error: 'instruction is required' });
+      return;
+    }
+
+    const product = await semanticDb('data_products').where({ id: productId }).first();
+    if (!product) {
+      res.status(404).json({ ok: false, error: 'Data product not found' });
+      return;
+    }
+
+    const schemas = await semanticDb('star_schemas').where({ data_product_id: productId });
+    const schemaIds = schemas.map((s: { id: number }) => s.id);
+    const tables = schemaIds.length
+      ? await semanticDb('product_tables')
+          .whereIn('star_schema_id', schemaIds)
+          .orderBy(['dag_order', 'table_name'])
+      : [];
+    const tableIds = tables.map((t: { id: number }) => t.id);
+    const columns = tableIds.length
+      ? await semanticDb('product_columns')
+          .whereIn('product_table_id', tableIds)
+          .orderBy(['sort_order', 'id'])
+      : [];
+    const kpis = await semanticDb('product_kpis')
+      .where({ data_product_id: productId })
+      .orderBy('name');
+
+    const colsByTable = new Map<number, typeof columns>();
+    for (const c of columns) {
+      const arr = colsByTable.get(c.product_table_id) ?? [];
+      arr.push(c);
+      colsByTable.set(c.product_table_id, arr);
+    }
+
+    const summary: ProductSummary = {
+      id:          product.id,
+      name:        product.name,
+      description: product.description ?? null,
+      tables: tables.map((t: any) => ({
+        id:          t.id,
+        table_name:  t.table_name,
+        description: t.description ?? null,
+        columns: (colsByTable.get(t.id) ?? []).map((c: any) => ({
+          id:           c.id,
+          column_name:  c.column_name,
+          display_name: c.display_name ?? null,
+          description:  c.description ?? null,
+          data_type:    c.data_type ?? null,
+        })),
+      })),
+      kpis: kpis.map((k: any) => ({
+        id:                  k.id,
+        name:                k.name,
+        description:         k.description ?? null,
+        formula_plain_text:  k.formula_plain_text ?? null,
+        formula_sql:         k.formula_sql ?? null,
+      })),
+    };
+
+    const proposal = await refineProduct(summary, instruction.trim());
+    res.json({ ok: true, data: proposal });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/:id/refine/apply — Apply a proposal's changes
+// Body: { changes: RefineChange[] }
+// Returns: { applied: number, skipped: Array<{ change, reason }>, notes: string[] }
+// ---------------------------------------------------------------------------
+
+router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const productId = Number(req.params.id);
+    const { changes } = req.body as { changes: RefineChange[] };
+    if (!Array.isArray(changes)) {
+      res.status(400).json({ ok: false, error: 'changes[] is required' });
+      return;
+    }
+
+    const product = await semanticDb('data_products').where({ id: productId }).first();
+    if (!product) {
+      res.status(404).json({ ok: false, error: 'Data product not found' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let applied = 0;
+    const skipped: Array<{ change: RefineChange; reason: string }> = [];
+    const notes: string[] = [];
+
+    for (const change of changes) {
+      try {
+        switch (change.op) {
+          case 'update_table_description': {
+            const n = await semanticDb('product_tables')
+              .where({ id: change.table_id })
+              .update({ description: change.new_value, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'Table not found' });
+            break;
+          }
+          case 'update_column_description': {
+            const n = await semanticDb('product_columns')
+              .where({ id: change.column_id })
+              .update({ description: change.new_value, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'Column not found' });
+            break;
+          }
+          case 'update_column_display_name': {
+            const n = await semanticDb('product_columns')
+              .where({ id: change.column_id })
+              .update({ display_name: change.new_value, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'Column not found' });
+            break;
+          }
+          case 'update_kpi_description': {
+            const n = await semanticDb('product_kpis')
+              .where({ id: change.kpi_id, data_product_id: productId })
+              .update({ description: change.new_value, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'KPI not found' });
+            break;
+          }
+          case 'update_kpi_formula': {
+            const n = await semanticDb('product_kpis')
+              .where({ id: change.kpi_id, data_product_id: productId })
+              .update({ formula_sql: change.new_value, ai_draft: false, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'KPI not found' });
+            break;
+          }
+          case 'update_kpi_plain_text': {
+            const n = await semanticDb('product_kpis')
+              .where({ id: change.kpi_id, data_product_id: productId })
+              .update({ formula_plain_text: change.new_value, updated_at: now });
+            if (n > 0) applied++;
+            else skipped.push({ change, reason: 'KPI not found' });
+            break;
+          }
+          case 'add_kpi': {
+            await semanticDb('product_kpis').insert({
+              data_product_id:    productId,
+              name:               change.name,
+              description:        change.description,
+              formula_plain_text: change.formula_plain_text,
+              formula_sql:        change.formula_sql,
+              ai_draft:           false,
+            });
+            applied++;
+            break;
+          }
+          case 'note': {
+            notes.push(change.message);
+            break;
+          }
+          default: {
+            skipped.push({ change, reason: 'Unknown op' });
+          }
+        }
+      } catch (e) {
+        skipped.push({ change, reason: e instanceof Error ? e.message : 'Unknown error' });
+      }
+    }
+
+    res.json({ ok: true, data: { applied, skipped, notes } as { applied: number; skipped: typeof skipped; notes: string[] } });
   } catch (err) { next(err); }
 });
 

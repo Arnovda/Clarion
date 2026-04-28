@@ -58,6 +58,12 @@ import {
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
 import {
+  REFINE_PRODUCT_SYSTEM,
+  buildRefineProductUser,
+  RefineProposal,
+  ProductSummary,
+} from './prompts/refineProductPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1185,6 +1191,41 @@ export async function editColumnExpression(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Product Refinement — NL instruction → structured metadata diff
+// ---------------------------------------------------------------------------
+
+export async function refineProduct(
+  product: ProductSummary,
+  instruction: string,
+): Promise<RefineProposal> {
+  const raw = await callClaude(
+    REFINE_PRODUCT_SYSTEM,
+    buildRefineProductUser(product, instruction),
+    { model: MODEL_HAIKU, maxTokens: 1500, callLabel: 'refine_product' },
+  );
+
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'refineProduct: failed to parse JSON');
+    return {
+      summary: 'I could not understand that request well enough to propose changes.',
+      changes: [],
+      reasoning: 'The model returned non-JSON output.',
+    };
+  }
+
+  const obj = parsed as Partial<RefineProposal>;
+  return {
+    summary:   typeof obj.summary === 'string' ? obj.summary : '',
+    changes:   Array.isArray(obj.changes) ? (obj.changes as RefineProposal['changes']) : [],
+    reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : '',
+  };
 }
 
 // ---------------------------------------------------------------------------
