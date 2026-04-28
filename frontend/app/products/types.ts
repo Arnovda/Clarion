@@ -56,6 +56,10 @@ export interface ProductTable {
   last_run_error: string | null;
   load_mode: string;
   quality_checks?: QualityCheck[];
+  source_product_table_id?: number | null;
+  is_reference?: boolean;
+  owner_product_id?: number | null;
+  owner_product_name?: string | null;
 }
 
 export interface ProductColumn {

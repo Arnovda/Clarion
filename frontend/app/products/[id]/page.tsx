@@ -4,9 +4,9 @@ import { useEffect, useState, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import {
-  ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, MessageSquare,
+  ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, ChevronDown, MessageSquare,
   Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck,
-  CheckCircle2, AlertCircle, X,
+  CheckCircle2, AlertCircle, X, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -36,6 +36,8 @@ type TransformResult = {
   status: 'success' | 'error';
   row_count?: number;
   error?: string;
+  product_id?: number;
+  product_name?: string;
 };
 
 function getAllTables(p: FullDataProduct): (ProductTable & { columns: ProductColumn[] })[] {
@@ -61,10 +63,27 @@ function ProductDetailInner() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [running, setRunning] = useState(false);
-  const [rebuildPlan, setRebuildPlan] = useState<Array<{ table_name: string; display_name: string }> | null>(null);
+  const [rebuildPlan, setRebuildPlan] = useState<Array<{ table_name: string; display_name: string; product_name?: string }> | null>(null);
+  const [rebuildMenuOpen, setRebuildMenuOpen] = useState(false);
   const [rebuildResults, setRebuildResults] = useState<TransformResult[] | null>(null);
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
+  const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const toast = useToast();
+
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem('product-detail:ai-panel-open');
+      if (v != null) setAiPanelOpen(v === '1');
+    } catch { /* ignore */ }
+  }, []);
+
+  const toggleAiPanel = useCallback(() => {
+    setAiPanelOpen((prev) => {
+      const next = !prev;
+      try { window.localStorage.setItem('product-detail:ai-panel-open', next ? '1' : '0'); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   const loadDetail = useCallback(async () => {
     try {
@@ -107,12 +126,15 @@ function ProductDetailInner() {
     loadAux();
   }, [productId, loadDetail, loadKpis, loadAux]);
 
-  async function handleRebuild() {
+  async function handleRebuild(opts: { includeUpstream?: boolean } = {}) {
     if (!detail || running) return;
-    const plan = getAllTables(detail)
-      .filter((t) => !!t.transformation_sql)
-      .map((t) => ({ table_name: t.table_name, display_name: t.display_name ?? t.table_name }));
-    if (plan.length === 0) {
+    const localTables = getAllTables(detail).filter((t) => !!t.transformation_sql);
+    const plan = localTables.map((t) => ({
+      table_name: t.table_name,
+      display_name: t.display_name ?? t.table_name,
+      product_name: detail.name,
+    }));
+    if (plan.length === 0 && !opts.includeUpstream) {
       toast.warn('Nothing to rebuild', { description: 'No tables with transformation SQL.' });
       return;
     }
@@ -120,13 +142,18 @@ function ProductDetailInner() {
     setRebuildResults(null);
     setRunning(true);
     try {
-      const res = await api.post(`/products/${detail.id}/run-full`);
+      const url = opts.includeUpstream
+        ? `/products/${detail.id}/run-full?include=upstream`
+        : `/products/${detail.id}/run-full`;
+      const res = await api.post(url);
       const results = (res.data?.data ?? []) as TransformResult[];
       setRebuildResults(results);
       const errors = results.filter((r) => r.status === 'error');
       const totalRows = results.reduce((s, r) => s + (r.row_count ?? 0), 0);
+      const productCount = new Set(results.map((r) => r.product_id ?? detail.id)).size;
       if (errors.length === 0) {
-        toast.success(`Rebuilt ${results.length} table${results.length === 1 ? '' : 's'}`, {
+        const productSuffix = productCount > 1 ? ` across ${productCount} products` : '';
+        toast.success(`Rebuilt ${results.length} table${results.length === 1 ? '' : 's'}${productSuffix}`, {
           description: `${totalRows.toLocaleString('en-GB')} rows written to the warehouse.`,
         });
       } else {
@@ -182,6 +209,7 @@ function ProductDetailInner() {
 
   const tables = getAllTables(detail);
   const name = cleanTopicName(detail.name);
+  const hasReferences = tables.some((t) => t.is_reference);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -213,20 +241,75 @@ function ProductDetailInner() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={handleRebuild}
-              disabled={running || tables.length === 0}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-            >
-              {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" strokeWidth={2} />}
-              {running ? 'Running\u2026' : 'Rebuild'}
-            </button>
+            <div className="relative inline-flex">
+              <button
+                onClick={() => handleRebuild()}
+                disabled={running || tables.length === 0}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white hover:bg-ocean-hover disabled:opacity-50 transition-colors',
+                  hasReferences ? 'rounded-l-md border-r border-ocean-hover/40' : 'rounded-md',
+                )}
+              >
+                {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" strokeWidth={2} />}
+                {running ? 'Running\u2026' : 'Rebuild'}
+              </button>
+              {hasReferences && (
+                <>
+                  <button
+                    onClick={() => setRebuildMenuOpen((v) => !v)}
+                    disabled={running}
+                    className="inline-flex items-center justify-center px-1.5 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-r-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
+                    title="More rebuild options"
+                    aria-haspopup="menu"
+                    aria-expanded={rebuildMenuOpen}
+                  >
+                    <ChevronDown className="w-3 h-3" strokeWidth={2.5} />
+                  </button>
+                  {rebuildMenuOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setRebuildMenuOpen(false)}
+                        aria-hidden="true"
+                      />
+                      <div className="absolute right-0 top-full mt-1 w-72 z-20 bg-raised border border-line rounded-md shadow-lg overflow-hidden">
+                        <button
+                          onClick={() => { setRebuildMenuOpen(false); handleRebuild(); }}
+                          className="w-full text-left px-3 py-2 text-[12px] hover:bg-soft transition-colors"
+                        >
+                          <div className="font-medium text-ink">Rebuild this product</div>
+                          <div className="text-[11px] text-muted mt-0.5">Only tables owned by this product.</div>
+                        </button>
+                        <button
+                          onClick={() => { setRebuildMenuOpen(false); handleRebuild({ includeUpstream: true }); }}
+                          className="w-full text-left px-3 py-2 text-[12px] hover:bg-soft transition-colors border-t border-line"
+                        >
+                          <div className="font-medium text-ink">Rebuild + upstream dependencies</div>
+                          <div className="text-[11px] text-muted mt-0.5">Refreshes shared dims in their owner products first, then this one.</div>
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
             <button
               onClick={handleDelete}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-err bg-err-soft border border-err/20 rounded-md hover:bg-err/10 transition-colors"
             >
               <Trash2 className="w-3 h-3" strokeWidth={2} />
               Delete
+            </button>
+            <button
+              onClick={toggleAiPanel}
+              className="hidden lg:inline-flex items-center justify-center w-8 h-8 text-muted-2 hover:text-ink hover:bg-soft rounded-md transition-colors"
+              title={aiPanelOpen ? 'Hide AI panel' : 'Show AI panel'}
+              aria-label={aiPanelOpen ? 'Hide AI panel' : 'Show AI panel'}
+              aria-pressed={aiPanelOpen}
+            >
+              {aiPanelOpen
+                ? <PanelRightClose className="w-4 h-4" strokeWidth={2} />
+                : <PanelRightOpen className="w-4 h-4" strokeWidth={2} />}
             </button>
           </div>
         </div>
@@ -273,19 +356,21 @@ function ProductDetailInner() {
           </div>
         </div>
 
-        {/* Right: AI chat sidebar */}
-        <div className="hidden lg:flex w-[420px] shrink-0 flex-col">
-          <AskAIPanel
-            open={true}
-            embedded={true}
-            hideClose={true}
-            onClose={() => { /* no-op in embedded mode */ }}
-            product={detail}
-            connections={connections}
-            products={products}
-            onRefineApplied={() => { loadDetail(); loadKpis(); }}
-          />
-        </div>
+        {/* Right: AI chat sidebar (collapsible) */}
+        {aiPanelOpen && (
+          <div className="hidden lg:flex w-[420px] shrink-0 flex-col border-l border-line">
+            <AskAIPanel
+              open={true}
+              embedded={true}
+              hideClose={true}
+              onClose={() => { /* no-op in embedded mode */ }}
+              product={detail}
+              connections={connections}
+              products={products}
+              onRefineApplied={() => { loadDetail(); loadKpis(); }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -485,18 +570,48 @@ function TablesSection({
 function RebuildBanner({
   plan, results, running, onDismiss,
 }: {
-  plan: Array<{ table_name: string; display_name: string }>;
+  plan: Array<{ table_name: string; display_name: string; product_name?: string }>;
   results: TransformResult[] | null;
   running: boolean;
   onDismiss: () => void;
 }) {
-  const resultByName = new Map((results ?? []).map((r) => [r.table_name, r]));
-  const tables = plan.length > 0
-    ? plan
-    : (results ?? []).map((r) => ({ table_name: r.table_name, display_name: r.table_name }));
-  const errors = (results ?? []).filter((r) => r.status === 'error');
-  const successes = (results ?? []).filter((r) => r.status === 'success');
-  const totalRows = successes.reduce((s, r) => s + (r.row_count ?? 0), 0);
+  // Merge plan + results into per-table rows, grouped by product. Plan rows
+  // cover the local product before results arrive; once results stream back
+  // they overwrite the placeholder and add upstream products that weren't
+  // in the original plan.
+  type Row = { table_name: string; display_name: string; product_name: string; result?: TransformResult };
+  const rowsByKey = new Map<string, Row>();
+
+  for (const p of plan) {
+    const product_name = p.product_name ?? '';
+    const key = `${product_name}::${p.table_name}`;
+    rowsByKey.set(key, { table_name: p.table_name, display_name: p.display_name, product_name });
+  }
+
+  for (const r of results ?? []) {
+    const product_name = r.product_name ?? plan[0]?.product_name ?? '';
+    const key = `${product_name}::${r.table_name}`;
+    const existing = rowsByKey.get(key);
+    if (existing) {
+      existing.result = r;
+    } else {
+      rowsByKey.set(key, {
+        table_name: r.table_name,
+        display_name: r.table_name,
+        product_name,
+        result: r,
+      });
+    }
+  }
+
+  const rows = Array.from(rowsByKey.values());
+  const errors = rows.filter((r) => r.result?.status === 'error');
+  const successes = rows.filter((r) => r.result?.status === 'success');
+  const totalRows = successes.reduce((s, r) => s + (r.result?.row_count ?? 0), 0);
+
+  // Group rows by product for rendering
+  const productNames = Array.from(new Set(rows.map((r) => r.product_name)));
+  const showProductHeaders = productNames.length > 1;
 
   const variantBorder = running
     ? 'border-l-ocean'
@@ -518,38 +633,51 @@ function RebuildBanner({
         <div className="flex-1 min-w-0">
           <p className="text-[12.5px] text-ink font-medium leading-tight">
             {running
-              ? `Rebuilding ${tables.length} table${tables.length === 1 ? '' : 's'}\u2026`
+              ? `Rebuilding ${rows.length} table${rows.length === 1 ? '' : 's'}\u2026`
               : errors.length > 0
-                ? `${errors.length} of ${tables.length} table${tables.length === 1 ? '' : 's'} failed`
-                : `Rebuilt ${successes.length} table${successes.length === 1 ? '' : 's'} \u00b7 ${totalRows.toLocaleString('en-GB')} rows`
+                ? `${errors.length} of ${rows.length} table${rows.length === 1 ? '' : 's'} failed`
+                : `Rebuilt ${successes.length} table${successes.length === 1 ? '' : 's'}${showProductHeaders ? ` across ${productNames.length} products` : ''} \u00b7 ${totalRows.toLocaleString('en-GB')} rows`
             }
           </p>
-          {tables.length > 0 && (
-            <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-              {tables.map(({ table_name, display_name }) => {
-                const r = resultByName.get(table_name);
-                const state = running && !r ? 'pending' : r?.status === 'success' ? 'ok' : r?.status === 'error' ? 'err' : 'pending';
+          {rows.length > 0 && (
+            <div className="mt-1.5 space-y-1.5">
+              {productNames.map((product) => {
+                const productRows = rows.filter((r) => r.product_name === product);
                 return (
-                  <li key={table_name} className="inline-flex items-center gap-1.5 text-[11.5px]">
-                    {state === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-muted-2" />}
-                    {state === 'ok' && <CheckCircle2 className="w-3 h-3 text-ok" strokeWidth={2.25} />}
-                    {state === 'err' && <AlertCircle className="w-3 h-3 text-err" strokeWidth={2.25} />}
-                    <span className={cn(
-                      'font-mono',
-                      state === 'ok' && 'text-ink-2',
-                      state === 'err' && 'text-err',
-                      state === 'pending' && 'text-muted',
-                    )}>{display_name}</span>
-                    {r?.status === 'success' && r.row_count !== undefined && (
-                      <span className="text-muted-2 tabular-nums">({r.row_count.toLocaleString('en-GB')})</span>
+                  <div key={product || '_default'}>
+                    {showProductHeaders && product && (
+                      <div className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted-2 mb-0.5">
+                        {product}
+                      </div>
                     )}
-                    {r?.status === 'error' && r.error && (
-                      <span className="text-err/80 truncate max-w-[280px]" title={r.error}>{r.error}</span>
-                    )}
-                  </li>
+                    <ul className="flex flex-wrap gap-x-3 gap-y-1">
+                      {productRows.map(({ table_name, display_name, result: r }) => {
+                        const state = running && !r ? 'pending' : r?.status === 'success' ? 'ok' : r?.status === 'error' ? 'err' : 'pending';
+                        return (
+                          <li key={`${product}::${table_name}`} className="inline-flex items-center gap-1.5 text-[11.5px]">
+                            {state === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-muted-2" />}
+                            {state === 'ok' && <CheckCircle2 className="w-3 h-3 text-ok" strokeWidth={2.25} />}
+                            {state === 'err' && <AlertCircle className="w-3 h-3 text-err" strokeWidth={2.25} />}
+                            <span className={cn(
+                              'font-mono',
+                              state === 'ok' && 'text-ink-2',
+                              state === 'err' && 'text-err',
+                              state === 'pending' && 'text-muted',
+                            )}>{display_name}</span>
+                            {r?.status === 'success' && r.row_count !== undefined && (
+                              <span className="text-muted-2 tabular-nums">({r.row_count.toLocaleString('en-GB')})</span>
+                            )}
+                            {r?.status === 'error' && r.error && (
+                              <span className="text-err/80 truncate max-w-[280px]" title={r.error}>{r.error}</span>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
                 );
               })}
-            </ul>
+            </div>
           )}
         </div>
         {!running && (

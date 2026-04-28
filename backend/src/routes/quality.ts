@@ -23,6 +23,7 @@ import { runQualityProfile, runQualityProfileWithConnector } from '../quality/Qu
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
+import { resolveOwnerProductTable } from '../services/productOwnership';
 import { generateQualityAlertContext } from '../ai/AIService';
 
 const router = Router();
@@ -399,19 +400,20 @@ router.get('/tables', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/quality/product/:productTableId/profile — trigger quality profiling for a product table
+// POST /api/quality/product/:productTableId/profile — trigger quality profiling for a product table.
+// If the row is a reference to a shared dim, resolves to the owner product so we
+// read the actual materialised parquet (not the consumer's empty stub directory).
 router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ptId = Number(req.params.productTableId);
+    const tenantId = req.user?.tenantId;
 
-    // Look up the chain: product_table → star_schema → data_product → connection
-    const pt = await semanticDb('product_tables').where({ id: ptId }).first();
-    if (!pt) { res.status(404).json({ ok: false, error: 'Product table not found' }); return; }
+    const owner = await resolveOwnerProductTable(ptId, tenantId);
+    if (!owner) { res.status(404).json({ ok: false, error: 'Product table not found' }); return; }
 
-    const ss = await semanticDb('star_schemas').where({ id: pt.star_schema_id }).first();
-    const dp = await semanticDb('data_products').where({ id: ss.data_product_id }).first();
-    const conn = await semanticDb('connections').where({ id: dp.connection_id }).first();
-    if (!conn) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+    const pt = owner.productTable as { table_name: string };
+    const dp = owner.product as { id: number; name: string };
+    const conn = owner.connection as { id: number; warehouse_path?: string };
 
     // Build product warehouse path (same logic as transformationRunner)
     const productSlug = dp.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
@@ -441,17 +443,27 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     const connector = new DuckDBConnector(productDir, [pt.table_name]);
     await connector.connect();
 
-    // Let the profiler introspect the actual Parquet columns via SELECT * LIMIT 1
-    // (product_columns metadata may be stale / out of sync with materialized data)
+    // Profile is keyed on the *consumer's* connection_id — the row the UI is
+    // asking about. That way the consumer's Quality tab shows fresh stats even
+    // though the parquet lives under the owner's product slug.
+    const requestedPt = await semanticDb('product_tables').where({ id: ptId }).first();
+    const consumerSchema = requestedPt
+      ? await semanticDb('star_schemas').where({ id: requestedPt.star_schema_id }).first()
+      : null;
+    const consumerProduct = consumerSchema
+      ? await semanticDb('data_products').where({ id: consumerSchema.data_product_id }).first()
+      : null;
+    const consumerConnId = (consumerProduct?.connection_id ?? dp.id) as number;
+
     const result = await runQualityProfileWithConnector(
-      dp.connection_id,
+      consumerConnId,
       pt.table_name,
       connector,
     );
 
     connector.disconnect();
 
-    res.json({ ok: true, data: result });
+    res.json({ ok: true, data: { ...result, redirected: owner.redirected } });
   } catch (err) {
     next(err);
   }

@@ -130,11 +130,49 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
     // Tables
     const schemaIds = schemas.map((s: { id: number }) => s.id);
-    const tables = schemaIds.length
+    const rawTables = schemaIds.length
       ? await semanticDb('product_tables')
           .whereIn('star_schema_id', schemaIds)
           .orderBy(['dag_order', 'table_name'])
       : [];
+
+    // Enrich reference rows (rows that point at an owner via source_product_table_id)
+    // with the owner's freshness fields and product name. Without this, a consumer
+    // product's UI shows stale "last_run_at" / row_count for shared dims that are
+    // only physically rebuilt under their owning product.
+    const ownerIds = rawTables
+      .map((t: { source_product_table_id?: number | null }) => t.source_product_table_id)
+      .filter((id): id is number => typeof id === 'number');
+    const owners = ownerIds.length
+      ? await semanticDb('product_tables as pt')
+          .leftJoin('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+          .leftJoin('data_products as dp', 'ss.data_product_id', 'dp.id')
+          .whereIn('pt.id', ownerIds)
+          .select(
+            'pt.id', 'pt.transformation_status', 'pt.last_run_at',
+            'pt.last_run_error', 'pt.row_count', 'pt.delta_path',
+            'dp.id as owner_product_id', 'dp.name as owner_product_name',
+          )
+      : [];
+    const ownerById = new Map(owners.map((o: { id: number }) => [o.id, o]));
+
+    const tables = rawTables.map((t: Record<string, unknown>) => {
+      const ownerId = t.source_product_table_id as number | null | undefined;
+      if (!ownerId) return t;
+      const owner = ownerById.get(ownerId);
+      if (!owner) return t;
+      return {
+        ...t,
+        transformation_status: owner.transformation_status ?? t.transformation_status,
+        last_run_at: owner.last_run_at ?? t.last_run_at,
+        last_run_error: owner.last_run_error ?? t.last_run_error,
+        row_count: owner.row_count ?? t.row_count,
+        delta_path: owner.delta_path ?? t.delta_path,
+        owner_product_id: owner.owner_product_id ?? null,
+        owner_product_name: owner.owner_product_name ?? null,
+        is_reference: true,
+      };
+    });
 
     // Columns
     const tableIds = tables.map((t: { id: number }) => t.id);
@@ -1270,33 +1308,72 @@ router.patch('/tables/:tableId/load-mode', requireAuth, requireRole('admin'), as
 
 // ---------------------------------------------------------------------------
 // POST /api/products/:id/run-full — Force a full refresh (ignores load_mode)
+// Query: ?include=upstream  also rebuilds upstream dependency products in
+// topological order, so shared dims are fresh before consumer facts run.
 // ---------------------------------------------------------------------------
 router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = req.user?.tenantId;
+    const includeUpstream = String(req.query.include ?? '').toLowerCase() === 'upstream';
+
     const product = await semanticDb('data_products').where({ id: req.params.id }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
-    const schemaIds = schemas.map((s: { id: number }) => s.id);
-
-    const tables = schemaIds.length
-      ? await semanticDb('product_tables')
-          .whereIn('star_schema_id', schemaIds)
-          .whereNotNull('transformation_sql')
-          .orderBy('dag_order', 'asc')
-      : [];
-
-    // Override load_mode to 'full' for this run only
-    const fullTables = tables.map((t: Record<string, unknown>) => ({ ...t, load_mode: 'full' }));
-
     const { runProductTransformation } = await import('../services/transformationRunner');
+    const { resolveUpstreamProductsTopo } = await import('../services/productOwnership');
 
-    const results = await runProductTransformation(product, fullTables as any, req.user?.tenantId);
+    // Build the run order: upstream-first if requested, then current product.
+    const upstreamIds = includeUpstream
+      ? await resolveUpstreamProductsTopo(Number(product.id), tenantId)
+      : [];
+    const runOrder = [...upstreamIds, Number(product.id)];
 
-    res.json({ ok: true, data: results });
+    const allResults: Array<{
+      product_id: number;
+      product_name: string;
+      table_name: string;
+      status: 'success' | 'error';
+      row_count?: number;
+      error?: string;
+    }> = [];
+
+    for (const pid of runOrder) {
+      const p = await semanticDb('data_products').where({ id: pid }).first();
+      if (!p) continue;
+
+      const schemas = await semanticDb('star_schemas').where({ data_product_id: pid });
+      const schemaIds = schemas.map((s: { id: number }) => s.id);
+      const tables = schemaIds.length
+        ? await semanticDb('product_tables')
+            .whereIn('star_schema_id', schemaIds)
+            .whereNotNull('transformation_sql')
+            .orderBy('dag_order', 'asc')
+        : [];
+
+      // Override load_mode to 'full' for this run only
+      const fullTables = tables.map((t: Record<string, unknown>) => ({ ...t, load_mode: 'full' }));
+
+      const results = await runProductTransformation(p, fullTables as any, tenantId);
+      for (const r of results) {
+        allResults.push({
+          product_id: pid,
+          product_name: p.name as string,
+          ...r,
+        });
+      }
+    }
+
+    res.json({
+      ok: true,
+      data: allResults,
+      meta: {
+        run_order: runOrder,
+        included_upstream: includeUpstream && upstreamIds.length > 0,
+      },
+    });
   } catch (err) { next(err); }
 });
 
