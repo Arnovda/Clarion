@@ -6,10 +6,12 @@ import dynamic from 'next/dynamic';
 import {
   ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, MessageSquare,
   Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck,
+  CheckCircle2, AlertCircle, X,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import RequireRole from '@/components/RequireRole';
+import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/cn';
 import type {
   Connection,
@@ -28,6 +30,13 @@ const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), {
 const QualityTab = dynamic(() => import('../QualityTab'), { ssr: false });
 
 type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
+
+type TransformResult = {
+  table_name: string;
+  status: 'success' | 'error';
+  row_count?: number;
+  error?: string;
+};
 
 function getAllTables(p: FullDataProduct): (ProductTable & { columns: ProductColumn[] })[] {
   return p.star_schemas
@@ -52,7 +61,10 @@ function ProductDetailInner() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [running, setRunning] = useState(false);
+  const [rebuildPlan, setRebuildPlan] = useState<string[] | null>(null);
+  const [rebuildResults, setRebuildResults] = useState<TransformResult[] | null>(null);
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
+  const toast = useToast();
 
   const loadDetail = useCallback(async () => {
     try {
@@ -97,10 +109,38 @@ function ProductDetailInner() {
 
   async function handleRebuild() {
     if (!detail || running) return;
+    const plan = getAllTables(detail)
+      .filter((t) => !!t.transformation_sql)
+      .map((t) => t.display_name ?? t.table_name);
+    if (plan.length === 0) {
+      toast.warn('Nothing to rebuild', { description: 'No tables with transformation SQL.' });
+      return;
+    }
+    setRebuildPlan(plan);
+    setRebuildResults(null);
     setRunning(true);
     try {
-      await api.post(`/products/${detail.id}/run-full`);
+      const res = await api.post(`/products/${detail.id}/run-full`);
+      const results = (res.data?.data ?? []) as TransformResult[];
+      setRebuildResults(results);
+      const errors = results.filter((r) => r.status === 'error');
+      const totalRows = results.reduce((s, r) => s + (r.row_count ?? 0), 0);
+      if (errors.length === 0) {
+        toast.success(`Rebuilt ${results.length} table${results.length === 1 ? '' : 's'}`, {
+          description: `${totalRows.toLocaleString('en-GB')} rows written to the warehouse.`,
+        });
+      } else {
+        toast.error(`${errors.length} of ${results.length} tables failed`, {
+          description: errors.map((e) => `${e.table_name}: ${e.error ?? 'unknown error'}`).join(' \u00b7 ').slice(0, 320),
+          duration: 12000,
+        });
+      }
       await loadDetail();
+    } catch (err) {
+      const ax = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+      const msg = ax?.response?.data?.error ?? ax?.response?.data?.message ?? ax?.message ?? 'Rebuild failed';
+      toast.error('Rebuild failed', { description: msg, duration: 12000 });
+      setRebuildResults([]);
     } finally {
       setRunning(false);
     }
@@ -112,7 +152,10 @@ function ProductDetailInner() {
     try {
       await api.delete(`/products/${detail.id}`);
       router.push('/products');
-    } catch { /* ignore */ }
+    } catch (err) {
+      const ax = err as { response?: { data?: { error?: string } }; message?: string };
+      toast.error('Delete failed', { description: ax?.response?.data?.error ?? ax?.message ?? 'Unknown error' });
+    }
   }
 
   if (loading) {
@@ -188,6 +231,15 @@ function ProductDetailInner() {
           </div>
         </div>
       </div>
+
+      {(running || rebuildPlan) && (
+        <RebuildBanner
+          plan={rebuildPlan ?? []}
+          results={rebuildResults}
+          running={running}
+          onDismiss={() => { setRebuildPlan(null); setRebuildResults(null); }}
+        />
+      )}
 
       {/* Two-column body: details + chat */}
       <div className="flex-1 min-h-0 flex overflow-hidden">
@@ -426,6 +478,88 @@ function TablesSection({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function RebuildBanner({
+  plan, results, running, onDismiss,
+}: {
+  plan: string[];
+  results: TransformResult[] | null;
+  running: boolean;
+  onDismiss: () => void;
+}) {
+  const resultByName = new Map((results ?? []).map((r) => [r.table_name, r]));
+  const tables = plan.length > 0 ? plan : (results ?? []).map((r) => r.table_name);
+  const errors = (results ?? []).filter((r) => r.status === 'error');
+  const successes = (results ?? []).filter((r) => r.status === 'success');
+  const totalRows = successes.reduce((s, r) => s + (r.row_count ?? 0), 0);
+
+  const variantBorder = running
+    ? 'border-l-ocean'
+    : errors.length > 0
+      ? 'border-l-err'
+      : 'border-l-ok';
+
+  return (
+    <div className={cn('shrink-0 border-b border-line bg-softer/50 border-l-2', variantBorder)}>
+      <div className="px-6 py-2.5 flex items-start gap-3">
+        <div className="shrink-0 mt-0.5">
+          {running
+            ? <Loader2 className="w-4 h-4 animate-spin text-ocean" />
+            : errors.length > 0
+              ? <AlertCircle className="w-4 h-4 text-err" strokeWidth={2} />
+              : <CheckCircle2 className="w-4 h-4 text-ok" strokeWidth={2} />
+          }
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-[12.5px] text-ink font-medium leading-tight">
+            {running
+              ? `Rebuilding ${tables.length} table${tables.length === 1 ? '' : 's'}\u2026`
+              : errors.length > 0
+                ? `${errors.length} of ${tables.length} table${tables.length === 1 ? '' : 's'} failed`
+                : `Rebuilt ${successes.length} table${successes.length === 1 ? '' : 's'} \u00b7 ${totalRows.toLocaleString('en-GB')} rows`
+            }
+          </p>
+          {tables.length > 0 && (
+            <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+              {tables.map((name) => {
+                const r = resultByName.get(name);
+                const state = running && !r ? 'pending' : r?.status === 'success' ? 'ok' : r?.status === 'error' ? 'err' : 'pending';
+                return (
+                  <li key={name} className="inline-flex items-center gap-1.5 text-[11.5px]">
+                    {state === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-muted-2" />}
+                    {state === 'ok' && <CheckCircle2 className="w-3 h-3 text-ok" strokeWidth={2.25} />}
+                    {state === 'err' && <AlertCircle className="w-3 h-3 text-err" strokeWidth={2.25} />}
+                    <span className={cn(
+                      'font-mono',
+                      state === 'ok' && 'text-ink-2',
+                      state === 'err' && 'text-err',
+                      state === 'pending' && 'text-muted',
+                    )}>{name}</span>
+                    {r?.status === 'success' && r.row_count !== undefined && (
+                      <span className="text-muted-2 tabular-nums">({r.row_count.toLocaleString('en-GB')})</span>
+                    )}
+                    {r?.status === 'error' && r.error && (
+                      <span className="text-err/80 truncate max-w-[280px]" title={r.error}>{r.error}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+        {!running && (
+          <button
+            onClick={onDismiss}
+            className="shrink-0 p-1 rounded hover:bg-soft text-muted hover:text-ink-2 transition-colors"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" strokeWidth={2} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
