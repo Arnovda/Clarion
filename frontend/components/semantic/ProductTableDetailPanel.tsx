@@ -208,7 +208,7 @@ export default function ProductTableDetailPanel({
 
       {viewTab === 'quality' ? (
         productConnectionId != null ? (
-          <QualityPanel connId={productConnectionId} tableName={tbl.table_name} />
+          <QualityPanel connId={productConnectionId} tableName={tbl.table_name} productTableId={tableId} />
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-2 text-sm p-6 text-center max-w-md mx-auto">
             Quality requires a connection. This product is not yet linked to a source.
