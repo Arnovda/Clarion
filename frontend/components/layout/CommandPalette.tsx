@@ -46,8 +46,7 @@ const ACTIONS: SearchResult[] = [
   { type: 'action', id: 'ask',        title: 'Ask a question',    subtitle: 'Query your data with AI',  icon: 'chat',  href: '/query' },
   { type: 'action', id: 'dashboard',  title: 'Create dashboard',  subtitle: 'Build a new AI dashboard', icon: 'grid',  href: '/dashboards' },
   { type: 'action', id: 'connect',    title: 'Connect a source',  subtitle: 'Add a new database',       icon: 'plug',  href: '/setup' },
-  { type: 'action', id: 'dictionary', title: 'Catalog',           subtitle: 'Browse tables & products', icon: 'book',  href: '/semantic' },
-  { type: 'action', id: 'products',   title: 'Data products',     subtitle: 'Star-schema models',       icon: 'star',  href: '/products' },
+  { type: 'action', id: 'catalog',    title: 'Catalog',           subtitle: 'Browse sources & products', icon: 'book',  href: '/catalog' },
   { type: 'action', id: 'team',       title: 'Team management',   subtitle: 'Users & invites',          icon: 'users', href: '/users' },
 ];
 
@@ -119,7 +118,7 @@ export default function CommandPalette() {
           title: item.name,
           subtitle: item.parent ?? item.connectionName ?? '',
           icon: iconForType(t),
-          href: t === 'dashboard' ? `/dashboards?id=${item.id}` : t === 'kpi' ? '/semantic' : '/semantic',
+          href: t === 'dashboard' ? `/dashboards?id=${item.id}` : '/catalog',
         };
       });
       setResults([...items, ...actionMatches].slice(0, 10));
@@ -158,7 +157,7 @@ export default function CommandPalette() {
     if (r.href) {
       router.push(r.href);
     } else if (r.type === 'table' || r.type === 'column') {
-      router.push('/semantic');
+      router.push('/catalog');
     }
   }
 

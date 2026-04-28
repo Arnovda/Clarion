@@ -41,8 +41,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   // Discover — find your data
-  { key: 'catalog',    href: '/semantic',   label: 'Data catalog',    icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'discover' },
-  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.star,    roles: ['admin'],                       group: 'discover' },
+  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
   { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
 
   // Work — use it
@@ -63,8 +62,7 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/query':      ['/query', '/ask'],
   '/dashboards': ['/dashboards'],
   '/notebooks':  ['/notebooks'],
-  '/semantic':   ['/semantic'],
-  '/products':   ['/products'],
+  '/catalog':    ['/catalog', '/semantic', '/products'],
   '/glossary':   ['/glossary'],
   '/setup':      ['/setup', '/sources'],
   '/review':     ['/review', '/gaps', '/suggestions'],

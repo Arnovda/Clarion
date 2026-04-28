@@ -37,9 +37,20 @@ export interface CatalogSelection {
   role?: string | null;
 }
 
+export interface CatalogSchemaSelection {
+  catalog: CatalogId;
+  schemaSlug: string;
+  schemaLabel: string;
+  schemaMeta?: SchemaEntry['meta'];
+}
+
 interface Props {
   selected?: CatalogSelection | null;
+  /** Highlight a schema-level selection (e.g. a data product root). */
+  selectedSchema?: { catalog: CatalogId; schemaSlug: string } | null;
   onSelectTable?: (sel: CatalogSelection) => void;
+  /** Fired when the schema label (not the chevron) is clicked. */
+  onSelectSchema?: (sel: CatalogSchemaSelection) => void;
   /** Hide one of the catalogs entirely (e.g. notebooks may want sources only). */
   hide?: CatalogId;
   /** Optional: show row counts in the table list (default true). */
@@ -88,7 +99,7 @@ const fmtRows = (n: number | null | undefined) => {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export default function CatalogBrowser({ selected, onSelectTable, hide, showRowCounts = true }: Props) {
+export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true }: Props) {
   const [catalogs, setCatalogs] = useState<CatalogEntry[]>([]);
   const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
@@ -260,26 +271,59 @@ export default function CatalogBrowser({ selected, onSelectTable, hide, showRowC
                     const tables = tablesBySchema[schemaKey] ?? [];
                     const tablesLoading = loadingTables.has(schemaKey);
 
+                    const schemaSelected = selectedSchema?.catalog === cat.id
+                      && selectedSchema?.schemaSlug === schema.id;
+
                     return (
                       <div key={schema.id}>
-                        {/* ── Schema row ── */}
-                        <button
-                          onClick={() => toggleSchema(cat.id, schema.id)}
-                          className="w-full flex items-center gap-2 pl-7 pr-3 py-1.5 group hover:bg-softer transition-colors"
+                        {/* ── Schema row (split: chevron toggles, label selects) ── */}
+                        <div
+                          className={cn(
+                            'w-full flex items-center gap-2 pl-7 pr-3 py-1.5 group transition-colors border-l-2 -ml-[2px]',
+                            schemaSelected
+                              ? 'bg-ocean-softer border-ocean'
+                              : 'hover:bg-softer border-transparent',
+                          )}
                           title={schema.description ?? schema.label}
                         >
-                          <Chevron open={schemaOpen} />
-                          <Folder
-                            className={cn('w-3.5 h-3.5 shrink-0', schemaOpen ? 'text-ocean' : 'text-muted-2')}
-                            strokeWidth={1.5}
-                          />
-                          <span className="text-[13px] text-ink-2 truncate flex-1 text-left">
-                            {schema.label}
-                          </span>
-                          <span className="text-[10px] font-mono text-muted-2 tabular-nums">
-                            {schema.tableCount}
-                          </span>
-                        </button>
+                          <button
+                            onClick={() => toggleSchema(cat.id, schema.id)}
+                            aria-label={schemaOpen ? 'Collapse tables' : 'Expand tables'}
+                            className="p-0.5 rounded hover:bg-soft"
+                          >
+                            <Chevron open={schemaOpen} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onSelectSchema) {
+                                onSelectSchema({
+                                  catalog: cat.id,
+                                  schemaSlug: schema.id,
+                                  schemaLabel: schema.label,
+                                  schemaMeta: schema.meta,
+                                });
+                              } else {
+                                toggleSchema(cat.id, schema.id);
+                              }
+                            }}
+                            className="flex-1 flex items-center gap-2 min-w-0 text-left"
+                          >
+                            <Folder
+                              className={cn('w-3.5 h-3.5 shrink-0', schemaOpen ? 'text-ocean' : 'text-muted-2')}
+                              strokeWidth={1.5}
+                            />
+                            <span className={cn(
+                              'text-[13px] truncate flex-1',
+                              schemaSelected ? 'text-ocean font-medium' : 'text-ink-2',
+                            )}>
+                              {schema.label}
+                            </span>
+                            <span className="text-[10px] font-mono text-muted-2 tabular-nums">
+                              {schema.tableCount}
+                            </span>
+                          </button>
+                        </div>
 
                         {schemaOpen && (
                           <div>

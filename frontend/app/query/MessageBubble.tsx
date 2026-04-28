@@ -474,11 +474,11 @@ function LowConfidenceGuide({ confidence, debug }: { confidence?: number; debug?
       ) : (
         <p className="text-ink-3">
           Try rephrasing, or improve descriptions in{' '}
-          <Link href="/semantic" className="underline text-ocean hover:text-ocean-hover">Definitions</Link>.
+          <Link href="/catalog" className="underline text-ocean hover:text-ocean-hover">Definitions</Link>.
         </p>
       )}
       <Link
-        href="/semantic"
+        href="/catalog"
         className="inline-flex items-center gap-1 mt-1 px-3 py-1.5 bg-raised border border-line rounded-md text-[11px] font-mono tracking-[0.06em] uppercase text-ink-2 hover:text-ocean hover:border-ocean/40 transition-colors"
       >
         Open Definitions →
