@@ -193,7 +193,9 @@ function QueryPageInner() {
         queryLayer: msg.queryLayer,
       });
       return res.data.data?.id as number | undefined;
-    } catch { /* non-fatal — message still shown locally */ }
+    } catch (err) {
+      console.error('[chat] persistMessage failed', { conversationId, role: msg.role, err });
+    }
   }
 
   useEffect(() => {
@@ -506,8 +508,14 @@ function QueryPageInner() {
     setInput('');
     const userMsgId = nextId.current++;
     setMessages((prev) => [...prev, { id: userMsgId, role: 'user', text: q }]);
-    // Persist user message to server
-    if (cid && cid > 0) persistMessage(cid, { role: 'user', text: q });
+    // Persist user message to server — await so any failure is visible in console
+    // and the message is durable before the assistant streams (avoids vanishing on reload)
+    if (cid && cid > 0) {
+      const userServerId = await persistMessage(cid, { role: 'user', text: q });
+      if (userServerId) {
+        setMessages((prev) => prev.map((m) => m.id === userMsgId ? { ...m, serverId: userServerId } : m));
+      }
+    }
     setLoading(true);
     setThinkingPhase('');
     setThinkingText('');
@@ -613,7 +621,21 @@ function QueryPageInner() {
         }),
       });
 
-      const reader  = response.body!.getReader();
+      if (!response.ok || !response.body) {
+        const detail = await response.text().catch(() => '');
+        console.error('[chat] /think failed', { status: response.status, detail });
+        const friendly = response.status === 401
+          ? 'Your session expired. Please sign in again.'
+          : response.status >= 500
+            ? 'The server hit an error processing your question. Please try again in a moment.'
+            : `Could not run your question (HTTP ${response.status}). Please try again.`;
+        setMessages((prev) => [...prev, {
+          id: nextId.current++, role: 'assistant', text: friendly, error: true,
+        }]);
+        return;
+      }
+
+      const reader  = response.body.getReader();
       const decoder = new TextDecoder();
       let   buffer  = '';
       let   assistantId = -1;
