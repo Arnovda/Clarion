@@ -156,10 +156,10 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       : [];
     const ownerById = new Map(owners.map((o: { id: number }) => [o.id, o]));
 
-    const tables = rawTables.map((t: Record<string, unknown>) => {
+    const tables: any[] = rawTables.map((t: any) => {
       const ownerId = t.source_product_table_id as number | null | undefined;
       if (!ownerId) return t;
-      const owner = ownerById.get(ownerId);
+      const owner = ownerById.get(ownerId) as any;
       if (!owner) return t;
       return {
         ...t,
