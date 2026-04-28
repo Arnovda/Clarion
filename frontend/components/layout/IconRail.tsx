@@ -129,7 +129,7 @@ export default function IconRail() {
   return (
     <aside
       aria-label="Primary navigation"
-      className="w-[220px] min-w-[220px] h-screen flex flex-col bg-raised border-r border-line shrink-0 overflow-y-auto"
+      className="w-[220px] min-w-[220px] h-full flex flex-col bg-raised border-r border-line shrink-0 overflow-y-auto"
     >
       <nav className="flex-1 flex flex-col gap-0.5 px-2.5 py-3.5">
         {GROUP_ORDER.map((g) => {
