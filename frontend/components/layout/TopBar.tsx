@@ -6,7 +6,6 @@ import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { clearToken, getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
-import api from '@/lib/api';
 import NotificationBell from '../NotificationBell';
 import CommandPalette from './CommandPalette';
 
@@ -33,32 +32,11 @@ function initialsOf(name?: string, email?: string): string {
 export default function TopBar({ showSearch = true }: TopBarProps) {
   const router = useRouter();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
-  const [tenantName, setTenantName] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    const p = getTokenPayload();
-    setPayload(p);
-    if (!p) { setTenantName(null); return; }
-
-    // Fetch the real tenant name from the profile API (cached in sessionStorage
-    // so we don't re-fetch on every page transition).
-    const cached = sessionStorage.getItem('databridge_tenant_name');
-    if (cached) { setTenantName(cached); return; }
-
-    let cancelled = false;
-    api.get('/users/profile')
-      .then((res) => {
-        if (cancelled) return;
-        const name = res.data?.data?.tenant?.name ?? null;
-        if (name) {
-          setTenantName(name);
-          sessionStorage.setItem('databridge_tenant_name', name);
-        }
-      })
-      .catch(() => { /* silent — chip just won't appear */ });
-    return () => { cancelled = true; };
+    setPayload(getTokenPayload());
   }, []);
 
   useEffect(() => {
@@ -87,6 +65,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
     router.push('/');
   }
 
+
   const initials = initialsOf(payload?.displayName, payload?.email);
 
   return (
@@ -102,16 +81,6 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
           </svg>
           <span>DataBridge</span>
         </Link>
-
-        {/* Tenant chip — real org name from the profile API */}
-        {tenantName && (
-          <div
-            className="hidden sm:block text-[12px] text-muted pl-3 ml-1.5 border-l border-line leading-none truncate max-w-[180px]"
-            title={tenantName}
-          >
-            {tenantName}
-          </div>
-        )}
 
         <div className="flex-1" />
 

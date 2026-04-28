@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Loader2, Check, Flag, Inbox, RefreshCw } from 'lucide-react';
-import IconRail from '@/components/layout/IconRail';
+import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
@@ -67,9 +67,8 @@ function ReviewQueueInner() {
   const colCount = items.filter((i) => i.type === 'column').length;
 
   return (
-    <div className="flex h-screen overflow-hidden bg-bg">
-      <IconRail />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+    <AppShell>
+      <>
         {/* Top bar */}
         <div className="bg-raised border-b border-line px-6 py-4 flex items-center justify-between flex-shrink-0">
           <div>
@@ -177,8 +176,8 @@ function ReviewQueueInner() {
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </>
+    </AppShell>
   );
 }
 
