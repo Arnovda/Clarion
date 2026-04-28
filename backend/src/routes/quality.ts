@@ -23,7 +23,7 @@ import { runQualityProfile, runQualityProfileWithConnector } from '../quality/Qu
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
-import { resolveOwnerProductTable } from '../services/productOwnership';
+import { resolveOwnerProductTable, OwnerResolveError } from '../services/productOwnership';
 import { generateQualityAlertContext } from '../ai/AIService';
 
 const router = Router();
@@ -408,8 +408,16 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     const ptId = Number(req.params.productTableId);
     const tenantId = req.user?.tenantId;
 
-    const owner = await resolveOwnerProductTable(ptId, tenantId);
-    if (!owner) { res.status(404).json({ ok: false, error: 'Product table not found' }); return; }
+    let owner;
+    try {
+      owner = await resolveOwnerProductTable(ptId, tenantId);
+    } catch (e) {
+      if (e instanceof OwnerResolveError) {
+        res.status(404).json({ ok: false, error: e.message, stage: e.stage });
+        return;
+      }
+      throw e;
+    }
 
     const pt = owner.productTable as { table_name: string };
     const dp = owner.product as { id: number; name: string };

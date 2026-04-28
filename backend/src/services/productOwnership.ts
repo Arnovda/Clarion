@@ -20,6 +20,13 @@ export interface ResolvedOwner {
   redirected: boolean;
 }
 
+export class OwnerResolveError extends Error {
+  constructor(message: string, public readonly stage: 'product_table' | 'star_schema' | 'data_product' | 'connection' | 'cycle') {
+    super(message);
+    this.name = 'OwnerResolveError';
+  }
+}
+
 /**
  * Follow `source_product_table_id` until we land on a row that owns its data
  * (or we hit a cycle / dangling pointer). Cycle guard caps depth at 8.
@@ -27,27 +34,54 @@ export interface ResolvedOwner {
 export async function resolveOwnerProductTable(
   productTableId: number,
   tenantId?: number,
-): Promise<ResolvedOwner | null> {
+): Promise<ResolvedOwner> {
   return tenantQuery(tenantId, async (trx) => {
     let currentId = productTableId;
     let redirected = false;
     const seen = new Set<number>();
 
     for (let depth = 0; depth < 8; depth++) {
-      if (seen.has(currentId)) break;
+      if (seen.has(currentId)) {
+        throw new OwnerResolveError(
+          `Cycle detected following source_product_table_id chain from ${productTableId} (revisited ${currentId})`,
+          'cycle',
+        );
+      }
       seen.add(currentId);
 
       const pt = await trx('product_tables').where({ id: currentId }).first();
-      if (!pt) return null;
+      if (!pt) {
+        throw new OwnerResolveError(
+          redirected
+            ? `Owner product_table id=${currentId} not found (followed from ${productTableId}). Possibly deleted or wrong tenant.`
+            : `Product table id=${currentId} not found in tenant ${tenantId ?? 'unknown'}.`,
+          'product_table',
+        );
+      }
 
       const ownsData = !!pt.transformation_sql || !pt.source_product_table_id;
       if (ownsData || !pt.source_product_table_id) {
         const ss = await trx('star_schemas').where({ id: pt.star_schema_id }).first();
-        if (!ss) return null;
+        if (!ss) {
+          throw new OwnerResolveError(
+            `Star schema id=${pt.star_schema_id} not found for product_table ${currentId}.`,
+            'star_schema',
+          );
+        }
         const dp = await trx('data_products').where({ id: ss.data_product_id }).first();
-        if (!dp) return null;
+        if (!dp) {
+          throw new OwnerResolveError(
+            `Data product id=${ss.data_product_id} not found for star_schema ${ss.id}.`,
+            'data_product',
+          );
+        }
         const conn = await trx('connections').where({ id: dp.connection_id }).first();
-        if (!conn) return null;
+        if (!conn) {
+          throw new OwnerResolveError(
+            `Connection id=${dp.connection_id} not found for data_product ${dp.id}. The product may have been disconnected from its source.`,
+            'connection',
+          );
+        }
         return { productTable: pt, product: dp, starSchema: ss, connection: conn, redirected };
       }
 
@@ -55,7 +89,10 @@ export async function resolveOwnerProductTable(
       redirected = true;
     }
 
-    return null;
+    throw new OwnerResolveError(
+      `Exceeded ownership-chain depth (8) starting from product_table ${productTableId}.`,
+      'cycle',
+    );
   });
 }
 
