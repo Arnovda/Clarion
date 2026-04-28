@@ -25,10 +25,10 @@ export function errorHandler(
   // Log full error server-side — never expose internals to the client
   console.error('[ErrorHandler]', err);
 
-  // For admin users in non-production, include the error message for debugging
+  // Admins (in any environment) get the real message — they're trusted
+  // operators of their own tenant and need diagnostics in prod too.
   const isAdmin = req.user?.role === 'admin';
-  const isDev = process.env.NODE_ENV !== 'production';
-  const message = (isDev && isAdmin && err instanceof Error)
+  const message = (isAdmin && err instanceof Error)
     ? err.message
     : 'Something went wrong. Please try again.';
 
