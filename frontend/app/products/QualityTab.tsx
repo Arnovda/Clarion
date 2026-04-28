@@ -33,7 +33,7 @@ function ScoreDot({ score }: { score: number | null }) {
   return <span className={`w-2 h-2 rounded-full ${cls} inline-block`} />;
 }
 
-export default function QualityTab() {
+export default function QualityTab({ productNameFilter }: { productNameFilter?: string } = {}) {
   const [tables, setTables] = useState<ProductTableHealth[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ProductTableHealth | null>(null);
@@ -45,9 +45,10 @@ export default function QualityTab() {
     try {
       const res = await api.get('/quality/tables');
       const all = (res.data.data ?? []) as ProductTableHealth[];
-      setTables(all.filter((t) => t.layer === 'product'));
+      const filtered = all.filter((t) => t.layer === 'product');
+      setTables(productNameFilter ? filtered.filter((t) => t.product_name === productNameFilter) : filtered);
     } catch { /* noop */ } finally { setLoading(false); }
-  }, []);
+  }, [productNameFilter]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -106,15 +107,95 @@ export default function QualityTab() {
 
   if (tables.length === 0) {
     return (
-      <div className="max-w-5xl mx-auto px-6 pt-8 pb-10">
+      <div className={productNameFilter ? '' : 'max-w-5xl mx-auto px-6 pt-8 pb-10'}>
         <div className="bg-raised border border-line rounded-lg p-12 text-center">
-          <p className="text-[13px] text-ink-3">No product tables yet. Build a product first to see quality scores.</p>
+          <p className="text-[13px] text-ink-3">
+            {productNameFilter
+              ? 'No tables in this product yet, or none have been profiled.'
+              : 'No product tables yet. Build a product first to see quality scores.'}
+          </p>
         </div>
       </div>
     );
   }
 
   const ringColor = avgScore >= 90 ? 'var(--ok)' : avgScore >= 70 ? 'var(--warn)' : 'var(--err)';
+
+  if (productNameFilter) {
+    const ptables = tables;
+    const isProfiling = profilingProduct === productNameFilter;
+    const sorted = [...ptables].sort((a, b) => (a.overall_score ?? 2) - (b.overall_score ?? 2));
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-12 h-12 rounded-full border-2 flex items-center justify-center"
+              style={{ borderColor: ringColor }}
+            >
+              <span className="font-display text-[16px] tabular-nums text-ink">{avgScore}</span>
+            </div>
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Overall score</p>
+              <p className="text-[12px] text-ink-2">{profiled.length} of {tables.length} tables profiled</p>
+            </div>
+          </div>
+          {isProfiling ? (
+            <div className="flex items-center gap-2 text-[11px] text-ocean">
+              <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} />
+              Profiling {profilingProgress.done}/{profilingProgress.total}…
+            </div>
+          ) : (
+            <button
+              onClick={() => profileAll(productNameFilter, ptables)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-ocean hover:bg-ocean-softer transition-colors"
+            >
+              <Play className="w-2.5 h-2.5" strokeWidth={2} fill="currentColor" />
+              Profile all
+            </button>
+          )}
+        </div>
+        <div className="bg-raised border border-line rounded-lg overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-line">
+                <th className="text-left px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Table</th>
+                <th className="text-center px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Score</th>
+                <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Rows</th>
+                <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Last profiled</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((t) => (
+                <tr
+                  key={t.id}
+                  onClick={() => setSelected(t)}
+                  className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
+                >
+                  <td className="px-5 py-3">
+                    <div className="flex items-center gap-2">
+                      <ScoreDot score={t.overall_score} />
+                      <span className="text-[13px] font-medium text-ink">{t.display_name || t.table_name}</span>
+                      {t.display_name && t.display_name !== t.table_name && (
+                        <span className="text-[11px] font-mono text-muted-2">{t.table_name}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
+                  <td className="px-5 py-3 text-right text-[12px] text-ink-3 tabular-nums">
+                    {t.row_count != null ? t.row_count.toLocaleString() : '—'}
+                  </td>
+                  <td className="px-5 py-3 text-right text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
+                    {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-6 pt-8 pb-10 space-y-6">

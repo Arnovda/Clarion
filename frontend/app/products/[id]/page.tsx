@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import {
   ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, MessageSquare,
-  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText,
+  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -23,8 +23,11 @@ import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner, ProductIco
 import { cleanTopicName } from '../helpers';
 
 const AskAIPanel = dynamic(() => import('../AskAIPanel'), { ssr: false });
+const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
+const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
+const QualityTab = dynamic(() => import('../QualityTab'), { ssr: false });
 
-type DetailTab = 'overview' | 'tables' | 'kpis' | 'sql';
+type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
 
 function getAllTables(p: FullDataProduct): (ProductTable & { columns: ProductColumn[] })[] {
   return p.star_schemas
@@ -194,7 +197,10 @@ function ProductDetailInner() {
             <nav className="flex gap-0">
               <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
               <TabBtn active={tab === 'tables'} onClick={() => setTab('tables')} icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
+              <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+              <TabBtn active={tab === 'lineage'} onClick={() => setTab('lineage')} icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
               <TabBtn active={tab === 'kpis'} onClick={() => setTab('kpis')} icon={<Gauge className="w-3.5 h-3.5" />}>KPIs</TabBtn>
+              <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')} icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
               <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
             </nav>
           </div>
@@ -207,7 +213,10 @@ function ProductDetailInner() {
                 onToggle={(id) => setExpandedTableId(expandedTableId === id ? null : id)}
               />
             )}
+            {tab === 'schema' && <SchemaSection detail={detail} />}
+            {tab === 'lineage' && <LineageSection detail={detail} />}
             {tab === 'kpis' && <KpisSection kpis={kpis} />}
+            {tab === 'quality' && <QualityTab productNameFilter={detail.name} />}
             {tab === 'sql' && <SqlSection tables={tables} />}
           </div>
         </div>
@@ -417,6 +426,31 @@ function TablesSection({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function SchemaSection({ detail }: { detail: FullDataProduct }) {
+  if (detail.star_schemas.length === 0) {
+    return <p className="text-[13px] text-muted italic">No tables designed yet.</p>;
+  }
+  return (
+    <div className="space-y-6">
+      {detail.star_schemas.map((schema) => (
+        <StarSchemaFlow key={schema.id} schema={schema} />
+      ))}
+    </div>
+  );
+}
+
+function LineageSection({ detail }: { detail: FullDataProduct }) {
+  const allTables = detail.star_schemas.flatMap((s) => s.tables);
+  if (allTables.length === 0) {
+    return <p className="text-[13px] text-muted italic">No tables to show lineage for yet.</p>;
+  }
+  return (
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+      <LineageFlow data={{ tables: allTables }} />
     </div>
   );
 }
