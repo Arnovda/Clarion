@@ -424,12 +424,17 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
       productDir = require('path').resolve('./warehouse/product', productSlug);
     }
 
-    // Verify that warehouse data actually exists for this table before profiling
-    const tablePath = require('path').join(productDir, pt.table_name);
-    const fs = require('fs');
-    if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f: string) => f.endsWith('.parquet'))) {
-      res.status(404).json({ ok: false, error: `No warehouse data found for table "${pt.table_name}". Run the transformation first.` });
-      return;
+    // Verify that warehouse data actually exists for this table before profiling.
+    // Local fs check only — Azure (az://) paths can't be probed with fs, so we
+    // skip the pre-flight and let DuckDB surface a clean error if the blob is missing.
+    const isAzure = productDir.startsWith('az://');
+    if (!isAzure) {
+      const tablePath = require('path').join(productDir, pt.table_name);
+      const fs = require('fs');
+      if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f: string) => f.endsWith('.parquet'))) {
+        res.status(404).json({ ok: false, error: `No warehouse data found for table "${pt.table_name}". Run the transformation first.` });
+        return;
+      }
     }
 
     // Create DuckDB connector pointing at product warehouse

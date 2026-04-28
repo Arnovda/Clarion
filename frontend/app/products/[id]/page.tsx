@@ -61,7 +61,7 @@ function ProductDetailInner() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [running, setRunning] = useState(false);
-  const [rebuildPlan, setRebuildPlan] = useState<string[] | null>(null);
+  const [rebuildPlan, setRebuildPlan] = useState<Array<{ table_name: string; display_name: string }> | null>(null);
   const [rebuildResults, setRebuildResults] = useState<TransformResult[] | null>(null);
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
   const toast = useToast();
@@ -111,7 +111,7 @@ function ProductDetailInner() {
     if (!detail || running) return;
     const plan = getAllTables(detail)
       .filter((t) => !!t.transformation_sql)
-      .map((t) => t.display_name ?? t.table_name);
+      .map((t) => ({ table_name: t.table_name, display_name: t.display_name ?? t.table_name }));
     if (plan.length === 0) {
       toast.warn('Nothing to rebuild', { description: 'No tables with transformation SQL.' });
       return;
@@ -485,13 +485,15 @@ function TablesSection({
 function RebuildBanner({
   plan, results, running, onDismiss,
 }: {
-  plan: string[];
+  plan: Array<{ table_name: string; display_name: string }>;
   results: TransformResult[] | null;
   running: boolean;
   onDismiss: () => void;
 }) {
   const resultByName = new Map((results ?? []).map((r) => [r.table_name, r]));
-  const tables = plan.length > 0 ? plan : (results ?? []).map((r) => r.table_name);
+  const tables = plan.length > 0
+    ? plan
+    : (results ?? []).map((r) => ({ table_name: r.table_name, display_name: r.table_name }));
   const errors = (results ?? []).filter((r) => r.status === 'error');
   const successes = (results ?? []).filter((r) => r.status === 'success');
   const totalRows = successes.reduce((s, r) => s + (r.row_count ?? 0), 0);
@@ -524,11 +526,11 @@ function RebuildBanner({
           </p>
           {tables.length > 0 && (
             <ul className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-              {tables.map((name) => {
-                const r = resultByName.get(name);
+              {tables.map(({ table_name, display_name }) => {
+                const r = resultByName.get(table_name);
                 const state = running && !r ? 'pending' : r?.status === 'success' ? 'ok' : r?.status === 'error' ? 'err' : 'pending';
                 return (
-                  <li key={name} className="inline-flex items-center gap-1.5 text-[11.5px]">
+                  <li key={table_name} className="inline-flex items-center gap-1.5 text-[11.5px]">
                     {state === 'pending' && <Loader2 className="w-3 h-3 animate-spin text-muted-2" />}
                     {state === 'ok' && <CheckCircle2 className="w-3 h-3 text-ok" strokeWidth={2.25} />}
                     {state === 'err' && <AlertCircle className="w-3 h-3 text-err" strokeWidth={2.25} />}
@@ -537,7 +539,7 @@ function RebuildBanner({
                       state === 'ok' && 'text-ink-2',
                       state === 'err' && 'text-err',
                       state === 'pending' && 'text-muted',
-                    )}>{name}</span>
+                    )}>{display_name}</span>
                     {r?.status === 'success' && r.row_count !== undefined && (
                       <span className="text-muted-2 tabular-nums">({r.row_count.toLocaleString('en-GB')})</span>
                     )}

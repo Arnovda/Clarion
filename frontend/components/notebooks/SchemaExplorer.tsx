@@ -234,7 +234,8 @@ export default function SchemaExplorer({ connectionId, scope, onInsert }: Schema
               <div className="ml-2">
                 {ns.tables.map((table) => {
                   const tableKey = `${ns.id}:${table.id}`;
-                  const qualifiedName = `${ns.name}.${table.name}`;
+                  const q = (s: string) => `"${s.replace(/"/g, '""')}"`;
+                  const qualifiedName = `${q(ns.name)}.${q(table.name)}`;
                   const isExpanded = expandedTables.has(tableKey);
 
                   return (
@@ -280,7 +281,7 @@ export default function SchemaExplorer({ connectionId, scope, onInsert }: Schema
                             <div
                               key={col.id}
                               className="flex items-center gap-1.5 pl-4 pr-2 py-[2px] group/col hover:bg-surface-container-low/30 transition-colors cursor-pointer"
-                              onClick={() => handleInsert(col.name)}
+                              onClick={() => handleInsert(`"${col.name.replace(/"/g, '""')}"`)}
                               title={col.description || `${col.displayName} (${col.dataType})`}
                             >
                               {/* Column role indicator */}
