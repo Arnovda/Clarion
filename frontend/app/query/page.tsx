@@ -542,6 +542,7 @@ function QueryPageInner() {
           needsClarification: d.needsClarification,
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
           queryLayer: d.queryLayer,
+          visualization: d.visualization,
         };
         // Persist to server
         if (cid && cid > 0) {
@@ -677,6 +678,7 @@ function QueryPageInner() {
               flagReason?: string;
               subScores?: { schema?: number; join?: number; formula?: number };
               uncertaintyNotes?: string[];
+              visualization?: import('./types').VisualizationHint;
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
@@ -687,6 +689,7 @@ function QueryPageInner() {
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
               reasoning: accumulatedThinking || undefined,
               queryLayer: d.queryLayer,
+              visualization: d.visualization,
             };
             // Persist to server
             if (cid && cid > 0) {

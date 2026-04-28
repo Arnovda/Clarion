@@ -1038,6 +1038,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
         rows: queryRows.slice(0, 200), sql: nlResult.sql,
+        ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
         debug: { hint: `Query executed against product layer with confidence ${Math.round(nlResult.confidence * 100)}%.` },
       }});
       res.end(); return;
@@ -1281,6 +1282,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       rows: queryResult.rows.slice(0, 200),
       sql: nlResult.sql,
+      ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
       debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length,
         hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
         semanticContext, relationshipContext, kpiFormulas },
@@ -1691,6 +1693,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
         tablesUsed:  nlResult.tables_used,
         rows:        rows.slice(0, 200),
         sql:         nlResult.sql,
+        ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
         ...(validation.ok ? {} : { warning: validation.warning }),
         debug: {
           confirmedTables:        tableIds.length,

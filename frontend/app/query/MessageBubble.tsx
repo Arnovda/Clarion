@@ -10,72 +10,192 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  LineChart, PieChart, Pie, Cell,
   ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
-import { Code, ThumbsUp, ThumbsDown, FileDown } from 'lucide-react';
+import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon } from 'lucide-react';
 import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
-import { OBSERVATORY } from '@/lib/observatory';
-import type { DebugInfo, ForecastData, Message } from './types';
+import { OBSERVATORY, SERIES } from '@/lib/observatory';
+import type { DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
 
 // ─── Result visualizer ───────────────────────────────────────────────────────
 
-function ResultVisualizer({ rows }: { rows: Record<string, unknown>[] }) {
+function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hint?: VisualizationHint }) {
+  // ── Derive columns + numeric detection ──
+  const { columns, numericCols, defaultLabelCol, defaultValueCol } = (() => {
+    if (!rows || rows.length === 0) {
+      return { columns: [] as string[], numericCols: [] as string[], defaultLabelCol: undefined as string | undefined, defaultValueCol: undefined as string | undefined };
+    }
+    const columns = Object.keys(rows[0]);
+    const numericCols = columns.filter((col) =>
+      rows.some((r) => r[col] !== null && r[col] !== undefined) &&
+      rows.every((r) =>
+        r[col] === null || r[col] === undefined ||
+        typeof r[col] === 'number' ||
+        (typeof r[col] === 'string' && !isNaN(Number(r[col])) && (r[col] as string) !== ''),
+      ),
+    );
+    const labelCol = pickLabelColumn(columns, numericCols);
+    const isPctCol = (c: string) => /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(c);
+    const isIdCol  = (c: string) => /(_id|_key|_nr|_number|_code)$/i.test(c);
+    const candidateValueCols = numericCols.filter((c) => !isIdCol(c));
+    const absoluteCols = candidateValueCols.filter((c) => !isPctCol(c));
+    const valueColPool = absoluteCols.length > 0 ? absoluteCols : candidateValueCols;
+    const valueCol = valueColPool.length > 0
+      ? valueColPool.reduce((best, col) => {
+          const maxBest = Math.max(...rows.map((r) => Number(r[best]) || 0));
+          const maxCol  = Math.max(...rows.map((r) => Number(r[col])  || 0));
+          return maxCol > maxBest ? col : best;
+        })
+      : undefined;
+    return { columns, numericCols, defaultLabelCol: labelCol, defaultValueCol: valueCol };
+  })();
+
+  // Resolve the columns the chart will use — hint takes priority, fall back to heuristics
+  const xKey    = (hint?.xKey    && columns.includes(hint.xKey))    ? hint.xKey    : defaultLabelCol;
+  const yKey    = (hint?.yKey    && columns.includes(hint.yKey))    ? hint.yKey    : defaultValueCol;
+  const groupBy = (hint?.groupBy && columns.includes(hint.groupBy)) ? hint.groupBy : undefined;
+
+  // Decide an initial chart type — hint wins, otherwise heuristic
+  const heuristicType: VisualizationType = (() => {
+    if (!xKey || !yKey) return 'table';
+    if (rows.length > 60) return 'table';
+    // Two-cat + numeric → stacked
+    const otherCats = columns.filter((c) => c !== xKey && c !== yKey && !numericCols.includes(c));
+    if (otherCats.length >= 1 && rows.length >= 2) return 'stacked_bar';
+    return 'bar';
+  })();
+  const initialType: VisualizationType = hint?.type ?? heuristicType;
+
+  const [active, setActive] = useState<VisualizationType>(initialType);
+
   if (!rows || rows.length === 0) return null;
-  const columns = Object.keys(rows[0]);
-  const numericCols = columns.filter((col) =>
-    rows.some((r) => r[col] !== null && r[col] !== undefined) &&
-    rows.every((r) =>
-      r[col] === null || r[col] === undefined ||
-      typeof r[col] === 'number' ||
-      (typeof r[col] === 'string' && !isNaN(Number(r[col])) && (r[col] as string) !== ''),
-    ),
-  );
-  const labelCol = pickLabelColumn(columns, numericCols);
-  // Prefer the most "interesting" numeric column for the chart bar:
-  //   - skip percentage/rate columns when an absolute-value column also exists
-  //   - skip id/key columns
-  const isPctCol = (c: string) => /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(c);
-  const isIdCol  = (c: string) => /(_id|_key|_nr|_number|_code)$/i.test(c);
-  const candidateValueCols = numericCols.filter((c) => !isIdCol(c));
-  const absoluteCols = candidateValueCols.filter((c) => !isPctCol(c));
-  const valueColPool = absoluteCols.length > 0 ? absoluteCols : candidateValueCols;
-  const valueCol = valueColPool.length > 0
-    ? valueColPool.reduce((best, col) => {
-        const maxBest = Math.max(...rows.map((r) => Number(r[best]) || 0));
-        const maxCol  = Math.max(...rows.map((r) => Number(r[col])  || 0));
-        return maxCol > maxBest ? col : best;
-      })
-    : undefined;
-  const showChart = !!(labelCol && valueCol && rows.length >= 2 && rows.length <= 25);
-  const chartData = showChart ? rows.map((r) => ({ ...r, [valueCol!]: Number(r[valueCol!]) })) : [];
-  const chartH    = showChart ? Math.min(rows.length * 34 + 48, 320) : 0;
+
+  // ── Build chart-ready data per type ──
+  const isPct = (c?: string) => !!c && /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(c);
+  const tickFmt = (v: number) => {
+    if (isPct(yKey)) return `${Number(v).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+    return Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
+  };
+
+  // For stacked bar: pivot rows into one row per xKey with a column per groupBy value
+  const pivoted = (() => {
+    if (active !== 'stacked_bar' || !xKey || !yKey || !groupBy) return null;
+    const map = new Map<string, Record<string, unknown>>();
+    const groups = new Set<string>();
+    for (const r of rows) {
+      const x = String(r[xKey] ?? '');
+      const g = String(r[groupBy] ?? '');
+      groups.add(g);
+      const acc = map.get(x) ?? { [xKey]: x };
+      acc[g] = (Number(acc[g]) || 0) + (Number(r[yKey]) || 0);
+      map.set(x, acc);
+    }
+    return { data: Array.from(map.values()), groups: Array.from(groups) };
+  })();
+
+  const chartH = Math.min(Math.max(rows.length * 26, 220), 360);
+  const colourOf = (i: number) => SERIES[i % SERIES.length] ?? OBSERVATORY.ocean;
+
+  // ── Toolbar ──
+  const toolbarBtn = (t: VisualizationType, label: string, Icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>) => {
+    const ok = t === 'stacked_bar' ? !!groupBy : t === 'pie' ? !!xKey && !!yKey && rows.length <= 12 : t === 'table' ? true : !!xKey && !!yKey;
+    if (!ok) return null;
+    const isActive = active === t;
+    return (
+      <button
+        key={t}
+        onClick={() => setActive(t)}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+          isActive ? 'bg-ocean text-white' : 'text-muted hover:text-ink hover:bg-softer'
+        }`}
+        title={label}
+      >
+        <Icon size={12} strokeWidth={2} className="-mt-px" />
+        {label}
+      </button>
+    );
+  };
 
   return (
     <div className="mt-3 space-y-3 border-t border-line pt-3">
-      {showChart && (
+      <div className="flex items-center gap-1 -mb-1">
+        {toolbarBtn('bar',         'Bar',     BarChart3)}
+        {toolbarBtn('line',        'Line',    LineIcon)}
+        {toolbarBtn('stacked_bar', 'Stacked', Layers)}
+        {toolbarBtn('pie',         'Pie',     PieIcon)}
+        {toolbarBtn('table',       'Table',   TableIcon)}
+      </div>
+
+      {active === 'bar' && xKey && yKey && (
         <div className="rounded-md bg-softer border border-line p-3">
           <ResponsiveContainer width="100%" height={chartH}>
-            <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 8 }}>
+            <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="rgba(13,28,47,0.08)" />
-              <XAxis type="number" tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false}
-                tickFormatter={(v) => {
-                  if (valueCol && /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(valueCol)) {
-                    return `${Number(v).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
-                  }
-                  return Math.abs(v) >= 1000 ? `€${(v / 1000).toFixed(1)}k` : String(v);
-                }} />
-              <YAxis type="category" dataKey={labelCol} tick={{ fontSize: 10, fill: OBSERVATORY.ink }} width={130} axisLine={false} tickLine={false} />
+              <XAxis type="number" tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} tickFormatter={tickFmt} />
+              <YAxis type="category" dataKey={xKey} tick={{ fontSize: 10, fill: OBSERVATORY.ink }} width={140} axisLine={false} tickLine={false} />
               <Tooltip
-                formatter={(value: unknown) => [formatCellValue(value, valueCol), valueCol!.replace(/_/g, ' ')]}
+                formatter={(value: unknown) => [formatCellValue(value, yKey), yKey.replace(/_/g, ' ')]}
                 contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }}
               />
-              <Bar dataKey={valueCol!} fill={OBSERVATORY.ocean} radius={[0, 4, 4, 0]} maxBarSize={22} />
+              <Bar dataKey={yKey} fill={OBSERVATORY.ocean} radius={[0, 4, 4, 0]} maxBarSize={22} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       )}
+
+      {active === 'line' && xKey && yKey && (
+        <div className="rounded-md bg-softer border border-line p-3">
+          <ResponsiveContainer width="100%" height={chartH}>
+            <LineChart data={rows} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(13,28,47,0.08)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} tickFormatter={tickFmt} />
+              <Tooltip
+                formatter={(value: unknown) => [formatCellValue(value, yKey), yKey.replace(/_/g, ' ')]}
+                contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }}
+              />
+              <Line type="monotone" dataKey={yKey} stroke={OBSERVATORY.ocean} strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {active === 'stacked_bar' && pivoted && xKey && (
+        <div className="rounded-md bg-softer border border-line p-3">
+          <ResponsiveContainer width="100%" height={chartH}>
+            <BarChart data={pivoted.data} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(13,28,47,0.08)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} tickFormatter={tickFmt} />
+              <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {pivoted.groups.map((g, i) => (
+                <Bar key={g} dataKey={g} stackId="a" fill={colourOf(i)} maxBarSize={36} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {active === 'pie' && xKey && yKey && (
+        <div className="rounded-md bg-softer border border-line p-3">
+          <ResponsiveContainer width="100%" height={chartH}>
+            <PieChart>
+              <Pie data={rows} dataKey={yKey} nameKey={xKey} outerRadius={Math.min(chartH / 2 - 24, 130)} label={(e: { name?: string }) => e.name ?? ''}>
+                {rows.map((_, i) => <Cell key={i} fill={colourOf(i)} />)}
+              </Pie>
+              <Tooltip
+                formatter={(value: unknown) => [formatCellValue(value, yKey), yKey.replace(/_/g, ' ')]}
+                contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-md border border-line text-[12px] bg-raised">
         <table className="w-full">
           <thead>
@@ -736,7 +856,7 @@ export default function MessageBubble({
             </div>
           )}
           <p className="text-ink leading-relaxed"><BoldText text={msg.text} /></p>
-          {msg.forecast ? <ForecastChart forecast={msg.forecast} /> : (msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} />)}
+          {msg.forecast ? <ForecastChart forecast={msg.forecast} /> : (msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} hint={msg.visualization} />)}
           {msg.warning && !msg.wasRepaired && (
             <div className="flex items-start gap-2 bg-warn-soft border border-line rounded-md px-3 py-2 text-[12px] text-ink-2">
               <span className="flex-shrink-0 mt-0.5 text-warn">⚠</span>

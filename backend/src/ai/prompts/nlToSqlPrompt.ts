@@ -114,6 +114,22 @@ Score your confidence in three dimensions:
 The overall "confidence" should be the MINIMUM of these three sub-scores.
 List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "unsure if status refers to order status or customer status").
 
+━━━ VISUALIZATION HINT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Pick the best chart type for the expected result shape AND any explicit user
+intent in the question (e.g. "as a bar chart", "show a line", "pie"):
+
+• "bar"          — categorical x-axis, one numeric series. Default for top-N / ranking.
+• "line"         — time series (date/month/year on x-axis), one numeric series.
+• "stacked_bar"  — categorical x-axis, numeric value, broken down by a second category.
+                   Use when the SELECT has TWO categorical columns + one numeric (e.g. month × status × count).
+• "pie"          — single categorical breakdown of one numeric, ≤8 slices, parts-of-a-whole.
+• "table"        — many columns, no clear chart shape, or user explicitly wants a table.
+
+Always set "xKey" (categorical/time axis) and "yKey" (numeric) when type ≠ "table".
+Set "groupBy" to the second categorical column when type = "stacked_bar".
+If the user explicitly requests a chart type ("in a bar chart", "as a line"), honour it.
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Return exactly this JSON shape — nothing else:
@@ -124,11 +140,21 @@ Return exactly this JSON shape — nothing else:
   "join_confidence": 0.80,
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
-  "tables_used": ["orders", "customers"]
+  "tables_used": ["orders", "customers"],
+  "visualization": { "type": "bar", "xKey": "customer_name", "yKey": "total_revenue" }
 }`;
 
 export function buildNlToSqlUser(question: string): string {
   return `Question: "${question}"`;
+}
+
+export type VisualizationType = 'bar' | 'line' | 'stacked_bar' | 'pie' | 'table';
+
+export interface VisualizationHint {
+  type: VisualizationType;
+  xKey?: string;
+  yKey?: string;
+  groupBy?: string;
 }
 
 export interface NlToSqlOutput {
@@ -139,6 +165,7 @@ export interface NlToSqlOutput {
   formula_confidence: number;
   uncertainty_notes: string[];
   tables_used: string[];
+  visualization?: VisualizationHint;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,8 +296,11 @@ Return exactly this JSON shape — nothing else:
   "join_confidence": 0.80,
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
-  "tables_used": ["sales.orders", "hr.employees"]
-}`;
+  "tables_used": ["sales.orders", "hr.employees"],
+  "visualization": { "type": "bar", "xKey": "department_name", "yKey": "headcount" }
+}
+
+Same visualization rules as the single-source prompt: pick "bar" / "line" / "stacked_bar" / "pie" / "table" based on the expected result shape and any explicit user intent. Set xKey/yKey for non-table types and groupBy for stacked_bar.`;
 
 export function buildNlToSqlCrossUser(question: string): string {
   return `Question: "${question}"`;

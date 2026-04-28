@@ -34,6 +34,15 @@ export interface ForecastPoint {
   upper: number;
 }
 
+export type VisualizationType = 'bar' | 'line' | 'stacked_bar' | 'pie' | 'table';
+
+export interface VisualizationHint {
+  type:    VisualizationType;
+  xKey?:   string;
+  yKey?:   string;
+  groupBy?: string;
+}
+
 export interface ForecastData {
   historical:  Array<{ date: string; value: number }>;
   predicted:   ForecastPoint[];
@@ -70,6 +79,7 @@ export interface Message {
   feedbackComment?:    string;
   serverId?:           number;             // DB id from conversation_messages table
   forecast?:           ForecastData;       // forecast visualization data
+  visualization?:      VisualizationHint;  // LLM-suggested chart type for the result rows
 }
 
 export interface Conversation {

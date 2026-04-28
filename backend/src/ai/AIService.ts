@@ -589,6 +589,7 @@ export function extractEntitiesFromQuestion(
 
 function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
   const confidence = parsed.confidence as number;
+  const viz = parsed.visualization as Record<string, unknown> | undefined;
   return {
     sql:                 parsed.sql as string,
     confidence,
@@ -597,6 +598,14 @@ function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
     formula_confidence:  (parsed.formula_confidence as number)  ?? confidence,
     uncertainty_notes:   (parsed.uncertainty_notes as string[]) ?? [],
     tables_used:         parsed.tables_used as string[],
+    ...(viz && typeof viz.type === 'string' ? {
+      visualization: {
+        type: viz.type as 'bar' | 'line' | 'stacked_bar' | 'pie' | 'table',
+        xKey: viz.xKey as string | undefined,
+        yKey: viz.yKey as string | undefined,
+        groupBy: viz.groupBy as string | undefined,
+      },
+    } : {}),
   };
 }
 
