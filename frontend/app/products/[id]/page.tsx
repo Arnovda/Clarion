@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
-import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import { cn } from '@/lib/cn';
 import type {
@@ -493,9 +492,7 @@ function SqlSection({ tables }: { tables: (ProductTable & { columns: ProductColu
 export default function ProductDetailPage() {
   return (
     <RequireRole roles={['admin', 'analyst']}>
-      <AppShell>
-        <ProductDetailInner />
-      </AppShell>
+      <ProductDetailInner />
     </RequireRole>
   );
 }
