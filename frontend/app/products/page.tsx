@@ -25,6 +25,7 @@ import { statusBorderColor, cleanTopicName } from './helpers';
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
 const QualityTab = dynamic(() => import('./QualityTab'), { ssr: false });
+const AskAIPanel = dynamic(() => import('./AskAIPanel'), { ssr: false });
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -43,6 +44,10 @@ function ProductsPageInner() {
 
   // Card click -> slide-over detail panel
   const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
+
+  // Ask AI panel state — { open, productId? } where productId === null means general/cross-product
+  const [askOpen, setAskOpen] = useState(false);
+  const [askProductId, setAskProductId] = useState<number | null>(null);
 
   // Accordion state (used inside slide-over)
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
@@ -398,6 +403,16 @@ function ProductsPageInner() {
           <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">Organized data</h1>
         </div>
         <div className="flex items-center gap-2">
+          {products.length > 0 && (
+            <button
+              onClick={() => { setAskProductId(null); setAskOpen(true); }}
+              className="group px-3 py-2 text-[13px] font-medium rounded-md border border-line text-ink-2 hover:border-ocean hover:text-ocean hover:bg-ocean-softer/40 transition-colors flex items-center gap-1.5"
+              aria-label="Ask AI across all products"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-ocean group-hover:ai-sparkle" strokeWidth={1.75} />
+              Ask AI
+            </button>
+          )}
           {connections.length > 1 && (
             <select
               value={buildConnId ?? ''}
@@ -553,10 +568,13 @@ function ProductsPageInner() {
                   const name = cleanTopicName(product.name);
 
                   return (
-                    <button
+                    <div
                       key={product.id}
                       onClick={() => openProduct(product.id)}
-                      className="text-left bg-raised border border-line rounded-lg hover:border-line-strong transition-all overflow-hidden group"
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProduct(product.id); } }}
+                      className="text-left bg-raised border border-line rounded-lg hover:border-line-strong transition-all overflow-hidden group cursor-pointer focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
                     >
                       {/* Icon + name header */}
                       <div className="px-5 pt-5 pb-3">
@@ -596,11 +614,16 @@ function ProductsPageInner() {
                           {tables.length > 0 ? `${tables.length} tables` : ''}
                           {detail && totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
                         </span>
-                        <span className="text-xs font-semibold text-ocean group-hover:text-ocean-hover transition-colors">
-                          Ask questions &rarr;
-                        </span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setAskProductId(product.id); setAskOpen(true); }}
+                          className="flex items-center gap-1.5 text-xs font-semibold text-ocean hover:text-ocean-hover transition-colors group/ask"
+                          aria-label={`Ask AI about ${name}`}
+                        >
+                          <Sparkles className="w-3 h-3 group-hover/ask:ai-sparkle" strokeWidth={2} />
+                          Ask AI
+                        </button>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -655,6 +678,15 @@ function ProductsPageInner() {
           {tab === 'quality' && <QualityTab />}
         </div>
       </div>
+
+      {/* ── Ask AI side panel ────────────────────────────────────────── */}
+      <AskAIPanel
+        open={askOpen}
+        onClose={() => setAskOpen(false)}
+        product={askProductId !== null ? (products.find((p) => p.id === askProductId) ?? null) : null}
+        connections={connections}
+        products={products}
+      />
     </div>
   );
 }

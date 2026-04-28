@@ -951,9 +951,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
   };
 
   try {
-    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
+      productId?: number;
     };
 
     if (!question?.trim()) {
@@ -970,7 +971,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     emit({ type: 'phase', text: 'Loading context…' });
     const thinkProductCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId);
+      : await buildProductSemanticContext(connectionId, productId ? [productId] : undefined);
     const thinkTenantId = req.user!.tenantId;
     const thinkProductWarehouse = thinkProductCtx
       ? await semanticDb.transaction(async (trx) => {
