@@ -455,11 +455,28 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
       : null;
     const consumerConnId = (consumerProduct?.connection_id ?? dp.id) as number;
 
-    const result = await runQualityProfileWithConnector(
-      consumerConnId,
-      pt.table_name,
-      connector,
-    );
+    let result;
+    try {
+      result = await runQualityProfileWithConnector(
+        consumerConnId,
+        pt.table_name,
+        connector,
+      );
+    } catch (err) {
+      connector.disconnect();
+      const msg = err instanceof Error ? err.message : String(err);
+      // DuckDB raises this when the parquet/delta directory is missing — usually
+      // because the transformation hasn't materialised the table yet. Surface a
+      // clear, actionable message instead of the raw catalog error.
+      if (/Table with name .* does not exist/i.test(msg) || /Catalog Error/i.test(msg)) {
+        res.status(404).json({
+          ok: false,
+          error: `No warehouse data found for table "${pt.table_name}". Run the transformation first (Rebuild on the product overview).`,
+        });
+        return;
+      }
+      throw err;
+    }
 
     connector.disconnect();
 
