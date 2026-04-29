@@ -295,6 +295,7 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
       const product = allProducts.find((p) => p.id === productId);
       if (!product) continue;
       const [runRow] = await semanticDb('transformation_runs').insert({
+        tenant_id: tenantId,
         product_id: productId,
         triggered_by: req.user!.email,
         status: 'running',
