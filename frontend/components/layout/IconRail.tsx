@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
-  Plug, Inbox, Users, Shield, Library, Package,
+  Plug, Inbox, Users, Shield, Library, Package, Workflow,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -28,6 +28,7 @@ const ICONS = {
   users:   <Users         className={ICON_CLASS} strokeWidth={1.5} />,
   shield:  <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
   package: <Package        className={ICON_CLASS} strokeWidth={1.5} />,
+  workflow: <Workflow      className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -49,6 +50,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
+  { key: 'pipelines',  href: '/pipelines',  label: 'Pipelines',       icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 
   // Curate — keep definitions correct (analyst+)
@@ -66,6 +68,7 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/notebooks':  ['/notebooks'],
   '/catalog':    ['/catalog', '/semantic'],
   '/products':   ['/products'],
+  '/pipelines':  ['/pipelines'],
   '/glossary':   ['/glossary'],
   '/setup':      ['/setup', '/sources'],
   '/review':     ['/review', '/gaps', '/suggestions'],
