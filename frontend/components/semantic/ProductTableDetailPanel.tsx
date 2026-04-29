@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { format as formatSql } from 'sql-formatter';
 import { ArrowRight, GitBranch } from 'lucide-react';
 import api from '@/lib/api';
@@ -81,6 +81,8 @@ export default function ProductTableDetailPanel({
   let table: ProductTable | null = null;
   let pgTableId: number | null = null;
   let productConnectionId: number | null = null;
+  let parentProductId: number | null = null;
+  let parentSchemaId: number | null = null;
   const usedByProducts: string[] = [];
   for (const product of productTree) {
     for (const schema of product.starSchemas) {
@@ -89,6 +91,8 @@ export default function ProductTableDetailPanel({
         table = found;
         pgTableId = (found as { pg_table_id?: number }).pg_table_id ?? tableId;
         productConnectionId = product.connectionId;
+        parentProductId = product.productId;
+        parentSchemaId = schema.schemaId;
         break;
       }
     }
@@ -119,6 +123,58 @@ export default function ProductTableDetailPanel({
   const [viewTab, setViewTab]         = useState<ViewTab>('overview');
   const [domainInput, setDomainInput] = useState('');
   const [showColHistory, setShowColHistory] = useState<number | null>(null);
+  const [rels, setRels] = useState<RelRow[]>([]);
+  const [relsLoading, setRelsLoading] = useState(false);
+
+  // Relationships are stored per star schema in product_relationships and exposed
+  // via GET /api/products/:productId. Fetch lazily when the user opens the tab.
+  useEffect(() => {
+    if (viewTab !== 'relationships') return;
+    if (parentProductId == null || !table) return;
+    const tableName = table.table_name;
+    let cancelled = false;
+    setRelsLoading(true);
+    api.get(`/products/${parentProductId}`).then((res) => {
+      if (cancelled) return;
+      const product = res.data.data ?? res.data;
+      const schemas: Array<{
+        id: number;
+        relationships: Array<{
+          from_table_name: string;
+          from_column_name: string | null;
+          to_table_name: string;
+          to_column_name: string | null;
+          relationship_type: string;
+        }>;
+      }> = product?.star_schemas ?? [];
+      const all = schemas.flatMap((s) => s.relationships ?? []);
+      const out: RelRow[] = [];
+      for (const r of all) {
+        if (r.from_table_name === tableName) {
+          out.push({
+            direction: 'OUT',
+            fromTable: r.from_table_name,
+            fromColumn: r.from_column_name,
+            toTable: r.to_table_name,
+            toColumn: r.to_column_name,
+            relationship: r.relationship_type,
+          });
+        } else if (r.to_table_name === tableName) {
+          out.push({
+            direction: 'IN',
+            fromTable: r.from_table_name,
+            fromColumn: r.from_column_name,
+            toTable: r.to_table_name,
+            toColumn: r.to_column_name,
+            relationship: r.relationship_type,
+          });
+        }
+      }
+      setRels(out);
+    }).catch(() => { if (!cancelled) setRels([]); })
+      .finally(() => { if (!cancelled) setRelsLoading(false); });
+    return () => { cancelled = true; };
+  }, [viewTab, parentProductId, table?.table_name]);
 
   // Keep local state in sync when parent switches table or columns arrive
   if (tableId !== prevTableId) {
@@ -189,20 +245,6 @@ export default function ProductTableDetailPanel({
   function updateCol(id: number, patch: Partial<ProductColumn>) {
     setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
   }
-
-  // Outgoing FK relationships from this table — derived from column metadata.
-  // (Incoming relationships would require loading every other product table's
-  //  columns, which the parent doesn't pass in. Skip for now.)
-  const rels: RelRow[] = cols
-    .filter((c) => c.fk_target_table)
-    .map((c) => ({
-      direction: 'OUT' as const,
-      fromTable: tbl.table_name,
-      fromColumn: c.column_name,
-      toTable: c.fk_target_table as string,
-      toColumn: c.fk_target_column,
-      relationship: 'many_to_one',
-    }));
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
 
@@ -628,12 +670,14 @@ export default function ProductTableDetailPanel({
       {/* ── Relationships ─────────────────────────────────────────────────── */}
       {viewTab === 'relationships' && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
-          {rels.length === 0 ? (
+          {relsLoading ? (
+            <p className="text-[13px] text-muted">Loading relationships...</p>
+          ) : rels.length === 0 ? (
             <div className="bg-raised border border-line rounded-lg p-6 text-center">
               <GitBranch className="w-8 h-8 text-muted-2 mx-auto mb-3" strokeWidth={1.5} />
               <p className="font-display text-[16px] text-ink tracking-[-0.01em]">No relationships</p>
               <p className="text-[12px] text-muted mt-1.5 max-w-md mx-auto leading-relaxed">
-                This table has no foreign-key columns. Relationships are derived from columns marked as foreign keys.
+                No relationships are defined for this product table in the star schema.
               </p>
             </div>
           ) : (
