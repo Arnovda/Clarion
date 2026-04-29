@@ -284,6 +284,41 @@ html, body {
   animation: shimmerSlide 1.5s ease-in-out infinite;
 }
 
+/* Pipeline live-running indicators */
+@keyframes pipelineCardPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(22, 78, 99, 0.18), 0 4px 12px rgba(15, 26, 34, 0.06); }
+  50%      { box-shadow: 0 0 0 5px rgba(22, 78, 99, 0.32), 0 4px 14px rgba(15, 26, 34, 0.08); }
+}
+.pipeline-card-running {
+  animation: pipelineCardPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pipelineRowShimmer {
+  0%   { background-position: -150% 0; }
+  100% { background-position:  250% 0; }
+}
+.pipeline-row-running {
+  background-image: linear-gradient(
+    90deg,
+    rgba(22, 78, 99, 0.00) 0%,
+    rgba(22, 78, 99, 0.14) 45%,
+    rgba(22, 78, 99, 0.22) 50%,
+    rgba(22, 78, 99, 0.14) 55%,
+    rgba(22, 78, 99, 0.00) 100%
+  );
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  animation: pipelineRowShimmer 1.4s linear infinite;
+}
+
+@keyframes pipelineLiveDot {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.85); }
+}
+.pipeline-live-dot {
+  animation: pipelineLiveDot 1.2s ease-in-out infinite;
+}
+
 /* ── AI panel: subtle "thinking" cues ─────────────────────────────────── */
 
 @keyframes aiHalo {

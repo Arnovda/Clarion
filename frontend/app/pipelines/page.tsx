@@ -118,21 +118,39 @@ function ProductNode({ data }: NodeProps<NodeData>) {
   const facts = tables.filter((t) => t.table_role === 'fact').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
   const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact');
 
+  const isRunning = product.status === 'running';
+  const tablesDone = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'success').length;
+  const tablesRunning = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'running').length;
+  const progressPct = tables.length > 0 ? Math.round((tablesDone / tables.length) * 100) : 0;
+
   return (
     <div
       onClick={() => data.onClick(product.id)}
-      className="cursor-pointer rounded-md transition-shadow group"
+      className={`cursor-pointer rounded-md transition-shadow group relative overflow-hidden ${isRunning ? 'pipeline-card-running' : ''}`}
       style={{
         width: NODE_W,
         background: OBSERVATORY.raised,
         border: `1.5px solid ${selected ? OBSERVATORY.ocean : s.border}`,
-        boxShadow: selected
+        boxShadow: !isRunning && selected
           ? `0 0 0 3px ${OBSERVATORY.oceanSoft}, 0 4px 12px rgba(15,26,34,0.06)`
-          : '0 1px 2px rgba(15,26,34,0.04)',
+          : !isRunning ? '0 1px 2px rgba(15,26,34,0.04)' : undefined,
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
       <Handle type="source" position={Position.Right} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
+
+      {/* Running progress strip across the top of the card */}
+      {isRunning && (
+        <div
+          className="absolute top-0 left-0 right-0 h-[3px]"
+          style={{ background: OBSERVATORY.oceanSofter }}
+        >
+          <div
+            className="h-full transition-all duration-500"
+            style={{ width: `${progressPct}%`, background: OBSERVATORY.ocean }}
+          />
+        </div>
+      )}
 
       {/* Header */}
       <div
@@ -179,9 +197,15 @@ function ProductNode({ data }: NodeProps<NodeData>) {
         >
           {s.label}
         </span>
-        <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
-          {tables.length} {tables.length === 1 ? 'table' : 'tables'}
-        </span>
+        {isRunning ? (
+          <span className="text-[10px] font-mono tabular-nums" style={{ color: OBSERVATORY.ocean }}>
+            {tablesDone}/{tables.length} done{tablesRunning > 0 && ` · ${tablesRunning} live`}
+          </span>
+        ) : (
+          <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
+            {tables.length} {tables.length === 1 ? 'table' : 'tables'}
+          </span>
+        )}
       </div>
 
       {/* Tables list */}
@@ -236,9 +260,10 @@ function NodeTableRow({ table }: { table: PipelineTable }) {
     status === 'running' ? { color: OBSERVATORY.ocean, pulse: true } :
     status === 'error'   ? { color: OBSERVATORY.err,   pulse: false } :
                            { color: OBSERVATORY.muted2,pulse: false };
+  const isRunning = status === 'running';
   return (
     <div
-      className="flex items-center gap-1.5 px-1 rounded"
+      className={`flex items-center gap-1.5 px-1 rounded ${isRunning ? 'pipeline-row-running' : ''}`}
       style={{ height: TABLE_ROW_H }}
     >
       <span
@@ -247,12 +272,17 @@ function NodeTableRow({ table }: { table: PipelineTable }) {
       />
       <span
         className="text-[11px] font-mono truncate flex-1"
-        style={{ color: OBSERVATORY.ink2 }}
+        style={{ color: isRunning ? OBSERVATORY.ocean : OBSERVATORY.ink2, fontWeight: isRunning ? 500 : 400 }}
         title={table.table_name}
       >
         {table.table_name}
       </span>
-      {table.row_count != null && table.row_count > 0 && (
+      {isRunning && (
+        <span className="text-[9px] uppercase tracking-wider font-mono" style={{ color: OBSERVATORY.ocean }}>
+          live
+        </span>
+      )}
+      {!isRunning && table.row_count != null && table.row_count > 0 && (
         <span
           className="text-[9px] tabular-nums"
           style={{ color: OBSERVATORY.muted2 }}
@@ -339,15 +369,17 @@ function PipelinesInner() {
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll while anything is running
+  // Poll while anything is running. 1.8s is fast enough for live feedback
+  // without hammering the API — DuckDB transformations rarely finish faster.
+  const anyRunning = useMemo(
+    () => data?.products.some((p) => p.status === 'running') ?? false,
+    [data],
+  );
   useEffect(() => {
-    if (!data) return;
-    const anyRunning = data.products.some((p) => p.status === 'running');
-    if (anyRunning) {
-      pollRef.current = setTimeout(() => load(true), 4000);
-    }
+    if (!anyRunning) return;
+    pollRef.current = setTimeout(() => load(true), 1800);
     return () => { if (pollRef.current) clearTimeout(pollRef.current); };
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [anyRunning, data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build ReactFlow nodes/edges
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
@@ -425,14 +457,22 @@ function PipelinesInner() {
       })),
     );
     setRfEdges(
-      data.productEdges.map((e, i) => ({
-        id: `e-${e.source}-${e.target}-${i}`,
-        source: String(e.source),
-        target: String(e.target),
-        type: 'smoothstep',
-        animated: data.products.some((p) => (p.id === e.source || p.id === e.target) && p.status === 'running'),
-        style: { stroke: OBSERVATORY.lineStrong, strokeWidth: 1.5 },
-      })),
+      data.productEdges.map((e, i) => {
+        const sourceRunning = data.products.some((p) => p.id === e.source && p.status === 'running');
+        const targetRunning = data.products.some((p) => p.id === e.target && p.status === 'running');
+        const live = sourceRunning || targetRunning;
+        return {
+          id: `e-${e.source}-${e.target}-${i}`,
+          source: String(e.source),
+          target: String(e.target),
+          type: 'smoothstep',
+          animated: live,
+          style: {
+            stroke: live ? OBSERVATORY.ocean : OBSERVATORY.lineStrong,
+            strokeWidth: live ? 2 : 1.5,
+          },
+        };
+      }),
     );
   }, [data, selectedId, running.product, refreshOrderMap, tablesByProduct, onNodeClick, onRunOne, setRfNodes, setRfEdges]);
 
@@ -477,9 +517,26 @@ function PipelinesInner() {
   return (
     <div className="h-full flex flex-col bg-bg">
       {/* Toolbar */}
-      <div className="px-6 py-4 border-b border-line bg-raised flex items-center gap-4">
+      <div className="px-6 py-4 border-b border-line bg-raised flex items-center gap-4 relative">
+        {/* Global running progress strip */}
+        {anyRunning && <GlobalRunStrip data={data!} />}
+
         <div className="flex-1">
-          <h1 className="font-serif text-[22px] leading-tight text-ink">Pipelines</h1>
+          <h1 className="font-serif text-[22px] leading-tight text-ink flex items-center gap-2">
+            Pipelines
+            {anyRunning && (
+              <span
+                className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full"
+                style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
+              >
+                <span
+                  className="pipeline-live-dot inline-block w-1.5 h-1.5 rounded-full"
+                  style={{ background: OBSERVATORY.ocean }}
+                />
+                Live
+              </span>
+            )}
+          </h1>
           <p className="text-xs text-muted mt-0.5">
             Refresh data products in dependency order — dimensions before facts, upstream before downstream.
           </p>
@@ -567,6 +624,32 @@ function PipelinesInner() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Global run strip — shows progress under the toolbar while anything runs
+// ---------------------------------------------------------------------------
+function GlobalRunStrip({ data }: { data: PipelineData }) {
+  const totalTables = data.tables.length;
+  const doneTables = data.tables.filter(
+    (t) => (t.transformation_status ?? '').toLowerCase() === 'success',
+  ).length;
+  const runningTables = data.tables.filter(
+    (t) => (t.transformation_status ?? '').toLowerCase() === 'running',
+  ).length;
+  const pct = totalTables > 0 ? (doneTables / totalTables) * 100 : 0;
+  return (
+    <div
+      className="absolute left-0 right-0 bottom-0 h-[3px] overflow-hidden"
+      style={{ background: OBSERVATORY.oceanSofter }}
+      title={`${doneTables} of ${totalTables} tables done · ${runningTables} running now`}
+    >
+      <div
+        className="h-full transition-all duration-500"
+        style={{ width: `${pct}%`, background: OBSERVATORY.ocean }}
+      />
     </div>
   );
 }
