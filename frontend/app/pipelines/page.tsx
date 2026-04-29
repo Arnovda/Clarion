@@ -79,18 +79,49 @@ const STATUS_STYLES: Record<ProductStatus, { bg: string; border: string; text: s
 };
 
 // ---------------------------------------------------------------------------
-// ReactFlow custom node — product card
+// ReactFlow custom node — product card with inline table list
 // ---------------------------------------------------------------------------
-const NODE_W = 260;
-const NODE_H = 116;
+const NODE_W = 280;
+const HEADER_H = 36;
+const STATUS_ROW_H = 26;
+const GROUP_LABEL_H = 18;
+const TABLE_ROW_H = 22;
+const FOOTER_H = 30;
+const PADDING_Y = 14;
 
-function ProductNode({ data }: NodeProps<{ product: Product; selected: boolean; onClick: (id: number) => void }>) {
-  const { product, selected } = data;
+interface NodeData {
+  product: Product;
+  tables: PipelineTable[];
+  selected: boolean;
+  running: boolean;
+  refreshOrder: number | null; // 1-indexed position in current run
+  onClick: (id: number) => void;
+  onRun: (id: number) => void;
+}
+
+function nodeHeight(tables: PipelineTable[]) {
+  const dims = tables.filter((t) => t.table_role === 'dimension').length;
+  const facts = tables.filter((t) => t.table_role === 'fact').length;
+  const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact').length;
+  let h = HEADER_H + STATUS_ROW_H + PADDING_Y + FOOTER_H;
+  if (dims > 0)   h += GROUP_LABEL_H + dims * TABLE_ROW_H;
+  if (facts > 0)  h += GROUP_LABEL_H + facts * TABLE_ROW_H;
+  if (others > 0) h += GROUP_LABEL_H + others * TABLE_ROW_H;
+  if (tables.length === 0) h += 22; // "no tables" placeholder
+  return h;
+}
+
+function ProductNode({ data }: NodeProps<NodeData>) {
+  const { product, tables, selected, running, refreshOrder } = data;
   const s = STATUS_STYLES[product.status];
+  const dims = tables.filter((t) => t.table_role === 'dimension').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
+  const facts = tables.filter((t) => t.table_role === 'fact').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
+  const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact');
+
   return (
     <div
       onClick={() => data.onClick(product.id)}
-      className="cursor-pointer rounded-md transition-shadow"
+      className="cursor-pointer rounded-md transition-shadow group"
       style={{
         width: NODE_W,
         background: OBSERVATORY.raised,
@@ -103,7 +134,11 @@ function ProductNode({ data }: NodeProps<{ product: Product; selected: boolean; 
       <Handle type="target" position={Position.Left} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
       <Handle type="source" position={Position.Right} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
 
-      <div className="px-3 py-2 flex items-center gap-2 border-b" style={{ borderColor: OBSERVATORY.softer }}>
+      {/* Header */}
+      <div
+        className="px-3 flex items-center gap-2 border-b"
+        style={{ borderColor: OBSERVATORY.softer, height: HEADER_H }}
+      >
         <span
           className={`inline-block w-2 h-2 rounded-full shrink-0 ${product.status === 'running' ? 'animate-pulse' : ''}`}
           style={{ background: s.dot }}
@@ -111,63 +146,158 @@ function ProductNode({ data }: NodeProps<{ product: Product; selected: boolean; 
         <span className="text-[13px] font-medium truncate flex-1" style={{ color: OBSERVATORY.ink }}>
           {product.name}
         </span>
+        {refreshOrder != null && (
+          <span
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+            style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
+            title="Position in refresh order"
+          >
+            #{refreshOrder}
+          </span>
+        )}
         {product.schedule?.enabled && (
           <Calendar size={12} style={{ color: OBSERVATORY.muted2 }} />
         )}
+        <button
+          onClick={(e) => { e.stopPropagation(); data.onRun(product.id); }}
+          disabled={running}
+          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-soft disabled:opacity-50"
+          title="Refresh this product (and upstream)"
+        >
+          {running ? <Spinner /> : <Play size={11} style={{ color: OBSERVATORY.ocean }} />}
+        </button>
       </div>
 
-      <div className="px-3 py-2 space-y-1">
-        <div className="flex items-center gap-1.5">
-          <span
-            className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded"
-            style={{ background: s.bg, color: s.text }}
-          >
-            {s.label}
-          </span>
-          <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
-            {product.table_counts.total} {product.table_counts.total === 1 ? 'table' : 'tables'}
-          </span>
-        </div>
+      {/* Status row */}
+      <div
+        className="px-3 flex items-center gap-1.5"
+        style={{ height: STATUS_ROW_H }}
+      >
+        <span
+          className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded"
+          style={{ background: s.bg, color: s.text }}
+        >
+          {s.label}
+        </span>
+        <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
+          {tables.length} {tables.length === 1 ? 'table' : 'tables'}
+        </span>
+      </div>
 
-        <div className="flex items-center gap-2 text-[10px]" style={{ color: OBSERVATORY.muted }}>
-          {product.last_run_at ? (
-            <span>last run {formatRelative(product.last_run_at)}</span>
-          ) : (
-            <span>not yet run</span>
-          )}
-        </div>
-
-        {(product.table_counts.error > 0 || product.table_counts.running > 0) && (
-          <div className="flex gap-2 text-[10px]">
-            {product.table_counts.running > 0 && (
-              <span style={{ color: OBSERVATORY.ocean }}>{product.table_counts.running} running</span>
-            )}
-            {product.table_counts.error > 0 && (
-              <span style={{ color: OBSERVATORY.err }}>{product.table_counts.error} failed</span>
-            )}
+      {/* Tables list */}
+      <div className="px-2 pb-1">
+        {tables.length === 0 && (
+          <div className="text-[10px] italic px-1 py-1" style={{ color: OBSERVATORY.muted2 }}>
+            No tables defined
           </div>
+        )}
+        {dims.length > 0 && <NodeTableGroup label="Dimensions" tables={dims} step={1} />}
+        {facts.length > 0 && <NodeTableGroup label="Facts" tables={facts} step={2} />}
+        {others.length > 0 && <NodeTableGroup label="Other" tables={others} step={3} />}
+      </div>
+
+      {/* Footer */}
+      <div
+        className="px-3 flex items-center justify-between border-t text-[10px]"
+        style={{ borderColor: OBSERVATORY.softer, color: OBSERVATORY.muted, height: FOOTER_H }}
+      >
+        <span>
+          {product.last_run_at ? `last run ${formatRelative(product.last_run_at)}` : 'not yet run'}
+        </span>
+        {product.schedule?.enabled && product.schedule.cron_expression && (
+          <span className="font-mono" title={`${product.schedule.cron_expression} ${product.schedule.timezone ?? ''}`}>
+            scheduled
+          </span>
         )}
       </div>
     </div>
   );
 }
 
+function NodeTableGroup({ label, tables, step }: { label: string; tables: PipelineTable[]; step: number }) {
+  return (
+    <div className="mt-1">
+      <div
+        className="flex items-center gap-1 px-1"
+        style={{ height: GROUP_LABEL_H, color: OBSERVATORY.muted2 }}
+      >
+        <span className="font-mono text-[9px]">[{step}]</span>
+        <span className="text-[9px] uppercase tracking-wider">{label}</span>
+      </div>
+      {tables.map((t) => <NodeTableRow key={t.id} table={t} />)}
+    </div>
+  );
+}
+
+function NodeTableRow({ table }: { table: PipelineTable }) {
+  const status = (table.transformation_status ?? 'draft').toLowerCase();
+  const cfg =
+    status === 'success' ? { color: OBSERVATORY.ok,    pulse: false } :
+    status === 'running' ? { color: OBSERVATORY.ocean, pulse: true } :
+    status === 'error'   ? { color: OBSERVATORY.err,   pulse: false } :
+                           { color: OBSERVATORY.muted2,pulse: false };
+  return (
+    <div
+      className="flex items-center gap-1.5 px-1 rounded"
+      style={{ height: TABLE_ROW_H }}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.pulse ? 'animate-pulse' : ''}`}
+        style={{ background: cfg.color }}
+      />
+      <span
+        className="text-[11px] font-mono truncate flex-1"
+        style={{ color: OBSERVATORY.ink2 }}
+        title={table.table_name}
+      >
+        {table.table_name}
+      </span>
+      {table.row_count != null && table.row_count > 0 && (
+        <span
+          className="text-[9px] tabular-nums"
+          style={{ color: OBSERVATORY.muted2 }}
+        >
+          {formatRowCount(table.row_count)}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function formatRowCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 const nodeTypes = { product: ProductNode };
 
 // ---------------------------------------------------------------------------
-// Dagre layout
+// Dagre layout — height varies per product based on table count
 // ---------------------------------------------------------------------------
-function layout(products: Product[], edges: ProductEdge[]) {
+function layout(
+  products: Product[],
+  edges: ProductEdge[],
+  tablesByProduct: Map<number, PipelineTable[]>,
+) {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 90, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: 'LR', nodesep: 28, ranksep: 100, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
-  for (const p of products) g.setNode(String(p.id), { width: NODE_W, height: NODE_H });
+  const heights = new Map<number, number>();
+  for (const p of products) {
+    const h = nodeHeight(tablesByProduct.get(p.id) ?? []);
+    heights.set(p.id, h);
+    g.setNode(String(p.id), { width: NODE_W, height: h });
+  }
   for (const e of edges) g.setEdge(String(e.source), String(e.target));
   dagre.layout(g);
   const positions = new Map<number, { x: number; y: number }>();
   for (const p of products) {
     const n = g.node(String(p.id));
-    if (n) positions.set(p.id, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
+    if (n) {
+      const h = heights.get(p.id) ?? 100;
+      positions.set(p.id, { x: n.x - NODE_W / 2, y: n.y - h / 2 });
+    }
   }
   return positions;
 }
@@ -223,15 +353,74 @@ function PipelinesInner() {
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
 
+  // Refresh-order indicator: when products are running, number them by topo
+  // position so users can see "this one runs first, that one after".
+  const refreshOrderMap = useMemo(() => {
+    if (!data) return new Map<number, number>();
+    const runningIds = new Set(data.products.filter((p) => p.status === 'running').map((p) => p.id));
+    if (runningIds.size === 0) return new Map<number, number>();
+    // Topo sort just the running set's ancestors-then-self order via productEdges.
+    const inDeg = new Map<number, number>();
+    const adj = new Map<number, number[]>();
+    for (const id of runningIds) { inDeg.set(id, 0); adj.set(id, []); }
+    for (const e of data.productEdges) {
+      if (runningIds.has(e.source) && runningIds.has(e.target)) {
+        adj.get(e.source)!.push(e.target);
+        inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
+      }
+    }
+    const ready = Array.from(runningIds).filter((id) => (inDeg.get(id) ?? 0) === 0);
+    const order: number[] = [];
+    while (ready.length > 0) {
+      const next = ready.shift()!;
+      order.push(next);
+      for (const child of adj.get(next) ?? []) {
+        const d = (inDeg.get(child) ?? 0) - 1;
+        inDeg.set(child, d);
+        if (d === 0) ready.push(child);
+      }
+    }
+    for (const id of runningIds) if (!order.includes(id)) order.push(id);
+    const m = new Map<number, number>();
+    order.forEach((id, i) => m.set(id, i + 1));
+    return m;
+  }, [data]);
+
+  const tablesByProduct = useMemo(() => {
+    const m = new Map<number, PipelineTable[]>();
+    if (!data) return m;
+    for (const t of data.tables) {
+      if (t.product_id == null) continue;
+      const arr = m.get(t.product_id) ?? [];
+      arr.push(t);
+      m.set(t.product_id, arr);
+    }
+    return m;
+  }, [data]);
+
+  const onRunOne = useCallback(
+    (id: number) => { runScope({ productIds: [id] }); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   useEffect(() => {
     if (!data) return;
-    const positions = layout(data.products, data.productEdges);
+    const positions = layout(data.products, data.productEdges, tablesByProduct);
     setRfNodes(
       data.products.map((p) => ({
         id: String(p.id),
         type: 'product',
         position: positions.get(p.id) ?? { x: 0, y: 0 },
-        data: { product: p, selected: selectedId === p.id, onClick: onNodeClick },
+        data: {
+          product: p,
+          tables: tablesByProduct.get(p.id) ?? [],
+          selected: selectedId === p.id,
+          running: running.product === p.id,
+          refreshOrder: refreshOrderMap.get(p.id) ?? null,
+          onClick: onNodeClick,
+          onRun: onRunOne,
+        } as NodeData,
         draggable: false,
       })),
     );
@@ -245,7 +434,7 @@ function PipelinesInner() {
         style: { stroke: OBSERVATORY.lineStrong, strokeWidth: 1.5 },
       })),
     );
-  }, [data, selectedId, onNodeClick, setRfNodes, setRfEdges]);
+  }, [data, selectedId, running.product, refreshOrderMap, tablesByProduct, onNodeClick, onRunOne, setRfNodes, setRfEdges]);
 
   async function runScope(scope: 'all' | 'stale' | { productIds: number[] }) {
     const key = scope === 'all' ? 'all' : scope === 'stale' ? 'stale' : 'product';
