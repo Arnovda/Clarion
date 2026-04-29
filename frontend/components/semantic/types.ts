@@ -65,7 +65,7 @@ export interface ProductTable {
   owner_name: string | null;
   domains: string | string[];
   ai_draft: boolean;
-  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected';
+  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected' | 'flagged';
   approved_by?: string;
   approved_at?: string;
   rejection_reason?: string;
@@ -90,7 +90,7 @@ export interface ProductColumn {
   sort_order: number;
   owner_name: string | null;
   ai_draft: boolean;
-  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected';
+  approval_status?: 'draft' | 'pending_review' | 'approved' | 'rejected' | 'flagged';
   approved_by?: string;
   approved_at?: string;
   rejection_reason?: string;

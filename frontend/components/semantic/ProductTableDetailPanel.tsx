@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { format as formatSql } from 'sql-formatter';
+import { ArrowRight, GitBranch } from 'lucide-react';
 import api from '@/lib/api';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -9,7 +10,7 @@ import HistoryPanel from './HistoryPanel';
 import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
 
-type ViewTab = 'definition' | 'quality';
+type ViewTab = 'overview' | 'columns' | 'relationships' | 'quality' | 'history';
 
 interface Props {
   tableId: number;
@@ -60,8 +61,17 @@ const columnCompleteness = (col: ProductColumn) =>
     !col.ai_draft,
   );
 
+interface RelRow {
+  direction: 'OUT' | 'IN';
+  fromTable: string;
+  fromColumn: string | null;
+  toTable: string;
+  toColumn: string | null;
+  relationship: string;
+}
+
 // ---------------------------------------------------------------------------
-// Main panel — matches TableDetailPanel visual design
+// Main panel — five-tab layout matching TableDetailPanel
 // ---------------------------------------------------------------------------
 
 export default function ProductTableDetailPanel({
@@ -69,8 +79,6 @@ export default function ProductTableDetailPanel({
 }: Props) {
   // Find the table in the product tree
   let table: ProductTable | null = null;
-  let productName = '';
-  let schemaName = '';
   let pgTableId: number | null = null;
   let productConnectionId: number | null = null;
   const usedByProducts: string[] = [];
@@ -79,8 +87,6 @@ export default function ProductTableDetailPanel({
       const found = schema.tables.find((t) => t.id === tableId);
       if (found) {
         table = found;
-        productName = product.productName;
-        schemaName = schema.schemaName;
         pgTableId = (found as { pg_table_id?: number }).pg_table_id ?? tableId;
         productConnectionId = product.connectionId;
         break;
@@ -110,7 +116,9 @@ export default function ProductTableDetailPanel({
   const [savingCol, setSavingCol]     = useState<number | null>(null);
   const [savedMsg, setSavedMsg]       = useState('');
   const [colView, setColView]         = useState<'cards' | 'grid'>('grid');
-  const [viewTab, setViewTab]         = useState<ViewTab>('definition');
+  const [viewTab, setViewTab]         = useState<ViewTab>('overview');
+  const [domainInput, setDomainInput] = useState('');
+  const [showColHistory, setShowColHistory] = useState<number | null>(null);
 
   // Keep local state in sync when parent switches table or columns arrive
   if (tableId !== prevTableId) {
@@ -122,11 +130,6 @@ export default function ProductTableDetailPanel({
     setPrevColLen(columns.length);
     setCols(columns);
   }
-
-  // Domain management
-  const [domainInput, setDomainInput] = useState('');
-  const [showTableHistory, setShowTableHistory] = useState(false);
-  const [showColHistory, setShowColHistory] = useState<number | null>(null);
 
   if (!tbl) {
     return (
@@ -187,194 +190,228 @@ export default function ProductTableDetailPanel({
     setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
   }
 
-  const subTabBtn = (t: ViewTab, label: string) => (
-    <button
-      onClick={() => setViewTab(t)}
-      className={`px-3 py-1.5 text-[12px] font-medium transition-colors relative ${
-        viewTab === t ? 'text-ink' : 'text-muted hover:text-ink-2'
-      }`}
-    >
-      {label}
-      {viewTab === t && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
-    </button>
-  );
+  // Outgoing FK relationships from this table — derived from column metadata.
+  // (Incoming relationships would require loading every other product table's
+  //  columns, which the parent doesn't pass in. Skip for now.)
+  const rels: RelRow[] = cols
+    .filter((c) => c.fk_target_table)
+    .map((c) => ({
+      direction: 'OUT' as const,
+      fromTable: tbl.table_name,
+      fromColumn: c.column_name,
+      toTable: c.fk_target_table as string,
+      toColumn: c.fk_target_column,
+      relationship: 'many_to_one',
+    }));
+
+  const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
+
+  const tabs: { id: ViewTab; label: string; count?: number }[] = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'columns', label: 'Columns', count: cols.length },
+    { id: 'relationships', label: 'Relationships' },
+    { id: 'quality', label: 'Quality' },
+    { id: 'history', label: 'History' },
+  ];
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
-      <div className="border-b border-line bg-raised px-4 flex items-center gap-1 flex-shrink-0">
-        {subTabBtn('definition', 'Definition')}
-        {subTabBtn('quality', 'Quality')}
-      </div>
+      {/* Header */}
+      <div className="bg-raised border-b border-line px-6 pt-5 pb-0 flex-shrink-0">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="min-w-0">
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Product table</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
+                {tbl.display_name || tbl.table_name}
+              </h2>
+              <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${roleColor(tbl.table_role)}`}>
+                {tbl.table_role}
+              </span>
+            </div>
+            <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
 
-      {viewTab === 'quality' ? (
-        productConnectionId != null ? (
-          <QualityPanel connId={productConnectionId} tableName={tbl.table_name} productTableId={tableId} />
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-muted-2 text-sm p-6 text-center max-w-md mx-auto">
-            Quality requires a connection. This product is not yet linked to a source.
-          </div>
-        )
-      ) : (
-      <>
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 pb-24">
-
-        {/* ── Table header ────────────────────────────────────────────────── */}
-        <section className="bg-raised border border-line rounded-lg px-6 py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Product table</p>
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="font-display text-[24px] text-ink leading-tight tracking-[-0.02em] truncate">
-                  {tbl.display_name || tbl.table_name}
-                </h2>
-                <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${roleColor(tbl.table_role)}`}>
-                  {tbl.table_role}
-                </span>
-              </div>
-              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
-
-              <div className="flex items-center gap-2 mt-3 flex-wrap">
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
+                {cols.length} columns
+              </span>
+              {tbl.row_count != null && (
                 <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
-                  {cols.length} columns
+                  {tbl.row_count.toLocaleString()} rows
                 </span>
-                {tbl.row_count != null && (
-                  <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
-                    {tbl.row_count.toLocaleString()} rows
-                  </span>
-                )}
-                {tbl.transformation_status && (
-                  <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${
-                    tbl.transformation_status === 'success' ? 'text-ok bg-ok-soft'
-                    : tbl.transformation_status === 'error' ? 'text-err bg-err-soft'
-                    : 'text-muted-2 bg-softer'
-                  }`}>
-                    {tbl.transformation_status}
-                  </span>
-                )}
-                {tbl.last_run_at && (
-                  <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
-                    Last run: {new Date(tbl.last_run_at).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-
-              {/* Used-by badges for shared dimensions */}
-              {usedByProducts.length > 0 && (
-                <div className="flex items-center gap-1.5 mt-3 flex-wrap">
-                  <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">Used in:</span>
-                  {usedByProducts.map((pName) => (
-                    <span key={pName} className="text-[10px] bg-softer text-ink-3 border border-line px-2 py-0.5 rounded">
-                      {pName}
-                    </span>
-                  ))}
-                </div>
+              )}
+              {tbl.transformation_status && (
+                <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${
+                  tbl.transformation_status === 'success' ? 'text-ok bg-ok-soft'
+                  : tbl.transformation_status === 'error' ? 'text-err bg-err-soft'
+                  : 'text-muted-2 bg-softer'
+                }`}>
+                  {tbl.transformation_status}
+                </span>
+              )}
+              {tbl.last_run_at && (
+                <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
+                  Last run: {new Date(tbl.last_run_at).toLocaleDateString()}
+                </span>
               )}
             </div>
-
-            <ApprovalBadge
-              entityType="product_table"
-              entityId={tbl.id}
-              status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-              aiDraft={!!tbl.ai_draft}
-              onChanged={onSaved}
-            />
-          </div>
-        </section>
-
-        {/* ── Table details — glass card ──────────────────────────────────── */}
-        <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
-          <div className="grid grid-cols-2 gap-5">
-            <div>
-              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
-              <input
-                value={tbl.display_name ?? ''}
-                onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
-                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                placeholder="Human-readable name"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Owner</label>
-              <input
-                value={tbl.owner_name ?? ''}
-                onChange={(e) => setTbl({ ...tbl, owner_name: e.target.value })}
-                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                placeholder="Table owner"
-              />
-            </div>
           </div>
 
-          <div>
-            <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Description</label>
-            <textarea
-              value={tbl.description ?? ''}
-              onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
-              rows={2}
-              className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none"
-              placeholder="What does this table contain?"
-            />
-          </div>
+          <ApprovalBadge
+            entityType="product_table"
+            entityId={tbl.id}
+            status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+            aiDraft={!!tbl.ai_draft}
+            onChanged={onSaved}
+          />
+        </div>
 
-          {/* Domain tags */}
-          <div>
-            <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data domains</label>
-            <div className="flex flex-wrap gap-1.5 mb-2">
-              {domains.map((tag) => (
-                <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-ai-soft text-ai border border-line rounded-md px-2 py-0.5">
-                  {tag}
-                  <button onClick={() => removeDomain(tag)} className="hover:text-ai/80 leading-none">&times;</button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={domainInput}
-                onChange={(e) => setDomainInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
-                placeholder="Add domain tag..."
-                className="flex-1 bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-              />
+        {/* Tab strip */}
+        <div className="flex items-center gap-0 -mb-px">
+          {tabs.map((t) => {
+            const active = viewTab === t.id;
+            return (
               <button
-                onClick={() => addDomain(domainInput)}
-                className="px-4 py-2 text-sm bg-softer hover:bg-bg text-ink-2 border border-line rounded-md transition-colors"
-              >Add</button>
-            </div>
-          </div>
+                key={t.id}
+                onClick={() => setViewTab(t.id)}
+                className={`px-4 py-2.5 text-[13px] transition-colors whitespace-nowrap relative ${
+                  active ? 'text-ink font-medium' : 'text-muted hover:text-ink-2'
+                }`}
+              >
+                {t.label}
+                {typeof t.count === 'number' && (
+                  <span className="ml-1.5 text-[11px] font-mono text-muted-2 tabular-nums">({t.count})</span>
+                )}
+                {active && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={() => setShowTableHistory(!showTableHistory)}
-              className="px-4 py-2 text-xs text-muted bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong transition-colors font-medium"
-            >
-              {showTableHistory ? 'Hide History' : 'History'}
-            </button>
-            {savedMsg && (
-              <span className="text-xs text-ok font-semibold flex items-center gap-1">
-                <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
-              </span>
-            )}
-          </div>
+      {/* ── Overview ──────────────────────────────────────────────────────── */}
+      {viewTab === 'overview' && (
+        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+          {/* AI suggested banner — saving clears ai_draft via the update endpoint */}
+          {isAiDraft && (
+            <section className="bg-ocean-softer border border-ocean/30 rounded-lg p-4">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-ocean mb-1">AI suggested</p>
+                  <p className="text-[13px] text-ink leading-relaxed">
+                    Review the description below. Saving will mark this table as confirmed.
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
 
-          {showTableHistory && (
-            <div className="mt-4 pt-4 border-t border-slate-200/30">
-              <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+          {/* Edit form */}
+          <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
+            <div className="grid grid-cols-2 gap-5">
+              <div>
+                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
+                <input
+                  value={tbl.display_name ?? ''}
+                  onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
+                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
+                  placeholder="Human-readable name"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Owner</label>
+                <input
+                  value={tbl.owner_name ?? ''}
+                  onChange={(e) => setTbl({ ...tbl, owner_name: e.target.value })}
+                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
+                  placeholder="Table owner"
+                />
+              </div>
             </div>
+
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Description</label>
+              <textarea
+                value={tbl.description ?? ''}
+                onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
+                rows={3}
+                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none"
+                placeholder="What does this table contain?"
+              />
+            </div>
+
+            {/* Domain tags */}
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data domains</label>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {domains.map((tag) => (
+                  <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-ai-soft text-ai border border-line rounded-md px-2 py-0.5">
+                    {tag}
+                    <button onClick={() => removeDomain(tag)} className="hover:text-ai/80 leading-none">&times;</button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={domainInput}
+                  onChange={(e) => setDomainInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
+                  placeholder="Add domain tag..."
+                  className="flex-1 bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
+                />
+                <button
+                  onClick={() => addDomain(domainInput)}
+                  className="px-4 py-2 text-sm bg-softer hover:bg-bg text-ink-2 border border-line rounded-md transition-colors"
+                >Add</button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                onClick={saveTable}
+                disabled={savingTable}
+                className="px-5 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
+              >
+                {savingTable ? 'Saving...' : 'Save table'}
+              </button>
+              {savedMsg && (
+                <span className="text-xs text-ok font-semibold flex items-center gap-1">
+                  <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
+                </span>
+              )}
+            </div>
+          </section>
+
+          {/* Used in: products that share this dim */}
+          {usedByProducts.length > 0 && (
+            <section className="bg-raised border border-line rounded-lg p-6">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-3">Used in — data products</p>
+              <div className="flex flex-wrap gap-2">
+                {usedByProducts.map((pName) => (
+                  <span key={pName} className="inline-flex items-center gap-1.5 text-[12px] text-ink-2 bg-softer border border-line rounded-md px-3 py-1.5">
+                    {pName}
+                  </span>
+                ))}
+              </div>
+            </section>
           )}
 
           {/* Data preview + SQL view */}
-          <div className="pt-4 border-t border-line space-y-3">
+          <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data preview</p>
             <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
             <SqlViewer pgTableId={pgTableId ?? tableId} />
-          </div>
-        </section>
+          </section>
+        </div>
+      )}
 
-        {/* ── Columns ────────────────────────────────────────────────────── */}
-        <section>
+      {/* ── Columns ───────────────────────────────────────────────────────── */}
+      {viewTab === 'columns' && (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-display text-ink flex items-center gap-2">
-              Columns
-              <span className="text-xs font-normal text-muted-2 bg-softer border border-line px-2 py-0.5 rounded-lg">{cols.length}</span>
-            </h3>
+            <p className="text-[12px] text-muted-2">
+              {cols.filter((c) => !c.ai_draft).length}/{cols.length} columns confirmed
+            </p>
             <div className="flex items-center bg-raised border border-line rounded-md overflow-hidden">
               <button
                 onClick={() => setColView('grid')}
@@ -398,17 +435,16 @@ export default function ProductTableDetailPanel({
             </div>
           </div>
 
-          {/* ── Compact grid view with heatmap ────────────────────────────── */}
           {colView === 'grid' && (
             <div className="bg-raised border border-line rounded-lg overflow-hidden">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="bg-softer border-b border-line">
-                    <th className="text-left px-4 py-3 font-semibold text-muted uppercase tracking-wider text-[10px]">Column</th>
-                    <th className="text-left px-3 py-3 font-semibold text-muted uppercase tracking-wider text-[10px]">Type</th>
-                    <th className="text-left px-3 py-3 font-semibold text-muted uppercase tracking-wider text-[10px]">Role</th>
-                    <th className="text-left px-3 py-3 font-semibold text-muted uppercase tracking-wider text-[10px]">Description</th>
-                    <th className="text-center px-3 py-3 font-semibold text-muted uppercase tracking-wider text-[10px]">Status</th>
+                    <th className="text-left px-4 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Column</th>
+                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Type</th>
+                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Role</th>
+                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Description</th>
+                    <th className="text-center px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Status</th>
                     <th className="text-right px-4 py-3"></th>
                   </tr>
                 </thead>
@@ -478,7 +514,6 @@ export default function ProductTableDetailPanel({
             </div>
           )}
 
-          {/* ── Expanded card view ────────────────────────────────────────── */}
           {colView === 'cards' && (
             <div className="space-y-3">
               {cols.map((col) => {
@@ -514,7 +549,6 @@ export default function ProductTableDetailPanel({
                       />
                     </div>
 
-                    {/* FK / transformation metadata */}
                     {(col.fk_target_table || col.transformation_expression || col.additivity) && (
                       <div className="flex flex-wrap gap-1.5 mb-3">
                         {col.fk_target_table && (
@@ -588,39 +622,58 @@ export default function ProductTableDetailPanel({
               })}
             </div>
           )}
-        </section>
-      </div>
-
-      {/* ── Floating action bar ────────────────────────────────────────── */}
-      <div className="fixed bottom-0 left-[460px] right-0 z-20 floating-bar px-6 py-3">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-2">
-              {cols.filter((c) => !c.ai_draft).length}/{cols.length} columns confirmed
-            </span>
-            {savedMsg && (
-              <span className="text-xs text-ok font-semibold flex items-center gap-1.5 animate-fadeIn">
-                <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
-              </span>
-            )}
-          </div>
-          <button
-            onClick={saveTable}
-            disabled={savingTable}
-            className="px-6 py-2.5 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-          >
-            {savingTable ? (
-              <span className="flex items-center gap-2">
-                <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Saving...
-              </span>
-            ) : (
-              'Save table'
-            )}
-          </button>
         </div>
-      </div>
-      </>
+      )}
+
+      {/* ── Relationships ─────────────────────────────────────────────────── */}
+      {viewTab === 'relationships' && (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          {rels.length === 0 ? (
+            <div className="bg-raised border border-line rounded-lg p-6 text-center">
+              <GitBranch className="w-8 h-8 text-muted-2 mx-auto mb-3" strokeWidth={1.5} />
+              <p className="font-display text-[16px] text-ink tracking-[-0.01em]">No relationships</p>
+              <p className="text-[12px] text-muted mt-1.5 max-w-md mx-auto leading-relaxed">
+                This table has no foreign-key columns. Relationships are derived from columns marked as foreign keys.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rels.map((r, i) => (
+                <div key={i} className="bg-raised border border-line rounded-lg px-4 py-3 flex items-center gap-3">
+                  <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">
+                    {r.direction}
+                  </span>
+                  <div className="flex-1 min-w-0 flex items-center gap-2 text-[13px] font-mono">
+                    <span className="text-ink-2 truncate">{r.fromTable}{r.fromColumn ? `.${r.fromColumn}` : ''}</span>
+                    <ArrowRight className="w-3.5 h-3.5 text-muted-2 flex-shrink-0" strokeWidth={2} />
+                    <span className="text-ink-2 truncate">{r.toTable}{r.toColumn ? `.${r.toColumn}` : ''}</span>
+                  </div>
+                  <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ocean bg-ocean-softer border border-line px-1.5 py-0.5 rounded">
+                    {r.relationship}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Quality ───────────────────────────────────────────────────────── */}
+      {viewTab === 'quality' && (
+        productConnectionId != null ? (
+          <QualityPanel connId={productConnectionId} tableName={tbl.table_name} productTableId={tableId} />
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-muted-2 text-sm p-6 text-center max-w-md mx-auto">
+            Quality requires a connection. This product is not yet linked to a source.
+          </div>
+        )
+      )}
+
+      {/* ── History ───────────────────────────────────────────────────────── */}
+      {viewTab === 'history' && (
+        <div className="flex-1 overflow-y-auto px-6 py-6">
+          <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+        </div>
       )}
     </div>
   );
@@ -644,8 +697,6 @@ const SQL_FUNCS = new Set([
 ]);
 
 function HighlightedSql({ sql }: { sql: string }) {
-  // Tokenize: comments, strings, numbers, identifiers/keywords, punctuation.
-  // Capturing groups in the regex are preserved by .split().
   const re = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|\b\d+(?:\.\d+)?\b|\b\w+\b)/g;
   const parts = sql.split(re);
   return (

@@ -408,9 +408,32 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     const ptId = Number(req.params.productTableId);
     const tenantId = req.user?.tenantId;
 
+    // Resolve, with a Neo4j-by-name fallback when the pgId is stale.
+    // Catalog reads from Neo4j; if Postgres ids drifted (rebuild, partial sync),
+    // the UI ends up with a pgId that no longer resolves. Look up the table by
+    // (data_product_id, table_name) instead and retry.
+    async function resolveWithFallback(): Promise<Awaited<ReturnType<typeof resolveOwnerProductTable>>> {
+      try {
+        return await resolveOwnerProductTable(ptId, tenantId);
+      } catch (e) {
+        if (!(e instanceof OwnerResolveError) || e.stage !== 'product_table') throw e;
+        const hint = await graph.getProductTableByPgId(ptId);
+        if (!hint || !hint.data_product_id || !hint.table_name) throw e;
+        const ss = await semanticDb('star_schemas')
+          .where({ data_product_id: hint.data_product_id })
+          .first();
+        if (!ss) throw e;
+        const pt = await semanticDb('product_tables')
+          .where({ star_schema_id: ss.id, table_name: hint.table_name })
+          .first();
+        if (!pt) throw e;
+        return resolveOwnerProductTable(Number(pt.id), tenantId);
+      }
+    }
+
     let owner;
     try {
-      owner = await resolveOwnerProductTable(ptId, tenantId);
+      owner = await resolveWithFallback();
     } catch (e) {
       if (e instanceof OwnerResolveError) {
         res.status(404).json({ ok: false, error: e.message, stage: e.stage });

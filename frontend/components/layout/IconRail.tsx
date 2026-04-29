@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
-  Plug, Inbox, Users, Shield, Library,
+  Plug, Inbox, Users, Shield, Library, Package,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -27,6 +27,7 @@ const ICONS = {
   inbox:   <Inbox         className={ICON_CLASS} strokeWidth={1.5} />,
   users:   <Users         className={ICON_CLASS} strokeWidth={1.5} />,
   shield:  <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
+  package: <Package        className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -47,6 +48,7 @@ const NAV_ITEMS: NavItem[] = [
   // Work — use it
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
+  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 
   // Curate — keep definitions correct (analyst+)
@@ -62,7 +64,8 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/query':      ['/query', '/ask'],
   '/dashboards': ['/dashboards'],
   '/notebooks':  ['/notebooks'],
-  '/catalog':    ['/catalog', '/semantic', '/products'],
+  '/catalog':    ['/catalog', '/semantic'],
+  '/products':   ['/products'],
   '/glossary':   ['/glossary'],
   '/setup':      ['/setup', '/sources'],
   '/review':     ['/review', '/gaps', '/suggestions'],
