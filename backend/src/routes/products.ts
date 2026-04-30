@@ -2136,14 +2136,19 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
 
       // Auto-inject dim_date
       const dateRange = busMatrix.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
+      const isFirstBuilder = dp.build_order === 1;
       const [dimDateRow] = await trx('product_tables').insert({
         star_schema_id: schemaId,
         table_name: 'dim_date',
         display_name: 'Date',
         description: 'Auto-generated calendar dimension',
         table_role: 'dimension',
+        // Only the first product in build order materializes dim_date.
+        // All later products treat it as a conformed (shared) dimension and
+        // load it from the owning product's parquet at run time.
+        is_shared_dimension: !isFirstBuilder,
         dag_order: 0,
-        transformation_sql: dp.build_order === 1 ? DIM_DATE_SQL(dateRange.start, dateRange.end) : null,
+        transformation_sql: isFirstBuilder ? DIM_DATE_SQL(dateRange.start, dateRange.end) : null,
         transformation_status: 'draft',
         ai_draft: false,
         created_at: new Date().toISOString(),

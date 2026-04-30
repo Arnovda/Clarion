@@ -232,6 +232,19 @@ if (!process.env.VITEST) {
             finished_at: new Date(),
           });
         if (staleRuns > 0) console.log(`[startup] Closed ${staleRuns} orphaned transformation run(s)`);
+
+        // One-time backfill for dim_date rows in non-first products. Older
+        // rows were inserted with transformation_sql=null but no
+        // is_shared_dimension flag — see busMatrixBuilder.ts. Without that
+        // flag the runner tries to materialize them and crashes with
+        // "AS null" syntax errors. Scope is dim_date specifically; any other
+        // null-sql dim row should still surface as a real authoring error.
+        const flagged = await semanticDb('product_tables')
+          .where({ table_role: 'dimension', table_name: 'dim_date' })
+          .whereNull('transformation_sql')
+          .where((qb) => qb.whereNull('is_shared_dimension').orWhere('is_shared_dimension', false))
+          .update({ is_shared_dimension: true });
+        if (flagged > 0) console.log(`[startup] Backfilled is_shared_dimension=true on ${flagged} dim_date stub row(s)`);
       } catch { /* non-fatal */ }
     })();
 
