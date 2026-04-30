@@ -68,6 +68,23 @@ interface PipelineData {
 }
 
 // ---------------------------------------------------------------------------
+// Stuck-run detection — a worker may die mid-run and leave product_tables
+// rows pinned to transformation_status='running'. Anything still "running"
+// with no last_run_at, or last_run_at older than this threshold, is treated
+// as orphaned. We surface it as "stuck" rather than continuing the live
+// shimmer + polling loop.
+// ---------------------------------------------------------------------------
+const STUCK_AFTER_MS = 5 * 60 * 1000; // 5 minutes
+
+function isTableStuck(t: PipelineTable, isPendingProduct: boolean): boolean {
+  if (isPendingProduct) return false; // we just optimistically marked it; trust the user
+  if ((t.transformation_status ?? '').toLowerCase() !== 'running') return false;
+  if (!t.last_run_at) return true;
+  const age = Date.now() - new Date(t.last_run_at).getTime();
+  return age > STUCK_AFTER_MS;
+}
+
+// ---------------------------------------------------------------------------
 // Status palette (Observatory)
 // ---------------------------------------------------------------------------
 const STATUS_STYLES: Record<ProductStatus, { bg: string; border: string; text: string; dot: string; label: string }> = {
@@ -95,6 +112,7 @@ interface NodeData {
   selected: boolean;
   running: boolean;
   refreshOrder: number | null; // 1-indexed position in current run
+  isPendingProduct: boolean;   // user just clicked Run on this product
   onClick: (id: number) => void;
   onRun: (id: number) => void;
 }
@@ -112,15 +130,20 @@ function nodeHeight(tables: PipelineTable[]) {
 }
 
 function ProductNode({ data }: NodeProps<NodeData>) {
-  const { product, tables, selected, running, refreshOrder } = data;
+  const { product, tables, selected, running, refreshOrder, isPendingProduct } = data;
   const s = STATUS_STYLES[product.status];
   const dims = tables.filter((t) => t.table_role === 'dimension').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
   const facts = tables.filter((t) => t.table_role === 'fact').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
   const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact');
 
-  const isRunning = product.status === 'running';
+  // A product is genuinely running only if it has live (non-stuck) running tables
+  // OR the user just clicked Run on it (pending). Otherwise, "running" is just a
+  // stale flag from an orphaned worker — don't pulse the card.
   const tablesDone = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'success').length;
-  const tablesRunning = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'running').length;
+  const tablesRunningRaw = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'running');
+  const tablesRunningLive = tablesRunningRaw.filter((t) => !isTableStuck(t, isPendingProduct));
+  const tablesStuck = tablesRunningRaw.length - tablesRunningLive.length;
+  const isRunning = product.status === 'running' && (tablesRunningLive.length > 0 || isPendingProduct);
   const progressPct = tables.length > 0 ? Math.round((tablesDone / tables.length) * 100) : 0;
 
   return (
@@ -199,7 +222,11 @@ function ProductNode({ data }: NodeProps<NodeData>) {
         </span>
         {isRunning ? (
           <span className="text-[10px] font-mono tabular-nums" style={{ color: OBSERVATORY.ocean }}>
-            {tablesDone}/{tables.length} done{tablesRunning > 0 && ` · ${tablesRunning} live`}
+            {tablesDone}/{tables.length} done{tablesRunningLive.length > 0 && ` · ${tablesRunningLive.length} live`}
+          </span>
+        ) : tablesStuck > 0 ? (
+          <span className="text-[10px] font-mono" style={{ color: OBSERVATORY.warn }} title="Worker likely died mid-run. Click Run to retry.">
+            {tablesStuck} stuck
           </span>
         ) : (
           <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
@@ -215,9 +242,9 @@ function ProductNode({ data }: NodeProps<NodeData>) {
             No tables defined
           </div>
         )}
-        {dims.length > 0 && <NodeTableGroup label="Dimensions" tables={dims} step={1} />}
-        {facts.length > 0 && <NodeTableGroup label="Facts" tables={facts} step={2} />}
-        {others.length > 0 && <NodeTableGroup label="Other" tables={others} step={3} />}
+        {dims.length > 0 && <NodeTableGroup label="Dimensions" tables={dims} step={1} isPendingProduct={isPendingProduct} />}
+        {facts.length > 0 && <NodeTableGroup label="Facts" tables={facts} step={2} isPendingProduct={isPendingProduct} />}
+        {others.length > 0 && <NodeTableGroup label="Other" tables={others} step={3} isPendingProduct={isPendingProduct} />}
       </div>
 
       {/* Footer */}
@@ -238,7 +265,7 @@ function ProductNode({ data }: NodeProps<NodeData>) {
   );
 }
 
-function NodeTableGroup({ label, tables, step }: { label: string; tables: PipelineTable[]; step: number }) {
+function NodeTableGroup({ label, tables, step, isPendingProduct }: { label: string; tables: PipelineTable[]; step: number; isPendingProduct: boolean }) {
   return (
     <div className="mt-1">
       <div
@@ -248,23 +275,32 @@ function NodeTableGroup({ label, tables, step }: { label: string; tables: Pipeli
         <span className="font-mono text-[9px]">[{step}]</span>
         <span className="text-[9px] uppercase tracking-wider">{label}</span>
       </div>
-      {tables.map((t) => <NodeTableRow key={t.id} table={t} />)}
+      {tables.map((t) => <NodeTableRow key={t.id} table={t} isPendingProduct={isPendingProduct} />)}
     </div>
   );
 }
 
-function NodeTableRow({ table }: { table: PipelineTable }) {
+function NodeTableRow({ table, isPendingProduct }: { table: PipelineTable; isPendingProduct: boolean }) {
   const status = (table.transformation_status ?? 'draft').toLowerCase();
+  const stuck = isTableStuck(table, isPendingProduct);
+  const isLive = status === 'running' && !stuck;
+  const isError = status === 'error';
+
   const cfg =
     status === 'success' ? { color: OBSERVATORY.ok,    pulse: false } :
-    status === 'running' ? { color: OBSERVATORY.ocean, pulse: true } :
-    status === 'error'   ? { color: OBSERVATORY.err,   pulse: false } :
+    isLive               ? { color: OBSERVATORY.ocean, pulse: true } :
+    stuck                ? { color: OBSERVATORY.warn,  pulse: false } :
+    isError              ? { color: OBSERVATORY.err,   pulse: false } :
                            { color: OBSERVATORY.muted2,pulse: false };
-  const isRunning = status === 'running';
+
   return (
     <div
-      className={`flex items-center gap-1.5 px-1 rounded ${isRunning ? 'pipeline-row-running' : ''}`}
-      style={{ height: TABLE_ROW_H }}
+      className={`flex items-center gap-1.5 px-1 rounded ${isLive ? 'pipeline-row-running' : ''}`}
+      style={{
+        height: TABLE_ROW_H,
+        background: isError ? 'rgba(196, 60, 60, 0.06)' : undefined,
+      }}
+      title={isError && table.last_run_error ? table.last_run_error : stuck ? 'Stuck — worker likely died. Run again to retry.' : table.table_name}
     >
       <span
         className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.pulse ? 'animate-pulse' : ''}`}
@@ -272,17 +308,27 @@ function NodeTableRow({ table }: { table: PipelineTable }) {
       />
       <span
         className="text-[11px] font-mono truncate flex-1"
-        style={{ color: isRunning ? OBSERVATORY.ocean : OBSERVATORY.ink2, fontWeight: isRunning ? 500 : 400 }}
-        title={table.table_name}
+        style={{
+          color: isLive ? OBSERVATORY.ocean : isError ? OBSERVATORY.err : stuck ? OBSERVATORY.warn : OBSERVATORY.ink2,
+          fontWeight: isLive || isError ? 500 : 400,
+        }}
       >
         {table.table_name}
       </span>
-      {isRunning && (
+      {isLive && (
         <span className="text-[9px] uppercase tracking-wider font-mono" style={{ color: OBSERVATORY.ocean }}>
           live
         </span>
       )}
-      {!isRunning && table.row_count != null && table.row_count > 0 && (
+      {stuck && (
+        <span className="text-[9px] uppercase tracking-wider font-mono" style={{ color: OBSERVATORY.warn }}>
+          stuck
+        </span>
+      )}
+      {isError && (
+        <AlertCircle size={10} style={{ color: OBSERVATORY.err }} />
+      )}
+      {!isLive && !stuck && !isError && table.row_count != null && table.row_count > 0 && (
         <span
           className="text-[9px] tabular-nums"
           style={{ color: OBSERVATORY.muted2 }}
@@ -428,11 +474,21 @@ function PipelinesInner() {
   }, [rawData, pendingRuns]);
 
   // Poll fast when running OR when pending — pending means the backend hasn't
-  // confirmed yet and we want to catch the transition quickly.
-  const anyRunning = useMemo(
-    () => (data?.products.some((p) => p.status === 'running') ?? false) || pendingRuns.size > 0,
-    [data, pendingRuns],
-  );
+  // confirmed yet and we want to catch the transition quickly. Stuck-only
+  // running products (worker died, status pinned to 'running') do NOT count —
+  // otherwise we'd poll forever waiting for a worker that's never coming back.
+  const anyRunning = useMemo(() => {
+    if (pendingRuns.size > 0) return true;
+    if (!data) return false;
+    return data.products.some((p) => {
+      if (p.status !== 'running') return false;
+      const ptables = data.tables.filter((t) => t.product_id === p.id);
+      const isPending = pendingRuns.has(p.id);
+      return ptables.some(
+        (t) => (t.transformation_status ?? '').toLowerCase() === 'running' && !isTableStuck(t, isPending),
+      );
+    });
+  }, [data, pendingRuns]);
   useEffect(() => {
     if (!anyRunning) return;
     // 800 ms while there are unconfirmed pending runs; 1.8 s once confirmed running.
@@ -510,6 +566,7 @@ function PipelinesInner() {
           selected: selectedId === p.id,
           running: running.product === p.id,
           refreshOrder: refreshOrderMap.get(p.id) ?? null,
+          isPendingProduct: pendingRuns.has(p.id),
           onClick: onNodeClick,
           onRun: onRunOne,
         } as NodeData,
@@ -534,7 +591,7 @@ function PipelinesInner() {
         };
       }),
     );
-  }, [data, selectedId, running.product, refreshOrderMap, tablesByProduct, onNodeClick, onRunOne, setRfNodes, setRfEdges]);
+  }, [data, selectedId, running.product, refreshOrderMap, tablesByProduct, pendingRuns, onNodeClick, onRunOne, setRfNodes, setRfEdges]);
 
   async function runScope(scope: 'all' | 'stale' | { productIds: number[] }) {
     const key = scope === 'all' ? 'all' : scope === 'stale' ? 'stale' : 'product';
@@ -653,6 +710,16 @@ function PipelinesInner() {
         />
       )}
 
+      {/* Failure / stuck summary — surfaces WHICH tables failed and WHY */}
+      {data && (
+        <FailureSummary
+          data={data}
+          pendingIds={pendingRuns}
+          onJumpToProduct={(id) => setSelectedId(id)}
+          onRetryProduct={(id) => runScope({ productIds: [id] })}
+        />
+      )}
+
       {/* Content: DAG + side panel */}
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
@@ -730,6 +797,172 @@ function GlobalRunStrip({ data }: { data: PipelineData }) {
         className="h-full transition-all duration-500"
         style={{ width: `${pct}%`, background: OBSERVATORY.ocean }}
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Failure summary — collapsible banner showing every failed or stuck table
+// across all products with the actual error message. Answers "what failed
+// and why?" without needing to open the side panel for each product.
+// ---------------------------------------------------------------------------
+function FailureSummary({
+  data, pendingIds, onJumpToProduct, onRetryProduct,
+}: {
+  data: PipelineData;
+  pendingIds: Map<number, string | null>;
+  onJumpToProduct: (id: number) => void;
+  onRetryProduct: (id: number) => void;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const productById = useMemo(() => new Map(data.products.map((p) => [p.id, p])), [data.products]);
+
+  // Group failed + stuck tables by product
+  const failuresByProduct = useMemo(() => {
+    const m = new Map<number, { failed: PipelineTable[]; stuck: PipelineTable[] }>();
+    for (const t of data.tables) {
+      if (t.product_id == null) continue;
+      const status = (t.transformation_status ?? '').toLowerCase();
+      const isPending = pendingIds.has(t.product_id);
+      const stuck = isTableStuck(t, isPending);
+      if (status === 'error' || stuck) {
+        const entry = m.get(t.product_id) ?? { failed: [], stuck: [] };
+        if (stuck) entry.stuck.push(t);
+        else entry.failed.push(t);
+        m.set(t.product_id, entry);
+      }
+    }
+    return m;
+  }, [data.tables, pendingIds]);
+
+  if (failuresByProduct.size === 0) return null;
+
+  const totalFailed = Array.from(failuresByProduct.values()).reduce((sum, x) => sum + x.failed.length, 0);
+  const totalStuck = Array.from(failuresByProduct.values()).reduce((sum, x) => sum + x.stuck.length, 0);
+
+  return (
+    <div
+      className="border-b"
+      style={{ background: OBSERVATORY.errSoft, borderColor: 'rgba(196, 60, 60, 0.2)' }}
+    >
+      {/* Header row — click to expand/collapse */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-6 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.02] transition-colors"
+      >
+        <AlertCircle size={14} style={{ color: OBSERVATORY.err }} />
+        <span className="text-[13px] font-medium" style={{ color: OBSERVATORY.err }}>
+          {totalFailed > 0 && `${totalFailed} table${totalFailed === 1 ? '' : 's'} failed`}
+          {totalFailed > 0 && totalStuck > 0 && ' · '}
+          {totalStuck > 0 && (
+            <span style={{ color: OBSERVATORY.warn }}>
+              {totalStuck} stuck
+            </span>
+          )}
+        </span>
+        <span className="text-[11px]" style={{ color: OBSERVATORY.muted }}>
+          across {failuresByProduct.size} product{failuresByProduct.size === 1 ? '' : 's'}
+        </span>
+        <span className="ml-auto text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
+          {expanded ? 'hide' : 'show details'}
+        </span>
+      </button>
+
+      {/* Expanded list */}
+      {expanded && (
+        <div className="px-6 pb-3 space-y-2">
+          {Array.from(failuresByProduct.entries()).map(([pid, entry]) => {
+            const product = productById.get(pid);
+            if (!product) return null;
+            return (
+              <div
+                key={pid}
+                className="rounded-md border bg-white p-2.5"
+                style={{ borderColor: 'rgba(196, 60, 60, 0.2)' }}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: OBSERVATORY.err }}
+                  />
+                  <button
+                    onClick={() => onJumpToProduct(pid)}
+                    className="text-[12px] font-medium hover:underline"
+                    style={{ color: OBSERVATORY.ink }}
+                  >
+                    {product.name}
+                  </button>
+                  <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
+                    {entry.failed.length > 0 && `${entry.failed.length} failed`}
+                    {entry.failed.length > 0 && entry.stuck.length > 0 && ' · '}
+                    {entry.stuck.length > 0 && (
+                      <span style={{ color: OBSERVATORY.warn }}>{entry.stuck.length} stuck</span>
+                    )}
+                  </span>
+                  <button
+                    onClick={() => onRetryProduct(pid)}
+                    className="ml-auto px-2 py-0.5 text-[10px] rounded border flex items-center gap-1 hover:bg-soft"
+                    style={{ borderColor: OBSERVATORY.line, color: OBSERVATORY.ocean }}
+                    title="Retry this product (and upstream)"
+                  >
+                    <Play size={9} /> Retry
+                  </button>
+                </div>
+
+                {entry.failed.map((t) => (
+                  <div
+                    key={t.id}
+                    className="pl-3.5 py-1 border-l-2 mt-1"
+                    style={{ borderColor: OBSERVATORY.err }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px]" style={{ color: OBSERVATORY.err }}>
+                        {t.table_name}
+                      </span>
+                      {t.last_run_at && (
+                        <span className="text-[10px]" style={{ color: OBSERVATORY.muted2 }}>
+                          {formatRelative(t.last_run_at)}
+                        </span>
+                      )}
+                    </div>
+                    {t.last_run_error ? (
+                      <div className="mt-0.5 text-[11px] font-mono whitespace-pre-wrap break-words" style={{ color: OBSERVATORY.ink2 }}>
+                        {t.last_run_error}
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 text-[11px] italic" style={{ color: OBSERVATORY.muted }}>
+                        (no error message recorded)
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {entry.stuck.map((t) => (
+                  <div
+                    key={t.id}
+                    className="pl-3.5 py-1 border-l-2 mt-1"
+                    style={{ borderColor: OBSERVATORY.warn }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px]" style={{ color: OBSERVATORY.warn }}>
+                        {t.table_name}
+                      </span>
+                      <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.warn }}>
+                        stuck
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-[11px]" style={{ color: OBSERVATORY.ink2 }}>
+                      Pinned to <span className="font-mono">running</span>
+                      {t.last_run_at && <> since {formatRelative(t.last_run_at)}</>}
+                      {' '}— worker likely died mid-run. Click Retry to re-run.
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -996,6 +1229,7 @@ function TableGroup({ label, tables, order }: { label: string; tables: PipelineT
 }
 
 function TableRow({ table }: { table: PipelineTable }) {
+  const [showError, setShowError] = useState(false);
   const status = (table.transformation_status ?? 'draft').toLowerCase();
   const cfg =
     status === 'success' ? { color: OBSERVATORY.ok,    icon: <CheckCircle2 size={10} /> } :
@@ -1003,15 +1237,29 @@ function TableRow({ table }: { table: PipelineTable }) {
     status === 'error'   ? { color: OBSERVATORY.err,   icon: <AlertCircle size={10} /> } :
                            { color: OBSERVATORY.muted2,icon: <Clock size={10} /> };
 
+  const hasError = status === 'error' && !!table.last_run_error;
+
   return (
-    <div className="flex items-center gap-2 px-2 py-1 rounded hover:bg-softer text-[11px]">
-      <span style={{ color: cfg.color }}>{cfg.icon}</span>
-      <span className="text-ink-2 truncate flex-1 font-mono">{table.table_name}</span>
-      {table.row_count != null && (
-        <span className="text-[10px] tabular-nums text-muted">{table.row_count.toLocaleString()}</span>
-      )}
-      {status === 'error' && table.last_run_error && (
-        <span className="text-[10px]" style={{ color: OBSERVATORY.err }} title={table.last_run_error}>!</span>
+    <div className="rounded hover:bg-softer">
+      <div
+        className={`flex items-center gap-2 px-2 py-1 text-[11px] ${hasError ? 'cursor-pointer' : ''}`}
+        onClick={() => hasError && setShowError(!showError)}
+      >
+        <span style={{ color: cfg.color }}>{cfg.icon}</span>
+        <span className="text-ink-2 truncate flex-1 font-mono">{table.table_name}</span>
+        {table.row_count != null && (
+          <span className="text-[10px] tabular-nums text-muted">{table.row_count.toLocaleString()}</span>
+        )}
+        {hasError && (
+          <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.err }}>
+            {showError ? 'hide' : 'why?'}
+          </span>
+        )}
+      </div>
+      {hasError && showError && (
+        <div className="mx-2 mb-1 px-2 py-1.5 rounded text-[11px] font-mono whitespace-pre-wrap break-words" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.ink2 }}>
+          {table.last_run_error}
+        </div>
       )}
     </div>
   );

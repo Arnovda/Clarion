@@ -211,6 +211,27 @@ if (!process.env.VITEST) {
             profiling_progress: 0,
           });
         if (stale > 0) console.log(`[startup] Reset ${stale} stale profiling job(s)`);
+
+        // Same treatment for product_tables: any row pinned to 'running' at
+        // startup must be from a previous worker that died mid-transformation.
+        const staleTables = await semanticDb('product_tables')
+          .where('transformation_status', 'running')
+          .update({
+            transformation_status: 'error',
+            last_run_at: new Date().toISOString(),
+            last_run_error: 'Run interrupted by worker restart',
+          });
+        if (staleTables > 0) console.log(`[startup] Reset ${staleTables} stuck product_table run(s)`);
+
+        // Also close out any transformation_runs left in 'running' state.
+        const staleRuns = await semanticDb('transformation_runs')
+          .where('status', 'running')
+          .update({
+            status: 'failed',
+            error_message: 'Run interrupted by worker restart',
+            finished_at: new Date(),
+          });
+        if (staleRuns > 0) console.log(`[startup] Closed ${staleRuns} orphaned transformation run(s)`);
       } catch { /* non-fatal */ }
     })();
 
