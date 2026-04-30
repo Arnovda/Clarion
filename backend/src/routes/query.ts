@@ -166,7 +166,7 @@ async function loadConversationHistory(
 
 // Dedup-or-increment gap: if a similar unresolved gap exists (keyword overlap),
 // bump its hit_count instead of creating a duplicate.
-async function upsertDefinitionGap(queryLogId: number, description: string, question: string): Promise<void> {
+async function upsertDefinitionGap(queryLogId: number, description: string, question: string, tenantId?: number): Promise<void> {
   const words = question.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   if (words.length > 0) {
     const existing = await semanticDb('definition_gaps').where({ resolved: false });
@@ -182,7 +182,11 @@ async function upsertDefinitionGap(queryLogId: number, description: string, ques
       }
     }
   }
+  // tenant_id has a Postgres default that reads from current_setting('app.current_tenant'),
+  // but pooled connections sometimes route the INSERT to a connection without that GUC,
+  // producing a NOT NULL violation. Pass it explicitly when the caller knows it.
   await semanticDb('definition_gaps').insert({
+    ...(tenantId != null ? { tenant_id: tenantId } : {}),
     query_log_id: queryLogId,
     gap_description: description,
     hit_count: 1,
@@ -262,6 +266,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       // skip SQL execution.
       if (nlResult.intent === 'explain' && nlResult.explanation) {
         await semanticDb('query_log').insert({
+          tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
           generated_sql:    null,
@@ -282,6 +287,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const blockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await semanticDb('query_log')
         .insert({
+          tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
           generated_sql:    nlResult.sql,
@@ -293,7 +299,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
       if (blockCheck.blocked) {
-        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, tenantId);
         res.json({
           ok: true,
           data: {
@@ -725,6 +731,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     // Meta-question short-circuit (source layer).
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await semanticDb('query_log').insert({
+        tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
         generated_sql:    null,
@@ -746,6 +753,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     const blockCheck = shouldBlockQuery(nlResult);
     const [logRow] = await semanticDb('query_log')
       .insert({
+        tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
         generated_sql:    nlResult.sql,
@@ -758,7 +766,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 4. Block low-confidence queries (overall < 0.7 OR any sub-score < 0.5)
     if (blockCheck.blocked) {
-      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, tenantId);
       // Notify admins about the new gap
       if (req.user?.tenantId) {
         notifyAdmins(req.user.tenantId, 'new_gap', 'New definition gap', {
@@ -1067,6 +1075,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
       const thinkBlockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await semanticDb('query_log').insert({
+        tenant_id: thinkTenantId,
         user_id: req.user!.sub, question_text: question, generated_sql: nlResult.sql,
         confidence_score: nlResult.confidence, was_flagged: thinkBlockCheck.blocked,
         flag_reason: thinkBlockCheck.blocked ? thinkBlockCheck.reason : null,
@@ -1074,7 +1083,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
       if (thinkBlockCheck.blocked) {
-        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
         emit({ type: 'done', data: {
           answer: blockedUserMessage(nlResult), confidence: nlResult.confidence,
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
@@ -1238,6 +1247,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // conversation history to be loaded — which we already do above.
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await semanticDb('query_log').insert({
+        tenant_id:        thinkTenantId,
         user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
         question_text:    question,
         generated_sql:    null,
@@ -1266,6 +1276,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // ── 4. Log ──────────────────────────────────────────────────────────────
     const thinkBlockCheck = shouldBlockQuery(nlResult);
     const [logRow] = await semanticDb('query_log').insert({
+      tenant_id:        thinkTenantId,
       user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
       question_text:    question,
       generated_sql:    nlResult.sql,
@@ -1277,7 +1288,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 5. Block low-confidence (overall < 0.7 OR any sub-score < 0.5) ────
     if (thinkBlockCheck.blocked) {
-      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question);
+      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
       emit({ type: 'done', data: {
         answer: blockedUserMessage(nlResult),
         confidence: nlResult.confidence,
@@ -1749,6 +1760,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
     // 8. Log the query
     const [logRow] = await semanticDb('query_log')
       .insert({
+        tenant_id:        req.user!.tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
         generated_sql:    nlResult.sql,
@@ -1761,7 +1773,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
     // 9. Block low-confidence queries
     if (nlResult.confidence < 0.7) {
-      await upsertDefinitionGap(queryLogId, `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`, question);
+      await upsertDefinitionGap(queryLogId, `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`, question, req.user!.tenantId);
       res.json({
         ok: true,
         data: {
@@ -1964,6 +1976,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
 
     // 6. Log the query
     await semanticDb('query_log').insert({
+      tenant_id:        req.user!.tenantId,
       user_id:          req.user!.sub,
       question_text:    question,
       generated_sql:    fcResult.historicalSql,
