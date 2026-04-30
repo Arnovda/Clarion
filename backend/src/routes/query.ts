@@ -124,12 +124,40 @@ async function loadConversationHistory(
       .where({ conversation_id: conversationId })
       .orderBy('created_at', 'desc')
       .limit(limit)
-      .select('role', 'content');
-    // Reverse to chronological order and map to the shape the AI service expects
-    return rows.reverse().map((r: { role: string; content: string }) => ({
-      role: r.role,
-      content: r.content,
-    }));
+      .select('role', 'content', 'sql', 'tables_used', 'rows', 'confidence');
+
+    // Reverse to chronological order. For assistant messages, splice in the
+    // executed SQL + a tiny row sample so the model can see what queries it
+    // actually ran on prior turns. Without this it can't answer methodology
+    // follow-ups ("how did you calculate X?") and may regenerate a different
+    // SQL for the same question on the next turn.
+    return rows.reverse().map((r: {
+      role: string;
+      content: string;
+      sql: string | null;
+      tables_used: string[] | null;
+      rows: unknown[] | null;
+      confidence: number | null;
+    }) => {
+      if (r.role !== 'assistant' || !r.sql) {
+        return { role: r.role, content: r.content };
+      }
+      const tables = Array.isArray(r.tables_used) ? r.tables_used.join(', ') : '';
+      const sampleRows = Array.isArray(r.rows) ? r.rows.slice(0, 3) : [];
+      const totalRows = Array.isArray(r.rows) ? r.rows.length : 0;
+      const conf = typeof r.confidence === 'number' ? Math.round(r.confidence * 100) : null;
+      const lines: string[] = [r.content];
+      lines.push(`\n[methodology — for your reference, do not repeat verbatim]`);
+      if (tables) lines.push(`Tables used: ${tables}`);
+      if (conf != null) lines.push(`Confidence: ${conf}%`);
+      lines.push(`SQL executed:\n${r.sql}`);
+      if (sampleRows.length > 0) {
+        lines.push(`Returned ${totalRows} row(s). Sample: ${JSON.stringify(sampleRows)}`);
+      } else if (totalRows === 0) {
+        lines.push(`Returned 0 rows.`);
+      }
+      return { role: r.role, content: lines.join('\n') };
+    });
   } catch {
     // If the conversation doesn't exist or the query fails, return empty — non-blocking
     return [];
@@ -228,6 +256,28 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       }
       trackMetric('nl_to_sql_ms', Date.now() - nlStart, { layer: 'product', cache: cacheHit ? 'hit' : 'miss' });
       trackEvent(cacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'product' });
+
+      // Meta-question short-circuit: model classified this as a follow-up
+      // about methodology, not a data request. Return the explanation and
+      // skip SQL execution.
+      if (nlResult.intent === 'explain' && nlResult.explanation) {
+        await semanticDb('query_log').insert({
+          user_id:          req.user!.sub,
+          question_text:    question,
+          generated_sql:    null,
+          confidence_score: nlResult.confidence,
+          was_flagged:      false,
+        });
+        res.json({ ok: true, data: {
+          answer: nlResult.explanation,
+          confidence: nlResult.confidence,
+          tablesUsed: nlResult.tables_used ?? [],
+          rows: [], sql: '', queryLayer: 'product', intent: 'explain',
+          subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+          uncertaintyNotes: nlResult.uncertainty_notes ?? [],
+        }});
+        return;
+      }
 
       const blockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await semanticDb('query_log')
@@ -671,6 +721,26 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       cross: String(isCrossSourceQuery),
     });
     trackEvent(srcCacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'source' });
+
+    // Meta-question short-circuit (source layer).
+    if (nlResult.intent === 'explain' && nlResult.explanation) {
+      await semanticDb('query_log').insert({
+        user_id:          req.user!.sub,
+        question_text:    question,
+        generated_sql:    null,
+        confidence_score: nlResult.confidence,
+        was_flagged:      false,
+      });
+      res.json({ ok: true, data: {
+        answer: nlResult.explanation,
+        confidence: nlResult.confidence,
+        tablesUsed: nlResult.tables_used ?? [],
+        rows: [], sql: '', queryLayer: 'source', intent: 'explain',
+        subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+        uncertaintyNotes: nlResult.uncertainty_notes ?? [],
+      }});
+      return;
+    }
 
     // 3. Log the query regardless of outcome
     const blockCheck = shouldBlockQuery(nlResult);
@@ -1160,6 +1230,36 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       dialect,
       conversationHistory,
     );
+
+    // ── Meta-question short-circuit ────────────────────────────────────────
+    // When the model classifies the question as "explain" (asking about the
+    // methodology of a previous answer), we skip SQL execution entirely and
+    // emit the plain-language explanation as the final answer. This requires
+    // conversation history to be loaded — which we already do above.
+    if (nlResult.intent === 'explain' && nlResult.explanation) {
+      await semanticDb('query_log').insert({
+        user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
+        question_text:    question,
+        generated_sql:    null,
+        confidence_score: nlResult.confidence,
+        was_flagged:      false,
+        flag_reason:      null,
+      });
+      emit({ type: 'done', data: {
+        answer: nlResult.explanation,
+        confidence: nlResult.confidence,
+        subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+        uncertaintyNotes: nlResult.uncertainty_notes,
+        blocked: false,
+        tablesUsed: nlResult.tables_used,
+        queryLayer: 'source',
+        rows: [],
+        sql: '',
+        intent: 'explain',
+      }});
+      res.end();
+      return;
+    }
 
     emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 

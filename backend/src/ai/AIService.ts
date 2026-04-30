@@ -594,16 +594,22 @@ export function extractEntitiesFromQuestion(
 // ---------------------------------------------------------------------------
 
 function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
-  const confidence = parsed.confidence as number;
+  const intentRaw = parsed.intent as string | undefined;
+  const intent: 'data' | 'explain' = intentRaw === 'explain' ? 'explain' : 'data';
+  // For explain intent, the model gives no SQL; default confidence to 1 so it
+  // bypasses the low-confidence gate (we're not executing anything anyway).
+  const confidence = (parsed.confidence as number | undefined) ?? (intent === 'explain' ? 1 : 0);
   const viz = parsed.visualization as Record<string, unknown> | undefined;
   return {
-    sql:                 parsed.sql as string,
+    intent,
+    explanation:         parsed.explanation as string | undefined,
+    sql:                 (parsed.sql as string) ?? '',
     confidence,
     schema_confidence:   (parsed.schema_confidence as number)   ?? confidence,
     join_confidence:     (parsed.join_confidence as number)     ?? confidence,
     formula_confidence:  (parsed.formula_confidence as number)  ?? confidence,
     uncertainty_notes:   (parsed.uncertainty_notes as string[]) ?? [],
-    tables_used:         parsed.tables_used as string[],
+    tables_used:         (parsed.tables_used as string[]) ?? [],
     ...(viz && typeof viz.type === 'string' ? {
       visualization: {
         type: viz.type as 'bar' | 'line' | 'stacked_bar' | 'pie' | 'table',

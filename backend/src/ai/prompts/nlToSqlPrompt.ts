@@ -6,8 +6,18 @@ export const NL_TO_SQL_SYSTEM = (
   glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a SQLite database.
-You only return valid SQLite SQL and a confidence score between 0 and 1.
-Never explain. Never add commentary outside the JSON. Return JSON only.
+You return JSON only — never markdown, never commentary outside JSON.
+
+Most questions ask for data, and you respond with SQL.
+Some questions are META — the user is asking ABOUT a previous answer
+("how did you calculate X?", "why did you use that table?", "explain
+your approach", "what does this number mean?"). For those, set
+"intent":"explain" and put a clear plain-language answer in
+"explanation". Do NOT generate SQL for meta questions; reference
+the SQL and tables shown in the conversation history when explaining.
+
+If a question is a follow-up that needs new data ("now break it down
+by region"), keep "intent":"data" and produce SQL.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -132,8 +142,9 @@ If the user explicitly requests a chart type ("in a bar chart", "as a line"), ho
 
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return exactly this JSON shape — nothing else:
+For DATA questions (the default — user wants numbers/rows):
 {
+  "intent": "data",
   "sql": "SELECT ...",
   "confidence": 0.85,
   "schema_confidence": 0.95,
@@ -142,7 +153,17 @@ Return exactly this JSON shape — nothing else:
   "uncertainty_notes": [],
   "tables_used": ["orders", "customers"],
   "visualization": { "type": "bar", "xKey": "customer_name", "yKey": "total_revenue" }
-}`;
+}
+
+For META questions (user asks about how/why a previous answer was produced):
+{
+  "intent": "explain",
+  "explanation": "I summed line_total from order_lines and divided by ... <2-5 sentences>",
+  "tables_used": ["orders", "order_lines"]
+}
+Reference the actual SQL and tables visible in the conversation history.
+Do NOT regenerate the SQL — describe it. If no prior SQL is in history,
+say so honestly: "I don't have a prior query to explain in this conversation."`;
 
 export function buildNlToSqlUser(question: string): string {
   return `Question: "${question}"`;
@@ -157,8 +178,12 @@ export interface VisualizationHint {
   groupBy?: string;
 }
 
+export type NlToSqlIntent = 'data' | 'explain';
+
 export interface NlToSqlOutput {
-  sql: string;
+  intent?: NlToSqlIntent;             // defaults to 'data' for backwards compat
+  explanation?: string;                // present when intent === 'explain'
+  sql: string;                         // empty/ignored when intent === 'explain'
   confidence: number;
   schema_confidence: number;
   join_confidence: number;
@@ -239,8 +264,12 @@ export const NL_TO_SQL_CROSS_SYSTEM = (
   glossaryContext = '',
 ) =>
   `You are a SQL generation engine for a multi-schema SQLite session.
-You only return valid SQLite SQL and a confidence score between 0 and 1.
-Never explain. Never add commentary outside the JSON. Return JSON only.
+You return JSON only — never markdown, never commentary outside JSON.
+
+For DATA questions, return SQL with "intent":"data".
+For META questions ("how did you calculate that?", "why this table?"),
+return "intent":"explain" with a plain-language "explanation" instead
+of SQL — reference the SQL/tables visible in conversation history.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -288,8 +317,9 @@ Step 6 — Apply sensible default filters (exclude cancelled/inactive records wh
 
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return exactly this JSON shape — nothing else:
+For DATA questions:
 {
+  "intent": "data",
   "sql": "SELECT ...",
   "confidence": 0.85,
   "schema_confidence": 0.95,
@@ -298,6 +328,13 @@ Return exactly this JSON shape — nothing else:
   "uncertainty_notes": [],
   "tables_used": ["sales.orders", "hr.employees"],
   "visualization": { "type": "bar", "xKey": "department_name", "yKey": "headcount" }
+}
+
+For META questions about a prior answer in conversation history:
+{
+  "intent": "explain",
+  "explanation": "<2-5 sentences referencing the prior SQL and tables>",
+  "tables_used": ["sales.orders"]
 }
 
 Same visualization rules as the single-source prompt: pick "bar" / "line" / "stacked_bar" / "pie" / "table" based on the expected result shape and any explicit user intent. Set xKey/yKey for non-table types and groupBy for stacked_bar.`;
