@@ -347,11 +347,18 @@ export default function PipelinesPage() {
 
 function PipelinesInner() {
   const toast = useToast();
-  const [data, setData] = useState<PipelineData | null>(null);
+  const [rawData, setRawData] = useState<PipelineData | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [running, setRunning] = useState<{ all: boolean; stale: boolean; product: number | null }>({ all: false, stale: false, product: null });
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Optimistic run state: when the user clicks Run, we capture each product's
+  // last_run_at at click time. Until the backend reports a NEWER last_run_at
+  // (run finished) OR transitions the product into 'running' (run started),
+  // we display the product as running locally so the UI feels instant.
+  // Maps productId → previous last_run_at (null if never run).
+  const [pendingRuns, setPendingRuns] = useState<Map<number, string | null>>(new Map());
 
   const onNodeClick = useCallback((id: number) => setSelectedId(id), []);
 
@@ -359,7 +366,7 @@ function PipelinesInner() {
     if (!silent) setLoading(true);
     try {
       const res = await api.get('/pipelines');
-      setData(res.data.data as PipelineData);
+      setRawData(res.data.data as PipelineData);
     } catch {
       toast.error('Failed to load pipelines');
     } finally {
@@ -369,17 +376,70 @@ function PipelinesInner() {
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll while anything is running. 1.8s is fast enough for live feedback
-  // without hammering the API — DuckDB transformations rarely finish faster.
+  // Reconcile pendingRuns with raw data: drop products that the backend has
+  // already moved past their pre-run state (status === running OR last_run_at
+  // bumped OR status === error post-trigger).
+  useEffect(() => {
+    if (!rawData || pendingRuns.size === 0) return;
+    const next = new Map(pendingRuns);
+    let changed = false;
+    pendingRuns.forEach((prevRunAt, pid) => {
+      const p = rawData.products.find((x) => x.id === pid);
+      if (!p) { next.delete(pid); changed = true; return; }
+      // Backend caught up if it now shows running, or if last_run_at bumped, or status flipped to error AFTER our trigger.
+      if (p.status === 'running') { next.delete(pid); changed = true; return; }
+      if (p.last_run_at !== prevRunAt) { next.delete(pid); changed = true; return; }
+    });
+    if (changed) setPendingRuns(next);
+  }, [rawData, pendingRuns]);
+
+  // Hard safety: clear any pending entries that have lingered > 30s without
+  // the backend catching up (worker stuck, Redis down, etc.).
+  useEffect(() => {
+    if (pendingRuns.size === 0) return;
+    const t = setTimeout(() => setPendingRuns(new Map()), 30000);
+    return () => clearTimeout(t);
+  }, [pendingRuns]);
+
+  // Apply optimistic state on top of raw data. Pending products are forced to
+  // 'running'; their tables flip to 'running' too so the per-row shimmer fires.
+  const data = useMemo<PipelineData | null>(() => {
+    if (!rawData) return null;
+    if (pendingRuns.size === 0) return rawData;
+    const pending = pendingRuns;
+    return {
+      ...rawData,
+      products: rawData.products.map((p) =>
+        pending.has(p.id) && p.status !== 'running'
+          ? { ...p, status: 'running' as ProductStatus,
+              table_counts: { ...p.table_counts, running: Math.max(p.table_counts.running, 1) } }
+          : p,
+      ),
+      tables: rawData.tables.map((t) => {
+        if (t.product_id != null && pending.has(t.product_id)) {
+          const cur = (t.transformation_status ?? '').toLowerCase();
+          if (cur !== 'running' && cur !== 'success') {
+            return { ...t, transformation_status: 'running' };
+          }
+        }
+        return t;
+      }),
+    };
+  }, [rawData, pendingRuns]);
+
+  // Poll fast when running OR when pending — pending means the backend hasn't
+  // confirmed yet and we want to catch the transition quickly.
   const anyRunning = useMemo(
-    () => data?.products.some((p) => p.status === 'running') ?? false,
-    [data],
+    () => (data?.products.some((p) => p.status === 'running') ?? false) || pendingRuns.size > 0,
+    [data, pendingRuns],
   );
   useEffect(() => {
     if (!anyRunning) return;
-    pollRef.current = setTimeout(() => load(true), 1800);
+    // 800 ms while there are unconfirmed pending runs; 1.8 s once confirmed running.
+    const interval = pendingRuns.size > 0 ? 800 : 1800;
+    pollRef.current = setTimeout(() => load(true), interval);
     return () => { if (pollRef.current) clearTimeout(pollRef.current); };
-  }, [anyRunning, data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [anyRunning, data, pendingRuns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build ReactFlow nodes/edges
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
@@ -394,7 +454,7 @@ function PipelinesInner() {
     // Topo sort just the running set's ancestors-then-self order via productEdges.
     const inDeg = new Map<number, number>();
     const adj = new Map<number, number[]>();
-    for (const id of runningIds) { inDeg.set(id, 0); adj.set(id, []); }
+    runningIds.forEach((id) => { inDeg.set(id, 0); adj.set(id, []); });
     for (const e of data.productEdges) {
       if (runningIds.has(e.source) && runningIds.has(e.target)) {
         adj.get(e.source)!.push(e.target);
@@ -412,7 +472,7 @@ function PipelinesInner() {
         if (d === 0) ready.push(child);
       }
     }
-    for (const id of runningIds) if (!order.includes(id)) order.push(id);
+    runningIds.forEach((id) => { if (!order.includes(id)) order.push(id); });
     const m = new Map<number, number>();
     order.forEach((id, i) => m.set(id, i + 1));
     return m;
@@ -486,6 +546,16 @@ function PipelinesInner() {
         toast.info('Nothing to run');
       } else {
         toast.success(`Enqueued ${order.length} product${order.length === 1 ? '' : 's'}`);
+        // Optimistically mark each enqueued product as running until the backend confirms.
+        // Capture the pre-run last_run_at so we can detect when the backend catches up.
+        setPendingRuns((prev) => {
+          const next = new Map(prev);
+          for (const pid of order) {
+            const p = rawData?.products.find((x) => x.id === pid);
+            next.set(pid, p?.last_run_at ?? null);
+          }
+          return next;
+        });
       }
       await load(true);
     } catch (err) {
@@ -573,6 +643,16 @@ function PipelinesInner() {
         </div>
       </div>
 
+      {/* Live activity strip — concrete per-product / per-table breakdown */}
+      {anyRunning && data && (
+        <LiveActivityStrip
+          data={data}
+          tablesByProduct={tablesByProduct}
+          refreshOrderMap={refreshOrderMap}
+          pendingIds={pendingRuns}
+        />
+      )}
+
       {/* Content: DAG + side panel */}
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
@@ -650,6 +730,95 @@ function GlobalRunStrip({ data }: { data: PipelineData }) {
         className="h-full transition-all duration-500"
         style={{ width: `${pct}%`, background: OBSERVATORY.ocean }}
       />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live activity strip — full-width "what's happening right now" panel.
+// Lists each running/pending product, shows its progress (X/Y tables), and
+// the table currently being transformed.
+// ---------------------------------------------------------------------------
+function LiveActivityStrip({
+  data, tablesByProduct, refreshOrderMap, pendingIds,
+}: {
+  data: PipelineData;
+  tablesByProduct: Map<number, PipelineTable[]>;
+  refreshOrderMap: Map<number, number>;
+  pendingIds: Map<number, string | null>;
+}) {
+  const runningProducts = data.products
+    .filter((p) => p.status === 'running')
+    .sort((a, b) => (refreshOrderMap.get(a.id) ?? 999) - (refreshOrderMap.get(b.id) ?? 999));
+  if (runningProducts.length === 0) return null;
+
+  return (
+    <div
+      className="px-6 py-2.5 border-b flex items-center gap-3 overflow-x-auto"
+      style={{ background: OBSERVATORY.oceanSofter, borderColor: OBSERVATORY.oceanSoft }}
+    >
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span
+          className="pipeline-live-dot inline-block w-2 h-2 rounded-full"
+          style={{ background: OBSERVATORY.ocean }}
+        />
+        <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: OBSERVATORY.ocean }}>
+          Live · {runningProducts.length} {runningProducts.length === 1 ? 'product' : 'products'}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        {runningProducts.map((p) => {
+          const tables = tablesByProduct.get(p.id) ?? [];
+          const done = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'success').length;
+          const failed = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'error').length;
+          const liveTable = tables.find((t) => (t.transformation_status ?? '').toLowerCase() === 'running');
+          const pending = pendingIds.has(p.id) && !liveTable && done === 0 && failed === 0;
+          const order = refreshOrderMap.get(p.id);
+          return (
+            <div
+              key={p.id}
+              className="flex items-center gap-2 px-2.5 py-1 rounded-md border bg-white"
+              style={{ borderColor: OBSERVATORY.oceanSoft }}
+            >
+              {order != null && (
+                <span
+                  className="font-mono text-[9px] px-1 py-0.5 rounded"
+                  style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
+                >
+                  #{order}
+                </span>
+              )}
+              <span className="text-[12px] font-medium" style={{ color: OBSERVATORY.ink }}>
+                {p.name}
+              </span>
+              <span className="text-[10px] font-mono tabular-nums" style={{ color: OBSERVATORY.muted }}>
+                {done}/{tables.length}
+              </span>
+              {liveTable ? (
+                <span className="flex items-center gap-1 text-[10px] font-mono" style={{ color: OBSERVATORY.ocean }}>
+                  <span
+                    className="pipeline-live-dot inline-block w-1.5 h-1.5 rounded-full"
+                    style={{ background: OBSERVATORY.ocean }}
+                  />
+                  {liveTable.table_name}
+                </span>
+              ) : pending ? (
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
+                  queued…
+                </span>
+              ) : failed > 0 ? (
+                <span className="text-[10px] font-mono" style={{ color: OBSERVATORY.err }}>
+                  {failed} failed
+                </span>
+              ) : (
+                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
+                  starting…
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
