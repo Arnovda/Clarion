@@ -793,6 +793,9 @@ export default function MessageBubble({
             <span className="flex-shrink-0 mt-0.5 text-err">✕</span>
             <p className="leading-relaxed">{msg.text}</p>
           </div>
+          {isAdmin && (msg.errorDetail || msg.errorStack) && (
+            <ErrorDetail detail={msg.errorDetail} stack={msg.errorStack} />
+          )}
         </div>
       </div>
     );
@@ -945,6 +948,50 @@ export default function MessageBubble({
         </div>
         {isAdmin && <AdminDebugPanel msg={msg} />}
       </div>
+    </div>
+  );
+}
+
+// Admin/analyst-only — surfaces the real backend error so query failures
+// can be diagnosed without tailing container logs.
+function ErrorDetail({ detail, stack }: { detail?: string; stack?: string }) {
+  const [open, setOpen] = useState(false);
+  const [showStack, setShowStack] = useState(false);
+  return (
+    <div className="mt-2.5 text-[12px]">
+      <button
+        onClick={() => setOpen(!open)}
+        className="font-mono text-[10px] uppercase tracking-wider text-err hover:underline"
+      >
+        {open ? 'hide details' : 'show error details'}
+      </button>
+      {open && (
+        <div className="mt-1.5 px-2.5 py-2 rounded bg-white border border-line space-y-2">
+          {detail && (
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-muted mb-1">Error</div>
+              <pre className="font-mono text-[11px] whitespace-pre-wrap break-words text-ink leading-snug">
+                {detail}
+              </pre>
+            </div>
+          )}
+          {stack && (
+            <div>
+              <button
+                onClick={() => setShowStack(!showStack)}
+                className="font-mono text-[10px] uppercase tracking-wider text-muted hover:text-ink"
+              >
+                {showStack ? 'hide stack' : 'show stack'}
+              </button>
+              {showStack && (
+                <pre className="mt-1 font-mono text-[10px] whitespace-pre-wrap break-words text-muted2 leading-snug max-h-60 overflow-y-auto">
+                  {stack}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -70,6 +70,8 @@ export interface Message {
   mismatches?:         EntityMismatch[];   // unrecognised literals + fuzzy alternatives
   ambiguities?:        EntityAmbiguity[];  // literals that matched multiple rows
   error?:              boolean;
+  errorDetail?:        string;             // raw error message (admin/analyst only)
+  errorStack?:         string;             // stack trace (admin/analyst only)
   debug?:              DebugInfo;
   rows?:               Record<string, unknown>[];
   wasRepaired?:        boolean;            // prevents re-triggering repair on already-fixed answers

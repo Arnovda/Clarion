@@ -1292,7 +1292,17 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
   } catch (err) {
     console.error('[/think] Error:', err);
-    emit({ type: 'error', message: 'Something went wrong. Please try again.' });
+    // Show the real error to admin/analyst — viewers still get the generic
+    // message because raw errors can leak SQL / file paths / internals.
+    const role = req.user?.role;
+    const canSeeDetails = role === 'admin' || role === 'analyst';
+    const detail = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    emit({
+      type: 'error',
+      message: 'Something went wrong. Please try again.',
+      ...(canSeeDetails ? { errorDetail: detail, errorStack: stack } : {}),
+    });
     res.end();
   }
 });

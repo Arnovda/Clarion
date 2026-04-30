@@ -709,6 +709,8 @@ function QueryPageInner() {
               id: nextId.current++, role: 'assistant',
               text: (event.message as string) || 'Something went wrong. Please try again.',
               error: true,
+              errorDetail: event.errorDetail as string | undefined,
+              errorStack: event.errorStack as string | undefined,
             }]);
           }
         }
