@@ -28,9 +28,10 @@ interface TableRow {
   id: number;
   table_name: string;
   table_role: string;
-  transformation_sql: string;
+  transformation_sql: string | null;
   dag_order: number;
   load_mode: string; // 'full' | 'incremental'
+  is_shared_dimension?: boolean | null;
 }
 
 interface TransformResult {
@@ -539,6 +540,24 @@ export async function runProductTransformation(
 
     // Execute each transformation in order
     for (const table of sorted) {
+      // Shared/conformed dimensions live in another product. The metadata row
+      // exists here as a stub (transformation_sql=null, is_shared_dimension=true)
+      // and the actual parquet was loaded by loadDependencyDimensions above.
+      // Skip materialization — but mark the row 'success' so the UI doesn't
+      // perpetually show it as draft/stuck.
+      if (table.is_shared_dimension) {
+        await tenantQuery(tenantId, (trx) =>
+          trx('product_tables').where({ id: table.id }).update({
+            transformation_status: 'success',
+            last_run_at: new Date().toISOString(),
+            last_run_error: null,
+          })
+        );
+        results.push({ table_name: table.table_name, status: 'success', row_count: 0 });
+        console.log(`[transformationRunner] Skipped shared dim ${table.table_name} — loaded from upstream product`);
+        continue;
+      }
+
       const tableOutputPath = productTablePath(productDir, table.table_name);
 
       if (!useAzure) {
@@ -571,6 +590,17 @@ export async function runProductTransformation(
         let sql = table.transformation_sql;
         let aiRepaired = false;
         const tempTable = `__temp_${table.table_name}`;
+
+        // Guard: missing/empty transformation_sql produces "AS null;" which
+        // DuckDB parses as a syntax error. Fail clearly instead so the user
+        // knows to author the SQL or re-run schema design.
+        if (!sql || typeof sql !== 'string' || sql.trim() === '') {
+          throw new Error(
+            `No transformation SQL defined for ${table.table_name}. ` +
+            `Open the data product, edit this table, and add the SELECT that builds it ` +
+            `(or re-run "Design star schema" to let the AI regenerate it).`,
+          );
+        }
 
         try {
           await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
