@@ -1071,6 +1071,34 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         dialect,
         conversationHistory,
       );
+
+      // Meta-question short-circuit (product layer). Skip SQL execution.
+      if (nlResult.intent === 'explain' && nlResult.explanation) {
+        await semanticDb('query_log').insert({
+          tenant_id:        thinkTenantId,
+          user_id:          req.user!.sub,
+          question_text:    question,
+          generated_sql:    null,
+          confidence_score: nlResult.confidence,
+          was_flagged:      false,
+          flag_reason:      null,
+        });
+        emit({ type: 'done', data: {
+          answer: nlResult.explanation,
+          confidence: nlResult.confidence,
+          subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+          uncertaintyNotes: nlResult.uncertainty_notes,
+          blocked: false,
+          tablesUsed: nlResult.tables_used,
+          queryLayer: 'product',
+          rows: [],
+          sql: '',
+          intent: 'explain',
+        }});
+        res.end();
+        return;
+      }
+
       emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 
       const thinkBlockCheck = shouldBlockQuery(nlResult);
