@@ -341,4 +341,34 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
   } catch (err) { next(err); }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/pipelines/clear-stuck — mark any product_tables / transformation_runs
+// stuck in 'running' with last_run_at older than 5 minutes as failed/error.
+// Lets the user reset orphaned-worker rows on demand without waiting for a
+// container restart's startup cleanup.
+// ---------------------------------------------------------------------------
+router.post('/clear-stuck', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const STUCK_THRESHOLD_MIN = 5;
+    const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MIN * 60 * 1000).toISOString();
+    const tables = await semanticDb('product_tables')
+      .where('transformation_status', 'running')
+      .where((qb) => qb.whereNull('last_run_at').orWhere('last_run_at', '<', cutoff))
+      .update({
+        transformation_status: 'error',
+        last_run_at: new Date().toISOString(),
+        last_run_error: 'Run interrupted — cleared by user',
+      });
+    const runs = await semanticDb('transformation_runs')
+      .where('status', 'running')
+      .where((qb) => qb.whereNull('started_at').orWhere('started_at', '<', cutoff))
+      .update({
+        status: 'failed',
+        error_message: 'Run interrupted — cleared by user',
+        finished_at: new Date(),
+      });
+    res.json({ ok: true, data: { tablesCleared: tables, runsClosed: runs } });
+  } catch (err) { next(err); }
+});
+
 export default router;

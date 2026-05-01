@@ -623,23 +623,48 @@ function PipelinesInner() {
     }
   }
 
+  async function clearStuck() {
+    try {
+      const res = await api.post('/pipelines/clear-stuck');
+      const cleared = (res.data.data?.tablesCleared as number) ?? 0;
+      if (cleared > 0) {
+        toast.success(`Cleared ${cleared} stuck table${cleared === 1 ? '' : 's'}`);
+      } else {
+        toast.info('Nothing to clear');
+      }
+      await load(true);
+    } catch {
+      toast.error('Failed to clear stuck runs');
+    }
+  }
+
   const selectedProduct = useMemo(
     () => data?.products.find((p) => p.id === selectedId) ?? null,
     [data, selectedId],
   );
 
   const counts = useMemo(() => {
-    if (!data) return { total: 0, success: 0, running: 0, stale: 0, error: 0, never: 0 };
+    const init = { total: 0, success: 0, running: 0, stuck: 0, stale: 0, error: 0, never: 0 };
+    if (!data) return init;
     return data.products.reduce((acc, p) => {
       acc.total++;
-      if (p.status === 'success')   acc.success++;
-      if (p.status === 'running')   acc.running++;
-      if (p.status === 'stale')     acc.stale++;
-      if (p.status === 'error')     acc.error++;
-      if (p.status === 'never_run') acc.never++;
+      // A product whose only running tables are stuck is NOT actually running
+      // — surface it as 'stuck' instead so the toolbar count matches reality.
+      if (p.status === 'running') {
+        const ptables = data.tables.filter((t) => t.product_id === p.id);
+        const isPending = pendingRuns.has(p.id);
+        const liveTables = ptables.filter(
+          (t) => (t.transformation_status ?? '').toLowerCase() === 'running' && !isTableStuck(t, isPending),
+        );
+        if (liveTables.length > 0 || isPending) acc.running++;
+        else acc.stuck++;
+      } else if (p.status === 'success')   acc.success++;
+      else if (p.status === 'stale')       acc.stale++;
+      else if (p.status === 'error')       acc.error++;
+      else if (p.status === 'never_run')   acc.never++;
       return acc;
-    }, { total: 0, success: 0, running: 0, stale: 0, error: 0, never: 0 });
-  }, [data]);
+    }, init);
+  }, [data, pendingRuns]);
 
   return (
     <div className="h-full flex flex-col bg-bg">
@@ -717,6 +742,7 @@ function PipelinesInner() {
           pendingIds={pendingRuns}
           onJumpToProduct={(id) => setSelectedId(id)}
           onRetryProduct={(id) => runScope({ productIds: [id] })}
+          onClearStuck={clearStuck}
         />
       )}
 
@@ -807,12 +833,13 @@ function GlobalRunStrip({ data }: { data: PipelineData }) {
 // and why?" without needing to open the side panel for each product.
 // ---------------------------------------------------------------------------
 function FailureSummary({
-  data, pendingIds, onJumpToProduct, onRetryProduct,
+  data, pendingIds, onJumpToProduct, onRetryProduct, onClearStuck,
 }: {
   data: PipelineData;
   pendingIds: Map<number, string | null>;
   onJumpToProduct: (id: number) => void;
   onRetryProduct: (id: number) => void;
+  onClearStuck: () => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const productById = useMemo(() => new Map(data.products.map((p) => [p.id, p])), [data.products]);
@@ -846,27 +873,43 @@ function FailureSummary({
       style={{ background: OBSERVATORY.errSoft, borderColor: 'rgba(196, 60, 60, 0.2)' }}
     >
       {/* Header row — click to expand/collapse */}
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full px-6 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.02] transition-colors"
-      >
-        <AlertCircle size={14} style={{ color: OBSERVATORY.err }} />
-        <span className="text-[13px] font-medium" style={{ color: OBSERVATORY.err }}>
-          {totalFailed > 0 && `${totalFailed} table${totalFailed === 1 ? '' : 's'} failed`}
-          {totalFailed > 0 && totalStuck > 0 && ' · '}
-          {totalStuck > 0 && (
-            <span style={{ color: OBSERVATORY.warn }}>
-              {totalStuck} stuck
-            </span>
-          )}
-        </span>
-        <span className="text-[11px]" style={{ color: OBSERVATORY.muted }}>
-          across {failuresByProduct.size} product{failuresByProduct.size === 1 ? '' : 's'}
-        </span>
-        <span className="ml-auto text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
+      <div className="w-full px-6 py-2.5 flex items-center gap-3">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex-1 flex items-center gap-3 text-left hover:opacity-80 transition-opacity"
+        >
+          <AlertCircle size={14} style={{ color: OBSERVATORY.err }} />
+          <span className="text-[13px] font-medium" style={{ color: OBSERVATORY.err }}>
+            {totalFailed > 0 && `${totalFailed} table${totalFailed === 1 ? '' : 's'} failed`}
+            {totalFailed > 0 && totalStuck > 0 && ' · '}
+            {totalStuck > 0 && (
+              <span style={{ color: OBSERVATORY.warn }}>
+                {totalStuck} stuck
+              </span>
+            )}
+          </span>
+          <span className="text-[11px]" style={{ color: OBSERVATORY.muted }}>
+            across {failuresByProduct.size} product{failuresByProduct.size === 1 ? '' : 's'}
+          </span>
+        </button>
+        {totalStuck > 0 && (
+          <button
+            onClick={onClearStuck}
+            className="px-2.5 py-1 text-[11px] rounded border bg-white hover:bg-soft transition-colors flex items-center gap-1.5"
+            style={{ borderColor: OBSERVATORY.warn, color: OBSERVATORY.warn }}
+            title="Mark all stuck-running rows as errored. Use when a worker died and never reset its state."
+          >
+            <X size={11} /> Clear stuck
+          </button>
+        )}
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[10px] font-mono uppercase tracking-wider hover:underline"
+          style={{ color: OBSERVATORY.muted2 }}
+        >
           {expanded ? 'hide' : 'show details'}
-        </span>
-      </button>
+        </button>
+      </div>
 
       {/* Expanded list */}
       {expanded && (
@@ -1059,10 +1102,11 @@ function LiveActivityStrip({
 // ---------------------------------------------------------------------------
 // Toolbar counts
 // ---------------------------------------------------------------------------
-function PipelineCounts({ counts }: { counts: { total: number; success: number; running: number; stale: number; error: number; never: number } }) {
+function PipelineCounts({ counts }: { counts: { total: number; success: number; running: number; stuck: number; stale: number; error: number; never: number } }) {
   const items: { label: string; value: number; color: string }[] = [
     { label: 'OK',      value: counts.success, color: OBSERVATORY.ok },
     { label: 'Running', value: counts.running, color: OBSERVATORY.ocean },
+    { label: 'Stuck',   value: counts.stuck,   color: OBSERVATORY.warn },
     { label: 'Stale',   value: counts.stale,   color: OBSERVATORY.warn },
     { label: 'Failed',  value: counts.error,   color: OBSERVATORY.err },
     { label: 'Idle',    value: counts.never,   color: OBSERVATORY.muted },
