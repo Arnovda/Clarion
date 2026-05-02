@@ -42,6 +42,7 @@ import notificationsRouter from './routes/notifications';
 import policiesRouter      from './routes/policies';
 import settingsRouter      from './routes/settings';
 import emailSchedulesRouter from './routes/emailSchedules';
+import sourcesRouter         from './routes/sources';
 import catalogRouter         from './routes/catalog';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
@@ -146,6 +147,7 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/policies',        policiesRouter);
 app.use('/api/settings',        settingsRouter);
 app.use('/api/email-schedules', emailSchedulesRouter);
+app.use('/api/source-types',    sourcesRouter);
 app.use('/api/catalog',         catalogRouter);
 
 // Admin-only: re-run schema profiling for an existing connection

@@ -402,6 +402,14 @@ resource "azurerm_container_app" "backend" {
   revision_mode                = "Single"
   tags                         = var.tags
 
+  # System-assigned managed identity — used by:
+  #   • BlobSasTokenIssuer to mint user-delegation SAS for the warehouse +
+  #     heartbeat containers (no Storage account key handling)
+  #   • AzureContainerAppsJobLauncher to start sync-worker job executions
+  identity {
+    type = "SystemAssigned"
+  }
+
   registry {
     server               = azurerm_container_registry.main.login_server
     username             = azurerm_container_registry.main.admin_username
@@ -544,6 +552,41 @@ resource "azurerm_container_app" "backend" {
         interval_seconds        = 10
         failure_count_threshold = 10
       }
+
+      # ─── Source-connector platform env (Day 5/6) ──────────────────────
+      # When AZURE_CONTAINER_APPS_JOB_NAME is set, the SyncOrchestrator
+      # routes syncs to ephemeral Container Apps Job executions instead
+      # of in-process. The other vars below are only consulted in that
+      # branch — leave them set unconditionally so flipping the launcher
+      # is a single env-var change.
+      env {
+        name  = "AZURE_SUBSCRIPTION_ID"
+        value = data.azurerm_client_config.current.subscription_id
+      }
+      env {
+        name  = "AZURE_RESOURCE_GROUP"
+        value = azurerm_resource_group.main.name
+      }
+      env {
+        name  = "AZURE_CONTAINER_APPS_JOB_NAME"
+        value = azurerm_container_app_job.sync_worker.name
+      }
+      env {
+        name  = "AZURE_WAREHOUSE_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.warehouse.name
+      }
+      env {
+        name  = "AZURE_WAREHOUSE_CONTAINER"
+        value = azurerm_storage_container.warehouse.name
+      }
+      env {
+        name  = "AZURE_HEARTBEAT_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.warehouse.name
+      }
+      env {
+        name  = "AZURE_HEARTBEAT_CONTAINER"
+        value = azurerm_storage_container.sync_heartbeat.name
+      }
     }
   }
 
@@ -557,6 +600,83 @@ resource "azurerm_container_app" "backend" {
       percentage      = 100
     }
   }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sync-worker Container App Job (Day 6 — container-per-sync isolation)
+# ─────────────────────────────────────────────────────────────────────────────
+# An ephemeral container is spun up per sync execution. The orchestrator
+# triggers it via Mgmt API, passing per-execution env vars (decrypted creds,
+# warehouse SAS, heartbeat SAS). Container exits cleanly after the sync;
+# memory dies with it. No DataBridge DB credentials, no shared state.
+
+resource "azurerm_storage_container" "sync_heartbeat" {
+  name                  = "sync-heartbeat"
+  storage_account_name  = azurerm_storage_account.warehouse.name
+  container_access_type = "private"
+}
+
+resource "azurerm_container_app_job" "sync_worker" {
+  name                         = "${var.project_name}-${var.environment}-sync-worker"
+  location                     = azurerm_resource_group.main.location
+  resource_group_name          = azurerm_resource_group.main.name
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  tags                         = var.tags
+
+  # Hard cap. Longest sync we expect today is ~10 min (TransactionLines
+  # filtered to FY2025); 30-min ceiling gives plenty of headroom.
+  replica_timeout_in_seconds = 1800
+  # No auto-retry — orchestrator persists the failure and the user can
+  # re-trigger manually. Auto-retry without idempotency = duplicate writes.
+  replica_retry_limit = 0
+
+  manual_trigger_config {
+    parallelism              = 1
+    replica_completion_count = 1
+  }
+
+  registry {
+    server               = azurerm_container_registry.main.login_server
+    username             = azurerm_container_registry.main.admin_username
+    password_secret_name = "acr-password"
+  }
+  secret {
+    name  = "acr-password"
+    value = azurerm_container_registry.main.admin_password
+  }
+
+  template {
+    container {
+      name   = "sync-worker"
+      image  = "${azurerm_container_registry.main.login_server}/databridge-sync-worker:main-latest"
+      cpu    = 0.5
+      memory = "1Gi"
+
+      # No env block here — every var is supplied per-execution by the
+      # orchestrator's Mgmt API call. Setting them here would shadow that.
+    }
+  }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Role assignments — wire backend's managed identity to the perms it needs
+# ─────────────────────────────────────────────────────────────────────────────
+# Backend → Storage: issue user-delegation SAS for warehouse + heartbeat
+# (the SAS URLs are then handed to the worker — worker never sees an
+# account key). Reading the heartbeat blob also goes through this identity.
+resource "azurerm_role_assignment" "backend_blob_contributor" {
+  scope                = azurerm_storage_account.warehouse.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_container_app.backend.identity[0].principal_id
+}
+
+# Backend → Container App Job: start + stop executions, read execution status.
+# `Container Apps Jobs Operator` is the minimum role; `Contributor` works too
+# but is broader.
+resource "azurerm_role_assignment" "backend_job_operator" {
+  scope                = azurerm_container_app_job.sync_worker.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_container_app.backend.identity[0].principal_id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

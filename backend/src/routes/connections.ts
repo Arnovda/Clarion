@@ -1,6 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import { z } from 'zod';
+import {
+  createAdapterLogger,
+  getConnector,
+  ConfigValidationError,
+} from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import { semanticDb } from '../db/knex';
@@ -8,6 +14,7 @@ import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { encryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
 import { testConnectionSchema, createConnectionSchema, updateConnectionSchema } from '../middleware/schemas';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -76,6 +83,115 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
   }
 });
 
+// POST /api/connections/source — create a source-system connection
+//
+// Used by the new "Add source" wizard for ExactOnline / NetSuite / etc.
+// Distinct from POST /api/connections (which is for direct-DB connections):
+//   • the runtime query side is always DuckDB (reads warehouse Parquet files)
+//   • there's no schema profiling on save — that runs after the first sync
+//     lands data
+//   • credentials are connector-specific JSON, validated by the connector's
+//     own JSON Schema, not the SQL-driver shape
+const createSourceConnectionSchema = z.object({
+  body: z.object({
+    name: z.string().min(1).max(255),
+    connectorType: z.string().min(1).max(64),
+    config: z.record(z.unknown()),
+    selectedEntities: z.array(z.string()).min(1, 'Pick at least one entity'),
+    domains: z.array(z.string()).optional(),
+  }),
+});
+router.post(
+  '/source',
+  requireAuth,
+  requireRole('admin'),
+  validate(createSourceConnectionSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { name, connectorType, config, selectedEntities, domains } = req.body as {
+        name: string;
+        connectorType: string;
+        config: Record<string, unknown>;
+        selectedEntities: string[];
+        domains?: string[];
+      };
+
+      // Resolve the connector — 404 if the type isn't registered.
+      let connector;
+      try {
+        connector = getConnector(connectorType);
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: e.message });
+          return;
+        }
+        throw e;
+      }
+
+      // Re-validate credentials before saving. The wizard already calls
+      // testConnection but we don't trust client state — repeat here so a
+      // skipped wizard-step or stale tab can't store bad creds.
+      const probeLog = createAdapterLogger(
+        logger.child({
+          mod: 'create-source-connection',
+          connector: connectorType,
+          tenantId: req.user?.tenantId,
+        }),
+      );
+      let testResult;
+      try {
+        testResult = await connector.testConnection(config, { log: probeLog });
+      } catch (e) {
+        if (e instanceof ConfigValidationError) {
+          res.status(400).json({ ok: false, error: e.message });
+          return;
+        }
+        throw e;
+      }
+      if (!testResult.ok) {
+        res.status(400).json({ ok: false, error: testResult.error ?? 'Credentials rejected' });
+        return;
+      }
+
+      // Encrypt the connector config. Stored as bare TEXT (ciphertext is
+      // already opaque — no need to wrap in JSON).
+      const encrypted = encryptCredentials(JSON.stringify(config));
+
+      // Save the connection. `type='duckdb'` because the QUERY side will
+      // read the warehouse Parquet files via DuckDB (matches the pattern
+      // every other warehouse-backed connection uses).
+      const [row] = await semanticDb('connections')
+        .insert({
+          tenant_id: req.user!.tenantId,
+          name,
+          type: 'duckdb',
+          // Direct-DB `config` column unused for source connections, but the
+          // existing schema requires it (NOT NULL). Empty config object is fine.
+          config: JSON.stringify({}),
+          connector_type: connectorType,
+          connector_config_encrypted: encrypted,
+          selected_entities: selectedEntities,
+          domains: JSON.stringify(domains ?? []),
+          created_by: req.user!.email ?? 'unknown',
+        })
+        .returning('id');
+
+      const connectionId: number =
+        typeof row === 'object' ? (row as { id: number }).id : (row as number);
+
+      // No schema profiling here — there's no data yet. The first sync will
+      // populate the warehouse, and the orchestrator will trigger profiling
+      // automatically on completion (Day 5+).
+      res.status(201).json({
+        ok: true,
+        data: { connectionId, testDetails: testResult.details },
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 // GET /api/connections — list all connections
 router.get('/', requireAuth, requireRole('admin'), async (_req: Request, res: Response, next: NextFunction) => {
   try {
@@ -88,13 +204,115 @@ router.get('/', requireAuth, requireRole('admin'), async (_req: Request, res: Re
       // Mask passwords in the response
       const safeConfig = { ...config };
       if (safeConfig.password) safeConfig.password = '••••••••';
-      return { ...r, config: safeConfig };
+      // Strip the encrypted source-connector config — never send ciphertext to the browser.
+      const sanitizedRow = { ...r, config: safeConfig };
+      delete (sanitizedRow as Record<string, unknown>).connector_config_encrypted;
+      return sanitizedRow;
     });
     res.json({ ok: true, data: sanitized });
   } catch (err) {
     next(err);
   }
 });
+
+// ─── Source-connection sync routes ────────────────────────────────────────
+// Trigger a sync, list sync history, poll a single sync run, request cancellation.
+// All gated by tenant-scoped RLS via the existing middleware stack.
+
+// POST /api/connections/:id/sync — trigger a sync of the selected entities
+router.post(
+  '/:id/sync',
+  requireAuth,
+  requireRole('admin'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) {
+        res.status(400).json({ ok: false, error: 'Invalid connection id' });
+        return;
+      }
+      const { triggerSync } = await import('../orchestrator/SyncOrchestrator');
+      const result = await triggerSync({
+        connectionId: id,
+        tenantId: req.user!.tenantId,
+        triggeredByUserId: req.user!.id,
+      });
+      res.status(202).json({ ok: true, data: result });
+    } catch (err) {
+      // User-input errors (no entities, no connector_type) → 400 not 500.
+      const msg = err instanceof Error ? err.message : 'Failed to trigger sync';
+      if (
+        msg.includes('not found') ||
+        msg.includes('not a source-connector') ||
+        msg.includes('no selected entities')
+      ) {
+        res.status(400).json({ ok: false, error: msg });
+        return;
+      }
+      next(err);
+    }
+  },
+);
+
+// GET /api/connections/:id/sync-runs?limit=N — list sync history for a connection
+router.get(
+  '/:id/sync-runs',
+  requireAuth,
+  requireRole('admin', 'analyst'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = Number(req.params.id);
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const rows = await semanticDb('source_sync_runs')
+        .where({ connection_id: id, tenant_id: req.user!.tenantId })
+        .orderBy('id', 'desc')
+        .limit(limit);
+      res.json({ ok: true, data: rows });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// GET /api/connections/:id/sync-runs/:syncRunId — poll a single run (for live UI status)
+router.get(
+  '/:id/sync-runs/:syncRunId',
+  requireAuth,
+  requireRole('admin', 'analyst'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const syncRunId = Number(req.params.syncRunId);
+      const row = await semanticDb('source_sync_runs')
+        .where({ id: syncRunId, tenant_id: req.user!.tenantId })
+        .first();
+      if (!row) {
+        res.status(404).json({ ok: false, error: 'Sync run not found' });
+        return;
+      }
+      res.json({ ok: true, data: row });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// POST /api/connections/:id/sync/:syncRunId/cancel — request cancellation
+router.post(
+  '/:id/sync/:syncRunId/cancel',
+  requireAuth,
+  requireRole('admin'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const syncRunId = Number(req.params.syncRunId);
+      const { requestCancellation } = await import('../orchestrator/SyncOrchestrator');
+      const cancelled = requestCancellation(syncRunId);
+      // Worker / orchestrator picks up the flag and writes status='cancelled' itself.
+      res.json({ ok: true, data: { requested: cancelled } });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 // PATCH /api/connections/:id — update name and/or config
 router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {

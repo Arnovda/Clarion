@@ -22,6 +22,11 @@ interface Connection {
   query_engine?: string;          // 'source' | 'duckdb'
   ingestion_status?: string;      // null | 'pending' | 'running' | 'done' | 'error'
   last_ingested_at?: string;
+  // Source-connector fields (populated when this connection was created via /setup/add-source).
+  connector_type?: string | null; // e.g. 'exactonline'
+  selected_entities?: string[];
+  last_synced_at?: string | null;
+  last_sync_status?: string | null; // 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 }
 
 interface Connector {
@@ -154,6 +159,23 @@ const CONNECTORS: Connector[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Registry connector presentation (visual hints — UX only, not functional)
+// ---------------------------------------------------------------------------
+// Backend's /api/source-types returns each connector's `displayName` and
+// optional `iconSvg`. These maps add tile-level UX polish (colour + a richer
+// description than the connector wants to bake into its package). Add an
+// entry per registry connector you want curated styling for; unknown types
+// fall back to amber + a generic description.
+
+const REGISTRY_DESCRIPTIONS: Record<string, string> = {
+  exactonline: 'Sync GL, sales and master data from Exact Online.',
+};
+
+const REGISTRY_COLORS: Record<string, string> = {
+  exactonline: 'bg-orange-500',
+};
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -205,6 +227,58 @@ function ConnectionCard({
   const config = getConfig(conn);
   const [deleting, setDeleting] = useState(false);
   const [reprofiling, setReprofiling] = useState(false);
+  const isSourceConnector = !!conn.connector_type;
+  const [syncing, setSyncing] = useState(conn.last_sync_status === 'running' || conn.last_sync_status === 'queued');
+  const [syncStatus, setSyncStatus] = useState<string | null>(conn.last_sync_status ?? null);
+  const [syncRowCounts, setSyncRowCounts] = useState<Record<string, number> | null>(null);
+  const [syncRunId, setSyncRunId] = useState<number | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  // Live-poll the active sync run while it's running.
+  useEffect(() => {
+    if (!syncing || syncRunId === null) return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const res = await api.get(`/connections/${conn.id}/sync-runs/${syncRunId}`);
+        const row = res.data?.data;
+        if (!row || stopped) return;
+        setSyncStatus(row.status);
+        if (row.row_counts) {
+          setSyncRowCounts(typeof row.row_counts === 'string' ? JSON.parse(row.row_counts) : row.row_counts);
+        }
+        if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
+          setSyncing(false);
+          if (row.status === 'failed') setSyncError(row.error_message ?? 'Sync failed');
+        }
+      } catch {
+        // ignore; next tick will retry
+      }
+    };
+    void tick();
+    const interval = setInterval(tick, 2000);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [syncing, syncRunId, conn.id]);
+
+  async function handleSyncNow() {
+    setSyncError(null);
+    setSyncRowCounts(null);
+    setSyncing(true);
+    setSyncStatus('queued');
+    try {
+      const res = await api.post(`/connections/${conn.id}/sync`);
+      const data = res.data?.data;
+      if (data?.syncRunId) setSyncRunId(data.syncRunId);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Sync failed to start';
+      setSyncError(msg);
+      setSyncing(false);
+      setSyncStatus('failed');
+    }
+  }
 
   async function handleDelete() {
     if (!confirm(`Remove connection "${conn.name}"? This will also delete all definitions.`)) return;
@@ -271,7 +345,36 @@ function ConnectionCard({
               · Ingested {new Date(conn.last_ingested_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
             </span>
           )}
+          {isSourceConnector && conn.last_synced_at && (
+            <span className="ml-2">
+              · Last synced {new Date(conn.last_synced_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
+            </span>
+          )}
         </p>
+        {/* Sync status block — only shown for source-connector connections. */}
+        {isSourceConnector && (syncing || syncStatus || syncError) && (
+          <div className="mt-2 px-3 py-2 rounded-md border border-line bg-softer text-[11.5px]">
+            {syncing && (
+              <p className="text-ink-2 font-mono">
+                <span className="inline-block w-2 h-2 mr-2 bg-ocean rounded-full animate-pulse" />
+                {syncStatus === 'queued' ? 'Queued…' : 'Syncing…'}
+              </p>
+            )}
+            {!syncing && syncStatus === 'succeeded' && (
+              <p className="text-ok font-mono">✓ Sync complete</p>
+            )}
+            {syncError && (
+              <p className="text-rose-700 font-mono break-words">✗ {syncError}</p>
+            )}
+            {syncRowCounts && Object.keys(syncRowCounts).length > 0 && (
+              <p className="text-muted mt-1 font-mono">
+                {Object.entries(syncRowCounts)
+                  .map(([k, v]) => `${k}: ${v.toLocaleString()}`)
+                  .join(' · ')}
+              </p>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-col gap-1 shrink-0">
         <button
@@ -280,18 +383,31 @@ function ConnectionCard({
         >
           View definitions
         </button>
+        {isSourceConnector && (
+          <button
+            onClick={handleSyncNow}
+            disabled={syncing}
+            className="px-3 py-1.5 text-[12px] font-medium bg-ocean-softer text-ocean border border-ocean-soft rounded-md hover:bg-ocean-softer/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+        )}
         <button
           onClick={() => onEdit(conn)}
           className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
         >
           Edit
         </button>
-        <button
-          onClick={() => onReIngest(conn)}
-          className="px-3 py-1.5 text-[12px] bg-ai-soft text-ai border border-line rounded-md hover:bg-ai/15 transition-colors"
-        >
-          Re-ingest
-        </button>
+        {/* Re-ingest is for direct-DB connections (the legacy ETL path) — hidden
+            for source-connector connections, which use "Sync now" instead. */}
+        {!isSourceConnector && (
+          <button
+            onClick={() => onReIngest(conn)}
+            className="px-3 py-1.5 text-[12px] bg-ai-soft text-ai border border-line rounded-md hover:bg-ai/15 transition-colors"
+          >
+            Re-ingest
+          </button>
+        )}
         <button
           onClick={handleReProfile}
           disabled={reprofiling}
@@ -967,12 +1083,17 @@ function EmptyWorkspaceHero({
 // ---------------------------------------------------------------------------
 
 function SourcesPageInner() {
+  const router = useRouter();
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
   const [editingConn, setEditingConn] = useState<Connection | null>(null);
   const [profiling, setProfiling] = useState<{ id: number; name: string; startStream?: boolean } | null>(null);
   const [ingesting, setIngesting] = useState<{ id: number; name: string } | null>(null);
+  // Registry-driven connectors (ExactOnline today; NetSuite/QuickBooks/etc. later).
+  // Fetched from the backend so adding a new connector to the registry makes it
+  // show up here automatically — no frontend change per connector.
+  const [registryConnectors, setRegistryConnectors] = useState<Connector[]>([]);
 
   useEffect(() => {
     api.get('/connections')
@@ -987,6 +1108,29 @@ function SourcesPageInner() {
       })
       .catch(() => setConnections([]))
       .finally(() => setLoading(false));
+  }, []);
+
+  // Load registry connectors. Each becomes a tile in the "Add a source" grid;
+  // clicking routes to the wizard with the type pre-selected.
+  useEffect(() => {
+    api.get('/source-types')
+      .then((res) => {
+        const types: Array<{ type: string; displayName: string; iconSvg?: string }> =
+          res.data?.data ?? [];
+        setRegistryConnectors(
+          types.map((t) => ({
+            id: t.type,
+            name: t.displayName,
+            description: REGISTRY_DESCRIPTIONS[t.type] ?? 'API source. Sync data into your warehouse.',
+            available: true,
+            color: REGISTRY_COLORS[t.type] ?? 'bg-amber-500',
+            iconLetter: t.displayName.charAt(0).toUpperCase(),
+            // formFields not used — we route to the wizard which renders the form from JSON Schema.
+            formFields: [],
+          })),
+        );
+      })
+      .catch(() => setRegistryConnectors([]));
   }, []);
 
   function openEdit(conn: Connection) {
@@ -1176,6 +1320,13 @@ function SourcesPageInner() {
                 key={connector.id}
                 connector={connector}
                 onClick={() => { setEditingConn(null); setPanelConnector(connector); }}
+              />
+            ))}
+            {registryConnectors.map((connector) => (
+              <ConnectorTile
+                key={`registry:${connector.id}`}
+                connector={connector}
+                onClick={() => router.push(`/setup/add-source?type=${encodeURIComponent(connector.id)}`)}
               />
             ))}
           </div>

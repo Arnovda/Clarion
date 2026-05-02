@@ -17,9 +17,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@azure/arm-appcontainers": "^3.0.0",
     "@azure/identity": "^4.13.1",
     "@azure/keyvault-secrets": "^4.10.0",
     "@azure/storage-blob": "^12.31.0",
+    "@databridge/connectors": "file:../packages/connectors",
     "@types/nodemailer": "^8.0.0",
     "applicationinsights": "^3.14.0",
     "axios": "^1.14.0",

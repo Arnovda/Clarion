@@ -1,0 +1,736 @@
+'use client';
+
+/**
+ * "Add a source" wizard — drives the new connector platform.
+ *
+ * Three steps:
+ *   1. Pick a source type      — fetched from GET /api/source-types
+ *   2. Configure credentials   — form auto-rendered from the connector's
+ *                                JSON Schema; "Test connection" calls
+ *                                POST /api/source-types/:type/test
+ *   3. Pick entities           — multi-select from
+ *                                POST /api/source-types/:type/list-entities
+ *
+ * Save → POST /api/connections/source → redirect to /catalog.
+ *
+ * The wizard is connector-agnostic. Adding a new connector to the registry
+ * (backend) makes it appear in step 1 with no frontend change required —
+ * its form fields are derived from the JSON Schema, its entities are
+ * loaded by the connector's listEntities method.
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { ArrowLeft, ArrowRight, Check, Loader2, Plug, X } from 'lucide-react';
+import AppShell from '@/components/layout/AppShell';
+import RequireRole from '@/components/RequireRole';
+import api from '@/lib/api';
+import { cn } from '@/lib/cn';
+
+// ─── Backend types (mirror @databridge/connectors) ────────────────────────
+interface SourceTypeMeta {
+  type: string;
+  displayName: string;
+  iconSvg?: string;
+  configSchema: JsonSchemaObject;
+  egressAllowList: string[];
+}
+
+interface JsonSchemaObject {
+  type: 'object';
+  required?: string[];
+  properties: Record<string, JsonSchemaProperty>;
+  additionalProperties?: boolean;
+}
+
+interface JsonSchemaProperty {
+  type: 'string' | 'integer' | 'number' | 'boolean';
+  title?: string;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+  minLength?: number;
+  pattern?: string;
+}
+
+interface EntityDescriptor {
+  name: string;
+  displayName?: string;
+  category?: string;
+  description?: string;
+  estimatedRowCount?: number;
+  supportsIncremental: boolean;
+}
+
+interface TestResult {
+  ok: boolean;
+  error?: string;
+  details?: Record<string, string>;
+}
+
+type Step = 'pick-type' | 'configure' | 'pick-entities' | 'saving';
+
+// ─── Page ─────────────────────────────────────────────────────────────────
+export default function AddSourcePage() {
+  return (
+    <RequireRole roles={['admin']}>
+      <AppShell>
+        <AddSourceWizard />
+      </AppShell>
+    </RequireRole>
+  );
+}
+
+function AddSourceWizard() {
+  const router = useRouter();
+  // When the user clicks a connector tile on /setup, we route here with
+  // ?type=<id>. The wizard skips the type-picker step and goes straight
+  // to the configure form.
+  const searchParams = useSearchParams();
+  const preselectedType = searchParams.get('type');
+
+  // Wizard state
+  const [step, setStep] = useState<Step>('pick-type');
+  const [types, setTypes] = useState<SourceTypeMeta[]>([]);
+  const [loadingTypes, setLoadingTypes] = useState(true);
+  const [pickedType, setPickedType] = useState<SourceTypeMeta | null>(null);
+  const [name, setName] = useState('');
+  const [config, setConfig] = useState<Record<string, unknown>>({});
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [entities, setEntities] = useState<EntityDescriptor[]>([]);
+  const [loadingEntities, setLoadingEntities] = useState(false);
+  const [selectedEntities, setSelectedEntities] = useState<Set<string>>(new Set());
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Load source-types catalog on mount. If a `?type=` was provided, jump
+  // straight to step 2 once the catalog is in.
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api.get('/source-types');
+        if (!active) return;
+        const catalog: SourceTypeMeta[] = res.data?.data ?? [];
+        setTypes(catalog);
+        if (preselectedType) {
+          const match = catalog.find((t) => t.type === preselectedType);
+          if (match) {
+            handlePickType(match);
+          }
+        }
+      } catch (err) {
+        console.error('failed to load source-types', err);
+      } finally {
+        if (active) setLoadingTypes(false);
+      }
+    })();
+    return () => { active = false; };
+    // `preselectedType` and `handlePickType` are intentionally omitted —
+    // we only want this to run once at mount; the closure captures the
+    // initial `preselectedType` value, which is what we want.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Pre-fill default name when a type is picked
+  function handlePickType(t: SourceTypeMeta) {
+    setPickedType(t);
+    setName((current) => current || t.displayName);
+    // Apply schema defaults
+    const defaults: Record<string, unknown> = {};
+    for (const [k, prop] of Object.entries(t.configSchema.properties)) {
+      if (prop.default !== undefined) defaults[k] = prop.default;
+    }
+    setConfig(defaults);
+    setTestResult(null);
+    setStep('configure');
+  }
+
+  async function handleTest() {
+    if (!pickedType) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api.post(`/source-types/${pickedType.type}/test`, { config });
+      setTestResult(res.data?.data ?? { ok: false, error: 'Empty response' });
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Network error';
+      setTestResult({ ok: false, error: msg });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function handleProceedToEntities() {
+    if (!pickedType) return;
+    setLoadingEntities(true);
+    try {
+      const res = await api.post(`/source-types/${pickedType.type}/list-entities`, { config });
+      setEntities(res.data?.data ?? []);
+      setStep('pick-entities');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Failed to list entities';
+      setTestResult({ ok: false, error: msg });
+    } finally {
+      setLoadingEntities(false);
+    }
+  }
+
+  async function handleSave() {
+    if (!pickedType) return;
+    if (selectedEntities.size === 0) {
+      setSaveError('Pick at least one entity to sync.');
+      return;
+    }
+    setSaveError(null);
+    setStep('saving');
+    try {
+      const res = await api.post('/connections/source', {
+        name: name.trim() || pickedType.displayName,
+        connectorType: pickedType.type,
+        config,
+        selectedEntities: Array.from(selectedEntities),
+      });
+      const id = res.data?.data?.connectionId;
+      if (id) {
+        router.push(`/catalog`);
+      } else {
+        setSaveError('Connection saved but no ID returned.');
+        setStep('pick-entities');
+      }
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Save failed';
+      setSaveError(msg);
+      setStep('pick-entities');
+    }
+  }
+
+  return (
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Header ───────────────────────────────────────────────────────── */}
+      <div className="border-b border-line bg-raised px-6 py-4 flex items-center justify-between flex-shrink-0">
+        <div>
+          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">
+            Setup
+          </p>
+          <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">
+            Add a source
+          </h1>
+        </div>
+        <button
+          onClick={() => router.push('/setup')}
+          className="text-[12.5px] text-muted hover:text-ink flex items-center gap-1.5"
+        >
+          <X className="w-4 h-4" /> Cancel
+        </button>
+      </div>
+
+      {/* Step indicator ───────────────────────────────────────────────── */}
+      <StepIndicator step={step} />
+
+      {/* Body ────────────────────────────────────────────────────────── */}
+      <div className="flex-1 min-h-0 overflow-y-auto bg-bg">
+        <div className="max-w-3xl mx-auto px-6 py-8">
+          {step === 'pick-type' && (
+            <PickType types={types} loading={loadingTypes} onPick={handlePickType} />
+          )}
+          {step === 'configure' && pickedType && (
+            <Configure
+              type={pickedType}
+              name={name}
+              setName={setName}
+              config={config}
+              setConfig={setConfig}
+              testing={testing}
+              testResult={testResult}
+              onTest={handleTest}
+              onBack={() => setStep('pick-type')}
+              onNext={handleProceedToEntities}
+              loadingEntities={loadingEntities}
+            />
+          )}
+          {step === 'pick-entities' && pickedType && (
+            <PickEntities
+              entities={entities}
+              selected={selectedEntities}
+              setSelected={setSelectedEntities}
+              onBack={() => setStep('configure')}
+              onSave={handleSave}
+              saveError={saveError}
+            />
+          )}
+          {step === 'saving' && (
+            <div className="flex flex-col items-center justify-center py-24 text-center">
+              <Loader2 className="w-6 h-6 animate-spin text-ocean mb-4" strokeWidth={2} />
+              <p className="text-[13px] text-ink">Saving connection…</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step indicator ───────────────────────────────────────────────────────
+function StepIndicator({ step }: { step: Step }) {
+  const stepNum = step === 'pick-type' ? 1 : step === 'configure' ? 2 : 3;
+  const labels = ['Pick a source', 'Configure', 'Choose entities'];
+  return (
+    <div className="bg-raised border-b border-line px-6 py-3 flex-shrink-0">
+      <div className="max-w-3xl mx-auto flex items-center gap-3">
+        {labels.map((label, i) => (
+          <div key={label} className="flex items-center gap-3 flex-1">
+            <div
+              className={cn(
+                'w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-medium border transition-colors',
+                i + 1 < stepNum && 'bg-ocean text-white border-ocean',
+                i + 1 === stepNum && 'bg-ocean-softer text-ocean border-ocean',
+                i + 1 > stepNum && 'bg-bg text-muted border-line',
+              )}
+            >
+              {i + 1 < stepNum ? <Check className="w-3 h-3" strokeWidth={2.5} /> : i + 1}
+            </div>
+            <span
+              className={cn(
+                'text-[12px] font-mono uppercase tracking-[0.06em]',
+                i + 1 === stepNum ? 'text-ink' : 'text-muted',
+              )}
+            >
+              {label}
+            </span>
+            {i < labels.length - 1 && <div className="flex-1 h-px bg-line" />}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 1: pick a type ──────────────────────────────────────────────────
+function PickType(props: {
+  types: SourceTypeMeta[];
+  loading: boolean;
+  onPick: (t: SourceTypeMeta) => void;
+}) {
+  if (props.loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 text-center">
+        <Loader2 className="w-6 h-6 animate-spin text-ocean mb-4" strokeWidth={2} />
+        <p className="text-[13px] text-muted">Loading available sources…</p>
+      </div>
+    );
+  }
+  if (props.types.length === 0) {
+    return (
+      <div className="text-center py-16">
+        <p className="text-[13px] text-muted">No source connectors registered.</p>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <p className="text-[13px] text-ink-2 mb-6">
+        Choose what you'd like to connect. The form on the next step is generated from
+        the connector's own schema — different sources ask for different fields.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {props.types.map((t) => (
+          <button
+            key={t.type}
+            onClick={() => props.onPick(t)}
+            className="text-left p-4 rounded-md border border-line bg-raised hover:border-ocean hover:bg-ocean-softer/30 transition-colors flex items-start gap-3"
+          >
+            <div className="w-9 h-9 rounded-md bg-ocean-softer text-ocean flex items-center justify-center flex-shrink-0">
+              {t.iconSvg ? (
+                <span dangerouslySetInnerHTML={{ __html: t.iconSvg }} />
+              ) : (
+                <Plug className="w-4 h-4" strokeWidth={1.75} />
+              )}
+            </div>
+            <div className="min-w-0">
+              <p className="text-[13px] font-medium text-ink truncate">{t.displayName}</p>
+              <p className="text-[11px] font-mono text-muted-2 mt-0.5">{t.type}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 2: configure ────────────────────────────────────────────────────
+function Configure(props: {
+  type: SourceTypeMeta;
+  name: string;
+  setName: (s: string) => void;
+  config: Record<string, unknown>;
+  setConfig: (c: Record<string, unknown>) => void;
+  testing: boolean;
+  testResult: TestResult | null;
+  onTest: () => void;
+  onBack: () => void;
+  onNext: () => void;
+  loadingEntities: boolean;
+}) {
+  const required = useMemo(
+    () => new Set(props.type.configSchema.required ?? []),
+    [props.type.configSchema],
+  );
+  const allRequiredFilled = useMemo(() => {
+    return Array.from(required).every((k) => {
+      const v = props.config[k];
+      return v !== undefined && v !== null && v !== '';
+    });
+  }, [props.config, required]);
+
+  function setField(key: string, value: unknown) {
+    props.setConfig({ ...props.config, [key]: value });
+    // Reset stale test result whenever fields change
+    if (props.testResult) {
+      // Only clear, never re-test; user has to re-click.
+      // Done via the parent ignoring stale state — we just note the change.
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="font-display text-[20px] text-ink leading-tight tracking-[-0.01em] mb-1">
+        Configure {props.type.displayName}
+      </h2>
+      <p className="text-[13px] text-ink-3 mb-6">
+        These credentials are encrypted at rest. You can change them later by re-running this wizard.
+      </p>
+
+      {/* Connection name */}
+      <div className="mb-5">
+        <label className="block text-[11px] font-mono uppercase tracking-[0.06em] text-muted mb-1.5">
+          Connection name
+        </label>
+        <input
+          type="text"
+          value={props.name}
+          onChange={(e) => props.setName(e.target.value)}
+          placeholder={props.type.displayName}
+          className="w-full px-3 py-2 text-[13px] border border-line rounded-md bg-bg focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+        />
+        <p className="text-[11px] text-muted-2 mt-1">
+          A label to recognise this connection in the UI.
+        </p>
+      </div>
+
+      {/* Auto-generated form */}
+      <SchemaForm
+        schema={props.type.configSchema}
+        value={props.config}
+        onChange={setField}
+      />
+
+      {/* Test connection */}
+      <div className="mt-6 pt-6 border-t border-line">
+        <button
+          onClick={props.onTest}
+          disabled={props.testing || !allRequiredFilled}
+          className="px-4 py-2 text-[13px] border border-line rounded-md hover:border-ocean hover:bg-ocean-softer/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+        >
+          {props.testing ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+          ) : (
+            <Plug className="w-3.5 h-3.5" strokeWidth={2} />
+          )}
+          {props.testing ? 'Testing…' : 'Test connection'}
+        </button>
+        {props.testResult && (
+          <div
+            className={cn(
+              'mt-3 px-3 py-2 rounded-md border text-[12.5px]',
+              props.testResult.ok
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-rose-50 border-rose-200 text-rose-900',
+            )}
+          >
+            {props.testResult.ok ? (
+              <div className="flex items-start gap-2">
+                <Check className="w-4 h-4 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+                <div>
+                  <p className="font-medium">Connection successful</p>
+                  {props.testResult.details && Object.keys(props.testResult.details).length > 0 && (
+                    <p className="text-[11.5px] mt-1 font-mono text-emerald-800">
+                      {Object.entries(props.testResult.details)
+                        .map(([k, v]) => `${k}: ${v}`)
+                        .join(' · ')}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2">
+                <X className="w-4 h-4 flex-shrink-0 mt-0.5" strokeWidth={2.5} />
+                <div>
+                  <p className="font-medium">Connection failed</p>
+                  <p className="text-[11.5px] mt-1 break-words">{props.testResult.error}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer nav */}
+      <div className="mt-8 flex items-center justify-between">
+        <button
+          onClick={props.onBack}
+          className="text-[13px] text-muted hover:text-ink flex items-center gap-1.5"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <button
+          onClick={props.onNext}
+          disabled={!props.testResult?.ok || props.loadingEntities}
+          className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+        >
+          {props.loadingEntities && <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />}
+          {props.loadingEntities ? 'Loading entities…' : 'Continue'}
+          {!props.loadingEntities && <ArrowRight className="w-3.5 h-3.5" />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Auto-form renderer ───────────────────────────────────────────────────
+/**
+ * Minimal JSON Schema form renderer — handles flat objects with string /
+ * enum properties (which is everything our connector configs need today).
+ *
+ * We didn't pull in @rjsf because:
+ *   • Bundle size is significant for what we use of it
+ *   • Theming it to match Observatory tokens is non-trivial
+ *   • Our schemas are tiny — 5–8 fields each — and don't need rjsf's full power
+ *
+ * If schemas grow more complex (nested objects, arrays of structured data,
+ * conditional fields) swap in rjsf at that point.
+ */
+function SchemaForm(props: {
+  schema: JsonSchemaObject;
+  value: Record<string, unknown>;
+  onChange: (key: string, value: unknown) => void;
+}) {
+  const required = new Set(props.schema.required ?? []);
+  return (
+    <div className="space-y-4">
+      {Object.entries(props.schema.properties).map(([key, prop]) => (
+        <SchemaField
+          key={key}
+          fieldKey={key}
+          prop={prop}
+          required={required.has(key)}
+          value={props.value[key]}
+          onChange={(v) => props.onChange(key, v)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function SchemaField(props: {
+  fieldKey: string;
+  prop: JsonSchemaProperty;
+  required: boolean;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  const { fieldKey, prop, required, value, onChange } = props;
+  // Sensitive field detection — render as <input type="password">.
+  // Field-name based; backend already enforces redaction in logs.
+  const isSensitive = /(secret|password|token|apikey|api_key)/i.test(fieldKey);
+  const label = prop.title ?? humanise(fieldKey);
+
+  return (
+    <div>
+      <label className="block text-[11px] font-mono uppercase tracking-[0.06em] text-muted mb-1.5">
+        {label}
+        {required && <span className="text-rose-500 ml-1">*</span>}
+      </label>
+      {prop.enum ? (
+        <select
+          value={(value as string) ?? ''}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full px-3 py-2 text-[13px] border border-line rounded-md bg-bg focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+        >
+          {!required && <option value="">— select —</option>}
+          {prop.enum.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type={isSensitive ? 'password' : prop.type === 'integer' || prop.type === 'number' ? 'number' : 'text'}
+          value={value === undefined || value === null ? '' : String(value)}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (prop.type === 'integer' || prop.type === 'number') {
+              onChange(raw === '' ? '' : Number(raw));
+            } else {
+              onChange(raw);
+            }
+          }}
+          autoComplete={isSensitive ? 'off' : undefined}
+          spellCheck={false}
+          placeholder={prop.default !== undefined ? String(prop.default) : ''}
+          className="w-full px-3 py-2 text-[13px] border border-line rounded-md bg-bg focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 font-mono"
+        />
+      )}
+      {prop.description && (
+        <p className="text-[11px] text-muted-2 mt-1">{prop.description}</p>
+      )}
+    </div>
+  );
+}
+
+function humanise(key: string): string {
+  // 'clientId' → 'Client id'; 'refresh_token' → 'Refresh token'.
+  const spaced = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+// ─── Step 3: pick entities ────────────────────────────────────────────────
+function PickEntities(props: {
+  entities: EntityDescriptor[];
+  selected: Set<string>;
+  setSelected: (s: Set<string>) => void;
+  onBack: () => void;
+  onSave: () => void;
+  saveError: string | null;
+}) {
+  // Group by category for browsability with large catalogs.
+  const grouped = useMemo(() => {
+    const m = new Map<string, EntityDescriptor[]>();
+    for (const e of props.entities) {
+      const k = e.category ?? 'Other';
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(e);
+    }
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [props.entities]);
+
+  function toggle(name: string) {
+    const next = new Set(props.selected);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    props.setSelected(next);
+  }
+
+  function selectAllInGroup(items: EntityDescriptor[]) {
+    const next = new Set(props.selected);
+    for (const e of items) next.add(e.name);
+    props.setSelected(next);
+  }
+
+  function clearAll() {
+    props.setSelected(new Set());
+  }
+
+  return (
+    <div>
+      <h2 className="font-display text-[20px] text-ink leading-tight tracking-[-0.01em] mb-1">
+        Choose entities to sync
+      </h2>
+      <p className="text-[13px] text-ink-3 mb-6">
+        These are the tables we'll pull on each sync. You can change the selection later.
+      </p>
+
+      <div className="flex items-center justify-between mb-4 text-[12px]">
+        <span className="text-muted">
+          <span className="text-ink font-medium">{props.selected.size}</span>
+          {' '}of {props.entities.length} selected
+        </span>
+        <button
+          onClick={clearAll}
+          disabled={props.selected.size === 0}
+          className="text-muted hover:text-ink disabled:opacity-50"
+        >
+          Clear
+        </button>
+      </div>
+
+      <div className="space-y-5">
+        {grouped.map(([category, items]) => (
+          <div key={category}>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-muted">
+                {category}
+              </h3>
+              <button
+                onClick={() => selectAllInGroup(items)}
+                className="text-[11px] text-muted hover:text-ocean"
+              >
+                Select all
+              </button>
+            </div>
+            <div className="space-y-1">
+              {items.map((e) => (
+                <label
+                  key={e.name}
+                  className={cn(
+                    'flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors',
+                    props.selected.has(e.name)
+                      ? 'border-ocean bg-ocean-softer/40'
+                      : 'border-line bg-raised hover:border-line-strong',
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={props.selected.has(e.name)}
+                    onChange={() => toggle(e.name)}
+                    className="mt-0.5 accent-ocean"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[13px] font-medium text-ink">
+                      {e.displayName ?? e.name}
+                    </p>
+                    {e.description && (
+                      <p className="text-[11.5px] text-muted-2 mt-0.5">{e.description}</p>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {props.saveError && (
+        <div className="mt-4 px-3 py-2 rounded-md border border-rose-200 bg-rose-50 text-rose-900 text-[12.5px]">
+          {props.saveError}
+        </div>
+      )}
+
+      <div className="mt-8 flex items-center justify-between">
+        <button
+          onClick={props.onBack}
+          className="text-[13px] text-muted hover:text-ink flex items-center gap-1.5"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" /> Back
+        </button>
+        <button
+          onClick={props.onSave}
+          disabled={props.selected.size === 0}
+          className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          Save connection
+        </button>
+      </div>
+    </div>
+  );
+}

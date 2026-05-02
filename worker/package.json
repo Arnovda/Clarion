@@ -1,0 +1,22 @@
+{
+  "name": "databridge-sync-worker",
+  "version": "0.1.0",
+  "description": "Ephemeral sync worker — runs ONE source-connector sync per process invocation, writes Parquet to a sandboxed warehouse path, exits.",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "start": "node dist/main.js",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@azure/storage-blob": "^12.31.0",
+    "@databridge/connectors": "file:../packages/connectors",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2"
+  }
+}
