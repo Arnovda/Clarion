@@ -96,7 +96,7 @@ const createSourceConnectionSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255),
     connectorType: z.string().min(1).max(64),
-    config: z.record(z.unknown()),
+    config: z.record(z.string(), z.unknown()),
     selectedEntities: z.array(z.string()).min(1, 'Pick at least one entity'),
     domains: z.array(z.string()).optional(),
   }),
@@ -235,7 +235,7 @@ router.post(
       const result = await triggerSync({
         connectionId: id,
         tenantId: req.user!.tenantId,
-        triggeredByUserId: req.user!.id,
+        triggeredByUserId: req.user!.sub,
       });
       res.status(202).json({ ok: true, data: result });
     } catch (err) {

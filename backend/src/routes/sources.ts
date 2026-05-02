@@ -58,7 +58,7 @@ router.get('/', requireAuth, (_req: Request, res: Response) => {
  */
 const probeSchema = z.object({
   body: z.object({
-    config: z.record(z.unknown()),
+    config: z.record(z.string(), z.unknown()),
   }),
   params: z.object({
     type: z.string().min(1),

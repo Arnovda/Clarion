@@ -27,11 +27,14 @@ env:
 
 jobs:
   # ── Build & push Docker images ────────────────────────────────────────────
+  # Frontend and ETL build from their own folder context (their Dockerfiles
+  # don't reference any sibling package). Backend builds from repo root
+  # because it depends on packages/connectors via `file:../packages/connectors`.
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [backend, frontend, etl]
+        service: [frontend, etl]
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +62,37 @@ jobs:
             ${{ env.ACR_REGISTRY }}/databridge-${{ matrix.service }}:${{ github.ref_name }}-latest
           build-args: |
             NEXT_PUBLIC_API_URL=${{ github.ref_name == 'main' && secrets.PROD_API_URL || secrets.STAGING_API_URL }}
+
+  # Backend has its own job because its Dockerfile context is repo root
+  # (multi-package build pulling in packages/connectors).
+  build-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          BRANCH=${{ github.ref_name }}
+          echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
+            ${{ env.ACR_REGISTRY }}/databridge-backend:${{ github.ref_name }}-latest
 
   # ── Build & push the sync-worker image ────────────────────────────────────
   # Separate from the matrix because it has a multi-package build context
@@ -95,7 +129,7 @@ jobs:
 
   # ── Deploy to Azure Container Apps ────────────────────────────────────────
   deploy:
-    needs: [build, build-worker]
+    needs: [build, build-backend, build-worker]
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
@@ -132,12 +166,12 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
 
-      - name: Deploy sync-worker job
-        run: |
-          az containerapp job update \
-            --name ${{ secrets.SYNC_WORKER_JOB_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_REGISTRY }}/databridge-sync-worker:${{ steps.tag.outputs.tag }}
+      # Sync-worker Job: no `az containerapp job update` step needed.
+      # The Job spec references `databridge-sync-worker:main-latest`, and
+      # Container Apps Jobs pull the image fresh on every execution — so as
+      # long as CI's build-worker step pushed the new `main-latest` tag,
+      # the next sync triggered by the orchestrator will use the new code.
+      # If you ever pin the Job to a SHA tag, add an update step here.
 
   # ── Run migrations after deploy ───────────────────────────────────────────
   migrate:

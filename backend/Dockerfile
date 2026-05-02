@@ -1,51 +1,68 @@
-# ── Stage 1: Build ──────────────────────────────────────────────────────────
+# Build context: REPO ROOT (not ./backend).
+# This is because backend now depends on `@databridge/connectors` via
+# `file:../packages/connectors` — `npm ci` needs to see that path.
+# CI's `build-push-action` is configured with `context: .` and
+# `file: ./backend/Dockerfile` to make this work.
+
+# ── Stage 1: Build connectors package + backend ─────────────────────────────
 FROM node:20-slim AS builder
 
-WORKDIR /app
+WORKDIR /build
 
-# Install build essentials for native modules
+# Install build essentials for native modules (DuckDB, better-sqlite3)
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
-# Copy package files and install ALL deps (including devDependencies for tsc)
-COPY package.json package-lock.json ./
-RUN npm ci
+# ── Build the shared connectors package first ──
+COPY packages/connectors/package.json ./packages/connectors/package.json
+COPY packages/connectors/package-lock.json ./packages/connectors/package-lock.json
+COPY packages/connectors/tsconfig.json  ./packages/connectors/tsconfig.json
+RUN cd packages/connectors && npm ci
+COPY packages/connectors/src ./packages/connectors/src
+RUN cd packages/connectors && npm run build && npm prune --production
 
-# Copy source
-COPY tsconfig.json tsconfig.build.json ./
-COPY knexfile.ts ./
-COPY src/ ./src/
+# ── Install + build the backend ──
+COPY backend/package.json backend/package-lock.json ./backend/
+RUN cd backend && npm ci
+COPY backend/tsconfig.json backend/tsconfig.build.json ./backend/
+COPY backend/knexfile.ts ./backend/knexfile.ts
+COPY backend/src/ ./backend/src/
+RUN cd backend && npx tsc --project tsconfig.build.json
 
-# Compile TypeScript → JavaScript in /app/dist
-# Type checking is done in CI (test.yml); Docker build uses transpile-only for speed
-RUN npx tsc --project tsconfig.build.json
-
-# ── Stage 2: Production ────────────────────────────────────────────────────
+# ── Stage 2: Production image ───────────────────────────────────────────────
 FROM node:20-slim AS production
 
 WORKDIR /app
 
-# Install runtime deps for native modules (better-sqlite3, duckdb)
-# ca-certificates: SSL certs for DuckDB's Azure extension
-# libcurl4-openssl-dev: required when azure_transport_option_type = 'curl'
-RUN apt-get update && apt-get install -y wget python3 make g++ ca-certificates libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+      wget python3 make g++ ca-certificates libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install only production deps
-COPY package.json package-lock.json ./
+# The backend's `file:../packages/connectors` dep resolution looks RELATIVE to
+# the backend's package.json. Recreate the same on-disk layout the build had:
+#   /app/backend/        ← runtime cwd
+#   /app/packages/connectors/  ← what file:../packages/connectors resolves to
+COPY --from=builder /build/packages/connectors/package.json ./packages/connectors/package.json
+COPY --from=builder /build/packages/connectors/dist          ./packages/connectors/dist
+COPY --from=builder /build/packages/connectors/node_modules  ./packages/connectors/node_modules
+
+# Install the backend's production deps, pointing the WORKDIR at /app/backend
+# so the relative `file:../packages/connectors` link resolves correctly.
+WORKDIR /app/backend
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev
 
-# Copy compiled JS from builder
-COPY --from=builder /app/dist ./dist
+# Copy compiled JS + knexfile
+COPY --from=builder /build/backend/dist ./dist
+COPY backend/knexfile.ts ./
 
-# Copy knexfile (needed for runtime migrations)
-COPY knexfile.ts ./
-
-# We still need ts-node for knexfile.ts at migration time
+# Migrations are run via `knex migrate:latest` which loads knexfile.ts via
+# ts-node, so we need it at runtime even though the app itself is plain JS.
 RUN npm install ts-node typescript
 
 # DuckDB's Azure extension is compiled on RHEL and looks for CA certs at
 # /etc/pki/tls/certs/ca-bundle.crt. On Debian-based images (node:20-slim)
-# the certs live at /etc/ssl/certs/ca-certificates.crt. Create a symlink
-# so the extension finds them. Also set CURL_CA_BUNDLE as a fallback.
+# the certs live at /etc/ssl/certs/ca-certificates.crt. Create a symlink so
+# the extension finds them. Also set CURL_CA_BUNDLE as a fallback.
 RUN mkdir -p /etc/pki/tls/certs && \
     ln -s /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
 ENV CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
@@ -61,11 +78,9 @@ db.exec('INSTALL delta; INSTALL azure;', (err) => {\
   db.close(() => process.exit(0));\
 });"
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1
 
 EXPOSE 3001
 
-# Run compiled JS directly (not ts-node) for performance
 CMD ["node", "dist/index.js"]

@@ -191,22 +191,29 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
           // Fire-and-forget — we don't wait for the stop to land before
           // resolving the handle. The poll loop has already noted
           // pollerStopped and will resolve with EXIT_CANCELLED.
-          this.client.jobsExecutions
-            .beginStopAndWait(this.cfg.resourceGroup, this.cfg.jobName, executionName)
+          // Note: stop-execution lives on the Jobs operations group
+          // (not JobsExecutions) — the SDK exposes it as `jobs.beginStopExecutionAndWait`.
+          this.client.jobs
+            .beginStopExecutionAndWait(this.cfg.resourceGroup, this.cfg.jobName, executionName)
             .catch((err) => log.warn({ err, executionName }, 'failed to stop job execution'));
         }
       },
     };
   }
 
+  /**
+   * The SDK only exposes `jobsExecutions.list(...)` (no per-execution `.get`),
+   * so we paginate and find the row by name. Lists are short (Container Apps
+   * keeps recent executions) and we only call this once every 2s during a
+   * sync — overhead is negligible.
+   */
   private async fetchExecutionStatus(executionName: string): Promise<string | undefined> {
     try {
-      const exec = await this.client.jobsExecutions.get(
-        this.cfg.resourceGroup,
-        this.cfg.jobName,
-        executionName,
-      );
-      return exec.status;
+      const iter = this.client.jobsExecutions.list(this.cfg.resourceGroup, this.cfg.jobName);
+      for await (const exec of iter) {
+        if (exec.name === executionName) return exec.status;
+      }
+      return undefined;
     } catch (err) {
       log.warn({ err, executionName }, 'failed to fetch execution status; assuming still running');
       return undefined;
