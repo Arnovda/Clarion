@@ -20,15 +20,16 @@
 
 import { BaseSourceConnector } from '../BaseSourceConnector';
 import { HttpClient } from '../HttpClient';
-import type {
-  ConnectorConfig,
-  EntityDescriptor,
-  ProbeContext,
-  SourceConnector,
-  SyncContext,
-  SyncOptions,
-  SyncResult,
-  TestResult,
+import {
+  CancellationError,
+  type ConnectorConfig,
+  type EntityDescriptor,
+  type ProbeContext,
+  type SourceConnector,
+  type SyncContext,
+  type SyncOptions,
+  type SyncResult,
+  type TestResult,
 } from '../types';
 import { asEntityDescriptors, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
@@ -200,6 +201,11 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     });
 
     // ── Sync each selected entity ──────────────────────────────────────
+    // Per-entity isolation: an error on one entity is recorded as a
+    // warning and the loop continues with the rest. Only cancellation
+    // aborts the whole sync. This is meaningfully better UX than
+    // failing the entire sync when, say, one wide-table endpoint
+    // rejects a filter — you still keep the work that succeeded.
     const rowCounts: Record<string, number> = {};
 
     for (const entity of resolved) {
@@ -209,11 +215,19 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       });
       ctx.log.info(`syncing ${entity.name}`, { apiPath: entity.apiPath });
 
-      const written = await this.syncOneEntity(http, config, entity, ctx);
-      rowCounts[entity.name] = written;
+      try {
+        const written = await this.syncOneEntity(http, config, entity, ctx);
+        rowCounts[entity.name] = written;
 
-      if (written === 0) {
-        warnings.push(`Entity '${entity.name}' returned no rows.`);
+        if (written === 0) {
+          warnings.push(`Entity '${entity.name}' returned no rows.`);
+        }
+      } catch (err) {
+        if (err instanceof CancellationError) throw err; // never swallow cancellation
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.log.warn(`entity '${entity.name}' failed — continuing with remaining entities`, { error: msg });
+        warnings.push(`Entity '${entity.name}' failed: ${msg}`);
+        rowCounts[entity.name] = 0;
       }
     }
 

@@ -184,9 +184,11 @@ export class HttpClient {
     }
 
     // Anything else → throw a structured error with a redacted excerpt.
+    // Include the body excerpt directly in the message so it shows up in
+    // worker IPC events (which only carry .message, not the full HttpError).
     const excerpt = excerptOfBody(resp.data);
     throw new HttpError(
-      `HTTP ${resp.status} from ${this.safeUrl(req)}`,
+      `HTTP ${resp.status} from ${this.safeUrl(req)}${excerpt ? ` — ${excerpt}` : ''}`,
       resp.status,
       this.safeUrl(req),
       excerpt,

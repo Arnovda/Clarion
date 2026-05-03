@@ -268,9 +268,12 @@ describe('ExactOnlineConnector — sync', () => {
     expect(secondPage.isDone()).toBe(false);
   });
 
-  it('propagates HTTP 5xx as a sync failure (after retries)', async () => {
+  it('records HTTP 5xx as a per-entity warning and continues', async () => {
     mockTokenRefresh();
-    // Six 500s — exceeds default maxRetries=5
+    // Six 500s — exceeds default maxRetries=5. Per-entity error tolerance
+    // means this entity gets warned + skipped, but sync() resolves
+    // successfully so other entities (none here, but in real usage) keep
+    // running.
     nock(BASE_URL)
       .get(`/api/v1/${DIVISION}/crm/Accounts`)
       .times(6)
@@ -280,6 +283,10 @@ describe('ExactOnlineConnector — sync', () => {
     const ctx = makeCtx(root);
     const c = new ExactOnlineConnector();
 
-    await expect(c.sync(makeConfig(), { entities: ['Accounts'] }, ctx)).rejects.toThrow(/HTTP 500/);
+    const result = await c.sync(makeConfig(), { entities: ['Accounts'] }, ctx);
+    expect(result.rowCounts).toEqual({ Accounts: 0 });
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.stringMatching(/Entity 'Accounts' failed.*HTTP 500/)]),
+    );
   }, 30_000);
 });
