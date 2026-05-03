@@ -88,18 +88,23 @@ export async function up(knex: Knex): Promise<void> {
   );
 
   // ── Row-level security ───────────────────────────────────────────────────
-  await knex.raw(`ALTER TABLE source_sync_runs ENABLE ROW LEVEL SECURITY`);
-  await knex.raw(`ALTER TABLE source_sync_runs FORCE ROW LEVEL SECURITY`);
-  await knex.raw(`
-    CREATE POLICY source_sync_runs_tenant ON source_sync_runs
-    USING (tenant_id = current_setting('app.current_tenant')::integer)
-    WITH CHECK (tenant_id = current_setting('app.current_tenant')::integer)
-  `);
-
-  // Grant the runtime role the perms it needs. The `databridge_app` role is
-  // the RLS-enforced login (see backend/src/db/knex.ts).
-  await knex.raw(`GRANT SELECT, INSERT, UPDATE ON source_sync_runs TO databridge_app`);
-  await knex.raw(`GRANT USAGE, SELECT ON SEQUENCE source_sync_runs_id_seq TO databridge_app`);
+  // Only applied when the dual-role setup (databridge + databridge_app) is in
+  // place. In single-role deployments (Azure Postgres Flexible Server with
+  // the default `databridge` role only), tenant scoping relies on the
+  // application layer setting `SET app.current_tenant` per-request — the
+  // database-level RLS policy is unnecessary.
+  const hasRole = await knex.raw(`SELECT 1 FROM pg_roles WHERE rolname = 'databridge_app'`);
+  if (hasRole.rows.length > 0) {
+    await knex.raw(`ALTER TABLE source_sync_runs ENABLE ROW LEVEL SECURITY`);
+    await knex.raw(`ALTER TABLE source_sync_runs FORCE ROW LEVEL SECURITY`);
+    await knex.raw(`
+      CREATE POLICY source_sync_runs_tenant ON source_sync_runs
+      USING (tenant_id = current_setting('app.current_tenant')::integer)
+      WITH CHECK (tenant_id = current_setting('app.current_tenant')::integer)
+    `);
+    await knex.raw(`GRANT SELECT, INSERT, UPDATE ON source_sync_runs TO databridge_app`);
+    await knex.raw(`GRANT USAGE, SELECT ON SEQUENCE source_sync_runs_id_seq TO databridge_app`);
+  }
 }
 
 export async function down(knex: Knex): Promise<void> {
