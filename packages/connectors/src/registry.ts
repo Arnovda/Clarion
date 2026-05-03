@@ -65,6 +65,9 @@ export function listConnectorCatalog(): ConnectorCatalogEntry[] {
       iconSvg: c.iconSvg,
       configSchema: c.configSchema,
       egressAllowList: [...c.egressAllowList],
+      // Surface OAuth capability so the wizard can render "Connect with X"
+      // instead of paste-token fields. Connectors without OAuth omit it.
+      oauth: c.oauth ? { preAuthFields: [...c.oauth.preAuthFields] } : undefined,
     };
   });
 }
@@ -75,6 +78,7 @@ export interface ConnectorCatalogEntry {
   iconSvg?: string;
   configSchema: SourceConnector['configSchema'];
   egressAllowList: string[];
+  oauth?: { preAuthFields: string[] };
 }
 
 /** For tests: empty the registry. Never call from production code. */

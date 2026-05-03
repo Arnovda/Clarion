@@ -9,6 +9,7 @@
 // ─── Types (the contract) ─────────────────────────────────────────────────
 export type {
   SourceConnector,
+  OAuthSpec,
   ConnectorConfig,
   EntityDescriptor,
   ProbeContext,

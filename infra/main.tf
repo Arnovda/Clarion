@@ -587,6 +587,16 @@ resource "azurerm_container_app" "backend" {
         name  = "AZURE_HEARTBEAT_CONTAINER"
         value = azurerm_storage_container.sync_heartbeat.name
       }
+      # OAuth callback base — providers (ExactOnline / NetSuite / etc.) verify
+      # that the redirect_uri sent on /auth matches the one sent on /token, and
+      # the URL must be pre-registered in the customer's app registration.
+      # Pinning to the deployed backend's external URL means the URL never
+      # surprises the customer — same value across replicas, same value over
+      # time. See routes/sources.ts:computeRedirectUri.
+      env {
+        name  = "OAUTH_REDIRECT_BASE_URL"
+        value = "https://${var.project_name}-${var.environment}-backend.${azurerm_container_app_environment.main.default_domain}"
+      }
     }
   }
 

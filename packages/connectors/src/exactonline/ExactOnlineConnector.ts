@@ -32,12 +32,13 @@ import type {
 } from '../types';
 import { asEntityDescriptors, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
-import { AuthRefreshError, refreshAccessToken } from './oauth';
+import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
 
 export class ExactOnlineConnector extends BaseSourceConnector implements SourceConnector {
   readonly type = 'exactonline';
   readonly displayName = 'Exact Online';
   readonly configSchema = exactOnlineConfigSchema;
+  readonly oauth = exactOnlineOAuth;
   readonly egressAllowList: readonly string[] = [
     '*.exactonline.nl',
     '*.exactonline.be',

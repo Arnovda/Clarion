@@ -21,7 +21,7 @@
  */
 
 import axios, { AxiosError } from 'axios';
-import type { Logger } from '../types';
+import type { ConnectorConfig, Logger, OAuthSpec } from '../types';
 
 export interface RefreshResult {
   accessToken: string;
@@ -128,3 +128,98 @@ function excerptOf(body: unknown, max = 200): string | undefined {
   }
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
+
+// ─── Authorization Code flow (the "Connect with X" UX) ───────────────────
+/**
+ * The connector's `OAuthSpec`. The platform owns state generation, popup
+ * management, and the pending-row lifecycle; this just provides the URL
+ * builder + code exchanger.
+ *
+ * Reference: https://developers.exactonline.com/#OAuth%20overview.html
+ *
+ * EO quirks worth noting:
+ *   • `force_login=0` skips the username/password screen if the user has
+ *     a valid session — better UX, identical security.
+ *   • The redirect_uri sent to /auth MUST exactly match the one sent to
+ *     /token. The platform passes the same string to both sides.
+ *   • Scopes are NOT specified in OAuth params — they're configured in
+ *     the user's EO app registration.
+ *   • EO returns refresh_token + access_token together on Authorization
+ *     Code exchange; both have the same TTL semantics as `refreshAccessToken`
+ *     above (refresh tokens rotate on every use).
+ */
+interface ExactOnlineTokenExchange {
+  access_token: string;
+  refresh_token: string;
+  expires_in?: number;
+  token_type?: string;
+}
+
+export const exactOnlineOAuth: OAuthSpec = {
+  preAuthFields: ['clientId', 'clientSecret', 'division', 'baseUrl'],
+
+  buildAuthUrl(config, state, redirectUri) {
+    const cfg = config as { clientId: string; baseUrl: string };
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: cfg.clientId,
+      redirect_uri: redirectUri,
+      state,
+      // Skip the username/password screen if the user has a live EO session.
+      force_login: '0',
+    });
+    return `${cfg.baseUrl.replace(/\/$/, '')}/api/oauth2/auth?${params.toString()}`;
+  },
+
+  async exchangeCode(config, code, redirectUri): Promise<ConnectorConfig> {
+    const cfg = config as {
+      clientId: string;
+      clientSecret: string;
+      baseUrl: string;
+    };
+    const url = `${cfg.baseUrl.replace(/\/$/, '')}/api/oauth2/token`;
+
+    let resp;
+    try {
+      resp = await axios.post(
+        url,
+        new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          // MUST match the redirect_uri sent to /auth — EO verifies.
+          redirect_uri: redirectUri,
+          client_id: cfg.clientId,
+          client_secret: cfg.clientSecret,
+        }),
+        {
+          headers: { Accept: 'application/json' },
+          timeout: 30_000,
+          validateStatus: () => true,
+        },
+      );
+    } catch (err) {
+      const e = err as AxiosError;
+      throw new Error(`Network error during OAuth code exchange: ${e.code ?? e.message}`);
+    }
+
+    if (resp.status !== 200) {
+      const excerpt = excerptOf(resp.data);
+      throw new Error(
+        `OAuth code exchange failed (HTTP ${resp.status})${excerpt ? `: ${excerpt}` : ''}`,
+      );
+    }
+
+    const body = resp.data as Partial<ExactOnlineTokenExchange>;
+    if (!body.access_token || !body.refresh_token) {
+      throw new Error(
+        'OAuth code exchange succeeded but response was missing access_token or refresh_token',
+      );
+    }
+
+    // Return the full config = pre-auth fields + the newly-acquired refresh_token.
+    return {
+      ...config,
+      refreshToken: body.refresh_token,
+    };
+  },
+};

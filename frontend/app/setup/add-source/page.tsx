@@ -34,6 +34,8 @@ interface SourceTypeMeta {
   iconSvg?: string;
   configSchema: JsonSchemaObject;
   egressAllowList: string[];
+  /** When set, the wizard renders a "Connect with X" button instead of asking for paste tokens. */
+  oauth?: { preAuthFields: string[] };
 }
 
 interface JsonSchemaObject {
@@ -102,6 +104,11 @@ function AddSourceWizard() {
   const [loadingEntities, setLoadingEntities] = useState(false);
   const [selectedEntities, setSelectedEntities] = useState<Set<string>>(new Set());
   const [saveError, setSaveError] = useState<string | null>(null);
+  // OAuth-flow state. When the user clicks "Connect with X" we get back a
+  // stateToken; subsequent test/list-entities/save calls reference it instead
+  // of inline `config`. The refresh_token never leaves the backend.
+  const [oauthStateToken, setOauthStateToken] = useState<string | null>(null);
+  const [oauthInProgress, setOauthInProgress] = useState(false);
 
   // Load source-types catalog on mount. If a `?type=` was provided, jump
   // straight to step 2 once the catalog is in.
@@ -146,12 +153,17 @@ function AddSourceWizard() {
     setStep('configure');
   }
 
+  /** Body for /test, /list-entities, and /connections/source — inline config OR oauthStateToken. */
+  function probeBody(): { config?: Record<string, unknown>; oauthStateToken?: string } {
+    return oauthStateToken ? { oauthStateToken } : { config };
+  }
+
   async function handleTest() {
     if (!pickedType) return;
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await api.post(`/source-types/${pickedType.type}/test`, { config });
+      const res = await api.post(`/source-types/${pickedType.type}/test`, probeBody());
       setTestResult(res.data?.data ?? { ok: false, error: 'Empty response' });
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })
@@ -164,11 +176,106 @@ function AddSourceWizard() {
     }
   }
 
+  /**
+   * OAuth Authorization Code flow.
+   * 1. POST /oauth-init with the user's pre-auth fields → get { authUrl, stateToken }
+   * 2. Open authUrl in a popup window.
+   * 3. Listen for postMessage from the callback page (kind === 'databridge:oauth').
+   * 4. On success message, POST /oauth-finish with { stateToken, code } — backend
+   *    exchanges the code for tokens and updates the pending row.
+   * 5. Stash stateToken in component state; subsequent calls send it instead of `config`.
+   * 6. Auto-run testConnection so the user sees ✓ Connected before moving on.
+   *
+   * The refresh_token never reaches the browser — it's exchanged backend-side
+   * and stored encrypted. Only the stateToken (an opaque pointer) is in the
+   * wizard's memory.
+   */
+  async function handleOAuthConnect() {
+    if (!pickedType?.oauth) return;
+    setOauthInProgress(true);
+    setTestResult(null);
+    try {
+      const initRes = await api.post(
+        `/source-types/${pickedType.type}/oauth-init`,
+        { config },
+      );
+      const data = initRes.data?.data as { authUrl: string; stateToken: string } | undefined;
+      if (!data?.authUrl || !data?.stateToken) {
+        throw new Error('oauth-init returned an unexpected response');
+      }
+
+      // Open popup. Centred 600x700 over current window.
+      const w = 600, h = 720;
+      const left = (window.screen.width  - w) / 2 + (window.screenLeft ?? 0);
+      const top  = (window.screen.height - h) / 2 + (window.screenTop  ?? 0);
+      const popup = window.open(
+        data.authUrl,
+        'databridge-oauth',
+        `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no`,
+      );
+      if (!popup) {
+        throw new Error('Popup blocked — please allow popups for this site and try again');
+      }
+
+      // Wait for postMessage from the popup.
+      const result = await new Promise<{ ok: true; code: string; state: string } | { ok: false; error: string }>((resolve, reject) => {
+        let resolved = false;
+        const onMessage = (ev: MessageEvent) => {
+          const m = ev.data;
+          if (!m || m.kind !== 'databridge:oauth') return;
+          window.removeEventListener('message', onMessage);
+          resolved = true;
+          clearInterval(closedCheck);
+          resolve(m);
+        };
+        // If the user closes the popup without completing, error out.
+        const closedCheck = setInterval(() => {
+          if (popup.closed && !resolved) {
+            clearInterval(closedCheck);
+            window.removeEventListener('message', onMessage);
+            reject(new Error('Popup closed before authorization completed'));
+          }
+        }, 500);
+        window.addEventListener('message', onMessage);
+      });
+
+      if (!result.ok) {
+        throw new Error(result.error ?? 'OAuth authorization failed');
+      }
+      if (result.state !== data.stateToken) {
+        // CSRF guard — the state we got back should match what we issued.
+        throw new Error('OAuth state mismatch');
+      }
+
+      // Hand the code back to the backend to complete the exchange.
+      await api.post(`/source-types/${pickedType.type}/oauth-finish`, {
+        stateToken: data.stateToken,
+        code: result.code,
+      });
+
+      setOauthStateToken(data.stateToken);
+      // Fire testConnection so the user sees the ✓ green block.
+      const testRes = await api.post(
+        `/source-types/${pickedType.type}/test`,
+        { oauthStateToken: data.stateToken },
+      );
+      setTestResult(testRes.data?.data ?? { ok: true });
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'OAuth flow failed';
+      setTestResult({ ok: false, error: msg });
+    } finally {
+      setOauthInProgress(false);
+    }
+  }
+
   async function handleProceedToEntities() {
     if (!pickedType) return;
     setLoadingEntities(true);
     try {
-      const res = await api.post(`/source-types/${pickedType.type}/list-entities`, { config });
+      const res = await api.post(`/source-types/${pickedType.type}/list-entities`, probeBody());
       setEntities(res.data?.data ?? []);
       setStep('pick-entities');
     } catch (err) {
@@ -194,7 +301,9 @@ function AddSourceWizard() {
       const res = await api.post('/connections/source', {
         name: name.trim() || pickedType.displayName,
         connectorType: pickedType.type,
-        config,
+        // OAuth flow: backend reads the full config from oauth_pending via stateToken.
+        // Paste-token flow: send config inline.
+        ...(oauthStateToken ? { oauthStateToken } : { config }),
         selectedEntities: Array.from(selectedEntities),
       });
       const id = res.data?.data?.connectionId;
@@ -256,6 +365,9 @@ function AddSourceWizard() {
               onBack={() => setStep('pick-type')}
               onNext={handleProceedToEntities}
               loadingEntities={loadingEntities}
+              oauthStateToken={oauthStateToken}
+              oauthInProgress={oauthInProgress}
+              onOAuthConnect={handleOAuthConnect}
             />
           )}
           {step === 'pick-entities' && pickedType && (
@@ -380,10 +492,37 @@ function Configure(props: {
   onBack: () => void;
   onNext: () => void;
   loadingEntities: boolean;
+  oauthStateToken: string | null;
+  oauthInProgress: boolean;
+  onOAuthConnect: () => void;
 }) {
+  // When the connector supports OAuth, only pre-auth fields are shown in the
+  // form — refresh_token etc. are filled in by the OAuth dance.
+  const isOAuth = !!props.type.oauth;
+  const oauthDone = !!props.oauthStateToken;
+  const visibleFieldKeys = useMemo(() => {
+    const all = Object.keys(props.type.configSchema.properties);
+    if (!isOAuth) return all;
+    const preAuth = new Set(props.type.oauth!.preAuthFields);
+    return all.filter((k) => preAuth.has(k));
+  }, [isOAuth, props.type]);
+
+  const visibleSchema = useMemo<JsonSchemaObject>(() => {
+    if (!isOAuth) return props.type.configSchema;
+    const filteredProps: Record<string, JsonSchemaProperty> = {};
+    for (const k of visibleFieldKeys) {
+      filteredProps[k] = props.type.configSchema.properties[k];
+    }
+    return {
+      type: 'object',
+      required: (props.type.configSchema.required ?? []).filter((k) => visibleFieldKeys.includes(k)),
+      properties: filteredProps,
+    };
+  }, [isOAuth, props.type.configSchema, visibleFieldKeys]);
+
   const required = useMemo(
-    () => new Set(props.type.configSchema.required ?? []),
-    [props.type.configSchema],
+    () => new Set(visibleSchema.required ?? []),
+    [visibleSchema],
   );
   const allRequiredFilled = useMemo(() => {
     return Array.from(required).every((k) => {
@@ -394,11 +533,6 @@ function Configure(props: {
 
   function setField(key: string, value: unknown) {
     props.setConfig({ ...props.config, [key]: value });
-    // Reset stale test result whenever fields change
-    if (props.testResult) {
-      // Only clear, never re-test; user has to re-click.
-      // Done via the parent ignoring stale state — we just note the change.
-    }
   }
 
   return (
@@ -407,7 +541,10 @@ function Configure(props: {
         Configure {props.type.displayName}
       </h2>
       <p className="text-[13px] text-ink-3 mb-6">
-        These credentials are encrypted at rest. You can change them later by re-running this wizard.
+        {isOAuth
+          ? 'Fill in your app registration details, then click Connect — you\'ll be redirected to ' +
+            props.type.displayName + ' to authorize.'
+          : 'These credentials are encrypted at rest. You can change them later by re-running this wizard.'}
       </p>
 
       {/* Connection name */}
@@ -427,27 +564,48 @@ function Configure(props: {
         </p>
       </div>
 
-      {/* Auto-generated form */}
+      {/* Auto-generated form. In OAuth mode, only pre-auth fields are shown. */}
       <SchemaForm
-        schema={props.type.configSchema}
+        schema={visibleSchema}
         value={props.config}
         onChange={setField}
       />
 
-      {/* Test connection */}
+      {/* Test connection / Connect-with-OAuth */}
       <div className="mt-6 pt-6 border-t border-line">
-        <button
-          onClick={props.onTest}
-          disabled={props.testing || !allRequiredFilled}
-          className="px-4 py-2 text-[13px] border border-line rounded-md hover:border-ocean hover:bg-ocean-softer/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-        >
-          {props.testing ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
-          ) : (
-            <Plug className="w-3.5 h-3.5" strokeWidth={2} />
-          )}
-          {props.testing ? 'Testing…' : 'Test connection'}
-        </button>
+        {isOAuth ? (
+          <button
+            onClick={props.onOAuthConnect}
+            disabled={props.oauthInProgress || !allRequiredFilled || oauthDone}
+            className="px-4 py-2 text-[13px] bg-ocean text-white font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+          >
+            {props.oauthInProgress ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+            ) : oauthDone ? (
+              <Check className="w-3.5 h-3.5" strokeWidth={2.5} />
+            ) : (
+              <Plug className="w-3.5 h-3.5" strokeWidth={2} />
+            )}
+            {props.oauthInProgress
+              ? 'Waiting for authorization…'
+              : oauthDone
+                ? 'Connected — click Continue'
+                : `Connect with ${props.type.displayName}`}
+          </button>
+        ) : (
+          <button
+            onClick={props.onTest}
+            disabled={props.testing || !allRequiredFilled}
+            className="px-4 py-2 text-[13px] border border-line rounded-md hover:border-ocean hover:bg-ocean-softer/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+          >
+            {props.testing ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+            ) : (
+              <Plug className="w-3.5 h-3.5" strokeWidth={2} />
+            )}
+            {props.testing ? 'Testing…' : 'Test connection'}
+          </button>
+        )}
         {props.testResult && (
           <div
             className={cn(

@@ -1,40 +1,34 @@
 /**
  * Source-connector routes — drives the "Add source" wizard.
  *
- *   GET  /api/source-types                       → list registered connectors + their schemas
- *   POST /api/source-types/:type/test            → testConnection
- *   POST /api/source-types/:type/list-entities   → listEntities
+ *   GET  /api/source-types                              → list registered connectors + their schemas
+ *   POST /api/source-types/:type/oauth-init             → start an OAuth handshake; returns authUrl + stateToken
+ *   GET  /api/source-types/:type/oauth-callback         → OAuth provider's redirect target; exchanges code for tokens
+ *   POST /api/source-types/:type/test                   → testConnection (accepts inline config OR oauthStateToken)
+ *   POST /api/source-types/:type/list-entities          → listEntities (accepts inline config OR oauthStateToken)
  *
- * All routes are admin-only and tenant-scoped via the standard middleware
- * stack. The connector framework runs in-process for these endpoints —
- * isolation only matters during sync (the long-running job that runs in
- * the dedicated worker container).
- *
- * Sync triggering and run history live in `routes/connections.ts`
- * (POST /api/connections/:id/sync, etc.) so they sit next to the existing
- * connection CRUD.
+ * Sync triggering and run history live in `routes/connections.ts`.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import {
+  ConfigValidationError,
   createAdapterLogger,
   getConnector,
   listConnectorCatalog,
-  ConfigValidationError,
+  type ConnectorConfig,
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { semanticDb } from '../db/knex';
+import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
 const router = Router();
 
 // ─── GET /api/source-types ────────────────────────────────────────────────
-/**
- * Returns the catalog of connector types the platform supports — drives
- * the "pick a source" grid in the wizard. Public schema data only;
- * never includes credentials or runtime state.
- */
 router.get('/', requireAuth, (_req: Request, res: Response) => {
   const catalog = listConnectorCatalog();
   res.json({
@@ -45,32 +39,281 @@ router.get('/', requireAuth, (_req: Request, res: Response) => {
       iconSvg: c.iconSvg,
       configSchema: c.configSchema,
       egressAllowList: c.egressAllowList,
+      // Surface OAuth capability + which fields are pre-auth so the wizard can
+      // render the right form. Connectors without OAuth omit this.
+      oauth: c.oauth ? { preAuthFields: [...c.oauth.preAuthFields] } : undefined,
     })),
   });
 });
 
 // ─── Shared validation ────────────────────────────────────────────────────
-/**
- * Both test and list-entities accept a raw config object whose shape is
- * connector-specific. We don't validate the contents at the route layer
- * (the connector's own JSON Schema does that, with better error messages);
- * we just enforce that there IS a config object.
- */
 const probeSchema = z.object({
   body: z.object({
-    config: z.record(z.string(), z.unknown()),
+    config: z.record(z.string(), z.unknown()).optional(),
+    oauthStateToken: z.string().optional(),
+  }).refine((v) => !!v.config || !!v.oauthStateToken, {
+    message: 'Body must include either `config` or `oauthStateToken`',
   }),
   params: z.object({
     type: z.string().min(1),
   }),
 });
 
-// ─── POST /api/source-types/:type/test ────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────
 /**
- * Validates credentials by calling `connector.testConnection`. Always
- * returns 200 with `{ ok, error?, details? }` — failures here are an
- * expected user-error path (bad token, wrong region), not a server error.
+ * Resolve the config for a probe call. Either inline (config) or via
+ * stateToken (look up the latest pending OAuth row, decrypt its config).
+ *
+ * The stateToken path is gated by tenant + initiating user — a stateToken
+ * from one tenant is meaningless to another, even if the random bits leaked.
  */
+async function resolveProbeConfig(
+  body: { config?: Record<string, unknown>; oauthStateToken?: string },
+  user: { tenantId: number; sub: number },
+): Promise<Record<string, unknown>> {
+  if (body.config) return body.config;
+  if (!body.oauthStateToken) throw new Error('Missing config or oauthStateToken');
+  await semanticDb.raw(`SET app.current_tenant = '${Number(user.tenantId)}'`);
+  const row = await semanticDb('oauth_pending')
+    .where({
+      state_token: body.oauthStateToken,
+      tenant_id: user.tenantId,
+      initiated_by_user_id: user.sub,
+    })
+    .first();
+  if (!row) throw new Error('Unknown or expired stateToken');
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    throw new Error('OAuth session expired — re-run the Connect step');
+  }
+  return JSON.parse(decryptCredentials(row.encrypted_config));
+}
+
+/**
+ * Compute the redirect URI the OAuth provider should send the user back to.
+ *
+ * Order of preference:
+ *   1. `OAUTH_REDIRECT_BASE_URL` env var — the canonical answer in prod (the
+ *      backend's external URL might not be reflected in `req.host` if running
+ *      behind a custom domain or proxy).
+ *   2. `req.protocol`://`req.get('host')` — fallback for local dev.
+ */
+function computeRedirectUri(req: Request, connectorType: string): string {
+  const base = process.env.OAUTH_REDIRECT_BASE_URL?.replace(/\/$/, '')
+    ?? `${req.protocol}://${req.get('host')}`;
+  return `${base}/api/source-types/${encodeURIComponent(connectorType)}/oauth-callback`;
+}
+
+// ─── POST /api/source-types/:type/oauth-init ──────────────────────────────
+/**
+ * Kicks off an OAuth Authorization Code flow.
+ *   • Encrypts + stashes the user's pre-auth fields in `oauth_pending`.
+ *   • Generates a CSRF-resistant state token (random 32 bytes, base64url).
+ *   • Asks the connector to build the provider's authorisation URL.
+ *   • Returns { authUrl, stateToken } — the wizard opens authUrl in a popup
+ *     and waits for postMessage from the callback page.
+ */
+router.post(
+  '/:type/oauth-init',
+  requireAuth,
+  requireRole('admin'),
+  validate(z.object({
+    body: z.object({ config: z.record(z.string(), z.unknown()) }),
+    params: z.object({ type: z.string().min(1) }),
+  })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { type } = req.params;
+      const { config } = req.body as { config: Record<string, unknown> };
+
+      let connector;
+      try {
+        connector = getConnector(type);
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: e.message });
+          return;
+        }
+        throw e;
+      }
+
+      if (!connector.oauth) {
+        res.status(400).json({
+          ok: false,
+          error: `Connector '${type}' does not support OAuth. Use paste-token instead.`,
+        });
+        return;
+      }
+
+      // CSRF guard: random 32 bytes, base64url. Long enough that brute-forcing
+      // a valid token (and matching tenant + user + non-expired row) is infeasible.
+      const stateToken = crypto.randomBytes(32).toString('base64url');
+      const redirectUri = computeRedirectUri(req, type);
+
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
+      const encryptedConfig = encryptCredentials(JSON.stringify(config));
+
+      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+      // Opportunistic GC: drop expired rows for this tenant.
+      await semanticDb('oauth_pending')
+        .where('tenant_id', req.user!.tenantId)
+        .andWhere('expires_at', '<', new Date())
+        .del();
+
+      await semanticDb('oauth_pending').insert({
+        tenant_id: req.user!.tenantId,
+        initiated_by_user_id: req.user!.sub,
+        connector_type: type,
+        status: 'pending',
+        state_token: stateToken,
+        encrypted_config: encryptedConfig,
+        redirect_uri: redirectUri,
+        expires_at: expiresAt,
+      });
+
+      const authUrl = connector.oauth.buildAuthUrl(config as ConnectorConfig, stateToken, redirectUri);
+      res.json({ ok: true, data: { authUrl, stateToken, redirectUri } });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── GET /api/source-types/:type/oauth-callback ───────────────────────────
+/**
+ * The OAuth provider's redirect target. Stateless — does NOT touch the DB.
+ * Renders an HTML page that postMessage's `{ ok, code, state }` (or
+ * `{ ok: false, error }`) to the opener window and closes the popup.
+ *
+ * The actual code-exchange + DB write happens in a separate auth'd endpoint
+ * (`POST /:type/oauth-finish`) that the wizard calls after receiving the
+ * postMessage. Splitting the work this way means we never need an
+ * unauthenticated DB path — RLS stays unbroken.
+ *
+ * Auth code lifetime is short (~10 min) and one-time-use, so the brief
+ * window where the code lives in the wizard's memory + postMessage payload
+ * is acceptable. The refresh_token, which is the truly sensitive token,
+ * never leaves the backend.
+ */
+router.get('/:type/oauth-callback', (req: Request, res: Response) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : null;
+  const state = typeof req.query.state === 'string' ? req.query.state : null;
+  const providerError = typeof req.query.error === 'string' ? req.query.error : null;
+
+  const result = providerError
+    ? { ok: false, error: `Provider error: ${providerError}` }
+    : !code || !state
+      ? { ok: false, error: 'Missing code or state' }
+      : { ok: true, code, state };
+
+  // Render an HTML page that posts the result to the opener and closes.
+  // `targetOrigin: '*'` because frontend + backend are on different
+  // subdomains; the wizard validates the message shape via `kind` field.
+  const safe = JSON.stringify(result).replace(/</g, '\\u003c');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!doctype html>
+<html><body style="font-family:system-ui;padding:2rem;color:#0f172a">
+<p>Returning to DataBridge…</p>
+<script>
+  (function() {
+    var msg = ${safe};
+    msg.kind = 'databridge:oauth';
+    if (window.opener && !window.opener.closed) {
+      try { window.opener.postMessage(msg, '*'); } catch (e) {}
+    }
+    setTimeout(function() { window.close(); }, 300);
+  })();
+</script>
+</body></html>`);
+});
+
+// ─── POST /api/source-types/:type/oauth-finish ────────────────────────────
+/**
+ * Auth'd finalisation step: takes the auth code the wizard captured from the
+ * popup callback, looks up the matching `oauth_pending` row (gated by
+ * tenant + initiator), exchanges the code for tokens via the connector's
+ * `OAuthSpec.exchangeCode`, and updates the row's encrypted config to
+ * include the freshly-acquired refresh_token.
+ *
+ * After this returns success, subsequent calls (test, list-entities, save)
+ * pass the SAME stateToken — backend resolves it to the now-full config.
+ */
+router.post(
+  '/:type/oauth-finish',
+  requireAuth,
+  requireRole('admin'),
+  validate(z.object({
+    body: z.object({
+      stateToken: z.string().min(1),
+      code: z.string().min(1),
+    }),
+    params: z.object({ type: z.string().min(1) }),
+  })),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { type } = req.params;
+      const { stateToken, code } = req.body as { stateToken: string; code: string };
+
+      let connector;
+      try {
+        connector = getConnector(type);
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: e.message });
+          return;
+        }
+        throw e;
+      }
+      if (!connector.oauth) {
+        res.status(400).json({ ok: false, error: `Connector '${type}' does not support OAuth` });
+        return;
+      }
+
+      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+      const row = await semanticDb('oauth_pending')
+        .where({
+          state_token: stateToken,
+          connector_type: type,
+          tenant_id: req.user!.tenantId,
+          initiated_by_user_id: req.user!.sub,
+        })
+        .first();
+      if (!row) {
+        res.status(404).json({ ok: false, error: 'Unknown or already-consumed stateToken' });
+        return;
+      }
+      if (row.status !== 'pending') {
+        // Idempotent: if already authorised, just return success.
+        res.json({ ok: true, data: { alreadyAuthorised: true } });
+        return;
+      }
+      if (new Date(row.expires_at).getTime() < Date.now()) {
+        res.status(400).json({ ok: false, error: 'OAuth session expired — please retry' });
+        return;
+      }
+
+      const partialConfig = JSON.parse(decryptCredentials(row.encrypted_config));
+      let fullConfig: Record<string, unknown>;
+      try {
+        fullConfig = await connector.oauth.exchangeCode(partialConfig, code, row.redirect_uri);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'OAuth code exchange failed';
+        res.status(400).json({ ok: false, error: msg });
+        return;
+      }
+
+      const reencrypted = encryptCredentials(JSON.stringify(fullConfig));
+      await semanticDb('oauth_pending')
+        .where({ id: row.id })
+        .update({ status: 'authorised', encrypted_config: reencrypted });
+
+      res.json({ ok: true, data: { ok: true } });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// ─── POST /api/source-types/:type/test ────────────────────────────────────
 router.post(
   '/:type/test',
   requireAuth,
@@ -79,7 +322,10 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { type } = req.params;
-      const { config } = req.body as { config: Record<string, unknown> };
+      const config = await resolveProbeConfig(
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+      );
 
       const connector = getConnector(type);
       const result = await connector.testConnection(config, {
@@ -95,9 +341,15 @@ router.post(
         res.status(400).json({ ok: false, error: err.message });
         return;
       }
-      if (err instanceof Error && err.message.startsWith('Unknown connector type')) {
-        res.status(404).json({ ok: false, error: err.message });
-        return;
+      if (err instanceof Error) {
+        if (err.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: err.message });
+          return;
+        }
+        if (err.message.includes('stateToken') || err.message.includes('OAuth session')) {
+          res.status(400).json({ ok: false, error: err.message });
+          return;
+        }
       }
       next(err);
     }
@@ -105,11 +357,6 @@ router.post(
 );
 
 // ─── POST /api/source-types/:type/list-entities ───────────────────────────
-/**
- * Returns the entity catalog for the wizard's multi-select. Curated for
- * connectors today; will become dynamic ($metadata-driven) without API
- * change later.
- */
 router.post(
   '/:type/list-entities',
   requireAuth,
@@ -118,7 +365,10 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { type } = req.params;
-      const { config } = req.body as { config: Record<string, unknown> };
+      const config = await resolveProbeConfig(
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+      );
 
       const connector = getConnector(type);
       const entities = await connector.listEntities(config, {
@@ -134,9 +384,15 @@ router.post(
         res.status(400).json({ ok: false, error: err.message });
         return;
       }
-      if (err instanceof Error && err.message.startsWith('Unknown connector type')) {
-        res.status(404).json({ ok: false, error: err.message });
-        return;
+      if (err instanceof Error) {
+        if (err.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: err.message });
+          return;
+        }
+        if (err.message.includes('stateToken') || err.message.includes('OAuth session')) {
+          res.status(400).json({ ok: false, error: err.message });
+          return;
+        }
       }
       next(err);
     }

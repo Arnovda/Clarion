@@ -49,6 +49,17 @@ export interface SourceConnector {
   readonly egressAllowList: readonly string[];
 
   /**
+   * Optional. Declares OAuth 2.0 Authorization Code support. When present,
+   * the wizard renders a "Connect with <displayName>" button instead of
+   * asking the user to paste tokens. The platform handles the popup +
+   * callback dance; the connector provides the URL builder + code exchanger.
+   *
+   * Connectors that don't support OAuth (or only support paste-token for
+   * now) leave this undefined.
+   */
+  readonly oauth?: OAuthSpec;
+
+  /**
    * Validate credentials. Returns `{ ok: true }` on success or
    * `{ ok: false, error }` with a user-facing reason on failure.
    *
@@ -81,6 +92,67 @@ export interface SourceConnector {
    * orchestrator marks the run failed, the user sees the error message.
    */
   sync(config: ConnectorConfig, opts: SyncOptions, ctx: SyncContext): Promise<SyncResult>;
+}
+
+// ─── OAuth specification ──────────────────────────────────────────────────
+/**
+ * OAuth 2.0 Authorization Code support for a connector. Three pieces:
+ *
+ *   1. `preAuthFields` — which fields of `configSchema` the user fills in
+ *      BEFORE the OAuth handshake (typically clientId, clientSecret, region).
+ *      The wizard renders these as form inputs; the rest of `configSchema`
+ *      (refresh_token, etc.) is hidden from the form.
+ *
+ *   2. `buildAuthUrl(...)` — pure function that constructs the URL we
+ *      redirect the user to. Connector-specific because OAuth providers
+ *      differ wildly in scope/state/PKCE conventions.
+ *
+ *   3. `exchangeCode(...)` — exchanges the callback's `code` for tokens
+ *      and returns the FULL config (originals + the freshly-acquired
+ *      refresh_token / access_token). Pure async function; no side effects.
+ *
+ * The platform owns: state-token generation, popup management, the temp
+ * `oauth_pending` row, postMessage to the wizard. Connectors only need
+ * the three above.
+ */
+export interface OAuthSpec {
+  /**
+   * Names of fields in `configSchema.properties` that the user must fill in
+   * BEFORE the auth redirect. Everything in `configSchema` not listed here
+   * is hidden from the wizard form (the connector + platform fill it in
+   * via the OAuth dance).
+   */
+  readonly preAuthFields: readonly string[];
+
+  /**
+   * Build the URL to redirect the user to. The connector knows its own
+   * scopes, response_type, and any vendor-specific quirks (e.g. EO's
+   * `force_login=0`).
+   *
+   * @param config       The user's pre-auth fields.
+   * @param state        Opaque token the platform wants echoed back; we
+   *                     use it as a CSRF guard + lookup key for the
+   *                     pending OAuth row.
+   * @param redirectUri  Absolute URL the OAuth provider should send the
+   *                     user back to after auth. The connector includes
+   *                     this in the auth URL; on `exchangeCode` it must
+   *                     pass the SAME value (OAuth providers verify
+   *                     redirect_uri matches between auth + token calls).
+   */
+  buildAuthUrl(config: ConnectorConfig, state: string, redirectUri: string): string;
+
+  /**
+   * Exchange the `code` from the callback for tokens. Returns the
+   * connector's full config (preAuthFields + acquired tokens), ready
+   * to be encrypted + persisted by the platform.
+   *
+   * Throw on failure — platform turns it into a user-facing error.
+   */
+  exchangeCode(
+    config: ConnectorConfig,
+    code: string,
+    redirectUri: string,
+  ): Promise<ConnectorConfig>;
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────

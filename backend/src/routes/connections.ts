@@ -11,7 +11,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
-import { encryptCredentials } from '../utils/crypto';
+import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
 import { testConnectionSchema, createConnectionSchema, updateConnectionSchema } from '../middleware/schemas';
 import { logger } from '../utils/logger';
@@ -92,13 +92,19 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
 //     lands data
 //   • credentials are connector-specific JSON, validated by the connector's
 //     own JSON Schema, not the SQL-driver shape
+//
+// Accepts EITHER inline `config` (paste-token flow) OR `oauthStateToken`
+// (OAuth flow — the full config lives encrypted in `oauth_pending`).
 const createSourceConnectionSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(255),
     connectorType: z.string().min(1).max(64),
-    config: z.record(z.string(), z.unknown()),
+    config: z.record(z.string(), z.unknown()).optional(),
+    oauthStateToken: z.string().optional(),
     selectedEntities: z.array(z.string()).min(1, 'Pick at least one entity'),
     domains: z.array(z.string()).optional(),
+  }).refine((v) => !!v.config || !!v.oauthStateToken, {
+    message: 'Body must include either `config` or `oauthStateToken`',
   }),
 });
 router.post(
@@ -108,13 +114,15 @@ router.post(
   validate(createSourceConnectionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { name, connectorType, config, selectedEntities, domains } = req.body as {
-        name: string;
-        connectorType: string;
-        config: Record<string, unknown>;
-        selectedEntities: string[];
-        domains?: string[];
-      };
+      const { name, connectorType, config: inlineConfig, oauthStateToken, selectedEntities, domains } =
+        req.body as {
+          name: string;
+          connectorType: string;
+          config?: Record<string, unknown>;
+          oauthStateToken?: string;
+          selectedEntities: string[];
+          domains?: string[];
+        };
 
       // Resolve the connector — 404 if the type isn't registered.
       let connector;
@@ -126,6 +134,37 @@ router.post(
           return;
         }
         throw e;
+      }
+
+      // Resolve the config: inline OR via oauth_pending lookup.
+      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+      let config: Record<string, unknown>;
+      let oauthRowId: number | null = null;
+      if (oauthStateToken) {
+        const row = await semanticDb('oauth_pending')
+          .where({
+            state_token: oauthStateToken,
+            connector_type: connectorType,
+            tenant_id: req.user!.tenantId,
+            initiated_by_user_id: req.user!.sub,
+          })
+          .first();
+        if (!row) {
+          res.status(404).json({ ok: false, error: 'Unknown or already-consumed stateToken' });
+          return;
+        }
+        if (row.status !== 'authorised') {
+          res.status(400).json({ ok: false, error: 'OAuth flow not complete — finish the connect step first' });
+          return;
+        }
+        if (new Date(row.expires_at).getTime() < Date.now()) {
+          res.status(400).json({ ok: false, error: 'OAuth session expired — re-run the Connect step' });
+          return;
+        }
+        config = JSON.parse(decryptCredentials(row.encrypted_config));
+        oauthRowId = row.id;
+      } else {
+        config = inlineConfig!;
       }
 
       // Re-validate credentials before saving. The wizard already calls
@@ -178,6 +217,13 @@ router.post(
 
       const connectionId: number =
         typeof row === 'object' ? (row as { id: number }).id : (row as number);
+
+      // Consume the oauth_pending row — the persistent connection's
+      // `connector_config_encrypted` takes over from here. Delete-after-use
+      // means the stateToken can't be replayed even if it leaks.
+      if (oauthRowId !== null) {
+        await semanticDb('oauth_pending').where({ id: oauthRowId }).del();
+      }
 
       // No schema profiling here — there's no data yet. The first sync will
       // populate the warehouse, and the orchestrator will trigger profiling
