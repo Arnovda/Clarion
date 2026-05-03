@@ -14,6 +14,9 @@ interface ConnectionRow {
   query_engine?: string;       // 'source' | 'duckdb'
   warehouse_path?: string | null;
   ingestion_status?: string | null;
+  /** Source-connector connections store table names here, not in `ingested_tables`. */
+  selected_entities?: string[] | null;
+  connector_type?: string | null;
 }
 
 /**
@@ -116,7 +119,15 @@ export async function createConnector(conn: ConnectionRow): Promise<BaseConnecto
 
   // Use DuckDB if ingestion is complete
   if (conn.query_engine === 'duckdb' && conn.warehouse_path) {
-    const tableNames = await getIngestedTableNames(conn.id);
+    // Two sources of table names, in priority order:
+    //   1. `ingested_tables` table — populated by the legacy ETL flow.
+    //   2. `selected_entities` on the connection row — populated by the
+    //      source-connector wizard (Day 5+ flow). These connections never
+    //      touch `ingested_tables`.
+    let tableNames = await getIngestedTableNames(conn.id);
+    if (tableNames.length === 0 && Array.isArray(conn.selected_entities) && conn.selected_entities.length > 0) {
+      tableNames = conn.selected_entities;
+    }
     return new DuckDBConnector(conn.warehouse_path, tableNames);
   }
 
