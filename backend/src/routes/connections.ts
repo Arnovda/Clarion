@@ -398,7 +398,7 @@ router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectio
 
 // Helper: compute profiling progress percentage from phase
 const PROFILING_PHASES = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'] as const;
-function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {
+export function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {
   // Each phase gets a weight — quality + ai_draft are heaviest
   const weights: Record<string, [number, number]> = {
     schema:   [0,  10],

@@ -466,9 +466,63 @@ async function runProfilerInBackground(args: {
 }): Promise<void> {
   const { connectionId, tenantId } = args;
   const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
+  // Lazy-import the progress-percentage helper to keep this orchestrator
+  // self-contained; the helper is the same one /api/connections/:id/profile
+  // uses for its SSE updates so the wizard's progress bar maths match.
+  const { profilingProgressPct } = await import('../routes/connections');
   await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-  await runSchemaProfiler(connectionId, null, (p) => {
-    log.debug({ connectionId, phase: p.phase, msg: p.message }, 'profiler progress');
-  });
-  log.info({ connectionId }, 'schema profiling complete');
+
+  // Mark running so the UI can render "Analysing…" instead of guessing.
+  // Mirrors the existing POST /api/connections/:id/profile flow exactly,
+  // so the frontend's existing polling logic just works.
+  await semanticDb('connections')
+    .where({ id: connectionId, tenant_id: tenantId })
+    .update({
+      profiling_status: 'running',
+      profiling_phase: 'schema',
+      profiling_message: 'Starting profiling…',
+      profiling_progress: 0,
+      profiling_started_at: new Date().toISOString(),
+    });
+
+  try {
+    await runSchemaProfiler(connectionId, null, (p) => {
+      log.debug({ connectionId, phase: p.phase, msg: p.message }, 'profiler progress');
+      // Best-effort persistence of progress — never break the profiler if
+      // the DB write hiccups.
+      semanticDb('connections')
+        .where({ id: connectionId, tenant_id: tenantId })
+        .update({
+          profiling_phase: p.phase,
+          profiling_message: p.message,
+          profiling_progress: profilingProgressPct(p.phase, p.tableIndex, p.tableCount),
+        })
+        .catch(() => undefined);
+    });
+
+    await semanticDb('connections')
+      .where({ id: connectionId, tenant_id: tenantId })
+      .update({
+        profiling_status: 'done',
+        profiling_phase: 'done',
+        profiling_message: 'Profiling complete',
+        profiling_progress: 100,
+        last_profiled_at: new Date().toISOString(),
+      });
+    log.info({ connectionId }, 'schema profiling complete');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Profiling failed';
+    log.error({ err, connectionId }, 'schema profiling failed');
+    await semanticDb('connections')
+      .where({ id: connectionId, tenant_id: tenantId })
+      .update({
+        profiling_status: 'error',
+        profiling_phase: 'error',
+        profiling_message: msg,
+        profiling_progress: 0,
+      })
+      .catch(() => undefined);
+    // Re-throw so the orchestrator's caller-side .catch() can log too.
+    throw err;
+  }
 }

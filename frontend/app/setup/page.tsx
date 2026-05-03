@@ -233,6 +233,16 @@ function ConnectionCard({
   const [syncRowCounts, setSyncRowCounts] = useState<Record<string, number> | null>(null);
   const [syncRunId, setSyncRunId] = useState<number | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  // Profiling phase — orchestrator triggers profiling automatically after a
+  // successful sync, but until now that ran silently. We poll the connection
+  // row once the sync is done so the card can show "Analysing…" and switch
+  // to "Ready" only when source_tables / source_columns are populated.
+  const [profilingState, setProfilingState] = useState<{
+    status: string | null;
+    message: string | null;
+    progress: number | null;
+  }>({ status: null, message: null, progress: null });
+  const [profilingPolling, setProfilingPolling] = useState(false);
 
   // Live-poll the active sync run while it's running.
   useEffect(() => {
@@ -250,6 +260,10 @@ function ConnectionCard({
         if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
           setSyncing(false);
           if (row.status === 'failed') setSyncError(row.error_message ?? 'Sync failed');
+          // Sync done → start polling profiling state. Only chase profiling
+          // when the sync actually succeeded — failed/cancelled syncs don't
+          // trigger profiling on the backend.
+          if (row.status === 'succeeded') setProfilingPolling(true);
         }
       } catch {
         // ignore; next tick will retry
@@ -259,6 +273,36 @@ function ConnectionCard({
     const interval = setInterval(tick, 2000);
     return () => { stopped = true; clearInterval(interval); };
   }, [syncing, syncRunId, conn.id]);
+
+  // After sync succeeds, poll the connection row's profiling fields. Stop
+  // when status reaches a terminal state ('done' or 'error') or after
+  // ~10 minutes (safety cap — profiler shouldn't take that long).
+  useEffect(() => {
+    if (!profilingPolling) return;
+    let stopped = false;
+    const startedAt = Date.now();
+    const tick = async () => {
+      try {
+        const res = await api.get('/connections');
+        const updated = (res.data?.data ?? []).find((c: { id: number }) => c.id === conn.id);
+        if (!updated || stopped) return;
+        setProfilingState({
+          status: updated.profiling_status ?? null,
+          message: updated.profiling_message ?? null,
+          progress: typeof updated.profiling_progress === 'number' ? updated.profiling_progress : null,
+        });
+        const terminal = updated.profiling_status === 'done' || updated.profiling_status === 'error';
+        if (terminal || Date.now() - startedAt > 10 * 60_000) {
+          setProfilingPolling(false);
+        }
+      } catch {
+        // ignore; next tick retries
+      }
+    };
+    void tick();
+    const interval = setInterval(tick, 2500);
+    return () => { stopped = true; clearInterval(interval); };
+  }, [profilingPolling, conn.id]);
 
   async function handleSyncNow() {
     setSyncError(null);
@@ -351,16 +395,20 @@ function ConnectionCard({
             </span>
           )}
         </p>
-        {/* Sync status block — only shown for source-connector connections. */}
-        {isSourceConnector && (syncing || syncStatus || syncError) && (
+        {/* Sync + analysis status block — source-connector connections only.
+            Shows the sync phase first (Queued → Syncing → Done), then
+            transitions to analysis (profiling). The whole block disappears
+            once the connection has been sitting idle in 'done' state. */}
+        {isSourceConnector && (syncing || syncStatus || syncError || profilingPolling || profilingState.status === 'running' || profilingState.status === 'error') && (
           <div className="mt-2 px-3 py-2 rounded-md border border-line bg-softer text-[11.5px]">
+            {/* Sync phase */}
             {syncing && (
               <p className="text-ink-2 font-mono">
                 <span className="inline-block w-2 h-2 mr-2 bg-ocean rounded-full animate-pulse" />
                 {syncStatus === 'queued' ? 'Queued…' : 'Syncing…'}
               </p>
             )}
-            {!syncing && syncStatus === 'succeeded' && (
+            {!syncing && syncStatus === 'succeeded' && profilingState.status !== 'running' && profilingState.status !== 'error' && (
               <p className="text-ok font-mono">✓ Sync complete</p>
             )}
             {syncError && (
@@ -371,6 +419,24 @@ function ConnectionCard({
                 {Object.entries(syncRowCounts)
                   .map(([k, v]) => `${k}: ${v.toLocaleString()}`)
                   .join(' · ')}
+              </p>
+            )}
+            {/* Profiling / analysis phase */}
+            {profilingState.status === 'running' && (
+              <p className="text-ink-2 font-mono mt-1">
+                <span className="inline-block w-2 h-2 mr-2 bg-ai rounded-full animate-pulse" />
+                Analysing… {profilingState.message ?? ''}
+                {typeof profilingState.progress === 'number' && profilingState.progress > 0 && (
+                  <span className="ml-2 text-muted">{profilingState.progress}%</span>
+                )}
+              </p>
+            )}
+            {profilingState.status === 'done' && !syncing && (
+              <p className="text-ok font-mono mt-1">✓ Ready — definitions available in the catalog</p>
+            )}
+            {profilingState.status === 'error' && (
+              <p className="text-rose-700 font-mono mt-1 break-words">
+                ✗ Analysis failed: {profilingState.message ?? 'unknown error'}
               </p>
             )}
           </div>
