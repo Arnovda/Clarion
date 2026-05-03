@@ -45,6 +45,24 @@ export interface BusMatrixJobData {
   connectionId: number;
   tenantId: number;
   triggeredBy: string; // user email
+  /**
+   * What this job does:
+   *   • 'design'  (default, legacy) — full bus-matrix design + transformation
+   *   • 'refresh' — re-run a single product's transformations, optionally
+   *                 syncing the source connection upstream first.
+   * Reusing the bus-matrix queue keeps the Redis topology simple and lets
+   * the existing SSE / cancel / active-job endpoints work for both modes.
+   */
+  mode?: 'design' | 'refresh';
+  /** Required when mode='refresh' — which product to rebuild. */
+  productId?: number;
+  /**
+   * When mode='refresh' and syncSource=true, the worker triggers the
+   * connection's source sync first and waits for it to complete before
+   * running the product's transformations. Gives users a single click for
+   * the full upstream → downstream pipeline.
+   */
+  syncSource?: boolean;
 }
 
 export interface ConnectionSyncScheduleJobData {

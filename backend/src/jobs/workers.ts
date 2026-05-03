@@ -18,6 +18,7 @@ import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { trackEvent, trackException } from '../utils/monitoring';
 import { startMaintenanceWorker, stopMaintenanceWorker } from './warehouseMaintenance';
 import { withTenantAiContext } from '../services/aiBudget';
+import type { OrchestratorEvent } from '../services/busMatrixOrchestrator';
 
 const workers: Worker[] = [];
 
@@ -148,7 +149,7 @@ async function processTransformationJob(job: Job<TransformationJobData>): Promis
 // ---------------------------------------------------------------------------
 
 async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ products: number; allOk: boolean }> {
-  const { connectionId, tenantId, triggeredBy } = job.data;
+  const { connectionId, tenantId, triggeredBy, mode, productId, syncSource } = job.data;
   const jobId = String(job.id);
 
   await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
@@ -156,34 +157,56 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
   const controller = new AbortController();
   registerJobAbortController(jobId, controller);
 
-  // Bail early if cancel arrived while job was still waiting in the queue.
   if (isJobCancelled(jobId)) {
     unregisterJob(jobId);
     throw new Error('Cancelled before start');
   }
 
-  await job.updateProgress({ phase: 'starting', message: 'Starting bus matrix workflow…' });
+  // Shared event emitter — both refresh + design orchestrators use the same
+  // OrchestratorEvent union, so the type is imported at the top of the file.
+  const emitToJob = (event: OrchestratorEvent) => {
+    job.log(JSON.stringify({ ts: Date.now(), ...event })).catch(() => { /* non-fatal */ });
+    if (event.type === 'phase' && event.text) {
+      job.updateProgress({ phase: event.text }).catch(() => {});
+    }
+  };
 
   try {
-    const { runBusMatrixWorkflow } = await import('../services/busMatrixOrchestrator');
+    // ── Refresh mode — single product, optional source sync upstream ──
+    if (mode === 'refresh') {
+      if (!productId) throw new Error('productId required for refresh mode');
+      await job.updateProgress({ phase: 'starting', message: 'Starting product refresh…' });
+      const { runProductRefreshWorkflow } = await import('../services/busMatrixOrchestrator');
+      const result = await runProductRefreshWorkflow({
+        productId,
+        tenantId,
+        userEmail: triggeredBy,
+        syncSource: !!syncSource,
+        abortSignal: controller.signal,
+        isCancelled: () => isJobCancelled(jobId),
+        emit: emitToJob,
+      });
+      trackEvent('product_refresh_complete', {
+        productId: String(productId),
+        tenantId: String(tenantId),
+        allOk: String(result.allOk),
+        syncSource: String(!!syncSource),
+      });
+      // Refresh jobs return the same shape ({ products, allOk }) to keep
+      // the queue's return-value schema uniform — products=1 when refreshing.
+      return { products: 1, allOk: result.allOk };
+    }
 
+    // ── Design mode (legacy default) — full bus-matrix workflow ──────
+    await job.updateProgress({ phase: 'starting', message: 'Starting bus matrix workflow…' });
+    const { runBusMatrixWorkflow } = await import('../services/busMatrixOrchestrator');
     const result = await runBusMatrixWorkflow({
       connectionId,
       tenantId,
       userEmail: triggeredBy,
       abortSignal: controller.signal,
       isCancelled: () => isJobCancelled(jobId),
-      emit: (event) => {
-        // Persist every event into the job log so a re-attaching SSE client
-        // can replay the full history. Logs are size-bounded by BullMQ
-        // (default keepLogs).
-        job.log(JSON.stringify({ ts: Date.now(), ...event })).catch(() => { /* non-fatal */ });
-
-        // Mirror phase changes onto progress for snapshot consumers.
-        if (event.type === 'phase' && event.text) {
-          job.updateProgress({ phase: event.text }).catch(() => {});
-        }
-      },
+      emit: emitToJob,
     });
 
     trackEvent('bus_matrix_complete', {

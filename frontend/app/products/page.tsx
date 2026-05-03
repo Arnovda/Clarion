@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Database, X, ChevronRight, Sparkles, Plus } from 'lucide-react';
+import { Database, X, ChevronRight, Sparkles, Plus, RefreshCw, ChevronDown } from 'lucide-react';
 import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
@@ -205,6 +205,13 @@ function ProductsPageInner() {
             const text = event.text as string;
             addBuildLog(`  "${name}": ${text}`);
             if (status !== 'ok') allOk = false;
+          } else if (type === 'error_detail') {
+            // Per-failed-table error — surfaces WHICH table failed and WHY,
+            // so the user has something actionable instead of just a count.
+            const tbl = event.tableName as string;
+            const errMsg = event.error as string;
+            addBuildLog(`    ✗ ${tbl}: ${errMsg}`);
+            allOk = false;
           } else if (type === 'done') {
             // orchestrator's own "done" — superseded by 'completed' below, but log it
             if (event.text) addBuildLog(event.text as string);
@@ -249,6 +256,51 @@ function ProductsPageInner() {
       buildAbortRef.current = null;
     }
   }, [addBuildLog, loadProducts]);
+
+  // ── Per-product refresh ──────────────────────────────────────────────
+  // Enqueues a 'refresh' bus-matrix job (same queue, different mode) so
+  // the existing SSE / cancel / active-job endpoints work unchanged.
+  // syncSource=true triggers the source connection sync first; the worker
+  // waits for sync completion before running the product's transformations.
+  const [refreshMenuFor, setRefreshMenuFor] = useState<number | null>(null);
+  const handleRefreshProduct = useCallback(async (productId: number, productName: string, syncSource: boolean) => {
+    setRefreshMenuFor(null);
+    setBuilding(true);
+    setBuildDone(false);
+    setBuildSuccess(false);
+    setBuildLog([]);
+    setBuildThinking('');
+    setShowThinking(false);
+    setBuildJobId(null);
+
+    addBuildLog(syncSource
+      ? `Refreshing "${productName}" (syncing source first)…`
+      : `Refreshing "${productName}"…`);
+
+    try {
+      const res = await api.post(`/products/${productId}/refresh-start`, { syncSource });
+      const jobId = res.data?.data?.jobId as string | undefined;
+      if (!jobId) {
+        addBuildLog('Error: server did not return a jobId');
+        setBuildDone(true);
+        setBuilding(false);
+        return;
+      }
+      addBuildLog(`Job ${jobId} started — running on the server (safe to close this tab).`);
+      await attachToJob(jobId);
+    } catch (err) {
+      const ax = err as { response?: { data?: { error?: string; jobId?: string } }; message?: string };
+      const existingJobId = ax?.response?.data?.jobId;
+      if (existingJobId) {
+        addBuildLog(`Reattaching to running job ${existingJobId}…`);
+        await attachToJob(existingJobId);
+        return;
+      }
+      addBuildLog(`Error: ${ax?.response?.data?.error ?? ax?.message ?? 'Failed to start refresh'}`);
+      setBuildDone(true);
+      setBuilding(false);
+    }
+  }, [addBuildLog, attachToJob]);
 
   const handleAutoBuild = useCallback(async (connectionId: number) => {
     setBuilding(true);
@@ -520,7 +572,9 @@ function ProductsPageInner() {
               <div ref={buildTermRef} className="px-5 py-3 max-h-64 overflow-y-auto">
                 {buildLog.map((line, i) => (
                   <div key={i} className={`text-[12px] font-mono py-0.5 ${
-                    line.startsWith('Error') ? 'text-err'
+                    // Per-failed-table errors emitted as `    ✗ table: msg`
+                    line.startsWith('    ✗') ? 'text-err font-medium'
+                    : line.startsWith('Error') ? 'text-err'
                     : line.startsWith('All done') ? 'text-ok'
                     : line.startsWith('  ') ? 'text-white/50'
                     : 'text-white/80'
@@ -661,19 +715,75 @@ function ProductsPageInner() {
                         </div>
                       )}
 
-                      <div className="px-5 py-3 border-t border-slate-200/30 flex items-center justify-between bg-surface-container-low/30">
+                      <div className="px-5 py-3 border-t border-slate-200/30 flex items-center justify-between bg-surface-container-low/30 relative">
                         <span className="text-xs text-on-surface-variant/50">
                           {tables.length > 0 ? `${tables.length} tables` : ''}
                           {detail && totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
                         </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setAskProductId(product.id); setAskOpen(true); }}
-                          className="flex items-center gap-1.5 text-xs font-semibold text-ocean hover:text-ocean-hover transition-colors group/ask"
-                          aria-label={`Ask AI about ${name}`}
-                        >
-                          <Sparkles className="w-3 h-3 group-hover/ask:ai-sparkle" strokeWidth={2} />
-                          Ask AI
-                        </button>
+                        <div className="flex items-center gap-3">
+                          {/*
+                            Per-product refresh control. Split-button-style:
+                              • Click the icon → sync source + refresh (the
+                                end-to-end "give me the latest data" path)
+                              • Click the chevron → menu with the two options
+                                so users who already synced can skip it
+                          */}
+                          <div className="inline-flex items-center" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleRefreshProduct(product.id, name, true); }}
+                              disabled={building}
+                              className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium text-ink-2 border border-line rounded-l-md hover:bg-softer disabled:opacity-50 transition-colors"
+                              title={`Sync ${connections.find((c) => c.id === product.connection_id)?.name ?? 'source'} and refresh ${name}`}
+                              aria-label={`Refresh ${name} from source`}
+                            >
+                              <RefreshCw className={`w-3 h-3 ${building && refreshMenuFor === null ? 'animate-spin' : ''}`} strokeWidth={2} />
+                              Refresh
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setRefreshMenuFor(refreshMenuFor === product.id ? null : product.id); }}
+                              disabled={building}
+                              className="inline-flex items-center justify-center px-1 py-1 text-[11px] font-medium text-ink-2 border border-l-0 border-line rounded-r-md hover:bg-softer disabled:opacity-50 transition-colors"
+                              aria-haspopup="menu"
+                              aria-expanded={refreshMenuFor === product.id}
+                              aria-label="More refresh options"
+                            >
+                              <ChevronDown className="w-3 h-3" strokeWidth={2.5} />
+                            </button>
+                            {refreshMenuFor === product.id && (
+                              <>
+                                <div className="fixed inset-0 z-10" onClick={() => setRefreshMenuFor(null)} aria-hidden="true" />
+                                <div className="absolute right-0 bottom-full mb-1 w-72 z-20 bg-raised border border-line rounded-md shadow-lg overflow-hidden">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleRefreshProduct(product.id, name, true); }}
+                                    className="w-full text-left px-3 py-2 text-[12px] hover:bg-softer transition-colors"
+                                  >
+                                    <div className="font-medium text-ink">Sync source + refresh</div>
+                                    <div className="text-[11px] text-muted mt-0.5">
+                                      Pulls the latest data from the source, then re-runs this product&rsquo;s transformations.
+                                    </div>
+                                  </button>
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); handleRefreshProduct(product.id, name, false); }}
+                                    className="w-full text-left px-3 py-2 text-[12px] hover:bg-softer transition-colors border-t border-line"
+                                  >
+                                    <div className="font-medium text-ink">Rebuild transformations only</div>
+                                    <div className="text-[11px] text-muted mt-0.5">
+                                      Re-runs the product&rsquo;s transformations on whatever source data is already in the warehouse.
+                                    </div>
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setAskProductId(product.id); setAskOpen(true); }}
+                            className="flex items-center gap-1.5 text-xs font-semibold text-ocean hover:text-ocean-hover transition-colors group/ask"
+                            aria-label={`Ask AI about ${name}`}
+                          >
+                            <Sparkles className="w-3 h-3 group-hover/ask:ai-sparkle" strokeWidth={2} />
+                            Ask AI
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );

@@ -1579,6 +1579,80 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 //   POST /api/products/bus-matrix/:jobId/cancel → cancel a running job
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// POST /api/products/:id/refresh-start — enqueue a refresh job for one product
+//
+// Body: { syncSource?: boolean }
+//   - false (default) → just re-runs this product's transformations
+//   - true            → triggers source connection sync first, waits for it
+//                       to complete, THEN runs transformations. Single click
+//                       for the upstream → downstream pipeline.
+//
+// Returns { jobId } — frontend then attaches via /bus-matrix/:jobId/stream
+// (the SSE / cancel / active-job endpoints are mode-agnostic).
+// ---------------------------------------------------------------------------
+router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  try {
+    const productId = Number(req.params.id);
+    if (!Number.isFinite(productId)) {
+      res.status(400).json({ ok: false, error: 'Invalid product id' });
+      return;
+    }
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) {
+      res.status(403).json({ ok: false, error: 'Tenant context required' });
+      return;
+    }
+
+    const product = await semanticDb('data_products').where({ id: productId }).first();
+    if (!product) {
+      res.status(404).json({ ok: false, error: 'Data product not found' });
+      return;
+    }
+
+    const syncSource = !!(req.body as { syncSource?: boolean })?.syncSource;
+
+    const { getBusMatrixQueue } = await import('../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      res.status(503).json({
+        ok: false,
+        error: 'Job queue not available — Redis is not configured. Refresh requires Redis to survive browser close.',
+      });
+      return;
+    }
+
+    // Refuse to enqueue a second active refresh for the same product.
+    const activeJobs = await queue.getJobs(['waiting', 'active', 'delayed'], 0, 50);
+    const existing = activeJobs.find(
+      (j) => j.data.tenantId === tenantId && j.data.mode === 'refresh' && j.data.productId === productId,
+    );
+    if (existing) {
+      res.status(409).json({
+        ok: false,
+        error: 'A refresh is already running for this product.',
+        jobId: existing.id,
+      });
+      return;
+    }
+
+    const job = await queue.add('product-refresh', {
+      // connectionId is also required by the JobData type; carry it for tenant
+      // filtering on the active-jobs endpoint.
+      connectionId: Number(product.connection_id ?? 0),
+      tenantId,
+      triggeredBy: req.user?.email ?? 'unknown',
+      mode: 'refresh' as const,
+      productId,
+      syncSource,
+    });
+
+    res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix', mode: 'refresh', syncSource } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to start refresh' });
+  }
+});
+
 router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
     const { connectionId } = req.body as { connectionId: number };
