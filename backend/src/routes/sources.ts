@@ -181,49 +181,45 @@ router.post(
 // ─── GET /api/source-types/:type/oauth-callback ───────────────────────────
 /**
  * The OAuth provider's redirect target. Stateless — does NOT touch the DB.
- * Renders an HTML page that postMessage's `{ ok, code, state }` (or
- * `{ ok: false, error }`) to the opener window and closes the popup.
  *
- * The actual code-exchange + DB write happens in a separate auth'd endpoint
- * (`POST /:type/oauth-finish`) that the wizard calls after receiving the
- * postMessage. Splitting the work this way means we never need an
- * unauthenticated DB path — RLS stays unbroken.
+ * IMPORTANT: cross-origin window.opener access is unreliable in modern
+ * browsers (severed by COOP isolation, especially when the popup has
+ * passed through a third-party login page like EO's auth screen). So
+ * instead of rendering a postMessage page from backend's domain, we
+ * 302-redirect the popup to a SAME-ORIGIN page on the frontend
+ * (`/setup/oauth-return`) which then does the postMessage. Code + state
+ * travel in the URL fragment (#…) so they never hit server logs.
  *
- * Auth code lifetime is short (~10 min) and one-time-use, so the brief
- * window where the code lives in the wizard's memory + postMessage payload
- * is acceptable. The refresh_token, which is the truly sensitive token,
- * never leaves the backend.
+ * The actual code-exchange + DB write happens in a separate auth'd
+ * endpoint (`POST /:type/oauth-finish`) that the wizard calls after
+ * receiving the postMessage. Splitting the work this way means we never
+ * need an unauthenticated DB path — RLS stays unbroken.
  */
 router.get('/:type/oauth-callback', (req: Request, res: Response) => {
+  const { type } = req.params;
   const code = typeof req.query.code === 'string' ? req.query.code : null;
   const state = typeof req.query.state === 'string' ? req.query.state : null;
   const providerError = typeof req.query.error === 'string' ? req.query.error : null;
 
-  const result = providerError
-    ? { ok: false, error: `Provider error: ${providerError}` }
-    : !code || !state
-      ? { ok: false, error: 'Missing code or state' }
-      : { ok: true, code, state };
+  const frontendBase = process.env.FRONTEND_BASE_URL?.replace(/\/$/, '');
+  if (!frontendBase) {
+    // Hard fail with a visible message rather than try to fall back —
+    // misconfiguration here would silently break the OAuth UX in subtle ways.
+    res.status(500).send('Server misconfigured: FRONTEND_BASE_URL not set');
+    return;
+  }
 
-  // Render an HTML page that posts the result to the opener and closes.
-  // `targetOrigin: '*'` because frontend + backend are on different
-  // subdomains; the wizard validates the message shape via `kind` field.
-  const safe = JSON.stringify(result).replace(/</g, '\\u003c');
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(`<!doctype html>
-<html><body style="font-family:system-ui;padding:2rem;color:#0f172a">
-<p>Returning to DataBridge…</p>
-<script>
-  (function() {
-    var msg = ${safe};
-    msg.kind = 'databridge:oauth';
-    if (window.opener && !window.opener.closed) {
-      try { window.opener.postMessage(msg, '*'); } catch (e) {}
-    }
-    setTimeout(function() { window.close(); }, 300);
-  })();
-</script>
-</body></html>`);
+  // Build the fragment payload. Encode each value so the parser on the
+  // frontend can decode safely.
+  const params = providerError
+    ? `ok=0&error=${encodeURIComponent(`Provider error: ${providerError}`)}`
+    : !code || !state
+      ? `ok=0&error=${encodeURIComponent('Missing code or state')}`
+      : `ok=1&type=${encodeURIComponent(type)}&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
+
+  // Use a 303 See Other so the GET-only nature is explicit. The fragment
+  // is preserved by browsers when a Location header includes one.
+  res.redirect(303, `${frontendBase}/setup/oauth-return#${params}`);
 });
 
 // ─── POST /api/source-types/:type/oauth-finish ────────────────────────────

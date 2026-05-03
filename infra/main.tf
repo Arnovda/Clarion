@@ -597,6 +597,14 @@ resource "azurerm_container_app" "backend" {
         name  = "OAUTH_REDIRECT_BASE_URL"
         value = "https://${var.project_name}-${var.environment}-backend.${azurerm_container_app_environment.main.default_domain}"
       }
+      # OAuth completion bounces the popup through the FRONTEND domain
+      # (/setup/oauth-return) so that postMessage to the wizard runs
+      # same-origin — cross-origin window.opener access is unreliable
+      # after the popup has passed through a third-party auth screen.
+      env {
+        name  = "FRONTEND_BASE_URL"
+        value = "https://${var.project_name}-${var.environment}-frontend.${azurerm_container_app_environment.main.default_domain}"
+      }
     }
   }
 

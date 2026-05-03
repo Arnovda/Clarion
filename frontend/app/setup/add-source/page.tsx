@@ -217,10 +217,15 @@ function AddSourceWizard() {
         throw new Error('Popup blocked — please allow popups for this site and try again');
       }
 
-      // Wait for postMessage from the popup.
+      // Wait for postMessage from the popup. The popup is bounced through
+      // the same-origin return page (/setup/oauth-return) which sends the
+      // message with targetOrigin = our origin, so we accept only messages
+      // from our own origin — protects against any other tab/iframe that
+      // might happen to postMessage with our envelope shape.
       const result = await new Promise<{ ok: true; code: string; state: string } | { ok: false; error: string }>((resolve, reject) => {
         let resolved = false;
         const onMessage = (ev: MessageEvent) => {
+          if (ev.origin !== window.location.origin) return;
           const m = ev.data;
           if (!m || m.kind !== 'databridge:oauth') return;
           window.removeEventListener('message', onMessage);
@@ -229,13 +234,23 @@ function AddSourceWizard() {
           resolve(m);
         };
         // If the user closes the popup without completing, error out.
+        // Slight grace period (1.5s) after popup.closed so the message
+        // queue has a chance to drain — Chrome occasionally fires `closed`
+        // before the last postMessage propagates.
+        let closedSince: number | null = null;
         const closedCheck = setInterval(() => {
-          if (popup.closed && !resolved) {
-            clearInterval(closedCheck);
-            window.removeEventListener('message', onMessage);
-            reject(new Error('Popup closed before authorization completed'));
+          if (resolved) return;
+          if (popup.closed) {
+            if (closedSince === null) closedSince = Date.now();
+            else if (Date.now() - closedSince > 1500) {
+              clearInterval(closedCheck);
+              window.removeEventListener('message', onMessage);
+              reject(new Error('Popup closed before authorization completed'));
+            }
+          } else {
+            closedSince = null;
           }
-        }, 500);
+        }, 300);
         window.addEventListener('message', onMessage);
       });
 
