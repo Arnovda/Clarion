@@ -238,10 +238,17 @@ router.post(
   },
 );
 
-// GET /api/connections — list all connections
-router.get('/', requireAuth, requireRole('admin'), async (_req: Request, res: Response, next: NextFunction) => {
+// GET /api/connections — list this tenant's connections
+router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rows = await semanticDb('connections').select('*').orderBy('created_at', 'desc');
+    // Explicit tenant filter — Postgres RLS would catch this too in the
+    // dual-role deployment, but the prod single-role deployment skips RLS,
+    // so application-layer scoping is mandatory. Defence in depth either way.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    const rows = await semanticDb('connections')
+      .where('tenant_id', req.user!.tenantId)
+      .select('*')
+      .orderBy('created_at', 'desc');
     // Strip encrypted config secrets from the response — only send type + non-sensitive info
     const sanitized = rows.map((r: Record<string, unknown>) => {
       const config = typeof r.config === 'string'
@@ -351,9 +358,16 @@ router.post(
     try {
       const syncRunId = Number(req.params.syncRunId);
       const { requestCancellation } = await import('../orchestrator/SyncOrchestrator');
-      const cancelled = requestCancellation(syncRunId);
+      // Pass tenantId — registry validates the run belongs to this tenant.
+      const result = requestCancellation(syncRunId, req.user!.tenantId);
+      if (result === 'forbidden' || result === 'not_found') {
+        // Treat both the same to avoid leaking which sync_run_ids exist
+        // for other tenants.
+        res.status(404).json({ ok: false, error: 'Sync run not found' });
+        return;
+      }
       // Worker / orchestrator picks up the flag and writes status='cancelled' itself.
-      res.json({ ok: true, data: { requested: cancelled } });
+      res.json({ ok: true, data: { requested: true } });
     } catch (err) {
       next(err);
     }

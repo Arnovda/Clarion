@@ -51,24 +51,31 @@ const WAREHOUSE_ROOT = path.resolve(__dirname, '../../../warehouse');
 /**
  * Resolve the warehouse path that DuckDB should read from after a sync.
  *
- *   • Azure mode (Container Apps Job launcher): the worker wrote Parquet
- *     files to Blob via SAS at `<container>/conn_<id>/<table>/data.parquet`.
- *     DuckDBConnector reads `az://<container>/conn_<id>` and finds them.
+ * Path scheme — `tenant_<tid>/conn_<cid>/<table>/data.parquet` — defends
+ * tenant isolation in two ways:
+ *   1. Even though Azure SAS is container-scoped (no native path-prefix
+ *      restriction), the tenant prefix means a buggy connector that
+ *      writes outside its `conn_<cid>/` prefix would still stay within
+ *      its own tenant's subtree.
+ *   2. Operational clarity — listing the storage container shows one
+ *      directory per tenant, making access audits + lifecycle policies
+ *      straightforward.
  *
- *   • Local mode (LocalProcessJobLauncher): the worker wrote to the local
- *     filesystem at `<repo>/warehouse/conn_<id>/`. DuckDBConnector reads
- *     the absolute path.
+ *   • Azure mode: `az://<container>/tenant_<tid>/conn_<cid>`
+ *   • Local mode: `<repo>/warehouse/tenant_<tid>/conn_<cid>`
  *
  * The mode is determined by env: `AZURE_CONTAINER_APPS_JOB_NAME` set
- * means Azure (matches `createLauncherFromEnv`).
+ * means Azure.
  */
-function computeWarehousePathForDuckDB(connectionId: number): string {
+function computeWarehousePathForDuckDB(connectionId: number, tenantId: number): string {
+  const tenantSeg = `tenant_${tenantId}`;
+  const connSeg = `conn_${connectionId}`;
   const isAzureMode = !!process.env.AZURE_CONTAINER_APPS_JOB_NAME;
   if (isAzureMode) {
     const container = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
-    return `az://${container}/conn_${connectionId}`;
+    return `az://${container}/${tenantSeg}/${connSeg}`;
   }
-  return path.join(WAREHOUSE_ROOT, `conn_${connectionId}`);
+  return path.join(WAREHOUSE_ROOT, tenantSeg, connSeg);
 }
 
 // ─── Launcher selection ──────────────────────────────────────────────────
@@ -208,10 +215,10 @@ async function runSyncInBackground(args: {
     // Mark running. Loaded fresh after to make sure connector_config_encrypted
     // wasn't cleared between queue + start (defence in depth).
     await semanticDb('source_sync_runs')
-      .where({ id: syncRunId })
+      .where({ id: syncRunId, tenant_id: tenantId })
       .update({ status: 'running', started_at: semanticDb.fn.now() });
     await semanticDb('connections')
-      .where({ id: connectionId })
+      .where({ id: connectionId, tenant_id: tenantId })
       .update({ last_sync_status: 'running' });
 
     const conn = await semanticDb('connections')
@@ -230,8 +237,8 @@ async function runSyncInBackground(args: {
     //   • `duckdbReadPath`: what we persist on `connections.warehouse_path`
     //     so DuckDB can read the data later. In Azure mode this is an
     //     `az://` URL; in local mode it's the same filesystem path.
-    const localWarehousePath = path.join(WAREHOUSE_ROOT, `conn_${connectionId}`);
-    const duckdbReadPath = computeWarehousePathForDuckDB(connectionId);
+    const localWarehousePath = path.join(WAREHOUSE_ROOT, `tenant_${tenantId}`, `conn_${connectionId}`);
+    const duckdbReadPath = computeWarehousePathForDuckDB(connectionId, tenantId);
 
     const jobSpec: JobSpec = {
       connectorType: conn.connector_type,
@@ -264,7 +271,7 @@ async function runSyncInBackground(args: {
               const reencrypted = encryptCredentials(JSON.stringify(newConfig));
               await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
               await semanticDb('connections')
-                .where({ id: connectionId })
+                .where({ id: connectionId, tenant_id: tenantId })
                 .update({ connector_config_encrypted: reencrypted });
               childLog.info('rotated credential persisted');
             } catch (err) {
@@ -284,7 +291,7 @@ async function runSyncInBackground(args: {
             try {
               await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
               await semanticDb('source_sync_runs')
-                .where({ id: syncRunId })
+                .where({ id: syncRunId, tenant_id: tenantId })
                 .update({ row_counts: JSON.stringify(rowCounts) });
             } catch { /* heartbeat swallowed */ }
           })().catch(() => undefined);
@@ -293,7 +300,7 @@ async function runSyncInBackground(args: {
     });
 
     // Register cancellation handle so requestCancellation(syncRunId) can hit it.
-    cancellationHandles.set(syncRunId, handle);
+    cancellationHandles.set(syncRunId, { handle, tenantId });
 
     const { exitCode } = await handle.done;
     cancellationHandles.delete(syncRunId);
@@ -304,8 +311,11 @@ async function runSyncInBackground(args: {
     // synthetic error event.
     if (exitCode === EXIT_OK) {
       childLog.info({ rowCounts }, 'sync succeeded');
+      // Defence in depth — every UPDATE includes tenant_id alongside the PK
+      // so a misconfigured app.current_tenant can't accidentally cross
+      // tenant boundaries even if RLS isn't enabled in the deployment.
       await semanticDb('source_sync_runs')
-        .where({ id: syncRunId })
+        .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'succeeded',
           completed_at: semanticDb.fn.now(),
@@ -314,7 +324,7 @@ async function runSyncInBackground(args: {
           log_excerpt: logExcerpt || null,
         });
       await semanticDb('connections')
-        .where({ id: connectionId })
+        .where({ id: connectionId, tenant_id: tenantId })
         .update({
           last_sync_status: 'succeeded',
           last_synced_at: semanticDb.fn.now(),
@@ -332,7 +342,7 @@ async function runSyncInBackground(args: {
       });
     } else if (exitCode === EXIT_CANCELLED) {
       await semanticDb('source_sync_runs')
-        .where({ id: syncRunId })
+        .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'cancelled',
           completed_at: semanticDb.fn.now(),
@@ -341,11 +351,11 @@ async function runSyncInBackground(args: {
           log_excerpt: logExcerpt || null,
         });
       await semanticDb('connections')
-        .where({ id: connectionId })
+        .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'cancelled' });
     } else {
       await semanticDb('source_sync_runs')
-        .where({ id: syncRunId })
+        .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'failed',
           completed_at: semanticDb.fn.now(),
@@ -355,7 +365,7 @@ async function runSyncInBackground(args: {
           log_excerpt: logExcerpt || null,
         });
       await semanticDb('connections')
-        .where({ id: connectionId })
+        .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'failed' });
     }
   } catch (e) {
@@ -365,14 +375,14 @@ async function runSyncInBackground(args: {
     try {
       await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
       await semanticDb('source_sync_runs')
-        .where({ id: syncRunId })
+        .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'failed',
           completed_at: semanticDb.fn.now(),
           error_message: message.slice(0, 4000),
         });
       await semanticDb('connections')
-        .where({ id: connectionId })
+        .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'failed' });
     } catch (persistErr) {
       childLog.error({ err: persistErr }, 'failed to persist orchestrator-side failure');
@@ -427,14 +437,26 @@ function handleWorkerEvent(args: {
 }
 
 // ─── Cancellation registry ───────────────────────────────────────────────
-const cancellationHandles = new Map<number, JobHandle>();
+// Stores tenant_id alongside the handle so a guessed sync_run_id from
+// another tenant can't cancel our run. The route layer also passes the
+// caller's tenantId to `requestCancellation` for cross-check.
+interface CancellationEntry { handle: JobHandle; tenantId: number }
+const cancellationHandles = new Map<number, CancellationEntry>();
 
-/** Mark an in-flight sync as cancelled. Returns true if a handle was found. */
-export function requestCancellation(syncRunId: number): boolean {
-  const h = cancellationHandles.get(syncRunId);
-  if (!h) return false;
-  h.cancel();
-  return true;
+/**
+ * Mark an in-flight sync as cancelled, but only if the caller's tenant
+ * owns the run. Returns:
+ *   • `'cancelled'` — handle found, tenant matched, cancel signal sent
+ *   • `'not_found'` — no in-flight handle for this run
+ *   • `'forbidden'` — handle found but tenant doesn't match (HTTP 404 from
+ *     the route layer to avoid leaking existence)
+ */
+export function requestCancellation(syncRunId: number, tenantId: number): 'cancelled' | 'not_found' | 'forbidden' {
+  const entry = cancellationHandles.get(syncRunId);
+  if (!entry) return 'not_found';
+  if (entry.tenantId !== tenantId) return 'forbidden';
+  entry.handle.cancel();
+  return 'cancelled';
 }
 
 // ─── Schema profiling trigger ────────────────────────────────────────────

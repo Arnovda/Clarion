@@ -120,7 +120,11 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
     const done: Promise<{ exitCode: number }> = (async () => {
       try {
         // ─── Issue SAS URLs (orchestrator → Azure Storage) ────────────
-        const warehousePathPrefix = `conn_${spec.connectionId}/`;
+        // Tenant-prefixed path: defence in depth so a buggy connector that
+        // writes outside its `conn_<cid>/` prefix still stays within its
+        // own tenant's subtree (Azure SAS doesn't natively path-restrict
+        // at the SAS level — see BlobSasTokenIssuer for the long story).
+        const warehousePathPrefix = `tenant_${spec.tenantId}/conn_${spec.connectionId}/`;
         const heartbeatPathPrefix = `runs/${spec.syncRunId}/`;
         const warehouseSas = await this.cfg.issueSas({
           purpose: 'warehouse',
