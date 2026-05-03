@@ -216,10 +216,17 @@ export const exactOnlineOAuth: OAuthSpec = {
       );
     }
 
-    // Return the full config = pre-auth fields + the newly-acquired refresh_token.
+    // Return the full config = pre-auth fields + the newly-acquired tokens.
+    // We keep the access_token + its expiry so subsequent testConnection /
+    // sync calls don't immediately re-refresh — EO rate-limits refresh
+    // while the access_token is still valid (returns 400 access_denied
+    // "access_token not expired").
+    const ttlSeconds = body.expires_in ?? 600;
     return {
       ...config,
       refreshToken: body.refresh_token,
+      accessToken: body.access_token,
+      accessTokenExpiresAt: Date.now() + ttlSeconds * 1000,
     };
   },
 };

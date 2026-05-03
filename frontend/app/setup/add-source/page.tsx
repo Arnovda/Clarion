@@ -287,12 +287,12 @@ function AddSourceWizard() {
       });
 
       setOauthStateToken(data.stateToken);
-      // Fire testConnection so the user sees the ✓ green block.
-      const testRes = await api.post(
-        `/source-types/${pickedType.type}/test`,
-        { oauthStateToken: data.stateToken },
-      );
-      setTestResult(testRes.data?.data ?? { ok: true });
+      // We DON'T fire testConnection here — the OAuth exchange already
+      // proved the credentials are valid (it minted access + refresh tokens),
+      // and an immediate refresh would hit EO's "access_token not expired"
+      // rate limit. Just synthesise a success state for the UI; the next
+      // step (list-entities) will exercise the access token end-to-end.
+      setTestResult({ ok: true, details: {} });
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })
         ?.response?.data?.error

@@ -66,6 +66,24 @@ export const exactOnlineConfigSchema: JSONSchema7 = {
       ],
       default: 'https://start.exactonline.nl',
     },
+    // ─── Internal tokens populated by the OAuth flow ─────────────────────
+    // EO rate-limits the refresh endpoint: if the issued access_token is
+    // still valid, calling refresh returns 400 access_denied with
+    // "access_token not expired". So we store the access_token alongside
+    // the refresh_token and only refresh when the access_token is near
+    // expiry. Both fields are optional in the schema (paste-token flows
+    // don't have them) and hidden from the wizard form (not in OAuth's
+    // preAuthFields).
+    accessToken: {
+      type: 'string',
+      title: 'Access token (managed)',
+      description: 'Issued during OAuth handshake. Used directly until near expiry.',
+    },
+    accessTokenExpiresAt: {
+      type: 'integer',
+      title: 'Access token expiry (managed)',
+      description: 'Unix-ms timestamp; refresh fires when within 30s of this.',
+    },
   },
 };
 
@@ -76,6 +94,10 @@ export interface ExactOnlineConfig {
   refreshToken: string;
   division: string;
   baseUrl: string;
+  /** Tokens managed by the OAuth flow — undefined for paste-token connections. */
+  accessToken?: string;
+  /** Unix-ms; refresh fires when within 30s of this value. */
+  accessTokenExpiresAt?: number;
 }
 
 /** Narrowing helper — assumes config has already been validated against `exactOnlineConfigSchema`. */

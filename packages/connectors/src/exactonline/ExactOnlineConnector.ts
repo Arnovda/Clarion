@@ -55,16 +55,13 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     this.validateConfig(rawConfig);
     const config = asExactOnlineConfig(rawConfig);
 
+    // Use the existing access_token if it's still fresh — EO refuses to
+    // refresh while the issued access_token has time left ("access_token
+    // not expired" 400). Critical right after OAuth, where the access_token
+    // we just received is fully valid for ~10 minutes.
     let accessToken: string;
     try {
-      const refreshed = await refreshAccessToken({
-        baseUrl: config.baseUrl,
-        clientId: config.clientId,
-        clientSecret: config.clientSecret,
-        refreshToken: config.refreshToken,
-        log: ctx.log,
-      });
-      accessToken = refreshed.accessToken;
+      accessToken = await getOrRefreshAccessToken(config, ctx.log);
     } catch (e) {
       if (e instanceof AuthRefreshError) {
         return { ok: false, error: e.message };
@@ -137,53 +134,65 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       return { rowCounts: {}, warnings };
     }
 
-    // ── Refresh token ONCE, persist rotation BEFORE doing any data work ─
-    const refreshed = await refreshAccessToken({
-      baseUrl: config.baseUrl,
-      clientId: config.clientId,
-      clientSecret: config.clientSecret,
-      refreshToken: config.refreshToken,
-      log: ctx.log,
-    });
-    if (refreshed.newRefreshToken !== config.refreshToken) {
-      // Rotated. Persist immediately — if the sync crashes after this point,
-      // the next run uses the new token; the old one is dead either way.
+    // ── Get access token (use cached if fresh, else refresh) ────────────
+    // EO rate-limits refresh while the access_token is still valid. Right
+    // after OAuth, we have a fresh access_token and refreshing immediately
+    // would be denied — so we use the cached one when present + valid.
+    let accessToken: string;
+    let currentRefreshToken = config.refreshToken;
+    if (config.accessToken && config.accessTokenExpiresAt && config.accessTokenExpiresAt > Date.now() + 30_000) {
+      ctx.log.info('using cached access token (still fresh)');
+      accessToken = config.accessToken;
+    } else {
+      const refreshed = await refreshAccessToken({
+        baseUrl: config.baseUrl,
+        clientId: config.clientId,
+        clientSecret: config.clientSecret,
+        refreshToken: config.refreshToken,
+        log: ctx.log,
+      });
+      accessToken = refreshed.accessToken;
+      currentRefreshToken = refreshed.newRefreshToken;
+      // Persist rotated tokens BEFORE doing any data work — if the sync
+      // crashes after this point, the next run uses the new tokens.
       const newConfig: ExactOnlineConfig = {
         ...config,
         refreshToken: refreshed.newRefreshToken,
+        accessToken: refreshed.accessToken,
+        accessTokenExpiresAt: Date.now() + (refreshed.expiresIn * 1000),
       };
       if (ctx.onCredentialRotated) {
         await ctx.onCredentialRotated(newConfig as unknown as ConnectorConfig);
       } else {
-        ctx.log.warn(
-          'refresh token rotated but no onCredentialRotated handler — next sync may fail',
-        );
+        ctx.log.warn('tokens rotated but no onCredentialRotated handler');
       }
     }
 
-    // ── HttpClient with the new access token ───────────────────────────
+    // ── HttpClient with the access token ───────────────────────────────
     const http = new HttpClient({
       baseUrl: config.baseUrl,
-      authHeader: `Bearer ${refreshed.accessToken}`,
+      authHeader: `Bearer ${accessToken}`,
       log: ctx.log,
       // Inside a sync, retries on 429 / 5xx are valuable — we want to ride
       // out transient failures rather than abort and re-do everything.
       maxRetries: 5,
-      // If the access token expires mid-sync (unlikely for a 10-min lifetime
-      // sync, but possible for very large entities), refresh it once.
+      // If the access token expires mid-sync (long-running entities,
+      // 10-min token lifetime), refresh it once.
       onUnauthorised: async () => {
         const r = await refreshAccessToken({
           baseUrl: config.baseUrl,
           clientId: config.clientId,
           clientSecret: config.clientSecret,
-          // Use the rotated one we just saved.
-          refreshToken: refreshed.newRefreshToken,
+          refreshToken: currentRefreshToken,
           log: ctx.log,
         });
-        if (r.newRefreshToken !== refreshed.newRefreshToken && ctx.onCredentialRotated) {
+        currentRefreshToken = r.newRefreshToken;
+        if (ctx.onCredentialRotated) {
           await ctx.onCredentialRotated({
             ...config,
             refreshToken: r.newRefreshToken,
+            accessToken: r.accessToken,
+            accessTokenExpiresAt: Date.now() + (r.expiresIn * 1000),
           } as unknown as ConnectorConfig);
         }
         return `Bearer ${r.accessToken}`;
@@ -310,4 +319,30 @@ function extractFirst(body: MeResponse): { UserName?: string; CurrentDivision?: 
   if ('results' in d && Array.isArray(d.results)) return d.results[0];
   if ('UserName' in d || 'CurrentDivision' in d) return d as { UserName?: string; CurrentDivision?: string | number };
   return undefined;
+}
+
+/**
+ * Returns a usable access_token. Uses the cached one in `config` when it's
+ * still fresh (>30s of life left); falls back to refreshing the refresh_token.
+ *
+ * Used by testConnection (single shot) and conceptually by sync (which has
+ * its own version inline because it also needs to know whether it rotated
+ * tokens, for `onCredentialRotated` purposes).
+ */
+async function getOrRefreshAccessToken(
+  config: ExactOnlineConfig,
+  log: import('../types').Logger,
+): Promise<string> {
+  if (config.accessToken && config.accessTokenExpiresAt && config.accessTokenExpiresAt > Date.now() + 30_000) {
+    log.debug('using cached access token (still fresh)');
+    return config.accessToken;
+  }
+  const refreshed = await refreshAccessToken({
+    baseUrl: config.baseUrl,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    refreshToken: config.refreshToken,
+    log,
+  });
+  return refreshed.accessToken;
 }
