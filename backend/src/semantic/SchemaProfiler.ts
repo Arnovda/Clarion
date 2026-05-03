@@ -358,9 +358,16 @@ export async function runSchemaProfiler(
   if (shouldDisconnect) connector.disconnect();
 
   // Lookup maps
-  const tableContextByName = new Map(tableContext.tables.map((t) => [t.table_name, t]));
-  const columnDefByKey = new Map(
-    columnDescriptions.columns.map((c) => [`${c.table_name}.${c.column_name}`, c]),
+  // Explicit element types: without them, the build's tsc widens the
+  // tuple `[string, T]` to `(string | T)[]` and the Map values come out
+  // as `unknown` (so `.display_name` etc. fail to type-check downstream).
+  type TableCtxEntry = (typeof tableContext.tables)[number];
+  type ColumnDefEntry = (typeof columnDescriptions.columns)[number];
+  const tableContextByName = new Map<string, TableCtxEntry>(
+    tableContext.tables.map((t) => [t.table_name, t] as const),
+  );
+  const columnDefByKey = new Map<string, ColumnDefEntry>(
+    columnDescriptions.columns.map((c) => [`${c.table_name}.${c.column_name}`, c] as const),
   );
 
   // ── 7. Persist to Postgres + Neo4j ─────────────────────────────────────
