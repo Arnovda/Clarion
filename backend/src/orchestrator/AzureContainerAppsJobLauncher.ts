@@ -81,9 +81,35 @@ export interface AzureLauncherConfig {
 
 export class AzureContainerAppsJobLauncher implements JobLauncher {
   private readonly client: ContainerAppsAPIClient;
+  /**
+   * Cached container template (image + resources) read from the Job's base
+   * spec. Container Apps' job-start API requires the override to include
+   * the image; it does NOT inherit from the base. We resolve once and reuse.
+   */
+  private cachedContainerSpec: { image: string; cpu?: number; memory?: string; name: string } | null = null;
 
   constructor(private readonly cfg: AzureLauncherConfig) {
     this.client = new ContainerAppsAPIClient(new DefaultAzureCredential(), cfg.subscriptionId);
+  }
+
+  /**
+   * Read the Job's base container spec (image + cpu + memory) once, cache.
+   * Backend restart picks up any changes (rare — only at deploy time).
+   */
+  private async resolveContainerSpec(): Promise<{ image: string; cpu?: number; memory?: string; name: string }> {
+    if (this.cachedContainerSpec) return this.cachedContainerSpec;
+    const job = await this.client.jobs.get(this.cfg.resourceGroup, this.cfg.jobName);
+    const c = job.template?.containers?.[0];
+    if (!c?.image) {
+      throw new Error(`Job ${this.cfg.jobName} has no container image in its base template`);
+    }
+    this.cachedContainerSpec = {
+      name: c.name ?? 'sync-worker',
+      image: c.image,
+      cpu: c.resources?.cpu,
+      memory: c.resources?.memory,
+    };
+    return this.cachedContainerSpec;
   }
 
   launch(spec: JobSpec, onEvent: (event: WorkerEvent) => void): JobHandle {
@@ -127,17 +153,23 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
         ];
 
         // ─── Start the Job execution ──────────────────────────────────
-        log.info({ syncRunId: spec.syncRunId }, 'starting Container Apps Job execution');
+        // The override must include image + resources — Container Apps
+        // does NOT inherit from the base template when an override is
+        // provided. We read those from the Job once and cache them.
+        const baseContainer = await this.resolveContainerSpec();
+
+        log.info({ syncRunId: spec.syncRunId, image: baseContainer.image }, 'starting Container Apps Job execution');
         const startRes = await this.client.jobs.beginStartAndWait(
           this.cfg.resourceGroup,
           this.cfg.jobName,
           {
             template: {
               containers: [{
-                // The Job's existing container definition (image, resources)
-                // stays in place; we only override env. Container Apps merges
-                // these onto the base template.
-                name: 'sync-worker',
+                name: baseContainer.name,
+                image: baseContainer.image,
+                resources: (baseContainer.cpu !== undefined || baseContainer.memory !== undefined)
+                  ? { cpu: baseContainer.cpu, memory: baseContainer.memory }
+                  : undefined,
                 env: envOverrides,
               }],
             },
