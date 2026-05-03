@@ -14,15 +14,16 @@
 #   • `runtime` — copy compiled output + production node_modules, run as non-root
 
 # ─── Stage 1: build ───────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
+# Note: node:20-slim (Debian, glibc) — NOT alpine.
+# DuckDB's prebuilt binary links against glibc; on Alpine (musl) it fails
+# to load with `Error loading shared library ld-linux-x86-64.so.2`.
+# The backend image uses node:20-slim for the same reason.
+FROM node:20-slim AS deps
 
 WORKDIR /build
 
-# DuckDB native binding needs build-base + python on Alpine for any
-# install step that compiles. The prebuilt binary almost always works
-# but we keep these in the builder stage as insurance — the runtime
-# stage doesn't need them.
-RUN apk add --no-cache build-base python3
+# Build essentials for native modules (DuckDB) — used during npm install.
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 # Copy lockfiles first so layer cache survives source changes.
 # packages/connectors is a workspace dep referenced via file:.
@@ -46,11 +47,17 @@ RUN cd worker && npm install --no-audit --no-fund && npm run build
 RUN cd worker && npm prune --production --no-audit --no-fund
 
 # ─── Stage 2: runtime ─────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:20-slim AS runtime
+
+# Runtime libs DuckDB's azure extension expects (the spike's backend has the
+# same set — kept consistent so DuckDB behaves identically across processes).
+RUN apt-get update && apt-get install -y \
+      ca-certificates libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Run as a dedicated non-root user. Container Apps already namespace-isolates
 # but defence in depth is cheap.
-RUN addgroup -S worker && adduser -S worker -G worker
+RUN groupadd -r worker && useradd -r -g worker worker
 
 WORKDIR /app
 
