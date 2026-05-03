@@ -92,6 +92,53 @@ export interface SourceConnector {
    * orchestrator marks the run failed, the user sees the error message.
    */
   sync(config: ConnectorConfig, opts: SyncOptions, ctx: SyncContext): Promise<SyncResult>;
+
+  /**
+   * Optional. Returns FKs that are well-known for this source system and don't
+   * need to be inferred — they're just facts about the API surface (e.g.
+   * `SalesInvoiceLines.InvoiceID` always references `SalesInvoices.InvoiceID`
+   * in ExactOnline).
+   *
+   * Why this matters: API-style sources (ExactOnline, NetSuite, Stripe, ...)
+   * land their data in Parquet files which carry no FK constraints. Generic
+   * heuristics that look for `_id` snake_case suffixes don't match
+   * PascalCase API columns. Without this method, the schema profiler would
+   * have to ask Claude to re-discover relationships that are part of the
+   * vendor's documented data model. Cheaper and more accurate to declare them.
+   *
+   * Implementations should:
+   *   • only return relationships whose endpoints both appear in
+   *     `selectedEntities` (returning ones for unsynced entities is harmless,
+   *     they just won't match a table)
+   *   • use the same column casing as the actual Parquet headers
+   *   • mark each entry with `confidence` ≤ 1.0 — exact-as-vendor-docs is 1.0
+   *
+   * The platform calls this BEFORE running heuristic FK detection. Returned
+   * relationships are merged in as `source: 'declared'` and skipped by
+   * subsequent layers (no duplicate name-pattern guesses).
+   */
+  getKnownRelationships?(selectedEntities: readonly string[]): readonly KnownRelationship[];
+}
+
+// ─── Known relationships ──────────────────────────────────────────────────
+/**
+ * A relationship that's part of the source system's documented data model.
+ * Connectors expose these via `getKnownRelationships()`; the schema profiler
+ * treats them as ground truth and skips heuristic re-detection.
+ */
+export interface KnownRelationship {
+  /** Source-side table name. Must match `EntityDescriptor.name`. */
+  fromTable: string;
+  /** Source-side column name (case-sensitive — must match the Parquet header). */
+  fromColumn: string;
+  /** Referenced table. Must match `EntityDescriptor.name`. */
+  toTable: string;
+  /** Referenced column (typically the PK). */
+  toColumn: string;
+  /** Cardinality. Defaults to 'many_to_one' if omitted. */
+  type?: 'many_to_one' | 'one_to_many' | 'many_to_many' | 'one_to_one';
+  /** Plain-English description shown to users. */
+  description?: string;
 }
 
 // ─── OAuth specification ──────────────────────────────────────────────────

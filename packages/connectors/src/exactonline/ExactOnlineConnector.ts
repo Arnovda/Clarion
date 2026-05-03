@@ -31,7 +31,8 @@ import {
   type SyncResult,
   type TestResult,
 } from '../types';
-import { asEntityDescriptors, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
+import { asEntityDescriptors, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
+import type { KnownRelationship } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
 import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
 
@@ -274,6 +275,21 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       bytes: result.bytesWritten,
     });
     return result.rowsWritten;
+  }
+
+  /**
+   * Returns FKs that are part of the documented ExactOnline data model.
+   *
+   * Filtered to the user's selected entities so we never insert a relationship
+   * pointing to a table that wasn't synced. Same casing as the OData payload
+   * (PascalCase, IDs like `InvoiceID`/`ID`) so the SchemaProfiler's column
+   * lookup against the introspected Parquet headers actually matches.
+   */
+  getKnownRelationships(selectedEntities: readonly string[]): readonly KnownRelationship[] {
+    const set = new Set(selectedEntities);
+    return EXACT_ONLINE_KNOWN_RELATIONSHIPS.filter(
+      (r) => set.has(r.fromTable) && set.has(r.toTable),
+    );
   }
 
   private buildInitialUrl(config: ExactOnlineConfig, entity: ExactOnlineEntity): string {

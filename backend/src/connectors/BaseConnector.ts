@@ -107,6 +107,60 @@ const META_COLUMNS = new Set([
 ]);
 const KEY_SUFFIXES = ['_id', '_code', '_key', '_ref', '_no', '_num', '_number', '_nr'];
 
+// PascalCase / camelCase variants — same suffixes but without the underscore.
+// Common in API-style sources (ExactOnline, NetSuite, Stripe, Salesforce).
+// e.g. `InvoiceID` → suffix `id`, stem `invoice`. We require a 3+ char stem
+// so noise like `paid` (suffix `id`, stem `pa`) doesn't match.
+const KEY_SUFFIXES_PASCAL = ['id', 'code', 'key', 'ref', 'number'];
+
+/**
+ * Extract the "stem" of a key-shaped column name, supporting both
+ * snake_case (`customer_id` → `customer`) and PascalCase / camelCase
+ * (`CustomerID` → `customer`). Returns null if the column doesn't look
+ * like a key.
+ *
+ * The stem is what we then match against TABLE NAMES to find the FK target.
+ * Caller is responsible for confirming the stem corresponds to an actual
+ * table — that's the safety net for any over-matching here.
+ */
+export function getKeyStem(columnName: string): string | null {
+  const cn = columnName.toLowerCase();
+  if (cn === 'id') return null; // bare `id` is the table's PK, not a stem
+
+  // 1. snake_case suffixes (longest match first via array order)
+  for (const suffix of KEY_SUFFIXES) {
+    if (cn.endsWith(suffix)) {
+      const stem = cn.slice(0, -suffix.length);
+      if (stem.length >= 2) return stem;
+    }
+  }
+  // 2. PascalCase / camelCase suffixes — stricter min-stem to suppress noise
+  for (const suffix of KEY_SUFFIXES_PASCAL) {
+    if (cn.endsWith(suffix) && cn.length > suffix.length + 2) {
+      const stem = cn.slice(0, -suffix.length);
+      if (stem.length >= 3) return stem;
+    }
+  }
+  return null;
+}
+
+/**
+ * Tokenise a table name into its word components, lowercase + singularised.
+ * Handles PascalCase (`SalesInvoices` → ['sales', 'invoice']) and snake_case
+ * (`sales_invoices` → ['sales', 'invoice']). Used to recognise that a
+ * column like `InvoiceID` "belongs to" the `SalesInvoices` table even
+ * though `invoice` ≠ `salesinvoice`.
+ */
+export function tokenizeTableName(name: string): string[] {
+  return name
+    .replace(/([a-z])([A-Z])/g, '$1 $2')   // SalesInvoices → 'Sales Invoices'
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2') // GLAccounts → 'GL Accounts'
+    .replace(/[_-]+/g, ' ')                  // sales_invoices → 'sales invoices'
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.toLowerCase().replace(/s$/, ''));
+}
+
 export abstract class BaseConnector {
   abstract connect(): Promise<void>;
   abstract testConnection(): Promise<{ ok: boolean; message: string }>;
@@ -151,27 +205,37 @@ export abstract class BaseConnector {
 
       const tnLower = t.tableName.toLowerCase();
       const tnStem = tnLower.replace(/s$/, ''); // "verkooporders" → "verkooporder"
+      // Tokenised forms — handles `SalesInvoices` → ['sales', 'invoice'] so
+      // `InvoiceID` is recognised as the table's own business key (not an
+      // outward FK to a non-existent `Invoice` table).
+      const tableTokens = new Set(tokenizeTableName(t.tableName));
 
       for (const col of t.columns) {
         const cn = col.name.toLowerCase();
         if (META_COLUMNS.has(cn)) continue;
         if (MEASURE_PATTERNS.test(cn)) continue;
 
-        const isKeySuffix = KEY_SUFFIXES.some((s) => cn.endsWith(s));
+        // Bare `id` is always the table's own PK.
+        if (cn === 'id') {
+          businessKeys.push(col.name);
+          continue;
+        }
 
-        if (isKeySuffix) {
-          // Check if this key column belongs to THIS table (= business key)
-          // or points to ANOTHER table (= FK outward)
-          const colStem = cn.replace(/_(id|code|key|ref|no|num|number|nr)$/, '');
-          const belongsToThisTable =
-            cn === 'id' || cn === `${tnLower}_id` || cn === `${tnStem}_id` ||
-            colStem === tnLower || colStem === tnStem;
+        const colStem = getKeyStem(col.name);
+        if (!colStem) continue;
 
-          if (belongsToThisTable) {
-            businessKeys.push(col.name);
-          } else {
-            keyColumns.push(col.name); // FK pointing outward
-          }
+        // Check if this key column belongs to THIS table (= business key)
+        // or points to ANOTHER table (= FK outward).
+        const belongsToThisTable =
+          cn === `${tnLower}_id` || cn === `${tnStem}_id` ||
+          cn === `${tnLower}id`  || cn === `${tnStem}id`  ||
+          colStem === tnLower || colStem === tnStem ||
+          tableTokens.has(colStem);
+
+        if (belongsToThisTable) {
+          businessKeys.push(col.name);
+        } else {
+          keyColumns.push(col.name); // FK pointing outward
         }
       }
 
@@ -246,20 +310,14 @@ export abstract class BaseConnector {
     }
 
     // ── Layer 2: Name-pattern matching ───────────────────────────────────────
-    // Matches _id, _code, _key, _ref, _no, _num suffixes to table names
+    // Matches snake_case (`customer_id`) AND PascalCase (`CustomerID`) suffixes
+    // to table names. The `getKeyStem` helper hides the casing logic.
     const preLayer2 = candidates.length;
     for (const table of tables) {
       for (const col of table.columns) {
         const colLower = col.name.toLowerCase();
-
-        // Check all key suffixes, not just _id
-        let stem: string | null = null;
-        for (const suffix of KEY_SUFFIXES) {
-          if (colLower.endsWith(suffix) && colLower !== 'id') {
-            stem = colLower.slice(0, -suffix.length);
-            break;
-          }
-        }
+        if (colLower === 'id') continue;
+        const stem = getKeyStem(col.name);
         if (!stem) continue;
 
         // Expand abbreviations: cust → customer, prod → product
@@ -360,9 +418,11 @@ export abstract class BaseConnector {
         const cn = fromCol.name.toLowerCase();
         if (META_COLUMNS.has(cn)) continue;
         if (MEASURE_PATTERNS.test(cn)) continue;
-        // Only check key-like columns and integer columns
-        const isKeyLike = KEY_SUFFIXES.some((s) => cn.endsWith(s)) || fromCol.type.toUpperCase().includes('INT');
-        if (!isKeyLike) continue;
+        // Any column that LOOKS like a key (snake_case suffix OR PascalCase
+        // suffix). The old INT-only fallback excluded GUID-shaped FKs that
+        // API connectors (ExactOnline, Salesforce, ...) materialise as
+        // VARCHAR. Value-overlap verification below filters out noise.
+        if (!getKeyStem(fromCol.name)) continue;
 
         for (const dimClass of dimTables) {
           if (fkTimedOut()) break;

@@ -14,6 +14,18 @@ import {
   RelationshipSuggestOutput,
 } from './prompts/schemaDraftPrompt';
 import {
+  SCHEMA_CONVENTIONS_SYSTEM,
+  buildConventionsUser,
+  SchemaConventions,
+  TABLE_CONTEXT_SYSTEM,
+  buildTableContextUser,
+  TableContextOutput,
+  COLUMN_DESCRIPTIONS_SYSTEM,
+  buildColumnDescriptionsUser,
+  ColumnDescriptionsOutput,
+  FkCandidateLike,
+} from './prompts/schemaContextPrompt';
+import {
   NL_TO_SQL_SYSTEM,
   buildNlToSqlUser,
   NlToSqlOutput,
@@ -545,6 +557,108 @@ async function draftOneBatch(
     }
     return merged;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Three-pass schema profiling (replaces generateSchemaDraft for the new pipeline)
+// ---------------------------------------------------------------------------
+// Pass 1 — detectSchemaConventions: Haiku-grade question. Cheap, single call,
+// output drives the next two prompts.
+// ---------------------------------------------------------------------------
+
+export async function detectSchemaConventions(
+  sourceSystem: string | null,
+  tables: TableInfo[],
+): Promise<SchemaConventions | null> {
+  if (tables.length === 0) return null;
+  try {
+    const raw = await callClaude(
+      SCHEMA_CONVENTIONS_SYSTEM,
+      buildConventionsUser(sourceSystem, tables),
+      { maxTokens: 1500, model: MODEL_HAIKU, callLabel: 'schema_conventions' },
+    );
+    return parseJson<SchemaConventions>(raw);
+  } catch (err) {
+    console.warn('[AIService] detectSchemaConventions failed (non-fatal):', err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 — generateTableContext: ONE call, all tables, infers descriptions +
+// relationships. Column descriptions come in Pass 3.
+// ---------------------------------------------------------------------------
+
+export async function generateTableContext(
+  sourceSystem: string | null,
+  conventions: SchemaConventions | null,
+  tables: TableInfo[],
+  qualityStats: TableQualityStat[],
+  fkCandidates: FkCandidateLike[],
+): Promise<TableContextOutput> {
+  const glossary = await loadGlossaryBlock();
+  const raw = await callClaude(
+    TABLE_CONTEXT_SYSTEM,
+    buildTableContextUser(sourceSystem, conventions, tables, qualityStats, fkCandidates, glossary),
+    { maxTokens: 8000, cacheSystem: true, callLabel: 'table_context' },
+  );
+  return parseJson<TableContextOutput>(raw);
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 — generateColumnDescriptions: per-batch, with table+relationship
+// context. Same column-budget batching as the legacy schema draft.
+// ---------------------------------------------------------------------------
+
+export async function generateColumnDescriptions(
+  sourceSystem: string | null,
+  tableContext: TableContextOutput,
+  tables: TableInfo[],
+  qualityStats: TableQualityStat[],
+  onProgress?: (tableNames: string[], batchIndex: number, totalBatches: number) => void,
+): Promise<ColumnDescriptionsOutput> {
+  const glossary = await loadGlossaryBlock();
+  const batches = buildDraftBatches(tables);
+  const merged: ColumnDescriptionsOutput = { columns: [] };
+
+  for (let bi = 0; bi < batches.length; bi++) {
+    const batch = batches[bi];
+    const batchStats = qualityStats.filter((s) => batch.some((t) => t.tableName === s.table_name));
+    onProgress?.(batch.map((t) => t.tableName), bi, batches.length);
+    try {
+      const raw = await callClaude(
+        COLUMN_DESCRIPTIONS_SYSTEM,
+        buildColumnDescriptionsUser(sourceSystem, tableContext, batch, batchStats, glossary),
+        { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions' },
+      );
+      const part = parseJson<ColumnDescriptionsOutput>(raw);
+      merged.columns.push(...part.columns);
+    } catch (err) {
+      // If the batch is too wide and Claude truncates, fall back to halving.
+      // Reuse the same recursive split as draftOneBatch.
+      if (batch.length === 1) {
+        console.warn(`[AIService] column descriptions failed for single-table batch ${batch[0].tableName}:`, err);
+        continue;
+      }
+      console.warn(`[AIService] column descriptions JSON parse failed for ${batch.length}-table batch; splitting`);
+      const mid = Math.ceil(batch.length / 2);
+      for (const sub of [batch.slice(0, mid), batch.slice(mid)]) {
+        const sub2Stats = qualityStats.filter((s) => sub.some((t) => t.tableName === s.table_name));
+        try {
+          const raw = await callClaude(
+            COLUMN_DESCRIPTIONS_SYSTEM,
+            buildColumnDescriptionsUser(sourceSystem, tableContext, sub, sub2Stats, glossary),
+            { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions' },
+          );
+          const part = parseJson<ColumnDescriptionsOutput>(raw);
+          merged.columns.push(...part.columns);
+        } catch (err2) {
+          console.warn(`[AIService] column descriptions sub-batch failed:`, err2);
+        }
+      }
+    }
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
