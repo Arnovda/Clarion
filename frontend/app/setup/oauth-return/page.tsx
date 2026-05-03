@@ -43,15 +43,22 @@ export default function OAuthReturnPage() {
       };
     }
 
-    // postMessage to opener. Same origin, so this is reliable.
-    // We use targetOrigin === window.location.origin so we don't leak the
-    // code to any window that happens to be in our browsing-context group.
-    if (window.opener && !window.opener.closed) {
-      try {
-        window.opener.postMessage(msg, window.location.origin);
-      } catch {
-        // Swallow — the wizard's "popup closed" handler will surface this
-        // as a clean error if postMessage somehow failed.
+    // Send via BroadcastChannel — same-origin reliable channel that does
+    // NOT depend on window.opener. The opener link is severed when the
+    // popup passes through a third-party auth screen with strict COOP
+    // (e.g. ExactOnline's), so window.opener can be null here even though
+    // we're on the same origin as the wizard.
+    //
+    // BroadcastChannel works as long as both sides are on the same origin
+    // (which they are — both on the frontend domain).
+    try {
+      const channel = new BroadcastChannel('databridge-oauth');
+      channel.postMessage(msg);
+      channel.close();
+    } catch {
+      // Browser doesn't support BroadcastChannel? Fall back to opener.
+      if (window.opener && !window.opener.closed) {
+        try { window.opener.postMessage(msg, window.location.origin); } catch { /* swallowed */ }
       }
     }
 

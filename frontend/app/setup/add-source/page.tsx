@@ -217,41 +217,59 @@ function AddSourceWizard() {
         throw new Error('Popup blocked — please allow popups for this site and try again');
       }
 
-      // Wait for postMessage from the popup. The popup is bounced through
-      // the same-origin return page (/setup/oauth-return) which sends the
-      // message with targetOrigin = our origin, so we accept only messages
-      // from our own origin — protects against any other tab/iframe that
-      // might happen to postMessage with our envelope shape.
+      // Listen on a BroadcastChannel for the result. Two reasons:
+      //   1. window.opener.postMessage doesn't work — once the popup
+      //      passes through a third-party auth screen with strict COOP
+      //      (ExactOnline does this), the opener link is severed even if
+      //      the popup ends up back on our origin.
+      //   2. BroadcastChannel is same-origin and works between any
+      //      tabs/windows on our origin, regardless of opener state.
+      //
+      // We also keep a window.message listener as a fallback for browsers
+      // that don't support BroadcastChannel (none in our supported matrix,
+      // but it's a cheap safety net).
       const result = await new Promise<{ ok: true; code: string; state: string } | { ok: false; error: string }>((resolve, reject) => {
         let resolved = false;
+        const accept = (m: { kind?: string; ok?: boolean; code?: string; state?: string; error?: string } | undefined) => {
+          if (!m || m.kind !== 'databridge:oauth') return false;
+          if (resolved) return true;
+          resolved = true;
+          channel.close();
+          window.removeEventListener('message', onMessage);
+          clearInterval(closedCheck);
+          if (m.ok && m.code && m.state) resolve({ ok: true, code: m.code, state: m.state });
+          else resolve({ ok: false, error: m.error ?? 'OAuth failed' });
+          return true;
+        };
+        const channel = new BroadcastChannel('databridge-oauth');
+        channel.onmessage = (ev) => { accept(ev.data); };
         const onMessage = (ev: MessageEvent) => {
           if (ev.origin !== window.location.origin) return;
-          const m = ev.data;
-          if (!m || m.kind !== 'databridge:oauth') return;
-          window.removeEventListener('message', onMessage);
-          resolved = true;
-          clearInterval(closedCheck);
-          resolve(m);
+          accept(ev.data);
         };
+        window.addEventListener('message', onMessage);
+
         // If the user closes the popup without completing, error out.
-        // Slight grace period (1.5s) after popup.closed so the message
-        // queue has a chance to drain — Chrome occasionally fires `closed`
-        // before the last postMessage propagates.
+        // 1.5s grace period after popup.closed so the channel message has
+        // time to land — popup.close() fires after the message is queued
+        // but the wizard sees `closed` immediately.
         let closedSince: number | null = null;
         const closedCheck = setInterval(() => {
           if (resolved) return;
           if (popup.closed) {
             if (closedSince === null) closedSince = Date.now();
             else if (Date.now() - closedSince > 1500) {
-              clearInterval(closedCheck);
+              if (resolved) return;
+              resolved = true;
+              channel.close();
               window.removeEventListener('message', onMessage);
+              clearInterval(closedCheck);
               reject(new Error('Popup closed before authorization completed'));
             }
           } else {
             closedSince = null;
           }
         }, 300);
-        window.addEventListener('message', onMessage);
       });
 
       if (!result.ok) {
