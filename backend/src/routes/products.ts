@@ -29,7 +29,76 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       .limit(limit)
       .offset(offset);
 
-    res.json(paginatedResponse(products, Number(total), page, limit));
+    // Compute the canonical "primary source" for every product so the UI
+    // can group / filter / badge consistently. Rules (see CLAUDE.md notes):
+    //   1. Most-tables-contributed connection wins.
+    //   2. Tie → fall back to data_products.connection_id.
+    //   3. Empty data_product_sources → use data_products.connection_id.
+    //   4. Connection deleted → primary becomes null + sourceDeleted=true.
+    // multiSource=true when the product touches >1 connection.
+    const productIds = products.map((p: { id: number }) => p.id);
+    const sourceRows = productIds.length
+      ? await semanticDb('data_product_sources as dps')
+          .join('source_tables as st', 'st.id', 'dps.source_table_id')
+          .whereIn('dps.data_product_id', productIds)
+          .select('dps.data_product_id as product_id', 'st.connection_id as connection_id')
+      : [];
+
+    const connectionIds = new Set<number>();
+    for (const p of products as { connection_id: number | null }[]) if (p.connection_id) connectionIds.add(p.connection_id);
+    for (const r of sourceRows as { connection_id: number }[]) if (r.connection_id) connectionIds.add(r.connection_id);
+    const connRows = connectionIds.size
+      ? await semanticDb('connections')
+          .whereIn('id', Array.from(connectionIds))
+          .select('id', 'name', 'type', 'connector_type')
+      : [];
+    const connMap = new Map<number, { id: number; name: string; type: string; connectorType: string | null }>(
+      connRows.map((c: { id: number; name: string; type: string; connector_type: string | null }) =>
+        [c.id, { id: c.id, name: c.name, type: c.type, connectorType: c.connector_type }] as const,
+      ),
+    );
+
+    // product_id → connection_id → table_count
+    const tallies = new Map<number, Map<number, number>>();
+    for (const r of sourceRows as { product_id: number; connection_id: number }[]) {
+      if (!r.connection_id) continue;
+      let inner = tallies.get(r.product_id);
+      if (!inner) { inner = new Map(); tallies.set(r.product_id, inner); }
+      inner.set(r.connection_id, (inner.get(r.connection_id) ?? 0) + 1);
+    }
+
+    const enriched = (products as Array<{ id: number; connection_id: number | null }>).map((p) => {
+      const inner = tallies.get(p.id);
+      const contributors = inner
+        ? Array.from(inner.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])
+        : [];
+      // Primary connection: most-tables wins, fallback to data_products.connection_id.
+      const primaryId = contributors[0]?.[0] ?? p.connection_id ?? null;
+      const primaryConn = primaryId != null ? connMap.get(primaryId) ?? null : null;
+      const otherIds = contributors.slice(1).map(([id]) => id);
+      const otherSources = otherIds
+        .map((id) => connMap.get(id))
+        .filter((c): c is NonNullable<typeof c> => !!c);
+      const multiSource = contributors.length > 1;
+      // The product's stored connection_id pointed at a row we couldn't load
+      // (cascade delete left the FK NULL or the connection row vanished
+      // outside the tenant filter). Surface that explicitly so the UI can
+      // render a "Source deleted" pill rather than a silent "Unknown".
+      const sourceDeleted = primaryId != null && !primaryConn;
+      return {
+        ...p,
+        source: {
+          id: primaryConn?.id ?? null,
+          name: primaryConn?.name ?? null,
+          connectorType: primaryConn?.connectorType ?? null,
+          multiSource,
+          sourceDeleted,
+          otherSources,
+        },
+      };
+    });
+
+    res.json(paginatedResponse(enriched, Number(total), page, limit));
   } catch (err) { next(err); }
 });
 

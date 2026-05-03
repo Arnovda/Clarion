@@ -97,6 +97,26 @@ const fmtRows = (n: number | null | undefined) => {
   return String(n);
 };
 
+// Stable key that uniquely identifies a product's source bucket. Mirrors
+// `productSourceGroupKey` in <SourceBadge> so URL params / persistence are
+// shared between surfaces. Null/empty source → 'unassigned'.
+function sourceBucketKeyForSchema(s: SchemaEntry): string {
+  if (s.catalog !== 'products') return '';
+  const m = s.meta;
+  if (!m) return 'unassigned';
+  if (m.sourceDeleted) return 'deleted';
+  if (m.multiSource) return 'multi';
+  if (m.sourceConnectionId != null) return `conn:${m.sourceConnectionId}`;
+  return 'unassigned';
+}
+
+function sourceBucketLabel(key: string, sample: SchemaEntry | undefined): string {
+  if (key === 'multi') return 'Multi-source';
+  if (key === 'deleted') return 'Source deleted';
+  if (key === 'unassigned') return 'Unassigned';
+  return sample?.meta?.sourceConnectionName ?? 'Unknown source';
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true }: Props) {
@@ -104,6 +124,17 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
   const [openTables, setOpenTables] = useState<Set<string>>(new Set());
+  // Source-buckets within the products catalog. We track CLOSED buckets
+  // (inverse) so the default "all open" state is just an empty set —
+  // matching how users browse: see everything first, collapse to focus.
+  const [closedProductBuckets, setClosedProductBuckets] = useState<Set<string>>(new Set());
+  const toggleProductBucket = (key: string) => {
+    setClosedProductBuckets((s) => {
+      const n = new Set(s);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+  };
 
   const [schemasByCatalog, setSchemasByCatalog] = useState<Record<string, SchemaEntry[]>>({});
   const [tablesBySchema,   setTablesBySchema]   = useState<Record<string, TableEntry[]>>({});
@@ -265,7 +296,69 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                     <div className="pl-9 py-2 text-[11px] text-muted-2">No schemas yet</div>
                   )}
 
-                  {schemas.map((schema) => {
+                  {/*
+                    For the products catalog we sort schemas by their source
+                    bucket (alphabetical, with Multi-source / Source deleted /
+                    Unassigned sunk to the end) so consecutive same-bucket
+                    schemas group naturally. The render then emits a single
+                    bucket header before the first schema of each new bucket.
+                    Sources catalog stays flat — synthetic bucket keys are
+                    never assigned so no headers render.
+                  */}
+                  {(cat.id === 'products'
+                    ? [...schemas].sort((a, b) => {
+                        const ka = sourceBucketKeyForSchema(a);
+                        const kb = sourceBucketKeyForSchema(b);
+                        const rank = (k: string) =>
+                          k === 'multi' ? 1 : k === 'deleted' ? 2 : k === 'unassigned' ? 3 : 0;
+                        const ra = rank(ka), rb = rank(kb);
+                        if (ra !== rb) return ra - rb;
+                        if (ka !== kb) {
+                          const la = sourceBucketLabel(ka, a);
+                          const lb = sourceBucketLabel(kb, b);
+                          return la.localeCompare(lb);
+                        }
+                        return a.label.localeCompare(b.label);
+                      })
+                    : schemas
+                  ).map((schema, i, arr) => {
+                    // ── Bucket header (products only) ──
+                    let bucketHeader: React.ReactNode = null;
+                    let bucketCollapsed = false;
+                    if (cat.id === 'products') {
+                      const myBucket = sourceBucketKeyForSchema(schema);
+                      const prevBucket = i > 0 ? sourceBucketKeyForSchema(arr[i - 1]) : null;
+                      bucketCollapsed = closedProductBuckets.has(myBucket);
+                      if (myBucket !== prevBucket) {
+                        const inThisBucket = arr.filter((s) => sourceBucketKeyForSchema(s) === myBucket).length;
+                        bucketHeader = (
+                          <button
+                            key={`bh:${myBucket}`}
+                            onClick={() => toggleProductBucket(myBucket)}
+                            className="w-full flex items-center gap-2 pl-7 pr-3 py-1.5 hover:bg-softer transition-colors text-left"
+                            title={`${inThisBucket} product${inThisBucket === 1 ? '' : 's'}`}
+                          >
+                            <Chevron open={!bucketCollapsed} />
+                            <span className={cn(
+                              'text-[10px] font-mono tracking-[0.12em] uppercase shrink-0',
+                              myBucket === 'multi' || myBucket === 'deleted' || myBucket === 'unassigned'
+                                ? 'text-muted-2'
+                                : 'text-ocean',
+                            )}>
+                              {sourceBucketLabel(myBucket, schema)}
+                            </span>
+                            <span className="text-[10px] font-mono text-muted-2 tabular-nums ml-auto">
+                              {inThisBucket}
+                            </span>
+                          </button>
+                        );
+                      }
+                    }
+
+                    // Skip the schema row when its bucket is collapsed —
+                    // but still render the (one-shot) header above.
+                    if (bucketCollapsed) return bucketHeader;
+
                     const schemaKey = `${cat.id}/${schema.id}`;
                     const schemaOpen = openSchemas.has(schemaKey);
                     const tables = tablesBySchema[schemaKey] ?? [];
@@ -276,6 +369,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
 
                     return (
                       <div key={schema.id}>
+                        {bucketHeader}
                         {/* ── Schema row (split: chevron toggles, label selects) ── */}
                         <div
                           className={cn(

@@ -30,7 +30,17 @@ export interface SchemaEntry {
   ownerName?: string | null;
   status?: string | null;     // products only
   lastRefreshed?: string | null;
-  meta?: { connectionId?: number; dataProductId?: number; type?: string };
+  meta?: {
+    connectionId?: number;
+    dataProductId?: number;
+    type?: string;
+    /** Primary source for a product schema (products catalog only). */
+    sourceConnectionId?: number | null;
+    sourceConnectionName?: string | null;
+    sourceConnectorType?: string | null;
+    multiSource?: boolean;
+    sourceDeleted?: boolean;
+  };
 }
 
 export interface TableEntry {

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Database, X, ChevronRight, Sparkles } from 'lucide-react';
+import { Database, X, ChevronRight, Sparkles, Plus } from 'lucide-react';
+import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import RequireRole from '@/components/RequireRole';
@@ -72,6 +73,11 @@ function ProductsPageInner() {
 
   // KPI state
   const [kpis, setKpis] = useState<Map<number, ProductKpi[]>>(new Map());
+
+  // Source filter chip — null means "All sources" (grouped sections render).
+  // String keys mirror `productSourceGroupKey` so URL/persistence is shared
+  // with /catalog and any future surface that filters by source.
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
 
   // ----------- Data loading -----------
 
@@ -551,15 +557,66 @@ function ProductsPageInner() {
                 </div>
               )}
 
-              {/* Product cards grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {products.map((product) => {
+              {/*
+                Source filter / grouping. Two modes:
+                  • All sources (chip null): render grouped sections, one
+                    per source, with "Design your first <Source> product →"
+                    CTA cards in any group that has zero products.
+                  • Filtered (chip set): flat grid of just that source's
+                    products. CTA card lives at the end so users can spawn
+                    a new product for the same source they're looking at.
+              */}
+              {(() => {
+                // Build groups keyed by source-bucket. Connection rows that
+                // produced ZERO products get an entry too — that's how the
+                // empty-state CTA per source gets its slot.
+                type Group = { key: string; label: string; products: DataProduct[]; connectionId: number | null };
+                const groups: Group[] = [];
+                const indexByKey = new Map<string, number>();
+
+                const addGroup = (key: string, label: string, connectionId: number | null) => {
+                  if (indexByKey.has(key)) return;
+                  indexByKey.set(key, groups.length);
+                  groups.push({ key, label, products: [], connectionId });
+                };
+
+                // Seed with every active source-system connection so empty
+                // groups can show the CTA card (this is the killer feature
+                // that converts "0 products" into "design your first").
+                for (const c of connections) {
+                  addGroup(`conn:${c.id}`, c.name, c.id);
+                }
+
+                for (const p of products) {
+                  const k = productSourceGroupKey(p.source ?? null);
+                  const label = productSourceGroupLabel(k, p.source ?? null);
+                  const connId = p.source?.id ?? p.connection_id ?? null;
+                  addGroup(k, label, connId);
+                  groups[indexByKey.get(k)!].products.push(p);
+                }
+
+                // Sort: connection-name buckets alphabetically; synthetic
+                // ones (multi/deleted/unassigned) sunk to the end.
+                groups.sort((a, b) => {
+                  const rank = (k: string) =>
+                    k === 'multi' ? 1 : k === 'deleted' ? 2 : k === 'unassigned' ? 3 : 0;
+                  const ra = rank(a.key), rb = rank(b.key);
+                  if (ra !== rb) return ra - rb;
+                  return a.label.localeCompare(b.label);
+                });
+
+                // Drop multi/deleted/unassigned buckets if empty — no point
+                // showing a synthetic group with 0 products and no CTA.
+                const visible = groups.filter((g) =>
+                  (g.connectionId != null) || g.products.length > 0,
+                );
+
+                const renderCard = (product: DataProduct) => {
                   const detail = details.get(product.id);
                   const tables = detail ? getAllTables(detail) : [];
                   const productKpis = kpis.get(product.id) ?? [];
                   const visibleKpis = productKpis.slice(0, 5);
                   const name = cleanTopicName(product.name);
-
                   return (
                     <div
                       key={product.id}
@@ -569,10 +626,14 @@ function ProductsPageInner() {
                       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openProduct(product.id); } }}
                       className="text-left bg-raised border border-line rounded-lg hover:border-line-strong transition-all overflow-hidden group cursor-pointer focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
                     >
-                      {/* Icon + name header */}
                       <div className="px-5 pt-5 pb-3">
-                        <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center mb-3 group-hover:scale-105 transition-transform text-ocean">
-                          <ProductIcon product={product} className="w-7 h-7" />
+                        <div className="flex items-start justify-between gap-2 mb-3">
+                          <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center group-hover:scale-105 transition-transform text-ocean">
+                            <ProductIcon product={product} className="w-7 h-7" />
+                          </div>
+                          {product.source && (
+                            <SourceBadge source={product.source} size="compact" />
+                          )}
                         </div>
                         <div className="flex items-center gap-2 mb-1">
                           <h3 className="text-base font-semibold text-on-surface truncate">{name}</h3>
@@ -583,7 +644,6 @@ function ProductsPageInner() {
                         )}
                       </div>
 
-                      {/* KPI hints */}
                       {visibleKpis.length > 0 && (
                         <div className="px-5 pb-3">
                           <p className="text-[11px] font-semibold text-on-surface-variant/50 uppercase tracking-wider mb-1.5">What you can ask</p>
@@ -601,7 +661,6 @@ function ProductsPageInner() {
                         </div>
                       )}
 
-                      {/* Footer */}
                       <div className="px-5 py-3 border-t border-slate-200/30 flex items-center justify-between bg-surface-container-low/30">
                         <span className="text-xs text-on-surface-variant/50">
                           {tables.length > 0 ? `${tables.length} tables` : ''}
@@ -618,8 +677,104 @@ function ProductsPageInner() {
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                };
+
+                const renderEmptyCta = (group: Group) => (
+                  <button
+                    key={`cta:${group.key}`}
+                    onClick={() => {
+                      // Reuse the existing "Prepare my data" build flow,
+                      // pre-selecting this connection so the user lands one
+                      // click into "designing from <source>".
+                      if (group.connectionId != null) setBuildConnId(group.connectionId);
+                    }}
+                    className="bg-soft border-2 border-dashed border-line rounded-lg p-6 text-left hover:border-ocean hover:bg-ocean-softer/50 transition-colors group flex flex-col gap-2"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-raised border border-line flex items-center justify-center text-ocean group-hover:bg-ocean group-hover:text-white transition-colors">
+                      <Plus className="w-5 h-5" strokeWidth={1.75} />
+                    </div>
+                    <p className="text-[13.5px] font-medium text-ink">
+                      Design your first {group.label} product
+                    </p>
+                    <p className="text-[12px] text-muted leading-relaxed">
+                      Turn {group.label} tables into a clean, query-ready dataset.
+                    </p>
+                  </button>
+                );
+
+                // ── Filter chip row ──
+                const totalCount = products.length;
+                const chipsRow = (
+                  <div className="flex items-center gap-2 flex-wrap mb-4">
+                    <button
+                      onClick={() => setSourceFilter(null)}
+                      className={`text-[11.5px] font-medium px-2.5 py-1 rounded-md border transition-colors ${
+                        sourceFilter === null
+                          ? 'bg-ocean text-white border-ocean'
+                          : 'bg-raised text-ink-2 border-line hover:bg-softer'
+                      }`}
+                    >
+                      All <span className="ml-1 text-[10px] opacity-70 tabular-nums">{totalCount}</span>
+                    </button>
+                    {visible
+                      .filter((g) => g.products.length > 0)
+                      .map((g) => (
+                        <button
+                          key={`chip:${g.key}`}
+                          onClick={() => setSourceFilter(g.key)}
+                          className={`text-[11.5px] font-medium px-2.5 py-1 rounded-md border transition-colors inline-flex items-center gap-1.5 ${
+                            sourceFilter === g.key
+                              ? 'bg-ocean text-white border-ocean'
+                              : 'bg-raised text-ink-2 border-line hover:bg-softer'
+                          }`}
+                        >
+                          {g.label}
+                          <span className="text-[10px] opacity-70 tabular-nums">{g.products.length}</span>
+                        </button>
+                      ))}
+                  </div>
+                );
+
+                if (sourceFilter !== null) {
+                  // Filtered view — flat grid of one bucket's products.
+                  const group = visible.find((g) => g.key === sourceFilter);
+                  const filtered = group?.products ?? [];
+                  return (
+                    <>
+                      {chipsRow}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                        {filtered.map(renderCard)}
+                        {filtered.length === 0 && group && renderEmptyCta(group)}
+                      </div>
+                    </>
+                  );
+                }
+
+                // All-sources view — grouped sections.
+                return (
+                  <>
+                    {chipsRow}
+                    <div className="space-y-8">
+                      {visible.map((group) => (
+                        <section key={group.key}>
+                          <header className="flex items-baseline gap-2 mb-3">
+                            <h2 className="font-display text-[15px] tracking-[-0.01em] text-ink">
+                              {group.label}
+                            </h2>
+                            <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted">
+                              {group.products.length} product{group.products.length === 1 ? '' : 's'}
+                            </span>
+                          </header>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                            {group.products.map(renderCard)}
+                            {group.products.length === 0 && renderEmptyCta(group)}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Card click now navigates to /products/[id] (full detail page with embedded AI chat). */}
             </>

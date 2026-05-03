@@ -16,6 +16,21 @@ export interface DataProduct {
   created_at: string;
   star_schema_count?: number;
   icon_svg?: string | null;
+  /**
+   * Primary-source identity, server-derived. Used by /catalog tree, /products
+   * page filtering/grouping, and the shared <SourceBadge> primitive.
+   * Optional because the field is only present on responses from
+   * `GET /api/products` enriched after 2026-05-03 — clients reading older
+   * cached data degrade gracefully.
+   */
+  source?: {
+    id: number | null;
+    name: string | null;
+    connectorType: string | null;
+    multiSource: boolean;
+    sourceDeleted?: boolean;
+    otherSources?: Array<{ id: number; name: string; connectorType: string | null }>;
+  };
 }
 
 export interface StarSchema {

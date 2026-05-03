@@ -76,7 +76,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
 
     // products
     const products = await semanticDb('data_products')
-      .select('id', 'name', 'description', 'status', 'created_by', 'created_at', 'updated_at')
+      .select('id', 'name', 'description', 'status', 'created_by', 'created_at', 'updated_at', 'connection_id')
       .orderBy('name');
 
     const productTree = await graph.getProductTree();
@@ -85,17 +85,68 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
       tableCountByDpid.set(p.dataProductId, p.tables.length);
     }
 
-    const data = products.map((p) => ({
-      catalog: 'products' as const,
-      id: toSlugWithId(p.name, p.id),
-      label: p.name,
-      description: p.description,
-      tableCount: tableCountByDpid.get(p.id) ?? 0,
-      ownerName: p.created_by,
-      status: p.status,
-      lastRefreshed: p.updated_at ? String(p.updated_at) : null,
-      meta: { dataProductId: p.id },
-    }));
+    // Compute primary source per product (same rule as GET /api/products):
+    // most-tables-contributed connection wins, fallback to data_products.connection_id.
+    const productIds = (products as Array<{ id: number }>).map((p) => p.id);
+    const sourceRows = productIds.length
+      ? await semanticDb('data_product_sources as dps')
+          .join('source_tables as st', 'st.id', 'dps.source_table_id')
+          .whereIn('dps.data_product_id', productIds)
+          .select('dps.data_product_id as product_id', 'st.connection_id as connection_id')
+      : [];
+    const tallies = new Map<number, Map<number, number>>();
+    for (const r of sourceRows as { product_id: number; connection_id: number }[]) {
+      if (!r.connection_id) continue;
+      let inner = tallies.get(r.product_id);
+      if (!inner) { inner = new Map(); tallies.set(r.product_id, inner); }
+      inner.set(r.connection_id, (inner.get(r.connection_id) ?? 0) + 1);
+    }
+    const connIds = new Set<number>();
+    for (const p of products as Array<{ connection_id: number | null }>) if (p.connection_id) connIds.add(p.connection_id);
+    for (const r of sourceRows as { connection_id: number }[]) if (r.connection_id) connIds.add(r.connection_id);
+    const connRows = connIds.size
+      ? await semanticDb('connections')
+          .whereIn('id', Array.from(connIds))
+          .select('id', 'name', 'type', 'connector_type')
+      : [];
+    const connMap = new Map<number, { id: number; name: string; type: string; connector_type: string | null }>(
+      connRows.map((c: { id: number; name: string; type: string; connector_type: string | null }) => [c.id, c] as const),
+    );
+
+    const data = (products as Array<{
+      id: number; name: string; description: string | null;
+      status: string; created_by: string | null; updated_at: Date | string | null;
+      connection_id: number | null;
+    }>).map((p) => {
+      const inner = tallies.get(p.id);
+      const contributors = inner
+        ? Array.from(inner.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])
+        : [];
+      const primaryId = contributors[0]?.[0] ?? p.connection_id ?? null;
+      const primaryConn = primaryId != null ? connMap.get(primaryId) ?? null : null;
+      const multiSource = contributors.length > 1;
+      return {
+        catalog: 'products' as const,
+        id: toSlugWithId(p.name, p.id),
+        label: p.name,
+        description: p.description,
+        tableCount: tableCountByDpid.get(p.id) ?? 0,
+        ownerName: p.created_by,
+        status: p.status,
+        lastRefreshed: p.updated_at ? String(p.updated_at) : null,
+        meta: {
+          dataProductId: p.id,
+          // Primary-source info — drives the tree's "products grouped by
+          // source" rendering. Null when the product has no resolvable
+          // source (e.g. all source connections were deleted).
+          sourceConnectionId:   primaryConn?.id ?? null,
+          sourceConnectionName: primaryConn?.name ?? null,
+          sourceConnectorType:  primaryConn?.connector_type ?? null,
+          multiSource,
+          sourceDeleted:        primaryId != null && !primaryConn,
+        },
+      };
+    });
     res.json({ ok: true, data });
   } catch (err) { next(err); }
 });
