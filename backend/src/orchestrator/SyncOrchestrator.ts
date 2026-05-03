@@ -46,8 +46,30 @@ import {
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
 // Path layout matches existing conn_900 + the rest of the warehouse.
-// In Azure (Day 6) this becomes the Blob SAS URL the launcher injects.
 const WAREHOUSE_ROOT = path.resolve(__dirname, '../../../warehouse');
+
+/**
+ * Resolve the warehouse path that DuckDB should read from after a sync.
+ *
+ *   • Azure mode (Container Apps Job launcher): the worker wrote Parquet
+ *     files to Blob via SAS at `<container>/conn_<id>/<table>/data.parquet`.
+ *     DuckDBConnector reads `az://<container>/conn_<id>` and finds them.
+ *
+ *   • Local mode (LocalProcessJobLauncher): the worker wrote to the local
+ *     filesystem at `<repo>/warehouse/conn_<id>/`. DuckDBConnector reads
+ *     the absolute path.
+ *
+ * The mode is determined by env: `AZURE_CONTAINER_APPS_JOB_NAME` set
+ * means Azure (matches `createLauncherFromEnv`).
+ */
+function computeWarehousePathForDuckDB(connectionId: number): string {
+  const isAzureMode = !!process.env.AZURE_CONTAINER_APPS_JOB_NAME;
+  if (isAzureMode) {
+    const container = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
+    return `az://${container}/conn_${connectionId}`;
+  }
+  return path.join(WAREHOUSE_ROOT, `conn_${connectionId}`);
+}
 
 // ─── Launcher selection ──────────────────────────────────────────────────
 /**
@@ -201,7 +223,15 @@ async function runSyncInBackground(args: {
 
     const config: ConnectorConfig = JSON.parse(decryptCredentials(conn.connector_config_encrypted));
     const entities: string[] = Array.isArray(conn.selected_entities) ? conn.selected_entities : [];
-    const warehousePath = path.join(WAREHOUSE_ROOT, `conn_${connectionId}`);
+    // Two distinct paths matter here:
+    //   • `localWarehousePath`: what the LocalProcessJobLauncher tells the
+    //     worker to write to. Only used in local-dev mode; the Azure
+    //     launcher overrides with its own SAS URL.
+    //   • `duckdbReadPath`: what we persist on `connections.warehouse_path`
+    //     so DuckDB can read the data later. In Azure mode this is an
+    //     `az://` URL; in local mode it's the same filesystem path.
+    const localWarehousePath = path.join(WAREHOUSE_ROOT, `conn_${connectionId}`);
+    const duckdbReadPath = computeWarehousePathForDuckDB(connectionId);
 
     const jobSpec: JobSpec = {
       connectorType: conn.connector_type,
@@ -210,7 +240,7 @@ async function runSyncInBackground(args: {
       tenantId: String(tenantId),
       connectionId: String(connectionId),
       syncRunId: String(syncRunId),
-      warehousePath,
+      warehousePath: localWarehousePath,
     };
 
     childLog.info({ entities }, 'launching sync worker');
@@ -288,7 +318,10 @@ async function runSyncInBackground(args: {
         .update({
           last_sync_status: 'succeeded',
           last_synced_at: semanticDb.fn.now(),
-          warehouse_path: warehousePath,
+          // Persist the path DuckDB will read from — `az://...` in Azure,
+          // local FS path in dev. NOT the localWarehousePath above (that's
+          // only what we passed to the local launcher).
+          warehouse_path: duckdbReadPath,
           query_engine: 'duckdb',
         });
 
