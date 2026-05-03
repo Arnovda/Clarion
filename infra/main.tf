@@ -255,20 +255,21 @@ resource "azurerm_container_app" "redis" {
       cpu    = 0.25
       memory = "0.5Gi"
 
-      # Defaults are fine — BullMQ doesn't need any special config.
-      # Persistence is intentionally OFF (no AOF/RDB) — queue state is
-      # recoverable from Postgres + the orchestrator's idempotency.
-      command = ["redis-server", "--save", "", "--appendonly", "no"]
+      # Persistence intentionally OFF (no AOF/RDB) — queue state is
+      # recoverable from Postgres + the orchestrator's idempotency, and
+      # bullmq doesn't depend on durability for repeatable jobs.
+      # Wrap the empty-string arg in `sh -c` because the azurerm provider
+      # can't represent empty strings in the `command` array.
+      command = ["sh", "-c", "exec redis-server --save '' --appendonly no"]
     }
   }
 
   # Internal-only ingress: nothing outside the Container Apps env can hit it.
   ingress {
-    external_enabled           = false
-    target_port                = 6379
-    transport                  = "tcp"
-    exposed_port               = 6379
-    allow_insecure_connections = true
+    external_enabled = false
+    target_port      = 6379
+    transport        = "tcp"
+    exposed_port     = 6379
 
     traffic_weight {
       latest_revision = true
