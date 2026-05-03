@@ -392,8 +392,16 @@ export async function getRelationshipsForConnection(
         relationship_type:  toStr(p.relType),
         description:        toStr(p.description),
         ai_draft:           Boolean(p.aiDraft),
+        // Names are surfaced for UI use. The frontend filters/renders by
+        // `from_table` / `to_table` (and the column variants), so we expose
+        // them under both the verbose `_name` keys and the short canonical
+        // keys for backward-compat with any consumer of either shape.
         from_table_name:    toStr(r.get('fromTableName')),
         to_table_name:      toStr(r.get('toTableName')),
+        from_table:         toStr(r.get('fromTableName')),
+        to_table:           toStr(r.get('toTableName')),
+        from_column:        p.fromColName != null ? toStr(p.fromColName) : null,
+        to_column:          p.toColName   != null ? toStr(p.toColName)   : null,
       };
     });
   } finally {

@@ -358,6 +358,8 @@ export interface SchemaDraftOutput {
       via_column: string;   // column in the FROM table (the FK side)
       to_column: string;    // column in the TO table (the PK side)
       type: string;
+      /** Plain-language reasoning shown to users in list view, review queue, etc. */
+      description?: string;
     }>;
   }>;
   columns: Array<{

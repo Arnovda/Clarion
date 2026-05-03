@@ -1,7 +1,8 @@
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { BaseConnector, FkCandidate } from '../connectors/BaseConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
-import { generateSchemaDraft, suggestFkMatches } from '../ai/AIService';
+import { generateSchemaDraft, suggestFkMatches, suggestRelationships } from '../ai/AIService';
+import type { SemanticContext, RelationshipSuggestOutput } from '../ai/prompts/schemaDraftPrompt';
 import { semanticDb } from '../db/knex';
 import { runQualityProfile, runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
@@ -171,6 +172,98 @@ export async function runSchemaProfiler(
   // 3. Build lookup maps from the draft
   const tableDefMap = new Map(draft.tables.map((t) => [t.table_name, t]));
   const columnDefs = draft.columns;
+
+  // 3b. Cross-schema relationship pass.
+  //     The per-batch draft step sees only one batch of tables at a time, so
+  //     it can't propose relationships that span batches — and on wide schemas
+  //     where each batch is a single table, it can't propose relationships at
+  //     all. This pass runs ONE focused call with every table + column
+  //     description in context, which catches semantically-named FKs that
+  //     name-pattern heuristics miss (e.g. "InvoiceTo" → Accounts, where the
+  //     column's own AI-written description already says "Which customer is
+  //     being billed" — but nothing was reading that signal until now).
+  //     Suggestions are merged back into draft.tables so the existing insert
+  //     loop picks them up without further changes.
+  emit({ phase: 'ai_draft', message: 'Inferring relationships across schema…' });
+  try {
+    const ctx: SemanticContext = {
+      tables: schema.tables.map((t) => {
+        const def = tableDefMap.get(t.tableName);
+        const qs = qualityStats.find((q) => q.table_name === t.tableName);
+        return {
+          table_name:   t.tableName,
+          display_name: def?.display_name ?? t.tableName,
+          description:  def?.description  ?? '',
+          grain:        def?.grain        ?? undefined,
+          row_count:    qs?.row_count     ?? null,
+        };
+      }),
+      columns: schema.tables.flatMap((t) => {
+        const colDefs = columnDefs.filter((c) => c.table_name === t.tableName);
+        const qs = qualityStats.find((q) => q.table_name === t.tableName);
+        return t.columns.map((col) => {
+          const def  = colDefs.find((c) => c.column_name === col.name);
+          const qcol = qs?.columns.find((q) => q.field_name === col.name);
+          return {
+            table_name:     t.tableName,
+            column_name:    col.name,
+            display_name:   def?.display_name ?? col.name,
+            description:    def?.description  ?? '',
+            data_type:      col.type,
+            is_dimension:   def?.is_dimension ?? false,
+            is_measure:     def?.is_measure   ?? false,
+            example_values: col.sampleValues ?? [],
+            distinct_count: qcol?.distinct_count ?? null,
+            null_pct:       qcol?.null_pct       ?? null,
+            top_values:     qcol?.top_values     ?? null,
+            min_value:      qcol?.min_value      ?? null,
+            max_value:      qcol?.max_value      ?? null,
+          };
+        });
+      }),
+      relationships: [],
+      kpis: [],
+      fkCandidates: allFkCandidates.map((fk) => ({
+        fromTable:    fk.fromTable,
+        fromColumn:   fk.fromColumn,
+        toTable:      fk.toTable,
+        toColumn:     fk.toColumn,
+        source:       fk.source,
+        confidence:   fk.confidence,
+        overlapRatio: fk.overlapRatio ?? null,
+      })),
+    };
+
+    const result: RelationshipSuggestOutput = await suggestRelationships(ctx);
+    const extras = result.relationships ?? [];
+    console.log(`[SchemaProfiler] Cross-schema relationship pass: ${extras.length} suggestion(s)`);
+
+    // Merge into per-table suggested_relationships; the existing insert loop
+    // (step 5 below) handles persistence and de-dupes against allFkCandidates.
+    for (const rel of extras) {
+      const tableDef = tableDefMap.get(rel.from_table);
+      if (!tableDef) continue;
+      if (!tableDef.suggested_relationships) tableDef.suggested_relationships = [];
+      const key = `${rel.via_column}→${rel.to_table}.${rel.to_column}`;
+      const exists = tableDef.suggested_relationships.some(
+        (r) => `${r.via_column}→${r.to_table}.${r.to_column}` === key,
+      );
+      if (exists) continue;
+      tableDef.suggested_relationships.push({
+        to_table:   rel.to_table,
+        via_column: rel.via_column,
+        to_column:  rel.to_column,
+        type:       rel.type,
+        // Capture the AI's plain-language reasoning so the UI can show
+        // "Each invoice is billed to a customer" instead of the technical
+        // "Accounts.GLAccountSales → GLAccounts.ID" fallback.
+        description: rel.reason,
+      });
+    }
+  } catch (err) {
+    // Non-fatal — descriptions still get written; user can add relationships manually.
+    console.warn('[SchemaProfiler] Relationship pass failed (non-fatal):', err);
+  }
 
   // 4. Insert source_tables and source_columns in a transaction
   //    First wipe any existing rows so re-profiling never creates duplicates.
@@ -351,7 +444,11 @@ export async function runSchemaProfiler(
           to_table_id:       toTableId,
           to_column_id:      toColId,
           relationship_type: rel.type,
-          description:       `${tableDef.table_name}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
+          // Prefer the AI's plain-language reasoning when available; the
+          // technical fallback is only useful for relationships that came
+          // from heuristic FK matching with no AI reason attached.
+          description:       rel.description
+            ?? `${tableDef.table_name}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
           ai_draft:          true,
         });
         relationshipsInserted++;

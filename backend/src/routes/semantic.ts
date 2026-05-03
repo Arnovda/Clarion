@@ -210,6 +210,16 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
   } catch (err) { next(err); }
 });
 
+// ─── Relationships ─────────────────────────────────────────────────────────
+// IMPORTANT: dual-write asymmetry until Phase 7 (Neo4j cutover) is complete.
+//   • Profiling (SchemaProfiler) writes to BOTH Postgres `table_relationships`
+//     AND Neo4j (Postgres first, then mirrored).
+//   • These user-facing endpoints write to Neo4j ONLY.
+//   • All READS go through Neo4j (graph.getRelationshipsForConnection, etc.).
+// Net effect: Neo4j is the source of truth at runtime; the Postgres table is
+// a write-side legacy that gets repopulated on every re-profile. Do NOT
+// insert into table_relationships from anywhere else — it won't show up.
+
 // GET /api/semantic/relationships?connectionId=1
 router.get('/relationships', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {

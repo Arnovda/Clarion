@@ -17,9 +17,9 @@ import { SourceTable, SourceColumn, Relationship } from './types';
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout constants — must match exactly so handles line up with column rows
 // ─────────────────────────────────────────────────────────────────────────────
-const HEADER_H = 58;  // px — table header block height
-const ROW_H    = 30;  // px — each column row height
-const NODE_W   = 248; // px — fixed node width
+export const HEADER_H = 58;  // px — table header block height
+export const ROW_H    = 30;  // px — each column row height
+export const NODE_W   = 248; // px — fixed node width
 
 // Handle IDs
 const hL = (id: number | 'table') => `L_${id}`;
@@ -76,11 +76,14 @@ const HANDLE_STYLE = {
   zIndex: 20,
 };
 
-function TableNode({ data }: NodeProps<TableNodeData>) {
+export function TableNode({ data }: NodeProps<TableNodeData>) {
   const { table, columns, allColumnCount, relCount, searchDimmed, focused, focusColId, pairedColIds, colSideMap,
           onSelectTable, onSelectColumn,
           mode, viewId, onShowRelations, onRemoveFromView } = data;
-  const borderColor = focused ? '#2563eb' : '#bfdbfe';
+  // Neutral grays for non-focused; ocean accent only when this table is focused.
+  // The AI-draft yellow pill is the page's primary call-to-action; saturated
+  // colors here would compete with it.
+  const borderColor = focused ? '#0e7490' /* ocean */ : '#cbd5e1' /* slate-300 */;
   const totalH = HEADER_H + columns.length * ROW_H;
   const isViewMode = mode === 'view';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -131,29 +134,30 @@ function TableNode({ data }: NodeProps<TableNodeData>) {
         overflow: 'hidden',
         background: '#fff',
         boxShadow: focused
-          ? '0 0 0 3px #bfdbfe, 0 4px 20px rgba(37,99,235,.18)'
-          : '0 2px 8px rgba(0,0,0,.08)',
+          ? '0 0 0 3px #bae0e8 /* ocean tint */, 0 4px 20px rgba(14,116,144,.16)'
+          : '0 1px 3px rgba(15,23,42,.06), 0 4px 12px rgba(15,23,42,.04)',
       }}>
         {/* Header — clickable to select/highlight this table */}
         <div
           onClick={(e) => { e.stopPropagation(); onSelectTable(table.id); }}
           style={{
             height: HEADER_H,
-            background: focused ? '#1d4ed8' : '#1e40af',
+            // Neutral header — slate-800 baseline, ocean tint when focused.
+            background: focused ? '#0f172a' : '#1e293b',
             padding: '9px 12px',
             display: 'flex', flexDirection: 'column', justifyContent: 'center',
             cursor: 'pointer',
           }}>
-          <p style={{ margin: 0, color: '#fff', fontSize: 13, fontWeight: 700,
+          <p style={{ margin: 0, color: '#fff', fontSize: 13, fontWeight: 600,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {table.display_name || table.table_name}
           </p>
-          <p style={{ margin: '2px 0 0', color: '#93c5fd', fontSize: 10, fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <p style={{ margin: '2px 0 0', color: '#94a3b8' /* slate-400 */, fontSize: 10, fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6 }}>
             <span>{table.table_name} · {columns.length === allColumnCount ? `${columns.length} cols` : `${columns.length}/${allColumnCount} cols`}</span>
             {relCount > 0 && (
               <span style={{
-                background: 'rgba(255,255,255,0.2)', padding: '0 5px', borderRadius: 99,
-                fontSize: 9, fontWeight: 700, color: '#fff', lineHeight: '16px',
+                background: 'rgba(255,255,255,0.12)', padding: '0 5px', borderRadius: 99,
+                fontSize: 9, fontWeight: 600, color: '#cbd5e1', lineHeight: '16px',
               }}>{relCount} rel{relCount !== 1 ? 's' : ''}</span>
             )}
           </p>
@@ -1027,10 +1031,10 @@ function getDagrePositions(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir:  'LR',   // left → right: N-side left, 1-side right
-    ranksep:  280,    // wide horizontal gap — gives edges room to exit cleanly
-    nodesep:  80,     // vertical gap between nodes in the same column
-    marginx:  80,
-    marginy:  80,
+    ranksep:  160,    // horizontal gap between ranks
+    nodesep:  40,     // vertical gap between nodes in the same column
+    marginx:  40,
+    marginy:  40,
   });
 
   // Register every node with its actual pixel dimensions
@@ -1241,10 +1245,17 @@ interface Props {
   onSelectColumn?:   (tableId: number, colId: number) => void;
   onClearSelection?: () => void;
   viewId?:           number | null;   // when set, operate in custom-view mode
+  /**
+   * Hide the right-side relationships panel. Used by the new /catalog
+   * SourceRootPanel where the panel is redundant — the List + Review queue
+   * tabs cover the same ground with better UX.
+   */
+  hideSidebar?:      boolean;
 }
 
 function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColumnId,
-                  zoomToTableId, onSelectTable, onSelectColumn, onClearSelection, viewId }: Props) {
+                  zoomToTableId, onSelectTable, onSelectColumn, onClearSelection, viewId,
+                  hideSidebar }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -1253,7 +1264,12 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
   const [pendingConn,   setPendingConn]   = useState<PendingConn | null>(null);
 
   // ── Compact mode: only show relationship columns ──
-  const [compactMode, setCompactMode] = useState(false);
+  // Default ON: wide schemas (ExactOnline Accounts has 163 cols) make
+  // full-mode nodes ~5000px tall, which forces fit-view to zoom way out
+  // and renders text unreadable. Compact mode hides non-relationship
+  // columns, keeping nodes a reasonable height. The user can toggle it
+  // off (button or "C" key) to see every column when they need to.
+  const [compactMode, setCompactMode] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
   // ── Bulk draft review mode ──
@@ -1470,11 +1486,13 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
 
   // ── Rebuild graph whenever any relevant data changes ──
   const rebuildGraph = useCallback(() => {
-    // Apply dagre layout when relationships first arrive or after a reset (all-tables mode only)
-    if (needsDagreLayout.current && effRelationships.length > 0 && effTables.length > 0 && !isViewMode) {
-      const dagrePos = getDagrePositions(effTables, effColumnsByTable, effRelationships);
-      dagrePos.forEach((pos, id) => posMap.current.set(id, pos));
-      needsDagreLayout.current = false;
+    // Apply layout positions on first load (or after a reset).
+    if (needsDagreLayout.current && effTables.length > 0 && !isViewMode) {
+      if (effRelationships.length > 0) {
+        const dagrePos = getDagrePositions(effTables, effColumnsByTable, effRelationships);
+        dagrePos.forEach((pos, id) => posMap.current.set(id, pos));
+        needsDagreLayout.current = false;
+      }
     }
 
     const selTable  = onSelectTable  ?? (() => {});
@@ -1537,6 +1555,20 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
 
   // Reset layout: clear all positions, re-run dagre on next rebuild
   const { fitView, screenToFlowPosition } = useReactFlow();
+
+  // Whole-schema viewport: fit everything once nodes are mounted. Two
+  // staggered attempts handle the case where React Flow hasn't measured
+  // node DOM on the first tick.
+  const viewportInitialised = useRef(false);
+  useEffect(() => {
+    if (viewportInitialised.current) return;
+    if (nodes.length === 0) return;
+    viewportInitialised.current = true;
+    const t1 = setTimeout(() => fitView({ duration: 0,   padding: 0.2 }),  60);
+    const t2 = setTimeout(() => fitView({ duration: 300, padding: 0.2 }), 220);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [nodes, fitView]);
+
   function resetLayout() {
     posMap.current.clear();
     needsDagreLayout.current = true;
@@ -1940,7 +1972,7 @@ function Canvas({ connectionId, tables, columnsByTable, focusTableId, focusColum
         })()}
       </div>
 
-      {!isViewMode && (
+      {!isViewMode && !hideSidebar && (
         <RelationshipPanel
           relationships={effRelationships} tables={effTables} columnsByTable={effColumnsByTable}
           connectionId={connectionId}

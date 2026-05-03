@@ -14,11 +14,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, Database, FolderOpen } from 'lucide-react';
+import { Loader2, Database } from 'lucide-react';
 import api from '@/lib/api';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import ProductRootPanel from '@/components/products/ProductRootPanel';
+import SourceRootPanel from '@/components/catalog/SourceRootPanel';
 import type {
   SourceTable,
   SourceColumn,
@@ -55,7 +56,14 @@ export default function EntityDetailPanel({
   connections = [],
 }: Props) {
   if (selection.scope === 'empty') return <EmptyHint />;
-  if (selection.scope === 'source-root') return <SourceRootHint connectionId={selection.connectionId} />;
+  if (selection.scope === 'source-root') {
+    return (
+      <SourceRootPanel
+        key={`sr-${selection.connectionId}`}
+        connectionId={selection.connectionId}
+      />
+    );
+  }
   if (selection.scope === 'product-root') {
     return (
       <ProductRootPanel
@@ -209,16 +217,3 @@ function EmptyHint({ message }: { message?: string } = {}) {
   );
 }
 
-function SourceRootHint({ connectionId: _ }: { connectionId: number }) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16">
-      <div className="w-12 h-12 rounded-md bg-softer border border-line flex items-center justify-center mb-4 text-muted-2">
-        <FolderOpen className="w-5 h-5" strokeWidth={1.5} />
-      </div>
-      <p className="text-[13.5px] text-ink-2">Pick a table from this connection on the left.</p>
-      <p className="text-[12px] text-muted mt-1.5 max-w-md">
-        Connection-level actions (rename, re-profile, delete) live under the <span className="font-medium">Manage</span> menu in the top bar.
-      </p>
-    </div>
-  );
-}
