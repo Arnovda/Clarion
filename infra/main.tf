@@ -232,6 +232,51 @@ resource "azurerm_container_app_environment" "main" {
 }
 
 # Persistent storage for Neo4j data
+# Redis Container App — required for BullMQ queues + repeatable jobs.
+# Without Redis: scheduled transformations, scheduled email reports, AND the
+# new scheduled connection syncs are all dormant. Adding it as a Container
+# App is much cheaper than Azure Cache for Redis (~€10/mo vs €16+/mo) and
+# the data we cache is non-durable (queue state survives restarts via the
+# durable BullMQ persistence model + Postgres records of in-flight runs).
+resource "azurerm_container_app" "redis" {
+  name                         = "${var.project_name}-${var.environment}-redis"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = azurerm_resource_group.main.name
+  revision_mode                = "Single"
+  tags                         = var.tags
+
+  template {
+    min_replicas = 1
+    max_replicas = 1
+
+    container {
+      name   = "redis"
+      image  = "redis:7-alpine"
+      cpu    = 0.25
+      memory = "0.5Gi"
+
+      # Defaults are fine — BullMQ doesn't need any special config.
+      # Persistence is intentionally OFF (no AOF/RDB) — queue state is
+      # recoverable from Postgres + the orchestrator's idempotency.
+      command = ["redis-server", "--save", "", "--appendonly", "no"]
+    }
+  }
+
+  # Internal-only ingress: nothing outside the Container Apps env can hit it.
+  ingress {
+    external_enabled           = false
+    target_port                = 6379
+    transport                  = "tcp"
+    exposed_port               = 6379
+    allow_insecure_connections = true
+
+    traffic_weight {
+      latest_revision = true
+      percentage      = 100
+    }
+  }
+}
+
 resource "azurerm_container_app_environment_storage" "neo4j_data" {
   name                         = "neo4jdata"
   container_app_environment_id = azurerm_container_app_environment.main.id
@@ -586,6 +631,13 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "AZURE_HEARTBEAT_CONTAINER"
         value = azurerm_storage_container.sync_heartbeat.name
+      }
+      # Redis — enables BullMQ queues (scheduled syncs, scheduled
+      # transformations, scheduled email reports). Internal-only Container
+      # App in the same env, addressed by its app name.
+      env {
+        name  = "REDIS_URL"
+        value = "redis://${azurerm_container_app.redis.name}:6379"
       }
       # OAuth callback base — providers (ExactOnline / NetSuite / etc.) verify
       # that the redirect_uri sent on /auth matches the one sent on /token, and

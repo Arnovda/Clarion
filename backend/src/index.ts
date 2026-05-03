@@ -42,12 +42,14 @@ import notificationsRouter from './routes/notifications';
 import policiesRouter      from './routes/policies';
 import settingsRouter      from './routes/settings';
 import emailSchedulesRouter from './routes/emailSchedules';
-import sourcesRouter         from './routes/sources';
+import sourcesRouter                  from './routes/sources';
+import connectionSyncSchedulesRouter   from './routes/connectionSyncSchedules';
 import catalogRouter         from './routes/catalog';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
 import { loadSchedules, closeScheduler } from './jobs/scheduler';
+import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
@@ -148,6 +150,9 @@ app.use('/api/policies',        policiesRouter);
 app.use('/api/settings',        settingsRouter);
 app.use('/api/email-schedules', emailSchedulesRouter);
 app.use('/api/source-types',    sourcesRouter);
+// Same prefix as connections — the schedule routes hang off /:id under
+// /api/connections so they share that namespace's auth/middleware/RLS.
+app.use('/api/connections',     connectionSyncSchedulesRouter);
 app.use('/api/catalog',         catalogRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
@@ -199,6 +204,8 @@ if (!process.env.VITEST) {
     loadSchedules().catch(err => console.error('Schedule loading error:', err));
     // Load email report schedules from DB into BullMQ
     loadEmailSchedules().catch(err => console.error('Email schedule loading error:', err));
+    // Load connection sync schedules from DB into BullMQ
+    loadConnectionSyncSchedules().catch(err => console.error('Connection sync schedule loading error:', err));
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {

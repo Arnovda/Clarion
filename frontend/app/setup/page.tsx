@@ -11,6 +11,26 @@ import api from '@/lib/api';
 // Types
 // ---------------------------------------------------------------------------
 
+interface SyncSchedule {
+  id: number;
+  cron_expression: string;
+  timezone: string;
+  enabled: boolean;
+  next_run: string | null;
+}
+
+interface SyncRunRow {
+  id: number;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | string;
+  queued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  triggered_by_user_id: number | null;
+  row_counts: Record<string, number> | string | null;
+  warnings: string[] | string | null;
+  error_message: string | null;
+}
+
 interface Connection {
   id: number;
   name: string;
@@ -243,6 +263,19 @@ function ConnectionCard({
     progress: number | null;
   }>({ status: null, message: null, progress: null });
   const [profilingPolling, setProfilingPolling] = useState(false);
+  // Sync history panel — collapsed by default; loaded lazily on expand.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<SyncRunRow[] | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // Schedule panel — same lazy-load + collapsed pattern.
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [schedule, setSchedule] = useState<SyncSchedule | null>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [cronDraft, setCronDraft] = useState('0 6 * * *');           // 06:00 daily by default
+  const [tzDraft, setTzDraft] = useState('Europe/Brussels');
+  const [enabledDraft, setEnabledDraft] = useState(true);
 
   // Live-poll the active sync run while it's running.
   useEffect(() => {
@@ -321,6 +354,80 @@ function ConnectionCard({
       setSyncError(msg);
       setSyncing(false);
       setSyncStatus('failed');
+    }
+  }
+
+  async function toggleHistory() {
+    const next = !historyOpen;
+    setHistoryOpen(next);
+    if (next && history === null) {
+      setHistoryLoading(true);
+      try {
+        const res = await api.get(`/connections/${conn.id}/sync-runs?limit=20`);
+        setHistory(res.data?.data ?? []);
+      } catch {
+        setHistory([]);
+      } finally {
+        setHistoryLoading(false);
+      }
+    }
+  }
+
+  async function toggleSchedule() {
+    const next = !scheduleOpen;
+    setScheduleOpen(next);
+    setScheduleError(null);
+    if (next && schedule === null) {
+      setScheduleLoading(true);
+      try {
+        const res = await api.get(`/connections/${conn.id}/sync-schedule`);
+        const s = res.data?.data as SyncSchedule | null;
+        setSchedule(s);
+        if (s) {
+          setCronDraft(s.cron_expression);
+          setTzDraft(s.timezone);
+          setEnabledDraft(s.enabled);
+        }
+      } catch {
+        setSchedule(null);
+      } finally {
+        setScheduleLoading(false);
+      }
+    }
+  }
+
+  async function saveSchedule() {
+    setScheduleSaving(true);
+    setScheduleError(null);
+    try {
+      const res = await api.put(`/connections/${conn.id}/sync-schedule`, {
+        cronExpression: cronDraft.trim(),
+        timezone: tzDraft.trim() || 'UTC',
+        enabled: enabledDraft,
+      });
+      setSchedule(res.data?.data ?? null);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Failed to save schedule';
+      setScheduleError(msg);
+    } finally {
+      setScheduleSaving(false);
+    }
+  }
+
+  async function removeSchedule() {
+    if (!schedule) return;
+    if (!confirm('Remove the scheduled sync?')) return;
+    setScheduleSaving(true);
+    try {
+      await api.delete(`/connections/${conn.id}/sync-schedule`);
+      setSchedule(null);
+    } catch {
+      // ignore — UI shows the still-present schedule until they retry
+    } finally {
+      setScheduleSaving(false);
     }
   }
 
@@ -441,6 +548,136 @@ function ConnectionCard({
             )}
           </div>
         )}
+        {/* Sync history panel — collapsed by default; loads on first expand. */}
+        {isSourceConnector && historyOpen && (
+          <div className="mt-2 px-3 py-2 rounded-md border border-line bg-raised text-[11.5px]">
+            <p className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted mb-2">Sync history</p>
+            {historyLoading && <p className="text-muted">Loading…</p>}
+            {!historyLoading && history && history.length === 0 && (
+              <p className="text-muted">No sync runs yet.</p>
+            )}
+            {!historyLoading && history && history.length > 0 && (
+              <ul className="space-y-1.5">
+                {history.map((r) => {
+                  const counts = typeof r.row_counts === 'string'
+                    ? (() => { try { return JSON.parse(r.row_counts as string) as Record<string, number>; } catch { return {}; } })()
+                    : (r.row_counts ?? {});
+                  const totalRows = Object.values(counts as Record<string, number>).reduce((s, n) => s + (n || 0), 0);
+                  const dur = r.started_at && r.completed_at
+                    ? Math.round((new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()) / 1000)
+                    : null;
+                  const statusColor =
+                    r.status === 'succeeded' ? 'text-ok'
+                    : r.status === 'failed' ? 'text-rose-700'
+                    : r.status === 'cancelled' ? 'text-muted'
+                    : 'text-ai';
+                  return (
+                    <li key={r.id} className="border-t border-line pt-1.5 first:border-t-0 first:pt-0">
+                      <div className="flex items-baseline gap-2">
+                        <span className={`font-mono ${statusColor}`}>
+                          {r.status === 'succeeded' ? '✓' : r.status === 'failed' ? '✗' : r.status === 'cancelled' ? '–' : '•'} {r.status}
+                        </span>
+                        <span className="text-muted">
+                          {new Date(r.queued_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
+                        </span>
+                        {dur !== null && (
+                          <span className="text-muted-2 font-mono">· {dur}s</span>
+                        )}
+                        {totalRows > 0 && (
+                          <span className="text-muted-2 font-mono">· {totalRows.toLocaleString()} rows</span>
+                        )}
+                      </div>
+                      {r.error_message && (
+                        <p className="text-rose-700 font-mono mt-0.5 break-words text-[11px]">{r.error_message}</p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        )}
+        {/* Schedule panel — set or edit a recurring sync. The schema-hash gate
+            in the orchestrator means scheduled refreshes on stable schemas
+            cost zero LLM tokens, so daily/hourly schedules are safe. */}
+        {isSourceConnector && scheduleOpen && (
+          <div className="mt-2 px-3 py-2 rounded-md border border-line bg-raised text-[11.5px]">
+            <p className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted mb-2">Sync schedule</p>
+            {scheduleLoading && <p className="text-muted">Loading…</p>}
+            {!scheduleLoading && (
+              <div className="space-y-2">
+                <p className="text-muted-2 leading-relaxed">
+                  Standard 5-field cron (<span className="font-mono">m h dom mon dow</span>).
+                  Examples: <span className="font-mono">0 6 * * *</span> (06:00 daily),
+                  {' '}<span className="font-mono">0 */6 * * *</span> (every 6h),
+                  {' '}<span className="font-mono">0 8 * * 1-5</span> (08:00 weekdays).
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted">Cron expression</span>
+                    <input
+                      type="text"
+                      value={cronDraft}
+                      onChange={(e) => setCronDraft(e.target.value)}
+                      placeholder="0 6 * * *"
+                      className="px-2 py-1 text-[12px] font-mono border border-line rounded-md bg-bg focus:outline-none focus:border-ocean"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted">Timezone (IANA)</span>
+                    <input
+                      type="text"
+                      value={tzDraft}
+                      onChange={(e) => setTzDraft(e.target.value)}
+                      placeholder="Europe/Brussels"
+                      className="px-2 py-1 text-[12px] font-mono border border-line rounded-md bg-bg focus:outline-none focus:border-ocean"
+                    />
+                  </label>
+                </div>
+                <label className="flex items-center gap-2 text-[12px]">
+                  <input
+                    type="checkbox"
+                    checked={enabledDraft}
+                    onChange={(e) => setEnabledDraft(e.target.checked)}
+                    className="accent-ocean"
+                  />
+                  Enabled (uncheck to pause without losing the schedule)
+                </label>
+                {schedule?.next_run && enabledDraft && (
+                  <p className="text-muted-2 font-mono text-[11px]">
+                    Next run: {new Date(schedule.next_run).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
+                  </p>
+                )}
+                {scheduleError && (
+                  <p className="text-rose-700 break-words font-mono text-[11px]">✗ {scheduleError}</p>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    onClick={saveSchedule}
+                    disabled={scheduleSaving || !cronDraft.trim()}
+                    className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {scheduleSaving ? 'Saving…' : (schedule ? 'Update schedule' : 'Save schedule')}
+                  </button>
+                  {schedule && (
+                    <button
+                      onClick={removeSchedule}
+                      disabled={scheduleSaving}
+                      className="px-3 py-1.5 text-[12px] bg-rose-50 border border-rose-200 text-rose-700 rounded-md hover:bg-rose-100 disabled:opacity-50 transition-colors"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <p className="text-muted-2 text-[10.5px] mt-1 leading-relaxed">
+                  Cost note: the orchestrator skips the LLM step when the schema is unchanged
+                  since the last sync — scheduled refreshes on a stable schema have zero
+                  Claude cost. First sync after a schema change runs a full analysis.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex flex-col gap-1 shrink-0">
         <button
@@ -456,6 +693,22 @@ function ConnectionCard({
             className="px-3 py-1.5 text-[12px] font-medium bg-ocean-softer text-ocean border border-ocean-soft rounded-md hover:bg-ocean-softer/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+        )}
+        {isSourceConnector && (
+          <button
+            onClick={toggleHistory}
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
+          >
+            {historyOpen ? 'Hide history' : 'View history'}
+          </button>
+        )}
+        {isSourceConnector && (
+          <button
+            onClick={toggleSchedule}
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
+          >
+            {scheduleOpen ? 'Hide schedule' : (schedule ? 'Schedule (on)' : 'Schedule')}
           </button>
         )}
         <button

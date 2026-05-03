@@ -47,6 +47,12 @@ export interface BusMatrixJobData {
   triggeredBy: string; // user email
 }
 
+export interface ConnectionSyncScheduleJobData {
+  scheduleId: number;
+  connectionId: number;
+  tenantId: number;
+}
+
 // ---------------------------------------------------------------------------
 // Queue instances (null if Redis not configured)
 // ---------------------------------------------------------------------------
@@ -56,6 +62,7 @@ let ingestionQueue: Queue<IngestionJobData> | null = null;
 let transformationQueue: Queue<TransformationJobData> | null = null;
 let emailReportQueue: Queue<EmailReportJobData> | null = null;
 let busMatrixQueue: Queue<BusMatrixJobData> | null = null;
+let connectionSyncScheduleQueue: Queue<ConnectionSyncScheduleJobData> | null = null;
 
 export function getSchemaProfilingQueue(): Queue<SchemaProfilingJobData> | null {
   if (schemaProfilingQueue) return schemaProfilingQueue;
@@ -95,6 +102,21 @@ export function getBusMatrixQueue(): Queue<BusMatrixJobData> | null {
   if (!conn) return null;
   busMatrixQueue = new Queue<BusMatrixJobData>('bus-matrix', { connection: conn });
   return busMatrixQueue;
+}
+
+/**
+ * Queue for scheduled connection syncs. Holds repeatable jobs registered
+ * via cron expression on each enabled `connection_sync_schedules` row.
+ * The worker drains these by calling `triggerSync()` on the orchestrator,
+ * which in turn enforces the schema-hash cost gate (no LLM cost when
+ * structure is unchanged).
+ */
+export function getConnectionSyncScheduleQueue(): Queue<ConnectionSyncScheduleJobData> | null {
+  if (connectionSyncScheduleQueue) return connectionSyncScheduleQueue;
+  const conn = getRedisConnection();
+  if (!conn) return null;
+  connectionSyncScheduleQueue = new Queue<ConnectionSyncScheduleJobData>('connection-sync-schedule', { connection: conn });
+  return connectionSyncScheduleQueue;
 }
 
 /**

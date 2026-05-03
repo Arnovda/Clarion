@@ -9,7 +9,7 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
-import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData } from './queues';
+import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData } from './queues';
 import { registerJobAbortController, unregisterJob, isJobCancelled } from './cancellation';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
@@ -368,6 +368,29 @@ export function startWorkers(): void {
     trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown' });
   });
   workers.push(emailReportWorker);
+
+  // Connection sync schedule worker — fires `triggerSync` for each
+  // connection_sync_schedules cron tick. The orchestrator's schema-hash
+  // gate makes scheduled refreshes near-zero-cost when the schema is
+  // stable (no LLM call), so hourly schedules are economically viable.
+  const connSyncWorker = new Worker<ConnectionSyncScheduleJobData>(
+    'connection-sync-schedule',
+    async (job) => {
+      const { connectionId, tenantId } = job.data;
+      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+      const { triggerSync } = await import('../orchestrator/SyncOrchestrator');
+      const result = await triggerSync({ connectionId, tenantId });
+      // triggerSync is fire-and-forget — the BullMQ job completes once
+      // the run is QUEUED. The actual sync runs in the orchestrator's
+      // background; status surfaces via source_sync_runs.
+      return result;
+    },
+    { connection: conn, concurrency: 4 },
+  );
+  connSyncWorker.on('failed', (job, err) => {
+    trackException(err, { queue: 'connection-sync-schedule', jobId: job?.id ?? 'unknown' });
+  });
+  workers.push(connSyncWorker);
 
   // Warehouse maintenance — weekly OPTIMIZE + VACUUM
   const maintenanceWorker = startMaintenanceWorker();
