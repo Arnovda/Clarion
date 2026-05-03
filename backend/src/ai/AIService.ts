@@ -431,7 +431,48 @@ function repairTruncatedJson(raw: string): string | null {
  * truncation. Each batch produces a partial SchemaDraftOutput; results are merged.
  * Calls onProgress(tableName) after each batch so callers can report status.
  */
-const DRAFT_BATCH_SIZE = 3;
+// Adaptive batch sizing.
+// Each table contributes ~1 table description + N column descriptions to the
+// JSON output. Empirically a column entry runs ~150 chars (≈40 tokens), so we
+// budget by total columns rather than table count: at ~150 cols per batch the
+// expected output stays under ~7K output tokens, well below the 16K maxTokens
+// cap, and leaves headroom for the formatter and extra fields.
+//
+// History: a fixed BATCH_SIZE=3 was unreliable on wide schemas (e.g. ExactOnline
+// Accounts has 163 cols — a 3-table batch generated >50KB of JSON that
+// truncated mid-stream). Switching to column-budgeted batches handles both
+// narrow seed-data schemas (still packs many tables per call) and wide real
+// schemas (one table per call when needed) without manual tuning.
+// Empirical cap — at 150 cols per call, real-world schemas (e.g. ExactOnline's
+// 163-column Accounts) hit the 16k output token cap and produced truncated JSON.
+// 60 keeps the output comfortably under cap with headroom for richer descriptions.
+const COLUMNS_PER_BATCH = 60;
+
+function buildDraftBatches(tables: TableInfo[]): TableInfo[][] {
+  const batches: TableInfo[][] = [];
+  let current: TableInfo[] = [];
+  let currentCols = 0;
+  for (const t of tables) {
+    const cols = t.columns?.length ?? 0;
+    // A single table that exceeds the budget always gets its own batch.
+    if (cols >= COLUMNS_PER_BATCH) {
+      if (current.length) batches.push(current);
+      batches.push([t]);
+      current = [];
+      currentCols = 0;
+      continue;
+    }
+    if (current.length && currentCols + cols > COLUMNS_PER_BATCH) {
+      batches.push(current);
+      current = [];
+      currentCols = 0;
+    }
+    current.push(t);
+    currentCols += cols;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
 
 export async function generateSchemaDraft(
   sourceType: string,
@@ -441,32 +482,69 @@ export async function generateSchemaDraft(
   onProgress?: (tableNames: string[], batchIndex: number, totalBatches: number) => void,
 ): Promise<SchemaDraftOutput> {
   const merged: SchemaDraftOutput = { tables: [], columns: [] };
-  const batches: TableInfo[][] = [];
-  for (let i = 0; i < tables.length; i += DRAFT_BATCH_SIZE) {
-    batches.push(tables.slice(i, i + DRAFT_BATCH_SIZE));
-  }
+  const batches = buildDraftBatches(tables);
 
   const glossary = await loadGlossaryBlock();
 
   for (let bi = 0; bi < batches.length; bi++) {
     const batch = batches[bi];
-    const batchStats = qualityStats?.filter((s) =>
-      batch.some((t) => t.tableName === s.table_name),
-    );
-    onProgress?.(batch.map((t) => t.tableName), bi, batches.length);
-
-    const raw = await callClaude(
-      SCHEMA_DRAFT_SYSTEM,
-      buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates, glossary),
-      // SCHEMA_DRAFT_SYSTEM is identical across every batch in this source's
-      // profile — caching keeps the per-batch cost at just the user prompt.
-      { maxTokens: 16000, cacheSystem: true },
-    );
-    const partial = parseJson<SchemaDraftOutput>(raw);
+    const partial = await draftOneBatch(sourceType, batch, qualityStats, fkCandidates, glossary, bi, batches.length, onProgress);
     merged.tables.push(...partial.tables);
     merged.columns.push(...partial.columns);
   }
   return merged;
+}
+
+/**
+ * Draft a single batch with one-level fallback: if Claude truncates the
+ * response (manifests as `parseJson` throwing SyntaxError), recursively
+ * split the batch in half and retry. Never gives up entirely on a batch —
+ * worst case, single-table batches eventually succeed.
+ *
+ * Triggered by EO real-world schemas where some tables produced richer
+ * output than the static `COLUMNS_PER_BATCH` budget anticipated. The
+ * recursive split makes the profiler resilient without us having to
+ * hand-tune the batch size for every customer's schema shape.
+ */
+async function draftOneBatch(
+  sourceType: string,
+  batch: TableInfo[],
+  qualityStats: TableQualityStat[] | undefined,
+  fkCandidates: FkCandidate[] | undefined,
+  glossary: string,
+  bi: number,
+  totalBatches: number,
+  onProgress?: (tableNames: string[], batchIndex: number, totalBatches: number) => void,
+): Promise<SchemaDraftOutput> {
+  const batchStats = qualityStats?.filter((s) => batch.some((t) => t.tableName === s.table_name));
+  onProgress?.(batch.map((t) => t.tableName), bi, totalBatches);
+
+  const raw = await callClaude(
+    SCHEMA_DRAFT_SYSTEM,
+    buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates, glossary),
+    { maxTokens: 16000, cacheSystem: true },
+  );
+  try {
+    return parseJson<SchemaDraftOutput>(raw);
+  } catch (err) {
+    // Truncated / malformed JSON usually means Claude hit the output cap.
+    // Halve the batch and retry. A 1-table batch that still truncates
+    // bubbles up — at that point the table is genuinely too wide for
+    // a single Claude call and a different strategy is needed.
+    if (batch.length === 1) throw err;
+    // eslint-disable-next-line no-console
+    console.warn(`[AIService] schema draft JSON parse failed for ${batch.length}-table batch; splitting and retrying`, err instanceof Error ? err.message : err);
+    const mid = Math.ceil(batch.length / 2);
+    const left = batch.slice(0, mid);
+    const right = batch.slice(mid);
+    const merged: SchemaDraftOutput = { tables: [], columns: [] };
+    for (const sub of [left, right]) {
+      const part = await draftOneBatch(sourceType, sub, qualityStats, fkCandidates, glossary, bi, totalBatches, onProgress);
+      merged.tables.push(...part.tables);
+      merged.columns.push(...part.columns);
+    }
+    return merged;
+  }
 }
 
 // ---------------------------------------------------------------------------
