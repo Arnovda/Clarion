@@ -31,6 +31,7 @@ import type {
 } from '@/app/products/types';
 import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, ProductIcon } from '@/app/products/badges';
 import { cleanTopicName } from '@/app/products/helpers';
+import SourceBadge from '@/components/SourceBadge';
 
 const AskAIPanel = dynamic(() => import('@/app/products/AskAIPanel'), { ssr: false });
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
@@ -256,6 +257,9 @@ export default function ProductRootPanel({
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="font-display text-[22px] tracking-[-0.01em] text-ink truncate">{name}</h1>
               <StatusBadge status={detail.status} />
+              {detail.source && (
+                <SourceBadge source={detail.source} size="compact" />
+              )}
             </div>
             {detail.description && (
               <p className="text-[13.5px] text-ink-2 mt-1 leading-relaxed">{detail.description}</p>

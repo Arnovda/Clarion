@@ -312,8 +312,49 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       relsBySchema.set(r.star_schema_id, arr);
     }
 
+    // Compute the same `source` block the list endpoint returns so the
+    // detail panel can show <SourceBadge> consistently with /products and
+    // the catalog tree.
+    const dpsRows = await semanticDb('data_product_sources as dps')
+      .join('source_tables as st', 'st.id', 'dps.source_table_id')
+      .where('dps.data_product_id', product.id)
+      .select('st.connection_id as connection_id');
+    const tally = new Map<number, number>();
+    for (const r of dpsRows as { connection_id: number }[]) {
+      if (!r.connection_id) continue;
+      tally.set(r.connection_id, (tally.get(r.connection_id) ?? 0) + 1);
+    }
+    const contributors = Array.from(tally.entries()).sort(
+      (a, b) => b[1] - a[1] || a[0] - b[0],
+    );
+    const primaryId = contributors[0]?.[0] ?? product.connection_id ?? null;
+    const involvedIds = new Set<number>(contributors.map(([id]) => id));
+    if (product.connection_id) involvedIds.add(product.connection_id);
+    const connRows = involvedIds.size
+      ? await semanticDb('connections')
+          .whereIn('id', Array.from(involvedIds))
+          .select('id', 'name', 'connector_type')
+      : [];
+    const connMap = new Map<number, { id: number; name: string; connector_type: string | null }>(
+      connRows.map((c: { id: number; name: string; connector_type: string | null }) => [c.id, c] as const),
+    );
+    const primaryConn = primaryId != null ? connMap.get(primaryId) ?? null : null;
+    const otherSources = contributors.slice(1)
+      .map(([id]) => connMap.get(id))
+      .filter((c): c is NonNullable<typeof c> => !!c)
+      .map((c) => ({ id: c.id, name: c.name, connectorType: c.connector_type }));
+    const source = {
+      id: primaryConn?.id ?? null,
+      name: primaryConn?.name ?? null,
+      connectorType: primaryConn?.connector_type ?? null,
+      multiSource: contributors.length > 1,
+      sourceDeleted: primaryId != null && !primaryConn,
+      otherSources,
+    };
+
     const result = {
       ...product,
+      source,
       star_schemas: schemas.map((s: { id: number }) => ({
         ...s,
         tables: tablesBySchema.get(s.id) ?? [],

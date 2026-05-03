@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react';
+// We import only the helpers — the picker buttons need to recolor based on
+// selection state, so they can't use <SourceBadge> directly. Keeping the
+// grouping rule shared via the helpers preserves cross-page consistency.
+import { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
@@ -83,7 +87,21 @@ export default function DashboardsPage() {
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
-  const [products, setProducts] = useState<{ id: number; name: string; description: string; status: string }[]>([]);
+  const [products, setProducts] = useState<{
+    id: number;
+    name: string;
+    description: string;
+    status: string;
+    /** Server-derived primary source. See `frontend/components/SourceBadge.tsx`. */
+    source?: {
+      id: number | null;
+      name: string | null;
+      connectorType: string | null;
+      multiSource: boolean;
+      sourceDeleted?: boolean;
+      otherSources?: Array<{ id: number; name: string; connectorType: string | null }>;
+    };
+  }[]>([]);
   const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
   // Default = product layer. Toggle visible to admins for opt-in source-layer dashboards.
   const [useSourceLayer, setUseSourceLayer] = useState(false);
@@ -1129,48 +1147,100 @@ export default function DashboardsPage() {
                   );
                 })()}
 
-                {/* Data product selector */}
-                {products.length > 0 && (
-                  <div className="mb-6">
-                    <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data model(s)</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        onClick={() => setSelectedProductIds([])}
-                        className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
-                          selectedProductIds.length === 0
-                            ? 'bg-ocean text-white border-ocean'
-                            : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
-                        }`}
-                      >
-                        All products
-                      </button>
-                      {products.map((p) => (
+                {/* Data product selector — grouped by source so the picker
+                    matches /catalog and /products. With <=1 source group the
+                    eyebrow renders inline; with multiple, each source gets
+                    its own subsection so the user immediately sees lineage
+                    when picking a product to filter by. */}
+                {products.length > 0 && (() => {
+                  type ProductRow = (typeof products)[number];
+                  type Group = { key: string; label: string; items: ProductRow[] };
+                  const byKey = new Map<string, Group>();
+                  for (const p of products) {
+                    const k = productSourceGroupKey(p.source ?? null);
+                    let g = byKey.get(k);
+                    if (!g) {
+                      g = { key: k, label: productSourceGroupLabel(k, p.source ?? null), items: [] };
+                      byKey.set(k, g);
+                    }
+                    g.items.push(p);
+                  }
+                  const groups = Array.from(byKey.values()).sort((a, b) => {
+                    const rank = (k: string) =>
+                      k === 'multi' ? 1 : k === 'deleted' ? 2 : k === 'unassigned' ? 3 : 0;
+                    const ra = rank(a.key), rb = rank(b.key);
+                    if (ra !== rb) return ra - rb;
+                    return a.label.localeCompare(b.label);
+                  });
+                  const showHeaders = groups.length > 1;
+                  return (
+                    <div className="mb-6">
+                      <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data model(s)</p>
+                      <div className="flex flex-wrap gap-1.5 mb-3">
                         <button
-                          key={p.id}
-                          onClick={() => {
-                            setSelectedProductIds((prev) =>
-                              prev.includes(p.id)
-                                ? prev.filter((id) => id !== p.id)
-                                : [...prev, p.id],
-                            );
-                          }}
+                          onClick={() => setSelectedProductIds([])}
                           className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
-                            selectedProductIds.includes(p.id)
-                              ? 'bg-ai text-white border-ai'
+                            selectedProductIds.length === 0
+                              ? 'bg-ocean text-white border-ocean'
                               : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                           }`}
                         >
-                          {p.name}
+                          All products
                         </button>
-                      ))}
+                      </div>
+                      <div className="space-y-3">
+                        {groups.map((g) => (
+                          <div key={g.key}>
+                            {showHeaders && (
+                              <p className={`text-[10px] font-mono tracking-[0.1em] uppercase mb-1.5 ${
+                                g.key === 'multi' || g.key === 'deleted' || g.key === 'unassigned'
+                                  ? 'text-muted-2'
+                                  : 'text-ocean'
+                              }`}>
+                                {g.label}
+                              </p>
+                            )}
+                            <div className="flex flex-wrap gap-1.5">
+                              {g.items.map((p) => (
+                                <button
+                                  key={p.id}
+                                  onClick={() => {
+                                    setSelectedProductIds((prev) =>
+                                      prev.includes(p.id)
+                                        ? prev.filter((id) => id !== p.id)
+                                        : [...prev, p.id],
+                                    );
+                                  }}
+                                  className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors inline-flex items-center gap-2 ${
+                                    selectedProductIds.includes(p.id)
+                                      ? 'bg-ai text-white border-ai'
+                                      : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
+                                  }`}
+                                >
+                                  <span>{p.name}</span>
+                                  {p.source?.multiSource && (
+                                    <span className={`text-[9px] font-mono px-1 py-0.5 rounded ${
+                                      selectedProductIds.includes(p.id)
+                                        ? 'bg-white/20 text-white'
+                                        : 'bg-ocean-softer text-ocean'
+                                    }`} title={`Also draws from: ${p.source?.otherSources?.map((s) => s.name).join(', ') ?? ''}`}>
+                                      +{p.source?.otherSources?.length ?? 0}
+                                    </span>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      {selectedProductIds.length > 0 && (
+                        <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-2">
+                          {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard limited to tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
+                        </p>
+                      )}
                     </div>
-                    {selectedProductIds.length > 0 && (
-                      <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-2">
-                        {selectedProductIds.length} product{selectedProductIds.length > 1 ? 's' : ''} selected — dashboard limited to tables from {selectedProductIds.length > 1 ? 'these products' : 'this product'}
-                      </p>
-                    )}
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* Admin-only: query source data instead of data products */}
                 {isAdmin && (
