@@ -466,24 +466,58 @@ async function runProfilerInBackground(args: {
 }): Promise<void> {
   const { connectionId, tenantId } = args;
   const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
-  // Lazy-import the progress-percentage helper to keep this orchestrator
-  // self-contained; the helper is the same one /api/connections/:id/profile
-  // uses for its SSE updates so the wizard's progress bar maths match.
   const { profilingProgressPct } = await import('../routes/connections');
   await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
-  // Mark running so the UI can render "Analysing…" instead of guessing.
-  // Mirrors the existing POST /api/connections/:id/profile flow exactly,
-  // so the frontend's existing polling logic just works.
   await semanticDb('connections')
     .where({ id: connectionId, tenant_id: tenantId })
     .update({
       profiling_status: 'running',
       profiling_phase: 'schema',
-      profiling_message: 'Starting profiling…',
+      profiling_message: 'Checking schema…',
       profiling_progress: 0,
       profiling_started_at: new Date().toISOString(),
     });
+
+  // ─── Schema-hash gate — the cost guard ──────────────────────────────────
+  // Introspect first (fast: 1-2s), hash the structure, compare to the
+  // previous run's hash. If unchanged AND we already have source_tables
+  // for this connection, skip the AI-draft step entirely — Claude
+  // generated the same answer last time, no point re-running it. This
+  // makes scheduled refreshes ~free (zero LLM calls on no-schema-change).
+  try {
+    const conn = await semanticDb('connections')
+      .where({ id: connectionId, tenant_id: tenantId })
+      .first();
+    if (conn) {
+      const { hash, hadSchema } = await introspectAndHash(conn);
+      if (hadSchema) {
+        const existingTablesCount = (await semanticDb('source_tables')
+          .where({ connection_id: connectionId, tenant_id: tenantId })
+          .count<{ count: string }[]>('id as count')
+          .first())?.count ?? '0';
+        const existingTables = Number(existingTablesCount);
+        if (hash && conn.schema_hash === hash && existingTables > 0) {
+          log.info({ connectionId, hash }, 'schema unchanged — skipping AI draft');
+          await semanticDb('connections')
+            .where({ id: connectionId, tenant_id: tenantId })
+            .update({
+              profiling_status: 'done',
+              profiling_phase: 'done',
+              profiling_message: 'Schema unchanged — analysis skipped (no LLM cost)',
+              profiling_progress: 100,
+              last_profiled_at: new Date().toISOString(),
+            });
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    // Non-fatal — if the hash check itself errored, fall through to the
+    // full profiler. We'd rather pay a Claude run than skip an analysis
+    // we genuinely needed.
+    log.warn({ err, connectionId }, 'schema-hash gate errored — falling through to full profile');
+  }
 
   try {
     await runSchemaProfiler(connectionId, null, (p) => {
@@ -500,6 +534,24 @@ async function runProfilerInBackground(args: {
         .catch(() => undefined);
     });
 
+    // Persist the new schema hash so the next sync can short-circuit if
+    // nothing structural changed. Recompute from scratch — the in-memory
+    // hash from the gate above is stale by the time the profiler returns
+    // (the profiler may have observed slightly different schema in its
+    // own introspection).
+    let newHash: string | null = null;
+    try {
+      const conn2 = await semanticDb('connections')
+        .where({ id: connectionId, tenant_id: tenantId })
+        .first();
+      if (conn2) {
+        const { hash } = await introspectAndHash(conn2);
+        newHash = hash;
+      }
+    } catch (err) {
+      log.warn({ err, connectionId }, 'failed to compute schema hash post-profile (next sync will re-AI)');
+    }
+
     await semanticDb('connections')
       .where({ id: connectionId, tenant_id: tenantId })
       .update({
@@ -508,8 +560,9 @@ async function runProfilerInBackground(args: {
         profiling_message: 'Profiling complete',
         profiling_progress: 100,
         last_profiled_at: new Date().toISOString(),
+        ...(newHash ? { schema_hash: newHash } : {}),
       });
-    log.info({ connectionId }, 'schema profiling complete');
+    log.info({ connectionId, schemaHashed: !!newHash }, 'schema profiling complete');
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Profiling failed';
     log.error({ err, connectionId }, 'schema profiling failed');
@@ -524,5 +577,51 @@ async function runProfilerInBackground(args: {
       .catch(() => undefined);
     // Re-throw so the orchestrator's caller-side .catch() can log too.
     throw err;
+  }
+}
+
+// ─── Schema hashing (cost gate helper) ───────────────────────────────────
+/**
+ * Introspect the connection's schema and compute a hash of its STRUCTURE
+ * (table names + column names + types). Insensitive to data, sample
+ * values, or column ordering. Returns `{ hash: null }` when the connector
+ * doesn't expose schema information yet (e.g. fresh connection that
+ * hasn't synced).
+ *
+ * Used by `runProfilerInBackground` to skip the AI-draft step when nothing
+ * structural changed since the last successful profile.
+ */
+async function introspectAndHash(conn: Record<string, unknown>): Promise<{ hash: string | null; hadSchema: boolean }> {
+  const { createConnector } = await import('../connectors/ConnectorFactory');
+  const crypto = await import('crypto');
+
+  let connector;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    connector = await createConnector(conn as any);
+    await connector.connect();
+  } catch {
+    return { hash: null, hadSchema: false };
+  }
+  try {
+    const schema = await connector.introspectSchema();
+    if (!schema?.tables || schema.tables.length === 0) {
+      return { hash: null, hadSchema: false };
+    }
+    // Normalised representation — sorted, only structural fields, no
+    // sample values. Stable across runs as long as the structure is.
+    const normalised = schema.tables
+      .map((t) => ({
+        name: t.tableName,
+        columns: t.columns
+          .map((c) => ({ name: c.name, type: String(c.type ?? '').toLowerCase() }))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const json = JSON.stringify(normalised);
+    const hash = crypto.createHash('sha256').update(json).digest('hex');
+    return { hash, hadSchema: true };
+  } finally {
+    try { connector.disconnect(); } catch { /* swallow */ }
   }
 }
