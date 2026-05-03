@@ -172,6 +172,30 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
   };
 
   try {
+    // ── Pipeline mode — run a saved or built-in pipeline scope ──────
+    if (mode === 'pipeline') {
+      const { pipelineScope, pipelineRunId, pipelineName } = job.data;
+      if (!pipelineScope) throw new Error('pipelineScope required for pipeline mode');
+      await job.updateProgress({ phase: 'starting', message: `Starting pipeline${pipelineName ? ` "${pipelineName}"` : ''}…` });
+      const { runPipelineWorkflow } = await import('../services/busMatrixOrchestrator');
+      const result = await runPipelineWorkflow({
+        scope: pipelineScope,
+        pipelineRunId,
+        tenantId: Number(tenantId),
+        userEmail: triggeredBy,
+        abortSignal: controller.signal,
+        isCancelled: () => isJobCancelled(jobId),
+        emit: emitToJob,
+      });
+      trackEvent('pipeline_run_complete', {
+        tenantId: String(tenantId),
+        allOk: String(result.allOk),
+        sources: String(result.sourceResults.length),
+        products: String(result.productResults.length),
+      });
+      return { products: result.productResults.length, allOk: result.allOk };
+    }
+
     // ── Refresh mode — single product, optional source sync upstream ──
     if (mode === 'refresh') {
       if (!productId) throw new Error('productId required for refresh mode');

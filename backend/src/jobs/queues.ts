@@ -47,13 +47,14 @@ export interface BusMatrixJobData {
   triggeredBy: string; // user email
   /**
    * What this job does:
-   *   • 'design'  (default, legacy) — full bus-matrix design + transformation
-   *   • 'refresh' — re-run a single product's transformations, optionally
-   *                 syncing the source connection upstream first.
-   * Reusing the bus-matrix queue keeps the Redis topology simple and lets
-   * the existing SSE / cancel / active-job endpoints work for both modes.
+   *   • 'design'   (default, legacy) — full bus-matrix design + transformation
+   *   • 'refresh'  — re-run a single product's transformations, optionally
+   *                  syncing the source connection upstream first.
+   *   • 'pipeline' — run a saved-or-builtin pipeline (sources + products in
+   *                  topo order). Reuses the same SSE / cancel / active-job
+   *                  endpoints; the worker dispatches on `mode`.
    */
-  mode?: 'design' | 'refresh';
+  mode?: 'design' | 'refresh' | 'pipeline';
   /** Required when mode='refresh' — which product to rebuild. */
   productId?: number;
   /**
@@ -63,6 +64,12 @@ export interface BusMatrixJobData {
    * the full upstream → downstream pipeline.
    */
   syncSource?: boolean;
+  /** Required when mode='pipeline' — the resolved scope to execute. */
+  pipelineScope?: { sourceIds: number[]; productIds: number[]; shouldSyncSources: boolean };
+  /** Optional pipeline_runs.id for history persistence (mode='pipeline'). */
+  pipelineRunId?: number;
+  /** Optional pipeline name for display in events. */
+  pipelineName?: string;
 }
 
 export interface ConnectionSyncScheduleJobData {

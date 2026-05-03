@@ -1,386 +1,198 @@
 'use client';
 
 /**
- * Pipelines — orchestrated DAG view of every data product.
+ * /pipelines — refresh definitions for the whole tenant.
  *
- * - Top-level DAG: products as nodes, dependencies as edges.
- * - Status colors: success (green), running (blue/pulse), error (red),
- *   stale (amber), never_run (grey).
- * - Click a product → side panel: tables grouped by role, upstream/downstream,
- *   schedule editor, per-product run button.
- * - Toolbar: "Run all" / "Run stale" trigger /api/pipelines/run.
- * - Polls every 4 s while any product is running.
+ * A pipeline = a NAMED scope on the (sources → products) dependency graph
+ * + zero or more TRIGGERS. Built-in pipelines (auto-derived from the
+ * graph, never stored) cover the common cases. Custom pipelines let users
+ * pick exactly which sources + products they want and add triggers.
+ *
+ * Layout:
+ *   ┌────────────────────────┬─────────────────────────────────────────┐
+ *   │ LEFT — pipeline list   │ RIGHT — DAG + run controls              │
+ *   │  Built-in (3 + per-    │  Header: name, run, triggers            │
+ *   │   source + per-product)│  Canvas: ReactFlow LR (sources → prods) │
+ *   │  Custom (user-created) │  Bottom: run history                    │
+ *   │  + New pipeline        │                                          │
+ *   └────────────────────────┴─────────────────────────────────────────┘
+ *
+ * Run mechanics: clicking "Run" enqueues a 'mode: pipeline' job on the
+ * existing bus-matrix BullMQ queue and attaches via the existing
+ * /bus-matrix/:jobId/stream SSE endpoint. We display live progress in
+ * a slide-over toast — no page-level interruption needed.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactFlow, {
   Background, Controls,
   useNodesState, useEdgesState,
   NodeProps, Handle, Position,
   ReactFlowProvider,
+  type Node,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
-import { Play, RefreshCw, Calendar, AlertCircle, CheckCircle2, Clock, X, Database, ArrowRight } from 'lucide-react';
+import {
+  Play, Plus, Trash2, X, Database, Boxes, Calendar,
+  CheckCircle2, AlertCircle, Loader2, Clock, Pencil,
+} from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { OBSERVATORY } from '@/lib/observatory';
-import SchedulePanel from '@/components/SchedulePanel';
 import RequireRole from '@/components/RequireRole';
 import { formatRelative } from '@/lib/dates';
+import { cn } from '@/lib/cn';
+import { getToken } from '@/lib/auth';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-type ProductStatus = 'success' | 'running' | 'error' | 'stale' | 'never_run';
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
-interface Product {
-  id: number;
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+type PipelineScope =
+  | { type: 'all' }
+  | { type: 'sync-all' }
+  | { type: 'transform-all' }
+  | { type: 'from-source'; sourceId: number }
+  | { type: 'sync-source'; sourceId: number }
+  | { type: 'product'; productId: number; includeUpstreamSync?: boolean; includeDownstream?: boolean }
+  | { type: 'rebuild-product'; productId: number }
+  | { type: 'custom'; sourceIds: number[]; productIds: number[]; includeUpstream?: boolean; includeDownstream?: boolean; skipSourceSync?: boolean };
+
+type PipelineTrigger =
+  | { kind: 'cron'; cron: string; tz?: string }
+  | { kind: 'on_pipeline_complete'; pipelineId: number }
+  | { kind: 'on_source_sync_succeeded'; sourceId: number };
+
+interface BuiltinPipeline {
+  id: string;          // 'builtin:all' | 'builtin:from-source:5' | …
   name: string;
-  status: ProductStatus;
-  last_run_at: string | null;
-  connection_id: number | null;
-  table_counts: { total: number; success: number; running: number; error: number; draft: number };
-  schedule: { cron_expression: string; timezone: string | null; enabled: boolean } | null;
+  description: string;
+  group: 'global' | 'source' | 'product';
+  scope: PipelineScope;
+  sourceCount: number;
+  productCount: number;
 }
 
-interface ProductEdge { source: number; target: number }
-interface PipelineTable {
+interface CustomPipeline {
   id: number;
-  product_id: number | null;
-  star_schema_id: number;
-  table_name: string;
-  display_name: string | null;
-  table_role: string | null;
-  dag_order: number | null;
-  transformation_status: string | null;
-  last_run_at: string | null;
-  last_run_error: string | null;
-  row_count: number | null;
-}
-interface TableEdge { source: number; target: number; relationship_type: string }
-
-interface PipelineData {
-  products: Product[];
-  productEdges: ProductEdge[];
-  tables: PipelineTable[];
-  tableEdges: TableEdge[];
+  stableId: string;    // 'custom:17'
+  name: string;
+  description: string | null;
+  scope: PipelineScope;
+  triggers: PipelineTrigger[];
+  enabled: boolean;
+  lastRunAt: string | null;
+  lastStatus: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
-// ---------------------------------------------------------------------------
-// Stuck-run detection — a worker may die mid-run and leave product_tables
-// rows pinned to transformation_status='running'. Anything still "running"
-// with no last_run_at, or last_run_at older than this threshold, is treated
-// as orphaned. We surface it as "stuck" rather than continuing the live
-// shimmer + polling loop.
-// ---------------------------------------------------------------------------
-const STUCK_AFTER_MS = 5 * 60 * 1000; // 5 minutes
+type Pipeline = (BuiltinPipeline & { kind: 'builtin' }) | (CustomPipeline & { kind: 'custom' });
 
-function isTableStuck(t: PipelineTable, isPendingProduct: boolean): boolean {
-  if (isPendingProduct) return false; // we just optimistically marked it; trust the user
-  if ((t.transformation_status ?? '').toLowerCase() !== 'running') return false;
-  if (!t.last_run_at) return true;
-  const age = Date.now() - new Date(t.last_run_at).getTime();
-  return age > STUCK_AFTER_MS;
+interface DagSource {
+  id: number; name: string; type: string; connectorType: string | null;
+  lastSyncedAt: string | null; lastSyncStatus: string | null;
+}
+interface DagProduct {
+  id: number; name: string; status: string;
+  lastRunAt: string | null; connectionId: number | null;
+}
+interface DagEdge {
+  source: { kind: 'connection' | 'product'; id: number };
+  target: { kind: 'product'; id: number };
+}
+interface Dag { sources: DagSource[]; products: DagProduct[]; edges: DagEdge[] }
+
+interface RunRow {
+  id: number;
+  pipeline_id: number | null;
+  status: string;
+  queued_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  triggered_by: string | null;
+  job_id: string | null;
+  node_results: { sources: Array<{ sourceId: number; status: string; error?: string }>;
+                  products: Array<{ productId: number; productName: string; allOk: boolean; failedTables: number; totalTables: number }> } | null;
+  error_message: string | null;
 }
 
-// ---------------------------------------------------------------------------
-// Status palette (Observatory)
-// ---------------------------------------------------------------------------
-const STATUS_STYLES: Record<ProductStatus, { bg: string; border: string; text: string; dot: string; label: string }> = {
-  success:   { bg: OBSERVATORY.okSoft,   border: OBSERVATORY.ok,    text: OBSERVATORY.ok,    dot: OBSERVATORY.ok,    label: 'Up to date' },
-  running:   { bg: OBSERVATORY.oceanSoft,border: OBSERVATORY.ocean, text: OBSERVATORY.ocean, dot: OBSERVATORY.ocean, label: 'Running' },
-  error:     { bg: OBSERVATORY.errSoft,  border: OBSERVATORY.err,   text: OBSERVATORY.err,   dot: OBSERVATORY.err,   label: 'Failed' },
-  stale:     { bg: OBSERVATORY.warnSoft, border: OBSERVATORY.warn,  text: OBSERVATORY.warn,  dot: OBSERVATORY.warn,  label: 'Stale' },
-  never_run: { bg: OBSERVATORY.softer,   border: OBSERVATORY.line,  text: OBSERVATORY.muted, dot: OBSERVATORY.muted2,label: 'Never run' },
-};
+// ─── Layout helpers ─────────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// ReactFlow custom node — product card with inline table list
-// ---------------------------------------------------------------------------
-const NODE_W = 280;
-const HEADER_H = 36;
-const STATUS_ROW_H = 26;
-const GROUP_LABEL_H = 18;
-const TABLE_ROW_H = 22;
-const FOOTER_H = 30;
-const PADDING_Y = 14;
+const NODE_W = 220;
+const NODE_H = 64;
 
-interface NodeData {
-  product: Product;
-  tables: PipelineTable[];
-  selected: boolean;
-  running: boolean;
-  refreshOrder: number | null; // 1-indexed position in current run
-  isPendingProduct: boolean;   // user just clicked Run on this product
-  onClick: (id: number) => void;
-  onRun: (id: number) => void;
-}
-
-function nodeHeight(tables: PipelineTable[]) {
-  const dims = tables.filter((t) => t.table_role === 'dimension').length;
-  const facts = tables.filter((t) => t.table_role === 'fact').length;
-  const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact').length;
-  let h = HEADER_H + STATUS_ROW_H + PADDING_Y + FOOTER_H;
-  if (dims > 0)   h += GROUP_LABEL_H + dims * TABLE_ROW_H;
-  if (facts > 0)  h += GROUP_LABEL_H + facts * TABLE_ROW_H;
-  if (others > 0) h += GROUP_LABEL_H + others * TABLE_ROW_H;
-  if (tables.length === 0) h += 22; // "no tables" placeholder
-  return h;
-}
-
-function ProductNode({ data }: NodeProps<NodeData>) {
-  const { product, tables, selected, running, refreshOrder, isPendingProduct } = data;
-  const s = STATUS_STYLES[product.status];
-  const dims = tables.filter((t) => t.table_role === 'dimension').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
-  const facts = tables.filter((t) => t.table_role === 'fact').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
-  const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact');
-
-  // A product is genuinely running only if it has live (non-stuck) running tables
-  // OR the user just clicked Run on it (pending). Otherwise, "running" is just a
-  // stale flag from an orphaned worker — don't pulse the card.
-  const tablesDone = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'success').length;
-  const tablesRunningRaw = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'running');
-  const tablesRunningLive = tablesRunningRaw.filter((t) => !isTableStuck(t, isPendingProduct));
-  const tablesStuck = tablesRunningRaw.length - tablesRunningLive.length;
-  const isRunning = product.status === 'running' && (tablesRunningLive.length > 0 || isPendingProduct);
-  const progressPct = tables.length > 0 ? Math.round((tablesDone / tables.length) * 100) : 0;
-
-  return (
-    <div
-      onClick={() => data.onClick(product.id)}
-      className={`cursor-pointer rounded-md transition-shadow group relative overflow-hidden ${isRunning ? 'pipeline-card-running' : ''}`}
-      style={{
-        width: NODE_W,
-        background: OBSERVATORY.raised,
-        border: `1.5px solid ${selected ? OBSERVATORY.ocean : s.border}`,
-        boxShadow: !isRunning && selected
-          ? `0 0 0 3px ${OBSERVATORY.oceanSoft}, 0 4px 12px rgba(15,26,34,0.06)`
-          : !isRunning ? '0 1px 2px rgba(15,26,34,0.04)' : undefined,
-      }}
-    >
-      <Handle type="target" position={Position.Left} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
-      <Handle type="source" position={Position.Right} style={{ background: OBSERVATORY.line, width: 7, height: 7, border: 'none' }} />
-
-      {/* Running progress strip across the top of the card */}
-      {isRunning && (
-        <div
-          className="absolute top-0 left-0 right-0 h-[3px]"
-          style={{ background: OBSERVATORY.oceanSofter }}
-        >
-          <div
-            className="h-full transition-all duration-500"
-            style={{ width: `${progressPct}%`, background: OBSERVATORY.ocean }}
-          />
-        </div>
-      )}
-
-      {/* Header */}
-      <div
-        className="px-3 flex items-center gap-2 border-b"
-        style={{ borderColor: OBSERVATORY.softer, height: HEADER_H }}
-      >
-        <span
-          className={`inline-block w-2 h-2 rounded-full shrink-0 ${product.status === 'running' ? 'animate-pulse' : ''}`}
-          style={{ background: s.dot }}
-        />
-        <span className="text-[13px] font-medium truncate flex-1" style={{ color: OBSERVATORY.ink }}>
-          {product.name}
-        </span>
-        {refreshOrder != null && (
-          <span
-            className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-            style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
-            title="Position in refresh order"
-          >
-            #{refreshOrder}
-          </span>
-        )}
-        {product.schedule?.enabled && (
-          <Calendar size={12} style={{ color: OBSERVATORY.muted2 }} />
-        )}
-        <button
-          onClick={(e) => { e.stopPropagation(); data.onRun(product.id); }}
-          disabled={running}
-          className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-soft disabled:opacity-50"
-          title="Refresh this product (and upstream)"
-        >
-          {running ? <Spinner /> : <Play size={11} style={{ color: OBSERVATORY.ocean }} />}
-        </button>
-      </div>
-
-      {/* Status row */}
-      <div
-        className="px-3 flex items-center gap-1.5"
-        style={{ height: STATUS_ROW_H }}
-      >
-        <span
-          className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded"
-          style={{ background: s.bg, color: s.text }}
-        >
-          {s.label}
-        </span>
-        {isRunning ? (
-          <span className="text-[10px] font-mono tabular-nums" style={{ color: OBSERVATORY.ocean }}>
-            {tablesDone}/{tables.length} done{tablesRunningLive.length > 0 && ` · ${tablesRunningLive.length} live`}
-          </span>
-        ) : tablesStuck > 0 ? (
-          <span className="text-[10px] font-mono" style={{ color: OBSERVATORY.warn }} title="Worker likely died mid-run. Click Run to retry.">
-            {tablesStuck} stuck
-          </span>
-        ) : (
-          <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
-            {tables.length} {tables.length === 1 ? 'table' : 'tables'}
-          </span>
-        )}
-      </div>
-
-      {/* Tables list */}
-      <div className="px-2 pb-1">
-        {tables.length === 0 && (
-          <div className="text-[10px] italic px-1 py-1" style={{ color: OBSERVATORY.muted2 }}>
-            No tables defined
-          </div>
-        )}
-        {dims.length > 0 && <NodeTableGroup label="Dimensions" tables={dims} step={1} isPendingProduct={isPendingProduct} />}
-        {facts.length > 0 && <NodeTableGroup label="Facts" tables={facts} step={2} isPendingProduct={isPendingProduct} />}
-        {others.length > 0 && <NodeTableGroup label="Other" tables={others} step={3} isPendingProduct={isPendingProduct} />}
-      </div>
-
-      {/* Footer */}
-      <div
-        className="px-3 flex items-center justify-between border-t text-[10px]"
-        style={{ borderColor: OBSERVATORY.softer, color: OBSERVATORY.muted, height: FOOTER_H }}
-      >
-        <span>
-          {product.last_run_at ? `last run ${formatRelative(product.last_run_at)}` : 'not yet run'}
-        </span>
-        {product.schedule?.enabled && product.schedule.cron_expression && (
-          <span className="font-mono" title={`${product.schedule.cron_expression} ${product.schedule.timezone ?? ''}`}>
-            scheduled
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function NodeTableGroup({ label, tables, step, isPendingProduct }: { label: string; tables: PipelineTable[]; step: number; isPendingProduct: boolean }) {
-  return (
-    <div className="mt-1">
-      <div
-        className="flex items-center gap-1 px-1"
-        style={{ height: GROUP_LABEL_H, color: OBSERVATORY.muted2 }}
-      >
-        <span className="font-mono text-[9px]">[{step}]</span>
-        <span className="text-[9px] uppercase tracking-wider">{label}</span>
-      </div>
-      {tables.map((t) => <NodeTableRow key={t.id} table={t} isPendingProduct={isPendingProduct} />)}
-    </div>
-  );
-}
-
-function NodeTableRow({ table, isPendingProduct }: { table: PipelineTable; isPendingProduct: boolean }) {
-  const status = (table.transformation_status ?? 'draft').toLowerCase();
-  const stuck = isTableStuck(table, isPendingProduct);
-  const isLive = status === 'running' && !stuck;
-  const isError = status === 'error';
-
-  const cfg =
-    status === 'success' ? { color: OBSERVATORY.ok,    pulse: false } :
-    isLive               ? { color: OBSERVATORY.ocean, pulse: true } :
-    stuck                ? { color: OBSERVATORY.warn,  pulse: false } :
-    isError              ? { color: OBSERVATORY.err,   pulse: false } :
-                           { color: OBSERVATORY.muted2,pulse: false };
-
-  return (
-    <div
-      className={`flex items-center gap-1.5 px-1 rounded ${isLive ? 'pipeline-row-running' : ''}`}
-      style={{
-        height: TABLE_ROW_H,
-        background: isError ? 'rgba(196, 60, 60, 0.06)' : undefined,
-      }}
-      title={isError && table.last_run_error ? table.last_run_error : stuck ? 'Stuck — worker likely died. Run again to retry.' : table.table_name}
-    >
-      <span
-        className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.pulse ? 'animate-pulse' : ''}`}
-        style={{ background: cfg.color }}
-      />
-      <span
-        className="text-[11px] font-mono truncate flex-1"
-        style={{
-          color: isLive ? OBSERVATORY.ocean : isError ? OBSERVATORY.err : stuck ? OBSERVATORY.warn : OBSERVATORY.ink2,
-          fontWeight: isLive || isError ? 500 : 400,
-        }}
-      >
-        {table.table_name}
-      </span>
-      {isLive && (
-        <span className="text-[9px] uppercase tracking-wider font-mono" style={{ color: OBSERVATORY.ocean }}>
-          live
-        </span>
-      )}
-      {stuck && (
-        <span className="text-[9px] uppercase tracking-wider font-mono" style={{ color: OBSERVATORY.warn }}>
-          stuck
-        </span>
-      )}
-      {isError && (
-        <AlertCircle size={10} style={{ color: OBSERVATORY.err }} />
-      )}
-      {!isLive && !stuck && !isError && table.row_count != null && table.row_count > 0 && (
-        <span
-          className="text-[9px] tabular-nums"
-          style={{ color: OBSERVATORY.muted2 }}
-        >
-          {formatRowCount(table.row_count)}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function formatRowCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
-const nodeTypes = { product: ProductNode };
-
-// ---------------------------------------------------------------------------
-// Dagre layout — height varies per product based on table count
-// ---------------------------------------------------------------------------
-function layout(
-  products: Product[],
-  edges: ProductEdge[],
-  tablesByProduct: Map<number, PipelineTable[]>,
-) {
+function layoutDag(dag: Dag, scope: { sourceIds: Set<number>; productIds: Set<number> }) {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: 'LR', nodesep: 28, ranksep: 100, marginx: 24, marginy: 24 });
+  g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 80, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
-  const heights = new Map<number, number>();
-  for (const p of products) {
-    const h = nodeHeight(tablesByProduct.get(p.id) ?? []);
-    heights.set(p.id, h);
-    g.setNode(String(p.id), { width: NODE_W, height: h });
+  for (const s of dag.sources) g.setNode(`c:${s.id}`, { width: NODE_W, height: NODE_H });
+  for (const p of dag.products) g.setNode(`p:${p.id}`, { width: NODE_W, height: NODE_H });
+  for (const e of dag.edges) {
+    g.setEdge(
+      `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`,
+      `p:${e.target.id}`,
+    );
   }
-  for (const e of edges) g.setEdge(String(e.source), String(e.target));
   dagre.layout(g);
-  const positions = new Map<number, { x: number; y: number }>();
-  for (const p of products) {
-    const n = g.node(String(p.id));
-    if (n) {
-      const h = heights.get(p.id) ?? 100;
-      positions.set(p.id, { x: n.x - NODE_W / 2, y: n.y - h / 2 });
-    }
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const s of dag.sources) {
+    const n = g.node(`c:${s.id}`);
+    if (n) positions.set(`c:${s.id}`, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
+  }
+  for (const p of dag.products) {
+    const n = g.node(`p:${p.id}`);
+    if (n) positions.set(`p:${p.id}`, { x: n.x - NODE_W / 2, y: n.y - NODE_H / 2 });
   }
   return positions;
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+// ─── Custom node components ─────────────────────────────────────────────────
+
+interface NodeData {
+  label: string;
+  kind: 'connection' | 'product';
+  inScope: boolean;
+  meta: { connectorType?: string | null; status?: string; lastAt?: string | null };
+}
+
+function GraphNode({ data }: NodeProps<NodeData>) {
+  const Icon = data.kind === 'connection' ? Database : Boxes;
+  return (
+    <div
+      className="rounded-md border-2 px-3 py-2 transition-all"
+      style={{
+        width: NODE_W, height: NODE_H,
+        background: data.inScope ? OBSERVATORY.raised : OBSERVATORY.softer,
+        borderColor: data.inScope
+          ? (data.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai)
+          : OBSERVATORY.line,
+        opacity: data.inScope ? 1 : 0.5,
+      }}
+    >
+      <Handle type="target" position={Position.Left} style={{ background: OBSERVATORY.line, width: 6, height: 6, border: 'none' }} />
+      <Handle type="source" position={Position.Right} style={{ background: OBSERVATORY.line, width: 6, height: 6, border: 'none' }} />
+      <div className="flex items-center gap-2">
+        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: data.inScope ? (data.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai) : OBSERVATORY.muted2 }} />
+        <span className="text-[12px] font-medium truncate" style={{ color: OBSERVATORY.ink }}>{data.label}</span>
+      </div>
+      <div className="text-[10px] mt-1 truncate" style={{ color: OBSERVATORY.muted }}>
+        {data.kind === 'connection'
+          ? (data.meta.connectorType ?? data.meta.status ?? 'source')
+          : (data.meta.status ?? 'product')}
+        {data.meta.lastAt && ` · ${formatRelative(data.meta.lastAt)}`}
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = { graph: GraphNode };
+
+// ─── Page ───────────────────────────────────────────────────────────────────
+
 export default function PipelinesPage() {
   return (
     <RequireRole roles={['admin', 'analyst']}>
@@ -393,704 +205,602 @@ export default function PipelinesPage() {
 
 function PipelinesInner() {
   const toast = useToast();
-  const [rawData, setRawData] = useState<PipelineData | null>(null);
+  const [dag, setDag] = useState<Dag | null>(null);
+  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [running, setRunning] = useState<{ all: boolean; stale: boolean; product: number | null }>({ all: false, stale: false, product: null });
-  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [running, setRunning] = useState<string | null>(null);
+  const [showCustomEditor, setShowCustomEditor] = useState<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(null);
+  const [recentRuns, setRecentRuns] = useState<RunRow[]>([]);
+  const [activeStream, setActiveStream] = useState<{ jobId: string; pipelineRunId: number; pipelineName: string } | null>(null);
 
-  // Optimistic run state: when the user clicks Run, we capture each product's
-  // last_run_at at click time. Until the backend reports a NEWER last_run_at
-  // (run finished) OR transitions the product into 'running' (run started),
-  // we display the product as running locally so the UI feels instant.
-  // Maps productId → previous last_run_at (null if never run).
-  const [pendingRuns, setPendingRuns] = useState<Map<number, string | null>>(new Map());
-
-  const onNodeClick = useCallback((id: number) => setSelectedId(id), []);
-
-  async function load(silent = false) {
-    if (!silent) setLoading(true);
+  const reload = useCallback(async () => {
     try {
-      const res = await api.get('/pipelines');
-      setRawData(res.data.data as PipelineData);
-    } catch {
+      const [dagRes, listRes] = await Promise.all([
+        api.get('/pipelines/dag'),
+        api.get('/pipelines/list'),
+      ]);
+      const _dag = dagRes.data.data as Dag;
+      const list = listRes.data.data as { builtin: BuiltinPipeline[]; custom: CustomPipeline[] };
+      const all: Pipeline[] = [
+        ...list.builtin.map((b) => ({ ...b, kind: 'builtin' as const })),
+        ...list.custom.map((c) => ({ ...c, kind: 'custom' as const })),
+      ];
+      setDag(_dag);
+      setPipelines(all);
+      if (!selectedId && all.length > 0) {
+        const first = all[0];
+        const firstId = first.kind === 'builtin' ? first.id : (first as CustomPipeline & { kind: 'custom' }).stableId;
+        setSelectedId(firstId);
+      }
+    } catch (err) {
       toast.error('Failed to load pipelines');
+      // eslint-disable-next-line no-console
+      console.error(err);
     } finally {
-      if (!silent) setLoading(false);
+      setLoading(false);
     }
-  }
+  }, [selectedId, toast]);
 
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const reloadRuns = useCallback(async () => {
+    try {
+      const res = await api.get('/pipelines/runs?limit=15');
+      setRecentRuns(res.data.data ?? []);
+    } catch { /* noop */ }
+  }, []);
 
-  // Reconcile pendingRuns with raw data: drop products that the backend has
-  // already moved past their pre-run state (status === running OR last_run_at
-  // bumped OR status === error post-trigger).
-  useEffect(() => {
-    if (!rawData || pendingRuns.size === 0) return;
-    const next = new Map(pendingRuns);
-    let changed = false;
-    pendingRuns.forEach((prevRunAt, pid) => {
-      const p = rawData.products.find((x) => x.id === pid);
-      if (!p) { next.delete(pid); changed = true; return; }
-      // Backend caught up if it now shows running, or if last_run_at bumped, or status flipped to error AFTER our trigger.
-      if (p.status === 'running') { next.delete(pid); changed = true; return; }
-      if (p.last_run_at !== prevRunAt) { next.delete(pid); changed = true; return; }
-    });
-    if (changed) setPendingRuns(next);
-  }, [rawData, pendingRuns]);
+  useEffect(() => { reload(); reloadRuns(); }, [reload, reloadRuns]);
 
-  // Hard safety: clear any pending entries that have lingered > 30s without
-  // the backend catching up (worker stuck, Redis down, etc.).
-  useEffect(() => {
-    if (pendingRuns.size === 0) return;
-    const t = setTimeout(() => setPendingRuns(new Map()), 30000);
-    return () => clearTimeout(t);
-  }, [pendingRuns]);
+  const selected = useMemo(
+    () => pipelines.find((p) => (p.kind === 'builtin' ? p.id : p.stableId) === selectedId) ?? null,
+    [pipelines, selectedId],
+  );
 
-  // Apply optimistic state on top of raw data. Pending products are forced to
-  // 'running'; their tables flip to 'running' too so the per-row shimmer fires.
-  const data = useMemo<PipelineData | null>(() => {
-    if (!rawData) return null;
-    if (pendingRuns.size === 0) return rawData;
-    const pending = pendingRuns;
-    return {
-      ...rawData,
-      products: rawData.products.map((p) =>
-        pending.has(p.id) && p.status !== 'running'
-          ? { ...p, status: 'running' as ProductStatus,
-              table_counts: { ...p.table_counts, running: Math.max(p.table_counts.running, 1) } }
-          : p,
-      ),
-      tables: rawData.tables.map((t) => {
-        if (t.product_id != null && pending.has(t.product_id)) {
-          const cur = (t.transformation_status ?? '').toLowerCase();
-          if (cur !== 'running' && cur !== 'success') {
-            return { ...t, transformation_status: 'running' };
+  // Resolve selected pipeline's scope to highlight nodes on the canvas.
+  // For builtins we don't have the resolved set client-side, so we approximate
+  // from the scope shape. (Server has the canonical resolver — we send the
+  // run request there for the actual scope.)
+  const scopeHint = useMemo(() => {
+    const sourceIds = new Set<number>();
+    const productIds = new Set<number>();
+    if (!selected || !dag) return { sourceIds, productIds };
+    const s = selected.scope;
+    switch (s.type) {
+      case 'all':
+        dag.sources.forEach((x) => sourceIds.add(x.id));
+        dag.products.forEach((x) => productIds.add(x.id));
+        break;
+      case 'sync-all':
+        dag.sources.forEach((x) => sourceIds.add(x.id));
+        break;
+      case 'transform-all':
+        dag.products.forEach((x) => productIds.add(x.id));
+        break;
+      case 'sync-source':
+        sourceIds.add(s.sourceId);
+        break;
+      case 'from-source': {
+        sourceIds.add(s.sourceId);
+        // Approximate downstream by walking edges
+        const visited = new Set<string>();
+        const queue: string[] = [`c:${s.sourceId}`];
+        while (queue.length > 0) {
+          const cur = queue.shift()!;
+          if (visited.has(cur)) continue;
+          visited.add(cur);
+          for (const e of dag.edges) {
+            const fromKey = `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`;
+            if (fromKey === cur) {
+              const targetKey = `p:${e.target.id}`;
+              productIds.add(e.target.id);
+              queue.push(targetKey);
+            }
           }
         }
-        return t;
-      }),
-    };
-  }, [rawData, pendingRuns]);
+        break;
+      }
+      case 'product':
+        productIds.add(s.productId);
+        if (s.includeUpstreamSync !== false) {
+          // walk upstream to find source connections
+          const visited = new Set<string>();
+          const queue: string[] = [`p:${s.productId}`];
+          while (queue.length > 0) {
+            const cur = queue.shift()!;
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+            for (const e of dag.edges) {
+              const targetKey = `p:${e.target.id}`;
+              if (targetKey === cur) {
+                if (e.source.kind === 'connection') sourceIds.add(e.source.id);
+                else { productIds.add(e.source.id); queue.push(`p:${e.source.id}`); }
+              }
+            }
+          }
+        }
+        if (s.includeDownstream) {
+          const visited = new Set<string>();
+          const queue: string[] = [`p:${s.productId}`];
+          while (queue.length > 0) {
+            const cur = queue.shift()!;
+            if (visited.has(cur)) continue;
+            visited.add(cur);
+            for (const e of dag.edges) {
+              const fromKey = `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`;
+              if (fromKey === cur) {
+                productIds.add(e.target.id);
+                queue.push(`p:${e.target.id}`);
+              }
+            }
+          }
+        }
+        break;
+      case 'rebuild-product':
+        productIds.add(s.productId);
+        break;
+      case 'custom':
+        s.sourceIds.forEach((id) => sourceIds.add(id));
+        s.productIds.forEach((id) => productIds.add(id));
+        // Note: includeUpstream/Downstream expansion is computed server-side at
+        // run time. The hint here just shows what the user explicitly picked.
+        break;
+    }
+    return { sourceIds, productIds };
+  }, [selected, dag]);
 
-  // Poll fast when running OR when pending — pending means the backend hasn't
-  // confirmed yet and we want to catch the transition quickly. Stuck-only
-  // running products (worker died, status pinned to 'running') do NOT count —
-  // otherwise we'd poll forever waiting for a worker that's never coming back.
-  const anyRunning = useMemo(() => {
-    if (pendingRuns.size > 0) return true;
-    if (!data) return false;
-    return data.products.some((p) => {
-      if (p.status !== 'running') return false;
-      const ptables = data.tables.filter((t) => t.product_id === p.id);
-      const isPending = pendingRuns.has(p.id);
-      return ptables.some(
-        (t) => (t.transformation_status ?? '').toLowerCase() === 'running' && !isTableStuck(t, isPending),
-      );
-    });
-  }, [data, pendingRuns]);
-  useEffect(() => {
-    if (!anyRunning) return;
-    // 800 ms while there are unconfirmed pending runs; 1.8 s once confirmed running.
-    const interval = pendingRuns.size > 0 ? 800 : 1800;
-    pollRef.current = setTimeout(() => load(true), interval);
-    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
-  }, [anyRunning, data, pendingRuns]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Build ReactFlow nodes/edges
+  // ── ReactFlow nodes/edges ──
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
 
-  // Refresh-order indicator: when products are running, number them by topo
-  // position so users can see "this one runs first, that one after".
-  const refreshOrderMap = useMemo(() => {
-    if (!data) return new Map<number, number>();
-    const runningIds = new Set(data.products.filter((p) => p.status === 'running').map((p) => p.id));
-    if (runningIds.size === 0) return new Map<number, number>();
-    // Topo sort just the running set's ancestors-then-self order via productEdges.
-    const inDeg = new Map<number, number>();
-    const adj = new Map<number, number[]>();
-    runningIds.forEach((id) => { inDeg.set(id, 0); adj.set(id, []); });
-    for (const e of data.productEdges) {
-      if (runningIds.has(e.source) && runningIds.has(e.target)) {
-        adj.get(e.source)!.push(e.target);
-        inDeg.set(e.target, (inDeg.get(e.target) ?? 0) + 1);
-      }
-    }
-    const ready = Array.from(runningIds).filter((id) => (inDeg.get(id) ?? 0) === 0);
-    const order: number[] = [];
-    while (ready.length > 0) {
-      const next = ready.shift()!;
-      order.push(next);
-      for (const child of adj.get(next) ?? []) {
-        const d = (inDeg.get(child) ?? 0) - 1;
-        inDeg.set(child, d);
-        if (d === 0) ready.push(child);
-      }
-    }
-    runningIds.forEach((id) => { if (!order.includes(id)) order.push(id); });
-    const m = new Map<number, number>();
-    order.forEach((id, i) => m.set(id, i + 1));
-    return m;
-  }, [data]);
-
-  const tablesByProduct = useMemo(() => {
-    const m = new Map<number, PipelineTable[]>();
-    if (!data) return m;
-    for (const t of data.tables) {
-      if (t.product_id == null) continue;
-      const arr = m.get(t.product_id) ?? [];
-      arr.push(t);
-      m.set(t.product_id, arr);
-    }
-    return m;
-  }, [data]);
-
-  const onRunOne = useCallback(
-    (id: number) => { runScope({ productIds: [id] }); },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
-
   useEffect(() => {
-    if (!data) return;
-    const positions = layout(data.products, data.productEdges, tablesByProduct);
-    setRfNodes(
-      data.products.map((p) => ({
-        id: String(p.id),
-        type: 'product',
-        position: positions.get(p.id) ?? { x: 0, y: 0 },
+    if (!dag) return;
+    const positions = layoutDag(dag, scopeHint);
+    const nodes: Node<NodeData>[] = [
+      ...dag.sources.map((s) => ({
+        id: `c:${s.id}`,
+        type: 'graph',
+        position: positions.get(`c:${s.id}`) ?? { x: 0, y: 0 },
         data: {
-          product: p,
-          tables: tablesByProduct.get(p.id) ?? [],
-          selected: selectedId === p.id,
-          running: running.product === p.id,
-          refreshOrder: refreshOrderMap.get(p.id) ?? null,
-          isPendingProduct: pendingRuns.has(p.id),
-          onClick: onNodeClick,
-          onRun: onRunOne,
-        } as NodeData,
+          label: s.name, kind: 'connection' as const,
+          inScope: scopeHint.sourceIds.has(s.id),
+          meta: { connectorType: s.connectorType, lastAt: s.lastSyncedAt, status: s.lastSyncStatus ?? undefined },
+        },
         draggable: false,
       })),
-    );
+      ...dag.products.map((p) => ({
+        id: `p:${p.id}`,
+        type: 'graph',
+        position: positions.get(`p:${p.id}`) ?? { x: 0, y: 0 },
+        data: {
+          label: p.name, kind: 'product' as const,
+          inScope: scopeHint.productIds.has(p.id),
+          meta: { status: p.status, lastAt: p.lastRunAt },
+        },
+        draggable: false,
+      })),
+    ];
+    setRfNodes(nodes);
     setRfEdges(
-      data.productEdges.map((e, i) => {
-        const sourceRunning = data.products.some((p) => p.id === e.source && p.status === 'running');
-        const targetRunning = data.products.some((p) => p.id === e.target && p.status === 'running');
-        const live = sourceRunning || targetRunning;
+      dag.edges.map((e, i) => {
+        const fromKey = `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`;
+        const toKey = `p:${e.target.id}`;
+        const live = (e.source.kind === 'connection'
+          ? scopeHint.sourceIds.has(e.source.id)
+          : scopeHint.productIds.has(e.source.id))
+          && scopeHint.productIds.has(e.target.id);
         return {
-          id: `e-${e.source}-${e.target}-${i}`,
-          source: String(e.source),
-          target: String(e.target),
+          id: `e-${i}`,
+          source: fromKey, target: toKey,
           type: 'smoothstep',
-          animated: live,
           style: {
-            stroke: live ? OBSERVATORY.ocean : OBSERVATORY.lineStrong,
-            strokeWidth: live ? 2 : 1.5,
+            stroke: live ? OBSERVATORY.ocean : OBSERVATORY.line,
+            strokeWidth: live ? 1.5 : 1,
           },
         };
       }),
     );
-  }, [data, selectedId, running.product, refreshOrderMap, tablesByProduct, pendingRuns, onNodeClick, onRunOne, setRfNodes, setRfEdges]);
+  }, [dag, scopeHint, setRfNodes, setRfEdges]);
 
-  async function runScope(scope: 'all' | 'stale' | { productIds: number[] }) {
-    const key = scope === 'all' ? 'all' : scope === 'stale' ? 'stale' : 'product';
-    setRunning((r) => ({ ...r, [key]: scope === 'all' || scope === 'stale' ? true : (scope.productIds[0] ?? null) }));
+  // ── Run a pipeline ──
+  const runPipeline = useCallback(async (pipelineId: string, pipelineName: string) => {
+    setRunning(pipelineId);
     try {
-      const res = await api.post('/pipelines/run', { scope });
-      const order: number[] = res.data.data?.order ?? [];
-      if (order.length === 0) {
-        toast.info('Nothing to run');
-      } else {
-        toast.success(`Enqueued ${order.length} product${order.length === 1 ? '' : 's'}`);
-        // Optimistically mark each enqueued product as running until the backend confirms.
-        // Capture the pre-run last_run_at so we can detect when the backend catches up.
-        setPendingRuns((prev) => {
-          const next = new Map(prev);
-          for (const pid of order) {
-            const p = rawData?.products.find((x) => x.id === pid);
-            next.set(pid, p?.last_run_at ?? null);
-          }
-          return next;
-        });
-      }
-      await load(true);
+      const res = await api.post('/pipelines/run-pipeline', { pipelineId });
+      const { jobId, pipelineRunId } = res.data.data;
+      toast.success(`Started "${pipelineName}"`);
+      setActiveStream({ jobId: String(jobId), pipelineRunId, pipelineName });
+      reloadRuns();
     } catch (err) {
-      const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error;
-      toast.error(msg ?? 'Failed to start pipeline run');
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error ?? (err as Error).message;
+      toast.error(`Failed to start: ${msg}`);
     } finally {
-      setRunning({ all: false, stale: false, product: null });
+      setRunning(null);
     }
-  }
-
-  async function clearStuck() {
-    try {
-      const res = await api.post('/pipelines/clear-stuck');
-      const cleared = (res.data.data?.tablesCleared as number) ?? 0;
-      if (cleared > 0) {
-        toast.success(`Cleared ${cleared} stuck table${cleared === 1 ? '' : 's'}`);
-      } else {
-        toast.info('Nothing to clear');
-      }
-      await load(true);
-    } catch {
-      toast.error('Failed to clear stuck runs');
-    }
-  }
-
-  const selectedProduct = useMemo(
-    () => data?.products.find((p) => p.id === selectedId) ?? null,
-    [data, selectedId],
-  );
-
-  const counts = useMemo(() => {
-    const init = { total: 0, success: 0, running: 0, stuck: 0, stale: 0, error: 0, never: 0 };
-    if (!data) return init;
-    return data.products.reduce((acc, p) => {
-      acc.total++;
-      // A product whose only running tables are stuck is NOT actually running
-      // — surface it as 'stuck' instead so the toolbar count matches reality.
-      if (p.status === 'running') {
-        const ptables = data.tables.filter((t) => t.product_id === p.id);
-        const isPending = pendingRuns.has(p.id);
-        const liveTables = ptables.filter(
-          (t) => (t.transformation_status ?? '').toLowerCase() === 'running' && !isTableStuck(t, isPending),
-        );
-        if (liveTables.length > 0 || isPending) acc.running++;
-        else acc.stuck++;
-      } else if (p.status === 'success')   acc.success++;
-      else if (p.status === 'stale')       acc.stale++;
-      else if (p.status === 'error')       acc.error++;
-      else if (p.status === 'never_run')   acc.never++;
-      return acc;
-    }, init);
-  }, [data, pendingRuns]);
+  }, [toast, reloadRuns]);
 
   return (
     <div className="h-full flex flex-col bg-bg">
-      {/* Toolbar */}
-      <div className="px-6 py-4 border-b border-line bg-raised flex items-center gap-4 relative">
-        {/* Global running progress strip */}
-        {anyRunning && <GlobalRunStrip data={data!} />}
-
-        <div className="flex-1">
-          <h1 className="font-serif text-[22px] leading-tight text-ink flex items-center gap-2">
-            Pipelines
-            {anyRunning && (
-              <span
-                className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full"
-                style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
-              >
-                <span
-                  className="pipeline-live-dot inline-block w-1.5 h-1.5 rounded-full"
-                  style={{ background: OBSERVATORY.ocean }}
-                />
-                Live
-              </span>
-            )}
+      {/* Top bar */}
+      <div className="px-6 py-3 border-b border-line bg-raised flex items-center justify-between">
+        <div>
+          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Pipelines</p>
+          <h1 className="font-display text-[20px] text-ink leading-tight tracking-[-0.01em]">
+            Refresh schedules and runs
           </h1>
-          <p className="text-xs text-muted mt-0.5">
-            Refresh data products in dependency order — dimensions before facts, upstream before downstream.
-          </p>
         </div>
-
-        <div className="flex items-center gap-2">
-          <PipelineCounts counts={counts} />
-
-          <button
-            onClick={() => load()}
-            className="px-2.5 py-1.5 text-xs rounded-md border border-line bg-raised text-ink-2 hover:bg-soft transition-colors flex items-center gap-1.5"
-            title="Reload"
-          >
-            <RefreshCw size={12} />
-          </button>
-
-          <button
-            onClick={() => runScope('stale')}
-            disabled={running.stale || running.all || counts.stale + counts.error + counts.never === 0}
-            className="px-3 py-1.5 text-xs rounded-md border border-line bg-raised text-ink-2 hover:bg-soft transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {running.stale ? <Spinner /> : <RefreshCw size={12} />}
-            Run stale
-          </button>
-
-          <button
-            onClick={() => runScope('all')}
-            disabled={running.all || running.stale || counts.total === 0}
-            className="px-3 py-1.5 text-xs rounded-md bg-ocean text-white hover:bg-ocean-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {running.all ? <Spinner light /> : <Play size={12} />}
-            Run all
-          </button>
-        </div>
+        <button
+          onClick={() => { setShowCustomEditor({ mode: 'create' }); }}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+          New pipeline
+        </button>
       </div>
 
-      {/* Live activity strip — concrete per-product / per-table breakdown */}
-      {anyRunning && data && (
-        <LiveActivityStrip
-          data={data}
-          tablesByProduct={tablesByProduct}
-          refreshOrderMap={refreshOrderMap}
-          pendingIds={pendingRuns}
-        />
-      )}
-
-      {/* Failure / stuck summary — surfaces WHICH tables failed and WHY */}
-      {data && (
-        <FailureSummary
-          data={data}
-          pendingIds={pendingRuns}
-          onJumpToProduct={(id) => setSelectedId(id)}
-          onRetryProduct={(id) => runScope({ productIds: [id] })}
-          onClearStuck={clearStuck}
-        />
-      )}
-
-      {/* Content: DAG + side panel */}
       <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
-          {loading ? (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">
-              Loading pipeline graph…
-            </div>
-          ) : !data || data.products.length === 0 ? (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center max-w-sm">
-                <Database size={28} className="mx-auto mb-3 text-muted2" />
-                <p className="text-sm text-ink-2 mb-1">No data products yet</p>
-                <p className="text-xs text-muted">
-                  Create a data product first — it will appear here once defined.
-                </p>
+        {/* LEFT — pipeline list */}
+        <PipelineList
+          pipelines={pipelines}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onEditCustom={(id) => setShowCustomEditor({ mode: 'edit', id })}
+          onDelete={async (id) => {
+            if (!confirm('Delete this pipeline? Runs in progress will continue.')) return;
+            try {
+              await api.delete(`/pipelines/saved/${id}`);
+              toast.success('Pipeline deleted');
+              await reload();
+            } catch { toast.error('Delete failed'); }
+          }}
+          loading={loading}
+        />
+
+        {/* RIGHT — DAG canvas + controls */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {selected ? (
+            <>
+              <PipelineHeader
+                pipeline={selected}
+                running={running === (selected.kind === 'builtin' ? selected.id : selected.stableId)}
+                onRun={() => runPipeline(
+                  selected.kind === 'builtin' ? selected.id : selected.stableId,
+                  selected.name,
+                )}
+                onEdit={selected.kind === 'custom' ? () => setShowCustomEditor({ mode: 'edit', id: (selected as CustomPipeline).id }) : undefined}
+              />
+              <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
+                <ReactFlow
+                  nodes={rfNodes}
+                  edges={rfEdges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  nodeTypes={nodeTypes}
+                  fitView
+                  fitViewOptions={{ padding: 0.2 }}
+                  minZoom={0.4}
+                  maxZoom={1.5}
+                  proOptions={{ hideAttribution: true }}
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                >
+                  <Background color={OBSERVATORY.line} gap={20} size={1} />
+                  <Controls showInteractive={false} />
+                </ReactFlow>
+                {/* Legend */}
+                <div className="absolute top-3 right-3 bg-raised border border-line rounded-md px-3 py-2 text-[10px] font-mono uppercase tracking-[0.08em] flex items-center gap-3 shadow-sm">
+                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ocean }} /> Source in scope</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ai }} /> Product in scope</span>
+                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ background: OBSERVATORY.softer, border: `1px solid ${OBSERVATORY.line}` }} /> Out of scope</span>
+                </div>
               </div>
-            </div>
+              <RunHistory
+                runs={recentRuns}
+                pipelineId={selected.kind === 'custom' ? (selected as CustomPipeline).id : null}
+              />
+            </>
           ) : (
-            <ReactFlow
-              nodes={rfNodes}
-              edges={rfEdges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              nodeTypes={nodeTypes}
-              fitView
-              fitViewOptions={{ padding: 0.2 }}
-              minZoom={0.4}
-              maxZoom={1.5}
-              proOptions={{ hideAttribution: true }}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              elementsSelectable={false}
-            >
-              <Background color={OBSERVATORY.line} gap={20} size={1} />
-              <Controls showInteractive={false} />
-            </ReactFlow>
+            <div className="flex-1 flex items-center justify-center text-muted">
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Select a pipeline'}
+            </div>
           )}
         </div>
-
-        {selectedProduct && data && (
-          <SidePanel
-            product={selectedProduct}
-            allProducts={data.products}
-            tables={data.tables.filter((t) => t.product_id === selectedProduct.id)}
-            productEdges={data.productEdges}
-            onClose={() => setSelectedId(null)}
-            onRun={() => runScope({ productIds: [selectedProduct.id] })}
-            running={running.product === selectedProduct.id}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Global run strip — shows progress under the toolbar while anything runs
-// ---------------------------------------------------------------------------
-function GlobalRunStrip({ data }: { data: PipelineData }) {
-  const totalTables = data.tables.length;
-  const doneTables = data.tables.filter(
-    (t) => (t.transformation_status ?? '').toLowerCase() === 'success',
-  ).length;
-  const runningTables = data.tables.filter(
-    (t) => (t.transformation_status ?? '').toLowerCase() === 'running',
-  ).length;
-  const pct = totalTables > 0 ? (doneTables / totalTables) * 100 : 0;
-  return (
-    <div
-      className="absolute left-0 right-0 bottom-0 h-[3px] overflow-hidden"
-      style={{ background: OBSERVATORY.oceanSofter }}
-      title={`${doneTables} of ${totalTables} tables done · ${runningTables} running now`}
-    >
-      <div
-        className="h-full transition-all duration-500"
-        style={{ width: `${pct}%`, background: OBSERVATORY.ocean }}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Failure summary — collapsible banner showing every failed or stuck table
-// across all products with the actual error message. Answers "what failed
-// and why?" without needing to open the side panel for each product.
-// ---------------------------------------------------------------------------
-function FailureSummary({
-  data, pendingIds, onJumpToProduct, onRetryProduct, onClearStuck,
-}: {
-  data: PipelineData;
-  pendingIds: Map<number, string | null>;
-  onJumpToProduct: (id: number) => void;
-  onRetryProduct: (id: number) => void;
-  onClearStuck: () => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const productById = useMemo(() => new Map(data.products.map((p) => [p.id, p])), [data.products]);
-
-  // Group failed + stuck tables by product
-  const failuresByProduct = useMemo(() => {
-    const m = new Map<number, { failed: PipelineTable[]; stuck: PipelineTable[] }>();
-    for (const t of data.tables) {
-      if (t.product_id == null) continue;
-      const status = (t.transformation_status ?? '').toLowerCase();
-      const isPending = pendingIds.has(t.product_id);
-      const stuck = isTableStuck(t, isPending);
-      if (status === 'error' || stuck) {
-        const entry = m.get(t.product_id) ?? { failed: [], stuck: [] };
-        if (stuck) entry.stuck.push(t);
-        else entry.failed.push(t);
-        m.set(t.product_id, entry);
-      }
-    }
-    return m;
-  }, [data.tables, pendingIds]);
-
-  if (failuresByProduct.size === 0) return null;
-
-  const totalFailed = Array.from(failuresByProduct.values()).reduce((sum, x) => sum + x.failed.length, 0);
-  const totalStuck = Array.from(failuresByProduct.values()).reduce((sum, x) => sum + x.stuck.length, 0);
-
-  return (
-    <div
-      className="border-b"
-      style={{ background: OBSERVATORY.errSoft, borderColor: 'rgba(196, 60, 60, 0.2)' }}
-    >
-      {/* Header row — click to expand/collapse */}
-      <div className="w-full px-6 py-2.5 flex items-center gap-3">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex-1 flex items-center gap-3 text-left hover:opacity-80 transition-opacity"
-        >
-          <AlertCircle size={14} style={{ color: OBSERVATORY.err }} />
-          <span className="text-[13px] font-medium" style={{ color: OBSERVATORY.err }}>
-            {totalFailed > 0 && `${totalFailed} table${totalFailed === 1 ? '' : 's'} failed`}
-            {totalFailed > 0 && totalStuck > 0 && ' · '}
-            {totalStuck > 0 && (
-              <span style={{ color: OBSERVATORY.warn }}>
-                {totalStuck} stuck
-              </span>
-            )}
-          </span>
-          <span className="text-[11px]" style={{ color: OBSERVATORY.muted }}>
-            across {failuresByProduct.size} product{failuresByProduct.size === 1 ? '' : 's'}
-          </span>
-        </button>
-        {totalStuck > 0 && (
-          <button
-            onClick={onClearStuck}
-            className="px-2.5 py-1 text-[11px] rounded border bg-white hover:bg-soft transition-colors flex items-center gap-1.5"
-            style={{ borderColor: OBSERVATORY.warn, color: OBSERVATORY.warn }}
-            title="Mark all stuck-running rows as errored. Use when a worker died and never reset its state."
-          >
-            <X size={11} /> Clear stuck
-          </button>
-        )}
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="text-[10px] font-mono uppercase tracking-wider hover:underline"
-          style={{ color: OBSERVATORY.muted2 }}
-        >
-          {expanded ? 'hide' : 'show details'}
-        </button>
       </div>
 
-      {/* Expanded list */}
-      {expanded && (
-        <div className="px-6 pb-3 space-y-2">
-          {Array.from(failuresByProduct.entries()).map(([pid, entry]) => {
-            const product = productById.get(pid);
-            if (!product) return null;
-            return (
-              <div
-                key={pid}
-                className="rounded-md border bg-white p-2.5"
-                style={{ borderColor: 'rgba(196, 60, 60, 0.2)' }}
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span
-                    className="w-1.5 h-1.5 rounded-full"
-                    style={{ background: OBSERVATORY.err }}
-                  />
-                  <button
-                    onClick={() => onJumpToProduct(pid)}
-                    className="text-[12px] font-medium hover:underline"
-                    style={{ color: OBSERVATORY.ink }}
-                  >
-                    {product.name}
-                  </button>
-                  <span className="text-[10px]" style={{ color: OBSERVATORY.muted }}>
-                    {entry.failed.length > 0 && `${entry.failed.length} failed`}
-                    {entry.failed.length > 0 && entry.stuck.length > 0 && ' · '}
-                    {entry.stuck.length > 0 && (
-                      <span style={{ color: OBSERVATORY.warn }}>{entry.stuck.length} stuck</span>
-                    )}
-                  </span>
-                  <button
-                    onClick={() => onRetryProduct(pid)}
-                    className="ml-auto px-2 py-0.5 text-[10px] rounded border flex items-center gap-1 hover:bg-soft"
-                    style={{ borderColor: OBSERVATORY.line, color: OBSERVATORY.ocean }}
-                    title="Retry this product (and upstream)"
-                  >
-                    <Play size={9} /> Retry
-                  </button>
-                </div>
+      {/* Custom pipeline editor (modal) */}
+      {showCustomEditor && dag && (
+        <CustomPipelineEditor
+          dag={dag}
+          existing={showCustomEditor.mode === 'edit'
+            ? (pipelines.find((p) => p.kind === 'custom' && (p as CustomPipeline).id === showCustomEditor.id) as CustomPipeline | undefined)
+            : undefined}
+          onClose={() => setShowCustomEditor(null)}
+          onSaved={async () => { setShowCustomEditor(null); await reload(); }}
+        />
+      )}
 
-                {entry.failed.map((t) => (
-                  <div
-                    key={t.id}
-                    className="pl-3.5 py-1 border-l-2 mt-1"
-                    style={{ borderColor: OBSERVATORY.err }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11px]" style={{ color: OBSERVATORY.err }}>
-                        {t.table_name}
-                      </span>
-                      {t.last_run_at && (
-                        <span className="text-[10px]" style={{ color: OBSERVATORY.muted2 }}>
-                          {formatRelative(t.last_run_at)}
-                        </span>
-                      )}
-                    </div>
-                    {t.last_run_error ? (
-                      <div className="mt-0.5 text-[11px] font-mono whitespace-pre-wrap break-words" style={{ color: OBSERVATORY.ink2 }}>
-                        {t.last_run_error}
-                      </div>
-                    ) : (
-                      <div className="mt-0.5 text-[11px] italic" style={{ color: OBSERVATORY.muted }}>
-                        (no error message recorded)
-                      </div>
-                    )}
-                  </div>
-                ))}
-
-                {entry.stuck.map((t) => (
-                  <div
-                    key={t.id}
-                    className="pl-3.5 py-1 border-l-2 mt-1"
-                    style={{ borderColor: OBSERVATORY.warn }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[11px]" style={{ color: OBSERVATORY.warn }}>
-                        {t.table_name}
-                      </span>
-                      <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.warn }}>
-                        stuck
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-[11px]" style={{ color: OBSERVATORY.ink2 }}>
-                      Pinned to <span className="font-mono">running</span>
-                      {t.last_run_at && <> since {formatRelative(t.last_run_at)}</>}
-                      {' '}— worker likely died mid-run. Click Retry to re-run.
-                    </div>
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-        </div>
+      {/* Live run stream — slide-over toast */}
+      {activeStream && (
+        <RunStreamPanel
+          jobId={activeStream.jobId}
+          pipelineRunId={activeStream.pipelineRunId}
+          pipelineName={activeStream.pipelineName}
+          onClose={() => { setActiveStream(null); reloadRuns(); reload(); }}
+        />
       )}
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Live activity strip — full-width "what's happening right now" panel.
-// Lists each running/pending product, shows its progress (X/Y tables), and
-// the table currently being transformed.
-// ---------------------------------------------------------------------------
-function LiveActivityStrip({
-  data, tablesByProduct, refreshOrderMap, pendingIds,
+// ─── Left rail ──────────────────────────────────────────────────────────────
+
+function PipelineList({
+  pipelines, selectedId, onSelect, onEditCustom, onDelete, loading,
 }: {
-  data: PipelineData;
-  tablesByProduct: Map<number, PipelineTable[]>;
-  refreshOrderMap: Map<number, number>;
-  pendingIds: Map<number, string | null>;
+  pipelines: Pipeline[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onEditCustom: (id: number) => void;
+  onDelete: (id: number) => void;
+  loading: boolean;
 }) {
-  const runningProducts = data.products
-    .filter((p) => p.status === 'running')
-    .sort((a, b) => (refreshOrderMap.get(a.id) ?? 999) - (refreshOrderMap.get(b.id) ?? 999));
-  if (runningProducts.length === 0) return null;
+  const groups = useMemo(() => {
+    const builtinGlobal = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'global');
+    const builtinSource = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'source');
+    const builtinProduct = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'product');
+    const custom = pipelines.filter((p) => p.kind === 'custom');
+    return { builtinGlobal, builtinSource, builtinProduct, custom };
+  }, [pipelines]);
+
+  if (loading) {
+    return (
+      <div className="w-[320px] shrink-0 border-r border-line bg-soft flex items-center justify-center">
+        <Loader2 className="w-4 h-4 animate-spin text-muted" />
+      </div>
+    );
+  }
 
   return (
-    <div
-      className="px-6 py-2.5 border-b flex items-center gap-3 overflow-x-auto"
-      style={{ background: OBSERVATORY.oceanSofter, borderColor: OBSERVATORY.oceanSoft }}
-    >
-      <div className="flex items-center gap-1.5 shrink-0">
-        <span
-          className="pipeline-live-dot inline-block w-2 h-2 rounded-full"
-          style={{ background: OBSERVATORY.ocean }}
-        />
-        <span className="font-mono text-[10px] uppercase tracking-wider" style={{ color: OBSERVATORY.ocean }}>
-          Live · {runningProducts.length} {runningProducts.length === 1 ? 'product' : 'products'}
-        </span>
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        {runningProducts.map((p) => {
-          const tables = tablesByProduct.get(p.id) ?? [];
-          const done = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'success').length;
-          const failed = tables.filter((t) => (t.transformation_status ?? '').toLowerCase() === 'error').length;
-          const liveTable = tables.find((t) => (t.transformation_status ?? '').toLowerCase() === 'running');
-          const pending = pendingIds.has(p.id) && !liveTable && done === 0 && failed === 0;
-          const order = refreshOrderMap.get(p.id);
+    <div className="w-[320px] shrink-0 border-r border-line bg-soft overflow-y-auto">
+      <Section title="Built-in" eyebrow="global">
+        {groups.builtinGlobal.map((p) => (
+          <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
+            id={p.kind === 'builtin' ? p.id : p.stableId}
+            name={p.name}
+            sub={p.description}
+            selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
+            onSelect={onSelect}
+            counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
+        ))}
+      </Section>
+      {groups.builtinSource.length > 0 && (
+        <Section title="By source">
+          {groups.builtinSource.map((p) => (
+            <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
+              id={p.kind === 'builtin' ? p.id : p.stableId}
+              name={p.name}
+              sub={p.description}
+              selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
+              onSelect={onSelect}
+              counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
+          ))}
+        </Section>
+      )}
+      {groups.builtinProduct.length > 0 && (
+        <Section title="By product">
+          {groups.builtinProduct.map((p) => (
+            <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
+              id={p.kind === 'builtin' ? p.id : p.stableId}
+              name={p.name}
+              sub={p.description}
+              selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
+              onSelect={onSelect}
+              counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
+          ))}
+        </Section>
+      )}
+      <Section title="Custom" eyebrow={`${groups.custom.length}`}>
+        {groups.custom.length === 0 && (
+          <div className="px-3 py-3 text-[12px] text-muted italic">
+            No custom pipelines yet. Click <span className="font-medium">+ New pipeline</span>.
+          </div>
+        )}
+        {groups.custom.map((p) => {
+          const cp = p as CustomPipeline & { kind: 'custom' };
           return (
-            <div
-              key={p.id}
-              className="flex items-center gap-2 px-2.5 py-1 rounded-md border bg-white"
-              style={{ borderColor: OBSERVATORY.oceanSoft }}
-            >
-              {order != null && (
-                <span
-                  className="font-mono text-[9px] px-1 py-0.5 rounded"
-                  style={{ background: OBSERVATORY.oceanSoft, color: OBSERVATORY.ocean }}
-                >
-                  #{order}
+            <div key={cp.stableId} className="group">
+              <ListItem
+                id={cp.stableId}
+                name={cp.name}
+                sub={cp.description ?? `${cp.scope.type} · ${cp.triggers.length} trigger${cp.triggers.length === 1 ? '' : 's'}`}
+                selected={selectedId === cp.stableId}
+                onSelect={onSelect}
+                counts={cp.lastStatus ?? undefined}
+                actions={
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onEditCustom(cp.id); }}
+                      className="p-1 rounded hover:bg-soft text-muted-2 hover:text-ink-2"
+                      title="Edit"
+                    ><Pencil className="w-3 h-3" /></button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onDelete(cp.id); }}
+                      className="p-1 rounded hover:bg-err-soft text-muted-2 hover:text-err"
+                      title="Delete"
+                    ><Trash2 className="w-3 h-3" /></button>
+                  </>
+                } />
+            </div>
+          );
+        })}
+      </Section>
+    </div>
+  );
+}
+
+function Section({ title, eyebrow, children }: { title: string; eyebrow?: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 px-3 pt-3 pb-1.5">
+        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">{title}</p>
+        {eyebrow && <span className="text-[10px] text-muted-2">{eyebrow}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ListItem({
+  id, name, sub, selected, onSelect, counts, actions,
+}: {
+  id: string; name: string; sub?: string | null;
+  selected: boolean; onSelect: (id: string) => void;
+  counts?: string; actions?: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={() => onSelect(id)}
+      className={cn(
+        'w-full text-left px-3 py-2 border-l-2 transition-colors flex items-start gap-2 hover:bg-softer',
+        selected ? 'bg-ocean-softer border-ocean' : 'border-transparent',
+      )}
+    >
+      <div className="flex-1 min-w-0">
+        <p className={cn('text-[13px] truncate', selected ? 'text-ocean font-medium' : 'text-ink')}>
+          {name}
+        </p>
+        {sub && (
+          <p className="text-[11px] text-muted truncate mt-0.5">{sub}</p>
+        )}
+      </div>
+      {counts && <span className="text-[10px] font-mono text-muted-2 shrink-0 mt-0.5">{counts}</span>}
+      {actions && <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 shrink-0 -mt-0.5">{actions}</div>}
+    </button>
+  );
+}
+
+// ─── Right header ───────────────────────────────────────────────────────────
+
+function PipelineHeader({
+  pipeline, running, onRun, onEdit,
+}: {
+  pipeline: Pipeline;
+  running: boolean;
+  onRun: () => void;
+  onEdit?: () => void;
+}) {
+  const triggers = pipeline.kind === 'custom' ? (pipeline as CustomPipeline & { kind: 'custom' }).triggers : [];
+  return (
+    <div className="border-b border-line bg-raised px-6 py-3 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink truncate">{pipeline.name}</h2>
+          {pipeline.kind === 'builtin' ? (
+            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">built-in</span>
+          ) : (
+            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ai bg-ai-soft border border-line px-1.5 py-0.5 rounded">custom</span>
+          )}
+        </div>
+        <p className="text-[12px] text-muted mt-0.5">
+          {pipeline.kind === 'builtin' ? pipeline.description : (pipeline as CustomPipeline & { kind: 'custom' }).description ?? scopeSummary(pipeline.scope)}
+        </p>
+        {triggers.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {triggers.map((t, i) => (
+              <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.08em] bg-softer border border-line rounded">
+                {triggerSummary(t)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        {onEdit && (
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer transition-colors"
+          >
+            <Pencil className="w-3.5 h-3.5" />
+            Edit
+          </button>
+        )}
+        <button
+          onClick={onRun}
+          disabled={running}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
+        >
+          {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+          Run now
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function scopeSummary(s: PipelineScope): string {
+  switch (s.type) {
+    case 'all':              return 'Sync every source, transform every product';
+    case 'sync-all':         return 'Sync every source';
+    case 'transform-all':    return 'Transform every product (no sync)';
+    case 'sync-source':      return `Sync source #${s.sourceId}`;
+    case 'from-source':      return `Sync source #${s.sourceId} + dependents`;
+    case 'product':          return `Refresh product #${s.productId}`;
+    case 'rebuild-product':  return `Rebuild product #${s.productId} (no sync)`;
+    case 'custom':           return `${s.sourceIds.length} source${s.sourceIds.length === 1 ? '' : 's'}, ${s.productIds.length} product${s.productIds.length === 1 ? '' : 's'}`;
+  }
+}
+
+function triggerSummary(t: PipelineTrigger): React.ReactNode {
+  switch (t.kind) {
+    case 'cron':                       return <><Calendar className="w-3 h-3" /> {t.cron} {t.tz ?? ''}</>;
+    case 'on_pipeline_complete':       return <>after pipeline #{t.pipelineId}</>;
+    case 'on_source_sync_succeeded':   return <>on source #{t.sourceId} sync</>;
+  }
+}
+
+// ─── Run history ────────────────────────────────────────────────────────────
+
+function RunHistory({ runs, pipelineId }: { runs: RunRow[]; pipelineId: number | null }) {
+  const filtered = pipelineId == null
+    ? runs                                       // built-in selected → all recent runs
+    : runs.filter((r) => r.pipeline_id === pipelineId);
+
+  if (filtered.length === 0) {
+    return (
+      <div className="border-t border-line bg-raised px-6 py-3 text-[11px] text-muted">
+        No runs yet.
+      </div>
+    );
+  }
+  return (
+    <div className="border-t border-line bg-raised">
+      <div className="px-6 py-2 flex items-baseline gap-2">
+        <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Recent runs</p>
+      </div>
+      <div className="px-6 pb-3 max-h-40 overflow-y-auto">
+        {filtered.slice(0, 10).map((r) => {
+          const Icon = r.status === 'succeeded' ? CheckCircle2
+            : r.status === 'partial' || r.status === 'failed' ? AlertCircle
+            : r.status === 'running' || r.status === 'queued' ? Loader2 : Clock;
+          const color = r.status === 'succeeded' ? OBSERVATORY.ok
+            : r.status === 'partial' ? OBSERVATORY.warn
+            : r.status === 'failed' ? OBSERVATORY.err
+            : OBSERVATORY.muted;
+          return (
+            <div key={r.id} className="flex items-center gap-2 py-1 text-[11.5px]">
+              <Icon className={`w-3 h-3 ${r.status === 'running' || r.status === 'queued' ? 'animate-spin' : ''}`} style={{ color }} />
+              <span className="font-mono text-ink-2">#{r.id}</span>
+              <span className="text-muted-2">{r.triggered_by ?? '—'}</span>
+              <span className="text-muted">·</span>
+              <span style={{ color }}>{r.status}</span>
+              {r.node_results && (
+                <span className="text-muted ml-1">
+                  {r.node_results.products?.length ?? 0}p
+                  {r.node_results.sources?.length ? ` · ${r.node_results.sources.length}s` : ''}
                 </span>
               )}
-              <span className="text-[12px] font-medium" style={{ color: OBSERVATORY.ink }}>
-                {p.name}
+              <span className="ml-auto font-mono text-muted-2 text-[10px]">
+                {formatRelative(r.queued_at)}
               </span>
-              <span className="text-[10px] font-mono tabular-nums" style={{ color: OBSERVATORY.muted }}>
-                {done}/{tables.length}
-              </span>
-              {liveTable ? (
-                <span className="flex items-center gap-1 text-[10px] font-mono" style={{ color: OBSERVATORY.ocean }}>
-                  <span
-                    className="pipeline-live-dot inline-block w-1.5 h-1.5 rounded-full"
-                    style={{ background: OBSERVATORY.ocean }}
-                  />
-                  {liveTable.table_name}
-                </span>
-              ) : pending ? (
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
-                  queued…
-                </span>
-              ) : failed > 0 ? (
-                <span className="text-[10px] font-mono" style={{ color: OBSERVATORY.err }}>
-                  {failed} failed
-                </span>
-              ) : (
-                <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.muted2 }}>
-                  starting…
-                </span>
-              )}
             </div>
           );
         })}
@@ -1099,224 +809,349 @@ function LiveActivityStrip({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Toolbar counts
-// ---------------------------------------------------------------------------
-function PipelineCounts({ counts }: { counts: { total: number; success: number; running: number; stuck: number; stale: number; error: number; never: number } }) {
-  const items: { label: string; value: number; color: string }[] = [
-    { label: 'OK',      value: counts.success, color: OBSERVATORY.ok },
-    { label: 'Running', value: counts.running, color: OBSERVATORY.ocean },
-    { label: 'Stuck',   value: counts.stuck,   color: OBSERVATORY.warn },
-    { label: 'Stale',   value: counts.stale,   color: OBSERVATORY.warn },
-    { label: 'Failed',  value: counts.error,   color: OBSERVATORY.err },
-    { label: 'Idle',    value: counts.never,   color: OBSERVATORY.muted },
-  ].filter((i) => i.value > 0);
+// ─── Custom pipeline editor (modal) ─────────────────────────────────────────
 
-  return (
-    <div className="flex items-center gap-3 mr-2 text-[11px] text-muted">
-      {items.map((it) => (
-        <span key={it.label} className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: it.color }} />
-          <span className="font-mono tabular-nums" style={{ color: it.color }}>{it.value}</span>
-          <span>{it.label}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Side panel
-// ---------------------------------------------------------------------------
-function SidePanel({
-  product, allProducts, tables, productEdges, onClose, onRun, running,
+function CustomPipelineEditor({
+  dag, existing, onClose, onSaved,
 }: {
-  product: Product;
-  allProducts: Product[];
-  tables: PipelineTable[];
-  productEdges: ProductEdge[];
+  dag: Dag;
+  existing?: CustomPipeline;
   onClose: () => void;
-  onRun: () => void;
-  running: boolean;
+  onSaved: () => void;
 }) {
-  const upstreamIds = productEdges.filter((e) => e.target === product.id).map((e) => e.source);
-  const downstreamIds = productEdges.filter((e) => e.source === product.id).map((e) => e.target);
-  const upstream = allProducts.filter((p) => upstreamIds.includes(p.id));
-  const downstream = allProducts.filter((p) => downstreamIds.includes(p.id));
-
-  const dims = tables.filter((t) => t.table_role === 'dimension').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
-  const facts = tables.filter((t) => t.table_role === 'fact').sort((a, b) => (a.dag_order ?? 0) - (b.dag_order ?? 0));
-  const others = tables.filter((t) => t.table_role !== 'dimension' && t.table_role !== 'fact');
-
-  const s = STATUS_STYLES[product.status];
-
-  // Re-mount SchedulePanel when product changes
-  return (
-    <aside className="w-[400px] shrink-0 border-l border-line bg-raised h-full overflow-y-auto">
-      {/* Header */}
-      <div className="sticky top-0 z-10 bg-raised border-b border-line px-4 py-3 flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className={`inline-block w-2 h-2 rounded-full ${product.status === 'running' ? 'animate-pulse' : ''}`}
-              style={{ background: s.dot }}
-            />
-            <h2 className="text-sm font-medium text-ink truncate">{product.name}</h2>
-          </div>
-          <p className="text-[11px] text-muted mt-0.5">
-            <span style={{ color: s.text }}>{s.label}</span>
-            {' · '}
-            {product.last_run_at ? `last run ${formatRelative(product.last_run_at)}` : 'never run'}
-          </p>
-        </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded hover:bg-soft text-muted2 hover:text-ink"
-          aria-label="Close"
-        >
-          <X size={14} />
-        </button>
-      </div>
-
-      {/* Run button */}
-      <div className="px-4 py-3 border-b border-line">
-        <button
-          onClick={onRun}
-          disabled={running}
-          className="w-full px-3 py-2 text-xs rounded-md bg-ocean text-white hover:bg-ocean-hover transition-colors disabled:opacity-50 flex items-center justify-center gap-1.5"
-        >
-          {running ? <Spinner light /> : <Play size={12} />}
-          Refresh this product (and upstream)
-        </button>
-        <p className="text-[10px] text-muted mt-1.5 text-center">
-          Runs upstream dependencies first, then dims, then facts.
-        </p>
-      </div>
-
-      {/* Upstream / downstream */}
-      {(upstream.length > 0 || downstream.length > 0) && (
-        <div className="px-4 py-3 border-b border-line">
-          <h3 className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted mb-2">Dependencies</h3>
-          {upstream.length > 0 && (
-            <div className="mb-2">
-              <p className="text-[10px] text-muted mb-1">Depends on</p>
-              <div className="space-y-1">
-                {upstream.map((u) => <DepRow key={u.id} product={u} direction="up" />)}
-              </div>
-            </div>
-          )}
-          {downstream.length > 0 && (
-            <div>
-              <p className="text-[10px] text-muted mb-1">Used by</p>
-              <div className="space-y-1">
-                {downstream.map((d) => <DepRow key={d.id} product={d} direction="down" />)}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Tables */}
-      <div className="px-4 py-3 border-b border-line">
-        <h3 className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted mb-2">
-          Tables ({tables.length})
-        </h3>
-        {tables.length === 0 && (
-          <p className="text-[11px] text-muted">No tables defined.</p>
-        )}
-        {dims.length > 0 && <TableGroup label="Dimensions" tables={dims} order={1} />}
-        {facts.length > 0 && <TableGroup label="Facts"      tables={facts} order={2} />}
-        {others.length > 0 && <TableGroup label="Other"     tables={others} order={3} />}
-      </div>
-
-      {/* Schedule */}
-      <div className="px-4 py-3">
-        <h3 className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted mb-2">Schedule</h3>
-        <SchedulePanel key={product.id} productId={product.id} />
-        <p className="text-[10px] text-muted mt-2">
-          Edits also reschedule the BullMQ repeatable job.
-        </p>
-      </div>
-    </aside>
+  const toast = useToast();
+  const [name, setName] = useState(existing?.name ?? '');
+  const [description, setDescription] = useState(existing?.description ?? '');
+  const [pickedSources, setPickedSources] = useState<Set<number>>(
+    new Set(existing?.scope.type === 'custom' ? existing.scope.sourceIds : []),
   );
-}
-
-function DepRow({ product, direction }: { product: Product; direction: 'up' | 'down' }) {
-  const s = STATUS_STYLES[product.status];
-  return (
-    <div className="flex items-center gap-2 text-[11px]">
-      {direction === 'up'
-        ? <ArrowRight size={10} className="text-muted2 rotate-180" />
-        : <ArrowRight size={10} className="text-muted2" />}
-      <span
-        className={`w-1.5 h-1.5 rounded-full shrink-0 ${product.status === 'running' ? 'animate-pulse' : ''}`}
-        style={{ background: s.dot }}
-      />
-      <span className="text-ink-2 truncate flex-1">{product.name}</span>
-      <span className="text-[10px]" style={{ color: s.text }}>{s.label}</span>
-    </div>
+  const [pickedProducts, setPickedProducts] = useState<Set<number>>(
+    new Set(existing?.scope.type === 'custom' ? existing.scope.productIds : []),
   );
-}
+  const [includeUpstream, setIncludeUpstream] = useState(existing?.scope.type === 'custom' ? !!existing.scope.includeUpstream : false);
+  const [includeDownstream, setIncludeDownstream] = useState(existing?.scope.type === 'custom' ? !!existing.scope.includeDownstream : true);
+  const [skipSourceSync, setSkipSourceSync] = useState(existing?.scope.type === 'custom' ? !!existing.scope.skipSourceSync : false);
+  const [triggers, setTriggers] = useState<PipelineTrigger[]>(existing?.triggers ?? []);
+  const [saving, setSaving] = useState(false);
 
-function TableGroup({ label, tables, order }: { label: string; tables: PipelineTable[]; order: number }) {
+  const toggleSource = (id: number) => {
+    setPickedSources((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+  const toggleProduct = (id: number) => {
+    setPickedProducts((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
+  const save = async () => {
+    if (!name.trim()) { toast.error('Pipeline needs a name'); return; }
+    if (pickedSources.size === 0 && pickedProducts.size === 0) { toast.error('Pick at least one source or product'); return; }
+    setSaving(true);
+    try {
+      const scope: PipelineScope = {
+        type: 'custom',
+        sourceIds: Array.from(pickedSources),
+        productIds: Array.from(pickedProducts),
+        includeUpstream, includeDownstream, skipSourceSync,
+      };
+      if (existing) {
+        await api.put(`/pipelines/saved/${existing.id}`, {
+          name: name.trim(), description: description.trim() || null, scope, triggers,
+        });
+        toast.success('Pipeline updated');
+      } else {
+        await api.post('/pipelines/saved', {
+          name: name.trim(), description: description.trim() || null, scope, triggers,
+        });
+        toast.success('Pipeline created');
+      }
+      onSaved();
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error ?? (err as Error).message;
+      toast.error(`Save failed: ${msg}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div className="mb-2 last:mb-0">
-      <div className="flex items-center gap-1.5 mb-1">
-        <span className="font-mono text-[9px] text-muted2">[{order}]</span>
-        <span className="text-[10px] text-muted">{label}</span>
-      </div>
-      <div className="space-y-0.5">
-        {tables.map((t) => <TableRow key={t.id} table={t} />)}
-      </div>
-    </div>
-  );
-}
-
-function TableRow({ table }: { table: PipelineTable }) {
-  const [showError, setShowError] = useState(false);
-  const status = (table.transformation_status ?? 'draft').toLowerCase();
-  const cfg =
-    status === 'success' ? { color: OBSERVATORY.ok,    icon: <CheckCircle2 size={10} /> } :
-    status === 'running' ? { color: OBSERVATORY.ocean, icon: <Spinner /> } :
-    status === 'error'   ? { color: OBSERVATORY.err,   icon: <AlertCircle size={10} /> } :
-                           { color: OBSERVATORY.muted2,icon: <Clock size={10} /> };
-
-  const hasError = status === 'error' && !!table.last_run_error;
-
-  return (
-    <div className="rounded hover:bg-softer">
+    <div className="fixed inset-0 z-30 bg-ink/40 flex items-center justify-center p-6" onClick={onClose}>
       <div
-        className={`flex items-center gap-2 px-2 py-1 text-[11px] ${hasError ? 'cursor-pointer' : ''}`}
-        onClick={() => hasError && setShowError(!showError)}
+        className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-3xl max-h-[88vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
       >
-        <span style={{ color: cfg.color }}>{cfg.icon}</span>
-        <span className="text-ink-2 truncate flex-1 font-mono">{table.table_name}</span>
-        {table.row_count != null && (
-          <span className="text-[10px] tabular-nums text-muted">{table.row_count.toLocaleString()}</span>
-        )}
-        {hasError && (
-          <span className="text-[10px] font-mono uppercase tracking-wider" style={{ color: OBSERVATORY.err }}>
-            {showError ? 'hide' : 'why?'}
-          </span>
-        )}
-      </div>
-      {hasError && showError && (
-        <div className="mx-2 mb-1 px-2 py-1.5 rounded text-[11px] font-mono whitespace-pre-wrap break-words" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.ink2 }}>
-          {table.last_run_error}
+        <div className="border-b border-line px-5 py-3 flex items-center justify-between">
+          <h2 className="font-display text-[18px] text-ink">
+            {existing ? 'Edit pipeline' : 'New pipeline'}
+          </h2>
+          <button onClick={onClose} className="p-1 rounded hover:bg-soft"><X className="w-4 h-4" /></button>
         </div>
-      )}
+
+        <div className="px-5 py-4 space-y-5">
+          {/* Name + description */}
+          <div className="space-y-2">
+            <label className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted block">Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. EO daily refresh"
+              className="w-full bg-soft border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean"
+            />
+            <label className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted block mt-3">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional — what does this pipeline do?"
+              rows={2}
+              className="w-full bg-soft border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean"
+            />
+          </div>
+
+          {/* Sources picker */}
+          <div>
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Sources</p>
+            {dag.sources.length === 0 ? (
+              <p className="text-[12px] text-muted italic">No sources connected yet.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-1.5">
+                {dag.sources.map((s) => (
+                  <label key={s.id} className={cn(
+                    'flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-pointer transition-colors',
+                    pickedSources.has(s.id) ? 'bg-ocean-softer border-ocean' : 'bg-soft border-line hover:bg-softer',
+                  )}>
+                    <input
+                      type="checkbox"
+                      checked={pickedSources.has(s.id)}
+                      onChange={() => toggleSource(s.id)}
+                      className="w-3 h-3 accent-ocean"
+                    />
+                    <Database className="w-3 h-3 text-ocean shrink-0" />
+                    <span className="text-[12.5px] text-ink truncate">{s.name}</span>
+                    {s.connectorType && (
+                      <span className="text-[10px] font-mono text-muted-2 ml-auto">{s.connectorType}</span>
+                    )}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Products picker */}
+          <div>
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Products</p>
+            {dag.products.length === 0 ? (
+              <p className="text-[12px] text-muted italic">No products yet.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-1.5">
+                {dag.products.map((p) => (
+                  <label key={p.id} className={cn(
+                    'flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-pointer transition-colors',
+                    pickedProducts.has(p.id) ? 'bg-ai-soft border-ai' : 'bg-soft border-line hover:bg-softer',
+                  )}>
+                    <input
+                      type="checkbox"
+                      checked={pickedProducts.has(p.id)}
+                      onChange={() => toggleProduct(p.id)}
+                      className="w-3 h-3 accent-ai"
+                    />
+                    <Boxes className="w-3 h-3 text-ai shrink-0" />
+                    <span className="text-[12.5px] text-ink truncate">{p.name}</span>
+                    <span className="text-[10px] font-mono text-muted-2 ml-auto">{p.status}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Expansion options */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Auto-expand</p>
+            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
+              <input type="checkbox" checked={includeUpstream} onChange={(e) => setIncludeUpstream(e.target.checked)} className="w-3 h-3 accent-ocean" />
+              Include upstream products (run dependencies of picked products)
+            </label>
+            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
+              <input type="checkbox" checked={includeDownstream} onChange={(e) => setIncludeDownstream(e.target.checked)} className="w-3 h-3 accent-ocean" />
+              Include downstream products (run products that consume picked ones)
+            </label>
+            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
+              <input type="checkbox" checked={skipSourceSync} onChange={(e) => setSkipSourceSync(e.target.checked)} className="w-3 h-3 accent-ocean" />
+              Skip source sync (just run transformations on existing data)
+            </label>
+          </div>
+
+          {/* Triggers */}
+          <div>
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Triggers</p>
+            {triggers.length === 0 && (
+              <p className="text-[12px] text-muted italic mb-2">Manual run only. Add a trigger below to run automatically.</p>
+            )}
+            {triggers.map((t, i) => (
+              <div key={i} className="flex items-center gap-2 mb-1.5 px-2 py-1.5 bg-soft border border-line rounded">
+                <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted">{t.kind === 'cron' ? 'cron' : t.kind === 'on_pipeline_complete' ? 'after pipeline' : 'after sync'}</span>
+                {t.kind === 'cron' && (
+                  <>
+                    <input
+                      type="text" value={t.cron}
+                      onChange={(e) => {
+                        const next = [...triggers];
+                        next[i] = { ...t, cron: e.target.value };
+                        setTriggers(next);
+                      }}
+                      placeholder="0 2 * * *"
+                      className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
+                    />
+                    <input
+                      type="text" value={t.tz ?? ''}
+                      onChange={(e) => {
+                        const next = [...triggers];
+                        next[i] = { ...t, tz: e.target.value || undefined };
+                        setTriggers(next);
+                      }}
+                      placeholder="UTC"
+                      className="w-32 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
+                    />
+                  </>
+                )}
+                {t.kind === 'on_source_sync_succeeded' && (
+                  <select
+                    value={t.sourceId}
+                    onChange={(e) => {
+                      const next = [...triggers];
+                      next[i] = { ...t, sourceId: Number(e.target.value) };
+                      setTriggers(next);
+                    }}
+                    className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px]"
+                  >
+                    <option value="">Pick a source…</option>
+                    {dag.sources.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                  </select>
+                )}
+                <button
+                  onClick={() => setTriggers(triggers.filter((_, idx) => idx !== i))}
+                  className="p-1 rounded hover:bg-err-soft text-muted-2 hover:text-err"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              <button
+                onClick={() => setTriggers([...triggers, { kind: 'cron', cron: '0 2 * * *', tz: 'UTC' }])}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
+              ><Plus className="w-3 h-3" /> Cron schedule</button>
+              {dag.sources.length > 0 && (
+                <button
+                  onClick={() => setTriggers([...triggers, { kind: 'on_source_sync_succeeded', sourceId: dag.sources[0].id }])}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
+                ><Plus className="w-3 h-3" /> When a source finishes syncing</button>
+              )}
+            </div>
+            <p className="text-[10.5px] text-muted-2 mt-2">
+              Cron firing + sync-chained triggers will activate in the next release. Manual run works today.
+            </p>
+          </div>
+        </div>
+
+        <div className="border-t border-line px-5 py-3 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer">Cancel</button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50"
+          >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            {existing ? 'Save changes' : 'Create pipeline'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function Spinner({ light = false }: { light?: boolean }) {
+// ─── Live run stream (slide-over) ───────────────────────────────────────────
+
+function RunStreamPanel({
+  jobId, pipelineRunId: _runId, pipelineName, onClose,
+}: {
+  jobId: string; pipelineRunId: number; pipelineName: string; onClose: () => void;
+}) {
+  const [log, setLog] = useState<string[]>([]);
+  const [done, setDone] = useState(false);
+  const [allOk, setAllOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ctrl = new AbortController();
+    (async () => {
+      try {
+        const token = getToken();
+        const res = await fetch(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
+        });
+        const reader = res.body!.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (!cancelled) {
+          const { done: d, value } = await reader.read();
+          if (value) buf += dec.decode(value, { stream: !d });
+          const lines = buf.split('\n');
+          buf = d ? '' : (lines.pop() ?? '');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+              const t = ev.type as string;
+              if (t === 'phase' || t === 'log') setLog((l) => [...l, ev.text as string]);
+              else if (t === 'product') setLog((l) => [...l, `  "${ev.productName}": ${ev.text}`]);
+              else if (t === 'error_detail') setLog((l) => [...l, `    ✗ ${ev.tableName}: ${ev.error}`]);
+              else if (t === 'done') setLog((l) => [...l, ev.text as string]);
+              else if (t === 'completed') {
+                setDone(true);
+                const ok = (ev.result as { allOk?: boolean })?.allOk;
+                setAllOk(typeof ok === 'boolean' ? ok : null);
+              } else if (t === 'failed') {
+                setDone(true); setAllOk(false);
+                setLog((l) => [...l, `Error: ${ev.error}`]);
+              }
+            } catch { /* skip malformed */ }
+          }
+          if (d) break;
+        }
+      } catch { /* aborted */ }
+    })();
+    return () => { cancelled = true; ctrl.abort(); };
+  }, [jobId]);
+
   return (
-    <span
-      className="inline-block w-3 h-3 rounded-full border-2 border-t-transparent animate-spin"
-      style={{ borderColor: light ? 'rgba(255,255,255,0.7)' : OBSERVATORY.ocean, borderTopColor: 'transparent' }}
-    />
+    <div className="fixed bottom-4 right-4 z-30 w-[420px] max-h-[60vh] bg-ink rounded-lg shadow-xl overflow-hidden flex flex-col">
+      <div className="border-b border-white/10 px-4 py-2.5 flex items-center gap-2">
+        {done ? (
+          allOk ? <CheckCircle2 className="w-4 h-4 text-ok" /> : <AlertCircle className="w-4 h-4 text-err" />
+        ) : <Loader2 className="w-4 h-4 text-white animate-spin" />}
+        <span className="text-[13px] text-white/90 font-medium truncate flex-1">{pipelineName}</span>
+        <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-white/60 hover:text-white">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11.5px] leading-relaxed">
+        {log.map((line, i) => (
+          <div key={i} className={cn(
+            line.startsWith('    ✗') ? 'text-err' :
+            line.startsWith('Error') ? 'text-err' :
+            line.startsWith('All done') ? 'text-ok' :
+            line.startsWith('  ') ? 'text-white/50' : 'text-white/85',
+          )}>{line}</div>
+        ))}
+      </div>
+    </div>
   );
 }

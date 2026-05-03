@@ -251,6 +251,220 @@ export async function runBusMatrixWorkflow(
 export { CancelledError };
 
 // ---------------------------------------------------------------------------
+// Pipeline workflow — runs a resolved scope (sources + products in topo order).
+//
+// Phases:
+//   1. Sync each source in scope (parallel, since sources don't depend on
+//      each other). Failures are reported but don't halt the pipeline —
+//      products that depended on a failed source will fail downstream;
+//      products independent of it still run.
+//   2. Transform products in topological order. Failures are reported per
+//      table (via error_detail events) but don't halt the pipeline —
+//      independent products still run.
+//
+// Reuses `runProductTransformation` and `triggerSync` so all the existing
+// FK detection / value-overlap / per-table error semantics flow through
+// unchanged.
+// ---------------------------------------------------------------------------
+
+export interface RunPipelineWorkflowOptions {
+  scope: { sourceIds: number[]; productIds: number[]; shouldSyncSources: boolean };
+  pipelineRunId?: number;
+  tenantId: number;
+  userEmail?: string;
+  emit: (event: OrchestratorEvent) => void;
+  abortSignal?: AbortSignal;
+  isCancelled?: () => boolean | Promise<boolean>;
+}
+
+export interface RunPipelineWorkflowResult {
+  allOk: boolean;
+  sourceResults: Array<{ sourceId: number; status: 'succeeded' | 'failed' | 'skipped'; error?: string }>;
+  productResults: Array<{ productId: number; productName: string; allOk: boolean; failedTables: number; totalTables: number }>;
+}
+
+async function checkPipelineCancelled(opts: RunPipelineWorkflowOptions): Promise<void> {
+  if (opts.abortSignal?.aborted) throw new CancelledError();
+  if (opts.isCancelled && (await opts.isCancelled())) throw new CancelledError();
+}
+
+async function waitForSyncRun(
+  syncRunId: number,
+  tenantId: number,
+  opts: RunPipelineWorkflowOptions,
+): Promise<{ status: string; error_message: string | null }> {
+  const POLL_MS = 3_000;
+  const TIMEOUT_MS = 30 * 60 * 1000;
+  const start = Date.now();
+  while (true) {
+    await checkPipelineCancelled(opts);
+    const row = await semanticDb('source_sync_runs')
+      .where({ id: syncRunId, tenant_id: tenantId })
+      .first();
+    if (!row) throw new Error(`Sync run ${syncRunId} not found`);
+    if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
+      return { status: row.status, error_message: row.error_message };
+    }
+    if (Date.now() - start > TIMEOUT_MS) throw new Error('Source sync timed out after 30 min');
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+}
+
+export async function runPipelineWorkflow(
+  opts: RunPipelineWorkflowOptions,
+): Promise<RunPipelineWorkflowResult> {
+  const { scope, tenantId, emit, pipelineRunId } = opts;
+
+  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+  if (pipelineRunId) {
+    await semanticDb('pipeline_runs')
+      .where({ id: pipelineRunId, tenant_id: tenantId })
+      .update({ status: 'running', started_at: new Date().toISOString() });
+  }
+
+  const sourceResults: RunPipelineWorkflowResult['sourceResults'] = [];
+  const productResults: RunPipelineWorkflowResult['productResults'] = [];
+
+  // ── Phase 1 — source syncs (parallel) ────────────────────────────────
+  if (scope.shouldSyncSources && scope.sourceIds.length > 0) {
+    emit({ type: 'phase', text: `Syncing ${scope.sourceIds.length} source${scope.sourceIds.length === 1 ? '' : 's'}…` });
+
+    const { triggerSync } = await import('../orchestrator/SyncOrchestrator');
+    const syncs = await Promise.all(
+      scope.sourceIds.map(async (sourceId) => {
+        try {
+          const conn = await semanticDb('connections').where({ id: sourceId }).first();
+          if (!conn?.connector_type) {
+            emit({ type: 'log', text: `  ${conn?.name ?? sourceId}: skipped (not a source-connector)` });
+            return { sourceId, status: 'skipped' as const };
+          }
+          emit({ type: 'log', text: `  ${conn.name}: queueing sync…` });
+          const triggered = await triggerSync({
+            connectionId: sourceId,
+            tenantId: Number(tenantId),
+            triggeredByUserId: 0,
+          });
+          const syncRunId = (triggered as { syncRunId?: number }).syncRunId;
+          if (!syncRunId) {
+            emit({ type: 'log', text: `  ${conn.name}: no syncRunId returned — skipping` });
+            return { sourceId, status: 'skipped' as const };
+          }
+          const final = await waitForSyncRun(syncRunId, Number(tenantId), opts);
+          if (final.status === 'succeeded') {
+            emit({ type: 'log', text: `  ${conn.name}: sync OK` });
+            return { sourceId, status: 'succeeded' as const };
+          }
+          if (final.status === 'cancelled') throw new CancelledError();
+          emit({ type: 'error_detail', tableName: conn.name, error: final.error_message ?? 'Sync failed' });
+          return { sourceId, status: 'failed' as const, error: final.error_message ?? 'Sync failed' };
+        } catch (err) {
+          if (err instanceof CancelledError) throw err;
+          const msg = err instanceof Error ? err.message : 'Sync failed';
+          emit({ type: 'error_detail', tableName: `source:${sourceId}`, error: msg });
+          return { sourceId, status: 'failed' as const, error: msg };
+        }
+      }),
+    );
+    sourceResults.push(...syncs);
+  }
+
+  await checkPipelineCancelled(opts);
+
+  // ── Phase 2 — product transformations (topological order) ────────────
+  if (scope.productIds.length > 0) {
+    const { topoSortProducts } = await import('./pipelineService');
+    const ordered = await topoSortProducts(scope.productIds);
+    emit({ type: 'phase', text: `Running ${ordered.length} product${ordered.length === 1 ? '' : 's'}…` });
+
+    const { runProductTransformation } = await import('./transformationRunner');
+    for (const pid of ordered) {
+      await checkPipelineCancelled(opts);
+      const product = await semanticDb('data_products').where({ id: pid }).first();
+      if (!product) {
+        productResults.push({ productId: pid, productName: `#${pid}`, allOk: false, failedTables: 0, totalTables: 0 });
+        continue;
+      }
+      emit({ type: 'log', text: `  Running "${product.name}"…` });
+
+      const schemas = await semanticDb('star_schemas').where({ data_product_id: pid });
+      const schemaIds = schemas.map((s: { id: number }) => s.id);
+      const tables = schemaIds.length
+        ? await semanticDb('product_tables')
+            .whereIn('star_schema_id', schemaIds)
+            .whereNotNull('transformation_sql')
+            .orderBy('dag_order', 'asc')
+        : [];
+
+      try {
+        const results = await runProductTransformation(product, tables, tenantId);
+        const failed = results.filter((r) => r.status === 'error');
+        const allOk = failed.length === 0;
+        if (failed.length > 0) {
+          emit({
+            type: 'product',
+            productName: product.name,
+            productId: pid,
+            status: 'partial',
+            text: `${results.length - failed.length} ok, ${failed.length} failed`,
+          });
+          for (const f of failed) {
+            emit({
+              type: 'error_detail',
+              productName: product.name,
+              productId: pid,
+              tableName: f.table_name,
+              error: f.error ?? 'Unknown error',
+            });
+          }
+        } else {
+          emit({
+            type: 'product',
+            productName: product.name,
+            productId: pid,
+            status: 'ok',
+            text: `all ${results.length} tables ok`,
+          });
+        }
+        productResults.push({
+          productId: pid, productName: product.name,
+          allOk, failedTables: failed.length, totalTables: results.length,
+        });
+
+        // Sync to Neo4j (non-blocking)
+        try {
+          const { syncProductToNeo4j } = await import('./productGraphSync');
+          syncProductToNeo4j(pid).catch(() => { /* non-fatal */ });
+        } catch { /* ignore */ }
+      } catch (err) {
+        if (err instanceof CancelledError) throw err;
+        const msg = err instanceof Error ? err.message : 'Run failed';
+        emit({ type: 'product', productName: product.name, productId: pid, status: 'error', text: msg });
+        productResults.push({
+          productId: pid, productName: product.name,
+          allOk: false, failedTables: 0, totalTables: 0,
+        });
+      }
+    }
+  }
+
+  const allOk = sourceResults.every((s) => s.status !== 'failed') && productResults.every((p) => p.allOk);
+  emit({ type: 'done', text: allOk ? 'All done!' : 'Pipeline completed with some errors.' });
+
+  if (pipelineRunId) {
+    await semanticDb('pipeline_runs')
+      .where({ id: pipelineRunId, tenant_id: tenantId })
+      .update({
+        status: allOk ? 'succeeded' : (productResults.length === 0 && sourceResults.every((s) => s.status === 'failed') ? 'failed' : 'partial'),
+        completed_at: new Date().toISOString(),
+        node_results: JSON.stringify({ sources: sourceResults, products: productResults }),
+      });
+  }
+
+  return { allOk, sourceResults, productResults };
+}
+
+// ---------------------------------------------------------------------------
 // Product refresh workflow — re-run a single product's transformations,
 // optionally syncing the source connection upstream first.
 //

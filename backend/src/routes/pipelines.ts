@@ -371,4 +371,254 @@ router.post('/clear-stuck', requireAuth, requireRole('admin', 'analyst'), async 
   } catch (err) { next(err); }
 });
 
+// ===========================================================================
+// V2 routes — pipelines as first-class entities (sources + products in scope,
+// triggers, run history). Sit alongside the legacy product-DAG endpoints.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// GET /api/pipelines/dag — full tenant graph (sources + products + edges)
+// ---------------------------------------------------------------------------
+router.get('/dag', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { getDag } = await import('../services/pipelineService');
+    const dag = await getDag(req.user!.tenantId);
+    res.json({ ok: true, data: dag });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipelines/list — built-in (computed) + saved (custom) pipelines
+// ---------------------------------------------------------------------------
+router.get('/list', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+    const { listBuiltinPipelines } = await import('../services/pipelineService');
+    const builtin = await listBuiltinPipelines(tenantId);
+
+    const customRows = await semanticDb('pipelines')
+      .where('tenant_id', tenantId)
+      .orderBy('updated_at', 'desc')
+      .select('id', 'name', 'description', 'kind', 'scope', 'triggers', 'enabled',
+              'last_run_at', 'last_status', 'created_by', 'created_at', 'updated_at');
+
+    res.json({
+      ok: true,
+      data: {
+        builtin,
+        custom: customRows.map((r: Record<string, unknown>) => ({
+          id: r.id,
+          stableId: `custom:${r.id}`,
+          name: r.name,
+          description: r.description,
+          kind: r.kind,
+          scope: typeof r.scope === 'string' ? JSON.parse(r.scope as string) : r.scope,
+          triggers: typeof r.triggers === 'string' ? JSON.parse(r.triggers as string) : (r.triggers ?? []),
+          enabled: r.enabled,
+          lastRunAt: r.last_run_at,
+          lastStatus: r.last_status,
+          createdBy: r.created_by,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        })),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipelines/saved — create a custom pipeline
+// Body: { name, description?, scope, triggers?: [], enabled? }
+// ---------------------------------------------------------------------------
+router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+    const { name, description, scope, triggers, enabled } = req.body as {
+      name: string; description?: string;
+      scope: unknown; triggers?: unknown[]; enabled?: boolean;
+    };
+    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'name is required' });
+    if (!scope) return res.status(400).json({ ok: false, error: 'scope is required' });
+
+    const [row] = await semanticDb('pipelines').insert({
+      tenant_id: tenantId,
+      name: name.trim(),
+      description: description ?? null,
+      kind: 'custom',
+      scope: JSON.stringify(scope),
+      triggers: JSON.stringify(triggers ?? []),
+      enabled: enabled ?? true,
+      created_by: req.user?.email ?? null,
+    }).returning('id');
+    const id = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+    res.json({ ok: true, data: { id, stableId: `custom:${id}` } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/pipelines/saved/:id — update name / description / scope / triggers
+// ---------------------------------------------------------------------------
+router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'invalid id' });
+
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    const body = req.body as {
+      name?: string; description?: string | null;
+      scope?: unknown; triggers?: unknown[]; enabled?: boolean;
+    };
+    if (body.name !== undefined) patch.name = body.name.trim();
+    if (body.description !== undefined) patch.description = body.description;
+    if (body.scope !== undefined) patch.scope = JSON.stringify(body.scope);
+    if (body.triggers !== undefined) patch.triggers = JSON.stringify(body.triggers);
+    if (body.enabled !== undefined) patch.enabled = body.enabled;
+
+    const updated = await semanticDb('pipelines')
+      .where({ id, tenant_id: tenantId })
+      .update(patch);
+    if (!updated) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/pipelines/saved/:id
+// ---------------------------------------------------------------------------
+router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    const id = Number(req.params.id);
+    const deleted = await semanticDb('pipelines').where({ id, tenant_id: tenantId }).delete();
+    if (!deleted) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/pipelines/run-pipeline — run a built-in or saved pipeline.
+// Body: { pipelineId: 'builtin:all' | 'builtin:from-source:5' | 'custom:17'
+//                  | { scope: PipelineScope } }
+// Returns { jobId, pipelineRunId } so the frontend can attach via the
+// existing /bus-matrix/:jobId/stream SSE.
+// ---------------------------------------------------------------------------
+router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+    const { pipelineId, adhocScope } = req.body as {
+      pipelineId?: string;
+      adhocScope?: unknown; // for "Run with this scope, don't save"
+    };
+
+    let scope: unknown;
+    let pipelineName: string | undefined;
+    let savedPipelineId: number | null = null;
+
+    const { listBuiltinPipelines, resolveScope } = await import('../services/pipelineService');
+
+    if (typeof pipelineId === 'string' && pipelineId.startsWith('builtin:')) {
+      const builtins = await listBuiltinPipelines(tenantId);
+      const found = builtins.find((b) => b.id === pipelineId);
+      if (!found) return res.status(404).json({ ok: false, error: 'Built-in pipeline not found' });
+      scope = found.scope;
+      pipelineName = found.name;
+    } else if (typeof pipelineId === 'string' && pipelineId.startsWith('custom:')) {
+      const id = Number(pipelineId.slice(7));
+      const row = await semanticDb('pipelines')
+        .where({ id, tenant_id: tenantId })
+        .first();
+      if (!row) return res.status(404).json({ ok: false, error: 'Custom pipeline not found' });
+      scope = typeof row.scope === 'string' ? JSON.parse(row.scope) : row.scope;
+      pipelineName = row.name;
+      savedPipelineId = id;
+    } else if (adhocScope) {
+      scope = adhocScope;
+      pipelineName = 'Ad-hoc run';
+    } else {
+      return res.status(400).json({ ok: false, error: 'pipelineId or adhocScope required' });
+    }
+
+    // Resolve scope into concrete sourceIds + productIds
+    type PipelineScope = Parameters<typeof resolveScope>[0];
+    const resolved = await resolveScope(scope as PipelineScope, tenantId);
+    if (resolved.sourceIds.length === 0 && resolved.productIds.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Pipeline scope is empty — nothing to run' });
+    }
+
+    // Create pipeline_runs row first so we have an id to thread through.
+    const [runRow] = await semanticDb('pipeline_runs').insert({
+      tenant_id: tenantId,
+      pipeline_id: savedPipelineId,
+      status: 'queued',
+      triggered_by: req.user?.email ? `user:${req.user.email}` : 'manual',
+    }).returning('id');
+    const pipelineRunId = typeof runRow === 'object' ? (runRow as { id: number }).id : (runRow as number);
+
+    const { getBusMatrixQueue } = await import('../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({
+        status: 'failed', error_message: 'Job queue not available — Redis is not configured.',
+      });
+      return res.status(503).json({ ok: false, error: 'Job queue not available — Redis is not configured.' });
+    }
+
+    const job = await queue.add('pipeline-run', {
+      // connectionId not used in pipeline mode but the JobData type requires it.
+      connectionId: 0,
+      tenantId,
+      triggeredBy: req.user?.email ?? 'unknown',
+      mode: 'pipeline' as const,
+      pipelineScope: resolved,
+      pipelineRunId,
+      pipelineName,
+    });
+
+    await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) });
+    if (savedPipelineId) {
+      await semanticDb('pipelines').where({ id: savedPipelineId }).update({
+        last_run_at: new Date().toISOString(),
+        last_status: 'queued',
+      });
+    }
+
+    res.json({ ok: true, data: {
+      jobId: job.id,
+      pipelineRunId,
+      resolved,
+      pipelineName,
+    } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/pipelines/runs?pipelineId=&limit= — recent runs (for history)
+// ---------------------------------------------------------------------------
+router.get('/runs', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    const limit = Math.min(Number(req.query.limit) || 25, 200);
+    const pipelineId = req.query.pipelineId;
+    const q = semanticDb('pipeline_runs').where('tenant_id', tenantId);
+    if (pipelineId !== undefined) {
+      const id = Number(pipelineId);
+      if (Number.isFinite(id)) q.andWhere('pipeline_id', id);
+      else if (pipelineId === 'null') q.whereNull('pipeline_id');
+    }
+    const rows = await q.orderBy('id', 'desc').limit(limit);
+    res.json({ ok: true, data: rows });
+  } catch (err) { next(err); }
+});
+
 export default router;
