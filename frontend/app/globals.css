@@ -293,6 +293,17 @@ html, body {
   animation: pipelineCardPulse 1.6s ease-in-out infinite;
 }
 
+/* Per-node pulse used by GraphNode while a refresh is running. The
+ * keyframe halo shifts inside the existing 4px ring set inline (we
+ * don't fight the inline boxShadow — we replace it). */
+@keyframes pipelineNodePulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(22, 78, 99, 0.20); }
+  50%      { box-shadow: 0 0 0 7px rgba(22, 78, 99, 0.32); }
+}
+.pipeline-node-running {
+  animation: pipelineNodePulse 1.5s ease-in-out infinite;
+}
+
 @keyframes pipelineRowShimmer {
   0%   { background-position: -150% 0; }
   100% { background-position:  250% 0; }

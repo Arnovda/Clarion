@@ -157,28 +157,63 @@ interface NodeData {
   label: string;
   kind: 'connection' | 'product';
   inScope: boolean;
+  /**
+   * Live status from the active pipeline run, if any. When set the node
+   * shows its run state (queued / running / ok / failed / skipped) on top
+   * of the static in-scope colouring — including a pulsing ring while
+   * running and ✓ / ✗ overlays once it finishes.
+   */
+  liveStatus?: NodeRunStatus;
   meta: { connectorType?: string | null; status?: string; lastAt?: string | null };
 }
 
 function GraphNode({ data }: NodeProps<NodeData>) {
   const Icon = data.kind === 'connection' ? Database : Boxes;
+  const accent = data.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai;
+
+  // Live status takes visual precedence — a node currently running pulses,
+  // a completed one shows its outcome icon, etc. Static "out of scope" is
+  // dimmer than out-of-run because the user actively chose to exclude it.
+  const live = data.liveStatus;
+  const baseBorder = data.inScope ? accent : OBSERVATORY.line;
+  const liveStyle: { border: string; ring?: string; statusIcon: React.ReactNode | null; opacity: number } = (() => {
+    if (!live) return { border: baseBorder, statusIcon: null, opacity: data.inScope ? 1 : 0.5 };
+    switch (live) {
+      case 'running':
+        return { border: OBSERVATORY.ocean, ring: OBSERVATORY.oceanSoft, statusIcon: <Loader2 className="w-3 h-3 animate-spin" style={{ color: OBSERVATORY.ocean }} />, opacity: 1 };
+      case 'ok':
+        return { border: OBSERVATORY.ok, statusIcon: <CheckCircle2 className="w-3 h-3" style={{ color: OBSERVATORY.ok }} />, opacity: 1 };
+      case 'failed':
+        return { border: OBSERVATORY.err, statusIcon: <AlertCircle className="w-3 h-3" style={{ color: OBSERVATORY.err }} />, opacity: 1 };
+      case 'skipped':
+        return { border: OBSERVATORY.muted2, statusIcon: <MinusSquare className="w-3 h-3" style={{ color: OBSERVATORY.muted2 }} />, opacity: 0.85 };
+      case 'queued':
+        return { border: accent, statusIcon: <Clock className="w-3 h-3" style={{ color: OBSERVATORY.muted }} />, opacity: 1 };
+      default:
+        return { border: baseBorder, statusIcon: null, opacity: data.inScope ? 1 : 0.5 };
+    }
+  })();
+
   return (
     <div
-      className="rounded-md border-2 px-3 py-2 transition-all"
+      className={cn(
+        'rounded-md border-2 px-3 py-2 transition-all relative',
+        live === 'running' && 'pipeline-node-running',
+      )}
       style={{
         width: NODE_W, height: NODE_H,
         background: data.inScope ? OBSERVATORY.raised : OBSERVATORY.softer,
-        borderColor: data.inScope
-          ? (data.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai)
-          : OBSERVATORY.line,
-        opacity: data.inScope ? 1 : 0.5,
+        borderColor: liveStyle.border,
+        opacity: liveStyle.opacity,
+        boxShadow: liveStyle.ring ? `0 0 0 4px ${liveStyle.ring}` : undefined,
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: OBSERVATORY.line, width: 6, height: 6, border: 'none' }} />
       <Handle type="source" position={Position.Right} style={{ background: OBSERVATORY.line, width: 6, height: 6, border: 'none' }} />
       <div className="flex items-center gap-2">
-        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: data.inScope ? (data.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai) : OBSERVATORY.muted2 }} />
-        <span className="text-[12px] font-medium truncate" style={{ color: OBSERVATORY.ink }}>{data.label}</span>
+        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: data.inScope ? accent : OBSERVATORY.muted2 }} />
+        <span className="text-[12px] font-medium truncate flex-1" style={{ color: OBSERVATORY.ink }}>{data.label}</span>
+        {liveStyle.statusIcon && <span className="shrink-0">{liveStyle.statusIcon}</span>}
       </div>
       <div className="text-[10px] mt-1 truncate" style={{ color: OBSERVATORY.muted }}>
         {data.kind === 'connection'
@@ -214,6 +249,10 @@ function PipelinesInner() {
   const [showCustomEditor, setShowCustomEditor] = useState<{ mode: 'create' } | { mode: 'edit'; id: number } | null>(null);
   const [recentRuns, setRecentRuns] = useState<RunRow[]>([]);
   const [activeStream, setActiveStream] = useState<{ jobId: string; pipelineRunId: number; pipelineName: string } | null>(null);
+  // Live per-node statuses surfaced from the dock's SSE consumer; canvas
+  // overlays these on top of the static "in scope / out of scope" colouring
+  // so users can SEE the pipeline progress on the graph itself.
+  const [liveNodes, setLiveNodes] = useState<Map<string, NodeRunState>>(new Map());
 
   const reload = useCallback(async () => {
     try {
@@ -364,6 +403,7 @@ function PipelinesInner() {
         data: {
           label: s.name, kind: 'connection' as const,
           inScope: scopeHint.sourceIds.has(s.id),
+          liveStatus: liveNodes.get(`c:${s.id}`)?.status,
           meta: { connectorType: s.connectorType, lastAt: s.lastSyncedAt, status: s.lastSyncStatus ?? undefined },
         },
         draggable: false,
@@ -375,6 +415,7 @@ function PipelinesInner() {
         data: {
           label: p.name, kind: 'product' as const,
           inScope: scopeHint.productIds.has(p.id),
+          liveStatus: liveNodes.get(`p:${p.id}`)?.status,
           meta: { status: p.status, lastAt: p.lastRunAt },
         },
         draggable: false,
@@ -385,22 +426,35 @@ function PipelinesInner() {
       dag.edges.map((e, i) => {
         const fromKey = `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`;
         const toKey = `p:${e.target.id}`;
-        const live = (e.source.kind === 'connection'
+        const inScope = (e.source.kind === 'connection'
           ? scopeHint.sourceIds.has(e.source.id)
           : scopeHint.productIds.has(e.source.id))
           && scopeHint.productIds.has(e.target.id);
+        // Animate edges between any pair where AT LEAST one endpoint is
+        // currently running — gives the canvas an obvious "data is
+        // flowing" feel during a refresh without us having to track
+        // edge-level state.
+        const fromStatus = liveNodes.get(fromKey)?.status;
+        const toStatus = liveNodes.get(toKey)?.status;
+        const fromLive = fromStatus === 'running' || fromStatus === 'ok';
+        const toLive = toStatus === 'running';
+        const animated = fromLive && (toLive || toStatus === 'queued');
+        const stroke = animated
+          ? OBSERVATORY.ocean
+          : inScope ? OBSERVATORY.ocean : OBSERVATORY.line;
         return {
           id: `e-${i}`,
           source: fromKey, target: toKey,
           type: 'smoothstep',
+          animated,
           style: {
-            stroke: live ? OBSERVATORY.ocean : OBSERVATORY.line,
-            strokeWidth: live ? 1.5 : 1,
+            stroke,
+            strokeWidth: animated ? 2 : (inScope ? 1.5 : 1),
           },
         };
       }),
     );
-  }, [dag, scopeHint, setRfNodes, setRfEdges]);
+  }, [dag, scopeHint, liveNodes, setRfNodes, setRfEdges]);
 
   // ── Run a pipeline ──
   const runPipeline = useCallback(async (pipelineId: string, pipelineName: string) => {
@@ -507,7 +561,8 @@ function PipelinesInner() {
                   pipelineName={activeStream.pipelineName}
                   scopeHint={scopeHint}
                   dag={dag}
-                  onDismiss={() => { setActiveStream(null); reloadRuns(); reload(); }}
+                  onLiveNodesChange={setLiveNodes}
+                  onDismiss={() => { setActiveStream(null); setLiveNodes(new Map()); reloadRuns(); reload(); }}
                   onCompleted={() => { reloadRuns(); reload(); }}
                 />
               )}
@@ -553,11 +608,12 @@ function PipelineList({
   loading: boolean;
 }) {
   const groups = useMemo(() => {
-    const builtinGlobal = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'global');
-    const builtinSource = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'source');
-    const builtinProduct = pipelines.filter((p) => p.kind === 'builtin' && (p as BuiltinPipeline & { kind: 'builtin' }).group === 'product');
+    // Built-ins are now a single "Refresh everything"; per-source and
+    // per-product variants were stripped to reduce decision fatigue.
+    // Anything more specific is a custom pipeline (drag/click on canvas).
+    const builtinGlobal = pipelines.filter((p) => p.kind === 'builtin');
     const custom = pipelines.filter((p) => p.kind === 'custom');
-    return { builtinGlobal, builtinSource, builtinProduct, custom };
+    return { builtinGlobal, custom };
   }, [pipelines]);
 
   if (loading) {
@@ -570,43 +626,20 @@ function PipelineList({
 
   return (
     <div className="w-[320px] shrink-0 border-r border-line bg-soft overflow-y-auto">
-      <Section title="Built-in" eyebrow="global">
-        {groups.builtinGlobal.map((p) => (
-          <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
-            id={p.kind === 'builtin' ? p.id : p.stableId}
-            name={p.name}
-            sub={p.description}
-            selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
-            onSelect={onSelect}
-            counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
-        ))}
+      <Section title="Built-in" eyebrow="default">
+        {groups.builtinGlobal.map((p) => {
+          const id = p.id;
+          return (
+            <ListItem key={id}
+              id={id}
+              name={p.name}
+              sub={p.description}
+              selected={selectedId === id}
+              onSelect={onSelect}
+              counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
+          );
+        })}
       </Section>
-      {groups.builtinSource.length > 0 && (
-        <Section title="By source">
-          {groups.builtinSource.map((p) => (
-            <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
-              id={p.kind === 'builtin' ? p.id : p.stableId}
-              name={p.name}
-              sub={p.description}
-              selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
-              onSelect={onSelect}
-              counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
-          ))}
-        </Section>
-      )}
-      {groups.builtinProduct.length > 0 && (
-        <Section title="By product">
-          {groups.builtinProduct.map((p) => (
-            <ListItem key={p.kind === 'builtin' ? p.id : p.stableId}
-              id={p.kind === 'builtin' ? p.id : p.stableId}
-              name={p.name}
-              sub={p.description}
-              selected={selectedId === (p.kind === 'builtin' ? p.id : p.stableId)}
-              onSelect={onSelect}
-              counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
-          ))}
-        </Section>
-      )}
       <Section title="Custom" eyebrow={`${groups.custom.length}`}>
         {groups.custom.length === 0 && (
           <div className="px-3 py-3 text-[12px] text-muted italic">
@@ -820,6 +853,17 @@ function RunHistory({ runs, pipelineId }: { runs: RunRow[]; pipelineId: number |
 
 // ─── Custom pipeline editor (modal) ─────────────────────────────────────────
 
+/**
+ * Canvas-based custom pipeline editor.
+ *
+ * Full-screen modal with the same DAG as the main page. Click any node to
+ * include it AND all its upstream dependencies — implicit policy because
+ * "refresh a fact without its dim or its source" is never what users want.
+ * Click again to remove it (and any nodes that are now orphaned in the
+ * selection).
+ *
+ * No checkboxes, no toggles, no expansion options. The graph is the UI.
+ */
 function CustomPipelineEditor({
   dag, existing, onClose, onSaved,
 }: {
@@ -837,37 +881,144 @@ function CustomPipelineEditor({
   const [pickedProducts, setPickedProducts] = useState<Set<number>>(
     new Set(existing?.scope.type === 'custom' ? existing.scope.productIds : []),
   );
-  const [includeUpstream, setIncludeUpstream] = useState(existing?.scope.type === 'custom' ? !!existing.scope.includeUpstream : false);
-  const [includeDownstream, setIncludeDownstream] = useState(existing?.scope.type === 'custom' ? !!existing.scope.includeDownstream : true);
-  const [skipSourceSync, setSkipSourceSync] = useState(existing?.scope.type === 'custom' ? !!existing.scope.skipSourceSync : false);
   const [triggers, setTriggers] = useState<PipelineTrigger[]>(existing?.triggers ?? []);
   const [saving, setSaving] = useState(false);
 
-  const toggleSource = (id: number) => {
-    setPickedSources((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
-  const toggleProduct = (id: number) => {
-    setPickedProducts((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
+  // ── Upstream graph helpers ────────────────────────────────────────────
+  // For a given product, walk every incoming edge to collect the set of
+  // upstream products + source connections it depends on. This is the
+  // "include all upstream dependencies" policy applied at click time.
+  const upstreamFor = useCallback((target: { kind: 'product'; id: number }): { sourceIds: Set<number>; productIds: Set<number> } => {
+    const sourceIds = new Set<number>();
+    const productIds = new Set<number>([target.id]);
+    const visited = new Set<string>();
+    const queue: Array<`p:${number}`> = [`p:${target.id}`];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (visited.has(cur)) continue;
+      visited.add(cur);
+      for (const e of dag.edges) {
+        const tgt = `p:${e.target.id}`;
+        if (tgt !== cur) continue;
+        if (e.source.kind === 'connection') {
+          sourceIds.add(e.source.id);
+        } else {
+          productIds.add(e.source.id);
+          queue.push(`p:${e.source.id}` as `p:${number}`);
+        }
+      }
+    }
+    return { sourceIds, productIds };
+  }, [dag.edges]);
 
+  const isInScope = useCallback((kind: 'connection' | 'product', id: number): boolean => {
+    return kind === 'connection' ? pickedSources.has(id) : pickedProducts.has(id);
+  }, [pickedSources, pickedProducts]);
+
+  // Click a node:
+  //   • If currently in scope, REMOVE it (just that one — leaves upstream
+  //     intact in case other in-scope nodes still need it; the resolver
+  //     will re-add what's necessary at run time).
+  //   • If not in scope, ADD it AND its full upstream chain.
+  const onNodeClick = useCallback((kind: 'connection' | 'product', id: number) => {
+    if (isInScope(kind, id)) {
+      if (kind === 'connection') {
+        setPickedSources((s) => { const n = new Set(s); n.delete(id); return n; });
+      } else {
+        setPickedProducts((s) => { const n = new Set(s); n.delete(id); return n; });
+      }
+      return;
+    }
+    if (kind === 'connection') {
+      setPickedSources((s) => { const n = new Set(s); n.add(id); return n; });
+    } else {
+      const upstream = upstreamFor({ kind: 'product', id });
+      setPickedSources((s) => {
+        const n = new Set(s);
+        upstream.sourceIds.forEach((sid) => n.add(sid));
+        return n;
+      });
+      setPickedProducts((s) => {
+        const n = new Set(s);
+        upstream.productIds.forEach((pid) => n.add(pid));
+        return n;
+      });
+    }
+  }, [isInScope, upstreamFor]);
+
+  // ── ReactFlow nodes / edges for the editor canvas ────────────────────
+  const [edNodes, setEdNodes, edOnNodesChange] = useNodesState([]);
+  const [edEdges, setEdEdges, edOnEdgesChange] = useEdgesState([]);
+
+  useEffect(() => {
+    const scopeHint = { sourceIds: pickedSources, productIds: pickedProducts };
+    const positions = layoutDag(dag, scopeHint);
+    const nodes: Node<NodeData>[] = [
+      ...dag.sources.map((s) => ({
+        id: `c:${s.id}`,
+        type: 'graph',
+        position: positions.get(`c:${s.id}`) ?? { x: 0, y: 0 },
+        data: {
+          label: s.name, kind: 'connection' as const,
+          inScope: pickedSources.has(s.id),
+          meta: { connectorType: s.connectorType, lastAt: s.lastSyncedAt, status: s.lastSyncStatus ?? undefined },
+        },
+        draggable: false,
+      })),
+      ...dag.products.map((p) => ({
+        id: `p:${p.id}`,
+        type: 'graph',
+        position: positions.get(`p:${p.id}`) ?? { x: 0, y: 0 },
+        data: {
+          label: p.name, kind: 'product' as const,
+          inScope: pickedProducts.has(p.id),
+          meta: { status: p.status, lastAt: p.lastRunAt },
+        },
+        draggable: false,
+      })),
+    ];
+    setEdNodes(nodes);
+    setEdEdges(
+      dag.edges.map((e, i) => {
+        const fromKey = `${e.source.kind === 'connection' ? 'c' : 'p'}:${e.source.id}`;
+        const toKey = `p:${e.target.id}`;
+        const inScope = (e.source.kind === 'connection'
+          ? pickedSources.has(e.source.id)
+          : pickedProducts.has(e.source.id))
+          && pickedProducts.has(e.target.id);
+        return {
+          id: `e-${i}`,
+          source: fromKey, target: toKey,
+          type: 'smoothstep',
+          style: {
+            stroke: inScope ? OBSERVATORY.ocean : OBSERVATORY.line,
+            strokeWidth: inScope ? 1.5 : 1,
+            strokeDasharray: inScope ? undefined : '4 4',
+          },
+        };
+      }),
+    );
+  }, [dag, pickedSources, pickedProducts, setEdNodes, setEdEdges]);
+
+  // ── Save ─────────────────────────────────────────────────────────────
   const save = async () => {
     if (!name.trim()) { toast.error('Pipeline needs a name'); return; }
-    if (pickedSources.size === 0 && pickedProducts.size === 0) { toast.error('Pick at least one source or product'); return; }
+    if (pickedSources.size === 0 && pickedProducts.size === 0) {
+      toast.error('Click at least one node on the canvas to include it');
+      return;
+    }
     setSaving(true);
     try {
+      // includeUpstream + skipSourceSync are now resolver-side implicit
+      // ("always sync sources for in-scope products"); we just send the
+      // user's explicit picks. includeDownstream stays opt-in (false).
       const scope: PipelineScope = {
         type: 'custom',
         sourceIds: Array.from(pickedSources),
         productIds: Array.from(pickedProducts),
-        includeUpstream, includeDownstream, skipSourceSync,
+        includeUpstream: true,
+        includeDownstream: false,
+        skipSourceSync: false,
       };
       if (existing) {
         await api.put(`/pipelines/saved/${existing.id}`, {
@@ -890,186 +1041,28 @@ function CustomPipelineEditor({
   };
 
   return (
-    <div className="fixed inset-0 z-30 bg-ink/40 flex items-center justify-center p-6" onClick={onClose}>
-      <div
-        className="bg-raised border border-line rounded-lg shadow-xl w-full max-w-3xl max-h-[88vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b border-line px-5 py-3 flex items-center justify-between">
-          <h2 className="font-display text-[18px] text-ink">
-            {existing ? 'Edit pipeline' : 'New pipeline'}
-          </h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-soft"><X className="w-4 h-4" /></button>
-        </div>
-
-        <div className="px-5 py-4 space-y-5">
-          {/* Name + description */}
-          <div className="space-y-2">
-            <label className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted block">Name</label>
+    <div className="fixed inset-0 z-30 bg-ink/60 flex flex-col" onClick={onClose}>
+      <div className="flex-1 flex flex-col bg-bg" onClick={(e) => e.stopPropagation()}>
+        {/* ── Top bar: name + save / cancel ───────────────────────────── */}
+        <div className="border-b border-line bg-raised px-6 py-3 flex items-center gap-3 shrink-0">
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">
+              {existing ? 'Edit pipeline' : 'New pipeline'}
+            </p>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. EO daily refresh"
-              className="w-full bg-soft border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean"
-            />
-            <label className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted block mt-3">Description</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Optional — what does this pipeline do?"
-              rows={2}
-              className="w-full bg-soft border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean"
+              placeholder="Pipeline name (e.g. EO daily refresh)"
+              className="w-full bg-transparent border-none outline-none font-display text-[20px] tracking-[-0.01em] text-ink focus:ring-0 placeholder:text-muted-2"
+              autoFocus
             />
           </div>
-
-          {/* Sources picker */}
-          <div>
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Sources</p>
-            {dag.sources.length === 0 ? (
-              <p className="text-[12px] text-muted italic">No sources connected yet.</p>
-            ) : (
-              <div className="grid grid-cols-2 gap-1.5">
-                {dag.sources.map((s) => (
-                  <label key={s.id} className={cn(
-                    'flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-pointer transition-colors',
-                    pickedSources.has(s.id) ? 'bg-ocean-softer border-ocean' : 'bg-soft border-line hover:bg-softer',
-                  )}>
-                    <input
-                      type="checkbox"
-                      checked={pickedSources.has(s.id)}
-                      onChange={() => toggleSource(s.id)}
-                      className="w-3 h-3 accent-ocean"
-                    />
-                    <Database className="w-3 h-3 text-ocean shrink-0" />
-                    <span className="text-[12.5px] text-ink truncate">{s.name}</span>
-                    {s.connectorType && (
-                      <span className="text-[10px] font-mono text-muted-2 ml-auto">{s.connectorType}</span>
-                    )}
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Products picker */}
-          <div>
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Products</p>
-            {dag.products.length === 0 ? (
-              <p className="text-[12px] text-muted italic">No products yet.</p>
-            ) : (
-              <div className="grid grid-cols-2 gap-1.5">
-                {dag.products.map((p) => (
-                  <label key={p.id} className={cn(
-                    'flex items-center gap-2 px-2.5 py-1.5 rounded border cursor-pointer transition-colors',
-                    pickedProducts.has(p.id) ? 'bg-ai-soft border-ai' : 'bg-soft border-line hover:bg-softer',
-                  )}>
-                    <input
-                      type="checkbox"
-                      checked={pickedProducts.has(p.id)}
-                      onChange={() => toggleProduct(p.id)}
-                      className="w-3 h-3 accent-ai"
-                    />
-                    <Boxes className="w-3 h-3 text-ai shrink-0" />
-                    <span className="text-[12.5px] text-ink truncate">{p.name}</span>
-                    <span className="text-[10px] font-mono text-muted-2 ml-auto">{p.status}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Expansion options */}
-          <div className="space-y-1.5">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Auto-expand</p>
-            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
-              <input type="checkbox" checked={includeUpstream} onChange={(e) => setIncludeUpstream(e.target.checked)} className="w-3 h-3 accent-ocean" />
-              Include upstream products (run dependencies of picked products)
-            </label>
-            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
-              <input type="checkbox" checked={includeDownstream} onChange={(e) => setIncludeDownstream(e.target.checked)} className="w-3 h-3 accent-ocean" />
-              Include downstream products (run products that consume picked ones)
-            </label>
-            <label className="flex items-center gap-2 text-[12.5px] text-ink-2 cursor-pointer">
-              <input type="checkbox" checked={skipSourceSync} onChange={(e) => setSkipSourceSync(e.target.checked)} className="w-3 h-3 accent-ocean" />
-              Skip source sync (just run transformations on existing data)
-            </label>
-          </div>
-
-          {/* Triggers */}
-          <div>
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Triggers</p>
-            {triggers.length === 0 && (
-              <p className="text-[12px] text-muted italic mb-2">Manual run only. Add a trigger below to run automatically.</p>
-            )}
-            {triggers.map((t, i) => (
-              <div key={i} className="flex items-center gap-2 mb-1.5 px-2 py-1.5 bg-soft border border-line rounded">
-                <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted">{t.kind === 'cron' ? 'cron' : t.kind === 'on_pipeline_complete' ? 'after pipeline' : 'after sync'}</span>
-                {t.kind === 'cron' && (
-                  <>
-                    <input
-                      type="text" value={t.cron}
-                      onChange={(e) => {
-                        const next = [...triggers];
-                        next[i] = { ...t, cron: e.target.value };
-                        setTriggers(next);
-                      }}
-                      placeholder="0 2 * * *"
-                      className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
-                    />
-                    <input
-                      type="text" value={t.tz ?? ''}
-                      onChange={(e) => {
-                        const next = [...triggers];
-                        next[i] = { ...t, tz: e.target.value || undefined };
-                        setTriggers(next);
-                      }}
-                      placeholder="UTC"
-                      className="w-32 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
-                    />
-                  </>
-                )}
-                {t.kind === 'on_source_sync_succeeded' && (
-                  <select
-                    value={t.sourceId}
-                    onChange={(e) => {
-                      const next = [...triggers];
-                      next[i] = { ...t, sourceId: Number(e.target.value) };
-                      setTriggers(next);
-                    }}
-                    className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px]"
-                  >
-                    <option value="">Pick a source…</option>
-                    {dag.sources.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
-                  </select>
-                )}
-                <button
-                  onClick={() => setTriggers(triggers.filter((_, idx) => idx !== i))}
-                  className="p-1 rounded hover:bg-err-soft text-muted-2 hover:text-err"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-            <div className="flex flex-wrap gap-1.5 mt-1">
-              <button
-                onClick={() => setTriggers([...triggers, { kind: 'cron', cron: '0 2 * * *', tz: 'UTC' }])}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
-              ><Plus className="w-3 h-3" /> Cron schedule</button>
-              {dag.sources.length > 0 && (
-                <button
-                  onClick={() => setTriggers([...triggers, { kind: 'on_source_sync_succeeded', sourceId: dag.sources[0].id }])}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
-                ><Plus className="w-3 h-3" /> When a source finishes syncing</button>
-              )}
-            </div>
-            <p className="text-[10.5px] text-muted-2 mt-2">
-              Cron firing + sync-chained triggers will activate in the next release. Manual run works today.
-            </p>
-          </div>
-        </div>
-
-        <div className="border-t border-line px-5 py-3 flex justify-end gap-2">
+          <span className="text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 shrink-0">
+            {pickedSources.size} source{pickedSources.size === 1 ? '' : 's'}
+            {' · '}
+            {pickedProducts.size} product{pickedProducts.size === 1 ? '' : 's'}
+          </span>
           <button onClick={onClose} className="px-3 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer">Cancel</button>
           <button
             onClick={save}
@@ -1079,6 +1072,134 @@ function CustomPipelineEditor({
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             {existing ? 'Save changes' : 'Create pipeline'}
           </button>
+        </div>
+
+        {/* ── Canvas — clickable nodes, no scrolling ──────────────────── */}
+        <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
+          <ReactFlow
+            nodes={edNodes}
+            edges={edEdges}
+            onNodesChange={edOnNodesChange}
+            onEdgesChange={edOnEdgesChange}
+            onNodeClick={(_e, node) => {
+              const data = node.data as NodeData;
+              const id = Number(node.id.split(':')[1]);
+              onNodeClick(data.kind, id);
+            }}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            minZoom={0.4}
+            maxZoom={1.5}
+            proOptions={{ hideAttribution: true }}
+            nodesDraggable={false}
+            nodesConnectable={false}
+          >
+            <Background color={OBSERVATORY.line} gap={20} size={1} />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+
+          {/* Hint card — only visible while empty */}
+          {pickedSources.size === 0 && pickedProducts.size === 0 && (
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-raised border border-line rounded-md px-4 py-2.5 shadow-md pointer-events-none">
+              <p className="text-[12.5px] text-ink">
+                Click a <span className="text-ai font-medium">data product</span> to include it (and everything it needs upstream),
+                or click a <span className="text-ocean font-medium">source</span> directly.
+              </p>
+            </div>
+          )}
+
+          {/* Legend bottom-right */}
+          <div className="absolute bottom-3 right-3 bg-raised border border-line rounded-md px-3 py-2 text-[10px] font-mono uppercase tracking-[0.08em] flex items-center gap-3 shadow-sm">
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ocean }} /> source in scope</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ai }} /> product in scope</span>
+            <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ background: OBSERVATORY.softer, border: `1px solid ${OBSERVATORY.line}` }} /> click to add</span>
+          </div>
+        </div>
+
+        {/* ── Bottom strip: description + triggers ────────────────────── */}
+        <div className="border-t border-line bg-raised px-6 py-3 shrink-0 max-h-[40%] overflow-y-auto">
+          <div className="grid grid-cols-2 gap-6">
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Description (optional)</p>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What does this pipeline do?"
+                rows={2}
+                className="w-full bg-soft border border-line rounded-md px-3 py-2 text-[12.5px] focus:outline-none focus:border-ocean resize-none"
+              />
+            </div>
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Triggers</p>
+              {triggers.length === 0 && (
+                <p className="text-[12px] text-muted italic mb-2">Manual run only. Add a trigger below to run automatically.</p>
+              )}
+              {triggers.map((t, i) => (
+                <div key={i} className="flex items-center gap-2 mb-1.5 px-2 py-1.5 bg-soft border border-line rounded">
+                  <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted">
+                    {t.kind === 'cron' ? 'cron' : t.kind === 'on_pipeline_complete' ? 'after pipeline' : 'after sync'}
+                  </span>
+                  {t.kind === 'cron' && (
+                    <>
+                      <input
+                        type="text" value={t.cron}
+                        onChange={(e) => {
+                          const next = [...triggers];
+                          next[i] = { ...t, cron: e.target.value };
+                          setTriggers(next);
+                        }}
+                        placeholder="0 2 * * *"
+                        className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
+                      />
+                      <input
+                        type="text" value={t.tz ?? ''}
+                        onChange={(e) => {
+                          const next = [...triggers];
+                          next[i] = { ...t, tz: e.target.value || undefined };
+                          setTriggers(next);
+                        }}
+                        placeholder="UTC"
+                        className="w-24 bg-raised border border-line rounded px-2 py-1 text-[12px] font-mono"
+                      />
+                    </>
+                  )}
+                  {t.kind === 'on_source_sync_succeeded' && (
+                    <select
+                      value={t.sourceId}
+                      onChange={(e) => {
+                        const next = [...triggers];
+                        next[i] = { ...t, sourceId: Number(e.target.value) };
+                        setTriggers(next);
+                      }}
+                      className="flex-1 bg-raised border border-line rounded px-2 py-1 text-[12px]"
+                    >
+                      <option value="">Pick a source…</option>
+                      {dag.sources.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                    </select>
+                  )}
+                  <button
+                    onClick={() => setTriggers(triggers.filter((_, idx) => idx !== i))}
+                    className="p-1 rounded hover:bg-err-soft text-muted-2 hover:text-err"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                <button
+                  onClick={() => setTriggers([...triggers, { kind: 'cron', cron: '0 2 * * *', tz: 'UTC' }])}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
+                ><Plus className="w-3 h-3" /> Cron</button>
+                {dag.sources.length > 0 && (
+                  <button
+                    onClick={() => setTriggers([...triggers, { kind: 'on_source_sync_succeeded', sourceId: dag.sources[0].id }])}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] text-ink-2 border border-line rounded hover:bg-softer"
+                  ><Plus className="w-3 h-3" /> When a source syncs</button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1110,7 +1231,7 @@ interface NodeRunState {
 }
 
 function RunActivityDock({
-  jobId, pipelineRunId: _runId, pipelineName, scopeHint, dag, onDismiss, onCompleted,
+  jobId, pipelineRunId: _runId, pipelineName, scopeHint, dag, onDismiss, onCompleted, onLiveNodesChange,
 }: {
   jobId: string;
   pipelineRunId: number;
@@ -1119,6 +1240,10 @@ function RunActivityDock({
   dag: Dag | null;
   onDismiss: () => void;
   onCompleted: () => void;
+  /** Lifted up so the canvas above can animate per-node status from the
+   * same SSE stream. The dock remains the single SSE consumer; canvas
+   * just paints whatever it gets. */
+  onLiveNodesChange?: (nodes: Map<string, NodeRunState>) => void;
 }) {
   const [log, setLog] = useState<Array<{ kind: 'phase' | 'log' | 'error' | 'done'; text: string }>>([]);
   const [nodes, setNodes] = useState<Map<string, NodeRunState>>(new Map());
@@ -1298,6 +1423,13 @@ function RunActivityDock({
     });
     return { ok, failed, running, queued, skipped, total: nodes.size };
   }, [nodes]);
+
+  // Mirror node status changes back up to the page so the canvas can
+  // paint live. Single SSE consumer (this dock), single source of truth
+  // (the `nodes` Map), parent just observes.
+  useEffect(() => {
+    onLiveNodesChange?.(nodes);
+  }, [nodes, onLiveNodesChange]);
 
   // Auto-scroll log to bottom
   const logRef = React.useRef<HTMLDivElement>(null);

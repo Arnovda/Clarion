@@ -251,21 +251,33 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
       };
 
     case 'custom': {
+      // Implicit policy for custom scopes:
+      //   • Upstream is ALWAYS pulled in. Refreshing a fact without its
+      //     dim or its source is meaningless — we'd ship stale data.
+      //   • Source sync ALWAYS runs for any source touched by an
+      //     in-scope product. Optional flags from the stored scope are
+      //     ignored at resolve time.
+      //   • Downstream is opt-in (skipDownstream not implemented yet —
+      //     kept as future hook).
       const productIds = new Set<number>(scope.productIds);
-      if (scope.includeUpstream) {
-        for (const pid of scope.productIds) {
-          const ups = await resolveUpstreamProductsTopo(pid, tenantId);
-          for (const u of ups) productIds.add(u);
-        }
+      // Always pull upstream products
+      for (const pid of scope.productIds) {
+        const ups = await resolveUpstreamProductsTopo(pid, tenantId);
+        for (const u of ups) productIds.add(u);
       }
       if (scope.includeDownstream) {
         const downs = await expandDownstreamProducts(scope.productIds);
         for (const d of downs) productIds.add(d);
       }
+      // Always include sources that feed any product in scope, in addition
+      // to whatever the user explicitly picked.
+      const expandedProducts = Array.from(productIds);
+      const autoSources = await sourcesForProducts(expandedProducts);
+      const sourceSet = new Set<number>([...scope.sourceIds, ...autoSources]);
       return {
-        sourceIds: scope.sourceIds.filter((id) => allSources.includes(id)),
-        productIds: Array.from(productIds).filter((id) => allProducts.includes(id)),
-        shouldSyncSources: !scope.skipSourceSync && scope.sourceIds.length > 0,
+        sourceIds: Array.from(sourceSet).filter((id) => allSources.includes(id)),
+        productIds: expandedProducts.filter((id) => allProducts.includes(id)),
+        shouldSyncSources: true, // implicit — always sync upstream
       };
     }
 
@@ -391,10 +403,13 @@ export interface BuiltinPipeline {
 
 export async function listBuiltinPipelines(tenantId: number): Promise<BuiltinPipeline[]> {
   const dag = await getDag(tenantId);
-  const out: BuiltinPipeline[] = [];
-
-  // Global
-  out.push({
+  // Single built-in: "Refresh everything". Everything else is a custom
+  // pipeline — users carve out their own scopes by clicking nodes on the
+  // canvas. The earlier per-source / per-product / sync-only / transform-only
+  // built-ins added decision fatigue without much value: when 90 % of the
+  // time the choice is "refresh this and everything that needs to be fresh
+  // for it", a single built-in plus a quick custom-pipeline flow covers it.
+  return [{
     id: 'builtin:all',
     name: 'Refresh everything',
     description: 'Sync every source, then transform every product in dependency order.',
@@ -402,72 +417,5 @@ export async function listBuiltinPipelines(tenantId: number): Promise<BuiltinPip
     scope: { type: 'all' },
     sourceCount: dag.sources.length,
     productCount: dag.products.length,
-  });
-  out.push({
-    id: 'builtin:sync-all',
-    name: 'Sync sources only',
-    description: 'Pull the latest data from every source. No transformations.',
-    group: 'global',
-    scope: { type: 'sync-all' },
-    sourceCount: dag.sources.length,
-    productCount: 0,
-  });
-  out.push({
-    id: 'builtin:transform-all',
-    name: 'Transform products only',
-    description: 'Re-run every product on whatever source data is already in the warehouse.',
-    group: 'global',
-    scope: { type: 'transform-all' },
-    sourceCount: 0,
-    productCount: dag.products.length,
-  });
-
-  // Per-source
-  for (const s of dag.sources) {
-    const downstreamCount = dag.edges.filter(
-      (e) => e.source.kind === 'connection' && e.source.id === s.id,
-    ).length;
-    out.push({
-      id: `builtin:from-source:${s.id}`,
-      name: `Refresh from ${s.name}`,
-      description: `Sync ${s.name} and re-run every product that depends on it.`,
-      group: 'source',
-      scope: { type: 'from-source', sourceId: s.id },
-      sourceCount: 1,
-      productCount: downstreamCount,
-    });
-    out.push({
-      id: `builtin:sync-source:${s.id}`,
-      name: `Sync ${s.name} only`,
-      description: `Just pull the latest from ${s.name}. No products transformed.`,
-      group: 'source',
-      scope: { type: 'sync-source', sourceId: s.id },
-      sourceCount: 1,
-      productCount: 0,
-    });
-  }
-
-  // Per-product
-  for (const p of dag.products) {
-    out.push({
-      id: `builtin:product:${p.id}`,
-      name: `Refresh ${p.name}`,
-      description: `Sync upstream sources and re-run ${p.name}'s transformations.`,
-      group: 'product',
-      scope: { type: 'product', productId: p.id, includeUpstreamSync: true, includeDownstream: false },
-      sourceCount: 0, // computed at run-time
-      productCount: 1,
-    });
-    out.push({
-      id: `builtin:rebuild-product:${p.id}`,
-      name: `Rebuild ${p.name} (transformations only)`,
-      description: `Re-run ${p.name} on existing source data. No sync.`,
-      group: 'product',
-      scope: { type: 'rebuild-product', productId: p.id },
-      sourceCount: 0,
-      productCount: 1,
-    });
-  }
-
-  return out;
+  }];
 }
