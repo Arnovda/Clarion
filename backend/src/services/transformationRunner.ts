@@ -17,6 +17,13 @@ import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { invalidateWidgetCache } from './widgetCache';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import {
+  publishProductTable,
+  publishStubFromUpstream,
+  markProductTableRunning,
+  markProductTableFailed,
+  listProductTables,
+} from './tableCatalog';
+import {
   isAzurePath,
   productBasePath,
   productTablePath,
@@ -199,32 +206,18 @@ async function loadDependencyDimensions(
   );
 
   for (const dep of deps) {
-    // Find the OWNER rows in the upstream product — those are the dims that
-    // were materialised there and have a real delta_path. is_shared_dimension
-    // is false on owners; true on stubs in downstream products. We want owners.
-    const sharedTables = await tenantQuery(tenantId, (trx) =>
-      trx('product_tables as pt')
-        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-        .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': false })
-        .where('pt.table_role', 'dimension')
-        .select('pt.table_name', 'pt.delta_path')
-    );
+    // Catalog returns OWNER rows only (is_shared_dimension=false) and
+    // already includes resolved URIs — no inline path-construction needed.
+    // Filter to dimensions; facts aren't conformed across products.
+    const upstreamTables = await listProductTables(tenantId, dep.source_product_id as number);
+    const dims = upstreamTables.filter((t) => t.tableRole === 'dimension' && !t.isStub);
 
-    const sourceConn = await tenantQuery(tenantId, (trx) =>
-      trx('connections').where({ id: dep.connection_id }).first()
-    );
-    const sourceWarehouse = sourceConn?.warehouse_path;
-    if (!sourceWarehouse) continue;
-
-    const sourceProductDir = productBasePath(sourceWarehouse, productSlug(dep.source_product_name as string));
-
-    for (const tbl of sharedTables) {
-      const tblPath = (tbl.delta_path as string) || productTablePath(sourceProductDir, tbl.table_name as string);
+    for (const dim of dims) {
       try {
-        await createScanView(db, tbl.table_name as string, tblPath);
-        console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${tbl.table_name}`);
+        await createScanView(db, dim.tableName, dim.uri);
+        console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${dim.tableName}`);
       } catch {
-        console.warn(`  [dep] could not load ${dep.source_product_name}.${tbl.table_name} — skipping`);
+        console.warn(`  [dep] could not load ${dep.source_product_name}.${dim.tableName} — skipping`);
       }
     }
   }
@@ -505,28 +498,17 @@ export async function runProductTransformation(
       // perpetually show it as draft/stuck. ALSO copy delta_path from the
       // upstream owner so the catalog preview can read the stub's data.
       if (table.is_shared_dimension) {
-        const upstream = await tenantQuery(tenantId, (trx) =>
-          trx('data_product_dependencies as dpd')
-            .join('star_schemas as ss', 'ss.data_product_id', 'dpd.source_product_id')
-            .join('product_tables as pt', 'pt.star_schema_id', 'ss.id')
-            .where('dpd.dependent_product_id', product.id)
-            .where('pt.table_name', table.table_name)
-            .where('pt.is_shared_dimension', false)
-            .select('pt.delta_path', 'pt.row_count')
-            .first()
+        const mirrored = await publishStubFromUpstream(
+          tenantId,
+          table.id,
+          product.id,
+          table.table_name,
         );
-        await tenantQuery(tenantId, (trx) =>
-          trx('product_tables').where({ id: table.id }).update({
-            transformation_status: 'success',
-            last_run_at: new Date().toISOString(),
-            last_run_error: null,
-            // Mirror upstream owner's path/count so the preview + UI work for
-            // the stub row too. Falls back to null if upstream isn't built yet.
-            delta_path: upstream?.delta_path ?? null,
-            row_count: upstream?.row_count ?? 0,
-          })
-        );
-        results.push({ table_name: table.table_name, status: 'success', row_count: Number(upstream?.row_count ?? 0) });
+        results.push({
+          table_name: table.table_name,
+          status: 'success',
+          row_count: mirrored?.rowCount ?? 0,
+        });
         console.log(`[transformationRunner] Skipped shared dim ${table.table_name} — points at upstream parquet`);
         continue;
       }
@@ -537,12 +519,7 @@ export async function runProductTransformation(
         fs.mkdirSync(tableOutputPath, { recursive: true });
       }
 
-      await tenantQuery(tenantId, (trx) =>
-        trx('product_tables').where({ id: table.id }).update({
-          transformation_status: 'running',
-          last_run_error: null,
-        })
-      );
+      await markProductTableRunning(tenantId, table.id);
 
       try {
         // Create views for previously materialized product tables in this run
@@ -758,15 +735,7 @@ export async function runProductTransformation(
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
         }
 
-        await tenantQuery(tenantId, (trx) =>
-          trx('product_tables').where({ id: table.id }).update({
-            transformation_status: 'success',
-            delta_path: tableOutputPath,
-            row_count: rowCount,
-            last_run_at: new Date().toISOString(),
-            last_run_error: null,
-          })
-        );
+        await publishProductTable(tenantId, table.id, tableOutputPath, rowCount);
 
         // Sync product_columns to match actual materialized output
         try {
@@ -794,13 +763,7 @@ export async function runProductTransformation(
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        await tenantQuery(tenantId, (trx) =>
-          trx('product_tables').where({ id: table.id }).update({
-            transformation_status: 'error',
-            last_run_at: new Date().toISOString(),
-            last_run_error: msg,
-          })
-        );
+        await markProductTableFailed(tenantId, table.id, msg);
         results.push({ table_name: table.table_name, status: 'error', error: msg });
       }
     }

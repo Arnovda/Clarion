@@ -31,7 +31,75 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-04 (Storage layer consolidation — Phase 1)
+**Last updated:** 2026-05-04 (Storage layer consolidation — Phase 2)
+
+**Storage layer consolidation — Phase 2 (2026-05-04):** Built the table
+catalog as the single source of truth for "where does this logical
+table live?" Every consumer that previously queried
+`product_tables.delta_path`, `ingested_tables.delta_path`, or
+`connections.warehouse_path` directly now goes through one module.
+Behaviour-preserving — no schema changes, no metadata migrations.
+
+- **New module `backend/src/services/tableCatalog.ts`** with one
+  uniform API:
+  - **Resolution (single):** `resolveSourceTable(tenantId, connectionId, tableName)`,
+    `resolveProductTable(tenantId, productId, tableName)`,
+    `resolveProductTableById(tenantId, productTableId)` — returns
+    `{ tableName, uri, rowCount, lastUpdatedAt }` or null. The catalog
+    encapsulates the legacy ETL → docker-host path remap and the
+    source-connector-flow fallback (deriving from
+    `connections.warehouse_path` + `selected_entities` when
+    `ingested_tables` is empty).
+  - **Listings:** `listSourceTables(tenantId, connectionId)`,
+    `listProductTables(tenantId, productId)`,
+    `listProductTablesByConnection(tenantId, connectionId)` — return
+    arrays of resolved tables. The cross-connection listing is what
+    `createProductConnector` uses to register one DuckDB session that
+    can JOIN across products (conformed dimensions).
+  - **Writes:** `publishProductTable(tenantId, ptId, uri, rowCount)`,
+    `publishStubFromUpstream(tenantId, ptId, productId, tableName)`,
+    `markProductTableRunning(tenantId, ptId)`,
+    `markProductTableFailed(tenantId, ptId, msg)`. The catalog is the
+    ONLY writer of `delta_path` + `transformation_status='success'` —
+    the regression class "runner says SUCCESS but delta_path is null"
+    is now structurally impossible (the contract is enforced at the
+    function boundary, not at the schema row).
+- **Migrated callers (5 surfaces, ~6 inline join queries deleted):**
+  - `connectors/ConnectorFactory.createProductConnector` — replaced
+    the 20-line transactional join with a one-line catalog call.
+    Affects `/query`, `/dashboards`, `/notebooks`, `/quality`,
+    `/semantic` (every NL→SQL surface).
+  - `services/transformationRunner.runProductTransformation` — write
+    path: `publishProductTable` (success), `markProductTableFailed`
+    (error), `markProductTableRunning` (start),
+    `publishStubFromUpstream` (skip path). All four schema writes
+    routed through catalog.
+  - `services/transformationRunner.loadDependencyDimensions` —
+    read path: replaced bespoke join with `listProductTables(upstream)`
+    + filter to `tableRole === 'dimension' && !isStub`.
+  - `routes/semantic.ts` `/product-preview` — replaced direct
+    `product_tables` lookup + `delta_path` checks with
+    `resolveProductTableById`. Distinguishes "row doesn't exist" from
+    "not materialised" in the error message.
+  - `routes/notebooks.ts` `buildNamespacedDuckDB` — replaced two
+    separate `ingested_tables` + `product_tables` joins with
+    `listSourceTables` + `listProductTablesByConnection`.
+- **What this enables next:** Phase 3 (tenant-prefixed product layout)
+  becomes a single-file change — only the catalog needs to know the
+  new path scheme; every caller already gets a URI back. Migration
+  job can run in the background and update `delta_path` rows; readers
+  pick up the new paths transparently.
+- **What still queries `delta_path` directly (deferred):**
+  - `services/dbtProjectBuilder.ts` — generates dbt config strings
+    embedded in YAML hooks (different process, can't go through our
+    catalog). Will revisit if we kill the legacy ETL path entirely.
+  - `services/productContext.getProductWarehousePath` — derives a
+    parent-only path for use as DuckDB warehouse root. Currently
+    broken on Azure (uses `./warehouse/product/<slug>` literally);
+    Phase 3 will rebuild this on top of the catalog.
+- **Net diff:** ~190 lines added (the new catalog module), ~140
+  removed across the 5 callers. Bigger numbers, fewer places to
+  patch when something changes.
 
 **Storage layer consolidation — Phase 1 (2026-05-04):** Extracted four
 duplicated implementations of "construct a warehouse path / register a

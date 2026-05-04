@@ -150,25 +150,13 @@ export function createSourceConnector(conn: ConnectionRow): BaseConnector {
  * for this connection. This is critical because shared/conformed dimensions
  * (e.g. dim_customer) may live in a different product's warehouse directory
  * (e.g. Catalogue) than the fact tables being queried (e.g. Operations).
+ *
+ * Path + metadata resolution goes through `tableCatalog` so this surface
+ * uses the same source-of-truth as /catalog, /quality, and the runner.
  */
 export async function createProductConnector(productWarehousePath: string, connectionId: number, tenantId?: number): Promise<BaseConnector> {
-  // Get all successfully materialized product tables across ALL products for this connection.
-  // Wrap in a transaction with tenant context to ensure RLS allows access (the pool
-  // connection may not have app.current_tenant set from the middleware).
-  const productTables = await semanticDb.transaction(async (trx) => {
-    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
-    return trx('product_tables')
-      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
-      .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
-      .where('data_products.connection_id', connectionId)
-      .where('product_tables.transformation_status', 'success')
-      .whereNotNull('product_tables.delta_path')
-      .select<Array<{ table_name: string; delta_path: string; product_name: string }>>(
-        'product_tables.table_name',
-        'product_tables.delta_path',
-        'data_products.name as product_name',
-      );
-  });
+  const { listProductTablesByConnection } = await import('../services/tableCatalog');
+  const productTables = await listProductTablesByConnection(tenantId, connectionId);
 
   // Build explicit table → path and table → schema mappings. The schema is the
   // data product name, mirroring the notebook namespacing convention so SQL is
@@ -177,12 +165,13 @@ export async function createProductConnector(productWarehousePath: string, conne
   const tableSchemas = new Map<string, string>();
   const tableNames: string[] = [];
   for (const t of productTables) {
-    tablePaths.set(t.table_name, t.delta_path);
-    if (t.product_name) tableSchemas.set(t.table_name, t.product_name);
-    tableNames.push(t.table_name);
+    tablePaths.set(t.tableName, t.uri);
+    if (t.productName) tableSchemas.set(t.tableName, t.productName);
+    tableNames.push(t.tableName);
   }
 
-  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${new Set(productTables.map((t) => t.product_name)).size} product(s): ${tableNames.join(', ')}`);
+  const productCount = new Set(productTables.map((t) => t.productName)).size;
+  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${productCount} product(s): ${tableNames.join(', ')}`);
 
   return new DuckDBConnector(productWarehousePath, tableNames, tablePaths, tableSchemas);
 }

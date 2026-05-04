@@ -1403,28 +1403,37 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
 
     const safeLimit = Math.max(1, Math.min(Number(limit) || 10, 50));
 
-    // Look up the product table by neo4j_pg_id (which is the id from the frontend) or regular id
+    // Resolve via the table catalog. If the row is missing or hasn't
+    // been materialised yet, the catalog returns null; if it has, we
+    // get a host-usable URI without touching delta_path or the schema
+    // directly. Try neo4j_pg_id first (frontend uses pg ids), then
+    // the row's own primary key.
     const pgIdNum = Number(productTableId);
-    let table = await semanticDb('product_tables').where({ neo4j_pg_id: pgIdNum }).first();
-    if (!table) table = await semanticDb('product_tables').where({ id: pgIdNum }).first();
-    if (!table) {
-      res.status(404).json({ ok: false, error: 'Product table not found' });
+    const { resolveProductTableById } = await import('../services/tableCatalog');
+    const idLookup = await semanticDb('product_tables')
+      .where({ neo4j_pg_id: pgIdNum })
+      .select('id')
+      .first();
+    const internalId = idLookup ? Number(idLookup.id) : pgIdNum;
+    const resolved = await resolveProductTableById(req.user!.tenantId, internalId);
+
+    if (!resolved) {
+      // Distinguish between "row doesn't exist" vs "exists but not materialised".
+      const exists = await semanticDb('product_tables').where({ id: internalId }).first();
+      if (!exists) {
+        res.status(404).json({ ok: false, error: 'Product table not found' });
+      } else {
+        res.status(400).json({ ok: false, error: 'No data yet — run the transformation for this table first.' });
+      }
       return;
     }
 
-    if (!table.delta_path) {
-      res.status(400).json({ ok: false, error: 'No data yet — run the transformation for this table first.' });
-      return;
-    }
-
-    // delta_path points to the table directory (e.g. ./warehouse/product/sales/fact_sales)
-    // The parent directory is the product warehouse, and the table name is the last segment
-    const deltaPath = String(table.delta_path);
+    const tableName = resolved.tableName;
+    const deltaPath = resolved.uri;
     const pathMod = await import('path');
     const fsMod = await import('fs');
     const isAzure = isAzurePath(deltaPath);
     const parentDir = pathMod.dirname(deltaPath);
-    const tableName = String(table.table_name);
 
     // Local-only sanity check — surface a clear message rather than a DuckDB error.
     if (!isAzure && !fsMod.existsSync(deltaPath)) {

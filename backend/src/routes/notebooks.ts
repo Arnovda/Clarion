@@ -27,6 +27,7 @@ import {
   setupDuckDBForWarehouse,
   createScanView,
 } from '../services/warehouse';
+import { listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
 
 const router = Router();
 router.use(requireAuth);
@@ -59,42 +60,32 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
     await createScanView(db, viewName, tablePath, { schema });
   };
 
-  // Source tables — schema = connection name
-  const warehousePath = connection.warehouse_path;
-  if (warehousePath) {
-    const ingestedTables = await semanticDb('ingested_tables')
-      .where({ connection_id: connectionId, status: 'done' })
-      .select('table_name');
-    for (const t of ingestedTables) {
-      try {
-        const tPath = isAzure ? `${warehousePath}/${t.table_name}` : path.join(warehousePath, t.table_name);
-        await createView(connection.name, t.table_name, tPath);
-      } catch (err) {
-        console.warn(`[notebooks] Failed to create view for source ${connection.name}.${t.table_name}:`, err);
-      }
+  // Source tables — schema = connection name. Catalog returns
+  // host-usable URIs covering both legacy ETL (`ingested_tables`) and
+  // source-connector flows (`selected_entities`) without us caring.
+  const sources = await listSourceTables(undefined, connectionId);
+  for (const t of sources) {
+    try {
+      await createView(connection.name, t.tableName, t.uri);
+    } catch (err) {
+      console.warn(`[notebooks] Failed to create view for source ${connection.name}.${t.tableName}:`, err);
     }
   }
 
-  // Product tables — schema = product name
+  // Product tables — schema = product name. One catalog call returns
+  // every materialised product table for this connection across all
+  // products, so we can register them in a single loop.
   const products = await semanticDb('data_products')
     .where({ connection_id: connectionId })
     .whereIn('status', ['approved', 'success'])
-    .select('id', 'name');
-  for (const product of products) {
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: product.id }).select('id');
-    const schemaIds = schemas.map((s: { id: number }) => s.id);
-    if (schemaIds.length === 0) continue;
-    const productTables = await semanticDb('product_tables')
-      .whereIn('star_schema_id', schemaIds)
-      .where('transformation_status', 'success')
-      .whereNotNull('delta_path')
-      .select('table_name', 'delta_path');
+    .select('id');
+  if (products.length > 0) {
+    const productTables = await listProductTablesByConnection(undefined, connectionId);
     for (const t of productTables) {
       try {
-        const tPath = isAzurePath(t.delta_path) ? t.delta_path : path.resolve(t.delta_path);
-        await createView(product.name, t.table_name, tPath);
+        await createView(t.productName, t.tableName, t.uri);
       } catch (err) {
-        console.warn(`[notebooks] Failed to create view for product ${product.name}.${t.table_name}:`, err);
+        console.warn(`[notebooks] Failed to create view for product ${t.productName}.${t.tableName}:`, err);
       }
     }
   }
