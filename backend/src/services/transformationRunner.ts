@@ -8,7 +8,6 @@
 
 import path from 'path';
 import fs from 'fs';
-import os from 'os';
 import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
 import { runTransformationChecks } from './transformationChecks';
@@ -17,6 +16,16 @@ import { syncProductToNeo4j } from './productGraphSync';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { invalidateWidgetCache } from './widgetCache';
 import { trackMetric, trackEvent } from '../utils/monitoring';
+import {
+  isAzurePath,
+  productBasePath,
+  productTablePath,
+  productSlug,
+  sqlEscapePath,
+  setupDuckDBForWarehouse,
+  createScanView,
+  writeParquet,
+} from './warehouse';
 
 interface ProductRow {
   id: number;
@@ -118,91 +127,8 @@ async function syncProductColumns(
   }
 }
 
-/** Check if a path is an Azure Blob URI. */
-function isAzurePath(p: string): boolean {
-  return p.startsWith('az://') || p.startsWith('abfss://');
-}
-
-/** Set up Azure credentials in a DuckDB session. */
-async function setupAzure(db: Database): Promise<void> {
-  await db.exec('INSTALL azure; LOAD azure;');
-  const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
-  if (connStr) {
-    const escaped = connStr.replace(/'/g, "''");
-    await db.exec(`
-      CREATE SECRET azure_secret (
-        TYPE AZURE,
-        PROVIDER config,
-        CONNECTION_STRING '${escaped}'
-      );
-    `);
-  }
-  try {
-    const ver = await db.all(
-      `SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'azure'`,
-    );
-    console.log(`[transformationRunner] azure ext: ${JSON.stringify(ver)}`);
-  } catch { /* non-fatal */ }
-}
-
-/** Parse an Azure Blob URI like `az://<container>/<path>` into parts. */
-function parseAzurePath(azPath: string): { container: string; blob: string } {
-  const match = azPath.match(/^az:\/\/([^/]+)\/(.+)$/);
-  if (!match) throw new Error(`Invalid Azure path: ${azPath}`);
-  return { container: match[1], blob: match[2] };
-}
-
-/**
- * Write the result of a SELECT to Azure Blob Storage as Parquet.
- *
- * DuckDB's azure extension (v1.4) returns "Writing to Azure containers is
- * currently not supported" on COPY TO az://... — so we stage Parquet to a
- * local temp file and upload via @azure/storage-blob.
- */
-async function writeParquetToAzure(
-  db: Database,
-  selectSql: string,
-  azurePath: string,
-): Promise<void> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dbridge-pq-'));
-  const tmpFile = path.join(tmpDir, 'data.parquet').replace(/\\/g, '/');
-  const escaped = tmpFile.replace(/'/g, "''");
-  try {
-    await db.exec(`COPY (${selectSql}) TO '${escaped}' (FORMAT PARQUET);`);
-
-    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING;
-    if (!connStr) throw new Error('AZURE_STORAGE_CONNECTION_STRING not set');
-
-    const { container, blob } = parseAzurePath(azurePath);
-    const { BlobServiceClient } = await import('@azure/storage-blob');
-    const svc = BlobServiceClient.fromConnectionString(connStr);
-    const containerClient = svc.getContainerClient(container);
-    await containerClient.createIfNotExists();
-    const blobClient = containerClient.getBlockBlobClient(blob);
-    await blobClient.uploadFile(tmpFile);
-    console.log(`[transformationRunner] uploaded parquet → ${azurePath}`);
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  }
-}
-
-/** Build the product output directory/URI for a product. */
-function productBasePath(warehousePath: string, productSlug: string): string {
-  if (isAzurePath(warehousePath)) {
-    // az://warehouse/tenant_1/conn_4 → az://warehouse/tenant_1/products/my_product
-    const parts = warehousePath.replace(/\/conn_\d+$/, '');
-    return `${parts}/products/${productSlug}`;
-  }
-  return path.resolve('./warehouse/product', productSlug);
-}
-
-/** Build the path for a specific product table. */
-function productTablePath(productDir: string, tableName: string): string {
-  if (isAzurePath(productDir)) {
-    return `${productDir}/${tableName}`;
-  }
-  return path.join(productDir, tableName);
-}
+// Path / Azure / view / writer primitives now live in services/warehouse/.
+// Keep this file focused on transformation orchestration.
 
 /**
  * Cheap, conservative "is this even SQL?" check before we hand a string to
@@ -251,44 +177,7 @@ async function collectAvailableSchemas(db: Database): Promise<string> {
   return blocks.join('\n');
 }
 
-/** Create a delta_scan or read_parquet view, handling both local and Azure paths. */
-async function createScanView(db: Database, viewName: string, scanPath: string, useAzure: boolean): Promise<void> {
-  const escaped = scanPath.replace(/'/g, "''");
-  // Always try delta_scan first (ingested tables are Delta format)
-  let deltaErr: unknown;
-  try {
-    await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM delta_scan('${escaped}');`);
-    return;
-  } catch (e) {
-    deltaErr = e;
-    // Fall through to parquet
-  }
-
-  // Product tables are written as <dir>/data.parquet; try that first (works
-  // for both local and Azure — the azure extension supports parquet reads).
-  try {
-    await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
-    return;
-  } catch { /* skip */ }
-
-  // Glob fallback (local only — azure ext doesn't support globs reliably).
-  if (!useAzure) {
-    try {
-      await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
-      return;
-    } catch { /* skip */ }
-  }
-
-  // Single-file fallback (path might already point at a .parquet file).
-  try {
-    await db.exec(`CREATE OR REPLACE VIEW "${viewName}" AS SELECT * FROM read_parquet('${escaped}');`);
-    return;
-  } catch (parquetErr) {
-    const dMsg = deltaErr instanceof Error ? deltaErr.message : String(deltaErr);
-    const pMsg = parquetErr instanceof Error ? parquetErr.message : String(parquetErr);
-    console.warn(`[transformationRunner] createScanView("${viewName}") failed — path=${scanPath} delta=${dMsg} parquet=${pMsg}`);
-  }
-}
+// `createScanView` lives in services/warehouse/views.ts — imported above.
 
 /**
  * Loads shared dimension Parquet files from dependency products as DuckDB views.
@@ -327,13 +216,12 @@ async function loadDependencyDimensions(
     const sourceWarehouse = sourceConn?.warehouse_path;
     if (!sourceWarehouse) continue;
 
-    const sourceSlug = (dep.source_product_name as string).toLowerCase().replace(/[^a-z0-9]+/g, '_');
-    const sourceProductDir = productBasePath(sourceWarehouse, sourceSlug);
+    const sourceProductDir = productBasePath(sourceWarehouse, productSlug(dep.source_product_name as string));
 
     for (const tbl of sharedTables) {
       const tblPath = (tbl.delta_path as string) || productTablePath(sourceProductDir, tbl.table_name as string);
       try {
-        await createScanView(db, tbl.table_name as string, useAzure ? tblPath : tblPath.replace(/\\/g, '/'), useAzure);
+        await createScanView(db, tbl.table_name as string, tblPath);
         console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${tbl.table_name}`);
       } catch {
         console.warn(`  [dep] could not load ${dep.source_product_name}.${tbl.table_name} — skipping`);
@@ -430,11 +318,7 @@ async function generateMonthlyRollup(
   ].join(', ');
 
   const rollupSelectSql = `SELECT ${selects.join(', ')} FROM read_parquet('${escaped}') GROUP BY ${groupBy} ORDER BY month`;
-  if (useAzure) {
-    await writeParquetToAzure(db, rollupSelectSql, rollupPath);
-  } else {
-    await db.exec(`COPY (${rollupSelectSql}) TO '${escapedRollup}' (FORMAT PARQUET);`);
-  }
+  await writeParquet(db, rollupPath, rollupSelectSql);
 
   const cnt = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${escapedRollup}');`);
   const rowCount = Number((cnt[0] as { n: unknown }).n ?? 0);
@@ -488,8 +372,7 @@ export async function runProductTransformation(
   }
 
   // Product output paths
-  const productSlug = product.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const productDir = productBasePath(warehousePath, productSlug);
+  const productDir = productBasePath(warehousePath, productSlug(product.name));
 
   if (!useAzure) {
     fs.mkdirSync(productDir, { recursive: true });
@@ -500,11 +383,7 @@ export async function runProductTransformation(
   const results: TransformResult[] = [];
 
   try {
-    await db.exec('INSTALL delta; LOAD delta;');
-
-    if (useAzure) {
-      await setupAzure(db);
-    }
+    await setupDuckDBForWarehouse(db, useAzure);
 
     // ── Register source tables in DuckDB ────────────────────────────────
     // Two distinct ingestion paths populate two different sources of truth:
@@ -534,7 +413,7 @@ export async function runProductTransformation(
 
         if (isAzurePath(deltaPath)) {
           // Azure: use the blob URI directly
-          await createScanView(db, it.table_name, deltaPath, true);
+          await createScanView(db, it.table_name, deltaPath);
         } else {
           // Local: resolve against warehouse path
           let hostPath: string;
@@ -544,7 +423,7 @@ export async function runProductTransformation(
           } else {
             hostPath = deltaPath;
           }
-          await createScanView(db, it.table_name, hostPath.replace(/\\/g, '/'), false);
+          await createScanView(db, it.table_name, hostPath);
         }
         sourceViewsRegistered++;
       }
@@ -566,13 +445,11 @@ export async function runProductTransformation(
           `via selected_entities`,
         );
         for (const entityName of selectedEntities) {
-          // Path resolution mirrors DuckDBConnector.tablePath() so view
-          // creation matches what /query and /notebooks already do.
           const entityPath = useAzure
             ? `${warehousePath}/${entityName}`
-            : path.resolve(warehousePath, entityName).replace(/\\/g, '/');
+            : path.resolve(warehousePath, entityName);
           try {
-            await createScanView(db, entityName, entityPath, useAzure);
+            await createScanView(db, entityName, entityPath);
             sourceViewsRegistered++;
           } catch (err) {
             console.warn(
@@ -605,18 +482,17 @@ export async function runProductTransformation(
 
       const ptPath = productTablePath(productDir, pt.table_name);
 
-      if (useAzure) {
-        try {
-          await createScanView(db, pt.table_name, ptPath, true);
-          console.log(`  loaded (azure): ${pt.table_name}`);
-        } catch { console.log(`  skip: ${pt.table_name}`); }
-      } else {
-        const localDir = ptPath.replace(/\\/g, '/');
-        if (!fs.existsSync(ptPath)) { console.log(`  skip (no dir): ${pt.table_name}`); continue; }
-        try {
-          await createScanView(db, pt.table_name, localDir, false);
-          console.log(`  loaded: ${pt.table_name}`);
-        } catch { console.log(`  skip: ${pt.table_name}`); }
+      // Local mode: skip directories that don't exist yet (avoids a noisy
+      // DuckDB error). createScanView handles delta-vs-parquet detection.
+      if (!useAzure && !fs.existsSync(ptPath)) {
+        console.log(`  skip (no dir): ${pt.table_name}`);
+        continue;
+      }
+      try {
+        await createScanView(db, pt.table_name, ptPath);
+        console.log(`  loaded${useAzure ? ' (azure)' : ''}: ${pt.table_name}`);
+      } catch {
+        console.log(`  skip: ${pt.table_name}`);
       }
     }
 
@@ -674,7 +550,7 @@ export async function runProductTransformation(
           if (prev.status === 'success') {
             const prevPath = productTablePath(productDir, prev.table_name);
             try {
-              await createScanView(db, prev.table_name, useAzure ? prevPath : prevPath.replace(/\\/g, '/'), useAzure);
+              await createScanView(db, prev.table_name, prevPath);
             } catch { /* best-effort */ }
           }
         }
@@ -862,7 +738,7 @@ export async function runProductTransformation(
             `);
             await db.exec(`DROP TABLE IF EXISTS __existing;`);
             await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
-            await db.exec(`COPY __merged TO '${escapedPath}' (FORMAT PARQUET);`);
+            await writeParquet(db, parquetPath, 'SELECT * FROM __merged');
             const mergedCount = await db.all('SELECT COUNT(*) AS cnt FROM __merged');
             rowCount = Number(mergedCount[0]?.cnt ?? rowCount);
             await db.exec(`DROP TABLE IF EXISTS __merged;`);
@@ -871,18 +747,14 @@ export async function runProductTransformation(
             await db.exec(`INSERT INTO __existing SELECT * FROM ${tempTable};`);
             const totalCount = await db.all('SELECT COUNT(*) AS cnt FROM __existing');
             rowCount = Number(totalCount[0]?.cnt ?? rowCount);
-            await db.exec(`COPY __existing TO '${escapedPath}' (FORMAT PARQUET);`);
+            await writeParquet(db, parquetPath, 'SELECT * FROM __existing');
             await db.exec(`DROP TABLE IF EXISTS __existing;`);
             await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
           }
         } else {
-          // Full overwrite — Azure requires staging-then-upload (DuckDB azure
-          // ext can't COPY TO az://); local writes stay direct.
-          if (useAzure) {
-            await writeParquetToAzure(db, `SELECT * FROM ${tempTable}`, parquetPath);
-          } else {
-            await db.exec(`COPY ${tempTable} TO '${escapedPath}' (FORMAT PARQUET);`);
-          }
+          // Full overwrite — writeParquet handles the Azure staging dance
+          // internally so callers don't need to branch.
+          await writeParquet(db, parquetPath, `SELECT * FROM ${tempTable}`);
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
         }
 

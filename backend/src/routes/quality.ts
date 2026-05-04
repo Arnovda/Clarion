@@ -24,6 +24,7 @@ import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
 import { resolveOwnerProductTable, OwnerResolveError } from '../services/productOwnership';
+import { productBasePath, productSlug, isAzurePath } from '../services/warehouse';
 import { generateQualityAlertContext } from '../ai/AIService';
 
 const router = Router();
@@ -446,25 +447,20 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     const dp = owner.product as { id: number; name: string };
     const conn = owner.connection as { id: number; warehouse_path?: string };
 
-    // Build product warehouse path (same logic as transformationRunner)
-    const productSlug = dp.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    // Resolve the product warehouse directory the same way every other
+    // surface does — services/warehouse is the single source of truth.
     const warehousePath = conn.warehouse_path ?? `./warehouse/conn_${conn.id}`;
-    let productDir: string;
-    if (warehousePath.startsWith('az://')) {
-      const parts = warehousePath.replace(/\/conn_\d+$/, '');
-      productDir = `${parts}/products/${productSlug}`;
-    } else {
-      productDir = require('path').resolve('./warehouse/product', productSlug);
-    }
+    const productDir = productBasePath(warehousePath, productSlug(dp.name));
 
     // Verify that warehouse data actually exists for this table before profiling.
     // Local fs check only — Azure (az://) paths can't be probed with fs, so we
     // skip the pre-flight and let DuckDB surface a clean error if the blob is missing.
-    const isAzure = productDir.startsWith('az://');
+    const isAzure = isAzurePath(productDir);
     if (!isAzure) {
-      const tablePath = require('path').join(productDir, pt.table_name);
-      const fs = require('fs');
-      if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f: string) => f.endsWith('.parquet'))) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require('fs') as typeof import('fs');
+      const tablePath = path.join(productDir, pt.table_name);
+      if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f) => f.endsWith('.parquet'))) {
         res.status(404).json({ ok: false, error: `No warehouse data found for table "${pt.table_name}". Run the transformation first.` });
         return;
       }

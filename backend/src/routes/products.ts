@@ -5,6 +5,7 @@ import { semanticDb } from '../db/knex';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
 import { refineProduct } from '../ai/AIService';
+import { isAzurePath, productSlug as toProductSlug } from '../services/warehouse';
 import type {
   ProductSummary,
   RefineChange,
@@ -422,12 +423,15 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     }
 
     // Clean up warehouse Parquet files
-    const productSlug = (product.name as string).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const slug = toProductSlug(product.name as string);
     const conn = await semanticDb('connections').where({ id: connId }).first();
     const warehousePath = conn?.warehouse_path ?? `./warehouse/conn_${connId}`;
-    if (!warehousePath.startsWith('az://')) {
-      const productDir = require('path').resolve('./warehouse/product', productSlug);
-      const fs = require('fs');
+    if (!isAzurePath(warehousePath)) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const path = require('path') as typeof import('path');
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require('fs') as typeof import('fs');
+      const productDir = path.resolve('./warehouse/product', slug);
       if (fs.existsSync(productDir)) {
         fs.rmSync(productDir, { recursive: true, force: true });
         console.log(`[products] Deleted warehouse dir: ${productDir}`);

@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
+import { isAzurePath } from './warehouse';
 
 interface ProductTableRow {
   id: number;
@@ -65,7 +66,7 @@ export interface ProductSemanticContext {
  * Returns an empty array for Azure paths or missing directories.
  */
 function detectRollupTables(productDir: string): { name: string; factTable: string }[] {
-  if (!productDir || productDir.startsWith('az://') || !fs.existsSync(productDir)) return [];
+  if (!productDir || isAzurePath(productDir) || !fs.existsSync(productDir)) return [];
   try {
     return fs.readdirSync(productDir, { withFileTypes: true })
       .filter((e) => e.isDirectory() && e.name.startsWith('rollup_monthly_'))

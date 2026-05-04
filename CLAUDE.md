@@ -31,7 +31,63 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-04 (Project renamed DataBridge → Clarion)
+**Last updated:** 2026-05-04 (Storage layer consolidation — Phase 1)
+
+**Storage layer consolidation — Phase 1 (2026-05-04):** Extracted four
+duplicated implementations of "construct a warehouse path / register a
+DuckDB view / write parquet" into a single `services/warehouse/` module.
+Behaviour-preserving — no metadata changes, no on-disk layout changes.
+Sets up Phase 2 (centralised table catalog) and Phase 3 (tenant-prefixed
+product layout) to be safe scoped refactors.
+
+- **New module `backend/src/services/warehouse/`** with four files:
+  - `paths.ts` — `isAzurePath`, `parseAzurePath`, `productBasePath`,
+    `productTablePath`, `productSlug`, `sqlEscapePath`. The single
+    place that constructs warehouse URIs.
+  - `duckdb.ts` — `setupDuckDBForWarehouse(db, needAzure)` consolidates
+    the LOAD delta / LOAD azure / curl-transport / CREATE SECRET dance.
+  - `views.ts` — `createScanView(db, viewName, uri, opts?)` replaces
+    four near-duplicate implementations (transformationRunner,
+    DuckDBConnector, notebooks, dbtProjectBuilder). Auto-detects
+    Delta vs Parquet, local vs Azure; supports schema-qualified views
+    via `{schema}` opt.
+  - `writer.ts` — `writeParquet(db, uri, selectSql)` replaces three
+    write paths (writeParquetToAzure, two inline COPY TO sites in
+    transformationRunner). Handles the Azure stage-then-upload dance
+    internally so callers don't need to branch.
+  - `index.ts` — re-exports public API.
+- **Migrated call sites** (8 files):
+  - `services/transformationRunner.ts` — removed local `isAzurePath`,
+    `parseAzurePath`, `setupAzure`, `writeParquetToAzure`,
+    `productBasePath`, `productTablePath`, `createScanView` (~120
+    lines deleted). All inline COPY TO / read_parquet write paths now
+    delegate to `writeParquet`.
+  - `connectors/DuckDBConnector.ts` — `loadExtensions` is now a
+    one-liner; `createDeltaView` delegates to shared `createScanView`;
+    duplicate `isAzureUri` closures replaced with imported `isAzurePath`.
+  - `routes/notebooks.ts` — inline `createView` closure deleted; uses
+    shared `createScanView` + `setupDuckDBForWarehouse`.
+  - `services/dbtProjectBuilder.ts` — local `isAzurePath` deleted (the
+    raw read_parquet/COPY strings inside dbt hooks remain inline; they
+    run inside dbt's own DuckDB process, not ours).
+  - `routes/quality.ts` — inline product-path construction replaced
+    with `productBasePath(warehousePath, productSlug(name))`.
+  - `routes/ingestion.ts`, `routes/products.ts`, `routes/semantic.ts`,
+    `services/productContext.ts` — leftover `startsWith('az://')`
+    checks all routed through `isAzurePath`.
+- **Net effect:** ~250 lines removed, ~330 added (the four new
+  warehouse files). One canonical place for "is this Azure?" "where
+  does this product live?" "register a view." When DuckDB's azure or
+  delta extension changes behaviour, one file needs updating, not four.
+- **What stayed the same:** the on-disk layout (`./warehouse/product/<slug>`
+  for local, `az://<container>/products/<slug>` for Azure) — Phase 3
+  will introduce a tenant-prefixed v2 layout; for now we kept the
+  existing paths so this commit is purely a refactor.
+- **`utils/storage.ts`** (`StorageProvider` interface) was untouched —
+  it's still dead code. Its API (upload/download/list/delete/exists)
+  is at a different abstraction level; if we ever need it for
+  non-DuckDB blob ops it's there. Otherwise it'll be removed in a
+  later cleanup pass.
 
 **Project rename — DataBridge → Clarion (2026-05-04):** Brand-only rename across
 the source tree, docs, UI strings, comments, log messages, file names, and

@@ -10,6 +10,7 @@ import { invalidateSemanticCache } from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
 import { invalidateTenantCache } from '../services/queryCache';
 import { buildXlsx, buildCsv, escapeCsvField } from '../utils/xlsxBuilder';
+import { isAzurePath } from '../services/warehouse';
 
 const router = Router();
 
@@ -1421,7 +1422,7 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
     const deltaPath = String(table.delta_path);
     const pathMod = await import('path');
     const fsMod = await import('fs');
-    const isAzure = deltaPath.startsWith('az://');
+    const isAzure = isAzurePath(deltaPath);
     const parentDir = pathMod.dirname(deltaPath);
     const tableName = String(table.table_name);
 

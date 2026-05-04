@@ -31,6 +31,7 @@ import fs from 'fs';
 import path from 'path';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
+import { isAzurePath } from './warehouse';
 
 const log = logger.child({ module: 'dbt-builder' });
 
@@ -80,10 +81,6 @@ const PROJECT_VERSION = '1.0.0';
 
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-}
-
-function isAzurePath(p: string): boolean {
-  return p.startsWith('az://') || p.startsWith('abfss://');
 }
 
 /**

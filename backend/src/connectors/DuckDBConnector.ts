@@ -3,6 +3,11 @@ import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
 import { getOrInit, invalidateByPrefix } from './DuckDBPool';
+import {
+  isAzurePath,
+  setupDuckDBForWarehouse,
+  createScanView,
+} from '../services/warehouse';
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -68,10 +73,9 @@ export class DuckDBConnector extends BaseConnector {
     tableSchemas?: Map<string, string>,
   ) {
     super();
-    const isAzureUri = (p: string) => p.startsWith('az://') || p.startsWith('abfss://');
-    const explicitHasAzure = !!tablePaths && [...tablePaths.values()].some(isAzureUri);
-    this.isAzure = isAzureUri(warehousePath) || explicitHasAzure;
-    this.warehousePath = isAzureUri(warehousePath) ? warehousePath : path.resolve(warehousePath);
+    const explicitHasAzure = !!tablePaths && [...tablePaths.values()].some(isAzurePath);
+    this.isAzure = isAzurePath(warehousePath) || explicitHasAzure;
+    this.warehousePath = isAzurePath(warehousePath) ? warehousePath : path.resolve(warehousePath);
     this.tableNames = tableNames ?? [];
     this.tablePaths = tablePaths ?? new Map();
     this.tableSchemas = tableSchemas ?? new Map();
@@ -95,7 +99,7 @@ export class DuckDBConnector extends BaseConnector {
 
   /** Invalidate any pooled entries whose key begins with this warehouse path. */
   static async invalidateWarehouse(warehousePath: string): Promise<void> {
-    const normalised = warehousePath.startsWith('az://')
+    const normalised = isAzurePath(warehousePath)
       ? warehousePath
       : path.resolve(warehousePath);
     await invalidateByPrefix(`duckdb:${normalised}`);
@@ -138,39 +142,7 @@ export class DuckDBConnector extends BaseConnector {
   }
 
   private async loadExtensions(db: Database): Promise<void> {
-    // Use LOAD (not INSTALL+LOAD) if extensions are pre-installed in Docker image.
-    // Fall back to INSTALL+LOAD for local dev.
-    try {
-      await db.exec('LOAD delta;');
-    } catch {
-      await db.exec('INSTALL delta; LOAD delta;');
-    }
-
-    if (this.isAzure) {
-      try {
-        await db.exec('LOAD azure;');
-      } catch {
-        await db.exec('INSTALL azure; LOAD azure;');
-      }
-
-      // Use curl transport — avoids SSL CA cert path issues in Docker containers
-      // where DuckDB's default transport expects RHEL cert paths
-      await db.exec("SET azure_transport_option_type = 'curl';");
-
-      const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
-      if (connStr) {
-        // Escape single quotes in connection string
-        const escaped = connStr.replace(/'/g, "''");
-        await db.exec(`
-          CREATE OR REPLACE SECRET azure_secret (
-            TYPE AZURE,
-            CONNECTION_STRING '${escaped}'
-          );
-        `);
-      } else {
-        console.warn('[DuckDBConnector] AZURE_STORAGE_CONNECTION_STRING not set — blob reads will fail');
-      }
-    }
+    await setupDuckDBForWarehouse(db, this.isAzure);
   }
 
   private async createAllViews(db: Database): Promise<void> {
@@ -358,7 +330,7 @@ export class DuckDBConnector extends BaseConnector {
     // If explicit path mapping exists, use it (cross-product warehouse access)
     const explicit = this.tablePaths.get(tableName);
     if (explicit) {
-      if (explicit.startsWith('az://') || explicit.startsWith('abfss://')) return explicit;
+      if (isAzurePath(explicit)) return explicit;
       return path.resolve(explicit).replace(/\\/g, '/');
     }
 
@@ -398,45 +370,18 @@ export class DuckDBConnector extends BaseConnector {
       .map((e) => e.name);
   }
 
-  /** Create a DuckDB view for a Delta or Parquet table. If `schema` is provided
-   *  the view is qualified as "schema"."view"; otherwise it lands in the
-   *  default catalog (backward-compatible for callers that pass no schema). */
+  /**
+   * Create a DuckDB view for a Delta or Parquet table — delegates to the
+   * shared warehouse `createScanView` so every surface in the codebase
+   * registers views the same way.
+   */
   private async createDeltaView(
     db: Database,
     viewName: string,
     tablePath: string,
     schema?: string,
   ): Promise<void> {
-    const safeView = viewName.replace(/"/g, '""');
-    const qualified = schema
-      ? `"${schema.replace(/"/g, '""')}"."${safeView}"`
-      : `"${safeView}"`;
-
-    if (this.isAzure) {
-      // Azure: ETL ingestion writes Delta; product transformations write Parquet
-      // (<dir>/data.parquet). Try delta_scan first, fall back to read_parquet.
-      const escaped = tablePath.replace(/'/g, "''");
-      try {
-        await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${escaped}');`);
-        return;
-      } catch { /* not a delta table — try parquet */ }
-      try {
-        await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
-        return;
-      } catch { /* fall through */ }
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
-      return;
-    }
-
-    // Local: detect Delta vs Parquet
-    const localPath = tablePath.replace(/\\/g, '/');
-    const deltaLogPath = tablePath.replace(/\//g, path.sep) + path.sep + '_delta_log';
-
-    if (fs.existsSync(deltaLogPath)) {
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${localPath}');`);
-    } else {
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${localPath}/*.parquet');`);
-    }
+    await createScanView(db, viewName, tablePath, schema ? { schema } : undefined);
   }
 
 }

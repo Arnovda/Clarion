@@ -22,7 +22,11 @@ import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { callClaudeMultiTurn } from '../ai/AIService';
 import { Database } from 'duckdb-async';
 import path from 'path';
-import fs from 'fs';
+import {
+  isAzurePath,
+  setupDuckDBForWarehouse,
+  createScanView,
+} from '../services/warehouse';
 
 const router = Router();
 router.use(requireAuth);
@@ -35,10 +39,6 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
   const connection = await semanticDb('connections').where({ id: connectionId }).first();
   if (!connection) throw new Error('Connection not found');
 
-  const db = await Database.create(':memory:');
-  try { await db.exec('LOAD delta;'); } catch { await db.exec('INSTALL delta; LOAD delta;'); }
-
-  const isAzureUri = (p: string) => p.startsWith('az://') || p.startsWith('abfss://');
   // Azure mode is needed if either the connection warehouse OR any product
   // delta_path is an azure URI — product tables can live on Azure Blob even
   // when the source connection is local.
@@ -48,44 +48,15 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
     .where('data_products.connection_id', connectionId)
     .whereNotNull('product_tables.delta_path')
     .pluck<string[]>('product_tables.delta_path');
-  const isAzure = isAzureUri(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzureUri);
-  if (isAzure) {
-    try { await db.exec('LOAD azure;'); } catch { await db.exec('INSTALL azure; LOAD azure;'); }
-    await db.exec("SET azure_transport_option_type = 'curl';");
-    const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
-    if (connStr) {
-      await db.exec(`CREATE SECRET azure_secret (TYPE AZURE, CONNECTION_STRING '${connStr.replace(/'/g, "''")}');`);
-    }
-  }
+  const isAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
+
+  const db = await Database.create(':memory:');
+  await setupDuckDBForWarehouse(db, isAzure);
 
   const registeredSchemas = new Set<string>();
   const createView = async (schema: string, viewName: string, tablePath: string) => {
-    const safePath = tablePath.replace(/\\/g, '/').replace(/'/g, "''");
-    const safeSchema = schema.replace(/"/g, '""');
-    const safeView = viewName.replace(/"/g, '""');
-    const pathIsAzure = isAzureUri(tablePath);
-    await db.exec(`CREATE SCHEMA IF NOT EXISTS "${safeSchema}";`);
-    registeredSchemas.add(safeSchema);
-    if (pathIsAzure) {
-      // ETL ingestion writes Delta; product transformations write Parquet
-      // (<dir>/data.parquet). Try delta_scan first, fall back to read_parquet.
-      try {
-        await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM delta_scan('${safePath}');`);
-        return;
-      } catch { /* try parquet */ }
-      try {
-        await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM read_parquet('${safePath}/data.parquet');`);
-        return;
-      } catch { /* fall through */ }
-      await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM read_parquet('${safePath}/*.parquet');`);
-      return;
-    }
-    const fsPath = tablePath.replace(/\//g, path.sep);
-    if (fs.existsSync(path.join(fsPath, '_delta_log'))) {
-      await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM delta_scan('${safePath}');`);
-    } else {
-      await db.exec(`CREATE OR REPLACE VIEW "${safeSchema}"."${safeView}" AS SELECT * FROM read_parquet('${safePath}/*.parquet');`);
-    }
+    registeredSchemas.add(schema.replace(/"/g, '""'));
+    await createScanView(db, viewName, tablePath, { schema });
   };
 
   // Source tables — schema = connection name
@@ -120,7 +91,7 @@ async function buildNamespacedDuckDB(connectionId: number): Promise<Database> {
       .select('table_name', 'delta_path');
     for (const t of productTables) {
       try {
-        const tPath = isAzureUri(t.delta_path) ? t.delta_path : path.resolve(t.delta_path);
+        const tPath = isAzurePath(t.delta_path) ? t.delta_path : path.resolve(t.delta_path);
         await createView(product.name, t.table_name, tPath);
       } catch (err) {
         console.warn(`[notebooks] Failed to create view for product ${product.name}.${t.table_name}:`, err);

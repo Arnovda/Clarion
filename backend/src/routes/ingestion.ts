@@ -8,6 +8,7 @@ import { decryptCredentials, isEncrypted } from '../utils/crypto';
 import { triggerMaintenanceNow } from '../jobs/warehouseMaintenance';
 import { invalidateTenantCache } from '../services/queryCache';
 import { invalidateWidgetCache } from '../services/widgetCache';
+import { isAzurePath } from '../services/warehouse';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import axios from 'axios';
 
@@ -218,7 +219,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         const results = etlRes.data.results ?? [];
         // Blob paths (az://...) don't need remapping; local paths do
         const rawPath = etlRes.data.warehouse_path as string;
-        const warehousePath = rawPath.startsWith('az://') ? rawPath : remapWarehouseToHost(rawPath);
+        const warehousePath = isAzurePath(rawPath) ? rawPath : remapWarehouseToHost(rawPath);
 
         // Update ingested_tables with results (including watermark)
         let doneCount = 0;
@@ -321,7 +322,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
 
         const results = etlRes.data.results ?? [];
         const rawSyncPath = etlRes.data.warehouse_path as string;
-        const warehousePath = rawSyncPath.startsWith('az://') ? rawSyncPath : remapWarehouseToHost(rawSyncPath);
+        const warehousePath = isAzurePath(rawSyncPath) ? rawSyncPath : remapWarehouseToHost(rawSyncPath);
 
         for (const r of results as Array<{
           table_name: string; status: string;
