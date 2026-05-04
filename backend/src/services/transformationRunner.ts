@@ -503,29 +503,86 @@ export async function runProductTransformation(
       await setupAzure(db);
     }
 
-    // Create views for raw source tables (from ingestion)
+    // ── Register source tables in DuckDB ────────────────────────────────
+    // Two distinct ingestion paths populate two different sources of truth:
+    //
+    //   1. Legacy ETL flow → writes to `ingested_tables` (one row per
+    //      synced table) with the delta_path on disk / blob.
+    //   2. Source-connector flow (ExactOnline / NetSuite / …) → DOES NOT
+    //      write to `ingested_tables` (see ConnectorFactory.ts comment).
+    //      Table names live on `connections.selected_entities` and the
+    //      Parquet files sit at `<warehouse_path>/<entity>/data.parquet`.
+    //
+    // Without a fallback for path #2, source-connector products had ZERO
+    // source views registered → every transformation that referenced
+    // SalesInvoices / Items / etc. failed with Catalog/Binder errors →
+    // AI repair tried to fix it with empty schemas → the runner persisted
+    // Claude's "I cannot repair this without schemas" prose as the new
+    // SQL → death spiral. Was the root cause of the corrupted
+    // fact_sales_* SQL we saw in the dock.
     const ingestedTables = await tenantQuery(tenantId, (trx) =>
       trx('ingested_tables').where({ connection_id: product.connection_id, status: 'done' })
     );
 
-    for (const it of ingestedTables) {
-      const deltaPath = (it.delta_path as string).replace(/\\/g, '/');
+    let sourceViewsRegistered = 0;
+    if (ingestedTables.length > 0) {
+      for (const it of ingestedTables) {
+        const deltaPath = (it.delta_path as string).replace(/\\/g, '/');
 
-      if (isAzurePath(deltaPath)) {
-        // Azure: use the blob URI directly
-        await createScanView(db, it.table_name, deltaPath, true);
-      } else {
-        // Local: resolve against warehouse path
-        let hostPath: string;
-        if (deltaPath.startsWith('/warehouse/')) {
-          const tableDirName = deltaPath.split('/').pop()!;
-          hostPath = path.resolve(warehousePath, tableDirName);
+        if (isAzurePath(deltaPath)) {
+          // Azure: use the blob URI directly
+          await createScanView(db, it.table_name, deltaPath, true);
         } else {
-          hostPath = deltaPath;
+          // Local: resolve against warehouse path
+          let hostPath: string;
+          if (deltaPath.startsWith('/warehouse/')) {
+            const tableDirName = deltaPath.split('/').pop()!;
+            hostPath = path.resolve(warehousePath, tableDirName);
+          } else {
+            hostPath = deltaPath;
+          }
+          await createScanView(db, it.table_name, hostPath.replace(/\\/g, '/'), false);
         }
-        await createScanView(db, it.table_name, hostPath.replace(/\\/g, '/'), false);
+        sourceViewsRegistered++;
+      }
+    } else {
+      // Fallback for source-connector connections — same logic the
+      // DuckDBConnector uses when it has to query a connector-style
+      // warehouse: walk `selected_entities` and resolve each to its
+      // Parquet directory under the connection's warehouse_path.
+      const connRow = await tenantQuery(tenantId, (trx) =>
+        trx('connections').where({ id: product.connection_id }).first(),
+      );
+      const selectedEntities: string[] = Array.isArray(connRow?.selected_entities)
+        ? (connRow.selected_entities as string[])
+        : [];
+      if (selectedEntities.length > 0) {
+        console.log(
+          `[transformationRunner] No ingested_tables for connection ${product.connection_id} ` +
+          `— falling back to ${selectedEntities.length} source-connector entit${selectedEntities.length === 1 ? 'y' : 'ies'} ` +
+          `via selected_entities`,
+        );
+        for (const entityName of selectedEntities) {
+          // Path resolution mirrors DuckDBConnector.tablePath() so view
+          // creation matches what /query and /notebooks already do.
+          const entityPath = useAzure
+            ? `${warehousePath}/${entityName}`
+            : path.resolve(warehousePath, entityName).replace(/\\/g, '/');
+          try {
+            await createScanView(db, entityName, entityPath, useAzure);
+            sourceViewsRegistered++;
+          } catch (err) {
+            console.warn(
+              `[transformationRunner]   failed to register ${entityName} at ${entityPath}:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
       }
     }
+    console.log(
+      `[transformationRunner] Registered ${sourceViewsRegistered} source view(s) for "${product.name}"`,
+    );
 
     // Load shared dimensions from dependency products (conformed dims)
     await loadDependencyDimensions(db, product.id, productDir, useAzure, tenantId);
