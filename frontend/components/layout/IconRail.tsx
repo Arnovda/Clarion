@@ -6,17 +6,19 @@ import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow,
+  Home as HomeIcon,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-type Group = 'discover' | 'work' | 'curate' | 'settings';
+type Group = 'home' | 'discover' | 'work' | 'curate' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
 const ICONS = {
+  home:    <HomeIcon      className={ICON_CLASS} strokeWidth={1.5} />,
   chat:    <MessageSquare className={ICON_CLASS} strokeWidth={1.5} />,
   grid:    <LayoutGrid    className={ICON_CLASS} strokeWidth={1.5} />,
   code:    <Code2         className={ICON_CLASS} strokeWidth={1.5} />,
@@ -42,15 +44,20 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  // Home — daily driver, default landing
+  { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'home' },
+
   // Discover — find your data
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
   { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
 
-  // Work — use it
+  // Work — use it. Vocabulary cleanup: "Data products" → "Datasets"
+  // (avoids the data-engineering term for SMB users), "Pipelines" stays
+  // since it now has its own well-understood UX.
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
-  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
-  { key: 'pipelines',  href: '/pipelines',  label: 'Pipelines',       icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },
+  { key: 'products',   href: '/products',   label: 'Datasets',        icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
+  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 
   // Curate — keep definitions correct (analyst+)
@@ -63,6 +70,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {
+  '/home':       ['/home'],
   '/query':      ['/query', '/ask'],
   '/dashboards': ['/dashboards'],
   '/notebooks':  ['/notebooks'],
@@ -77,13 +85,16 @@ const ROUTE_ALIASES: Record<string, string[]> = {
 };
 
 const GROUP_LABELS: Record<Group, string> = {
+  // Home is unlabelled — it's the only item in its group, a nameless
+  // header would be visual noise. The rendering loop skips empty labels.
+  home:     '',
   discover: 'Discover',
   work:     'Work',
   curate:   'Curate',
   settings: 'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['discover', 'work', 'curate', 'settings'];
+const GROUP_ORDER: Group[] = ['home', 'discover', 'work', 'curate', 'settings'];
 
 export default function IconRail() {
   const pathname = usePathname();
@@ -141,9 +152,11 @@ export default function IconRail() {
           if (items.length === 0) return null;
           return (
             <div key={g} className="contents">
-              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted px-2.5 pt-3 pb-1.5 font-medium">
-                {GROUP_LABELS[g]}
-              </div>
+              {GROUP_LABELS[g] && (
+                <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted px-2.5 pt-3 pb-1.5 font-medium">
+                  {GROUP_LABELS[g]}
+                </div>
+              )}
               {items.map((it) => {
                 const active = isActive(it.href);
                 const badge = badgeFor(it);

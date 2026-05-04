@@ -45,6 +45,7 @@ import emailSchedulesRouter from './routes/emailSchedules';
 import sourcesRouter                  from './routes/sources';
 import connectionSyncSchedulesRouter   from './routes/connectionSyncSchedules';
 import catalogRouter         from './routes/catalog';
+import homeRouter            from './routes/home';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -154,6 +155,7 @@ app.use('/api/source-types',    sourcesRouter);
 // /api/connections so they share that namespace's auth/middleware/RLS.
 app.use('/api/connections',     connectionSyncSchedulesRouter);
 app.use('/api/catalog',         catalogRouter);
+app.use('/api/home',            homeRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
