@@ -1,5 +1,5 @@
 /**
- * Sync orchestrator — bridges DataBridge's domain (connections, tenants,
+ * Sync orchestrator — bridges Clarion's domain (connections, tenants,
  * source_sync_runs, schema profiler) to the connector framework via a
  * `JobLauncher`. The launcher decides WHERE the sync runs (local child
  * process today, Container Apps Job tomorrow); this orchestrator is

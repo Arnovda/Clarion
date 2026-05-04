@@ -197,7 +197,7 @@ app.use(errorHandler);
 if (!process.env.VITEST) {
   const PORT = Number(process.env.PORT ?? 3001);
   const server = app.listen(PORT, () => {
-    logger.info({ port: PORT }, 'DataBridge backend running');
+    logger.info({ port: PORT }, 'Clarion backend running');
     // Start Neo4j constraint setup in the background — non-blocking.
     ensureNeo4jConstraints().catch(err => console.error('Neo4j constraint setup error:', err));
     // Start BullMQ workers (no-op if Redis not configured)

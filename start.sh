@@ -2,7 +2,7 @@
 set -e
 
 echo "============================================"
-echo "  DataBridge - Starting all services"
+echo "  Clarion - Starting all services"
 echo "============================================"
 echo ""
 

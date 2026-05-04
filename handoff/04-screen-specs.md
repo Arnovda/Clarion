@@ -11,7 +11,7 @@ For each screen: **route**, **layout**, **must-have elements**, **states**, **re
 
 **Layout.** Centered 1280px card, two-column grid `1.1fr 1fr`, rounded-lg, shadow-2.
 - Left column: atmospheric SVG (observatory rings + data points) on `#0f1a22`. White wordmark top-left, italic serif pull quote bottom-left, mono compliance line at very bottom (`SOC 2 · EU-HOSTED · AES-256`).
-- Right column: 56px 64px padding, centered vertically. Mono eyebrow `SIGN IN`. Serif italic h2 `Welcome back.` Lede `Your workspace is one step away.` Email field. Password field with inline "Forgot?" link. Primary lg button, full width. Below: `New to DataBridge? Request an invite →` with ocean link.
+- Right column: 56px 64px padding, centered vertically. Mono eyebrow `SIGN IN`. Serif italic h2 `Welcome back.` Lede `Your workspace is one step away.` Email field. Password field with inline "Forgot?" link. Primary lg button, full width. Below: `New to Clarion? Request an invite →` with ocean link.
 
 **States.**
 - `/register` swap: eyebrow `CREATE WORKSPACE`, h2 `<em>Start observing.</em>`, lede names the invite flow. Extra field: "Workspace name". CTA: `Create workspace`.
@@ -32,7 +32,7 @@ For each screen: **route**, **layout**, **must-have elements**, **states**, **re
 **Hero.**
 - 72px observatory mark, ocean, with pulsing ring behind.
 - Serif h1 (52px): `Let's look inside` (serif italic line 2: `your company.`)
-- Serif sub: "Connect a source and DataBridge will profile it, learn what every column means, and make it ready for plain-language questions."
+- Serif sub: "Connect a source and Clarion will profile it, learn what every column means, and make it ready for plain-language questions."
 - Primary lg CTA `Connect your first source` + secondary `Explore with sample data`.
 - Below: 3-step mono eyebrow row `1 CONNECT · 2 PROFILE · 3 ASK` (current step ocean).
 

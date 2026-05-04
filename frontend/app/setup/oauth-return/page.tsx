@@ -6,7 +6,7 @@
  * Backend's /api/source-types/:type/oauth-callback 303-redirects here with
  * the auth code + state in the URL fragment (#code=…&state=…). The
  * fragment is never sent to the server, so this page parses it client-side,
- * postMessages the result to the opener (`databridge:oauth` envelope), and
+ * postMessages the result to the opener (`clarion:oauth` envelope), and
  * closes itself. The wizard's listener picks it up and continues the flow.
  *
  * Why bounce through frontend rather than postMessage from backend's domain
@@ -29,7 +29,7 @@ export default function OAuthReturnPage() {
     let msg: Record<string, unknown>;
     if (okParam === '1') {
       msg = {
-        kind: 'databridge:oauth',
+        kind: 'clarion:oauth',
         ok: true,
         code: params.get('code'),
         state: params.get('state'),
@@ -37,7 +37,7 @@ export default function OAuthReturnPage() {
       };
     } else {
       msg = {
-        kind: 'databridge:oauth',
+        kind: 'clarion:oauth',
         ok: false,
         error: params.get('error') ?? 'OAuth failed',
       };
@@ -52,7 +52,7 @@ export default function OAuthReturnPage() {
     // BroadcastChannel works as long as both sides are on the same origin
     // (which they are — both on the frontend domain).
     try {
-      const channel = new BroadcastChannel('databridge-oauth');
+      const channel = new BroadcastChannel('clarion-oauth');
       channel.postMessage(msg);
       channel.close();
     } catch {
@@ -74,7 +74,7 @@ export default function OAuthReturnPage() {
       color: '#0f172a',
       textAlign: 'center',
     }}>
-      <p>Returning to DataBridge…</p>
+      <p>Returning to Clarion…</p>
     </div>
   );
 }

@@ -12,7 +12,7 @@
  *     the same channel doubles as our event channel and the audit trail.
  *   • Works identically for child-process IPC (just read child.stdout).
  *   • No extra network plumbing, no shared service for the worker to call.
- *   • The worker has zero credentials to talk to DataBridge's DB — the
+ *   • The worker has zero credentials to talk to Clarion's DB — the
  *     orchestrator persists everything.
  *
  * Each emitted line is `JSON.stringify(event) + '\n'`. The orchestrator

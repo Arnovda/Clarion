@@ -56,7 +56,7 @@ describe('LocalFileWarehouseWriter', () => {
       const out = await db.all(`SELECT id, name, active, amount FROM read_parquet('${parquetPath}') ORDER BY id`);
       expect(out).toHaveLength(3);
       // DuckDB returns INT64 as BigInt to preserve precision — matches what
-      // DataBridge's existing DuckDBConnector sees on every other warehouse path.
+      // Clarion's existing DuckDBConnector sees on every other warehouse path.
       expect(Number(out[0].id)).toBe(1);
       expect(out[0].name).toBe('Acme NV');
       expect(out[0].active).toBe(true);

@@ -133,9 +133,9 @@ function QueryPageInner() {
       if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
         const key = `c:${urlConnectionId}`;
         setSelectedSource(key);
-        localStorage.setItem('databridge_query_source', key);
+        localStorage.setItem('clarion_query_source', key);
       } else {
-        const saved = localStorage.getItem('databridge_query_source');
+        const saved = localStorage.getItem('clarion_query_source');
         if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
           setSelectedSource(saved);
         } else if (all.length > 0) {
@@ -326,7 +326,7 @@ function QueryPageInner() {
       .then((blob) => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `databridge-export-${conversationId}.${format}`;
+        a.download = `clarion-export-${conversationId}.${format}`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
@@ -789,7 +789,7 @@ function QueryPageInner() {
                 </button>
               </div>
             ) : sources.length > 1 ? (
-              <SourceSelector sources={sources} selectedId={selectedSource} onChange={(id) => { setSelectedSource(id); localStorage.setItem('databridge_query_source', id); }} />
+              <SourceSelector sources={sources} selectedId={selectedSource} onChange={(id) => { setSelectedSource(id); localStorage.setItem('clarion_query_source', id); }} />
             ) : null}
           </div>
           <div className="flex items-center gap-4">

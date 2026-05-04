@@ -97,7 +97,7 @@ function buildHtmlEmail(
   <div style="max-width:680px;margin:32px auto;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
     <!-- Header -->
     <div style="background:#111827;padding:24px 32px">
-      <p style="margin:0 0 4px;font-size:10px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em">DataBridge Report · ${now}</p>
+      <p style="margin:0 0 4px;font-size:10px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em">Clarion Report · ${now}</p>
       <h1 style="margin:0;font-size:22px;font-weight:700;color:#ffffff">${dashboardTitle}</h1>
     </div>
     <!-- Body -->
@@ -107,7 +107,7 @@ function buildHtmlEmail(
     </div>
     <!-- Footer -->
     <div style="padding:16px 32px;border-top:1px solid #f3f4f6">
-      <p style="margin:0;font-size:11px;color:#9ca3af">Sent automatically by DataBridge. To manage this schedule, visit your dashboard settings.</p>
+      <p style="margin:0;font-size:11px;color:#9ca3af">Sent automatically by Clarion. To manage this schedule, visit your dashboard settings.</p>
     </div>
   </div>
 </body>
@@ -231,7 +231,7 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
   const html = buildHtmlEmail(dashboard.title as string, summary, widgetResults);
   await sendEmail({
     to: recipients,
-    subject: `${dashboard.title} — DataBridge Report`,
+    subject: `${dashboard.title} — Clarion Report`,
     html,
   });
 

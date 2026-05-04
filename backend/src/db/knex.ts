@@ -14,6 +14,11 @@ if (!process.env.VITEST) {
  * Row-Level Security policies are enforced. The superuser `databridge`
  * role is only used for migrations (via knexfile.ts).
  *
+ * NB: the Postgres role is named `databridge` for historical reasons
+ * (the project was originally called DataBridge). The brand was renamed
+ * to Clarion but the role + DB names + Docker volumes were kept to avoid
+ * a destructive rename of persisted state. See CLAUDE.md.
+ *
  * The app.current_tenant session variable is set by requireAuth middleware,
  * and RLS policies filter all queries to the authenticated tenant.
  */

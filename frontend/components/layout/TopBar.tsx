@@ -60,7 +60,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
   }
 
   function signOut() {
-    sessionStorage.removeItem('databridge_tenant_name');
+    sessionStorage.removeItem('clarion_tenant_name');
     clearToken();
     router.push('/');
   }
@@ -79,7 +79,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
             <circle cx="12" cy="12" r="4" />
             <circle cx="12" cy="12" r="0.6" fill="currentColor" />
           </svg>
-          <span>DataBridge</span>
+          <span>Clarion</span>
         </Link>
 
         <div className="flex-1" />

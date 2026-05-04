@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clarion — Product Overview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    color: #1a1a2e;
+    background: #fff;
+    font-size: 10.5pt;
+    line-height: 1.7;
+  }
+
+  /* ── Cover page ── */
+  .cover {
+    height: 100vh;
+    min-height: 700px;
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 60%, #0e7490 100%);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 80px;
+    page-break-after: always;
+    position: relative;
+    overflow: hidden;
+  }
+  .cover::before {
+    content: '';
+    position: absolute;
+    top: -100px; right: -100px;
+    width: 500px; height: 500px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(14,116,144,0.3) 0%, transparent 70%);
+  }
+  .cover-logo {
+    font-size: 13pt;
+    font-weight: 700;
+    color: #7dd3fc;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 40px;
+  }
+  .cover h1 {
+    font-size: 42pt;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.1;
+    margin-bottom: 24px;
+    max-width: 600px;
+  }
+  .cover-sub {
+    font-size: 14pt;
+    color: #bae6fd;
+    max-width: 520px;
+    line-height: 1.6;
+    margin-bottom: 60px;
+  }
+  .cover-meta {
+    font-size: 9pt;
+    color: #7dd3fc;
+    letter-spacing: 0.08em;
+  }
+  .cover-badge {
+    display: inline-block;
+    background: rgba(14,116,144,0.4);
+    border: 1px solid rgba(125,211,252,0.3);
+    color: #7dd3fc;
+    font-size: 8.5pt;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border-radius: 4px;
+    margin-bottom: 24px;
+  }
+
+  /* ── Page layout ── */
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 60px 60px;
+  }
+
+  @media print {
+    .cover { page-break-after: always; }
+    .page-break { page-break-before: always; }
+    .page { padding: 40px 48px; }
+  }
+
+  /* ── Section headers ── */
+  .section-eyebrow {
+    font-size: 7.5pt;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #0e7490;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 22pt;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 16px;
+    line-height: 1.2;
+  }
+  h3 {
+    font-size: 13pt;
+    font-weight: 600;
+    color: #0f172a;
+    margin-bottom: 10px;
+    margin-top: 28px;
+  }
+  h4 {
+    font-size: 10.5pt;
+    font-weight: 600;
+    color: #0f172a;
+    margin-bottom: 6px;
+  }
+  p { margin-bottom: 14px; color: #334155; }
+  .lead {
+    font-size: 12.5pt;
+    color: #1e3a5f;
+    line-height: 1.7;
+    margin-bottom: 24px;
+    font-weight: 400;
+  }
+
+  /* ── Divider ── */
+  .divider {
+    width: 48px;
+    height: 3px;
+    background: #0e7490;
+    margin-bottom: 32px;
+    border-radius: 2px;
+  }
+
+  /* ── Highlight box ── */
+  .highlight {
+    background: #f0f9ff;
+    border-left: 4px solid #0e7490;
+    padding: 18px 22px;
+    border-radius: 0 6px 6px 0;
+    margin: 24px 0;
+  }
+  .highlight p { margin: 0; color: #0f172a; font-size: 10.5pt; }
+
+  /* ── Audience cards ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .card {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    background: #f8fafc;
+  }
+  .card-icon {
+    font-size: 20pt;
+    margin-bottom: 10px;
+    display: block;
+  }
+  .card h4 { color: #0e7490; margin-bottom: 6px; }
+  .card p { font-size: 9.5pt; margin: 0; color: #475569; }
+
+  /* ── Feature list ── */
+  .feature-list { list-style: none; margin: 16px 0 24px; }
+  .feature-list li {
+    padding: 10px 0 10px 28px;
+    border-bottom: 1px solid #f1f5f9;
+    position: relative;
+    color: #334155;
+    font-size: 10pt;
+  }
+  .feature-list li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: #0e7490;
+    font-weight: 700;
+  }
+  .feature-list li strong { color: #0f172a; }
+
+  /* ── Comparison table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 9.5pt;
+  }
+  thead tr { background: #0f172a; color: #fff; }
+  thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  tbody tr:nth-child(even) { background: #f8fafc; }
+  tbody td { padding: 9px 14px; border-bottom: 1px solid #e2e8f0; color: #334155; }
+  tbody td:first-child { font-weight: 500; color: #0f172a; }
+  .check { color: #16a34a; font-weight: 700; }
+  .cross { color: #dc2626; }
+  .partial { color: #d97706; }
+
+  /* ── Workflow steps ── */
+  .steps { margin: 20px 0; }
+  .step {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 16px;
+    align-items: flex-start;
+  }
+  .step-num {
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    border-radius: 50%;
+    background: #0e7490;
+    color: #fff;
+    font-size: 9pt;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 2px;
+  }
+  .step-body h4 { margin-bottom: 3px; }
+  .step-body p { margin: 0; font-size: 9.5pt; color: #475569; }
+
+  /* ── Use case blocks ── */
+  .usecase {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px 22px;
+    margin-bottom: 14px;
+  }
+  .usecase h4 { color: #0e7490; margin-bottom: 6px; }
+  .usecase p { margin: 0; font-size: 9.5pt; color: #475569; }
+
+  /* ── Stat row ── */
+  .stat-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin: 28px 0;
+  }
+  .stat {
+    text-align: center;
+    padding: 24px 16px;
+    background: linear-gradient(135deg, #0f172a, #1e3a5f);
+    border-radius: 10px;
+    color: #fff;
+  }
+  .stat-num {
+    font-size: 26pt;
+    font-weight: 700;
+    color: #7dd3fc;
+    display: block;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .stat-label { font-size: 8.5pt; color: #bae6fd; letter-spacing: 0.06em; }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid #e2e8f0;
+    font-size: 8.5pt;
+    color: #94a3b8;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── Page break helpers ── */
+  .page-break { page-break-before: always; padding-top: 60px; }
+
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     COVER
+══════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="cover-logo">Clarion</div>
+  <div class="cover-badge">Product Overview</div>
+  <h1>Turn your business data into answers — instantly.</h1>
+  <p class="cover-sub">
+    Clarion is an AI-powered data intelligence platform that lets any
+    business user ask questions about their data in plain language, build
+    live dashboards, and receive automated insights — without writing a
+    single line of code or SQL.
+  </p>
+  <div class="cover-meta">Powered by Claude AI &nbsp;·&nbsp; April 2026</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     1. WHAT IS CLARION
+══════════════════════════════════════════════ -->
+<div class="page">
+  <div class="section-eyebrow">Introduction</div>
+  <h2>What is Clarion?</h2>
+  <div class="divider"></div>
+
+  <p class="lead">
+    Clarion is an AI-native business intelligence platform built for
+    small and medium-sized businesses that want the analytical power of
+    enterprise BI tools — without the complexity, cost, or need for a
+    dedicated data team.
+  </p>
+
+  <p>
+    Most businesses sit on a goldmine of data locked inside accounting
+    software, CRM systems, ERP platforms, and databases. Extracting
+    meaningful insights from that data traditionally requires data
+    engineers, SQL developers, or expensive consultants. Clarion
+    removes that barrier entirely.
+  </p>
+
+  <p>
+    Using state-of-the-art AI (Anthropic's Claude), Clarion understands
+    your data the same way a senior analyst would — the business meaning of
+    each table and column, the relationships between them, your KPI
+    definitions — and then answers your questions in plain language, builds
+    dashboards on demand, and proactively flags issues before they become
+    problems.
+  </p>
+
+  <div class="highlight">
+    <p><strong>The core promise:</strong> Any business user — from a CEO to a sales manager — can
+    open Clarion, type a question like "What were my top 10 customers by
+    revenue last quarter?" and receive a clear, accurate answer with a chart,
+    in under five seconds. No training required.</p>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat">
+      <span class="stat-num">&lt; 5s</span>
+      <span class="stat-label">Average answer time</span>
+    </div>
+    <div class="stat">
+      <span class="stat-num">0</span>
+      <span class="stat-label">Lines of SQL or code needed</span>
+    </div>
+    <div class="stat">
+      <span class="stat-num">100%</span>
+      <span class="stat-label">Answers sourced from your own data</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     2. WHO IS IT FOR
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Target Audience</div>
+  <h2>Who is Clarion for?</h2>
+  <div class="divider"></div>
+
+  <p class="lead">
+    Clarion is built for SMBs with 10 to 500 employees that generate
+    operational data but lack the in-house technical resources to analyse
+    it effectively.
+  </p>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-icon">🏢</span>
+      <h4>Business Owner / CEO</h4>
+      <p>Needs a real-time view of company performance — revenue, margins, cash flow — without waiting for a monthly report from the accountant.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">📊</span>
+      <h4>Finance Manager</h4>
+      <p>Wants to drill into costs, compare actuals vs budget, and catch anomalies early — without exporting to Excel every time.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">💼</span>
+      <h4>Sales Manager</h4>
+      <p>Needs pipeline visibility, customer revenue trends, and product performance — on demand, not in a weekly slide deck.</p>
+    </div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-icon">📦</span>
+      <h4>Operations Manager</h4>
+      <p>Monitors inventory levels, supplier lead times, order fulfilment rates — with automatic alerts when thresholds are breached.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">🧑‍💻</span>
+      <h4>Data / IT Administrator</h4>
+      <p>Sets up data sources, curates definitions, manages access, and monitors data quality — through a structured admin interface.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">👁️</span>
+      <h4>Executive Viewer</h4>
+      <p>Consumes pre-built dashboards and receives scheduled email reports — no setup needed, just log in and read.</p>
+    </div>
+  </div>
+
+  <h3>Industries</h3>
+  <p>Clarion connects to any structured data source, making it suitable across:</p>
+  <ul class="feature-list">
+    <li><strong>Wholesale &amp; Distribution</strong> — inventory, purchasing, order management</li>
+    <li><strong>Professional Services</strong> — project profitability, billable hours, client revenue</li>
+    <li><strong>Retail</strong> — sales performance, stock turnover, margin analysis</li>
+    <li><strong>Manufacturing</strong> — production output, quality metrics, supply chain</li>
+    <li><strong>Accounting &amp; Finance</strong> — P&amp;L, balance sheet trends, cashflow forecasting</li>
+    <li><strong>Any SMB with operational data</strong> in a database, ERP, or accounting platform</li>
+  </ul>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     3. WHAT CAN IT DO
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Capabilities</div>
+  <h2>What can Clarion do?</h2>
+  <div class="divider"></div>
+
+  <h3>1. Natural Language Questions</h3>
+  <p>
+    Type any business question in plain language — Dutch or English — and
+    Clarion translates it into a precise database query, executes it,
+    and returns a clear answer with a chart or table. There is no query
+    builder, no formula editor, no drag-and-drop interface to learn.
+  </p>
+  <div class="highlight">
+    <p>Examples: <em>"Show me revenue by product group for this year vs last year."</em> &nbsp;·&nbsp;
+    <em>"Which customers haven't ordered in the last 60 days?"</em> &nbsp;·&nbsp;
+    <em>"What is my gross margin per salesperson this quarter?"</em></p>
+  </div>
+
+  <h3>2. AI-Generated Dashboards</h3>
+  <p>
+    Describe the dashboard you want in a sentence. Clarion designs it,
+    writes all the underlying queries, and renders a fully interactive
+    dashboard — with filters, drill-down, date range selectors, and KPI
+    cards — in under 30 seconds. Dashboards can be saved, shared, and
+    refreshed automatically.
+  </p>
+
+  <h3>3. Scheduled Email Reports</h3>
+  <p>
+    Any dashboard can be scheduled to arrive in your inbox as a formatted
+    HTML email — daily, weekly, or monthly. The email includes an
+    AI-written executive summary that highlights the key movements and
+    anomalies, so you understand the numbers at a glance before opening
+    the full dashboard.
+  </p>
+
+  <h3>4. Quality Alerts</h3>
+  <p>
+    Clarion continuously monitors your data for quality issues — missing
+    values, unusual spikes, broken rules — and sends alerts with
+    AI-written business context explaining what changed and why it matters.
+    Not a raw technical error; a plain-language explanation.
+  </p>
+
+  <h3>5. KPI Drill-Down &amp; Investigation</h3>
+  <p>
+    Click any metric to see the detail rows behind it. Or click "Investigate"
+    on any chart to ask Clarion <em>why</em> a number looks the way it
+    does. The AI fires a series of follow-up queries, identifies the root
+    cause, and returns a synthesised explanation — in seconds.
+  </p>
+
+  <h3>6. Data Product Modelling</h3>
+  <p>
+    For teams with more complex needs, Clarion can design an optimised
+    star schema data model from your raw source data — fact tables,
+    dimension tables, KPI definitions — and materialise it as a high-speed
+    analytics warehouse. Dashboards and queries run against this warehouse,
+    making even large datasets feel instant.
+  </p>
+
+  <h3>7. Multi-Source Queries</h3>
+  <p>
+    Connect multiple data sources — accounting, CRM, operations — and ask
+    questions that span all of them. Clarion maintains a knowledge graph
+    of how your data sources relate to each other and can join across them
+    transparently.
+  </p>
+
+  <h3>8. Role-Based Access</h3>
+  <p>
+    Three role levels — Admin, Analyst, Viewer — ensure that sensitive data
+    and configuration remain accessible only to the right people. Column-level
+    masking and row-level filtering policies can be applied per user or
+    per role.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     4. HOW IT WORKS
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">How It Works</div>
+  <h2>From raw data to business insight</h2>
+  <div class="divider"></div>
+
+  <p class="lead">
+    Clarion follows a structured pipeline from data source to insight.
+    Most steps are fully automated — a typical setup takes under an hour.
+  </p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h4>Connect your data source</h4>
+        <p>Point Clarion at your database, ERP, or accounting platform. Supported: PostgreSQL, MySQL, SQL Server, SQLite, ExactOnline, and more. Credentials are encrypted with AES-256 and stored securely.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h4>AI generates a semantic layer</h4>
+        <p>Clarion reads your schema and uses AI to generate plain-language descriptions for every table and column, detect relationships, suggest KPI formulas, and score data quality. Your data team reviews and approves — typically in 20 minutes.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h4>Ingest to the analytics warehouse</h4>
+        <p>Data is ingested into a high-speed Parquet-based warehouse (Delta Lake). Incremental updates keep it fresh. The warehouse is what Clarion queries — your source systems are never touched during analytics.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <h4>Ask questions &amp; build dashboards</h4>
+        <p>Business users log in and start asking questions or requesting dashboards immediately. The AI translates every question into precise SQL, executes it, and returns a human-readable answer with a visualisation.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-body">
+        <h4>Automate delivery</h4>
+        <p>Schedule dashboards as email reports. Set up alerts for quality issues or KPI thresholds. The platform works in the background so you wake up to insight, not raw data.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="highlight">
+    <p><strong>Safety first:</strong> Clarion never exposes raw SQL to business users. Every AI-generated query carries a confidence score — queries below 70% confidence are blocked and logged for review rather than returning a potentially incorrect answer.</p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     5. USE CASES
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Real-World Applications</div>
+  <h2>Use cases</h2>
+  <div class="divider"></div>
+
+  <div class="usecase">
+    <h4>Monthly management reporting — automated</h4>
+    <p>A wholesale distributor replaces its monthly Excel-based management pack with a Clarion dashboard that updates daily. The CFO receives a scheduled email every Monday morning with an AI summary of the week's performance. Board packs are generated in one click.</p>
+  </div>
+
+  <div class="usecase">
+    <h4>Sales performance visibility</h4>
+    <p>A sales director asks "Which of my reps is underperforming vs target this month?" Clarion queries the CRM and accounting data, identifies the gap by rep and product category, and suggests where to investigate — without a single meeting with IT.</p>
+  </div>
+
+  <div class="usecase">
+    <h4>Inventory &amp; purchasing optimisation</h4>
+    <p>An operations manager sets a quality alert: "Notify me when any product's stock coverage drops below 2 weeks." Clarion monitors the warehouse daily and sends an email with a plain-language explanation the moment the threshold is crossed.</p>
+  </div>
+
+  <div class="usecase">
+    <h4>Customer revenue analysis</h4>
+    <p>A CEO asks "Who are my top 20 customers and what is their year-on-year revenue trend?" Clarion returns a ranked table with a trend sparkline for each customer, identifies the three customers with the sharpest decline, and offers a drill-down into the underlying invoices.</p>
+  </div>
+
+  <div class="usecase">
+    <h4>Finance &amp; accounting integration</h4>
+    <p>Connected to ExactOnline, Clarion ingests the full general ledger, sales entries, and supplier invoices. Finance teams can ask questions like "What is my gross margin by cost centre this quarter?" without waiting for month-end close reports.</p>
+  </div>
+
+  <div class="usecase">
+    <h4>Data quality governance</h4>
+    <p>Clarion scores every field in your source data for completeness, consistency, and freshness. Quality rules fire automatically — "Invoice amount cannot be negative", "Customer VAT number must match format" — and alert the responsible team with business context, not a raw error log.</p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     6. COMPETITIVE ADVANTAGES
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Competitive Position</div>
+  <h2>How Clarion compares</h2>
+  <div class="divider"></div>
+
+  <p>
+    Clarion competes with Microsoft Power BI, Qlik Sense, and Tableau in
+    the SMB segment. The table below shows where Clarion leads on the
+    dimensions that matter most to SMB buyers.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Capability</th>
+        <th>Clarion</th>
+        <th>Power BI</th>
+        <th>Qlik Sense</th>
+        <th>Tableau</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Natural language questions</td>
+        <td class="check">✓ Native, accurate</td>
+        <td class="partial">~ Limited / Copilot add-on</td>
+        <td class="partial">~ Basic</td>
+        <td class="partial">~ Basic</td>
+      </tr>
+      <tr>
+        <td>AI-generated dashboards</td>
+        <td class="check">✓ Full spec in &lt;30s</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+      </tr>
+      <tr>
+        <td>Automated semantic layer</td>
+        <td class="check">✓ AI-drafted, human-approved</td>
+        <td class="partial">~ Manual</td>
+        <td class="partial">~ Manual</td>
+        <td class="partial">~ Manual</td>
+      </tr>
+      <tr>
+        <td>Causal drill-down ("Why?")</td>
+        <td class="check">✓ AI-driven investigation</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+      </tr>
+      <tr>
+        <td>AI-written alert context</td>
+        <td class="check">✓ Business language</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+        <td class="cross">✗</td>
+      </tr>
+      <tr>
+        <td>Scheduled email reports</td>
+        <td class="check">✓ Included</td>
+        <td class="check">✓ Included</td>
+        <td class="check">✓ Included</td>
+        <td class="check">✓ Included</td>
+      </tr>
+      <tr>
+        <td>Time to first dashboard</td>
+        <td class="check">✓ &lt; 1 hour</td>
+        <td class="partial">~ Days to weeks</td>
+        <td class="partial">~ Days to weeks</td>
+        <td class="partial">~ Days to weeks</td>
+      </tr>
+      <tr>
+        <td>No SQL / coding required</td>
+        <td class="check">✓ Zero code</td>
+        <td class="partial">~ Some DAX required</td>
+        <td class="partial">~ Some scripting</td>
+        <td class="partial">~ Some setup</td>
+      </tr>
+      <tr>
+        <td>Dedicated data team needed</td>
+        <td class="check">✓ No</td>
+        <td class="cross">✗ Yes</td>
+        <td class="cross">✗ Yes</td>
+        <td class="cross">✗ Yes</td>
+      </tr>
+      <tr>
+        <td>SMB-friendly pricing</td>
+        <td class="check">✓ Flat monthly</td>
+        <td class="partial">~ Per user/month</td>
+        <td class="cross">✗ Enterprise pricing</td>
+        <td class="cross">✗ Enterprise pricing</td>
+      </tr>
+      <tr>
+        <td>Multi-tenant / white-label</td>
+        <td class="check">✓ Built-in</td>
+        <td class="partial">~ Limited</td>
+        <td class="partial">~ Limited</td>
+        <td class="partial">~ Limited</td>
+      </tr>
+      <tr>
+        <td>Data stays in your environment</td>
+        <td class="check">✓ Your Azure infra</td>
+        <td class="partial">~ Microsoft cloud</td>
+        <td class="partial">~ Qlik cloud</td>
+        <td class="partial">~ Salesforce cloud</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>The Clarion advantage in three sentences</h3>
+  <p>
+    <strong>Speed to value:</strong> A Power BI or Qlik deployment for an SMB typically takes
+    2–6 weeks and requires a consultant or internal data engineer. Clarion
+    is operational in under an hour with no technical expertise required.
+  </p>
+  <p>
+    <strong>AI-native, not AI-bolted-on:</strong> Competitors have added AI features as
+    afterthoughts on top of decade-old drag-and-drop interfaces. Clarion
+    is built from the ground up around AI — every insight, every dashboard,
+    every alert is AI-generated and AI-explained.
+  </p>
+  <p>
+    <strong>Your data, your infrastructure:</strong> Clarion runs entirely in your own
+    Azure environment. Your data never leaves your control, which matters
+    especially for GDPR compliance and customers in regulated industries.
+  </p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     7. SECURITY & COMPLIANCE
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Security &amp; Compliance</div>
+  <h2>Enterprise-grade security built in</h2>
+  <div class="divider"></div>
+
+  <p class="lead">
+    Clarion was designed with security as a first principle, not an
+    afterthought. Every layer — from credential storage to data access —
+    applies best-practice controls.
+  </p>
+
+  <ul class="feature-list">
+    <li><strong>Credential encryption:</strong> All database credentials and API keys are encrypted with AES-256-GCM before storage. Keys are managed through Azure Key Vault.</li>
+    <li><strong>Row-Level Security:</strong> PostgreSQL Row-Level Security policies enforce strict tenant isolation at the database level — one tenant can never see another's data, even if application logic fails.</li>
+    <li><strong>Data policies:</strong> Admins can define column-level masking (e.g. hide salary data from Viewers) and row-level filters (e.g. sales rep sees only their own customers).</li>
+    <li><strong>JWT authentication:</strong> All API calls require a signed JWT token with 8-hour expiry. Passwords are hashed with bcrypt (cost factor 10).</li>
+    <li><strong>No raw SQL to users:</strong> Business users never see database queries. A "show query" toggle is available only to admin and analyst roles.</li>
+    <li><strong>Confidence gating:</strong> AI-generated queries below 70% confidence are blocked and logged — never executed. This prevents hallucinated or incorrect answers reaching users.</li>
+    <li><strong>GDPR-ready:</strong> Data resides entirely in your Azure region (West Europe by default). No data is sent to third-party analytics services.</li>
+    <li><strong>Audit trail:</strong> All queries, dashboard accesses, and definition changes are logged with user, timestamp, and tenant context.</li>
+    <li><strong>Rate limiting:</strong> API endpoints are rate-limited (200 req/min global, 30 req/min for AI endpoints) to prevent abuse.</li>
+  </ul>
+
+  <div class="highlight">
+    <p><strong>GDPR note:</strong> The AI (Anthropic Claude) processes only the schema metadata and query results — not the raw personal data in your tables. Personal data never leaves your Azure environment unless you explicitly export it.</p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     8. TECHNICAL OVERVIEW (LIGHT)
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Technical Architecture</div>
+  <h2>Built for reliability and scale</h2>
+  <div class="divider"></div>
+
+  <p>
+    Clarion runs entirely on Microsoft Azure, using managed services
+    that scale automatically and require no infrastructure management from
+    the customer.
+  </p>
+
+  <h3>Deployment</h3>
+  <ul class="feature-list">
+    <li><strong>Azure Container Apps</strong> — backend API, frontend, and ETL pipeline run as containerised services with automatic scaling (scale-to-zero for cost efficiency)</li>
+    <li><strong>Azure PostgreSQL Flexible Server</strong> — semantic layer and metadata database, always-on, automated backups</li>
+    <li><strong>Azure Blob Storage</strong> — analytics data warehouse (Parquet files), cost-effective, unlimited scale</li>
+    <li><strong>Azure Key Vault</strong> — all secrets and encryption keys, zero secrets in application code or environment variables</li>
+    <li><strong>Application Insights</strong> — real-time monitoring, performance tracking, error alerting</li>
+  </ul>
+
+  <h3>Data pipeline</h3>
+  <ul class="feature-list">
+    <li><strong>ETL service</strong> — Python-based, reads from source systems incrementally (watermark-based CDC), writes Parquet files to Azure Blob</li>
+    <li><strong>DuckDB query engine</strong> — in-process analytics engine that queries Parquet files at sub-second speed; no separate data warehouse licence needed</li>
+    <li><strong>Delta Lake format</strong> — versioned, ACID-compliant Parquet storage; supports time-travel queries and incremental updates</li>
+    <li><strong>Monthly rollups</strong> — pre-aggregated summary tables generated automatically after each ingestion, making time-series queries 10–100× faster</li>
+  </ul>
+
+  <h3>Estimated running cost (Azure West Europe)</h3>
+  <table>
+    <thead>
+      <tr><th>Component</th><th>SKU</th><th>Est. monthly cost</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>PostgreSQL Flexible Server</td><td>B_Standard_B1ms</td><td>~€25</td></tr>
+      <tr><td>Container Apps (backend + frontend)</td><td>0.5 vCPU / 1 GB</td><td>~€30</td></tr>
+      <tr><td>Neo4j (knowledge graph)</td><td>0.5 vCPU / 1 GB</td><td>~€20</td></tr>
+      <tr><td>Blob Storage + ETL + Monitoring</td><td>Standard LRS</td><td>~€10</td></tr>
+      <tr><td>Redis Cache (job queues)</td><td>Basic C0</td><td>~€15</td></tr>
+      <tr><td><strong>Total</strong></td><td></td><td><strong>~€100/month</strong></td></tr>
+    </tbody>
+  </table>
+
+  <div class="highlight">
+    <p><strong>Cost model:</strong> Infrastructure costs are fixed and low. Clarion is priced per tenant on top of infrastructure cost — giving resellers and consultants a clear, predictable margin.</p>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════
+     9. GETTING STARTED
+══════════════════════════════════════════════ -->
+<div class="page page-break">
+  <div class="section-eyebrow">Onboarding</div>
+  <h2>Getting started</h2>
+  <div class="divider"></div>
+
+  <p class="lead">
+    A typical Clarion onboarding for a new customer takes less than one
+    working day — most of that is waiting for data ingestion to complete.
+  </p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <h4>Account creation (5 minutes)</h4>
+        <p>The customer receives an invite link, creates their account, and is taken through a brief onboarding wizard explaining the platform.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <h4>Connect data source (15 minutes)</h4>
+        <p>The admin enters database credentials or authorises an OAuth connection (e.g. ExactOnline). Clarion tests the connection and immediately begins profiling.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <h4>Review AI definitions (20 minutes)</h4>
+        <p>Clarion generates plain-language descriptions for every table and column. The admin reviews, adjusts where needed, and approves. This is the only manual step — and it gets faster with each source.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <h4>Ingest &amp; model (30–60 minutes)</h4>
+        <p>Clarion ingests data into the analytics warehouse and optionally designs a star schema data model. This runs automatically in the background.</p>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">5</div>
+      <div class="step-body">
+        <h4>Invite users &amp; share dashboards</h4>
+        <p>The admin invites team members, assigns roles, and shares the first AI-generated dashboard. Business users can start asking questions immediately.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Clarion · Confidential product overview · April 2026</span>
+    <span>Powered by Claude AI (Anthropic)</span>
+  </div>
+</div>
+
+</body>
+</html>

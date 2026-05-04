@@ -748,7 +748,7 @@ function RelationshipPanel({ relationships, tables, columnsByTable, connectionId
     setReSuggesting(true);
     setReSuggestStatus('Starting…');
     try {
-      const token = localStorage.getItem('databridge_token');
+      const token = localStorage.getItem('clarion_token');
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/semantic/relationships/re-suggest?connectionId=${connectionId}`, {
         method: 'POST',
         headers: {

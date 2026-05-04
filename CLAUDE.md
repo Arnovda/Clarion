@@ -1,4 +1,4 @@
-# CLAUDE.md — DataBridge
+# CLAUDE.md — Clarion
 > AI-powered semantic data platform. Read this file at the start of every session.
 
 ---
@@ -31,7 +31,62 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-04 (Pipelines: ADF-style activity dock + FK fix)
+**Last updated:** 2026-05-04 (Project renamed DataBridge → Clarion)
+
+**Project rename — DataBridge → Clarion (2026-05-04):** Brand-only rename across
+the source tree, docs, UI strings, comments, log messages, file names, and
+package.json `name` fields where they're internal-only. The persistence /
+infrastructure layer was deliberately preserved as `databridge` to avoid a
+destructive migration of data and live deployments. **What stayed `databridge`
+(do NOT change without an ops migration plan):**
+- PostgreSQL database name, superuser role `databridge`, RLS role `databridge_app`
+- Postgres password defaults (`databridge:databridge` in dev, `databridge_secret`
+  for Neo4j, `databridge_redis` for Redis)
+- Docker volumes `databridge_pgdata`, `databridge_neo4j_data`, `databridge_neo4j_logs`
+  (renaming = data loss)
+- Docker container names (`databridge-postgres`, `databridge-neo4j`, etc.) and
+  Azure Container App / image names (`databridge-backend`, `databridge-etl`,
+  `databridge-frontend`, `databridge-sync-worker`, `databridgeacr`,
+  `databridge-rg`, etc.) — recreating these in Azure is a separate, scheduled
+  ops task
+- npm package `@databridge/connectors` (16 import callsites; renaming cascades
+  to package.json deps and every workspace), and the workspace package names
+  `databridge-backend` + `databridge-sync-worker` which match the Azure image
+  names above
+- Project root directory on disk is still `databridge/` — rename when
+  convenient; Folder Structure section below uses the brand name `clarion/`.
+
+If/when you want to retire the `databridge` infra names: it's a coordinated
+operation involving `ALTER DATABASE`, `ALTER ROLE`, Docker volume migration,
+Terraform state surgery, and an npm package rename. Single, well-scoped
+follow-up task; not blocking.
+
+**Files renamed:** `databridge-overview.html` → `clarion-overview.html`,
+`DataBridge_Architecture.py` → `Clarion_Architecture.py` (the generated
+`DataBridge_Architecture.pdf` artifact is left in place; re-run the .py to
+regenerate as `Clarion_Architecture.pdf`).
+
+**Dual-write contract — relationship mirrors + docs (2026-05-04):** Closed three
+latent count-divergence bugs in the same class as the AI review queue confirm bug
+fixed last session. The relationship endpoints `POST /semantic/relationships`,
+`DELETE /semantic/relationships/:id`, and `POST /semantic/relationships/re-suggest`
+now mirror their Neo4j writes into Postgres `table_relationships` so Home's
+"relationships approved / total" counts (and any other Postgres aggregate that
+reads the table) stay accurate. `id` is kept identical across stores — routes
+draw from `semantic_node_id_seq` via `graph.nextPgId()` and insert into Postgres
+with the explicit pgId via `.onConflict('id').merge()`, then `setval` is called
+on `table_relationships_id_seq` so a later SchemaProfiler run can't collide.
+Stale comment block at top of the Relationships section in `routes/semantic.ts`
+(the old "user-facing endpoints write to Neo4j ONLY" comment) replaced with a
+contract-style note pointing at CLAUDE.md. New top-level CLAUDE.md section
+**"Dual-write contract (Postgres ↔ Neo4j)"** documents which surfaces read
+Postgres directly, which writes are mirrored, which are still un-mirrored
+(revert / approve / import — the rare admin paths), and the exit criterion for
+retiring the contract entirely (migrate every direct-Postgres aggregate to
+Neo4j count helpers). Architectural note: the user pushed back on dropping
+Neo4j entirely (textbook argument: graph DBs good for AI semantics + relations).
+We agreed to keep Neo4j and stabilise the dual-write contract instead — a
+reversible decision pending future scale. Files changed: `backend/src/routes/semantic.ts`, `CLAUDE.md`.
 
 **IA cleanup — 2026-04-27:**
 - New tenant business glossary: `business_glossary` table (migration `20260427000040`), `/semantic/glossary` CRUD routes, `services/glossaryContext.ts` loads + formats entries for prompts, `AIService` injects the block into NL→SQL (source + cross + DuckDB), dashboard gen/refine, and schema-draft via `getTenantAiContext()`. New `Glossary` tab on `/semantic` (`components/semantic/GlossaryPanel.tsx`).
@@ -156,7 +211,7 @@ Or use `start.bat` / `start.sh` to do all of the above in one command.
 
 ## Project Overview
 
-**DataBridge** is a multi-tenant semantic data platform that allows business users to connect
+**Clarion** is a multi-tenant semantic data platform that allows business users to connect
 to their source databases, enrich them with AI-assisted semantic definitions (table/column
 descriptions, relationships, KPI formulas), and then query that data using conversational
 AI — without ever writing SQL.
@@ -240,8 +295,12 @@ The platform supports the full data lifecycle:
 
 ## Folder Structure
 
+> Note: the on-disk root directory is still `databridge/`. The brand was renamed
+> to Clarion but the directory wasn't moved (would require updating every shell
+> script + dev launcher). Rename when convenient.
+
 ```
-databridge/
+clarion/                              ← on disk: databridge/
 ├── CLAUDE.md                         ← you are here
 ├── .env                              ← local only, gitignored
 ├── .env.example                      ← committed, no secrets
@@ -677,6 +736,64 @@ All output stored with `ai_draft: true` until a human confirms.
 
 ---
 
+## Dual-write contract (Postgres ↔ Neo4j)
+
+**Status:** Phase 7 of the Neo4j migration (drop Postgres semantic tables) is deferred.
+Until then, the system runs a deliberate, scoped dual-write between Neo4j (source of
+truth for AI context + traversal queries) and Postgres `source_tables` /
+`source_columns` / `table_relationships` (still queried directly by a handful of
+aggregate surfaces). This section is the contract — read it before touching any
+write to those three tables.
+
+**The rule:**
+- All semantic READS go through `db/semanticGraph.ts` (Neo4j-backed). Postgres reads
+  of `source_tables` / `source_columns` / `table_relationships` are tolerated only in
+  the "aggregate surfaces" list below, and only because rewriting them would require
+  Neo4j count helpers we haven't built yet.
+- Every WRITE that mutates one of those three tables in Neo4j MUST mirror the same
+  change to Postgres in the same request, OR the consuming aggregate must be
+  rewritten to read from Neo4j. No exceptions, no "we'll fix it next sprint."
+- The `id` is identical on both sides. Routes that create new rows pull an id from
+  `semantic_node_id_seq` via `graph.nextPgId()` and insert into Postgres with
+  `id = pgId` (using `.onConflict('id').merge()` for safety), then bump the Postgres
+  table's own sequence via `setval` so future Postgres-first inserts don't collide.
+
+**Aggregate surfaces that read Postgres directly (the reason the contract exists):**
+- `routes/home.ts` — Home health-score COUNTs of tables/columns/relationships and
+  pending-review queues.
+- `routes/quality.ts` — source-table quality dashboard joins.
+- `routes/products.ts` — FK derivation in product-design flows joins
+  `table_relationships`.
+- `routes/query.ts` — relationship lookup for cross-source NL→SQL.
+- `routes/notebooks.ts` — schema explorer.
+
+**Mirrored write surfaces today:**
+- `SchemaProfiler.ts` — Postgres-first (gets auto-increment id), then Neo4j with
+  that id as `pgId`. The original pattern; sets the id-alignment invariant.
+- `PATCH /semantic/tables/:id` — mirrors confirm/edit to `source_tables`.
+- `PATCH /semantic/columns/:id` — mirrors confirm/edit to `source_columns`.
+- `PATCH /semantic/relationships/:id` — mirrors confirm/edit to `table_relationships`.
+- `POST /semantic/relationships` — mirrors create with explicit `id = pgId`.
+- `DELETE /semantic/relationships/:id` — mirrors delete.
+- `POST /semantic/relationships/re-suggest` — mirrors the bulk wipe of AI drafts +
+  bulk insert.
+
+**Known un-mirrored writes (latent bugs of the same class — fix when a user reports):**
+- `POST /semantic/revert` — revert-to-version writes Neo4j only.
+- `POST /semantic/approve` — generic approval flow writes Neo4j only.
+- `POST /semantic/import` — bulk CSV import writes Neo4j only.
+
+**If you add a new write to any of those three tables, you have two options:**
+1. Mirror it (preferred — follow the pattern in `PATCH /semantic/tables/:id`).
+2. Rewrite the relevant aggregate read in `routes/home.ts` etc. to use a Neo4j
+   count helper. This is the long-term fix and the path to retiring this contract.
+
+**When can we drop this?** When every entry in "Aggregate surfaces that read Postgres
+directly" has been migrated to Neo4j. At that point the Postgres tables become
+write-side-only legacy and we can finish Phase 7.
+
+---
+
 ## Error Handling Rules
 
 - All connector errors must return a user-friendly message. Never expose file paths,
@@ -738,7 +855,7 @@ SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=
 SMTP_PASS=
-SMTP_FROM=DataBridge <noreply@yourdomain.com>
+SMTP_FROM=Clarion <noreply@yourdomain.com>
 
 # Azure (optional — only needed for production / Azure deployment)
 # AZURE_STORAGE_CONNECTION_STRING=
@@ -808,4 +925,4 @@ Do not summarise what you did in chat — write everything directly into CLAUDE.
 
 ---
 
-*Last updated: April 2026 — DataBridge v0.2*
+*Last updated: April 2026 — Clarion v0.2*

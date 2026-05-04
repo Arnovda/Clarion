@@ -4,7 +4,7 @@
  * Two production loggers and one test helper:
  *   • createStdoutLogger — JSON lines to stdout. Used by the sync-worker
  *     container; Container Apps streams stdout to Log Analytics.
- *   • createBackendLogger — wraps DataBridge's existing pino instance.
+ *   • createBackendLogger — wraps Clarion's existing pino instance.
  *     Used for in-process testConnection/listEntities calls.
  *   • createNoopLogger — for tests.
  *
@@ -124,7 +124,7 @@ export function createStdoutLogger(staticFields: Record<string, unknown> = {}): 
 }
 
 /**
- * Adapter for DataBridge's backend Pino logger. The backend wires this in
+ * Adapter for Clarion's backend Pino logger. The backend wires this in
  * so connector-method calls (testConnection, listEntities) flow through the
  * same structured-log pipeline as the rest of the API.
  */

@@ -88,7 +88,7 @@ export default function IngestionWizard({
     setIngestionMessage(`Ingesting ${selected.size} table(s)...`);
     setTableResults([]);
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('databridge_token') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
 

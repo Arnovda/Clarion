@@ -94,7 +94,7 @@ export interface AuthLayoutProps {
   lede?: ReactNode;
   /** Form children. */
   children: ReactNode;
-  /** Optional meta row below the CTA (e.g. "New to DataBridge? Request an invite →"). */
+  /** Optional meta row below the CTA (e.g. "New to Clarion? Request an invite →"). */
   footer?: ReactNode;
 }
 
@@ -108,7 +108,7 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
           <div className="relative h-full p-8 md:p-11 flex flex-col justify-between text-[#e3e6ea]">
             <div className="flex items-center gap-2.5 font-display font-medium text-[22px] tracking-[-0.02em] text-white">
               <ObservatoryMark size={26} className="text-ocean-soft" />
-              DataBridge
+              Clarion
             </div>
 
             <blockquote className="font-display italic text-[22px] md:text-[26px] leading-[1.35] tracking-[-0.01em] text-[#e3e6ea] max-w-[440px] m-0">

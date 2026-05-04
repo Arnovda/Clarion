@@ -74,8 +74,8 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
       throw new Error(`Unsafe table name: ${tableName}`);
     }
 
-    const stagingNdjson = path.join(os.tmpdir(), `databridge-stage-${randomUUID()}.ndjson`);
-    const stagingParquet = path.join(os.tmpdir(), `databridge-out-${randomUUID()}.parquet`);
+    const stagingNdjson = path.join(os.tmpdir(), `clarion-stage-${randomUUID()}.ndjson`);
+    const stagingParquet = path.join(os.tmpdir(), `clarion-out-${randomUUID()}.parquet`);
 
     let rowsWritten = 0;
     try {

@@ -113,7 +113,7 @@ export default function OnboardingPage() {
         <div className="flex items-center gap-6 px-9 py-[22px] border-b border-line">
           <div className="flex items-center gap-2.5 font-display font-medium text-[18px] text-ink leading-none">
             <ObservatoryMark size={20} className="text-ocean" />
-            DataBridge
+            Clarion
           </div>
           <div className="flex-1 flex gap-1.5">
             {[1, 2, 3, 4, 5].map((n) => (
@@ -243,7 +243,7 @@ function Step1Connect({
         <em>Where does your data live?</em>
       </h2>
       <p className="text-[15px] text-muted max-w-[540px] leading-[1.55] m-0 mb-8">
-        Pick the warehouse or database DataBridge should connect to. You can add more later.
+        Pick the warehouse or database Clarion should connect to. You can add more later.
       </p>
 
       <div className="grid grid-cols-3 gap-3">
@@ -300,7 +300,7 @@ function Step2Permissions({
         Permissions
       </div>
       <h2 className="font-display font-medium text-[36px] leading-[1.1] tracking-[-0.025em] text-ink m-0 mb-2.5 [&_em]:italic [&_em]:font-normal [&_em]:text-ink-2">
-        <em>What DataBridge can do.</em>
+        <em>What Clarion can do.</em>
       </h2>
       <p className="text-[15px] text-muted max-w-[540px] leading-[1.55] m-0 mb-8">
         Read-only by default. You stay in control.
@@ -340,7 +340,7 @@ function Step2Permissions({
           className="mt-0.5 w-4 h-4 rounded-xs border border-line-strong accent-ocean cursor-pointer"
         />
         <span className="text-[13.5px] text-ink-2 leading-[1.55]">
-          I confirm DataBridge may connect to the source(s) selected above with read-only access,
+          I confirm Clarion may connect to the source(s) selected above with read-only access,
           and that I have the authority to grant this on behalf of my organization.
         </span>
       </label>

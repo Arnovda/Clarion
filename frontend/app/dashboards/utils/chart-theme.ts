@@ -1,5 +1,5 @@
 // ─── chart-theme.ts ──────────────────────────────────────────────────────────
-// Observatory chart palette for DataBridge dashboards.
+// Observatory chart palette for Clarion dashboards.
 // Muted, editorial tones aligned with --c1 through --c6 in globals.css.
 // All chart components should import colors from here — never hardcode hex values.
 

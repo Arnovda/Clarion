@@ -83,7 +83,7 @@ const CONNECTORS: Connector[] = [
       {
         key: 'filepath',
         label: 'File path',
-        placeholder: 'C:\\Users\\you\\Documents\\databridge\\data\\sample.db',
+        placeholder: 'C:\\Users\\you\\Documents\\clarion\\data\\sample.db',
         type: 'text',
         hint: 'Absolute path to your .db file on this machine.',
       },
@@ -1012,7 +1012,7 @@ function SlidePanel({
           {!isEdit && (
             <div className="bg-softer border border-line rounded-md p-4 text-[12px] text-ink-3 space-y-1 leading-relaxed">
               <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">What happens when you connect?</p>
-              <p>1. DataBridge tests the connection to make sure it works.</p>
+              <p>1. Clarion tests the connection to make sure it works.</p>
               <p>2. You pick which tables to ingest into the data warehouse.</p>
               <p>3. Data is ingested as Delta Lake tables for fast querying.</p>
               <p>4. The schema is profiled and Claude generates definitions for your review.</p>
@@ -1080,7 +1080,7 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   useEffect(() => {
     if (!startStream || !connId) return;
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('databridge_token') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
     const abortCtrl = new AbortController();
 
     (async () => {
@@ -1352,7 +1352,7 @@ function EmptyWorkspaceHero({
 
         {/* Subcopy */}
         <p className="mt-5 max-w-[560px] font-display text-[17px] leading-[1.55] text-ink-2 m-0">
-          Connect a source and DataBridge will profile it, learn what every column means,
+          Connect a source and Clarion will profile it, learn what every column means,
           and make it ready for plain-language questions.
         </p>
 

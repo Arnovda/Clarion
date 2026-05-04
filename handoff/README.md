@@ -1,4 +1,4 @@
-# DataBridge · Observatory restyle — Claude Code handoff
+# Clarion · Observatory restyle — Claude Code handoff
 
 This folder is the **single source of truth** Claude Code should work from. Hand it this entire folder.
 

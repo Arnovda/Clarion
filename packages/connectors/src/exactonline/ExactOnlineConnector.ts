@@ -14,7 +14,7 @@
  * previous tenant's auth header into a new request).
  *
  * Inspired by the patterns in TicketSwap's tap-exact-online (MIT) and the
- * spike script in databridge-exact-spike/sync_exact.py. Both informed the
+ * spike script in clarion-exact-spike/sync_exact.py. Both informed the
  * pagination / OData cleanup choices here.
  */
 

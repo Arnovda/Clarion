@@ -43,7 +43,7 @@ kernel. Cells execute server-side via WebSocket.
 - Pro: Full Python ecosystem — pandas on 10+ GB, sklearn, torch, duckdb as
   a Python library, direct Parquet access.
 - Pro: Sharable kernel (multi-cursor editing later).
-- Con: Container orchestration infra DataBridge doesn't have today
+- Con: Container orchestration infra Clarion doesn't have today
   (Azure Container Apps provisioning, idle lifecycle, resource limits).
 - Con: Security surface area — arbitrary code on our infra, needs
   network egress lockdown + disk isolation.

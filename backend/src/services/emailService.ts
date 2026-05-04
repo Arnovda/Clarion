@@ -41,7 +41,7 @@ export interface EmailOptions {
 
 export async function sendEmail(opts: EmailOptions): Promise<void> {
   const t = getTransporter();
-  const from = process.env.SMTP_FROM ?? 'DataBridge <noreply@databridge.local>';
+  const from = process.env.SMTP_FROM ?? 'Clarion <noreply@clarion.local>';
 
   if (!t) {
     logger.warn({ to: opts.to, subject: opts.subject }, '[email] SMTP not configured — skipping send');

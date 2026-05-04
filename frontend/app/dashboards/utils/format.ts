@@ -1,5 +1,5 @@
 // ─── format.ts ───────────────────────────────────────────────────────────────
-// Formatting utilities for the DataBridge dashboard system.
+// Formatting utilities for the Clarion dashboard system.
 // Extracted from the monolith so widget components can import without
 // pulling in the entire page module.
 

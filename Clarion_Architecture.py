@@ -1,5 +1,5 @@
 """
-DataBridge Architecture Document — PDF Generator
+Clarion Architecture Document — PDF Generator
 Creates a professional architecture document with diagrams and visuals.
 """
 
@@ -93,11 +93,11 @@ def page_footer(c, page_num):
     c.line(30, 35, W - 30, 35)
     c.setFillColor(TEXT_LIGHT)
     c.setFont("Helvetica", 8)
-    c.drawString(30, 22, "DataBridge Technical Architecture")
+    c.drawString(30, 22, "Clarion Technical Architecture")
     c.drawRightString(W - 30, 22, f"Page {page_num}")
 
 def create_pdf():
-    c = canvas.Canvas("C:/Users/vandarn/Documents/databridge/DataBridge_Architecture.pdf", pagesize=A4)
+    c = canvas.Canvas("C:/Users/vandarn/Documents/databridge/Clarion_Architecture.pdf", pagesize=A4)
     page_num = 0
 
     # =========================================================================
@@ -113,7 +113,7 @@ def create_pdf():
     # Logo area
     c.setFillColor(white)
     c.setFont("Helvetica-Bold", 42)
-    c.drawCentredString(W/2, H - 280, "DataBridge")
+    c.drawCentredString(W/2, H - 280, "Clarion")
 
     c.setFont("Helvetica", 18)
     c.setFillColor(HexColor('#b39ddb'))
@@ -153,7 +153,7 @@ def create_pdf():
     # Description
     c.setFillColor(TEXT_MID)
     c.setFont("Helvetica", 9)
-    c.drawString(30, y, "DataBridge enables business users to query their data using natural language, powered by a semantic layer and Claude AI.")
+    c.drawString(30, y, "Clarion enables business users to query their data using natural language, powered by a semantic layer and Claude AI.")
     y -= 25
 
     # Three-layer architecture diagram
@@ -913,7 +913,7 @@ def create_pdf():
 
     # Save
     c.save()
-    print("PDF created: DataBridge_Architecture.pdf")
+    print("PDF created: Clarion_Architecture.pdf")
 
 if __name__ == '__main__':
     create_pdf()

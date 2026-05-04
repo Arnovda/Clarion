@@ -180,7 +180,7 @@ function AddSourceWizard() {
    * OAuth Authorization Code flow.
    * 1. POST /oauth-init with the user's pre-auth fields → get { authUrl, stateToken }
    * 2. Open authUrl in a popup window.
-   * 3. Listen for postMessage from the callback page (kind === 'databridge:oauth').
+   * 3. Listen for postMessage from the callback page (kind === 'clarion:oauth').
    * 4. On success message, POST /oauth-finish with { stateToken, code } — backend
    *    exchanges the code for tokens and updates the pending row.
    * 5. Stash stateToken in component state; subsequent calls send it instead of `config`.
@@ -210,7 +210,7 @@ function AddSourceWizard() {
       const top  = (window.screen.height - h) / 2 + (window.screenTop  ?? 0);
       const popup = window.open(
         data.authUrl,
-        'databridge-oauth',
+        'clarion-oauth',
         `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no`,
       );
       if (!popup) {
@@ -231,7 +231,7 @@ function AddSourceWizard() {
       const result = await new Promise<{ ok: true; code: string; state: string } | { ok: false; error: string }>((resolve, reject) => {
         let resolved = false;
         const accept = (m: { kind?: string; ok?: boolean; code?: string; state?: string; error?: string } | undefined) => {
-          if (!m || m.kind !== 'databridge:oauth') return false;
+          if (!m || m.kind !== 'clarion:oauth') return false;
           if (resolved) return true;
           resolved = true;
           channel.close();
@@ -241,7 +241,7 @@ function AddSourceWizard() {
           else resolve({ ok: false, error: m.error ?? 'OAuth failed' });
           return true;
         };
-        const channel = new BroadcastChannel('databridge-oauth');
+        const channel = new BroadcastChannel('clarion-oauth');
         channel.onmessage = (ev) => { accept(ev.data); };
         const onMessage = (ev: MessageEvent) => {
           if (ev.origin !== window.location.origin) return;

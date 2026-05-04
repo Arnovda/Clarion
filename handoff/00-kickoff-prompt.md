@@ -4,7 +4,7 @@ Paste this as your first message to Claude Code, with the `handoff/` folder atta
 
 ---
 
-You are restyling DataBridge, a Next.js 14 + Tailwind app, into a new visual direction called **Observatory**. This is a **presentation-layer change only** — no routing, data, or business logic changes.
+You are restyling Clarion, a Next.js 14 + Tailwind app, into a new visual direction called **Observatory**. This is a **presentation-layer change only** — no routing, data, or business logic changes.
 
 Your single source of truth is the `handoff/` folder. Read it end-to-end before writing any code:
 

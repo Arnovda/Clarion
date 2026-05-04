@@ -17,7 +17,7 @@ import type { JSONSchema7 } from 'json-schema';
 
 export const exactOnlineConfigSchema: JSONSchema7 = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://databridge.local/schemas/connectors/exactonline.json',
+  $id: 'https://clarion.local/schemas/connectors/exactonline.json',
   type: 'object',
   required: ['clientId', 'clientSecret', 'refreshToken', 'division', 'baseUrl'],
   additionalProperties: false,

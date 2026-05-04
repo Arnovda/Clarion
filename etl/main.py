@@ -1,5 +1,5 @@
 """
-DataBridge ETL Service — FastAPI
+Clarion ETL Service — FastAPI
 Reads source databases (SQLite, PostgreSQL, MySQL, SQL Server), writes Delta Lake tables.
 Supports both local filesystem and Azure Blob Storage for multi-tenant production.
 """
@@ -18,7 +18,7 @@ from deltalake import DeltaTable, write_deltalake
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="DataBridge ETL", version="0.3.0")
+app = FastAPI(title="Clarion ETL", version="0.3.0")
 
 # Warehouse config
 WAREHOUSE_ROOT = os.environ.get("WAREHOUSE_ROOT", "/warehouse")

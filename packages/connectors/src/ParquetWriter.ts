@@ -4,14 +4,14 @@
  * Two production implementations behind one `WarehouseWriter` interface:
  *
  *   • LocalFileWarehouseWriter — writes to a local filesystem path. Used in
- *     local dev and tests. Same on-disk layout as production so DataBridge's
+ *     local dev and tests. Same on-disk layout as production so Clarion's
  *     existing DuckDBConnector reads it without modification.
  *
  *   • BlobSasWarehouseWriter (Day 6) — writes to Azure Blob via a
  *     SAS-scoped client. Same interface; just swaps the storage backend.
  *
  * Why DuckDB as the writer:
- *   • Already a dependency of DataBridge — no new native binding to ship.
+ *   • Already a dependency of Clarion — no new native binding to ship.
  *   • DuckDB's `COPY (...) TO '<path>' (FORMAT 'parquet', COMPRESSION 'snappy')`
  *     is faster and more correct than any pure-JS Parquet writer.
  *   • Schema inference from JSON is built in — connectors can write
@@ -64,7 +64,7 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
 
     const stagingPath = path.join(
       os.tmpdir(),
-      `databridge-stage-${randomUUID()}.ndjson`,
+      `clarion-stage-${randomUUID()}.ndjson`,
     );
 
     let rowsWritten = 0;

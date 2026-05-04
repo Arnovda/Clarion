@@ -1,6 +1,6 @@
-# DataBridge — Azure Deployment Guide
+# Clarion — Azure Deployment Guide
 
-Step-by-step guide to deploy DataBridge on Azure for the first time.
+Step-by-step guide to deploy Clarion on Azure for the first time.
 
 ---
 
@@ -41,7 +41,7 @@ terraform output                        # non-sensitive values
 terraform output -json                  # all values including sensitive
 terraform output backend_url            # e.g. https://databridge-prod-backend.niceocean-abc123.westeurope.azurecontainerapps.io
 terraform output frontend_url           # e.g. https://databridge-prod-frontend.niceocean-abc123.westeurope.azurecontainerapps.io
-terraform output acr_login_server       # e.g. databridgeprodacr.azurecr.io
+terraform output acr_login_server       # e.g. clarionprodacr.azurecr.io
 ```
 
 ### Update CORS with actual frontend URL
@@ -170,7 +170,7 @@ Configure these GitHub repository secrets:
 
 ```bash
 az ad sp create-for-rbac \
-  --name "databridge-github-deploy" \
+  --name "clarion-github-deploy" \
   --role contributor \
   --scopes /subscriptions/YOUR_SUBSCRIPTION_ID/resourceGroups/databridge-prod-rg \
   --sdk-auth

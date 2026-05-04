@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   // ─── Heartbeat blob (Azure mode) ───────────────────────────────────────
   // When WORKER_HEARTBEAT_URL is set, every emitted event is mirrored into
   // an append-blob the orchestrator polls. This is how live progress
-  // reaches DataBridge's UI when the worker runs in Container Apps Jobs.
+  // reaches Clarion's UI when the worker runs in Container Apps Jobs.
   let heartbeat: AppendBlobClient | null = null;
   if (env.WORKER_HEARTBEAT_URL) {
     // SAS URL — auth is in the URL itself, so we use AnonymousCredential.

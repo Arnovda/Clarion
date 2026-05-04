@@ -238,14 +238,20 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
 });
 
 // ─── Relationships ─────────────────────────────────────────────────────────
-// IMPORTANT: dual-write asymmetry until Phase 7 (Neo4j cutover) is complete.
-//   • Profiling (SchemaProfiler) writes to BOTH Postgres `table_relationships`
-//     AND Neo4j (Postgres first, then mirrored).
-//   • These user-facing endpoints write to Neo4j ONLY.
-//   • All READS go through Neo4j (graph.getRelationshipsForConnection, etc.).
-// Net effect: Neo4j is the source of truth at runtime; the Postgres table is
-// a write-side legacy that gets repopulated on every re-profile. Do NOT
-// insert into table_relationships from anywhere else — it won't show up.
+// DUAL-WRITE CONTRACT (until Phase 7 Neo4j cutover is complete):
+//   • Neo4j is the source of truth for READS via graph.getRelationshipsForConnection
+//     etc. Every user-facing aggregate that needs Neo4j data goes through Neo4j.
+//   • A handful of aggregate surfaces still query Postgres directly — Home health
+//     score (routes/home.ts), AI review queue counts, the legacy /gaps page.
+//     For those surfaces to stay correct, every WRITE that mutates relationships
+//     must also be mirrored into Postgres `table_relationships`.
+//   • Mirrored writes (today): SchemaProfiler (Postgres-first, then Neo4j),
+//     POST/PATCH/DELETE /relationships, POST /relationships/re-suggest.
+//   • Mirror invariant: id is identical on both sides. The route uses
+//     `nextPgId()` (semantic_node_id_seq) as the source-of-truth id and inserts
+//     into Postgres with that explicit id, then bumps table_relationships_id_seq.
+//   • If you add a new write to relationships anywhere, MIRROR IT or extend the
+//     consuming aggregate to read from Neo4j. See CLAUDE.md → "Dual-write contract".
 
 // GET /api/semantic/relationships?connectionId=1
 router.get('/relationships', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
@@ -280,6 +286,30 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
       description:     description ? String(description) : null,
       aiDraft:         false,
     });
+    // Mirror to Postgres `table_relationships` so Home's "relationships
+    // approved / total" counts reflect the new row. Insert with explicit
+    // id = Neo4j pgId so PATCH/DELETE by id stays consistent across stores.
+    // See dual-write contract notes in CLAUDE.md.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    await semanticDb('table_relationships')
+      .insert({
+        id:                pgId,
+        from_table_id:     Number(from_table_id),
+        from_column_id:    from_column_id ? Number(from_column_id) : null,
+        to_table_id:       Number(to_table_id),
+        to_column_id:      to_column_id ? Number(to_column_id) : null,
+        relationship_type: String(relationship_type ?? ''),
+        description:       description ? String(description) : null,
+        ai_draft:          false,
+      })
+      .onConflict('id').merge();
+    // Keep table_relationships_id_seq ahead of any pgId we've inserted so
+    // future SchemaProfiler runs (which let Postgres auto-assign id) don't
+    // collide with Neo4j-assigned pgIds we've already mirrored.
+    await semanticDb.raw(
+      `SELECT setval('table_relationships_id_seq', GREATEST(?, (SELECT COALESCE(MAX(id), 1) FROM table_relationships)))`,
+      [pgId],
+    );
     res.status(201).json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
 });
@@ -320,7 +350,13 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin'), async (req
 // DELETE /api/semantic/relationships/:id
 router.delete('/relationships/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await graph.deleteRelationship(Number(req.params.id));
+    const id = Number(req.params.id);
+    await graph.deleteRelationship(id);
+    // Mirror delete to Postgres so Home's relationship counts decrement.
+    // No-op if the row doesn't exist (e.g. legacy Neo4j-only rels created
+    // before the dual-write was added).
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    await semanticDb('table_relationships').where({ id }).delete();
     await invalidateSemanticCache();
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -419,6 +455,20 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
     const columnIdMap = await graph.getColumnPgIdMap(connectionId);
 
     await graph.deleteAiDraftRelationships(connectionId);
+    // Mirror the wipe in Postgres — drop every AI-draft relationship rooted
+    // at any table for this connection. Confirmed (ai_draft = false) rels
+    // are preserved on both sides.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    const connectionTableIds = Array.from(tableIdMap.values());
+    if (connectionTableIds.length > 0) {
+      await semanticDb('table_relationships')
+        .where({ ai_draft: true })
+        .where(function () {
+          this.whereIn('from_table_id', connectionTableIds)
+              .orWhereIn('to_table_id', connectionTableIds);
+        })
+        .delete();
+    }
 
     let inserted = 0;
     for (const rel of result.relationships) {
@@ -442,9 +492,26 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
         description:    rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
         aiDraft:        true,
       });
+      // Mirror each new draft into Postgres with explicit id = Neo4j pgId.
+      await semanticDb('table_relationships')
+        .insert({
+          id:                pgId,
+          from_table_id:     fromTablePgId,
+          from_column_id:    fromColPgId ?? null,
+          to_table_id:       toTablePgId,
+          to_column_id:      toColPgId ?? null,
+          relationship_type: rel.type,
+          description:       rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
+          ai_draft:          true,
+        })
+        .onConflict('id').merge();
       inserted++;
       emit({ phase: 'storing', message: `Stored: ${rel.from_table}.${rel.via_column} → ${rel.to_table}.${rel.to_column}` });
     }
+    // Keep the Postgres sequence ahead of every pgId we just inserted.
+    await semanticDb.raw(
+      `SELECT setval('table_relationships_id_seq', (SELECT COALESCE(MAX(id), 1) FROM table_relationships))`,
+    );
 
     emit({ phase: 'done', message: `Done — ${inserted} relationships created` });
 
@@ -1066,7 +1133,7 @@ router.get('/dictionary', requireAuth, async (req: Request, res: Response, next:
         html += `</tbody></table>`;
       }
 
-      html += `<div class="footer">DataBridge Data Dictionary — auto-generated</div></body></html>`;
+      html += `<div class="footer">Clarion Data Dictionary — auto-generated</div></body></html>`;
 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.send(html);

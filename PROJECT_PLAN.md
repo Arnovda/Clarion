@@ -1,4 +1,4 @@
-# DataBridge — Production Launch Plan
+# Clarion — Production Launch Plan
 
 > Track progress block by block. Updated by Claude Code at the end of every session.
 > Read this file at the start of every session to know where we are.

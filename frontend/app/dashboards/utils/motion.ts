@@ -1,5 +1,5 @@
 // ─── motion.ts ───────────────────────────────────────────────────────────────
-// Framer Motion animation presets for the DataBridge premium dashboard.
+// Framer Motion animation presets for the Clarion premium dashboard.
 // Import these variants and springs instead of defining them inline.
 
 import { Variants } from 'framer-motion';

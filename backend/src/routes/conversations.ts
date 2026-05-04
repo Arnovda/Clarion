@@ -290,7 +290,7 @@ router.get('/:id/export/csv', async (req: Request, res: Response, next: NextFunc
     }
 
     const csv = csvLines.join('\r\n');
-    const filename = `databridge-export-${conv.id}.csv`;
+    const filename = `clarion-export-${conv.id}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -327,7 +327,7 @@ router.get('/:id/export/xlsx', async (req: Request, res: Response, next: NextFun
     // Build XLSX using a minimal OOXML generator (no external dependency)
     const columns = Object.keys(rows[0]);
     const xlsx = buildXlsxFromRows(columns, rows);
-    const filename = `databridge-export-${conv.id}.xlsx`;
+    const filename = `clarion-export-${conv.id}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

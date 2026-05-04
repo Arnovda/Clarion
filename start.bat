@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo   DataBridge - Starting all services
+echo   Clarion - Starting all services
 echo ============================================
 echo.
 
@@ -33,7 +33,7 @@ echo.
 :: 4. Start backend (in background)
 echo [4/5] Starting backend on port 3001...
 cd backend
-start "DataBridge Backend" cmd /c "npx ts-node src/index.ts"
+start "Clarion Backend" cmd /c "npx ts-node src/index.ts"
 cd ..
 echo      Backend starting...
 echo.
@@ -41,7 +41,7 @@ echo.
 :: 5. Start frontend (in background)
 echo [5/5] Starting frontend on port 3000...
 cd frontend
-start "DataBridge Frontend" cmd /c "npx next dev -p 3000"
+start "Clarion Frontend" cmd /c "npx next dev -p 3000"
 cd ..
 echo      Frontend starting...
 echo.

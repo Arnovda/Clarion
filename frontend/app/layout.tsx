@@ -23,7 +23,7 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: 'DataBridge',
+  title: 'Clarion',
   description: 'AI-powered semantic data platform',
 };
 

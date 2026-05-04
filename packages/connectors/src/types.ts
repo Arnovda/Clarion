@@ -14,7 +14,7 @@
  *     allow-list, and only write access to its own warehouse path.
  *
  * Connectors should never:
- *   • read DataBridge's database (workers have no DB credentials)
+ *   • read Clarion's database (workers have no DB credentials)
  *   • read environment variables directly (use config + ctx)
  *   • log credentials (use `ctx.log` — it redacts)
  *   • write outside `ctx.warehouseWriter` (the SAS token wouldn't authorise it)
@@ -205,7 +205,7 @@ export interface OAuthSpec {
 // ─── Configuration ────────────────────────────────────────────────────────
 /**
  * Connector-specific config. Always validated against `configSchema` before
- * being passed to a connector method. Encrypted at rest via DataBridge's
+ * being passed to a connector method. Encrypted at rest via Clarion's
  * AES-256-GCM crypto helpers.
  */
 export type ConnectorConfig = Record<string, unknown>;

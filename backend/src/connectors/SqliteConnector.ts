@@ -16,7 +16,7 @@ export class SqliteConnector extends BaseConnector {
     if (!fs.existsSync(this.filePath)) {
       throw new Error(`SQLite file not found: ${this.filePath}`);
     }
-    // readonly: true — DataBridge never writes to the source database
+    // readonly: true — Clarion never writes to the source database
     this.db = new Database(this.filePath, { readonly: true });
   }
 

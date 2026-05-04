@@ -1,5 +1,5 @@
 // ─── types.ts ─────────────────────────────────────────────────────────────────
-// Shared TypeScript interfaces for the DataBridge dashboard system.
+// Shared TypeScript interfaces for the Clarion dashboard system.
 // Import from here instead of defining inline in page.tsx.
 
 // ─── Filter & Widget Specs ────────────────────────────────────────────────────

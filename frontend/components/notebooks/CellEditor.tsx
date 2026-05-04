@@ -20,7 +20,7 @@ interface CellEditorProps {
   readOnly?: boolean;
 }
 
-// Minimal light theme that matches the DataBridge design
+// Minimal light theme that matches the Clarion design
 const lightTheme = EditorView.theme({
   '&': {
     fontSize: '13px',

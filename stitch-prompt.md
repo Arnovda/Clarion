@@ -1,8 +1,8 @@
-# DataBridge — AI-Powered Data Intelligence Platform
+# Clarion — AI-Powered Data Intelligence Platform
 
 ## What this product is
 
-DataBridge is a SaaS platform for SMB business users (owners, managers, analysts). Users connect their business databases, and the platform's AI understands the schema, generates definitions, discovers relationships, monitors data quality — and then lets users ask questions about their data in plain language. No SQL, no technical knowledge needed. The AI generates SQL behind the scenes and returns answers in plain sentences with charts.
+Clarion is a SaaS platform for SMB business users (owners, managers, analysts). Users connect their business databases, and the platform's AI understands the schema, generates definitions, discovers relationships, monitors data quality — and then lets users ask questions about their data in plain language. No SQL, no technical knowledge needed. The AI generates SQL behind the scenes and returns answers in plain sentences with charts.
 
 Three user roles:
 - **Admin**: Connects data sources, reviews AI-generated definitions, manages the team
@@ -71,7 +71,7 @@ The entire app uses a persistent three-panel layout. This is the core of the pre
 ### Panel 1 — Icon Rail (48px wide, always visible)
 
 - Dark navy background (#003358)
-- Logo at top (DataBridge icon/monogram)
+- Logo at top (Clarion icon/monogram)
 - 8 main navigation icons vertically stacked, each with a tooltip on hover
 - Active tab: teal left-border accent (3px) + brighter white icon. Inactive: muted white icon at 50% opacity
 - Divider line before bottom section
@@ -531,7 +531,7 @@ Full-width interactive graph visualization.
 
 ### Login page (`/`)
 - Centered card on surface background
-- DataBridge logo at top
+- Clarion logo at top
 - Email + password inputs (using the design system's input style: surface-container-lowest fill, bottom accent in primary)
 - "Sign in" button (primary gradient)
 - "Forgot password?" link

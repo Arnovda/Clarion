@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>DataBridge — How It Works</title>
+<title>Clarion — How It Works</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
 <script>
   mermaid.initialize({ startOnLoad: true, theme: 'neutral', fontFamily: 'Source Serif 4, Georgia, serif', flowchart: { curve: 'basis' } });
@@ -107,9 +107,9 @@
 
 <div class="cover">
   <div class="cover-top">
-    <div class="eyebrow">DataBridge Platform</div>
+    <div class="eyebrow">Clarion Platform</div>
     <h1><em>How it</em> works.</h1>
-    <p class="subtitle">A layered guide to what DataBridge does, how users experience it, and what happens under the hood.</p>
+    <p class="subtitle">A layered guide to what Clarion does, how users experience it, and what happens under the hood.</p>
   </div>
   <div class="cover-bottom">
     <div class="audience">
@@ -133,7 +133,7 @@
   Anyone. If you only read one section, read this one.
 </div>
 
-<p><strong>DataBridge is an AI-native semantic data platform.</strong> Business users connect their operational databases (their ERP, CRM, whatever they already run), let the AI understand the data, and then ask questions in plain English or build dashboards by describing them. The platform turns natural language into SQL, executes it against a purpose-built analytics warehouse, and renders the answer. No SQL expertise required to use it, no data team required to set it up.</p>
+<p><strong>Clarion is an AI-native semantic data platform.</strong> Business users connect their operational databases (their ERP, CRM, whatever they already run), let the AI understand the data, and then ask questions in plain English or build dashboards by describing them. The platform turns natural language into SQL, executes it against a purpose-built analytics warehouse, and renders the answer. No SQL expertise required to use it, no data team required to set it up.</p>
 
 <p>From a user's perspective, there are four moments:</p>
 
@@ -187,9 +187,9 @@ flowchart LR
 
 <h3>1. Connecting a source</h3>
 
-<p>An admin opens <strong>Sources</strong>, provides connection details for the client's operational database (SQLite, PostgreSQL, MySQL, or SQL Server), and DataBridge tests the connection. Credentials are encrypted at rest with AES-256-GCM before being stored.</p>
+<p>An admin opens <strong>Sources</strong>, provides connection details for the client's operational database (SQLite, PostgreSQL, MySQL, or SQL Server), and Clarion tests the connection. Credentials are encrypted at rest with AES-256-GCM before being stored.</p>
 
-<p>Once connected, the admin clicks <strong>Profile</strong>. In the background, DataBridge reads every table and column in the source, runs statistical analysis (null rates, distinct values, minimum/maximum), then asks Claude to generate plain-English descriptions of every table and column. The admin gets a ready-to-review <em>data dictionary</em>, usually within a minute or two.</p>
+<p>Once connected, the admin clicks <strong>Profile</strong>. In the background, Clarion reads every table and column in the source, runs statistical analysis (null rates, distinct values, minimum/maximum), then asks Claude to generate plain-English descriptions of every table and column. The admin gets a ready-to-review <em>data dictionary</em>, usually within a minute or two.</p>
 
 <p>The admin then opens <strong>Semantics</strong> to read through the AI's draft, correct anything that's wrong, and confirm. This is the one-time upfront cost. After this, the platform knows what the data <em>means</em> &mdash; which is the foundation everything else rests on.</p>
 
@@ -201,7 +201,7 @@ flowchart LR
 
 <h3>3. Running the transformations</h3>
 
-<p>The admin clicks <strong>Run transformation</strong>. DataBridge takes the approved SQL for each table, executes it against the source data, and writes the results as Parquet files (a fast, compressed analytical format) into a warehouse. This happens either on local disk (for dev) or in Azure Blob Storage (for production). After each table materialises, automated <strong>quality gates</strong> run &mdash; checking for things like duplicate business keys or JOINs that silently multiply rows. Failures block the run and surface as specific error messages in the UI.</p>
+<p>The admin clicks <strong>Run transformation</strong>. Clarion takes the approved SQL for each table, executes it against the source data, and writes the results as Parquet files (a fast, compressed analytical format) into a warehouse. This happens either on local disk (for dev) or in Azure Blob Storage (for production). After each table materialises, automated <strong>quality gates</strong> run &mdash; checking for things like duplicate business keys or JOINs that silently multiply rows. Failures block the run and surface as specific error messages in the UI.</p>
 
 <p>The admin can set a schedule (e.g. "rebuild every night at 3 am") so the data products stay fresh without manual intervention.</p>
 
@@ -247,7 +247,7 @@ flowchart TB
 
 <h3>The two-layer data model</h3>
 
-<p>DataBridge maintains data at two layers. The <strong>source layer</strong> is a faithful ingested copy of the client's operational database, stored as Delta Lake tables. The <strong>product layer</strong> is the materialised Kimball star schemas, stored as Parquet files. Queries prefer the product layer when it exists (cleaner model, purpose-built for analytics) and fall back to the source layer when a product doesn't cover the question.</p>
+<p>Clarion maintains data at two layers. The <strong>source layer</strong> is a faithful ingested copy of the client's operational database, stored as Delta Lake tables. The <strong>product layer</strong> is the materialised Kimball star schemas, stored as Parquet files. Queries prefer the product layer when it exists (cleaner model, purpose-built for analytics) and fall back to the source layer when a product doesn't cover the question.</p>
 
 <div class="diagram">
 <pre class="mermaid">

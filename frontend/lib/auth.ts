@@ -1,6 +1,6 @@
 'use client';
 
-const TOKEN_KEY = 'databridge_token';
+const TOKEN_KEY = 'clarion_token';
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null;

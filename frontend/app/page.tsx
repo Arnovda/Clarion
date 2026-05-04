@@ -53,7 +53,7 @@ export default function LoginPage() {
       lede="Your workspace is one step away."
       footer={
         <>
-          New to DataBridge?{' '}
+          New to Clarion?{' '}
           <Link
             href="/register"
             className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1"
