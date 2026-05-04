@@ -253,6 +253,13 @@ function PipelinesInner() {
   // overlays these on top of the static "in scope / out of scope" colouring
   // so users can SEE the pipeline progress on the graph itself.
   const [liveNodes, setLiveNodes] = useState<Map<string, NodeRunState>>(new Map());
+  // Right-pane tab — Canvas (the default "configure + run") vs Runs (the
+  // history / audit surface). Splitting these prevents the active-run dock,
+  // canvas, and recent-runs strip from competing for the same vertical
+  // real estate. When a run starts we keep the user on Canvas (so they see
+  // the live animation) but they can switch to Runs to drill into past
+  // pipeline_runs at any time.
+  const [pipelineTab, setPipelineTab] = useState<'canvas' | 'runs'>('canvas');
   // CRITICAL: these callbacks must have stable references because the dock
   // lists them in its SSE useEffect dependency array. Inline arrow functions
   // here would create a new reference on every parent render → the SSE
@@ -535,59 +542,69 @@ function PipelinesInner() {
               <PipelineHeader
                 pipeline={selected}
                 running={running === (selected.kind === 'builtin' ? selected.id : selected.stableId)}
+                activeTab={pipelineTab}
+                onTabChange={setPipelineTab}
+                runActive={!!activeStream}
                 onRun={() => runPipeline(
                   selected.kind === 'builtin' ? selected.id : selected.stableId,
                   selected.name,
                 )}
                 onEdit={selected.kind === 'custom' ? () => setShowCustomEditor({ mode: 'edit', id: (selected as CustomPipeline).id }) : undefined}
               />
-              <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
-                <ReactFlow
-                  nodes={rfNodes}
-                  edges={rfEdges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  nodeTypes={nodeTypes}
-                  fitView
-                  fitViewOptions={{ padding: 0.2 }}
-                  minZoom={0.4}
-                  maxZoom={1.5}
-                  proOptions={{ hideAttribution: true }}
-                  nodesDraggable={false}
-                  nodesConnectable={false}
-                >
-                  <Background color={OBSERVATORY.line} gap={20} size={1} />
-                  <Controls showInteractive={false} />
-                </ReactFlow>
-                {/* Legend */}
-                <div className="absolute top-3 right-3 bg-raised border border-line rounded-md px-3 py-2 text-[10px] font-mono uppercase tracking-[0.08em] flex items-center gap-3 shadow-sm">
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ocean }} /> Source in scope</span>
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ai }} /> Product in scope</span>
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ background: OBSERVATORY.softer, border: `1px solid ${OBSERVATORY.line}` }} /> Out of scope</span>
-                </div>
-              </div>
-              {/*
-                Active run dock — ADF-style. Sits BETWEEN the DAG canvas and
-                Recent runs so the user never loses sight of either while a
-                run is in progress. Per-node status + cumulative log,
-                collapsible to a one-line strip.
-              */}
-              {activeStream && (
-                <RunActivityDock
-                  jobId={activeStream.jobId}
-                  pipelineRunId={activeStream.pipelineRunId}
-                  pipelineName={activeStream.pipelineName}
-                  scopeHint={scopeHint}
+              {pipelineTab === 'canvas' ? (
+                <>
+                  <div className="flex-1 relative" style={{ background: OBSERVATORY.bg }}>
+                    <ReactFlow
+                      nodes={rfNodes}
+                      edges={rfEdges}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      nodeTypes={nodeTypes}
+                      fitView
+                      fitViewOptions={{ padding: 0.2 }}
+                      minZoom={0.4}
+                      maxZoom={1.5}
+                      proOptions={{ hideAttribution: true }}
+                      nodesDraggable={false}
+                      nodesConnectable={false}
+                    >
+                      <Background color={OBSERVATORY.line} gap={20} size={1} />
+                      <Controls showInteractive={false} />
+                    </ReactFlow>
+                    {/* Legend */}
+                    <div className="absolute top-3 right-3 bg-raised border border-line rounded-md px-3 py-2 text-[10px] font-mono uppercase tracking-[0.08em] flex items-center gap-3 shadow-sm">
+                      <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ocean }} /> Source in scope</span>
+                      <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm border-2" style={{ borderColor: OBSERVATORY.ai }} /> Product in scope</span>
+                      <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ background: OBSERVATORY.softer, border: `1px solid ${OBSERVATORY.line}` }} /> Out of scope</span>
+                    </div>
+                  </div>
+                  {/*
+                    Active run dock — ADF-style, slides up from below the
+                    canvas while a run is in progress. Per-node status +
+                    cumulative log, collapsible to a one-line strip.
+                  */}
+                  {activeStream && (
+                    <RunActivityDock
+                      jobId={activeStream.jobId}
+                      pipelineRunId={activeStream.pipelineRunId}
+                      pipelineName={activeStream.pipelineName}
+                      scopeHint={scopeHint}
+                      dag={dag}
+                      onLiveNodesChange={setLiveNodes}
+                      onDismiss={onDockDismiss}
+                      onCompleted={onDockCompleted}
+                    />
+                  )}
+                </>
+              ) : (
+                <RunsList
+                  runs={recentRuns}
+                  pipelineId={selected.kind === 'custom' ? (selected as CustomPipeline).id : null}
                   dag={dag}
-                  onLiveNodesChange={setLiveNodes}
-                  onDismiss={onDockDismiss}
-                  onCompleted={onDockCompleted}
+                  activeJobId={activeStream?.jobId ?? null}
+                  onJumpToCanvas={() => setPipelineTab('canvas')}
                 />
               )}
-              <RunHistory
-                runs={recentRuns}
-                pipelineId={selected.kind === 'custom' ? (selected as CustomPipeline).id : null}
-              />
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted">
@@ -741,56 +758,91 @@ function ListItem({
 // ─── Right header ───────────────────────────────────────────────────────────
 
 function PipelineHeader({
-  pipeline, running, onRun, onEdit,
+  pipeline, running, activeTab, onTabChange, runActive, onRun, onEdit,
 }: {
   pipeline: Pipeline;
   running: boolean;
+  activeTab: 'canvas' | 'runs';
+  onTabChange: (t: 'canvas' | 'runs') => void;
+  runActive: boolean;
   onRun: () => void;
   onEdit?: () => void;
 }) {
   const triggers = pipeline.kind === 'custom' ? (pipeline as CustomPipeline & { kind: 'custom' }).triggers : [];
   return (
-    <div className="border-b border-line bg-raised px-6 py-3 flex items-center gap-3">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink truncate">{pipeline.name}</h2>
-          {pipeline.kind === 'builtin' ? (
-            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">built-in</span>
-          ) : (
-            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ai bg-ai-soft border border-line px-1.5 py-0.5 rounded">custom</span>
+    <div className="border-b border-line bg-raised">
+      {/* Top row: name, run controls */}
+      <div className="px-6 py-3 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink truncate">{pipeline.name}</h2>
+            {pipeline.kind === 'builtin' ? (
+              <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">built-in</span>
+            ) : (
+              <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ai bg-ai-soft border border-line px-1.5 py-0.5 rounded">custom</span>
+            )}
+          </div>
+          <p className="text-[12px] text-muted mt-0.5">
+            {pipeline.kind === 'builtin' ? pipeline.description : (pipeline as CustomPipeline & { kind: 'custom' }).description ?? scopeSummary(pipeline.scope)}
+          </p>
+          {triggers.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {triggers.map((t, i) => (
+                <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.08em] bg-softer border border-line rounded">
+                  {triggerSummary(t)}
+                </span>
+              ))}
+            </div>
           )}
         </div>
-        <p className="text-[12px] text-muted mt-0.5">
-          {pipeline.kind === 'builtin' ? pipeline.description : (pipeline as CustomPipeline & { kind: 'custom' }).description ?? scopeSummary(pipeline.scope)}
-        </p>
-        {triggers.length > 0 && (
-          <div className="mt-1 flex flex-wrap gap-1.5">
-            {triggers.map((t, i) => (
-              <span key={i} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-[0.08em] bg-softer border border-line rounded">
-                {triggerSummary(t)}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        {onEdit && (
+        <div className="flex items-center gap-2">
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer transition-colors"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              Edit
+            </button>
+          )}
           <button
-            onClick={onEdit}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer transition-colors"
+            onClick={onRun}
+            disabled={running}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
           >
-            <Pencil className="w-3.5 h-3.5" />
-            Edit
+            {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
+            Run now
           </button>
-        )}
-        <button
-          onClick={onRun}
-          disabled={running}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-        >
-          {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-          Run now
-        </button>
+        </div>
+      </div>
+
+      {/* Tab strip — keeps "configure + watch" separate from "audit" */}
+      <div className="px-6 -mt-1 flex items-end gap-0">
+        {(['canvas', 'runs'] as const).map((tab) => {
+          const active = activeTab === tab;
+          return (
+            <button
+              key={tab}
+              onClick={() => onTabChange(tab)}
+              className={cn(
+                'inline-flex items-center gap-2 px-3 py-2 text-[12px] font-medium border-b-2 -mb-[1px] transition-colors',
+                active
+                  ? 'border-ocean text-ocean'
+                  : 'border-transparent text-muted hover:text-ink-2',
+              )}
+            >
+              {tab === 'canvas' ? 'Canvas' : 'Runs'}
+              {/* Pulse the Runs tab while a run is active so users notice
+                 it even if they're focused on the canvas. */}
+              {tab === 'runs' && runActive && (
+                <span className="relative flex w-1.5 h-1.5">
+                  <span className="absolute inline-flex w-full h-full rounded-full bg-ocean opacity-75 animate-ping" />
+                  <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-ocean" />
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -817,54 +869,263 @@ function triggerSummary(t: PipelineTrigger): React.ReactNode {
   }
 }
 
-// ─── Run history ────────────────────────────────────────────────────────────
+// ─── RunsList tab — replaces the old RunHistory strip with a real audit surface
+//
+// Filterable table of every run for the selected pipeline (or every tenant
+// run when a built-in is selected). Each row expands inline to show the
+// per-node node_results JSON the orchestrator persists at run completion,
+// plus the BullMQ job id for cross-referencing logs. The currently-active
+// run (if any) shows at the top with a live "running" pill.
 
-function RunHistory({ runs, pipelineId }: { runs: RunRow[]; pipelineId: number | null }) {
-  const filtered = pipelineId == null
-    ? runs                                       // built-in selected → all recent runs
-    : runs.filter((r) => r.pipeline_id === pipelineId);
+type RunStatusFilter = 'all' | 'succeeded' | 'partial' | 'failed' | 'running';
 
-  if (filtered.length === 0) {
+function RunsList({
+  runs, pipelineId, dag, activeJobId, onJumpToCanvas,
+}: {
+  runs: RunRow[];
+  pipelineId: number | null;
+  dag: Dag | null;
+  activeJobId: string | null;
+  onJumpToCanvas: () => void;
+}) {
+  const [filter, setFilter] = useState<RunStatusFilter>('all');
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const scoped = useMemo(
+    () => pipelineId == null ? runs : runs.filter((r) => r.pipeline_id === pipelineId),
+    [runs, pipelineId],
+  );
+  const filtered = useMemo(() => {
+    if (filter === 'all') return scoped;
+    if (filter === 'running') return scoped.filter((r) => r.status === 'running' || r.status === 'queued');
+    return scoped.filter((r) => r.status === filter);
+  }, [scoped, filter]);
+
+  const counts = useMemo(() => {
+    const c = { all: scoped.length, succeeded: 0, partial: 0, failed: 0, running: 0 };
+    for (const r of scoped) {
+      if (r.status === 'succeeded') c.succeeded++;
+      else if (r.status === 'partial') c.partial++;
+      else if (r.status === 'failed') c.failed++;
+      else if (r.status === 'running' || r.status === 'queued') c.running++;
+    }
+    return c;
+  }, [scoped]);
+
+  if (scoped.length === 0) {
     return (
-      <div className="border-t border-line bg-raised px-6 py-3 text-[11px] text-muted">
-        No runs yet.
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center px-6 py-16 text-muted">
+        <Clock className="w-6 h-6" strokeWidth={1.5} />
+        <p className="text-[13px] text-ink-2">No runs yet</p>
+        <p className="text-[12px] text-muted">
+          Switch to <button onClick={onJumpToCanvas} className="underline text-ocean hover:text-ocean-hover">Canvas</button> and click <span className="font-medium">Run now</span> to start one.
+        </p>
       </div>
     );
   }
+
   return (
-    <div className="border-t border-line bg-raised">
-      <div className="px-6 py-2 flex items-baseline gap-2">
-        <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Recent runs</p>
+    <div className="flex-1 flex flex-col min-h-0">
+      {/* Filter chips */}
+      <div className="px-6 py-3 border-b border-line bg-raised flex items-center gap-1.5 flex-wrap">
+        {([
+          { id: 'all',       label: 'All',       n: counts.all },
+          { id: 'running',   label: 'Running',   n: counts.running },
+          { id: 'succeeded', label: 'Succeeded', n: counts.succeeded },
+          { id: 'partial',   label: 'Partial',   n: counts.partial },
+          { id: 'failed',    label: 'Failed',    n: counts.failed },
+        ] as { id: RunStatusFilter; label: string; n: number }[]).map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setFilter(c.id)}
+            disabled={c.n === 0 && c.id !== 'all'}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-medium rounded border transition-colors',
+              filter === c.id
+                ? 'bg-ocean text-white border-ocean'
+                : c.n === 0
+                  ? 'bg-soft text-muted-2 border-line cursor-default opacity-50'
+                  : 'bg-raised text-ink-2 border-line hover:bg-softer',
+            )}
+          >
+            {c.label}
+            <span className={cn(
+              'text-[10px] font-mono tabular-nums',
+              filter === c.id ? 'text-white/80' : 'text-muted-2',
+            )}>{c.n}</span>
+          </button>
+        ))}
       </div>
-      <div className="px-6 pb-3 max-h-40 overflow-y-auto">
-        {filtered.slice(0, 10).map((r) => {
-          const Icon = r.status === 'succeeded' ? CheckCircle2
-            : r.status === 'partial' || r.status === 'failed' ? AlertCircle
-            : r.status === 'running' || r.status === 'queued' ? Loader2 : Clock;
-          const color = r.status === 'succeeded' ? OBSERVATORY.ok
-            : r.status === 'partial' ? OBSERVATORY.warn
-            : r.status === 'failed' ? OBSERVATORY.err
-            : OBSERVATORY.muted;
-          return (
-            <div key={r.id} className="flex items-center gap-2 py-1 text-[11.5px]">
-              <Icon className={`w-3 h-3 ${r.status === 'running' || r.status === 'queued' ? 'animate-spin' : ''}`} style={{ color }} />
-              <span className="font-mono text-ink-2">#{r.id}</span>
-              <span className="text-muted-2">{r.triggered_by ?? '—'}</span>
-              <span className="text-muted">·</span>
-              <span style={{ color }}>{r.status}</span>
-              {r.node_results && (
-                <span className="text-muted ml-1">
-                  {r.node_results.products?.length ?? 0}p
-                  {r.node_results.sources?.length ? ` · ${r.node_results.sources.length}s` : ''}
-                </span>
-              )}
-              <span className="ml-auto font-mono text-muted-2 text-[10px]">
-                {formatRelative(r.queued_at)}
-              </span>
+
+      {/* Run table */}
+      <div className="flex-1 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <div className="px-6 py-10 text-[12px] text-muted text-center">
+            No runs match this filter.
+          </div>
+        ) : (
+          <div className="divide-y divide-line">
+            {filtered.map((r) => (
+              <RunsListRow
+                key={r.id}
+                run={r}
+                dag={dag}
+                isActive={activeJobId != null && r.job_id === activeJobId}
+                expanded={expandedId === r.id}
+                onToggle={() => setExpandedId(expandedId === r.id ? null : r.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RunsListRow({
+  run, dag, isActive, expanded, onToggle,
+}: {
+  run: RunRow;
+  dag: Dag | null;
+  isActive: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = run.status === 'succeeded' ? CheckCircle2
+    : run.status === 'partial' || run.status === 'failed' ? AlertCircle
+    : run.status === 'running' || run.status === 'queued' ? Loader2 : Clock;
+  const color = run.status === 'succeeded' ? OBSERVATORY.ok
+    : run.status === 'partial' ? OBSERVATORY.warn
+    : run.status === 'failed' ? OBSERVATORY.err
+    : run.status === 'running' || run.status === 'queued' ? OBSERVATORY.ocean
+    : OBSERVATORY.muted;
+  const sources = run.node_results?.sources ?? [];
+  const products = run.node_results?.products ?? [];
+  const duration = run.completed_at && run.started_at
+    ? Math.round((new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()) / 1000)
+    : null;
+
+  // Resolve names from the DAG so the expansion shows "Exact Online" not "5"
+  const sourceNameById = useMemo(
+    () => new Map((dag?.sources ?? []).map((s) => [s.id, s.name])),
+    [dag],
+  );
+
+  return (
+    <div className={cn(isActive && 'bg-ocean-softer/40')}>
+      <button
+        onClick={onToggle}
+        className="w-full px-6 py-2.5 flex items-center gap-3 hover:bg-softer text-left transition-colors"
+      >
+        <ChevronDown
+          className={cn(
+            'w-3 h-3 text-muted-2 shrink-0 transition-transform',
+            !expanded && '-rotate-90',
+          )}
+        />
+        <Icon
+          className={cn('w-3.5 h-3.5 shrink-0', (run.status === 'running' || run.status === 'queued') && 'animate-spin')}
+          style={{ color }}
+        />
+        <span className="font-mono text-[12px] text-ink shrink-0">#{run.id}</span>
+        {isActive && (
+          <span className="text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded bg-ocean text-white">live</span>
+        )}
+        <span className="text-[12px] text-ink-2 truncate flex-1">
+          {run.triggered_by ?? '—'}
+        </span>
+        <span className="text-[11px] font-mono uppercase tracking-[0.08em] shrink-0" style={{ color }}>
+          {run.status}
+        </span>
+        {(sources.length > 0 || products.length > 0) && (
+          <span className="text-[11px] font-mono text-muted-2 shrink-0 hidden sm:inline">
+            {sources.length}s · {products.length}p
+          </span>
+        )}
+        {duration != null && (
+          <span className="text-[11px] font-mono text-muted-2 tabular-nums shrink-0">
+            {duration < 60 ? `${duration}s` : `${Math.round(duration / 60)}m`}
+          </span>
+        )}
+        <span className="text-[11px] font-mono text-muted-2 tabular-nums shrink-0 w-24 text-right">
+          {formatRelative(run.queued_at)}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-6 pb-3 bg-softer/30 border-t border-line/60">
+          {run.error_message && (
+            <div className="mt-2 mx-6 px-2 py-1.5 rounded text-[11.5px] font-mono" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.err }}>
+              {run.error_message}
             </div>
-          );
-        })}
-      </div>
+          )}
+          <div className="mt-2 mx-6 grid grid-cols-2 gap-x-8 gap-y-3">
+            {/* Sources */}
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                Sources ({sources.length})
+              </p>
+              {sources.length === 0 ? (
+                <p className="text-[11.5px] text-muted italic">None</p>
+              ) : (
+                <div className="space-y-0.5">
+                  {sources.map((s) => {
+                    const name = sourceNameById.get(s.sourceId) ?? `#${s.sourceId}`;
+                    const c = s.status === 'succeeded' ? OBSERVATORY.ok
+                      : s.status === 'failed' ? OBSERVATORY.err
+                      : OBSERVATORY.muted2;
+                    const SrcIcon = s.status === 'succeeded' ? CheckCircle2
+                      : s.status === 'failed' ? AlertCircle
+                      : MinusSquare;
+                    return (
+                      <div key={s.sourceId} className="flex items-center gap-2 text-[11.5px] py-0.5">
+                        <SrcIcon className="w-3 h-3 shrink-0" style={{ color: c }} />
+                        <Database className="w-3 h-3 shrink-0" style={{ color: OBSERVATORY.ocean }} />
+                        <span className="text-ink-2 flex-1 truncate">{name}</span>
+                        <span className="font-mono uppercase tracking-[0.08em] text-[10px]" style={{ color: c }}>{s.status}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* Products */}
+            <div>
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                Products ({products.length})
+              </p>
+              {products.length === 0 ? (
+                <p className="text-[11.5px] text-muted italic">None</p>
+              ) : (
+                <div className="space-y-0.5">
+                  {products.map((p) => {
+                    const c = p.allOk ? OBSERVATORY.ok
+                      : p.failedTables > 0 ? OBSERVATORY.err
+                      : OBSERVATORY.muted2;
+                    const PIcon = p.allOk ? CheckCircle2 : AlertCircle;
+                    return (
+                      <div key={p.productId} className="flex items-center gap-2 text-[11.5px] py-0.5">
+                        <PIcon className="w-3 h-3 shrink-0" style={{ color: c }} />
+                        <Boxes className="w-3 h-3 shrink-0" style={{ color: OBSERVATORY.ai }} />
+                        <span className="text-ink-2 flex-1 truncate">{p.productName}</span>
+                        <span className="text-[10.5px] font-mono text-muted-2">
+                          {p.totalTables - p.failedTables}/{p.totalTables}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+          {run.job_id && (
+            <p className="mt-3 mx-6 text-[10px] font-mono tracking-[0.06em] text-muted-2">
+              job {run.job_id} · queued {formatRelative(run.queued_at)}
+              {run.started_at && ` · started ${formatRelative(run.started_at)}`}
+              {run.completed_at && ` · finished ${formatRelative(run.completed_at)}`}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
