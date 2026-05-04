@@ -1130,16 +1130,31 @@ function RunActivityDock({
   // (before the first SSE event arrives).
   useEffect(() => {
     if (!dag) return;
+    // Mirror the orchestrator's disambiguation rule: when two products in
+    // scope share a name (e.g. "Sales" from EO + "Sales" from wholesale_erp),
+    // suffix with the source connection name so log + dock match.
+    const productsInScope = Array.from(scopeHint.productIds)
+      .map((id) => dag.products.find((p) => p.id === id))
+      .filter((p): p is DagProduct => !!p);
+    const nameCount = new Map<string, number>();
+    for (const p of productsInScope) nameCount.set(p.name, (nameCount.get(p.name) ?? 0) + 1);
+    const sourceNameById = new Map(dag.sources.map((s) => [s.id, s.name]));
+    const productDisplayName = (p: DagProduct): string => {
+      if ((nameCount.get(p.name) ?? 0) > 1 && p.connectionId != null) {
+        const src = sourceNameById.get(p.connectionId);
+        if (src) return `${p.name} (${src})`;
+      }
+      return p.name;
+    };
+
     const seed = new Map<string, NodeRunState>();
     Array.from(scopeHint.sourceIds).forEach((id) => {
       const s = dag.sources.find((x) => x.id === id);
       if (!s) return;
       seed.set(`c:${id}`, { key: `c:${id}`, kind: 'connection', id, name: s.name, status: 'queued' });
     });
-    Array.from(scopeHint.productIds).forEach((id) => {
-      const p = dag.products.find((x) => x.id === id);
-      if (!p) return;
-      seed.set(`p:${id}`, { key: `p:${id}`, kind: 'product', id, name: p.name, status: 'queued' });
+    productsInScope.forEach((p) => {
+      seed.set(`p:${p.id}`, { key: `p:${p.id}`, kind: 'product', id: p.id, name: productDisplayName(p), status: 'queued' });
     });
     setNodes(seed);
     // Reset log when a new run starts

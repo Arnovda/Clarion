@@ -380,6 +380,30 @@ export async function runPipelineWorkflow(
     const ordered = await topoSortProducts(scope.productIds);
     emit({ type: 'phase', text: `Running ${ordered.length} product${ordered.length === 1 ? '' : 's'}…` });
 
+    // Disambiguate duplicate product names in the log. Real-world hit: a
+    // tenant with two source connections (EO + wholesale_erp) ends up with
+    // two products called "Sales" / "Reference". Without the source suffix
+    // the log says `Running "Sales"…` twice with no way to tell apart
+    // which product just failed. Build a name → connection map up front so
+    // we only suffix when we actually have a collision.
+    const orderedRows = await semanticDb('data_products')
+      .whereIn('id', ordered)
+      .select<{ id: number; name: string; connection_id: number | null }[]>('id', 'name', 'connection_id');
+    const nameCount = new Map<string, number>();
+    for (const r of orderedRows) nameCount.set(r.name, (nameCount.get(r.name) ?? 0) + 1);
+    const connIds = Array.from(new Set(orderedRows.map((r) => r.connection_id).filter((x): x is number => !!x)));
+    const connNameById = new Map<number, string>();
+    if (connIds.length > 0) {
+      const conns = await semanticDb('connections').whereIn('id', connIds).select('id', 'name');
+      for (const c of conns as { id: number; name: string }[]) connNameById.set(c.id, c.name);
+    }
+    const displayNameById = new Map<number, string>();
+    for (const r of orderedRows) {
+      const ambiguous = (nameCount.get(r.name) ?? 0) > 1;
+      const connName = r.connection_id != null ? connNameById.get(r.connection_id) : null;
+      displayNameById.set(r.id, ambiguous && connName ? `${r.name} (${connName})` : r.name);
+    }
+
     const { runProductTransformation } = await import('./transformationRunner');
     for (const pid of ordered) {
       await checkPipelineCancelled(opts);
@@ -388,7 +412,8 @@ export async function runPipelineWorkflow(
         productResults.push({ productId: pid, productName: `#${pid}`, allOk: false, failedTables: 0, totalTables: 0 });
         continue;
       }
-      emit({ type: 'log', text: `  Running "${product.name}"…` });
+      const dispName = displayNameById.get(pid) ?? product.name;
+      emit({ type: 'log', text: `  Running "${dispName}"…` });
 
       const schemas = await semanticDb('star_schemas').where({ data_product_id: pid });
       const schemaIds = schemas.map((s: { id: number }) => s.id);
@@ -406,7 +431,7 @@ export async function runPipelineWorkflow(
         if (failed.length > 0) {
           emit({
             type: 'product',
-            productName: product.name,
+            productName: dispName,
             productId: pid,
             status: 'partial',
             text: `${results.length - failed.length} ok, ${failed.length} failed`,
@@ -414,7 +439,7 @@ export async function runPipelineWorkflow(
           for (const f of failed) {
             emit({
               type: 'error_detail',
-              productName: product.name,
+              productName: dispName,
               productId: pid,
               tableName: f.table_name,
               error: f.error ?? 'Unknown error',
@@ -423,14 +448,14 @@ export async function runPipelineWorkflow(
         } else {
           emit({
             type: 'product',
-            productName: product.name,
+            productName: dispName,
             productId: pid,
             status: 'ok',
             text: `all ${results.length} tables ok`,
           });
         }
         productResults.push({
-          productId: pid, productName: product.name,
+          productId: pid, productName: dispName,
           allOk, failedTables: failed.length, totalTables: results.length,
         });
 
@@ -442,9 +467,9 @@ export async function runPipelineWorkflow(
       } catch (err) {
         if (err instanceof CancelledError) throw err;
         const msg = err instanceof Error ? err.message : 'Run failed';
-        emit({ type: 'product', productName: product.name, productId: pid, status: 'error', text: msg });
+        emit({ type: 'product', productName: dispName, productId: pid, status: 'error', text: msg });
         productResults.push({
-          productId: pid, productName: product.name,
+          productId: pid, productName: dispName,
           allOk: false, failedTables: 0, totalTables: 0,
         });
       }

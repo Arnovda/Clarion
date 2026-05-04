@@ -606,8 +606,17 @@ export async function runProductTransformation(
           await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
         } catch (firstErr) {
           const errMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-          const isBinder = /Binder Error|Catalog Error|Referenced column|does not have a column/i.test(errMsg);
-          if (!isBinder) throw firstErr;
+          // Extended from Binder/Catalog only → also catches Parser/syntax
+          // errors. Real-world cause: occasionally the LLM leaks reasoning
+          // text into the transformation_sql field (e.g. "I need to check
+          // what tables are available..." instead of a SELECT). Without a
+          // repair attempt, every subsequent run hits the same parse error
+          // forever. The repair pass writes proper SQL from scratch using
+          // the live schema.
+          const isRepairable =
+            /Binder Error|Catalog Error|Referenced column|does not have a column|Parser Error|syntax error/i
+              .test(errMsg);
+          if (!isRepairable) throw firstErr;
 
           console.warn(`[transformationRunner] ${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
           const schemasText = await collectAvailableSchemas(db);
