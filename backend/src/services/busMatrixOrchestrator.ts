@@ -361,14 +361,24 @@ export async function runPipelineWorkflow(
           // Structured event so the dock can pin the sync_run_id to this
           // source node and let the user expand for live row_counts.
           emit({ type: 'source_run', sourceConnectionId: sourceId, syncRunId });
-          const final = await waitForSyncRun(syncRunId, Number(tenantId), opts);
-          if (final.status === 'succeeded') {
+          // triggerSync ALREADY awaits the worker's exit and updates the
+          // source_sync_runs row to its terminal status before returning.
+          // Read the row once instead of polling — the previous poll-based
+          // wait was adding 0–3s of pure latency for every source AND was
+          // a real foot-gun when the row was updated faster than the first
+          // poll could fire (manifested as "orchestrator stuck" on the dock).
+          const row = await semanticDb('source_sync_runs')
+            .where({ id: syncRunId, tenant_id: tenantId })
+            .first();
+          const finalStatus = (row?.status as string) ?? 'failed';
+          const errorMessage = (row?.error_message as string | null) ?? null;
+          if (finalStatus === 'succeeded') {
             emit({ type: 'log', text: `  ${conn.name}: sync OK` });
             return { sourceId, status: 'succeeded' as const };
           }
-          if (final.status === 'cancelled') throw new CancelledError();
-          emit({ type: 'error_detail', tableName: conn.name, error: final.error_message ?? 'Sync failed' });
-          return { sourceId, status: 'failed' as const, error: final.error_message ?? 'Sync failed' };
+          if (finalStatus === 'cancelled') throw new CancelledError();
+          emit({ type: 'error_detail', tableName: conn.name, error: errorMessage ?? 'Sync failed' });
+          return { sourceId, status: 'failed' as const, error: errorMessage ?? 'Sync failed' };
         } catch (err) {
           if (err instanceof CancelledError) throw err;
           const msg = err instanceof Error ? err.message : 'Sync failed';
@@ -596,11 +606,18 @@ export async function runProductRefreshWorkflow(
         const syncRunId = (triggered as { syncRunId?: number }).syncRunId;
         if (!syncRunId) throw new Error('Source sync did not return a syncRunId');
         emit({ type: 'log', text: `  Source sync queued (run #${syncRunId})…` });
-        const final = await waitForSourceSync(syncRunId, Number(tenantId), opts);
-        if (final.status === 'failed') {
-          throw new Error(`Source sync failed: ${final.error_message ?? 'unknown'}`);
+        // triggerSync already awaits worker exit + updates the row. Just
+        // read once. Avoids the same polling-stalls-the-orchestrator bug
+        // we hit on the pipeline path.
+        const row = await semanticDb('source_sync_runs')
+          .where({ id: syncRunId, tenant_id: tenantId })
+          .first();
+        const finalStatus = (row?.status as string) ?? 'failed';
+        const errorMessage = (row?.error_message as string | null) ?? null;
+        if (finalStatus === 'failed') {
+          throw new Error(`Source sync failed: ${errorMessage ?? 'unknown'}`);
         }
-        if (final.status === 'cancelled') {
+        if (finalStatus === 'cancelled') {
           throw new CancelledError();
         }
         emit({ type: 'log', text: '  Source sync complete' });

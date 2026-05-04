@@ -253,6 +253,24 @@ function PipelinesInner() {
   // overlays these on top of the static "in scope / out of scope" colouring
   // so users can SEE the pipeline progress on the graph itself.
   const [liveNodes, setLiveNodes] = useState<Map<string, NodeRunState>>(new Map());
+  // CRITICAL: these callbacks must have stable references because the dock
+  // lists them in its SSE useEffect dependency array. Inline arrow functions
+  // here would create a new reference on every parent render → the SSE
+  // connection would tear down and reopen, and BullMQ would replay the
+  // entire job log from the start. We saw this in production as a "stuck
+  // run" with the same events repeating in the output panel.
+  const onDockDismiss = useCallback(() => {
+    setActiveStream(null);
+    setLiveNodes(new Map());
+    void reloadRuns();
+    void reload();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const onDockCompleted = useCallback(() => {
+    void reloadRuns();
+    void reload();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -562,8 +580,8 @@ function PipelinesInner() {
                   scopeHint={scopeHint}
                   dag={dag}
                   onLiveNodesChange={setLiveNodes}
-                  onDismiss={() => { setActiveStream(null); setLiveNodes(new Map()); reloadRuns(); reload(); }}
-                  onCompleted={() => { reloadRuns(); reload(); }}
+                  onDismiss={onDockDismiss}
+                  onCompleted={onDockCompleted}
                 />
               )}
               <RunHistory
@@ -1310,7 +1328,14 @@ function RunActivityDock({
     });
   }, []);
 
-  // SSE attach
+  // SSE attach. Using a ref for `onCompleted` so we can safely omit it from
+  // the effect's dependency array — otherwise an unstable parent callback
+  // would tear this down + reopen on every render, and BullMQ would replay
+  // the entire job log from the start (= the "stuck" symptom we shipped a
+  // fix for).
+  const onCompletedRef = React.useRef(onCompleted);
+  useEffect(() => { onCompletedRef.current = onCompleted; }, [onCompleted]);
+
   useEffect(() => {
     let cancelled = false;
     const ctrl = new AbortController();
@@ -1416,11 +1441,11 @@ function RunActivityDock({
                   });
                   return next;
                 });
-                onCompleted();
+                onCompletedRef.current();
               } else if (t === 'failed') {
                 setDone(true); setAllOk(false);
                 setLog((l) => [...l, { kind: 'error', text: `Error: ${ev.error}` }]);
-                onCompleted();
+                onCompletedRef.current();
               }
             } catch { /* skip malformed */ }
           }
@@ -1429,7 +1454,8 @@ function RunActivityDock({
       } catch { /* aborted */ }
     })();
     return () => { cancelled = true; ctrl.abort(); };
-  }, [jobId, updateNodeByName, onCompleted]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, updateNodeByName]);
 
   const counts = useMemo(() => {
     let ok = 0, failed = 0, running = 0, queued = 0, skipped = 0;
