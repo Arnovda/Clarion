@@ -30,6 +30,7 @@ export type OrchestratorEventType =
   | 'log'        // arbitrary log line
   | 'product'    // a product finished transforming (with status)
   | 'error_detail' // per-failed-table error (so user can see WHY)
+  | 'source_run' // structured: source X has sync_run #N (so dock can drill in)
   | 'done'       // workflow finished successfully
   | 'error';     // workflow failed
 
@@ -44,6 +45,10 @@ export interface OrchestratorEvent {
   tableName?: string;
   /** error_detail: the actual error message (e.g. "Column not found"). */
   error?: string;
+  /** source_run: connection id whose sync just got queued. */
+  sourceConnectionId?: number;
+  /** source_run: source_sync_runs.id — dock fetches detail from this. */
+  syncRunId?: number;
 }
 
 export interface RunBusMatrixWorkflowOptions {
@@ -353,6 +358,9 @@ export async function runPipelineWorkflow(
             emit({ type: 'log', text: `  ${conn.name}: no syncRunId returned — skipping` });
             return { sourceId, status: 'skipped' as const };
           }
+          // Structured event so the dock can pin the sync_run_id to this
+          // source node and let the user expand for live row_counts.
+          emit({ type: 'source_run', sourceConnectionId: sourceId, syncRunId });
           const final = await waitForSyncRun(syncRunId, Number(tenantId), opts);
           if (final.status === 'succeeded') {
             emit({ type: 'log', text: `  ${conn.name}: sync OK` });

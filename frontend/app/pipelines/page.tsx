@@ -1228,6 +1228,9 @@ interface NodeRunState {
   status: NodeRunStatus;
   detail?: string;         // e.g. "3 of 5 tables ok" or error message
   errors?: string[];       // per-table failures (products only)
+  /** Sources only: the source_sync_runs.id assigned by triggerSync, so the
+   * dock can fetch live per-entity progress when the row is expanded. */
+  syncRunId?: number;
 }
 
 function RunActivityDock({
@@ -1353,6 +1356,22 @@ function RunActivityDock({
                 if (pm) {
                   updateNodeByName(pm[1], 'product', { status: 'running' });
                 }
+              } else if (t === 'source_run') {
+                // Pin the source_sync_runs.id to the matching source node so
+                // expand → /api/connections/:id/sync-runs/:syncRunId can
+                // show live per-entity row_counts.
+                const sourceId = ev.sourceConnectionId as number | undefined;
+                const syncRunId = ev.syncRunId as number | undefined;
+                if (sourceId != null && syncRunId != null) {
+                  setNodes((prev) => {
+                    const k = `c:${sourceId}`;
+                    const cur = prev.get(k);
+                    if (!cur) return prev;
+                    const next = new Map(prev);
+                    next.set(k, { ...cur, syncRunId });
+                    return next;
+                  });
+                }
               } else if (t === 'product') {
                 const status = (ev.status === 'ok' ? 'ok' :
                                 ev.status === 'partial' ? 'failed' :
@@ -1476,6 +1495,9 @@ function RunActivityDock({
           {counts.skipped > 0  && <span className="text-muted-2">{counts.skipped} skipped</span>}
           {counts.failed > 0   && <span style={{ color: OBSERVATORY.err }}>{counts.failed} failed</span>}
         </span>
+        {!done && (
+          <CancelRunButton jobId={jobId} />
+        )}
         {done && (
           <button
             onClick={onDismiss}
@@ -1530,7 +1552,7 @@ function RunActivityDock({
 }
 
 function NodeStatusRow({ node }: { node: NodeRunState }) {
-  const [showErrors, setShowErrors] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const Icon = node.kind === 'connection' ? Database : Boxes;
 
   const statusVisual: Record<NodeRunStatus, { icon: React.ReactNode; color: string; label: string }> = {
@@ -1543,10 +1565,26 @@ function NodeStatusRow({ node }: { node: NodeRunState }) {
   };
   const s = statusVisual[node.status];
   const hasErrors = (node.errors?.length ?? 0) > 0;
+  // Whether there's anything useful to show on expand. Sources without a
+  // syncRunId (skipped, queued before triggerSync returned) only have the
+  // top-line status — leave them non-expandable to avoid the affordance.
+  const expandable = (node.kind === 'connection' && node.syncRunId != null)
+    || node.kind === 'product'
+    || hasErrors;
 
   return (
     <div className="border-b border-line/60">
-      <div className="px-3 py-1.5 flex items-center gap-2">
+      <button
+        onClick={() => expandable && setExpanded(!expanded)}
+        disabled={!expandable}
+        className={cn(
+          'w-full px-3 py-1.5 flex items-center gap-2 text-left',
+          expandable ? 'hover:bg-softer cursor-pointer' : 'cursor-default',
+        )}
+      >
+        {expandable
+          ? <ChevronDown className={cn('w-3 h-3 text-muted-2 transition-transform shrink-0', !expanded && '-rotate-90')} />
+          : <span className="w-3 h-3 shrink-0" />}
         <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: node.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai }} />
         <span className="text-[12.5px] text-ink truncate flex-1">{node.name}</span>
         {node.detail && (
@@ -1557,18 +1595,229 @@ function NodeStatusRow({ node }: { node: NodeRunState }) {
           {s.label}
         </span>
         {hasErrors && (
-          <button
-            onClick={() => setShowErrors(!showErrors)}
-            className="text-[10px] font-mono uppercase tracking-[0.08em]"
-            style={{ color: OBSERVATORY.err }}
-          >
-            {showErrors ? 'hide' : `${node.errors!.length} ✗`}
-          </button>
+          <span className="text-[10px] font-mono uppercase tracking-[0.08em]" style={{ color: OBSERVATORY.err }}>
+            {node.errors!.length} ✗
+          </span>
         )}
+      </button>
+      {expanded && expandable && (
+        <div className="border-t border-line/60 bg-softer/40">
+          {node.kind === 'connection' && node.syncRunId != null && (
+            <SourceSyncDetail syncRunId={node.syncRunId} sourceId={node.id} live={node.status === 'running' || node.status === 'queued'} />
+          )}
+          {node.kind === 'product' && (
+            <ProductRunDetail productId={node.id} live={node.status === 'running' || node.status === 'queued'} errors={node.errors ?? []} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Live per-entity detail for a running source sync. Polls
+ * `GET /api/connections/:id/sync-runs/:syncRunId` every 3s while the sync
+ * is in flight and shows row_counts as they update — so users SEE the
+ * sync isn't stuck.
+ *
+ * Also surfaces a "stuck" warning if status hasn't changed AND row_counts
+ * hasn't moved for 60+ seconds. That's the cheapest way to give users a
+ * way out of the 30-min orchestrator timeout when the sync-worker
+ * container app is unreachable.
+ */
+function SourceSyncDetail({ syncRunId, sourceId, live }: { syncRunId: number; sourceId: number; live: boolean }) {
+  const [run, setRun] = useState<{
+    status: string;
+    queued_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+    row_counts: Record<string, number> | null;
+    warnings: unknown;
+    error_message: string | null;
+  } | null>(null);
+  const [loading, setLoading] = useState(true);
+  // For stuck detection: track last time we saw a status / row_counts change
+  const lastChangeRef = React.useRef<number>(Date.now());
+  const lastSnapshotRef = React.useRef<string>('');
+  const [stuckWarning, setStuckWarning] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await api.get(`/connections/${sourceId}/sync-runs/${syncRunId}`);
+        if (cancelled) return;
+        const data = res.data?.data ?? null;
+        setRun(data);
+        // Stuck detection — same status + same row_counts for 60s while live.
+        const snapshot = JSON.stringify({ s: data?.status, c: data?.row_counts });
+        if (snapshot !== lastSnapshotRef.current) {
+          lastSnapshotRef.current = snapshot;
+          lastChangeRef.current = Date.now();
+          setStuckWarning(false);
+        } else if (live && Date.now() - lastChangeRef.current > 60_000) {
+          setStuckWarning(true);
+        }
+      } catch { /* swallow — keep last-known-good */ } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    tick();
+    if (live) {
+      const t = setInterval(tick, 3_000);
+      return () => { cancelled = true; clearInterval(t); };
+    }
+    return () => { cancelled = true; };
+  }, [syncRunId, sourceId, live]);
+
+  if (loading) {
+    return <div className="px-4 py-2 text-[11px] text-muted">Loading sync detail…</div>;
+  }
+  if (!run) {
+    return <div className="px-4 py-2 text-[11px] text-muted italic">No sync run found.</div>;
+  }
+  const rowCounts = run.row_counts ?? {};
+  const entries = Object.entries(rowCounts);
+  return (
+    <div className="px-4 py-2 space-y-1.5">
+      <div className="flex items-center gap-3 text-[11px]">
+        <span className="font-mono text-muted">run #{syncRunId}</span>
+        <span className="font-mono uppercase tracking-[0.08em]" style={{
+          color: run.status === 'succeeded' ? OBSERVATORY.ok
+            : run.status === 'failed' ? OBSERVATORY.err
+            : run.status === 'cancelled' ? OBSERVATORY.muted
+            : OBSERVATORY.ocean,
+        }}>{run.status}</span>
+        {run.started_at && <span className="text-muted-2">started {formatRelative(run.started_at)}</span>}
+        {run.completed_at && <span className="text-muted-2">finished {formatRelative(run.completed_at)}</span>}
       </div>
-      {showErrors && hasErrors && (
-        <div className="px-3 pb-2 space-y-1">
-          {node.errors!.map((err, i) => (
+      {stuckWarning && (
+        <div className="px-2 py-1.5 rounded text-[11px]" style={{ background: OBSERVATORY.warnSoft, color: OBSERVATORY.warn }}>
+          ⚠ No progress in 60+ seconds. The sync worker may not be running. You can cancel the run from the dock header and check the source connection.
+        </div>
+      )}
+      {run.error_message && (
+        <div className="px-2 py-1 rounded text-[11px] font-mono" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.err }}>
+          {run.error_message}
+        </div>
+      )}
+      {entries.length === 0 ? (
+        <div className="text-[11px] text-muted italic">No entities synced yet — waiting for the worker to start.</div>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
+          {entries.map(([entity, count]) => (
+            <div key={entity} className="flex items-center justify-between text-[11px]">
+              <span className="font-mono text-ink-2 truncate">{entity}</span>
+              <span className="font-mono tabular-nums text-muted-2">{count.toLocaleString('en-GB')}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Cancel-running-pipeline button. Hits the existing
+ * /api/products/bus-matrix/:jobId/cancel endpoint (which works for the
+ * `pipeline` mode too — same queue). Optimistic: shows "Cancelling…"
+ * until the orchestrator's cancellation check fires and the SSE stream
+ * emits a `failed` event.
+ */
+function CancelRunButton({ jobId }: { jobId: string }) {
+  const toast = useToast();
+  const [cancelling, setCancelling] = useState(false);
+  return (
+    <button
+      onClick={async () => {
+        if (cancelling) return;
+        setCancelling(true);
+        try {
+          await api.post(`/products/bus-matrix/${jobId}/cancel`);
+          toast.info('Cancellation requested — the run will stop at the next checkpoint.');
+        } catch (err) {
+          const ax = err as { response?: { data?: { error?: string } }; message?: string };
+          toast.error(ax?.response?.data?.error ?? ax?.message ?? 'Cancel failed');
+          setCancelling(false);
+        }
+      }}
+      disabled={cancelling}
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium text-err border border-err/40 rounded hover:bg-err-soft disabled:opacity-50 transition-colors"
+      title="Stop this pipeline run"
+    >
+      {cancelling ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+      {cancelling ? 'Cancelling…' : 'Cancel'}
+    </button>
+  );
+}
+
+/**
+ * Per-table progress for a running product transformation. Polls
+ * `GET /api/pipelines` (legacy product DAG endpoint) which already
+ * returns table-level transformation_status + last_run_error.
+ */
+function ProductRunDetail({ productId, live, errors }: { productId: number; live: boolean; errors: string[] }) {
+  type Tbl = {
+    id: number; product_id: number | null; table_name: string;
+    table_role: string | null; transformation_status: string | null;
+    last_run_at: string | null; last_run_error: string | null;
+    row_count: number | null;
+  };
+  const [tables, setTables] = useState<Tbl[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await api.get('/pipelines');
+        if (cancelled) return;
+        const all = ((res.data?.data?.tables ?? []) as Tbl[]).filter((t) => t.product_id === productId);
+        setTables(all);
+      } catch { /* swallow */ } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    tick();
+    if (live) {
+      const t = setInterval(tick, 3_000);
+      return () => { cancelled = true; clearInterval(t); };
+    }
+    return () => { cancelled = true; };
+  }, [productId, live]);
+
+  if (loading) {
+    return <div className="px-4 py-2 text-[11px] text-muted">Loading table detail…</div>;
+  }
+  if (tables.length === 0 && errors.length === 0) {
+    return <div className="px-4 py-2 text-[11px] text-muted italic">No tables defined for this product.</div>;
+  }
+  return (
+    <div className="px-4 py-2 space-y-0.5">
+      {tables.map((t) => {
+        const status = (t.transformation_status ?? 'idle').toLowerCase();
+        const color = status === 'success' ? OBSERVATORY.ok
+          : status === 'running' ? OBSERVATORY.ocean
+          : status === 'error' ? OBSERVATORY.err
+          : OBSERVATORY.muted2;
+        const Icon = status === 'success' ? CheckCircle2
+          : status === 'running' ? Loader2
+          : status === 'error' ? AlertCircle
+          : Clock;
+        return (
+          <div key={t.id} className="flex items-center gap-2 text-[11px] py-0.5">
+            <Icon className={cn('w-3 h-3 shrink-0', status === 'running' && 'animate-spin')} style={{ color }} />
+            <span className="font-mono text-ink-2 flex-1 truncate">{t.table_name}</span>
+            {t.row_count != null && (
+              <span className="font-mono tabular-nums text-muted-2">{t.row_count.toLocaleString('en-GB')}</span>
+            )}
+            <span className="font-mono uppercase tracking-[0.08em] text-[10px]" style={{ color }}>{status}</span>
+          </div>
+        );
+      })}
+      {errors.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {errors.map((err, i) => (
             <div key={i} className="px-2 py-1 text-[11px] font-mono rounded" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.ink2 }}>
               {err}
             </div>
@@ -1578,3 +1827,4 @@ function NodeStatusRow({ node }: { node: NodeRunState }) {
     </div>
   );
 }
+
