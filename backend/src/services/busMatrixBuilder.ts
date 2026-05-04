@@ -37,11 +37,26 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     if (!Array.isArray(dp.fact_tables)) errors.push(`data_products[${i}] "${dp.name}": fact_tables missing`);
     if (typeof dp.build_order !== 'number') errors.push(`data_products[${i}] "${dp.name}": build_order missing`);
   });
+  // Save-time guard: when the AI returns prose where SQL should be (e.g.
+  // "I need to check what tables are available…" instead of a SELECT) we
+  // CANNOT persist it. Doing so kicks off a death spiral where every
+  // subsequent run feeds Claude its own apology text and gets worse output.
+  // Reject non-SQL here so the bus-matrix flow surfaces a clear error and
+  // the user can re-run "Prepare my data" cleanly.
+  const looksLikeSql = (sql: unknown): boolean => {
+    if (typeof sql !== 'string' || !sql.trim()) return false;
+    const stripped = sql.replace(/^\s*--[^\n]*\n/g, '').replace(/^\s+/, '').replace(/^\(+/, '').replace(/^\s+/, '');
+    return /^(SELECT|WITH)\b/i.test(stripped);
+  };
+
   (busMatrix.conformed_dimensions ?? []).forEach((d, i) => {
     if (!d.table_name) errors.push(`conformed_dimensions[${i}].table_name missing`);
     if (!Array.isArray(d.columns)) errors.push(`conformed_dimensions[${i}] "${d.table_name}": columns missing`);
     if (!Array.isArray(d.source_tables)) errors.push(`conformed_dimensions[${i}] "${d.table_name}": source_tables missing`);
     if (!d.transformation_sql) errors.push(`conformed_dimensions[${i}] "${d.table_name}": transformation_sql missing`);
+    else if (!looksLikeSql(d.transformation_sql)) {
+      errors.push(`conformed_dimensions[${i}] "${d.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
+    }
   });
   (busMatrix.fact_tables ?? []).forEach((f, i) => {
     if (!f.table_name) errors.push(`fact_tables[${i}].table_name missing`);
@@ -49,6 +64,9 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     if (!Array.isArray(f.source_tables)) errors.push(`fact_tables[${i}] "${f.table_name}": source_tables missing`);
     if (!Array.isArray(f.dimensions_used)) errors.push(`fact_tables[${i}] "${f.table_name}": dimensions_used missing`);
     if (!f.transformation_sql) errors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql missing`);
+    else if (!looksLikeSql(f.transformation_sql)) {
+      errors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
+    }
   });
   return errors;
 }

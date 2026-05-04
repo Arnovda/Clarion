@@ -1443,6 +1443,48 @@ Hard rules:
 - Keep TRY_CAST for type conversions; never use plain CAST.
 - Output a single self-contained SELECT statement. No semicolons at the end. No comments.`;
 
+// ---------------------------------------------------------------------------
+// Last-resort: generate transformation SQL from scratch when the stored
+// value is unparseable / corrupted (e.g. LLM apology text leaked into
+// transformation_sql). No "FAILING SQL" in the prompt — that's the whole
+// point: the failing version is gibberish, we don't want Claude anchoring
+// on it. Pure "build a SELECT for this table given these schemas".
+// ---------------------------------------------------------------------------
+const FROM_SCRATCH_TRANSFORMATION_SYSTEM = `You are a SQL generation expert for a DuckDB-based data warehouse.
+
+Your job: given a table name, its role (fact / dimension / bridge), and the AVAILABLE SCHEMAS in the warehouse, write the SELECT statement that materialises this table.
+
+Hard rules:
+- Reference ONLY columns that appear in the AVAILABLE SCHEMAS section.
+- For dimensions: surrogate key via ROW_NUMBER() OVER (...) AS <table>_key. Include the natural key + descriptive attributes.
+- For facts: foreign keys via COALESCE((SELECT key FROM dim_x WHERE …), -1) AS <dim>_key. Plus measures.
+- Use TRY_CAST for type conversions; never plain CAST.
+- Output a single self-contained SELECT statement starting with the keyword SELECT or WITH. No semicolons. No comments. No prose.
+- If you genuinely cannot infer the table from the schemas, output exactly the keyword SELECT followed by a clear FROM clause referencing the most relevant schema — don't apologise; the platform handles the empty-result case.`;
+
+export async function generateTransformationFromScratch(
+  tableName: string,
+  tableRole: string,
+  availableSchemas: string,
+): Promise<string> {
+  const userPrompt = `Build the transformation SELECT for ${tableRole} table "${tableName}".
+
+━━━ AVAILABLE SCHEMAS (these are the only tables/views/columns you may reference) ━━━
+${availableSchemas}
+
+Return only the SELECT statement.`;
+
+  const raw = await callClaude(FROM_SCRATCH_TRANSFORMATION_SYSTEM, userPrompt, {
+    model: MODEL,
+    maxTokens: 2048,
+    callLabel: 'transformation_from_scratch',
+  });
+  return raw
+    .replace(/^```(?:sql)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+}
+
 export async function repairTransformationSql(
   tableName: string,
   tableRole: string,

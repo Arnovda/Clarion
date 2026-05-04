@@ -205,6 +205,28 @@ function productTablePath(productDir: string, tableName: string): string {
 }
 
 /**
+ * Cheap, conservative "is this even SQL?" check before we hand a string to
+ * DuckDB or to the AI repair loop. We only check the OPENING token — that
+ * catches the common failure mode (LLM apology / reasoning text persisted
+ * as transformation_sql) without trying to parse the whole query
+ * client-side.
+ *
+ * Comments / leading whitespace / parenthesis are tolerated. Anything else
+ * starting with a non-SQL word (e.g. "I cannot", "Since", "Sorry") is
+ * treated as prose and triggers a regenerate-from-scratch path higher up.
+ */
+export function isSqlShaped(sql: string): boolean {
+  if (!sql || typeof sql !== 'string') return false;
+  // Strip line comments + leading whitespace + leading '('
+  const stripped = sql
+    .replace(/^\s*--[^\n]*\n/g, '')
+    .replace(/^\s+/, '')
+    .replace(/^\(+/, '')
+    .replace(/^\s+/, '');
+  return /^(SELECT|WITH)\b/i.test(stripped);
+}
+
+/**
  * Collect a compact text listing of every table/view currently registered in
  * the DuckDB session, with each one's columns. Used as context for the AI
  * repair pass when a transformation fails with a Binder/Catalog error.
@@ -601,6 +623,42 @@ export async function runProductTransformation(
             `(or re-run "Design star schema" to let the AI regenerate it).`,
           );
         }
+        // Detect prose-where-SQL-should-be early so we can regenerate from
+        // scratch instead of feeding apology text to the parser → repair
+        // loop, which historically just kept overwriting bad SQL with
+        // worse prose. A real transformation always starts with SELECT,
+        // WITH, or an opening parenthesis.
+        if (!isSqlShaped(sql)) {
+          console.warn(`[transformationRunner] ${table.table_name} has non-SQL transformation_sql — regenerating from scratch.`);
+          const schemasText = await collectAvailableSchemas(db);
+          if (!schemasText) {
+            throw new Error(
+              `transformation_sql for "${table.table_name}" is not valid SQL ` +
+              `(it looks like LLM commentary). The AI repair pass needs ` +
+              `the available schemas to regenerate it, but none are loaded ` +
+              `for this run. Re-run "Prepare my data" or edit the SQL by hand.`,
+            );
+          }
+          const { generateTransformationFromScratch } = await import('../ai/AIService');
+          const fresh = await generateTransformationFromScratch(
+            table.table_name, table.table_role, schemasText,
+          );
+          if (!fresh || !isSqlShaped(fresh)) {
+            throw new Error(
+              `Could not regenerate transformation_sql for "${table.table_name}" ` +
+              `— AI returned non-SQL. The stored value is corrupted; ` +
+              `please rebuild this product.`,
+            );
+          }
+          sql = fresh;
+          aiRepaired = true;
+          // Persist immediately so subsequent retries don't re-trigger this
+          // (which would burn AI tokens for the same fix every time).
+          await tenantQuery(tenantId, (trx) =>
+            trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
+          );
+          console.log(`[transformationRunner] ${table.table_name} regenerated from scratch — persisted`);
+        }
 
         try {
           await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
@@ -630,6 +688,15 @@ export async function runProductTransformation(
           );
           if (!repaired || repaired.trim() === sql.trim()) {
             throw firstErr; // repair produced nothing useful
+          }
+          // Reject AI apology prose ("I cannot repair…", "Since no available
+          // schemas…") — without this gate the runner would persist that
+          // text as the new transformation_sql, and every subsequent run
+          // would feed Claude its own apology and get worse output. The
+          // higher-level shape check is the single source of truth.
+          if (!isSqlShaped(repaired)) {
+            console.warn(`[transformationRunner] ${table.table_name} AI repair returned non-SQL — rejecting`);
+            throw firstErr;
           }
           sql = repaired;
           aiRepaired = true;
