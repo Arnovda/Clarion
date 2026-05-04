@@ -42,6 +42,16 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     const staleSources = sourceRows
       .filter((s) => !s.last_synced_at || new Date(s.last_synced_at) <= since)
       .map((s) => ({ id: s.id, name: s.name, lastSyncedAt: s.last_synced_at ? String(s.last_synced_at) : null }));
+    // Full source list — used by the freshness detail slide-over (the
+    // user wants to SEE every source with its timestamp before deciding
+    // which one to refresh).
+    const allSources = sourceRows.map((s) => ({
+      id: s.id, name: s.name,
+      connectorType: s.connector_type,
+      lastSyncedAt: s.last_synced_at ? String(s.last_synced_at) : null,
+      lastSyncStatus: s.last_sync_status,
+      isStale: !s.last_synced_at || new Date(s.last_synced_at) <= since,
+    }));
 
     // ── Products ───────────────────────────────────────────────────────
     const productRows = await semanticDb('data_products')
@@ -50,6 +60,12 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
       );
     const productsTotal = productRows.length;
     const productsFresh = productRows.filter((p) => p.updated_at && new Date(p.updated_at) > since).length;
+    const allProducts = productRows.map((p) => ({
+      id: p.id, name: p.name, status: p.status,
+      lastRefreshedAt: p.updated_at ? String(p.updated_at) : null,
+      isStale: !p.updated_at || new Date(p.updated_at) <= since,
+    }));
+    const staleProducts = allProducts.filter((p) => p.isStale);
 
     // ── Definition completeness ────────────────────────────────────────
     const [{ tot: tablesTotal }] = await semanticDb('source_tables').where({ is_active: true })
@@ -196,7 +212,10 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
         freshness: {
           sources:  { fresh: sourcesFresh,  total: sourcesTotal },
           products: { fresh: productsFresh, total: productsTotal },
-          stale: staleSources,
+          stale: staleSources,        // sources only — kept for back-compat
+          staleProducts,              // new — needed for attention list
+          allSources,                 // full list for the freshness detail slide-over
+          allProducts,
         },
         definitions: {
           tables:        { defined: Number(tablesDefined),  total: Number(tablesTotal) },

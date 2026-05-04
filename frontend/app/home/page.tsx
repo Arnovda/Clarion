@@ -25,7 +25,7 @@ import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, Calendar, CheckCircle2, Clock, Database, Boxes,
   RefreshCw, Sparkles, Library, ShieldCheck, ChevronRight, BarChart3,
-  Loader2, Star, Plus,
+  Loader2, Star, Plus, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { OBSERVATORY } from '@/lib/observatory';
@@ -43,6 +43,9 @@ interface HomeSummary {
     sources:  { fresh: number; total: number };
     products: { fresh: number; total: number };
     stale: Array<{ id: number; name: string; lastSyncedAt: string | null }>;
+    staleProducts: Array<{ id: number; name: string; status: string; lastRefreshedAt: string | null; isStale: boolean }>;
+    allSources: Array<{ id: number; name: string; connectorType: string | null; lastSyncedAt: string | null; lastSyncStatus: string | null; isStale: boolean }>;
+    allProducts: Array<{ id: number; name: string; status: string; lastRefreshedAt: string | null; isStale: boolean }>;
   };
   definitions: {
     tables:        { defined: number; total: number };
@@ -68,6 +71,7 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userName, setUserName] = useState<string>('');
+  const [freshnessOpen, setFreshnessOpen] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -145,7 +149,11 @@ export default function HomePage() {
 
         {/* HEALTH section */}
         <section className="mb-10">
-          <HealthSection summary={summary} onJump={(path) => router.push(path)} />
+          <HealthSection
+            summary={summary}
+            onJump={(path) => router.push(path)}
+            onOpenFreshnessDetail={() => setFreshnessOpen(true)}
+          />
         </section>
 
         {/* ATTENTION section */}
@@ -162,13 +170,22 @@ export default function HomePage() {
           />
         </section>
       </div>
+
+      {freshnessOpen && (
+        <FreshnessDetail
+          sources={summary.freshness.allSources}
+          products={summary.freshness.allProducts}
+          onClose={() => setFreshnessOpen(false)}
+          onJumpToPipelines={() => { setFreshnessOpen(false); router.push('/pipelines'); }}
+        />
+      )}
     </div>
   );
 }
 
 // ─── Health section ─────────────────────────────────────────────────────────
 
-function HealthSection({ summary, onJump }: { summary: HomeSummary; onJump: (path: string) => void }) {
+function HealthSection({ summary, onJump, onOpenFreshnessDetail }: { summary: HomeSummary; onJump: (path: string) => void; onOpenFreshnessDetail: () => void }) {
   const overall = summary.health.overall;
   const ringColor = overall == null ? OBSERVATORY.muted2
     : overall >= 80 ? OBSERVATORY.ok
@@ -206,7 +223,10 @@ function HealthSection({ summary, onJump }: { summary: HomeSummary; onJump: (pat
             score={summary.health.freshness}
             description={`${summary.freshness.sources.fresh}/${summary.freshness.sources.total} sources synced today, ${summary.freshness.products.fresh}/${summary.freshness.products.total} products refreshed`}
             icon={<RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
-            onClick={() => onJump('/pipelines')}
+            // Open the freshness detail panel instead of jumping straight
+            // to /pipelines. Users want to SEE which items are stale and
+            // when they were last refreshed before deciding what to act on.
+            onClick={onOpenFreshnessDetail}
           />
           <SubScoreTile
             label="Definitions"
@@ -338,15 +358,28 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
     });
   }
 
-  // Stale sources
+  // Stale sources + products combined into one item — same action ("refresh
+  // these"), and the user's mental model is "stale data" not "stale source
+  // vs stale product". Click-through to /pipelines is the same destination.
+  const stalePieces: string[] = [];
   if (summary.freshness.stale.length > 0) {
+    stalePieces.push(`${summary.freshness.stale.length} source${summary.freshness.stale.length === 1 ? '' : 's'}`);
+  }
+  if (summary.freshness.staleProducts.length > 0) {
+    stalePieces.push(`${summary.freshness.staleProducts.length} product${summary.freshness.staleProducts.length === 1 ? '' : 's'}`);
+  }
+  if (stalePieces.length > 0) {
+    const names = [
+      ...summary.freshness.stale.map((s) => s.name),
+      ...summary.freshness.staleProducts.map((p) => p.name),
+    ];
     items.push({
-      key: 'stale-sources',
+      key: 'stale-data',
       icon: <Clock className="w-4 h-4" strokeWidth={1.75} />,
       color: OBSERVATORY.warn,
-      title: `${summary.freshness.stale.length} source${summary.freshness.stale.length === 1 ? '' : 's'} not synced in 24h`,
-      description: summary.freshness.stale.slice(0, 3).map((s) => s.name).join(', ')
-        + (summary.freshness.stale.length > 3 ? ` + ${summary.freshness.stale.length - 3} more` : ''),
+      title: `${stalePieces.join(' and ')} not refreshed in 24h`,
+      description: names.slice(0, 3).join(', ')
+        + (names.length > 3 ? ` + ${names.length - 3} more` : ''),
       action: { label: 'Refresh now', path: '/pipelines' },
     });
   }
@@ -538,5 +571,183 @@ function RecentQuestionsSection({
         )}
       </div>
     </div>
+  );
+}
+
+// ─── Freshness detail slide-over ───────────────────────────────────────────
+//
+// Click the Freshness tile → see every source + product with its last
+// refresh timestamp BEFORE deciding whether to jump to /pipelines.
+// Stale items at top, fresh items below, same row template for both.
+// "Refresh now" button at the bottom takes the user to /pipelines (where
+// they pick the right scope) — we don't try to one-click refresh from here
+// because that would bypass the pipeline-scope decision the user is here
+// to make.
+
+function FreshnessDetail({
+  sources, products, onClose, onJumpToPipelines,
+}: {
+  sources: HomeSummary['freshness']['allSources'];
+  products: HomeSummary['freshness']['allProducts'];
+  onClose: () => void;
+  onJumpToPipelines: () => void;
+}) {
+  // Stale first within each kind, then by oldest refresh
+  const orderRows = <T extends { isStale: boolean; lastSyncedAt?: string | null; lastRefreshedAt?: string | null }>(rows: T[]): T[] => {
+    return [...rows].sort((a, b) => {
+      if (a.isStale !== b.isStale) return a.isStale ? -1 : 1;
+      const aAt = (a.lastSyncedAt ?? a.lastRefreshedAt) ?? '';
+      const bAt = (b.lastSyncedAt ?? b.lastRefreshedAt) ?? '';
+      return aAt.localeCompare(bAt);
+    });
+  };
+  const orderedSources = orderRows(sources);
+  const orderedProducts = orderRows(products);
+
+  // ESC closes
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const sourceCount = sources.length;
+  const productCount = products.length;
+  const staleSourceCount = sources.filter((s) => s.isStale).length;
+  const staleProductCount = products.filter((p) => p.isStale).length;
+
+  return (
+    <div className="fixed inset-0 z-40 bg-ink/40 flex items-stretch justify-end" onClick={onClose}>
+      <div
+        className="bg-raised w-full max-w-[560px] h-full overflow-y-auto shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+      >
+        {/* Header */}
+        <div className="sticky top-0 z-10 bg-raised border-b border-line px-5 py-3 flex items-start gap-2">
+          <Clock className="w-4 h-4 mt-0.5 shrink-0" style={{ color: OBSERVATORY.ocean }} strokeWidth={1.75} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Freshness</p>
+            <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink">
+              When was each thing last refreshed?
+            </h2>
+            <p className="text-[11.5px] text-muted-2 mt-0.5">
+              {staleSourceCount + staleProductCount > 0
+                ? `${staleSourceCount + staleProductCount} item${staleSourceCount + staleProductCount === 1 ? '' : 's'} not refreshed in the last 24 hours.`
+                : 'Everything has been refreshed in the last 24 hours.'}
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-soft text-muted-2 hover:text-ink-2"
+            aria-label="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-5 space-y-6">
+          {/* Sources */}
+          <section>
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">
+              Sources <span className="text-muted-2 normal-case ml-1">{sourceCount} total · {staleSourceCount} stale</span>
+            </p>
+            {sourceCount === 0 ? (
+              <p className="text-[12px] text-muted italic">No sources connected yet.</p>
+            ) : (
+              <ul className="divide-y divide-line border border-line rounded-md overflow-hidden">
+                {orderedSources.map((s) => (
+                  <FreshnessRow
+                    key={`s-${s.id}`}
+                    name={s.name}
+                    kind="source"
+                    sub={s.connectorType ?? 'source'}
+                    lastAt={s.lastSyncedAt}
+                    isStale={s.isStale}
+                    extra={s.lastSyncStatus}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Products */}
+          <section>
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">
+              Datasets <span className="text-muted-2 normal-case ml-1">{productCount} total · {staleProductCount} stale</span>
+            </p>
+            {productCount === 0 ? (
+              <p className="text-[12px] text-muted italic">No datasets yet.</p>
+            ) : (
+              <ul className="divide-y divide-line border border-line rounded-md overflow-hidden">
+                {orderedProducts.map((p) => (
+                  <FreshnessRow
+                    key={`p-${p.id}`}
+                    name={p.name}
+                    kind="product"
+                    sub={p.status}
+                    lastAt={p.lastRefreshedAt}
+                    isStale={p.isStale}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Action */}
+          <button
+            onClick={onJumpToPipelines}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />
+            Open Refresh
+          </button>
+          <p className="text-[10.5px] text-muted-2 text-center -mt-2">
+            Pick the scope (everything / one source / one dataset) and click <span className="font-medium">Run now</span>.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FreshnessRow({
+  name, kind, sub, lastAt, isStale, extra,
+}: {
+  name: string;
+  kind: 'source' | 'product';
+  sub: string;
+  lastAt: string | null;
+  isStale: boolean;
+  extra?: string | null;
+}) {
+  const Icon = kind === 'source' ? Database : Boxes;
+  const accent = kind === 'source' ? OBSERVATORY.ocean : OBSERVATORY.ai;
+  return (
+    <li className="px-3 py-2.5">
+      <div className="flex items-center gap-2 mb-0.5">
+        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: accent }} strokeWidth={1.75} />
+        <span className="text-[12.5px] font-medium text-ink truncate">{name}</span>
+        <span className={cn(
+          'text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-line',
+          kind === 'source' ? 'text-ocean bg-ocean-softer' : 'text-ai bg-ai-soft',
+        )}>
+          {sub}
+        </span>
+        <span
+          className="ml-auto inline-flex items-center gap-1 text-[10.5px] font-mono shrink-0"
+          style={{ color: isStale ? OBSERVATORY.warn : OBSERVATORY.muted2 }}
+        >
+          <Clock className="w-3 h-3" strokeWidth={1.5} />
+          {lastAt ? formatRelative(lastAt) : 'never refreshed'}
+          {isStale && lastAt && <span className="font-medium">· stale</span>}
+        </span>
+      </div>
+      {extra && (
+        <p className="text-[11px] text-muted-2 ml-6">{extra}</p>
+      )}
+    </li>
   );
 }

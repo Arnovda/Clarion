@@ -129,6 +129,21 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async 
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
     await graph.updateTable(id, body);
+    // Mirror to Postgres source_tables. Neo4j is the source of truth for
+    // reads, but several aggregate surfaces (Home health score, /review
+    // queue counts) still query Postgres directly. Without this dual-write
+    // a confirm in /review never lowered the "AI drafts pending" count.
+    // Tenant-scoped to defend against cross-tenant id collisions even
+    // though source_tables.id is globally unique.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    const tablePatch: Record<string, unknown> = { ai_draft: false };
+    if (typeof body.display_name === 'string') tablePatch.display_name = body.display_name;
+    if (typeof body.description === 'string') tablePatch.description = body.description;
+    if (typeof body.approval_status === 'string') tablePatch.approval_status = body.approval_status;
+    if (body.is_active !== undefined) tablePatch.is_active = !!body.is_active;
+    if (Array.isArray(body.domains)) tablePatch.domains = JSON.stringify(body.domains);
+    await semanticDb('source_tables').where({ id }).update(tablePatch);
+
     await invalidateSemanticCache();
 
     // Record version + audit
@@ -181,6 +196,18 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
     await graph.updateColumn(id, body);
+    // Mirror to Postgres source_columns. See PATCH /tables/:id above for
+    // the full rationale — Home health score + /review queue COUNT
+    // queries hit Postgres directly and would otherwise miss confirms.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    const colPatch: Record<string, unknown> = { ai_draft: false };
+    if (typeof body.display_name === 'string') colPatch.display_name = body.display_name;
+    if (typeof body.description === 'string') colPatch.description = body.description;
+    if (typeof body.approval_status === 'string') colPatch.approval_status = body.approval_status;
+    if (body.is_dimension !== undefined) colPatch.is_dimension = !!body.is_dimension;
+    if (body.is_measure !== undefined) colPatch.is_measure = !!body.is_measure;
+    await semanticDb('source_columns').where({ id }).update(colPatch);
+
     await invalidateSemanticCache();
 
     const changes = computeChanges(oldSnapshot, body);
@@ -276,6 +303,15 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin'), async (req
       toColumnPgId:   to_column_id   !== undefined ? (to_column_id   ? Number(to_column_id)   : null) : undefined,
       toColName:      toCol   !== undefined ? (toCol?.column_name   ?? null) : undefined,
     });
+    // Mirror to Postgres table_relationships so Home's "relationships
+    // approved / total" count reflects the confirmation. Same dual-write
+    // pattern as PATCH /tables/:id and PATCH /columns/:id above.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+    const relPatch: Record<string, unknown> = { ai_draft: false };
+    if (typeof relationship_type === 'string') relPatch.relationship_type = relationship_type;
+    if (typeof description === 'string') relPatch.description = description;
+    await semanticDb('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
+
     await invalidateSemanticCache();
     res.json({ ok: true });
   } catch (err) { next(err); }
