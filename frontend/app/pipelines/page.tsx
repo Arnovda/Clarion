@@ -23,7 +23,7 @@
  * a slide-over toast — no page-level interruption needed.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactFlow, {
   Background, Controls,
   useNodesState, useEdgesState,
@@ -36,6 +36,7 @@ import dagre from 'dagre';
 import {
   Play, Plus, Trash2, X, Database, Boxes, Calendar,
   CheckCircle2, AlertCircle, Loader2, Clock, Pencil,
+  ChevronDown, ChevronUp, MinusSquare, SquareDashed,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
@@ -493,6 +494,23 @@ function PipelinesInner() {
                   <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm" style={{ background: OBSERVATORY.softer, border: `1px solid ${OBSERVATORY.line}` }} /> Out of scope</span>
                 </div>
               </div>
+              {/*
+                Active run dock — ADF-style. Sits BETWEEN the DAG canvas and
+                Recent runs so the user never loses sight of either while a
+                run is in progress. Per-node status + cumulative log,
+                collapsible to a one-line strip.
+              */}
+              {activeStream && (
+                <RunActivityDock
+                  jobId={activeStream.jobId}
+                  pipelineRunId={activeStream.pipelineRunId}
+                  pipelineName={activeStream.pipelineName}
+                  scopeHint={scopeHint}
+                  dag={dag}
+                  onDismiss={() => { setActiveStream(null); reloadRuns(); reload(); }}
+                  onCompleted={() => { reloadRuns(); reload(); }}
+                />
+              )}
               <RunHistory
                 runs={recentRuns}
                 pipelineId={selected.kind === 'custom' ? (selected as CustomPipeline).id : null}
@@ -518,15 +536,6 @@ function PipelinesInner() {
         />
       )}
 
-      {/* Live run stream — slide-over toast */}
-      {activeStream && (
-        <RunStreamPanel
-          jobId={activeStream.jobId}
-          pipelineRunId={activeStream.pipelineRunId}
-          pipelineName={activeStream.pipelineName}
-          onClose={() => { setActiveStream(null); reloadRuns(); reload(); }}
-        />
-      )}
     </div>
   );
 }
@@ -1076,17 +1085,89 @@ function CustomPipelineEditor({
   );
 }
 
-// ─── Live run stream (slide-over) ───────────────────────────────────────────
+// ─── Active run dock (ADF-style) ────────────────────────────────────────────
+//
+// Sits between the DAG canvas and the Recent-runs list. Two halves:
+//   • LEFT  — node status table: each source + product in scope, with a
+//             status pill (queued / running / ✓ ok / ✗ failed) that updates
+//             from the SSE stream as events arrive.
+//   • RIGHT — chronological log (terminal-style). Per-failed-table errors
+//             render in red so you can read the actual SQL/transformation
+//             failure inline.
+// Collapsible to a single-line strip showing pipeline name + status counts;
+// dismissible after the run completes.
 
-function RunStreamPanel({
-  jobId, pipelineRunId: _runId, pipelineName, onClose,
+type NodeRunStatus = 'queued' | 'running' | 'ok' | 'failed' | 'skipped' | 'idle';
+
+interface NodeRunState {
+  key: string;             // 'c:5' | 'p:17'
+  kind: 'connection' | 'product';
+  id: number;
+  name: string;
+  status: NodeRunStatus;
+  detail?: string;         // e.g. "3 of 5 tables ok" or error message
+  errors?: string[];       // per-table failures (products only)
+}
+
+function RunActivityDock({
+  jobId, pipelineRunId: _runId, pipelineName, scopeHint, dag, onDismiss, onCompleted,
 }: {
-  jobId: string; pipelineRunId: number; pipelineName: string; onClose: () => void;
+  jobId: string;
+  pipelineRunId: number;
+  pipelineName: string;
+  scopeHint: { sourceIds: Set<number>; productIds: Set<number> };
+  dag: Dag | null;
+  onDismiss: () => void;
+  onCompleted: () => void;
 }) {
-  const [log, setLog] = useState<string[]>([]);
+  const [log, setLog] = useState<Array<{ kind: 'phase' | 'log' | 'error' | 'done'; text: string }>>([]);
+  const [nodes, setNodes] = useState<Map<string, NodeRunState>>(new Map());
   const [done, setDone] = useState(false);
   const [allOk, setAllOk] = useState<boolean | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
+  // Seed node table from the scope hint so users see queued nodes IMMEDIATELY
+  // (before the first SSE event arrives).
+  useEffect(() => {
+    if (!dag) return;
+    const seed = new Map<string, NodeRunState>();
+    Array.from(scopeHint.sourceIds).forEach((id) => {
+      const s = dag.sources.find((x) => x.id === id);
+      if (!s) return;
+      seed.set(`c:${id}`, { key: `c:${id}`, kind: 'connection', id, name: s.name, status: 'queued' });
+    });
+    Array.from(scopeHint.productIds).forEach((id) => {
+      const p = dag.products.find((x) => x.id === id);
+      if (!p) return;
+      seed.set(`p:${id}`, { key: `p:${id}`, kind: 'product', id, name: p.name, status: 'queued' });
+    });
+    setNodes(seed);
+    // Reset log when a new run starts
+    setLog([]);
+    setDone(false);
+    setAllOk(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId]);
+
+  // Match a "Source sync queued / OK / failed" line back to a connection
+  // node by name, so the per-node status pill updates as the orchestrator
+  // emits its log lines. Best-effort — falls back to the cumulative log
+  // for anything we can't pin to a node.
+  const updateNodeByName = useCallback((name: string, kind: 'connection' | 'product', patch: Partial<NodeRunState>) => {
+    setNodes((prev) => {
+      const entries = Array.from(prev.entries());
+      for (const [k, v] of entries) {
+        if (v.kind === kind && v.name === name) {
+          const next = new Map(prev);
+          next.set(k, { ...v, ...patch });
+          return next;
+        }
+      }
+      return prev;
+    });
+  }, []);
+
+  // SSE attach
   useEffect(() => {
     let cancelled = false;
     const ctrl = new AbortController();
@@ -1110,17 +1191,77 @@ function RunStreamPanel({
             try {
               const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
               const t = ev.type as string;
-              if (t === 'phase' || t === 'log') setLog((l) => [...l, ev.text as string]);
-              else if (t === 'product') setLog((l) => [...l, `  "${ev.productName}": ${ev.text}`]);
-              else if (t === 'error_detail') setLog((l) => [...l, `    ✗ ${ev.tableName}: ${ev.error}`]);
-              else if (t === 'done') setLog((l) => [...l, ev.text as string]);
-              else if (t === 'completed') {
+              if (t === 'phase') {
+                setLog((l) => [...l, { kind: 'phase', text: ev.text as string }]);
+              } else if (t === 'log') {
+                const text = ev.text as string;
+                setLog((l) => [...l, { kind: 'log', text }]);
+                // Try to pin source-sync log lines to their source node.
+                // Format: "  <name>: queueing sync…" / "  <name>: sync OK"
+                //         / "  <name>: skipped (...)"
+                const m = text.match(/^\s+(.+?): (queueing sync|sync OK|skipped.*)/);
+                if (m) {
+                  const name = m[1];
+                  const status: NodeRunStatus =
+                    /queueing/.test(m[2]) ? 'running' :
+                    /sync OK/.test(m[2]) ? 'ok' :
+                    /skipped/.test(m[2]) ? 'skipped' : 'queued';
+                  updateNodeByName(name, 'connection', { status, detail: m[2] });
+                }
+                // Product start: "  Running "<name>"…"
+                const pm = text.match(/^\s+Running "(.+?)"…/);
+                if (pm) {
+                  updateNodeByName(pm[1], 'product', { status: 'running' });
+                }
+              } else if (t === 'product') {
+                const status = (ev.status === 'ok' ? 'ok' :
+                                ev.status === 'partial' ? 'failed' :
+                                'failed') as NodeRunStatus;
+                updateNodeByName(ev.productName as string, 'product', {
+                  status,
+                  detail: ev.text as string,
+                });
+                setLog((l) => [...l, { kind: 'log', text: `  "${ev.productName}": ${ev.text}` }]);
+              } else if (t === 'error_detail') {
+                const productName = ev.productName as string | undefined;
+                const tbl = ev.tableName as string;
+                const errMsg = ev.error as string;
+                setLog((l) => [...l, { kind: 'error', text: `    ✗ ${tbl}: ${errMsg}` }]);
+                if (productName) {
+                  setNodes((prev) => {
+                    const entries = Array.from(prev.entries());
+                    for (const [k, v] of entries) {
+                      if (v.kind === 'product' && v.name === productName) {
+                        const next = new Map(prev);
+                        next.set(k, { ...v, errors: [...(v.errors ?? []), `${tbl}: ${errMsg}`] });
+                        return next;
+                      }
+                    }
+                    return prev;
+                  });
+                }
+              } else if (t === 'done') {
+                setLog((l) => [...l, { kind: 'done', text: ev.text as string }]);
+              } else if (t === 'completed') {
                 setDone(true);
                 const ok = (ev.result as { allOk?: boolean })?.allOk;
                 setAllOk(typeof ok === 'boolean' ? ok : null);
+                // Mark any still-running/queued nodes as idle so the table
+                // doesn't keep spinning forever.
+                setNodes((prev) => {
+                  const next = new Map(prev);
+                  Array.from(prev.entries()).forEach(([k, v]) => {
+                    if (v.status === 'running' || v.status === 'queued') {
+                      next.set(k, { ...v, status: ok === false ? 'failed' : 'idle' });
+                    }
+                  });
+                  return next;
+                });
+                onCompleted();
               } else if (t === 'failed') {
                 setDone(true); setAllOk(false);
-                setLog((l) => [...l, `Error: ${ev.error}`]);
+                setLog((l) => [...l, { kind: 'error', text: `Error: ${ev.error}` }]);
+                onCompleted();
               }
             } catch { /* skip malformed */ }
           }
@@ -1129,29 +1270,164 @@ function RunStreamPanel({
       } catch { /* aborted */ }
     })();
     return () => { cancelled = true; ctrl.abort(); };
-  }, [jobId]);
+  }, [jobId, updateNodeByName, onCompleted]);
+
+  const counts = useMemo(() => {
+    let ok = 0, failed = 0, running = 0, queued = 0, skipped = 0;
+    Array.from(nodes.values()).forEach((n) => {
+      if (n.status === 'ok') ok++;
+      else if (n.status === 'failed') failed++;
+      else if (n.status === 'running') running++;
+      else if (n.status === 'skipped') skipped++;
+      else if (n.status === 'queued') queued++;
+    });
+    return { ok, failed, running, queued, skipped, total: nodes.size };
+  }, [nodes]);
+
+  // Auto-scroll log to bottom
+  const logRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [log]);
+
+  const orderedNodes = useMemo(
+    () => Array.from(nodes.values()).sort((a, b) => {
+      // Sources before products, then by name
+      if (a.kind !== b.kind) return a.kind === 'connection' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    }),
+    [nodes],
+  );
 
   return (
-    <div className="fixed bottom-4 right-4 z-30 w-[420px] max-h-[60vh] bg-ink rounded-lg shadow-xl overflow-hidden flex flex-col">
-      <div className="border-b border-white/10 px-4 py-2.5 flex items-center gap-2">
-        {done ? (
-          allOk ? <CheckCircle2 className="w-4 h-4 text-ok" /> : <AlertCircle className="w-4 h-4 text-err" />
-        ) : <Loader2 className="w-4 h-4 text-white animate-spin" />}
-        <span className="text-[13px] text-white/90 font-medium truncate flex-1">{pipelineName}</span>
-        <button onClick={onClose} className="p-1 rounded hover:bg-white/10 text-white/60 hover:text-white">
-          <X className="w-3.5 h-3.5" />
+    <div className="border-t border-line bg-raised">
+      {/* Header bar */}
+      <div className="px-6 py-2 flex items-center gap-3 border-b border-line">
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="p-0.5 rounded hover:bg-soft text-muted-2 hover:text-ink-2"
+          aria-label={collapsed ? 'Expand' : 'Collapse'}
+        >
+          {collapsed ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
         </button>
+        {done
+          ? (allOk
+              ? <CheckCircle2 className="w-4 h-4" style={{ color: OBSERVATORY.ok }} />
+              : <AlertCircle className="w-4 h-4" style={{ color: OBSERVATORY.err }} />)
+          : <Loader2 className="w-4 h-4 animate-spin" style={{ color: OBSERVATORY.ocean }} />}
+        <span className="text-[12.5px] font-medium text-ink truncate flex-1">{pipelineName}</span>
+        <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted">
+          {done
+            ? (allOk ? 'completed' : 'completed with errors')
+            : counts.running > 0 ? 'running'
+            : 'queued'}
+        </span>
+        <span className="flex items-center gap-2 text-[11px] font-mono">
+          {counts.ok > 0       && <span style={{ color: OBSERVATORY.ok }}>{counts.ok} ok</span>}
+          {counts.running > 0  && <span style={{ color: OBSERVATORY.ocean }}>{counts.running} running</span>}
+          {counts.queued > 0   && <span className="text-muted-2">{counts.queued} queued</span>}
+          {counts.skipped > 0  && <span className="text-muted-2">{counts.skipped} skipped</span>}
+          {counts.failed > 0   && <span style={{ color: OBSERVATORY.err }}>{counts.failed} failed</span>}
+        </span>
+        {done && (
+          <button
+            onClick={onDismiss}
+            className="p-0.5 rounded hover:bg-soft text-muted-2 hover:text-ink-2"
+            aria-label="Dismiss"
+            title="Hide this panel"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11.5px] leading-relaxed">
-        {log.map((line, i) => (
-          <div key={i} className={cn(
-            line.startsWith('    ✗') ? 'text-err' :
-            line.startsWith('Error') ? 'text-err' :
-            line.startsWith('All done') ? 'text-ok' :
-            line.startsWith('  ') ? 'text-white/50' : 'text-white/85',
-          )}>{line}</div>
-        ))}
+
+      {!collapsed && (
+        <div className="grid grid-cols-2" style={{ height: 240 }}>
+          {/* Node status table */}
+          <div className="border-r border-line overflow-y-auto">
+            <div className="sticky top-0 bg-raised border-b border-line px-3 py-1.5 flex items-center gap-2">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Activity</p>
+            </div>
+            {orderedNodes.length === 0 ? (
+              <div className="px-3 py-3 text-[12px] text-muted italic">No nodes in scope.</div>
+            ) : (
+              <div>
+                {orderedNodes.map((n) => <NodeStatusRow key={n.key} node={n} />)}
+              </div>
+            )}
+          </div>
+
+          {/* Cumulative log */}
+          <div className="overflow-y-auto bg-ink" ref={logRef}>
+            <div className="sticky top-0 bg-ink border-b border-white/10 px-3 py-1.5">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-white/50">Output</p>
+            </div>
+            <div className="px-3 py-2 font-mono text-[11.5px] leading-relaxed">
+              {log.length === 0 && <div className="text-white/40 italic">Waiting for output…</div>}
+              {log.map((entry, i) => (
+                <div key={i} className={cn(
+                  entry.kind === 'error'  ? 'text-err' :
+                  entry.kind === 'done'   ? 'text-ok' :
+                  entry.kind === 'phase'  ? 'text-white/90 font-medium' :
+                  entry.text.startsWith('  ') ? 'text-white/55' : 'text-white/80',
+                )}>
+                  {entry.text}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NodeStatusRow({ node }: { node: NodeRunState }) {
+  const [showErrors, setShowErrors] = useState(false);
+  const Icon = node.kind === 'connection' ? Database : Boxes;
+
+  const statusVisual: Record<NodeRunStatus, { icon: React.ReactNode; color: string; label: string }> = {
+    queued:  { icon: <Clock className="w-3 h-3" />,                              color: OBSERVATORY.muted2, label: 'queued' },
+    running: { icon: <Loader2 className="w-3 h-3 animate-spin" />,               color: OBSERVATORY.ocean,  label: 'running' },
+    ok:      { icon: <CheckCircle2 className="w-3 h-3" />,                       color: OBSERVATORY.ok,     label: 'ok' },
+    failed:  { icon: <AlertCircle className="w-3 h-3" />,                        color: OBSERVATORY.err,    label: 'failed' },
+    skipped: { icon: <MinusSquare className="w-3 h-3" />,                        color: OBSERVATORY.muted2, label: 'skipped' },
+    idle:    { icon: <SquareDashed className="w-3 h-3" />,                       color: OBSERVATORY.muted2, label: 'idle' },
+  };
+  const s = statusVisual[node.status];
+  const hasErrors = (node.errors?.length ?? 0) > 0;
+
+  return (
+    <div className="border-b border-line/60">
+      <div className="px-3 py-1.5 flex items-center gap-2">
+        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: node.kind === 'connection' ? OBSERVATORY.ocean : OBSERVATORY.ai }} />
+        <span className="text-[12.5px] text-ink truncate flex-1">{node.name}</span>
+        {node.detail && (
+          <span className="text-[10.5px] text-muted-2 truncate max-w-[40%] hidden sm:inline">{node.detail}</span>
+        )}
+        <span className="inline-flex items-center gap-1 text-[10px] font-mono uppercase tracking-[0.08em] shrink-0" style={{ color: s.color }}>
+          {s.icon}
+          {s.label}
+        </span>
+        {hasErrors && (
+          <button
+            onClick={() => setShowErrors(!showErrors)}
+            className="text-[10px] font-mono uppercase tracking-[0.08em]"
+            style={{ color: OBSERVATORY.err }}
+          >
+            {showErrors ? 'hide' : `${node.errors!.length} ✗`}
+          </button>
+        )}
       </div>
+      {showErrors && hasErrors && (
+        <div className="px-3 pb-2 space-y-1">
+          {node.errors!.map((err, i) => (
+            <div key={i} className="px-2 py-1 text-[11px] font-mono rounded" style={{ background: OBSERVATORY.errSoft, color: OBSERVATORY.ink2 }}>
+              {err}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

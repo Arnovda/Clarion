@@ -343,7 +343,10 @@ export async function runPipelineWorkflow(
           const triggered = await triggerSync({
             connectionId: sourceId,
             tenantId: Number(tenantId),
-            triggeredByUserId: 0,
+            // Omit triggeredByUserId: source_sync_runs.triggered_by_user_id
+            // is a FK to users.id — passing 0 violates it. Audit attribution
+            // for pipeline-driven syncs lives on pipeline_runs.triggered_by.
+            triggeredByUserId: undefined,
           });
           const syncRunId = (triggered as { syncRunId?: number }).syncRunId;
           if (!syncRunId) {
@@ -553,7 +556,9 @@ export async function runProductRefreshWorkflow(
         const triggered = await triggerSync({
           connectionId: Number(product.connection_id),
           tenantId: Number(tenantId),
-          triggeredByUserId: 0, // refresh job — no specific user id needed
+          // Omit triggeredByUserId — passing 0 would violate the FK on
+          // source_sync_runs.triggered_by_user_id → users.id.
+          triggeredByUserId: undefined,
         });
         const syncRunId = (triggered as { syncRunId?: number }).syncRunId;
         if (!syncRunId) throw new Error('Source sync did not return a syncRunId');
