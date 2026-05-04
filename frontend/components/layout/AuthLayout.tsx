@@ -115,7 +115,7 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
               <span className="block font-mono not-italic font-medium text-[11px] tracking-[0.14em] uppercase text-white mb-3.5">
                 Observatory · Est. 2025
               </span>
-              The quiet place from which you see your company&rsquo;s data in full — and act on what you see.
+              Where your business<br />comes into focus.
             </blockquote>
 
             <div className="font-mono text-[10.5px] tracking-[0.08em] uppercase text-[#8891a0]">
