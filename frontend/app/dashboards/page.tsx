@@ -880,6 +880,9 @@ export default function DashboardsPage() {
         investigationTarget?.spec.id === widget.id ? null : { spec: widget, data }
       ) : undefined,
       isInvestigating: investigationTarget?.spec.id === widget.id,
+      // Provenance modal context
+      dataLayer: currentSpec?.dataLayer ?? 'product',
+      isAdminOrAnalyst: isAdmin,
     };
 
     switch (widget.type) {

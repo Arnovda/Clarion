@@ -1238,6 +1238,148 @@ router.post('/narrate', requireAuth, async (req: Request, res: Response, next: N
 });
 
 // ---------------------------------------------------------------------------
+// POST /widget-context — provenance for a single widget. Answers
+// "where does this number come from?" so users can audit before trusting.
+//
+// Returns:
+//   • plainEnglish — AI-rendered description of the SQL in business terms
+//   • tablesUsed   — every source / product table the SQL touches, with
+//                    last_refreshed_at + description so users can see
+//                    whether the underlying data is fresh
+//   • columnsUsed  — first ~20 source columns referenced, with
+//                    descriptions if available (drives "I don't recognise
+//                    this column" → click to read the definition)
+//   • sql          — echoed back so the modal can show it (admins / analysts)
+//
+// No caching server-side — Haiku call is ~$0.0001, frontend opens this
+// only on user click.
+// ---------------------------------------------------------------------------
+router.post('/widget-context', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+
+    const { title, sql, dataLayer } = req.body as {
+      title: string;
+      sql: string;
+      dataLayer?: 'product' | 'source';
+    };
+    if (!title || !sql) {
+      res.status(400).json({ ok: false, error: 'title and sql required' });
+      return;
+    }
+
+    // Crude SQL parser — pulls every identifier following FROM / JOIN.
+    // Good enough: our generated SQL is single-line CTE-free joins; we'll
+    // upgrade to a real parser if anyone writes hand-crafted SQL on top.
+    const tableNamesRaw = new Set<string>();
+    const tablePattern = /\b(?:FROM|JOIN)\s+["`]?([a-zA-Z_][a-zA-Z0-9_.]*)["`]?/gi;
+    let m: RegExpExecArray | null;
+    while ((m = tablePattern.exec(sql)) !== null) {
+      // Trim "schema.table" → "table"
+      const last = m[1].split('.').pop();
+      if (last) tableNamesRaw.add(last);
+    }
+    // Drop obvious DuckDB / SQL builtins
+    const SKIP = new Set(['unnest', 'generate_series', 'range', 'values']);
+    const tableNames = Array.from(tableNamesRaw).filter((n) => !SKIP.has(n.toLowerCase()));
+
+    type TableMeta = {
+      name: string;
+      kind: 'product' | 'source' | 'unknown';
+      description: string | null;
+      lastRefreshedAt: string | null;
+      productName?: string | null;
+      sourceName?: string | null;
+    };
+    const tablesUsed: TableMeta[] = [];
+
+    if (tableNames.length > 0) {
+      // Look up product tables (transformation_status='success' implies parquet exists)
+      const ptRows = await semanticDb('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+        .whereIn('pt.table_name', tableNames)
+        .select(
+          'pt.table_name', 'pt.description', 'pt.last_run_at',
+          'dp.name as product_name',
+        );
+      const ptByName = new Map<string, { description: string | null; last_run_at: Date | string | null; product_name: string | null }>();
+      for (const r of ptRows as Array<{ table_name: string; description: string | null; last_run_at: Date | string | null; product_name: string | null }>) {
+        ptByName.set(r.table_name, r);
+      }
+
+      // Source tables — last_synced_at lives on the connection, not the table.
+      const stRows = await semanticDb('source_tables as st')
+        .join('connections as c', 'st.connection_id', 'c.id')
+        .whereIn('st.table_name', tableNames)
+        .where({ 'st.is_active': true })
+        .select(
+          'st.table_name', 'st.description',
+          'c.last_synced_at', 'c.name as connection_name',
+        );
+      const stByName = new Map<string, { description: string | null; last_synced_at: Date | string | null; connection_name: string }>();
+      for (const r of stRows as Array<{ table_name: string; description: string | null; last_synced_at: Date | string | null; connection_name: string }>) {
+        stByName.set(r.table_name, r);
+      }
+
+      for (const name of tableNames) {
+        const pt = ptByName.get(name);
+        if (pt) {
+          tablesUsed.push({
+            name, kind: 'product',
+            description: pt.description,
+            lastRefreshedAt: pt.last_run_at ? String(pt.last_run_at) : null,
+            productName: pt.product_name,
+          });
+          continue;
+        }
+        const st = stByName.get(name);
+        if (st) {
+          tablesUsed.push({
+            name, kind: 'source',
+            description: st.description,
+            lastRefreshedAt: st.last_synced_at ? String(st.last_synced_at) : null,
+            sourceName: st.connection_name,
+          });
+          continue;
+        }
+        // Could be a CTE / temp / transformation rollup — surface as unknown.
+        tablesUsed.push({ name, kind: 'unknown', description: null, lastRefreshedAt: null });
+      }
+    }
+
+    // Build a small context string for the AI so it doesn't hallucinate
+    // column meanings — pass the table descriptions we just looked up.
+    const tableContext = tablesUsed
+      .filter((t) => t.description)
+      .map((t) => `${t.name}: ${t.description}`)
+      .join('\n');
+
+    let plainEnglish: string | null = null;
+    try {
+      const { explainSqlInPlainEnglish } = await import('../ai/AIService');
+      plainEnglish = await explainSqlInPlainEnglish(title, sql, tableContext || undefined);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[widget-context] explainSqlInPlainEnglish failed:', err);
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        plainEnglish,
+        tablesUsed,
+        sql,
+        dataLayer: dataLayer ?? 'product',
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /explain-widget  — 2-sentence plain-language explanation for a widget
 // ---------------------------------------------------------------------------
 

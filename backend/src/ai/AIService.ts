@@ -1640,6 +1640,48 @@ export async function explainWidget(
 }
 
 // ---------------------------------------------------------------------------
+// Phase B (provenance) — translate widget SQL into plain English so users
+// can verify "where does this number come from" without reading SQL. This
+// is the trust-layer feature: a finance team will not bet a board meeting
+// on a number whose origin they can't audit.
+// ---------------------------------------------------------------------------
+
+const SQL_TO_PLAIN_ENGLISH_SYSTEM = `You are a data analyst translating a SQL query into one paragraph of plain business English. Your audience: a non-technical user (CFO, ops manager) who wants to verify what a dashboard number actually represents before trusting it.
+
+Rules:
+- 2-3 sentences, no more.
+- Describe WHAT is computed, not how. Say "total revenue per month for this year" not "SUM with GROUP BY date_trunc".
+- If there's a filter (WHERE clause), state it in business terms: "for the current quarter", "where the customer is in Belgium", etc.
+- If there's an aggregation (SUM, COUNT, AVG, percentile), name it: "total", "count of", "average", "median".
+- If the SQL joins multiple tables, mention the join briefly: "combining sales with the customer dimension".
+- Do NOT mention column names verbatim unless their business meaning is non-obvious.
+- Do NOT use SQL keywords (SELECT, JOIN, GROUP BY, WHERE, etc).
+- Do NOT use markdown formatting. Plain prose.
+- Output ONLY the explanation text. No preamble, no "Here is the explanation:".`;
+
+function buildSqlToPlainEnglishUser(title: string, sql: string, tableContext?: string): string {
+  const ctx = tableContext ? `\nTABLES + COLUMNS REFERENCED:\n${tableContext}\n` : '';
+  return `Widget title: ${title}
+${ctx}
+SQL:
+${sql}
+
+Translate the SQL into 2-3 sentences of plain business English.`;
+}
+
+export async function explainSqlInPlainEnglish(
+  title: string,
+  sql: string,
+  tableContext?: string,
+): Promise<string> {
+  return callClaude(
+    SQL_TO_PLAIN_ENGLISH_SYSTEM,
+    buildSqlToPlainEnglishUser(title, sql, tableContext),
+    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'explain_sql_plain' },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Sprint 3.2 — Causal investigation
 // ---------------------------------------------------------------------------
 

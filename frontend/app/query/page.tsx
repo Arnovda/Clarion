@@ -103,6 +103,18 @@ function QueryPageInner() {
     }
   }, [urlProductId, urlProductName]);
 
+  // Seed the prompt input from a query param so deep-links can pre-fill
+  // the chat. Used today by the dashboard widget provenance modal's
+  // "Ask a follow-up" button — turns the explainer into action instead of
+  // a dead-end. Runs once per param value so we don't fight the user's typing.
+  const seedQuestion = searchParams.get('seedQuestion');
+  useEffect(() => {
+    if (!seedQuestion) return;
+    setInput(seedQuestion);
+    setTimeout(() => inputRef.current?.focus(), 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedQuestion]);
+
   // Load available connections + integration views (silent — no UI picker shown)
   useEffect(() => {
     Promise.all([

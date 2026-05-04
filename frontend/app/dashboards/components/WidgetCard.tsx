@@ -2,10 +2,11 @@
 
 import { useRef, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { Lightbulb, Search, X } from 'lucide-react';
+import { Lightbulb, Search, X, HelpCircle } from 'lucide-react';
 import { widgetVariants } from '../utils/motion';
 import type { WidgetSpec, WidgetData } from '../types';
 import api from '../../../lib/api';
+import WidgetProvenance from './WidgetProvenance';
 
 interface WidgetCardProps {
   spec: WidgetSpec;
@@ -19,6 +20,13 @@ interface WidgetCardProps {
   onExportXlsx?: () => void;
   onInvestigate?: () => void;
   isInvestigating?: boolean;
+  /** Which data layer the dashboard's SQL was generated against — passed
+   * through to the provenance modal so it knows whether to look up
+   * tables in source_tables vs product_tables. */
+  dataLayer?: 'product' | 'source';
+  /** Whether the current user is admin/analyst — gates the raw SQL view
+   * inside the provenance modal. */
+  isAdminOrAnalyst?: boolean;
 }
 
 export function WidgetCard({
@@ -33,6 +41,8 @@ export function WidgetCard({
   onExportXlsx,
   onInvestigate,
   isInvestigating,
+  dataLayer,
+  isAdminOrAnalyst,
 }: WidgetCardProps) {
   const isKpi = spec.type === 'kpi_card';
   const featured = spec.featured;
@@ -40,6 +50,10 @@ export function WidgetCard({
   const [exportingPdf, setExportingPdf] = useState(false);
   const [explanation, setExplanation] = useState<string | null>(null);
   const [explaining, setExplaining] = useState(false);
+  // Provenance modal — separate from the AI chart explainer; this one
+  // shows where the number comes from (SQL → plain English + tables +
+  // refresh times) so finance teams can audit before trusting.
+  const [showProvenance, setShowProvenance] = useState(false);
 
   async function fetchExplanation() {
     if (explaining || !data?.rows?.length) return;
@@ -135,6 +149,15 @@ export function WidgetCard({
                   </svg>
                 </button>
               )}
+              {/* Provenance — "How was this computed?" */}
+              <button
+                onClick={() => setShowProvenance(true)}
+                className="p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors"
+                title="How was this computed?"
+                aria-label="How was this computed?"
+              >
+                <HelpCircle className="w-3.5 h-3.5" strokeWidth={2} />
+              </button>
               {data && !data.loading && !data.error && data.rows.length > 0 && (
                 <button
                   onClick={fetchExplanation}
@@ -184,7 +207,23 @@ export function WidgetCard({
         </div>
       )}
 
-      <div className={`flex-1 ${isKpi ? 'p-5' : 'px-5 py-4'}`}>{children}</div>
+      <div className={`flex-1 relative ${isKpi ? 'p-5' : 'px-5 py-4'}`}>
+        {/* KPI cards skip the header toolbar entirely, so we surface the
+           provenance button as a floating top-right button that only
+           appears on hover. KPIs are the most trust-sensitive thing on
+           the dashboard — this is the headline number a CFO will quote. */}
+        {isKpi && (
+          <button
+            onClick={() => setShowProvenance(true)}
+            className="absolute top-2 right-2 p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors opacity-0 group-hover/widget:opacity-100"
+            title="How was this computed?"
+            aria-label="How was this computed?"
+          >
+            <HelpCircle className="w-3.5 h-3.5" strokeWidth={2} />
+          </button>
+        )}
+        {children}
+      </div>
 
       {explanation && (
         <div className="px-5 pb-4 pt-0 border-t border-line mt-0">
@@ -199,6 +238,15 @@ export function WidgetCard({
             </button>
           </div>
         </div>
+      )}
+
+      {showProvenance && (
+        <WidgetProvenance
+          widget={spec}
+          dataLayer={dataLayer ?? 'product'}
+          isAdminOrAnalyst={!!isAdminOrAnalyst}
+          onClose={() => setShowProvenance(false)}
+        />
       )}
     </motion.div>
   );
