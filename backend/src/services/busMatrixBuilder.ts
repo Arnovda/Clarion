@@ -173,7 +173,10 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           display_name: dim.display_name,
           description: dim.description,
           table_role: 'dimension',
-          is_shared_dimension: true,
+          // OWNER row — this product materialises the dim. Stubs in
+          // downstream products that reference this dim are inserted with
+          // is_shared_dimension=true (see fact-tables loop below).
+          is_shared_dimension: false,
           dag_order: 0,
           transformation_sql: dim.transformation_sql,
           transformation_status: 'draft',

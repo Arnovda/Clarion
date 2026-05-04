@@ -256,6 +256,28 @@ if (!process.env.VITEST) {
           .where((qb) => qb.whereNull('is_shared_dimension').orWhere('is_shared_dimension', false))
           .update({ is_shared_dimension: true });
         if (flagged > 0) console.log(`[startup] Backfilled is_shared_dimension=true on ${flagged} dim_date stub row(s)`);
+
+        // One-time repair for the inverted is_shared_dimension flag. Older
+        // bus-matrix builds inserted OWNED dims with is_shared_dimension=true
+        // (matching the AI proposal's semantic of "true=owner") but the
+        // runner reads true as "stub; skip." The mismatch caused dims to
+        // never be materialised and delta_path to stay null, breaking the
+        // catalog preview ("No data yet…"). Heuristic for misclassified
+        // owners: is_shared_dimension=true with non-empty transformation_sql.
+        // True stubs always have null/empty SQL.
+        const repaired = await semanticDb('product_tables')
+          .where({ table_role: 'dimension', is_shared_dimension: true })
+          .whereNot('table_name', 'dim_date')
+          .whereNotNull('transformation_sql')
+          .where('transformation_sql', '!=', '')
+          .update({ is_shared_dimension: false });
+        if (repaired > 0) {
+          console.log(
+            `[startup] Repaired is_shared_dimension flag on ${repaired} owned ` +
+            `dim row(s) (had non-null SQL but were flagged as stubs). ` +
+            `Re-run the refresh pipeline to materialise their parquet.`,
+          );
+        }
       } catch { /* non-fatal */ }
     })();
 

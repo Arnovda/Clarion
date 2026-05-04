@@ -257,7 +257,10 @@ export async function buildDbtProject(
       .join('star_schemas as ss', 'ss.data_product_id', 'dp.id')
       .join('product_tables as pt', 'pt.star_schema_id', 'ss.id')
       .where('dpd.dependent_product_id', product.id)
-      .where('pt.is_shared_dimension', true)
+      // Owners (false) live in the upstream product; stubs (true) live here.
+      // We need the upstream owners' delta_path to read their parquet.
+      .where('pt.is_shared_dimension', false)
+      .where('pt.table_role', 'dimension')
       .whereNotNull('pt.delta_path')
       .select(
         'pt.table_name',

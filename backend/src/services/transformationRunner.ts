@@ -310,11 +310,14 @@ async function loadDependencyDimensions(
   );
 
   for (const dep of deps) {
-    // Find the shared dimension tables in the source product
+    // Find the OWNER rows in the upstream product — those are the dims that
+    // were materialised there and have a real delta_path. is_shared_dimension
+    // is false on owners; true on stubs in downstream products. We want owners.
     const sharedTables = await tenantQuery(tenantId, (trx) =>
       trx('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-        .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': true })
+        .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': false })
+        .where('pt.table_role', 'dimension')
         .select('pt.table_name', 'pt.delta_path')
     );
 
@@ -623,17 +626,32 @@ export async function runProductTransformation(
       // exists here as a stub (transformation_sql=null, is_shared_dimension=true)
       // and the actual parquet was loaded by loadDependencyDimensions above.
       // Skip materialization — but mark the row 'success' so the UI doesn't
-      // perpetually show it as draft/stuck.
+      // perpetually show it as draft/stuck. ALSO copy delta_path from the
+      // upstream owner so the catalog preview can read the stub's data.
       if (table.is_shared_dimension) {
+        const upstream = await tenantQuery(tenantId, (trx) =>
+          trx('data_product_dependencies as dpd')
+            .join('star_schemas as ss', 'ss.data_product_id', 'dpd.source_product_id')
+            .join('product_tables as pt', 'pt.star_schema_id', 'ss.id')
+            .where('dpd.dependent_product_id', product.id)
+            .where('pt.table_name', table.table_name)
+            .where('pt.is_shared_dimension', false)
+            .select('pt.delta_path', 'pt.row_count')
+            .first()
+        );
         await tenantQuery(tenantId, (trx) =>
           trx('product_tables').where({ id: table.id }).update({
             transformation_status: 'success',
             last_run_at: new Date().toISOString(),
             last_run_error: null,
+            // Mirror upstream owner's path/count so the preview + UI work for
+            // the stub row too. Falls back to null if upstream isn't built yet.
+            delta_path: upstream?.delta_path ?? null,
+            row_count: upstream?.row_count ?? 0,
           })
         );
-        results.push({ table_name: table.table_name, status: 'success', row_count: 0 });
-        console.log(`[transformationRunner] Skipped shared dim ${table.table_name} — loaded from upstream product`);
+        results.push({ table_name: table.table_name, status: 'success', row_count: Number(upstream?.row_count ?? 0) });
+        console.log(`[transformationRunner] Skipped shared dim ${table.table_name} — points at upstream parquet`);
         continue;
       }
 

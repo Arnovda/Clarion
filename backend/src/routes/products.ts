@@ -529,9 +529,13 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       if (deps.length > 0) {
         const sharedDimBlocks: string[] = [];
         for (const dep of deps) {
+          // Owners (is_shared_dimension=false) live in the upstream product
+          // and have transformation_sql. Stubs in downstream products are
+          // is_shared_dimension=true with null SQL — we want the owners here.
           const sharedTables = await semanticDb('product_tables as pt')
             .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-            .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': true })
+            .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': false })
+            .where('pt.table_role', 'dimension')
             .whereNotNull('pt.transformation_sql')
             .select('pt.id', 'pt.table_name', 'pt.display_name', 'pt.description');
 
@@ -1543,7 +1547,7 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
       const sharedTables = await semanticDb('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': true })
+        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));
@@ -2169,7 +2173,10 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
           display_name: dim.display_name,
           description: dim.description,
           table_role: 'dimension',
-          is_shared_dimension: true,
+          // OWNER row — this product materialises the dim. Stubs in
+          // downstream products are inserted with is_shared_dimension=true
+          // in the fact-tables loop below.
+          is_shared_dimension: false,
           dag_order: 0,
           transformation_sql: dim.transformation_sql,
           transformation_status: 'draft',
@@ -2518,7 +2525,7 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
       const sharedTables = await semanticDb('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': true })
+        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));
@@ -2608,7 +2615,7 @@ router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, 
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
       const sharedTables = await semanticDb('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
-        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': true })
+        .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
       return { name: p.name as string, shared_dimension_tables: sharedTables };
     }));

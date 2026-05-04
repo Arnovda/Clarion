@@ -17,7 +17,7 @@ export interface ProposedTable {
   display_name: string;
   description: string;
   table_role: 'fact' | 'dimension' | 'bridge' | 'junk';
-  is_shared_dimension: boolean;  // true = owned by THIS product, reused by others
+  is_shared_dimension: boolean;  // (informational only — see note) true = owner / canonical
   dag_order: number;             // 0=dims first, 1=facts
   source_tables: string[];       // which source table names feed this table
 }
