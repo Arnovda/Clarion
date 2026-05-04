@@ -361,24 +361,20 @@ export async function runPipelineWorkflow(
           // Structured event so the dock can pin the sync_run_id to this
           // source node and let the user expand for live row_counts.
           emit({ type: 'source_run', sourceConnectionId: sourceId, syncRunId });
-          // triggerSync ALREADY awaits the worker's exit and updates the
-          // source_sync_runs row to its terminal status before returning.
-          // Read the row once instead of polling — the previous poll-based
-          // wait was adding 0–3s of pure latency for every source AND was
-          // a real foot-gun when the row was updated faster than the first
-          // poll could fire (manifested as "orchestrator stuck" on the dock).
-          const row = await semanticDb('source_sync_runs')
-            .where({ id: syncRunId, tenant_id: tenantId })
-            .first();
-          const finalStatus = (row?.status as string) ?? 'failed';
-          const errorMessage = (row?.error_message as string | null) ?? null;
-          if (finalStatus === 'succeeded') {
+          // We MUST poll. In LocalProcessJobLauncher mode triggerSync
+          // resolves only when the worker exits (so a single read would
+          // also work) — but in AzureContainerAppsJobLauncher mode
+          // triggerSync returns as soon as the Container Apps Job is
+          // queued, with the row still in 'running'. Without polling we'd
+          // mismark the source as failed every time.
+          const final = await waitForSyncRun(syncRunId, Number(tenantId), opts);
+          if (final.status === 'succeeded') {
             emit({ type: 'log', text: `  ${conn.name}: sync OK` });
             return { sourceId, status: 'succeeded' as const };
           }
-          if (finalStatus === 'cancelled') throw new CancelledError();
-          emit({ type: 'error_detail', tableName: conn.name, error: errorMessage ?? 'Sync failed' });
-          return { sourceId, status: 'failed' as const, error: errorMessage ?? 'Sync failed' };
+          if (final.status === 'cancelled') throw new CancelledError();
+          emit({ type: 'error_detail', tableName: conn.name, error: final.error_message ?? 'Sync failed' });
+          return { sourceId, status: 'failed' as const, error: final.error_message ?? 'Sync failed' };
         } catch (err) {
           if (err instanceof CancelledError) throw err;
           const msg = err instanceof Error ? err.message : 'Sync failed';
@@ -606,18 +602,14 @@ export async function runProductRefreshWorkflow(
         const syncRunId = (triggered as { syncRunId?: number }).syncRunId;
         if (!syncRunId) throw new Error('Source sync did not return a syncRunId');
         emit({ type: 'log', text: `  Source sync queued (run #${syncRunId})…` });
-        // triggerSync already awaits worker exit + updates the row. Just
-        // read once. Avoids the same polling-stalls-the-orchestrator bug
-        // we hit on the pipeline path.
-        const row = await semanticDb('source_sync_runs')
-          .where({ id: syncRunId, tenant_id: tenantId })
-          .first();
-        const finalStatus = (row?.status as string) ?? 'failed';
-        const errorMessage = (row?.error_message as string | null) ?? null;
-        if (finalStatus === 'failed') {
-          throw new Error(`Source sync failed: ${errorMessage ?? 'unknown'}`);
+        // Must poll: in Azure mode triggerSync returns when the
+        // Container Apps Job is queued, not when it completes. Polling
+        // until terminal status is the only correct path.
+        const final = await waitForSourceSync(syncRunId, Number(tenantId), opts);
+        if (final.status === 'failed') {
+          throw new Error(`Source sync failed: ${final.error_message ?? 'unknown'}`);
         }
-        if (finalStatus === 'cancelled') {
+        if (final.status === 'cancelled') {
           throw new CancelledError();
         }
         emit({ type: 'log', text: '  Source sync complete' });
