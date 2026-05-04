@@ -287,10 +287,31 @@ async function callClaude(
       const durationMs = Date.now() - start;
       logger.error({ callLabel, model, status, durationMs, err }, 'AI call failed');
       trackEvent('ai_call_failed', { callLabel, model, status: String(status ?? 'unknown'), durationMs: String(durationMs) });
+      // Specifically tag the "your credit balance is too low" 400 from
+      // Anthropic so callers in the refresh path can distinguish a real
+      // SQL bug from a billing situation. Without this, the dock shows
+      // the raw API JSON which looks like an internal error.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (status === 400 && /credit balance|too low to access|purchase credits/i.test(errMsg)) {
+        throw new AiCreditExhaustedError(errMsg);
+      }
       throw err;
     }
   }
   throw new Error('AIService: exhausted retries');
+}
+
+/**
+ * Thrown when the upstream provider says the account is out of credits.
+ * Refresh-path callers catch this specifically and produce a clear
+ * user-facing message ("AI repair skipped — Anthropic credits exhausted")
+ * instead of leaking provider JSON into the dock.
+ */
+export class AiCreditExhaustedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AiCreditExhaustedError';
+  }
 }
 
 // Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses

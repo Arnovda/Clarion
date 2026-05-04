@@ -639,25 +639,44 @@ export async function runProductTransformation(
               `for this run. Re-run "Prepare my data" or edit the SQL by hand.`,
             );
           }
-          const { generateTransformationFromScratch } = await import('../ai/AIService');
-          const fresh = await generateTransformationFromScratch(
-            table.table_name, table.table_role, schemasText,
-          );
-          if (!fresh || !isSqlShaped(fresh)) {
-            throw new Error(
-              `Could not regenerate transformation_sql for "${table.table_name}" ` +
-              `— AI returned non-SQL. The stored value is corrupted; ` +
-              `please rebuild this product.`,
+          try {
+            const { generateTransformationFromScratch } = await import('../ai/AIService');
+            const fresh = await generateTransformationFromScratch(
+              table.table_name, table.table_role, schemasText,
             );
+            if (!fresh || !isSqlShaped(fresh)) {
+              throw new Error(
+                `Could not regenerate transformation_sql for "${table.table_name}" ` +
+                `— AI returned non-SQL. The stored value is corrupted; ` +
+                `please rebuild this product.`,
+              );
+            }
+            sql = fresh;
+            aiRepaired = true;
+            // Persist immediately so subsequent retries don't re-trigger this
+            // (which would burn AI tokens for the same fix every time).
+            await tenantQuery(tenantId, (trx) =>
+              trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
+            );
+            console.log(`[transformationRunner] ${table.table_name} regenerated from scratch — persisted`);
+          } catch (regenErr) {
+            // If we can't reach Claude (credits, network, etc.) we don't
+            // want every refresh to keep trying forever. Throw a clean
+            // user-facing message and let the dock surface it; the user
+            // can either top up credits, edit the SQL, or rebuild the
+            // product. The next refresh will hit the same shape check
+            // but produce the same clear message — no token burn.
+            const { AiCreditExhaustedError } = await import('../ai/AIService');
+            if (regenErr instanceof AiCreditExhaustedError) {
+              throw new Error(
+                `transformation_sql for "${table.table_name}" is not valid SQL ` +
+                `and AI auto-repair is unavailable (Anthropic credits exhausted). ` +
+                `Top up credits in the Anthropic console, or rebuild this product, ` +
+                `or edit the SQL manually in /products.`,
+              );
+            }
+            throw regenErr;
           }
-          sql = fresh;
-          aiRepaired = true;
-          // Persist immediately so subsequent retries don't re-trigger this
-          // (which would burn AI tokens for the same fix every time).
-          await tenantQuery(tenantId, (trx) =>
-            trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
-          );
-          console.log(`[transformationRunner] ${table.table_name} regenerated from scratch — persisted`);
         }
 
         try {
@@ -678,14 +697,25 @@ export async function runProductTransformation(
 
           console.warn(`[transformationRunner] ${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
           const schemasText = await collectAvailableSchemas(db);
-          const { repairTransformationSql } = await import('../ai/AIService');
-          const repaired = await repairTransformationSql(
-            table.table_name,
-            table.table_role,
-            sql,
-            errMsg,
-            schemasText,
-          );
+          const { repairTransformationSql, AiCreditExhaustedError } = await import('../ai/AIService');
+          let repaired: string;
+          try {
+            repaired = await repairTransformationSql(
+              table.table_name,
+              table.table_role,
+              sql,
+              errMsg,
+              schemasText,
+            );
+          } catch (repairErr) {
+            if (repairErr instanceof AiCreditExhaustedError) {
+              throw new Error(
+                `${table.table_name} failed and AI auto-repair is unavailable ` +
+                `(Anthropic credits exhausted). Original error: ${errMsg.slice(0, 240)}`,
+              );
+            }
+            throw repairErr;
+          }
           if (!repaired || repaired.trim() === sql.trim()) {
             throw firstErr; // repair produced nothing useful
           }
