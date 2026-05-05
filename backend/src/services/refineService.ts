@@ -62,6 +62,7 @@ export async function buildRefineContext(
     const product = await trx('data_products').where({ id: productId }).first();
     if (!product) return null;
 
+    // ── Product layer ────────────────────────────────────────────────────
     const tables = await trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .where('ss.data_product_id', productId)
@@ -84,6 +85,38 @@ export async function buildRefineContext(
       colsByTable.set(Number(c.product_table_id), list);
     }
 
+    // ── Lineage (which source col fed each product col) ──────────────────
+    const productColIds = columns.map((c) => Number(c.id));
+    const lineage = productColIds.length > 0
+      ? await trx('column_lineage')
+          .whereIn('product_column_id', productColIds)
+          .select('product_column_id', 'source_table_name', 'source_column_name')
+      : [];
+    const lineageByCol = new Map<number, Array<{ sourceTable: string; sourceColumn: string }>>();
+    for (const l of lineage) {
+      const list = lineageByCol.get(Number(l.product_column_id)) ?? [];
+      list.push({
+        sourceTable:  String(l.source_table_name),
+        sourceColumn: String(l.source_column_name),
+      });
+      lineageByCol.set(Number(l.product_column_id), list);
+    }
+
+    // ── Source layer ─────────────────────────────────────────────────────
+    // Includes the product's own connection plus every dependency product's
+    // connection (so cross-product asks like "join in the customer name
+    // from the Reference product's source" have the right schema).
+    const ownConnId = Number(product.connection_id);
+    const depConnIds = await trx('data_product_dependencies as dpd')
+      .join('data_products as dp', 'dpd.source_product_id', 'dp.id')
+      .where('dpd.dependent_product_id', productId)
+      .pluck('dp.connection_id');
+    const allConnIds = Array.from(new Set([ownConnId, ...depConnIds.map((id) => Number(id))]))
+      .filter((id) => Number.isFinite(id));
+
+    const sourceConnections = await loadSourceSchemas(trx, allConnIds);
+
+    // ── KPIs + recent customizations ─────────────────────────────────────
     const kpiNames = await trx('product_kpis')
       .where({ data_product_id: productId })
       .pluck<string[]>('name');
@@ -109,14 +142,121 @@ export async function buildRefineContext(
           columnRole: c.column_role ? String(c.column_role) : null,
           description: c.description ? String(c.description) : null,
           transformationExpression: c.transformation_expression ? String(c.transformation_expression) : null,
+          sourceLineage: lineageByCol.get(Number(c.id)) ?? [],
         })),
       })),
+      sourceConnections,
       existingKpiNames: kpiNames,
       focusedTableId,
       recentCustomizations: recent.map((r) => ({
         intent: String(r.intent),
         summary: r.summary ? String(r.summary) : '',
         status: String(r.status),
+      })),
+    };
+  });
+}
+
+/**
+ * Load source schemas for a set of connections, joined to whatever quality
+ * profile we have (top values, null %, distinct count). Used to give the
+ * Refine AI awareness of raw columns it might be asked to pull in.
+ *
+ * Connection-table-column join with a left join on dataset_profiles so
+ * profiling results are best-effort — unprofiled tables still appear.
+ */
+async function loadSourceSchemas(
+  trx: import('knex').Knex.Transaction,
+  connectionIds: number[],
+): Promise<RefineChatProductContext['sourceConnections']> {
+  if (connectionIds.length === 0) return [];
+
+  const conns = await trx('connections')
+    .whereIn('id', connectionIds)
+    .select('id', 'name', 'connector_type');
+
+  const sourceTables = await trx('source_tables')
+    .whereIn('connection_id', connectionIds)
+    .where({ is_active: true })
+    .select('id', 'connection_id', 'table_name', 'description');
+
+  const stIds = sourceTables.map((t) => Number(t.id));
+  const sourceColumns = stIds.length > 0
+    ? await trx('source_columns')
+        .whereIn('table_id', stIds)
+        .orderBy(['table_id', 'id'])
+        .select('table_id', 'column_name', 'data_type', 'description')
+    : [];
+
+  // Per-column quality stats (best-effort — most recent profile per
+  // (connection_id, table_name)).
+  const profiles = stIds.length > 0
+    ? await trx('dataset_profiles as dp')
+        .leftJoin('field_profiles as fp', 'fp.profile_id', 'dp.id')
+        .whereIn('dp.connection_id', connectionIds)
+        .select(
+          'dp.connection_id', 'dp.table_name',
+          'fp.field_name', 'fp.null_pct', 'fp.distinct_count', 'fp.top_values',
+        )
+    : [];
+  const profileByKey = new Map<string, {
+    nullPct: number | null;
+    distinctCount: number | null;
+    topValues: string[] | null;
+  }>();
+  for (const p of profiles) {
+    if (!p.field_name) continue;
+    const key = `${p.connection_id}|${p.table_name}|${p.field_name}`;
+    const existing = profileByKey.get(key);
+    if (existing) continue; // first wins (latest profile via natural query order)
+    let topValues: string[] | null = null;
+    if (p.top_values) {
+      try {
+        const parsed = typeof p.top_values === 'string' ? JSON.parse(p.top_values) : p.top_values;
+        if (Array.isArray(parsed)) {
+          topValues = parsed.slice(0, 3).map((v: unknown) =>
+            typeof v === 'object' && v !== null && 'value' in (v as object)
+              ? String((v as { value: unknown }).value)
+              : String(v),
+          );
+        }
+      } catch { /* leave null */ }
+    }
+    profileByKey.set(key, {
+      nullPct: p.null_pct != null ? Number(p.null_pct) : null,
+      distinctCount: p.distinct_count != null ? Number(p.distinct_count) : null,
+      topValues,
+    });
+  }
+
+  // Group columns by source-table id.
+  const colsByStId = new Map<number, typeof sourceColumns>();
+  for (const c of sourceColumns) {
+    const list = colsByStId.get(Number(c.table_id)) ?? [];
+    list.push(c);
+    colsByStId.set(Number(c.table_id), list);
+  }
+
+  // Compose final shape.
+  return conns.map((c) => {
+    const tablesForConn = sourceTables.filter((t) => Number(t.connection_id) === Number(c.id));
+    return {
+      connectionName: String(c.name),
+      connectorType:  c.connector_type ? String(c.connector_type) : null,
+      tables: tablesForConn.map((t) => ({
+        sourceTableName: String(t.table_name),
+        description:     t.description ? String(t.description) : null,
+        columns: (colsByStId.get(Number(t.id)) ?? []).map((col) => {
+          const stats = profileByKey.get(`${c.id}|${t.table_name}|${col.column_name}`) ?? null;
+          return {
+            columnName:    String(col.column_name),
+            dataType:      String(col.data_type ?? 'UNKNOWN'),
+            description:   col.description ? String(col.description) : null,
+            topValues:     stats?.topValues ?? null,
+            nullPct:       stats?.nullPct ?? null,
+            distinctCount: stats?.distinctCount ?? null,
+          };
+        }),
       })),
     };
   });

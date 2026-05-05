@@ -22,6 +22,9 @@
 export interface RefineChatProductContext {
   productName: string;
   productDescription: string | null;
+  /** The product's tables — what already gets materialised. Each row
+   *  exposes its current columns and the full transformation_sql so the
+   *  AI can produce surgical edits. */
   tables: Array<{
     tableId: number;
     tableName: string;
@@ -34,6 +37,29 @@ export interface RefineChatProductContext {
       columnRole: string | null;
       description: string | null;
       transformationExpression: string | null;
+      /** From column_lineage — which source col fed this product col. */
+      sourceLineage: Array<{ sourceTable: string; sourceColumn: string }>;
+    }>;
+  }>;
+  /** Source-layer schemas the product can pull from. Includes this
+   *  product's own connection plus every dependency product's connection.
+   *  The AI uses these to answer "add a column from source X" without
+   *  having to guess what columns exist. */
+  sourceConnections: Array<{
+    connectionName: string;
+    connectorType: string | null;
+    tables: Array<{
+      sourceTableName: string;
+      description: string | null;
+      columns: Array<{
+        columnName: string;
+        dataType: string;
+        description: string | null;
+        /** Sample values from quality profiling — null when unprofiled. */
+        topValues: string[] | null;
+        nullPct: number | null;
+        distinctCount: number | null;
+      }>;
     }>;
   }>;
   existingKpiNames: string[];
@@ -181,32 +207,90 @@ unsupported:
   "suggested_action": "<manual path the user can take instead, or null>"
 }
 
+You see two layers of schema in every prompt:
+- PRODUCT SCHEMA — the current output tables. This is what the user is editing.
+- SOURCE SCHEMA — the raw tables those output tables were built from. The
+  user may ask you to pull a column the AI initially missed ("add a
+  birth_date column from the customers source"). Reference source columns
+  as <table>.<column> in transformation_sql; the column lineage on each
+  product column shows where existing fields came from for context.
+
 Hard rules:
-- You may only target tables and columns that appear in AVAILABLE SCHEMA. Never invent.
-- For add_column / modify_column you MUST emit new_transformation_sql containing the FULL replacement SELECT. The runner writes it verbatim — no splicing. Include every existing column unless the user is dropping it.
-- new_transformation_sql must be a single statement, no trailing semicolon, no CREATE TABLE wrapper.
-- If the user's request is ambiguous (which table? which column? what aggregation?), return ask_clarification with the single question that would unblock you. Do NOT guess.
-- If the request needs a capability beyond add_column / modify_column / add_kpi (add a new table, change grain, drop a column, restructure a join, ingest a new source), return unsupported with a one-line reason and a suggested manual action.
-- Lowercase SQL keywords. Double-quote identifiers with uppercase, spaces, or special chars.
-- summary should be readable by a non-technical user. ("Adds a margin_pct column to fact_sales", not "ALTER TABLE fact_sales ADD COLUMN margin_pct NUMERIC")`;
+- You may only target tables and columns that appear in PRODUCT SCHEMA or
+  SOURCE SCHEMA. Never invent a column that isn't listed.
+- If the user asks for data from a source column that exists in SOURCE
+  SCHEMA but is NOT yet in any product table, you can pull it in via a
+  modify_column on the relevant transformation_sql (extending the SELECT
+  to include the new source field).
+- For add_column / modify_column you MUST emit new_transformation_sql
+  containing the FULL replacement SELECT. The runner writes it verbatim
+  — no splicing. Include every existing column unless the user is dropping it.
+- new_transformation_sql must be a single statement, no trailing semicolon,
+  no CREATE TABLE wrapper.
+- If the user's request is ambiguous (which table? which column? what
+  aggregation? which source if multiple have the same column name?),
+  return ask_clarification with the single question that would unblock
+  you. Do NOT guess.
+- If a column you'd need is in SOURCE SCHEMA but its top values / null %
+  suggest the data is unreliable for the user's stated purpose, surface
+  that in the proposal's reasoning so the user can decide.
+- If the request needs a capability beyond add_column / modify_column /
+  add_kpi (add a new table, change grain, drop a column, restructure a
+  join, ingest a new source), return unsupported with a one-line reason
+  and a suggested manual action.
+- Lowercase SQL keywords. Double-quote identifiers with uppercase, spaces,
+  or special chars.
+- summary should be readable by a non-technical user. ("Adds a margin_pct
+  column to fact_sales", not "ALTER TABLE fact_sales ADD COLUMN margin_pct
+  NUMERIC")`;
 
 export function buildRefineChatUser(
   context: RefineChatProductContext,
   userMessage: string,
 ): string {
+  // ── Product layer (current output schema) ────────────────────────────────
   const tableLines = context.tables.map((t) => {
     const focusMarker = context.focusedTableId === t.tableId ? '  ← USER IS FOCUSED HERE' : '';
     const cols = t.columns
       .map((c) => {
         const role = c.columnRole ? ` [${c.columnRole}]` : '';
         const expr = c.transformationExpression ? ` = ${c.transformationExpression}` : '';
-        return `      id=${c.columnId} ${c.columnName} (${c.dataType})${role}${expr}`;
+        const lineage = c.sourceLineage.length > 0
+          ? `  ← ${c.sourceLineage.map((l) => `${l.sourceTable}.${l.sourceColumn}`).join(', ')}`
+          : '';
+        return `      id=${c.columnId} ${c.columnName} (${c.dataType})${role}${expr}${lineage}`;
       })
       .join('\n');
     const sql = t.transformationSql
       ? `    transformation_sql:\n${t.transformationSql.split('\n').map((l) => '      ' + l).join('\n')}`
       : '    (no transformation_sql)';
     return `  id=${t.tableId} ${t.tableName} [${t.tableRole}]${focusMarker}\n    columns:\n${cols}\n${sql}`;
+  }).join('\n\n');
+
+  // ── Source layer (raw schemas the product can pull from) ─────────────────
+  // Compact: connector / table / column with type + sample values + null %.
+  // The AI references these by `<connection>.<table>.<column>` — Phase 2
+  // SQL still scans single-source warehouses, so the connection name is
+  // mostly informational, but it disambiguates when two sources share a
+  // table name.
+  const sourceLines = context.sourceConnections.map((conn) => {
+    const tables = conn.tables.map((t) => {
+      const cols = t.columns.map((c) => {
+        const profile: string[] = [];
+        if (c.distinctCount != null) profile.push(`${c.distinctCount} distinct`);
+        if (c.nullPct != null) profile.push(`${(c.nullPct * 100).toFixed(0)}% null`);
+        if (c.topValues && c.topValues.length > 0) {
+          const sample = c.topValues.slice(0, 3).map((v) => JSON.stringify(v)).join(', ');
+          profile.push(`top: ${sample}`);
+        }
+        const profileBlock = profile.length > 0 ? ` { ${profile.join(' · ')} }` : '';
+        const desc = c.description ? `  — ${c.description}` : '';
+        return `      ${c.columnName} (${c.dataType})${profileBlock}${desc}`;
+      }).join('\n');
+      const tdesc = t.description ? `  — ${t.description}` : '';
+      return `    ${t.sourceTableName}${tdesc}\n${cols}`;
+    }).join('\n\n');
+    return `  ${conn.connectionName}${conn.connectorType ? ` [${conn.connectorType}]` : ''}:\n${tables}`;
   }).join('\n\n');
 
   const recentBlock = context.recentCustomizations.length > 0
@@ -220,12 +304,17 @@ export function buildRefineChatUser(
     ? `\nEXISTING KPIS (don't duplicate):\n  ${context.existingKpiNames.join(', ')}\n`
     : '';
 
+  const sourceBlock = context.sourceConnections.length > 0
+    ? `\nSOURCE SCHEMA (raw tables the product can pull from — reference by table.column):\n${sourceLines}\n`
+    : '';
+
   return [
     `PRODUCT: ${context.productName}`,
     context.productDescription ? `DESCRIPTION: ${context.productDescription}` : '',
     '',
-    'AVAILABLE SCHEMA:',
+    'PRODUCT SCHEMA (the current output — what users see in dashboards):',
     tableLines,
+    sourceBlock,
     kpiBlock,
     recentBlock,
     `USER REQUEST: ${userMessage}`,
