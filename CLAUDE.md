@@ -31,7 +31,70 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-04 (Storage layer consolidation — Phase 2)
+**Last updated:** 2026-05-05 (Storage layer consolidation — Phase 3)
+
+**Storage layer consolidation — Phase 3 (2026-05-05):** Tenant-prefixed,
+id-stable warehouse layout for product tables. Eliminates the cross-tenant
+collision risk identified in the storage-layer audit (`./warehouse/product/<slug>`
+was shared across tenants — two tenants with a "Sales" product would
+overwrite each other's parquet on the same host). Behaviour-preserving by
+default; opt-in via `WAREHOUSE_LAYOUT_VERSION=v2`.
+
+- **New URI helpers in `services/warehouse/paths.ts`:**
+  - `warehouseRoot()` — single source of truth for the warehouse base
+    URI. Returns `az://<container>` in Azure mode (detected via
+    `AZURE_CONTAINER_APPS_JOB_NAME`), `<repo>/warehouse` locally.
+    Container name from `AZURE_WAREHOUSE_CONTAINER`, default `'warehouse'`.
+  - `isAzureMode()` — environment-level Azure detection (separate from
+    `isAzurePath(uri)` which tests a single string). Mirrors the
+    detection logic in `SyncOrchestrator` so source + product paths
+    agree on the active mode.
+  - `productBasePathV2(tenantId, productId)` — new layout
+    `<root>/tenant_<tid>/product_<pid>`. Stable across product renames
+    because it uses `product.id` not `slug(product.name)`.
+  - `warehouseLayoutVersion()` — reads `WAREHOUSE_LAYOUT_VERSION` env;
+    returns `'v1'` (default) or `'v2'`.
+- **Wired into `transformationRunner.runProductTransformation`:**
+  When the layout flag is `'v2'` and a tenant id is present, the
+  product output path is `productBasePathV2(tenantId, productId)`
+  instead of `productBasePath(warehousePath, productSlug(name))`.
+  All other state (the parquet write itself, the `delta_path`
+  publish via the catalog, dependency loading, rollups) is unchanged
+  — it just consumes the new path. v1 builds still work; the flag is
+  per-deployment.
+- **Migration model — naturally incremental, no data copy required:**
+  - Existing rows keep their `delta_path` pointing at v1 directories.
+    They continue to read fine because the catalog returns
+    `delta_path` verbatim.
+  - When a v2 build runs (because the operator turned the flag on),
+    new writes go to the v2 location, the catalog publishes the v2
+    URI, the row's `delta_path` flips to v2.
+  - Every product table eventually migrates as it's re-refreshed.
+    No big-bang job, no downtime. Old v1 directories become orphans
+    and can be cleaned up by a maintenance job at leisure.
+- **`productContext.getProductWarehousePath` rebuilt on top of catalog:**
+  Was: hardcoded `./warehouse/product/<slug>` (wrong on Azure, never
+  matched real paths). Now: returns `warehouseRoot()` if any product
+  table for the connection has been materialised, else null. Real
+  per-table URIs come from `tableCatalog.listProductTablesByConnection`
+  via `createProductConnector` — `getProductWarehousePath` is only a
+  cache key now. Side benefit: the `dim_account` and similar
+  cross-product reads now work in Azure mode where they didn't before.
+- **Sources are unchanged.** `SyncOrchestrator.computeWarehousePathForDuckDB`
+  already produced `<root>/tenant_<tid>/conn_<cid>` paths — Phase 3
+  brings products into alignment with that pattern.
+- **What's NOT in this commit (next ops steps):**
+  - Migration script to copy v1 → v2 paths in bulk (so older tables
+    don't have to wait for re-refresh). Trivial: walk every
+    `product_tables` row matching the v1 pattern, copy parquet, update
+    `delta_path`. Will write when there's demand.
+  - Switching production to v2. The flag defaults to `v1`. To opt in:
+    set `WAREHOUSE_LAYOUT_VERSION=v2` in the deployed env, then trigger
+    a refresh — new writes start using the new layout. Old reads keep
+    working throughout.
+- **New env vars:** `WAREHOUSE_LAYOUT_VERSION` (`v1`|`v2`, default
+  `v1`), `AZURE_WAREHOUSE_CONTAINER` (default `warehouse`). Documented
+  in `.env.example`.
 
 **Storage layer consolidation — Phase 2 (2026-05-04):** Built the table
 catalog as the single source of truth for "where does this logical

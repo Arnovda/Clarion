@@ -17,12 +17,17 @@
 
 export {
   isAzurePath,
+  isAzureMode,
+  warehouseRoot,
+  warehouseLayoutVersion,
   parseAzurePath,
   productBasePath,
+  productBasePathV2,
   productTablePath,
   productSlug,
   sqlEscapePath,
 } from './paths';
+export type { WarehouseLayoutVersion } from './paths';
 
 export { setupDuckDBForWarehouse } from './duckdb';
 

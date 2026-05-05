@@ -11,7 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
-import { isAzurePath } from './warehouse';
+import { isAzurePath, warehouseRoot } from './warehouse';
 
 interface ProductTableRow {
   id: number;
@@ -279,30 +279,32 @@ export async function buildProductSemanticContext(
 }
 
 /**
- * Get the warehouse path for the product layer of a connection.
- * Returns the product directory path or null if not available.
+ * Get a "warehouse path" for a connection's product layer.
+ *
+ * This is mostly a cache-key for `createProductConnector` — the actual
+ * data access uses explicit `tablePaths` from the catalog, so the
+ * returned string only needs to be stable + env-aware. Returns the
+ * canonical warehouse root (`az://<container>` in Azure mode, the
+ * resolved local `./warehouse` path otherwise).
+ *
+ * Returns null when the connection has no successfully materialised
+ * product table — a sentinel that callers use to decide whether to
+ * route the query against the source-layer connector instead.
  */
 export async function getProductWarehousePath(connectionId: number, trx?: Knex | Knex.Transaction): Promise<string | null> {
   const db = trx ?? semanticDb;
-  const product = await db('data_products')
-    .where({ connection_id: connectionId })
-    .whereIn('status', ['approved', 'success'])
-    .first();
 
-  if (!product) return null;
-
-  // Check if any tables have been materialized
-  const materializedTable = await db('product_tables')
+  // "Has any table been materialised?" — cheap existence probe. We don't
+  // care about WHICH table; the catalog returns concrete URIs per-table
+  // via `listProductTablesByConnection` when the connector is built.
+  const hasAny = await db('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
-    .where({ 'star_schemas.data_product_id': product.id })
+    .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+    .where('data_products.connection_id', connectionId)
     .where('product_tables.transformation_status', 'success')
     .whereNotNull('product_tables.delta_path')
     .first();
 
-  if (!materializedTable) return null;
-
-  // The product warehouse is the parent of the table's delta path
-  // e.g., ./warehouse/product/finance/  (parent of ./warehouse/product/finance/dim_customer/)
-  const productSlug = product.name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  return `./warehouse/product/${productSlug}`;
+  if (!hasAny) return null;
+  return warehouseRoot();
 }

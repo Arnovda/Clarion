@@ -26,9 +26,11 @@ import {
 import {
   isAzurePath,
   productBasePath,
+  productBasePathV2,
   productTablePath,
   productSlug,
   sqlEscapePath,
+  warehouseLayoutVersion,
   setupDuckDBForWarehouse,
   createScanView,
   writeParquet,
@@ -364,8 +366,21 @@ export async function runProductTransformation(
     }
   }
 
-  // Product output paths
-  const productDir = productBasePath(warehousePath, productSlug(product.name));
+  // Product output paths.
+  //   v2 (opt-in via WAREHOUSE_LAYOUT_VERSION=v2): tenant-prefixed,
+  //       id-stable layout `<root>/tenant_<tid>/product_<pid>/<table>`.
+  //       Matches the source-side path pattern from SyncOrchestrator and
+  //       eliminates the cross-tenant collision risk where two tenants
+  //       with a product named "Sales" would share `./warehouse/product/sales`.
+  //   v1 (default, legacy): `./warehouse/product/<slug>` for local;
+  //       `az://<container>/products/<slug>` for Azure.
+  // Mixed-state is fine: existing rows keep their old `delta_path` until
+  // re-refreshed; new writes from v2 builds go to the new layout. The
+  // catalog reads `delta_path` verbatim so consumers don't care.
+  const layout = warehouseLayoutVersion();
+  const productDir = layout === 'v2' && tenantId
+    ? productBasePathV2(tenantId, product.id)
+    : productBasePath(warehousePath, productSlug(product.name));
 
   if (!useAzure) {
     fs.mkdirSync(productDir, { recursive: true });
