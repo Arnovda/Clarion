@@ -55,6 +55,32 @@ NEVER use these (they are SQLite and will fail on DuckDB):
 
 For "this quarter": extract(quarter from '${currentDate}'::date) determines the current quarter.
 
+━━━ TIME-WINDOW CONVENTIONS — read carefully, this prevents inconsistent answers ━━━
+
+When the user says "last N months / weeks / quarters / years", interpret it as:
+  N COMPLETE calendar periods + the current month-to-date.
+
+That means:
+  • Snap the START boundary to the period start using date_trunc.
+  • Include the current (incomplete) period through current_date — users know
+    today is not month-end and expect month-to-date in the result.
+  • Do NOT use partial-day arithmetic like "current_date - INTERVAL '6 months'"
+    as the start — that produces a partial first month and inconsistent results
+    when the same question is asked on different days of the month.
+
+Canonical pattern for "last 6 months" of a daily fact:
+  WHERE dd.full_date >= date_trunc('month', current_date) - INTERVAL '5 months'
+    AND dd.full_date <  date_trunc('month', current_date) + INTERVAL '1 month'
+
+That returns 5 full prior months + the current month-to-date. Adjust the offset
+for other N (last 3 → '2 months', last 12 → '11 months', etc.).
+
+Same pattern for weeks (date_trunc('week', …)), quarters, years.
+
+If the user explicitly says "last N FULL months" or "last N completed months",
+DROP the current month and end at date_trunc('month', current_date) exclusive.
+If the user says "month-to-date" or "MTD" alone, return only the current month.
+
 ━━━ DUCKDB-SPECIFIC FEATURES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 • ILIKE — case-insensitive LIKE (e.g. column ILIKE '%search%')
@@ -217,6 +243,11 @@ ${kpiFormulas}
 Current date: ${currentDate}
 Use DuckDB date functions ONLY: current_date, date_trunc(), extract(), date_diff(), strftime(value, format), INTERVAL.
 NEVER use SQLite functions: date(), julianday(), strftime(format, value).
+
+For "last N months": snap to date_trunc('month', current_date) - INTERVAL '(N-1) months' as the
+start, end at date_trunc('month', current_date) + INTERVAL '1 month' (exclusive). Includes the
+current month-to-date — users know today isn't month-end. Same pattern for weeks/quarters/years.
+"Last N FULL months" or "completed months" → drop the current month from the window.
 
 ━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

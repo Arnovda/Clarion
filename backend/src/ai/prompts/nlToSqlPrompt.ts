@@ -48,6 +48,30 @@ NEVER use these (they are PostgreSQL/MySQL and will fail on SQLite):
 For "this quarter": strftime('%m', '${currentDate}') determines the current month;
 Q1 = months 01-03, Q2 = 04-06, Q3 = 07-09, Q4 = 10-12.
 
+━━━ TIME-WINDOW CONVENTIONS — read carefully, this prevents inconsistent answers ━━━
+
+When the user says "last N months / weeks / quarters / years", interpret it as:
+  N COMPLETE calendar periods + the current month-to-date.
+
+That means:
+  • Snap the START boundary to the period start (e.g. date(col, 'start of month')).
+  • Include the current (incomplete) period through today — users know today is
+    not month-end and expect month-to-date in the result.
+  • Do NOT use partial-day arithmetic like date('now', '-6 months') as the start —
+    that produces a partial first month and inconsistent results when the same
+    question is asked on different days of the month.
+
+Canonical SQLite pattern for "last 6 months" of a daily fact:
+  WHERE date(col) >= date('${currentDate}', 'start of month', '-5 months')
+    AND date(col) <  date('${currentDate}', 'start of month', '+1 month')
+
+That returns 5 full prior months + the current month-to-date. Adjust the offset
+for other N (last 3 → '-2 months', last 12 → '-11 months', etc.).
+
+If the user explicitly says "last N FULL months" or "last N completed months",
+DROP the current month and end at date('${currentDate}', 'start of month') exclusive.
+If the user says "month-to-date" or "MTD" alone, return only the current month.
+
 ━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 If conversation history is provided, use it to resolve references like "it", "those",
@@ -292,6 +316,11 @@ ${kpiFormulas}
 Current date: ${currentDate}
 Use SQLite date functions ONLY: date(), strftime(), julianday().
 NEVER use EXTRACT(), DATE_TRUNC(), DATEADD(), DATEDIFF(), INTERVAL, NOW(), CURRENT_DATE.
+
+For "last N months": snap to date('${currentDate}', 'start of month', '-(N-1) months') as the
+start, end at date('${currentDate}', 'start of month', '+1 month') (exclusive). Includes the
+current month-to-date — users know today isn't month-end. Same pattern for weeks/quarters/years.
+"Last N FULL months" or "completed months" → drop the current month from the window.
 
 ━━━ CONVERSATION CONTEXT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
