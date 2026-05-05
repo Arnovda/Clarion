@@ -1583,7 +1583,10 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
         const repairDialect: SqlDialect = repairLayer === 'product'
           ? 'duckdb'
           : (connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite');
-        raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages);
+        // temperature 0: repair-loop fixes should be deterministic; the
+        // accumulated messages (diagnostic results) change turn-to-turn,
+        // which gives the loop natural variation without sampling noise.
+        raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages, { temperature: 0 });
       } catch (err: unknown) {
         send('error', { text: 'Claude API call failed. Please try again.' });
         break;

@@ -250,6 +250,14 @@ interface CallClaudeOptions {
   cacheSystem?: boolean;
   /** Override the model — e.g. Haiku for summarisation-class calls. */
   model?: string;
+  /**
+   * Sampling temperature (0–1). Default = Anthropic's default (1).
+   * Set to 0 for structured/deterministic calls (NL→SQL, validation,
+   * SQL-emitting refinement) so the same input always returns the
+   * same output. Leave default for prose calls (formatAnswer, brief,
+   * starters) where variety is desirable.
+   */
+  temperature?: number;
 }
 
 async function callClaude(
@@ -285,6 +293,7 @@ async function callClaude(
         messages: [{ role: 'user', content: userPrompt }],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         system: systemParam as any,
+        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       });
 
       const block = message.content[0];
@@ -390,6 +399,7 @@ async function callClaudeStreaming(
   maxTokens = 4096,
   callLabel?: string,
   cacheSystem = true,
+  temperature?: number,
 ): Promise<string> {
   if (!callLabel) callLabel = 'stream_' + systemPrompt.slice(0, 50).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
   const tenantId = await enforceAiBudget(callLabel);
@@ -402,6 +412,7 @@ async function callClaudeStreaming(
       ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
       : systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
+    ...(temperature !== undefined ? { temperature } : {}),
   };
 
   const stream = getClient().messages.stream(params);
@@ -457,6 +468,7 @@ async function callClaudeStreaming(
 export async function callClaudeMultiTurn(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+  opts: { temperature?: number } = {},
 ): Promise<string> {
   const tenantId = await enforceAiBudget('multi_turn');
   const start = Date.now();
@@ -465,6 +477,7 @@ export async function callClaudeMultiTurn(
     max_tokens: 4096,
     system: systemPrompt,
     messages,
+    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
   });
 
   const block = message.content[0];
@@ -692,7 +705,8 @@ export async function detectSchemaConventions(
     const raw = await callClaude(
       SCHEMA_CONVENTIONS_SYSTEM,
       buildConventionsUser(sourceSystem, tables),
-      { maxTokens: 1500, model: MODEL_HAIKU, callLabel: 'schema_conventions' },
+      // temperature 0: convention detection is structured classification.
+      { maxTokens: 1500, model: MODEL_HAIKU, callLabel: 'schema_conventions', temperature: 0 },
     );
     return parseJson<SchemaConventions>(raw);
   } catch (err) {
@@ -788,7 +802,8 @@ export async function suggestRelationships(
   const raw = await callClaude(
     RELATIONSHIP_SUGGEST_SYSTEM,
     buildRelationshipSuggestUser(ctx),
-    { maxTokens: 8000, cacheSystem: true },
+    // temperature 0: relationship inference is structured pattern matching.
+    { maxTokens: 8000, cacheSystem: true, temperature: 0 },
   );
   return parseJson<RelationshipSuggestOutput>(raw);
 }
@@ -843,7 +858,8 @@ Which unmatched columns are business keys to which dimension columns?`;
 
   console.log(`[FK AI] Asking Claude to match ${unmatchedColumns.length} unmatched key column(s) against ${dimensionTables.length} dimension table(s)…`);
   try {
-    const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, 4096);
+    // temperature 0: same unmatched columns + dimension tables → same FK suggestions.
+    const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, { maxTokens: 4096, temperature: 0 });
     const result = parseJson<{ suggestions: AiFkSuggestion[] }>(raw);
     console.log(`[FK AI] Claude suggested ${result.suggestions.length} match(es):`);
     for (const s of result.suggestions) {
@@ -954,14 +970,15 @@ export async function generateSql(
       })),
       { role: 'user', content: buildNlToSqlUser(question) },
     ];
-    const raw = await callClaudeMultiTurn(systemPrompt, messages);
+    const raw = await callClaudeMultiTurn(systemPrompt, messages, { temperature: 0 });
     return defaultSubScores(parseJson<Record<string, unknown>>(raw));
   }
 
   // cacheSystem: the NL→SQL system prompt embeds the full semantic context
   // + relationship context + KPI formulas — identical across back-to-back
   // questions from the same tenant. Cache hit rate here is very high.
-  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question), { cacheSystem: true });
+  // temperature 0: deterministic SQL — same question yields same SQL.
+  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question), { cacheSystem: true, temperature: 0 });
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
@@ -981,7 +998,8 @@ export async function validateQueryResult(
     const raw = await callClaude(
       RESULT_VALIDATION_SYSTEM,
       buildResultValidationUser(question, sql, rows, rows.length),
-      { model: MODEL_HAIKU, cacheSystem: true },
+      // temperature 0: validator should give the same verdict on the same evidence.
+      { model: MODEL_HAIKU, cacheSystem: true, temperature: 0 },
     );
     return parseJson<ResultValidationOutput>(raw);
   } catch {
@@ -1040,12 +1058,13 @@ export async function generateCrossSourceSql(
       })),
       { role: 'user', content: buildNlToSqlCrossUser(question) },
     ];
-    const raw = await callClaudeMultiTurn(systemPrompt, messages);
+    const raw = await callClaudeMultiTurn(systemPrompt, messages, { temperature: 0 });
     return defaultSubScores(parseJson<Record<string, unknown>>(raw));
   }
 
   // Cross-source system prompt is stable per tenant — cache same as single-source.
-  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question), { cacheSystem: true });
+  // temperature 0: deterministic SQL.
+  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question), { cacheSystem: true, temperature: 0 });
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
@@ -1199,7 +1218,8 @@ export async function refineDashboardSpec(
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
-    { cacheSystem: true },
+    // temperature 0: deterministic spec edits.
+    { cacheSystem: true, temperature: 0 },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -1218,7 +1238,10 @@ export async function generateDashboardSpec(
   const raw = await callClaude(
     getDashboardSystem(dialect),
     buildDashboardUser(request, semanticContext, relationshipContext, glossary),
-    { maxTokens: 16000, cacheSystem: true },
+    // temperature 0: same request should produce the same dashboard. Users
+    // are more frustrated by "same intent, different widgets" than by lack
+    // of variety on regeneration.
+    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -1236,7 +1259,8 @@ export async function validateAndFixDashboardSpec(
   const raw = await callClaude(
     VALIDATE_DASHBOARD_SYSTEM,
     buildValidateUser(spec, executionResults, semanticContext, relationshipContext),
-    { maxTokens: 16000, cacheSystem: true },
+    // temperature 0: same broken spec should get the same fix.
+    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
   return parseJson<DashboardSpec>(raw);
 }
@@ -1257,7 +1281,8 @@ export async function checkWidgetSemantics(
     const raw = await callClaude(
       SEMANTIC_CHECK_SYSTEM,
       buildSemanticCheckUser(title, chartType, sampleRows),
-      { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'widget_semantic_check' },
+      // temperature 0: same title + sample → same verdict.
+      { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'widget_semantic_check', temperature: 0 },
     );
     const parsed = parseJson<{ ok: boolean; issue?: string }>(raw);
     return parsed.ok ? null : (parsed.issue ?? 'Data does not match the title.');
@@ -1279,6 +1304,9 @@ export async function generateStarSchemaDesign(
     STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
     buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext),
     64000,
+    'star_schema_design',
+    true,
+    0, // temperature 0: deterministic schema design.
   );
   return parseJson<StarSchemaDesignOutput>(raw);
 }
@@ -1525,6 +1553,8 @@ export async function editColumnExpression(
   return callClaude(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
+    // temperature 0: same edit request → same SQL expression.
+    { temperature: 0 },
   );
 }
 
@@ -1548,7 +1578,8 @@ export async function draftKpiFormula(
   const raw = await callClaude(
     KPI_DRAFT_SYSTEM,
     buildKpiDraftUser(context, kpiName, userDescription),
-    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'kpi_draft' },
+    // temperature 0: same KPI name + product context → same formula.
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'kpi_draft', temperature: 0 },
   );
 
   // Strip code fences if Claude added them despite the system prompt.
@@ -1689,7 +1720,8 @@ export async function investigateConclude(
     buildAgentConcludeUser(input),
     // cacheSystem: same stable conclude-system prompt across every
     // investigation. Cheap win since the prompt is ≥1K tokens.
-    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude', cacheSystem: true },
+    // temperature 0: same evidence trail should produce the same conclusion.
+    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude', cacheSystem: true, temperature: 0 },
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   try {
@@ -1762,7 +1794,9 @@ export async function proposeRefinement(
     // dynamic per-product context lives in the user message. Caching the
     // system prompt across consecutive turns of the same Refine thread
     // (and across all tenants — same prompt) is a ~50% drop on Refine cost.
-    { model: MODEL, maxTokens: 2500, callLabel: 'refine_chat', cacheSystem: true },
+    // temperature 0: same user message + same product state should produce
+    // the same diff every time — "add a column called X" isn't a creative task.
+    { model: MODEL, maxTokens: 2500, callLabel: 'refine_chat', cacheSystem: true, temperature: 0 },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
@@ -1816,7 +1850,8 @@ export async function refineProduct(
   const raw = await callClaude(
     REFINE_PRODUCT_SYSTEM,
     buildRefineProductUser(product, instruction),
-    { model: MODEL_HAIKU, maxTokens: 1500, callLabel: 'refine_product' },
+    // temperature 0: deterministic refinement diff for the same instruction.
+    { model: MODEL_HAIKU, maxTokens: 1500, callLabel: 'refine_product', temperature: 0 },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
@@ -1892,6 +1927,8 @@ Return only the SELECT statement.`;
     model: MODEL,
     maxTokens: 2048,
     callLabel: 'transformation_from_scratch',
+    // temperature 0: same available schemas → same SELECT.
+    temperature: 0,
   });
   return raw
     .replace(/^```(?:sql)?\s*\n?/i, '')
@@ -1923,6 +1960,8 @@ Return only the corrected SELECT.`;
     model: MODEL,
     maxTokens: 2048,
     callLabel: 'transformation_repair',
+    // temperature 0: same failing SQL + same error → same fix.
+    temperature: 0,
   });
 
   // Strip any markdown code fences the model may add despite instructions.
@@ -1946,7 +1985,8 @@ export async function forecastQuery(
   const raw = await callClaude(
     FORECAST_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), dialect),
     buildForecastUser(question),
-    { maxTokens: 4096, callLabel: 'forecast_query', cacheSystem: true },
+    // temperature 0: forecast SQL is structured — same question → same SQL.
+    { maxTokens: 4096, callLabel: 'forecast_query', cacheSystem: true, temperature: 0 },
   );
   return parseJson<ForecastQueryOutput>(raw);
 }
@@ -2092,7 +2132,8 @@ export async function planInvestigation(
   const raw = await callClaude(
     INVESTIGATE_PLAN_SYSTEM,
     buildInvestigatePlanUser(widgetTitle, widgetSql, widgetRows, question),
-    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'investigate_plan' },
+    // temperature 0: same widget context → same diagnostic plan.
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'investigate_plan', temperature: 0 },
   );
   try {
     return parseJson<InvestigationPlan>(raw);
