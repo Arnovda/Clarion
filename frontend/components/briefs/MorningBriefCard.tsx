@@ -15,11 +15,18 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import {
   Sparkles, ChevronDown, ChevronUp, ArrowRight, AlertCircle, TrendingUp, TrendingDown, Minus,
+  Search,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
+
+const InvestigationPanel = dynamic(
+  () => import('@/components/investigate/InvestigationPanel'),
+  { ssr: false },
+);
 
 interface BriefBullet {
   kind: 'movement' | 'steady' | 'warn';
@@ -48,6 +55,12 @@ export default function MorningBriefCard() {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(true);
+  // Investigation slide-over — opened by clicking "Why?" on any bullet.
+  const [investigating, setInvestigating] = useState<{
+    question: string;
+    focus: string | null;
+    briefId: number;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -123,7 +136,7 @@ export default function MorningBriefCard() {
           {c.bullets.length > 0 && (
             <ul className="divide-y divide-ocean/10">
               {c.bullets.map((b, i) => (
-                <li key={i} className="px-5 py-3 flex items-start gap-3">
+                <li key={i} className="px-5 py-3 flex items-start gap-3 group">
                   <BulletIcon kind={b.kind} delta={b.delta} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2">
@@ -134,9 +147,41 @@ export default function MorningBriefCard() {
                     </div>
                     <p className="text-[12.5px] text-ink-2 leading-relaxed mt-0.5">{b.detail}</p>
                   </div>
+                  {/* "Why?" — opens an Investigation scoped to this bullet.
+                      Visible on hover so the bullet stays the focal point;
+                      keyboard-accessible via tab. */}
+                  <button
+                    onClick={() => setInvestigating({
+                      question: `Why did ${b.label} ${verbForBullet(b)}?`,
+                      focus: b.label,
+                      briefId: brief.id,
+                    })}
+                    className="flex-shrink-0 self-center inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-ocean border border-ocean/30 rounded hover:bg-ocean/5 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                    title="Investigate this movement"
+                  >
+                    <Search className="w-3 h-3" strokeWidth={2} />
+                    Why?
+                  </button>
                 </li>
               ))}
             </ul>
+          )}
+
+          {/* Investigation slide-over. Lazy-loaded; only mounted while
+              the user is investigating something.
+              We don't know which data product to scope the investigation
+              to from the brief alone (the brief may span multiple
+              products). The backend's resolveProductId fallback picks
+              the first available product as a default — fine for MVP. */}
+          {investigating && brief && (
+            <InvestigationPanel
+              open={true}
+              onClose={() => setInvestigating(null)}
+              question={investigating.question}
+              focus={investigating.focus}
+              briefId={investigating.briefId}
+              dataProductId={undefined}
+            />
           )}
 
           {c.suggested_focus && (
@@ -194,4 +239,16 @@ function deltaColour(kind: BriefBullet['kind'], delta: string): string {
   if (kind === 'steady') return 'text-muted-2';
   const isUp = !delta.trim().startsWith('-') && !delta.trim().startsWith('−');
   return isUp ? 'text-emerald-700' : 'text-red-600';
+}
+
+/**
+ * Choose a verb that fits the bullet kind + delta direction so the
+ * investigation question reads naturally. "Why did margin drop?" is
+ * better than "Why did margin -1.5pt?" for the agent prompt.
+ */
+function verbForBullet(b: BriefBullet): string {
+  if (b.kind === 'warn') return 'trigger this warning';
+  if (b.kind === 'steady') return 'stay flat';
+  const isUp = !b.delta.trim().startsWith('-') && !b.delta.trim().startsWith('−');
+  return isUp ? 'rise' : 'drop';
 }

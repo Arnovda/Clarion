@@ -2040,4 +2040,18 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/query/starters — personalised "Try asking…" prompts for the
+// /query empty state. Cached per-tenant for 24h.
+// ---------------------------------------------------------------------------
+router.get('/starters', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Auth required' }); return; }
+    const { getQueryStarters } = await import('../services/queryStartersService');
+    const result = await getQueryStarters(tenantId);
+    res.json({ ok: true, data: result });
+  } catch (err) { next(err); }
+});
+
 export default router;

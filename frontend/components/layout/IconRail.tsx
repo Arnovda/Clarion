@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
-  Plug, Inbox, Users, Shield, Library, Package, Workflow,
+  Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
@@ -31,6 +31,7 @@ const ICONS = {
   shield:  <Shield        className={ICON_CLASS} strokeWidth={1.5} />,
   package: <Package        className={ICON_CLASS} strokeWidth={1.5} />,
   workflow: <Workflow      className={ICON_CLASS} strokeWidth={1.5} />,
+  search:   <Search         className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -55,6 +56,7 @@ const NAV_ITEMS: NavItem[] = [
   // (avoids the data-engineering term for SMB users), "Pipelines" stays
   // since it now has its own well-understood UX.
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
+  { key: 'investigate',href: '/investigate',label: 'Investigate',     icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'products',   href: '/products',   label: 'Datasets',        icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },

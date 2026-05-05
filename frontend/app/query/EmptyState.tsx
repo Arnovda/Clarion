@@ -2,18 +2,26 @@
 
 /**
  * Pre-chat landing for /query — big serif headline + input + starter chips.
- * When arrived from a data product, shows product-specific KPI questions.
+ * Starter questions are personalised: AI generates them from the tenant's
+ * actual products + KPIs + dimension columns (cached server-side for 24h).
+ * Falls back to generic starters when the AI hasn't run yet or the tenant
+ * has no products. When arrived from a data product, the product-context
+ * KPI suggestions still take precedence.
  */
 
-import type { FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
+import api from '@/lib/api';
 
-const STARTERS = [
-  'Who are my top 5 customers by total order value?',
-  'What was total revenue last month?',
-  'Which products have the highest profit margin?',
-  'How many orders did we process this quarter?',
-  'What is the average order value per customer?',
-  'Which invoices are still unpaid?',
+interface PersonalisedStarter {
+  question: string;
+  kind: 'trend' | 'compare' | 'rank' | 'why' | 'state';
+}
+
+const FALLBACK_STARTERS: PersonalisedStarter[] = [
+  { question: 'Who are my top 5 customers by total order value?', kind: 'rank' },
+  { question: 'What was total revenue last month?', kind: 'state' },
+  { question: 'Which products have the highest profit margin?', kind: 'rank' },
+  { question: 'How many orders did we process this quarter?', kind: 'state' },
 ];
 
 interface EmptyStateProps {
@@ -39,9 +47,33 @@ export default function EmptyState({
   useSourceLayer,
   setUseSourceLayer,
 }: EmptyStateProps) {
-  // Build suggested questions: product KPIs first, then generic starters (capped at 4 per spec)
-  const kpiQuestions = (productContext?.kpis ?? []).slice(0, 4).map((kpi) => `What is the ${kpi}?`);
-  const questions = (kpiQuestions.length > 0 ? kpiQuestions : STARTERS).slice(0, 4);
+  // Personalised starters — fetched once on mount, cached on the server
+  // for 24h. Falls back to generic starters until the response lands.
+  const [personalised, setPersonalised] = useState<PersonalisedStarter[] | null>(null);
+  useEffect(() => {
+    if (productContext) return;  // product context wins; skip the network
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/query/starters');
+        const data = res.data?.data as { starters?: PersonalisedStarter[] } | undefined;
+        if (!cancelled && data?.starters && data.starters.length > 0) {
+          setPersonalised(data.starters);
+        }
+      } catch { /* fall through to defaults */ }
+    })();
+    return () => { cancelled = true; };
+  }, [productContext]);
+
+  // Resolution order: product-context KPIs → personalised → fallback.
+  const kpiQuestions = (productContext?.kpis ?? []).slice(0, 4).map((kpi) => ({
+    question: `What is the ${kpi}?`,
+    kind: 'state' as const,
+  }));
+  const source = kpiQuestions.length > 0
+    ? kpiQuestions
+    : (personalised ?? FALLBACK_STARTERS);
+  const questions = source.slice(0, 6);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-4 py-16 max-w-[680px] mx-auto w-full">
@@ -112,12 +144,19 @@ export default function EmptyState({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {questions.map((q) => (
             <button
-              key={q}
+              key={q.question}
               type="button"
-              onClick={() => onStarter(q)}
-              className="text-left px-4 py-3 rounded-sm border border-line bg-raised text-[13.5px] text-ink-2 hover:border-line-strong hover:bg-softer hover:text-ink transition-colors duration-1 ease-observatory"
+              onClick={() => onStarter(q.question)}
+              className="text-left px-4 py-3 rounded-sm border border-line bg-raised hover:border-line-strong hover:bg-softer transition-colors duration-1 ease-observatory group"
             >
-              {q}
+              <span className="block text-[13.5px] text-ink-2 group-hover:text-ink leading-snug">
+                {q.question}
+              </span>
+              {q.kind && (
+                <span className="block mt-1 font-mono text-[9.5px] uppercase tracking-[0.1em] text-muted-2">
+                  {q.kind}
+                </span>
+              )}
             </button>
           ))}
         </div>

@@ -100,6 +100,24 @@ import {
   type MorningBriefOutput,
 } from './prompts/morningBriefPrompt';
 import {
+  AGENT_PLAN_NEXT_SYSTEM,
+  buildAgentPlanNextUser,
+  AGENT_SUMMARISE_STEP_SYSTEM,
+  buildAgentSummariseUser,
+  AGENT_CONCLUDE_SYSTEM,
+  buildAgentConcludeUser,
+  type InvestigateAgentContext,
+  type InvestigateAgentDecision,
+  type InvestigateConclusion,
+  type InvestigateConclusionInput,
+} from './prompts/investigateAgentPrompt';
+import {
+  QUERY_STARTERS_SYSTEM,
+  buildQueryStartersUser,
+  type QueryStartersContext,
+  type QueryStartersResult,
+} from './prompts/queryStartersPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1521,6 +1539,88 @@ export async function suggestPulseEntries(
     suggestions: Array.isArray(obj.suggestions) ? obj.suggestions : [],
     hint: typeof obj.hint === 'string' && obj.hint.trim() ? obj.hint : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Query starters — personalised "Try asking…" prompts for /query empty
+// state. Cached upstream by queryStartersService.
+// ---------------------------------------------------------------------------
+
+export async function generateQueryStarters(
+  context: QueryStartersContext,
+): Promise<QueryStartersResult> {
+  const raw = await callClaude(
+    QUERY_STARTERS_SYSTEM,
+    buildQueryStartersUser(context),
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'query_starters' },
+  );
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  try {
+    const obj = JSON.parse(cleaned) as Partial<QueryStartersResult>;
+    return { starters: Array.isArray(obj.starters) ? obj.starters : [] };
+  } catch {
+    return { starters: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Investigate Agent — multi-step "why?" loop
+// ---------------------------------------------------------------------------
+
+/** Plan-next: returns the next step OR a signal to conclude. */
+export async function investigatePlanNext(
+  context: InvestigateAgentContext,
+): Promise<InvestigateAgentDecision> {
+  const raw = await callClaude(
+    AGENT_PLAN_NEXT_SYSTEM,
+    buildAgentPlanNextUser(context),
+    { model: MODEL, maxTokens: 800, callLabel: 'investigate_plan_next' },
+  );
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try { parsed = JSON.parse(cleaned); }
+  catch { return { kind: 'conclude', reason: 'AI output was not valid JSON.' }; }
+  const obj = parsed as { kind?: string; hypothesis?: string; query_sql?: string; reason?: string };
+  if (obj.kind === 'step' && obj.hypothesis && obj.query_sql) {
+    return { kind: 'step', hypothesis: String(obj.hypothesis), query_sql: String(obj.query_sql) };
+  }
+  return { kind: 'conclude', reason: typeof obj.reason === 'string' ? obj.reason : 'enough evidence' };
+}
+
+/** Summarise-step: turn the rows of one query into a one-sentence finding. */
+export async function investigateSummariseStep(opts: {
+  hypothesis: string;
+  querySql: string;
+  rowCount: number;
+  resultPreview: Array<Record<string, unknown>>;
+}): Promise<string> {
+  const raw = await callClaude(
+    AGENT_SUMMARISE_STEP_SYSTEM,
+    buildAgentSummariseUser(opts),
+    { model: MODEL_HAIKU, maxTokens: 200, callLabel: 'investigate_summarise' },
+  );
+  return raw.trim().replace(/^["']|["']$/g, '');
+}
+
+/** Conclude: synthesise the trail into a 3-5 sentence answer. */
+export async function investigateConclude(
+  input: InvestigateConclusionInput,
+): Promise<InvestigateConclusion> {
+  const raw = await callClaude(
+    AGENT_CONCLUDE_SYSTEM,
+    buildAgentConcludeUser(input),
+    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude' },
+  );
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  try {
+    const obj = JSON.parse(cleaned) as Partial<InvestigateConclusion>;
+    return {
+      conclusion: typeof obj.conclusion === 'string' ? obj.conclusion : '',
+      confidence: obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
+    };
+  } catch {
+    return { conclusion: 'Unable to synthesise a conclusion from the trail.', confidence: 'low' };
+  }
 }
 
 // ---------------------------------------------------------------------------
