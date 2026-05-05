@@ -162,10 +162,15 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const loadSuggestions = useCallback(async () => {
+  /**
+   * Load suggestions. By default uses the backend's 24h cache so the user
+   * doesn't burn an AI call every time they hit Home. Passing { force }
+   * bypasses the cache — wired to the explicit "Refresh" button.
+   */
+  const loadSuggestions = useCallback(async (opts: { force?: boolean } = {}) => {
     setLoading(true);
     try {
-      const res = await api.post('/pulse/suggest');
+      const res = await api.post(`/pulse/suggest${opts.force ? '?force=1' : ''}`);
       const data = res.data.data as { suggestions: Suggestion[]; hint: string | null };
       setSuggestions(data.suggestions);
       setHint(data.hint);
@@ -267,9 +272,10 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
       subtitle="Pick the ones you actually care about. You can edit any time."
       action={
         <button
-          onClick={loadSuggestions}
+          onClick={() => loadSuggestions({ force: true })}
           disabled={loading}
           className="text-[11px] font-mono uppercase tracking-[0.1em] text-muted-2 hover:text-ink-2 disabled:opacity-30"
+          title="Regenerate suggestions (skips 24h cache, costs an AI call)"
         >
           ↻ Refresh
         </button>

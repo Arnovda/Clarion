@@ -84,7 +84,11 @@ router.post('/suggest', requireAuth, async (req: Request, res: Response, next: N
     const tenantId = req.user?.tenantId;
     const userId = req.user?.sub as number | undefined;
     if (!tenantId || !userId) { res.status(401).json({ ok: false, error: 'Auth required' }); return; }
-    const result = await suggestPulse(tenantId, userId);
+    // ?force=1 bypasses the 24h in-process cache — used by the explicit
+    // "Refresh" button on the Pulse panel. Default (no param) returns
+    // the cached result so a normal Home page load doesn't burn tokens.
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const result = await suggestPulse(tenantId, userId, { force });
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });

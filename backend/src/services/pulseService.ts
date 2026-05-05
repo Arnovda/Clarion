@@ -177,15 +177,57 @@ export async function deletePulse(
 // ---------------------------------------------------------------------------
 // AI suggestions — runs once on first visit to seed the pulse, but the
 // user can re-run any time to see fresh ideas.
+//
+// Cached in-process per (tenantId, userId) for 24h so we don't burn tokens
+// on every Home page load. The cache key is per-user (not per-tenant)
+// because suggestions reference the user's display name + their personal
+// preferences. Cache invalidates when:
+//   - 24h elapsed (lazy)
+//   - user explicitly clicks "Refresh" → /pulse/suggest?force=1
+//   - process restart (no persistence — fine; first call after restart
+//     regenerates)
+//
+// Empty/hint results are NOT cached — those are cheap (no AI call) and
+// caching them would persist a stale "no products yet" hint after the
+// user has actually defined products.
 // ---------------------------------------------------------------------------
+
+interface SuggestCacheEntry {
+  result: PulseSuggestResult;
+  expiresAt: number;
+}
+
+const SUGGEST_CACHE = new Map<string, SuggestCacheEntry>();
+const SUGGEST_TTL_MS = 24 * 60 * 60 * 1000;
+
+function suggestCacheKey(tenantId: number, userId: number): string {
+  return `${tenantId}:${userId}`;
+}
+
+/**
+ * Drop a single user's cached suggestions, or the whole cache.
+ * Called when, e.g., the user applies a suggestion (so re-opening the
+ * "Suggest more" panel doesn't re-show the same item they just added).
+ */
+export function clearPulseSuggestCache(tenantId?: number, userId?: number): void {
+  if (tenantId && userId) SUGGEST_CACHE.delete(suggestCacheKey(tenantId, userId));
+  else SUGGEST_CACHE.clear();
+}
 
 export async function suggestPulse(
   tenantId: number,
   userId: number,
+  opts: { force?: boolean } = {},
 ): Promise<PulseSuggestResult> {
+  const cacheKey = suggestCacheKey(tenantId, userId);
+  if (!opts.force) {
+    const hit = SUGGEST_CACHE.get(cacheKey);
+    if (hit && hit.expiresAt > Date.now()) return hit.result;
+  }
+
   const context = await buildSuggestContext(tenantId, userId);
 
-  // Empty fast-path — no AI call needed.
+  // Empty fast-path — no AI call needed. Don't cache (see header note).
   if (context.products.length === 0) {
     return {
       suggestions: [],
@@ -203,7 +245,9 @@ export async function suggestPulse(
   // Lazy-load the AIService so we don't pull all the prompt code into
   // module-load time for routes that never need it.
   const { suggestPulseEntries } = await import('../ai/AIService');
-  return suggestPulseEntries(context);
+  const result = await suggestPulseEntries(context);
+  SUGGEST_CACHE.set(cacheKey, { result, expiresAt: Date.now() + SUGGEST_TTL_MS });
+  return result;
 }
 
 async function buildSuggestContext(
@@ -292,5 +336,10 @@ export async function applySuggestions(
       logger.warn({ err, suggestion: s }, 'pulseService.applySuggestions: skipped one entry');
     }
   }
+  // Invalidate the suggest cache for this user so a re-open of the
+  // "Suggest more" panel asks the AI for fresh ideas (or the next /home
+  // load triggers regeneration). Without this, the user sees the same
+  // suggestions they just added.
+  if (inserted > 0) clearPulseSuggestCache(tenantId, userId);
   return inserted;
 }
