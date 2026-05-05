@@ -166,7 +166,7 @@ export async function buildRefineContext(
  * profiling results are best-effort — unprofiled tables still appear.
  */
 async function loadSourceSchemas(
-  trx: import('knex').Knex.Transaction,
+  trx: import('knex').Knex,
   connectionIds: number[],
 ): Promise<RefineChatProductContext['sourceConnections']> {
   if (connectionIds.length === 0) return [];

@@ -1495,7 +1495,7 @@ export async function proposeRefinement(
   const raw = await callClaude(
     REFINE_CHAT_SYSTEM,
     buildRefineChatUser(context, userMessage),
-    { model: MODEL_SONNET, maxTokens: 2500, callLabel: 'refine_chat' },
+    { model: MODEL, maxTokens: 2500, callLabel: 'refine_chat' },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
