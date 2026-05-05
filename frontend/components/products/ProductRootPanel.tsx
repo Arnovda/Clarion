@@ -37,6 +37,7 @@ const AskAIPanel = dynamic(() => import('@/app/products/AskAIPanel'), { ssr: fal
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
 const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: false });
+const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
 
 type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
 
@@ -382,7 +383,7 @@ export default function ProductRootPanel({
             )}
             {tab === 'schema' && <SchemaSection detail={detail} />}
             {tab === 'lineage' && <LineageSection detail={detail} />}
-            {tab === 'kpis' && <KpisSection kpis={kpis} />}
+            {tab === 'kpis' && <KpiManager productId={productId} kpis={kpis} onChanged={loadKpis} />}
             {tab === 'quality' && <QualityTab productNameFilter={detail.name} />}
             {tab === 'sql' && <SqlSection tables={tables} />}
           </div>
@@ -746,42 +747,9 @@ function LineageSection({ detail }: { detail: FullDataProduct }) {
   );
 }
 
-function KpisSection({ kpis }: { kpis: ProductKpi[] }) {
-  if (kpis.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <Sparkles className="w-6 h-6 mx-auto text-muted-2 mb-2" strokeWidth={1.5} />
-        <p className="text-[13px] text-ink-2">No KPIs yet.</p>
-        <p className="text-[12px] text-muted mt-1">Ask the AI on the right to add one.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-3 max-w-3xl">
-      {kpis.map((k) => (
-        <div key={k.id} className="bg-raised border border-line rounded-md p-4">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Gauge className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
-            <h3 className="text-[14px] font-medium text-ink">{k.name}</h3>
-            {k.ai_draft && <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2">draft</span>}
-          </div>
-          {k.description && <p className="text-[12.5px] text-ink-2 leading-relaxed mb-2">{k.description}</p>}
-          {k.formula_plain_text && (
-            <p className="text-[12px] text-muted leading-relaxed mb-1">
-              <span className="font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2 mr-1.5">PLAIN</span>
-              {k.formula_plain_text}
-            </p>
-          )}
-          {k.formula_sql && (
-            <pre className="text-[11.5px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto">
-              {k.formula_sql}
-            </pre>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
+// `KpisSection` was deleted in favour of the editable `<KpiManager>`
+// component in `components/products/KpiManager.tsx`. KpiManager handles
+// list + add + edit + delete + AI-assist all on the same surface.
 
 function SqlSection({ tables }: { tables: (ProductTable & { columns: ProductColumn[] })[] }) {
   const withSql = tables.filter((t) => t.transformation_sql);

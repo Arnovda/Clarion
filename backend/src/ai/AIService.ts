@@ -76,6 +76,11 @@ import {
   ProductSummary,
 } from './prompts/refineProductPrompt';
 import {
+  KPI_DRAFT_SYSTEM,
+  buildKpiDraftUser,
+  KpiDraftProductContext,
+} from './prompts/kpiDraftPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1410,6 +1415,62 @@ export async function editColumnExpression(
     COLUMN_EDIT_SYSTEM,
     buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
   );
+}
+
+// ---------------------------------------------------------------------------
+// KPI Draft — propose a SQL formula for a user-defined KPI on a product
+// ---------------------------------------------------------------------------
+
+export interface KpiDraftResult {
+  formulaSql: string;
+  formulaPlainText: string;
+  primaryTable: string | null;
+  confidence: 'high' | 'medium' | 'low';
+  notes: string;
+}
+
+export async function draftKpiFormula(
+  context: KpiDraftProductContext,
+  kpiName: string,
+  userDescription: string | null,
+): Promise<KpiDraftResult> {
+  const raw = await callClaude(
+    KPI_DRAFT_SYSTEM,
+    buildKpiDraftUser(context, kpiName, userDescription),
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'kpi_draft' },
+  );
+
+  // Strip code fences if Claude added them despite the system prompt.
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'draftKpiFormula: failed to parse JSON');
+    return {
+      formulaSql: '',
+      formulaPlainText: '',
+      primaryTable: null,
+      confidence: 'low',
+      notes: 'I could not produce a structured formula for that KPI. Try rewording the description, or write the SQL by hand.',
+    };
+  }
+
+  const obj = parsed as Partial<{
+    formula_sql: string;
+    formula_plain_text: string;
+    primary_table: string;
+    confidence: 'high' | 'medium' | 'low';
+    notes: string;
+  }>;
+
+  return {
+    formulaSql:       typeof obj.formula_sql === 'string' ? obj.formula_sql.trim() : '',
+    formulaPlainText: typeof obj.formula_plain_text === 'string' ? obj.formula_plain_text.trim() : '',
+    primaryTable:     typeof obj.primary_table === 'string' ? obj.primary_table : null,
+    confidence:       obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
+    notes:            typeof obj.notes === 'string' ? obj.notes : '',
+  };
 }
 
 // ---------------------------------------------------------------------------
