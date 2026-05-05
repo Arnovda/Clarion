@@ -411,10 +411,13 @@ export function buildRefineSpecUser(
   glossaryContext = '',
 ): string {
   const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
+  // Compact JSON (no pretty-print). Claude reads compact JSON fine and the
+  // 2-space indent costs ~20% extra tokens on every refine call. The spec
+  // can run 5–15K input tokens for a populated dashboard, so this is real.
   return `Refinement request: "${refinement}"${glossarySection}
 
 Current dashboard spec:
-${JSON.stringify(currentSpec, null, 2)}
+${JSON.stringify(currentSpec)}
 
 ━━━ Schema context ━━━
 ${semanticContext}
@@ -467,10 +470,12 @@ export function buildSemanticCheckUser(
   chartType: string,
   sampleRows: Record<string, unknown>[],
 ): string {
+  // Compact JSON — Haiku call, but the rule applies: 3 rows × pretty-print
+  // adds tokens for no benefit.
   return `Title: "${title}"
 Chart type: ${chartType}
 Sample rows (first 3):
-${JSON.stringify(sampleRows.slice(0, 3), null, 2)}
+${JSON.stringify(sampleRows.slice(0, 3))}
 
 Does the data match what the title promises? Return JSON.`;
 }
@@ -510,11 +515,14 @@ export function buildValidateUser(
   semanticContext: string,
   relationshipContext: string,
 ): string {
+  // Compact JSON for both the spec and the execution results. Validate is
+  // the heaviest dashboard call (spec + every widget's sample rows) — pretty-
+  // printing adds ~25% on a per-call basis with no information change.
   return `Dashboard spec to validate:
-${JSON.stringify(currentSpec, null, 2)}
+${JSON.stringify(currentSpec)}
 
 ━━━ Execution results ━━━
-${JSON.stringify(executionResults, null, 2)}
+${JSON.stringify(executionResults)}
 
 ━━━ Schema context ━━━
 ${semanticContext}

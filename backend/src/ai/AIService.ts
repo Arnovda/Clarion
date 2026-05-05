@@ -1648,7 +1648,11 @@ export async function investigatePlanNext(
   const raw = await callClaude(
     AGENT_PLAN_NEXT_SYSTEM,
     buildAgentPlanNextUser(context),
-    { model: MODEL, maxTokens: 800, callLabel: 'investigate_plan_next' },
+    // cacheSystem: AGENT_PLAN_NEXT_SYSTEM is stable across all 6 turns of an
+    // investigation. Without caching, the ~2K-token system prompt is paid
+    // fresh on every PLAN_NEXT call. With caching, turns 2–6 read it at 10×
+    // discount → ~40% drop on Investigate cost.
+    { model: MODEL, maxTokens: 800, callLabel: 'investigate_plan_next', cacheSystem: true },
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   let parsed: unknown;
@@ -1683,7 +1687,9 @@ export async function investigateConclude(
   const raw = await callClaude(
     AGENT_CONCLUDE_SYSTEM,
     buildAgentConcludeUser(input),
-    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude' },
+    // cacheSystem: same stable conclude-system prompt across every
+    // investigation. Cheap win since the prompt is ≥1K tokens.
+    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude', cacheSystem: true },
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   try {
@@ -1707,7 +1713,11 @@ export async function composeMorningBrief(
   const raw = await callClaude(
     MORNING_BRIEF_SYSTEM,
     buildMorningBriefUser(context),
-    { model: MODEL_HAIKU, maxTokens: 1000, callLabel: 'morning_brief' },
+    // cacheSystem: brief system prompt is stable. Haiku cache reads are
+    // tiny ($0.03/MTok) but still strictly cheaper than fresh input —
+    // and the cron fires once per user per day, so cache hits on the
+    // 2nd+ user re-use the same system prompt.
+    { model: MODEL_HAIKU, maxTokens: 1000, callLabel: 'morning_brief', cacheSystem: true },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
@@ -1748,7 +1758,11 @@ export async function proposeRefinement(
   const raw = await callClaude(
     REFINE_CHAT_SYSTEM,
     buildRefineChatUser(context, userMessage),
-    { model: MODEL, maxTokens: 2500, callLabel: 'refine_chat' },
+    // cacheSystem: REFINE_CHAT_SYSTEM is the stable rules + JSON schema; the
+    // dynamic per-product context lives in the user message. Caching the
+    // system prompt across consecutive turns of the same Refine thread
+    // (and across all tenants — same prompt) is a ~50% drop on Refine cost.
+    { model: MODEL, maxTokens: 2500, callLabel: 'refine_chat', cacheSystem: true },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();

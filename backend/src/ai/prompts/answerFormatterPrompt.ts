@@ -16,5 +16,5 @@ export function buildReportNarrativeUser(
 ): string {
   return `Report title: "${title}"
 Period: "${period}"
-KPI results: ${JSON.stringify(kpiResults, null, 2)}`;
+KPI results: ${JSON.stringify(kpiResults)}`;
 }

@@ -211,20 +211,35 @@ export async function buildProductSemanticContext(
     .whereIn('data_product_id', productIds);
 
   // --- Format semantic context ---
+  // Compact column line. Goal: every char carries semantic load.
+  //   measure:   revenue (DECIMAL) [m,additive]: Sales amount
+  //   dim FK:    customer_key (BIGINT) →dim_customer: Customer FK
+  //   dim attr:  customer_name (VARCHAR): Customer name
+  //   no type:   <field> : description (skip "(unknown)")
+  //   no desc:   <field> (no trailing ": ")
+  // Default role is dimension/attribute — only mark measures explicitly,
+  // since that's what affects aggregation choice. FK arrow implies dim
+  // semantics so we don't repeat [dimension] there. Saves ~30% on column
+  // lines for a typical product context block, which is the dominant
+  // payload of NL→SQL.
   const semanticContext = tables.map((t) => {
     const cols = columns
       .filter((c) => c.product_table_id === t.id)
       .map((c) => {
-        const roleBadge = c.column_role ? ` [${c.column_role}]` : '';
-        const addBadge = c.additivity ? ` {${c.additivity}}` : '';
-        const fkNote = c.fk_target_table ? ` → ${c.fk_target_table}` : '';
-        return `    ${c.column_name} (${c.data_type ?? 'unknown'})${roleBadge}${addBadge}${fkNote}: ${c.description ?? ''}`;
+        const typePart = c.data_type ? ` (${c.data_type})` : '';
+        const isMeasure = c.column_role === 'measure';
+        const measureTag = isMeasure
+          ? (c.additivity ? ` [m,${c.additivity}]` : ' [m]')
+          : '';
+        const fkNote = c.fk_target_table ? ` →${c.fk_target_table}` : '';
+        const descPart = c.description ? `: ${c.description}` : '';
+        return `    ${c.column_name}${typePart}${measureTag}${fkNote}${descPart}`;
       })
       .join('\n');
 
-    const grainNote = t.grain ? ` (grain: ${t.grain})` : '';
-    const roleNote = ` [${t.table_role}]`;
-    return `Table: ${t.table_name}${roleNote}${grainNote} — ${t.description ?? ''}\n  Columns:\n${cols}`;
+    const grainNote = t.grain ? `, grain: ${t.grain}` : '';
+    const descPart = t.description ? ` — ${t.description}` : '';
+    return `Table ${t.table_name} (${t.table_role}${grainNote})${descPart}\n  Columns:\n${cols}`;
   }).join('\n\n');
 
   // --- Format relationship context ---
