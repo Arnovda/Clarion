@@ -17,7 +17,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Activity, Plus, Sparkles, Trash2, Loader2, Pencil, X, Check,
-  AlertCircle,
+  AlertCircle, Lightbulb,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
@@ -142,11 +142,23 @@ function Section({
 // Empty state — fetch suggestions, let user check on/off, save in one go.
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Local-only entry — user-typed plain-English theme not yet persisted. */
+interface CustomTheme {
+  text: string;
+  sensitivity: Sensitivity;
+  frequency: Frequency;
+}
+
 function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
   const toast = useToast();
   const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
   const [hint, setHint] = useState<string | null>(null);
+  // Cards default to UNSELECTED — opt-in, per the redesign. The previous
+  // version pre-selected all and forced users to opt out, which is friendlier
+  // for a returning user, but the explicit "click what matters to you"
+  // gesture is more honest for a first-time setup.
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [customs, setCustoms] = useState<CustomTheme[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -157,9 +169,7 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
       const data = res.data.data as { suggestions: Suggestion[]; hint: string | null };
       setSuggestions(data.suggestions);
       setHint(data.hint);
-      // Pre-select all suggestions — user opts out of what they don't want.
-      // Lower friction than asking them to opt in to each one.
-      setSelected(new Set(data.suggestions.map((_, i) => i)));
+      setSelected(new Set());
     } catch {
       toast.error('Could not load suggestions');
       setSuggestions([]);
@@ -178,24 +188,45 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
     });
   };
 
+  const totalChosen = selected.size + customs.length;
+
+  /**
+   * Save flow — two backend calls:
+   *   1. /pulse/apply-suggest  → batch-create the AI-suggested entries
+   *   2. /pulse                → one POST per custom theme (kind='theme')
+   * Run sequentially so we know exactly which one failed if anything goes
+   * wrong. Customs go after suggestions so the deterministic ordering of
+   * the brief is consistent with what the user saw in the picker.
+   */
   const save = useCallback(async () => {
     if (!suggestions) return;
     const picked = suggestions.filter((_, i) => selected.has(i));
-    if (picked.length === 0) {
+    if (picked.length === 0 && customs.length === 0) {
       toast.info('Pick at least one to save', { description: 'Or click Skip to set up your pulse later.' });
       return;
     }
     setSaving(true);
     try {
-      await api.post('/pulse/apply-suggest', { suggestions: picked });
-      toast.success(`Pulse seeded with ${picked.length} entr${picked.length === 1 ? 'y' : 'ies'}`);
+      if (picked.length > 0) {
+        await api.post('/pulse/apply-suggest', { suggestions: picked });
+      }
+      for (const c of customs) {
+        await api.post('/pulse', {
+          kind: 'theme',
+          theme_text: c.text,
+          sensitivity: c.sensitivity,
+          frequency: c.frequency,
+          label: c.text.length > 60 ? `${c.text.slice(0, 57)}…` : c.text,
+        });
+      }
+      toast.success(`Pulse seeded with ${totalChosen} entr${totalChosen === 1 ? 'y' : 'ies'}`);
       onSeeded();
     } catch {
       toast.error('Could not save your pulse');
     } finally {
       setSaving(false);
     }
-  }, [suggestions, selected, onSeeded, toast]);
+  }, [suggestions, selected, customs, totalChosen, onSeeded, toast]);
 
   if (loading) {
     return (
@@ -208,18 +239,25 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
     );
   }
 
+  // No AI suggestions yet — but the user can still seed the pulse with
+  // their own plain-English themes. The empty state used to be a dead-end;
+  // now it's a workable "type what you care about" form.
   if (!suggestions || suggestions.length === 0) {
     return (
-      <Section subtitle="What should Clarion watch for you?">
+      <Section subtitle="What should Clarion watch for you? Add your own — plain English is fine.">
         {hint && (
-          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded text-[12.5px] text-amber-900">
+          <div className="flex items-start gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded text-[12.5px] text-amber-900 mb-3">
             <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
             <span>{hint}</span>
           </div>
         )}
-        <p className="text-[12.5px] text-muted mt-3">
-          Once you have data products with KPIs defined, come back and I&rsquo;ll suggest a starter pulse.
-        </p>
+        <CustomList customs={customs} onChange={setCustoms} />
+        <SaveBar
+          totalChosen={totalChosen}
+          saving={saving}
+          onSkip={onSeeded}
+          onSave={save}
+        />
       </Section>
     );
   }
@@ -237,56 +275,254 @@ function SeedFlow({ onSeeded }: { onSeeded: () => void }) {
         </button>
       }
     >
-      <div className="space-y-2">
-        {suggestions.map((s, i) => {
-          const checked = selected.has(i);
-          return (
-            <label
-              key={i}
-              className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
-                checked ? 'border-ocean/40 bg-ocean/5' : 'border-line bg-bg hover:bg-soft'
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => toggle(i)}
-                className="mt-0.5 accent-ocean"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <span className="text-[13px] font-medium text-ink">{s.label}</span>
-                  <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2">
-                    {s.kind}
-                  </span>
-                  <SensitivityPill value={s.sensitivity} />
-                  <FrequencyPill value={s.frequency} />
-                </div>
-                <p className="text-[12px] text-muted leading-relaxed">{s.rationale}</p>
-              </div>
-            </label>
-          );
-        })}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {suggestions.map((s, i) => (
+          <SuggestionCard
+            key={i}
+            suggestion={s}
+            checked={selected.has(i)}
+            onToggle={() => toggle(i)}
+          />
+        ))}
+        {/* Add-your-own card — sits in the same grid as the suggestions
+            so it reads as just another option. Click expands inline; click
+            outside or Cancel collapses. Multiple customs can be added in
+            a row. */}
+        <AddCustomCard onAdd={(c) => setCustoms((prev) => [...prev, c])} />
       </div>
 
-      <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-line">
-        <button
-          onClick={onSeeded}
-          disabled={saving}
-          className="px-3 py-1.5 text-[12.5px] text-muted hover:text-ink"
+      {/* User-added customs render below the grid as a small list — keeps
+          the visual hierarchy clear (suggestions first, then yours). */}
+      {customs.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-line">
+          <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 mb-2">
+            Your own
+          </div>
+          <CustomList customs={customs} onChange={setCustoms} />
+        </div>
+      )}
+
+      <SaveBar
+        totalChosen={totalChosen}
+        saving={saving}
+        onSkip={onSeeded}
+        onSave={save}
+      />
+    </Section>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// SeedFlow card primitives
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * One AI-suggested card. The whole card is a clickable toggle (no nested
+ * checkbox); selected state shown with ocean border + softer fill + a small
+ * checkmark badge in the corner.
+ */
+function SuggestionCard({
+  suggestion: s, checked, onToggle,
+}: {
+  suggestion: Suggestion;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={checked}
+      className={`relative text-left p-3 rounded-md border transition-colors ${
+        checked
+          ? 'border-ocean bg-ocean/5'
+          : 'border-line bg-bg hover:bg-soft hover:border-line-strong'
+      }`}
+    >
+      {/* Selection badge — top-right corner */}
+      <div className={`absolute top-2 right-2 w-4 h-4 rounded-full flex items-center justify-center transition-colors ${
+        checked ? 'bg-ocean text-on-ocean' : 'bg-bg border border-line'
+      }`}>
+        {checked && <Check className="w-2.5 h-2.5" strokeWidth={3} />}
+      </div>
+
+      <div className="pr-6">
+        <div className="text-[13px] font-medium text-ink mb-1">{s.label}</div>
+        <p className="text-[11.5px] text-muted leading-relaxed mb-2 line-clamp-2">
+          {s.rationale}
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[9.5px] font-mono uppercase tracking-[0.08em] text-muted-2">
+            {s.kind}
+          </span>
+          <SensitivityPill value={s.sensitivity} />
+          <FrequencyPill value={s.frequency} />
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/**
+ * Dashed-border card. Click to expand into an inline textarea + sensitivity
+ * + frequency selectors. Save pushes a CustomTheme onto the parent's list.
+ */
+function AddCustomCard({ onAdd }: { onAdd: (c: CustomTheme) => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState('');
+  const [sensitivity, setSensitivity] = useState<Sensitivity>('medium');
+  const [frequency, setFrequency] = useState<Frequency>('weekly');
+
+  const submit = () => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    onAdd({ text: trimmed, sensitivity, frequency });
+    // Reset for next add — the card stays open so users can add several
+    // in a row without re-clicking.
+    setText('');
+    setSensitivity('medium');
+    setFrequency('weekly');
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex flex-col items-center justify-center p-3 rounded-md border-2 border-dashed border-line text-muted hover:text-ocean hover:border-ocean/40 hover:bg-ocean/5 transition-colors min-h-[110px]"
+      >
+        <Plus className="w-4 h-4 mb-1" strokeWidth={1.75} />
+        <span className="text-[12px] font-medium">Add your own</span>
+        <span className="text-[10.5px] text-muted-2 mt-0.5">Plain English is fine</span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="p-3 rounded-md border border-ocean/40 bg-ocean/5 space-y-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.1em] text-ocean">
+        <Lightbulb className="w-3 h-3" strokeWidth={2} />
+        Add your own
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="e.g. Watch for any customer paying more than 60 days late"
+        rows={3}
+        className="w-full px-2.5 py-1.5 text-[12.5px] bg-bg border border-line rounded focus:outline-none focus:border-ocean resize-none leading-relaxed"
+        autoFocus
+      />
+      <div className="grid grid-cols-2 gap-2">
+        <select
+          value={sensitivity}
+          onChange={(e) => setSensitivity(e.target.value as Sensitivity)}
+          className="px-2 py-1 text-[11.5px] bg-bg border border-line rounded focus:outline-none focus:border-ocean"
         >
-          Skip
+          <option value="low">Quiet (±10%)</option>
+          <option value="medium">Normal (±5%)</option>
+          <option value="high">Sensitive (any change)</option>
+        </select>
+        <select
+          value={frequency}
+          onChange={(e) => setFrequency(e.target.value as Frequency)}
+          className="px-2 py-1 text-[11.5px] bg-bg border border-line rounded focus:outline-none focus:border-ocean"
+        >
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+        </select>
+      </div>
+      <div className="flex items-center justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setText(''); }}
+          className="px-2.5 py-1 text-[11.5px] text-muted hover:text-ink"
+        >
+          Cancel
         </button>
         <button
-          onClick={save}
-          disabled={saving || selected.size === 0}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] font-medium bg-ocean text-on-ocean rounded hover:bg-ocean-dark disabled:opacity-40"
+          type="button"
+          onClick={submit}
+          disabled={!text.trim()}
+          className="inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-medium bg-ocean text-on-ocean rounded hover:bg-ocean-dark disabled:opacity-40"
         >
-          {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-          Save {selected.size} {selected.size === 1 ? 'entry' : 'entries'}
+          <Plus className="w-3 h-3" strokeWidth={2.25} />
+          Add
         </button>
       </div>
-    </Section>
+    </div>
+  );
+}
+
+/**
+ * Compact list of user-added themes, with inline remove. Lives below the
+ * card grid and groups the user's own additions visually.
+ */
+function CustomList({
+  customs, onChange,
+}: {
+  customs: CustomTheme[];
+  onChange: (next: CustomTheme[]) => void;
+}) {
+  // Always render the AddCustomCard inline at the top so the empty-state
+  // (no AI suggestions) flow can use this component on its own.
+  return (
+    <div className="space-y-2">
+      {customs.length === 0 && (
+        <AddCustomCard onAdd={(c) => onChange([...customs, c])} />
+      )}
+      {customs.map((c, i) => (
+        <div key={i} className="group flex items-start gap-3 p-2.5 rounded-md border border-line bg-bg">
+          <Lightbulb className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-ocean" strokeWidth={1.75} />
+          <div className="flex-1 min-w-0">
+            <p className="text-[12.5px] text-ink leading-relaxed">{c.text}</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <SensitivityPill value={c.sensitivity} />
+              <FrequencyPill value={c.frequency} />
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange(customs.filter((_, j) => j !== i))}
+            className="p-1 rounded hover:bg-soft text-muted hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+            title="Remove"
+          >
+            <X className="w-3 h-3" strokeWidth={1.75} />
+          </button>
+        </div>
+      ))}
+      {customs.length > 0 && (
+        <AddCustomCard onAdd={(c) => onChange([...customs, c])} />
+      )}
+    </div>
+  );
+}
+
+function SaveBar({
+  totalChosen, saving, onSkip, onSave,
+}: {
+  totalChosen: number;
+  saving: boolean;
+  onSkip: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-2 mt-4 pt-3 border-t border-line">
+      <button
+        onClick={onSkip}
+        disabled={saving}
+        className="px-3 py-1.5 text-[12.5px] text-muted hover:text-ink"
+      >
+        Skip
+      </button>
+      <button
+        onClick={onSave}
+        disabled={saving || totalChosen === 0}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12.5px] font-medium bg-ocean text-on-ocean rounded hover:bg-ocean-dark disabled:opacity-40"
+      >
+        {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+        Save {totalChosen} {totalChosen === 1 ? 'entry' : 'entries'}
+      </button>
+    </div>
   );
 }
 
@@ -569,29 +805,15 @@ function SuggestMore({ onAdded }: { onAdded: () => void }) {
       <div className="flex items-center justify-between mb-2">
         <span className="text-[11px] font-mono uppercase tracking-[0.1em] text-muted-2">More to watch</span>
       </div>
-      <div className="space-y-2">
-        {suggestions.map((s, i) => {
-          const checked = selected.has(i);
-          return (
-            <label
-              key={i}
-              className={`flex items-start gap-3 p-2.5 rounded-md border cursor-pointer transition-colors ${
-                checked ? 'border-ocean/40 bg-ocean/5' : 'border-line bg-bg hover:bg-soft'
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={checked}
-                onChange={() => toggle(i)}
-                className="mt-0.5 accent-ocean"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-[12.5px] font-medium text-ink">{s.label}</div>
-                <p className="text-[11.5px] text-muted leading-relaxed">{s.rationale}</p>
-              </div>
-            </label>
-          );
-        })}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {suggestions.map((s, i) => (
+          <SuggestionCard
+            key={i}
+            suggestion={s}
+            checked={selected.has(i)}
+            onToggle={() => toggle(i)}
+          />
+        ))}
       </div>
       <div className="flex items-center justify-end gap-2 mt-3">
         <button
