@@ -54,16 +54,42 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     }));
 
     // ── Products ───────────────────────────────────────────────────────
-    const productRows = await semanticDb('data_products')
-      .select<{ id: number; name: string; status: string; updated_at: Date | string | null }[]>(
-        'id', 'name', 'status', 'updated_at',
+    // Freshness signal = MAX(product_tables.last_run_at) per product.
+    // The earlier implementation read data_products.updated_at, but that
+    // column only changes on metadata edits (CRUD on the product
+    // definition) — refreshing the data does NOT touch it. The actual
+    // refresh path writes product_tables.last_run_at via the catalog's
+    // publishProductTable. So reading data_products.updated_at meant the
+    // "products refreshed today" count was permanently 0/N regardless of
+    // how many refreshes ran. Correct signal lives one level down.
+    //
+    // We LEFT JOIN through star_schemas → product_tables and aggregate
+    // MAX(last_run_at) per product. Successful product_tables only
+    // (transformation_status = 'success') so a stuck/failed run doesn't
+    // inflate the freshness number. Tenant scoping: explicit filter on
+    // data_products.tenant_id for parity with the rest of the file
+    // (other queries in home.ts also filter explicitly even though RLS
+    // would catch a missing filter).
+    const productRows = await semanticDb('data_products as dp')
+      .where('dp.tenant_id', tenantId)
+      .leftJoin('star_schemas as ss', 'dp.id', 'ss.data_product_id')
+      .leftJoin('product_tables as pt', function () {
+        this.on('ss.id', 'pt.star_schema_id')
+            .andOn('pt.transformation_status', semanticDb.raw('?', ['success']));
+      })
+      .groupBy('dp.id', 'dp.name', 'dp.status')
+      .select<{ id: number; name: string; status: string; last_refreshed_at: Date | string | null }[]>(
+        'dp.id',
+        'dp.name',
+        'dp.status',
+        semanticDb.raw('MAX(pt.last_run_at) as last_refreshed_at'),
       );
     const productsTotal = productRows.length;
-    const productsFresh = productRows.filter((p) => p.updated_at && new Date(p.updated_at) > since).length;
+    const productsFresh = productRows.filter((p) => p.last_refreshed_at && new Date(p.last_refreshed_at) > since).length;
     const allProducts = productRows.map((p) => ({
       id: p.id, name: p.name, status: p.status,
-      lastRefreshedAt: p.updated_at ? String(p.updated_at) : null,
-      isStale: !p.updated_at || new Date(p.updated_at) <= since,
+      lastRefreshedAt: p.last_refreshed_at ? String(p.last_refreshed_at) : null,
+      isStale: !p.last_refreshed_at || new Date(p.last_refreshed_at) <= since,
     }));
     const staleProducts = allProducts.filter((p) => p.isStale);
 
