@@ -316,7 +316,12 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
 });
 
 // PATCH /api/semantic/relationships/:id
-router.patch('/relationships/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+// Role: admin + analyst. Relaxed from admin-only for parity with
+// PATCH /tables/:id and /columns/:id (which were widened in the
+// Phase A IA redesign so analysts can confirm/flag from the review
+// queue). Relationships review now lives in the same /review surface,
+// so the role gate must match.
+router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { relationship_type, description, from_column_id, to_column_id } =
       req.body as Record<string, unknown>;
@@ -349,7 +354,11 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin'), async (req
 });
 
 // DELETE /api/semantic/relationships/:id
-router.delete('/relationships/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+// Role: admin + analyst — same parity rationale as PATCH above.
+// Analysts need to be able to "Reject" an AI-drafted relationship from
+// the review queue (relationships have no approval_status column, so
+// rejection is a hard delete rather than a soft flag).
+router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
     await graph.deleteRelationship(id);
@@ -1544,10 +1553,54 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
       items.push({ id: c.id, type: 'column', name: `${c.parent_table}.${c.display_name || c.column_name}`, description: c.description ?? '', status: c.ai_draft ? 'ai_draft' : (c.approval_status ?? 'pending'), updated_at: c.updated_at });
     }
 
-    // Sort by most recent
+    // Relationships with ai_draft=true. Different shape: no approval_status,
+    // no updated_at column on table_relationships (only id + ai_draft).
+    // We synthesise a name that reads naturally in the review queue:
+    //   "orders.customer_id → customers.id  (many_to_one)"
+    // and use the row id as a stable sort key (highest id = most recently
+    // discovered, since the SchemaProfiler inserts them in batches).
+    const relationships = await semanticDb('table_relationships as r')
+      .leftJoin('source_tables as ft', 'r.from_table_id', 'ft.id')
+      .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
+      .leftJoin('source_tables as tt', 'r.to_table_id',   'tt.id')
+      .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
+      .where('r.ai_draft', true)
+      .select(
+        'r.id',
+        'r.relationship_type',
+        'r.description',
+        'ft.table_name as from_table',
+        'fc.column_name as from_column',
+        'tt.table_name as to_table',
+        'tc.column_name as to_column',
+      )
+      .orderBy('r.id', 'desc')
+      .limit(100);
+    for (const r of relationships) {
+      const fromText = r.from_table && r.from_column ? `${r.from_table}.${r.from_column}` : '?';
+      const toText   = r.to_table   && r.to_column   ? `${r.to_table}.${r.to_column}`     : '?';
+      const typeText = r.relationship_type ? ` (${String(r.relationship_type).replace(/_/g, '-')})` : '';
+      items.push({
+        id: Number(r.id),
+        type: 'relationship',
+        name: `${fromText} → ${toText}${typeText}`,
+        description: r.description ?? '',
+        status: 'ai_draft',
+        // Synthesise a sort timestamp from the id so the cross-type sort
+        // below still works (newer id = more recent). Using a fixed
+        // future epoch offset ensures relationships group at the end of
+        // the timeline rather than dominating it; clients sort by
+        // updated_at desc so they appear after fresh table/column edits.
+        updated_at: new Date(0).toISOString(),
+      });
+    }
+
+    // Sort by most recent. Relationships carry epoch-0 so they sort
+    // last; within their own group the slice ordering is preserved
+    // (highest-id-first via the orderBy above).
     items.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
-    res.json({ ok: true, data: items.slice(0, 100) });
+    res.json({ ok: true, data: items.slice(0, 200) });
   } catch (err) { next(err); }
 });
 

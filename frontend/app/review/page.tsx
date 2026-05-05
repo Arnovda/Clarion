@@ -1,16 +1,18 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Loader2, Check, Flag, Inbox, RefreshCw } from 'lucide-react';
+import { Loader2, Check, Flag, Inbox, RefreshCw, X } from 'lucide-react';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { formatRelative } from '@/lib/dates';
 
+type ItemType = 'table' | 'column' | 'relationship';
+
 interface PendingItem {
   id: number;
-  type: 'table' | 'column';
+  type: ItemType;
   name: string;
   description: string;
   status: string;
@@ -22,7 +24,7 @@ function ReviewQueueInner() {
   const [items, setItems] = useState<PendingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'table' | 'column'>('all');
+  const [filter, setFilter] = useState<'all' | ItemType>('all');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -40,8 +42,15 @@ function ReviewQueueInner() {
     const key = `${item.type}-${item.id}`;
     setActing(key);
     try {
-      const path = item.type === 'table' ? `/semantic/tables/${item.id}` : `/semantic/columns/${item.id}`;
-      await api.patch(path, { ai_draft: false, approval_status: 'approved' });
+      // Relationship PATCH route always sets ai_draft=false; no
+      // approval_status column on table_relationships, so we send a
+      // bare body. Tables/columns get the explicit approval_status.
+      if (item.type === 'relationship') {
+        await api.patch(`/semantic/relationships/${item.id}`, {});
+      } else {
+        const path = item.type === 'table' ? `/semantic/tables/${item.id}` : `/semantic/columns/${item.id}`;
+        await api.patch(path, { ai_draft: false, approval_status: 'approved' });
+      }
       setItems((prev) => prev.filter((i) => !(i.type === item.type && i.id === item.id)));
       toast.success('Confirmed');
     } catch {
@@ -49,7 +58,33 @@ function ReviewQueueInner() {
     } finally { setActing(null); }
   };
 
+  /**
+   * "Reject" an AI-suggested relationship. Different semantics from
+   * "flag" on tables/columns: relationships have no approval_status
+   * column, so the only way to express "this suggestion is wrong" is
+   * to delete it. Calls DELETE /semantic/relationships/:id which
+   * mirrors the delete to both Neo4j and Postgres (dual-write
+   * contract).
+   */
+  const rejectRelationship = async (item: PendingItem) => {
+    if (!window.confirm(`Delete this relationship suggestion?\n\n${item.name}`)) return;
+    const key = `${item.type}-${item.id}`;
+    setActing(key);
+    try {
+      await api.delete(`/semantic/relationships/${item.id}`);
+      setItems((prev) => prev.filter((i) => !(i.type === item.type && i.id === item.id)));
+      toast.success('Rejected');
+    } catch {
+      toast.error('Reject failed');
+    } finally { setActing(null); }
+  };
+
   const flag = async (item: PendingItem) => {
+    if (item.type === 'relationship') {
+      // Relationships don't support a "flagged" middle state — route
+      // through reject (delete) instead. See rejectRelationship comment.
+      return rejectRelationship(item);
+    }
     const key = `${item.type}-${item.id}`;
     setActing(key);
     try {
@@ -65,6 +100,7 @@ function ReviewQueueInner() {
   const filtered = filter === 'all' ? items : items.filter((i) => i.type === filter);
   const tableCount = items.filter((i) => i.type === 'table').length;
   const colCount = items.filter((i) => i.type === 'column').length;
+  const relCount = items.filter((i) => i.type === 'relationship').length;
 
   return (
     <AppShell>
@@ -75,7 +111,7 @@ function ReviewQueueInner() {
             <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Curate</p>
             <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">AI review queue</h1>
             <p className="text-[12px] text-muted mt-1 leading-relaxed">
-              {items.length} item{items.length === 1 ? '' : 's'} awaiting confirmation · AI-suggested descriptions for tables and columns
+              {items.length} item{items.length === 1 ? '' : 's'} awaiting confirmation · AI-suggested descriptions and relationships
             </p>
           </div>
           <button
@@ -90,9 +126,16 @@ function ReviewQueueInner() {
 
         {/* Filter pills */}
         <div className="bg-raised border-b border-line px-6 flex items-center gap-0">
-          {(['all', 'table', 'column'] as const).map((f) => {
-            const count = f === 'all' ? items.length : f === 'table' ? tableCount : colCount;
+          {(['all', 'table', 'column', 'relationship'] as const).map((f) => {
+            const count = f === 'all' ? items.length
+                        : f === 'table' ? tableCount
+                        : f === 'column' ? colCount
+                        : relCount;
             const active = filter === f;
+            const label = f === 'all' ? 'All'
+                        : f === 'table' ? 'Tables'
+                        : f === 'column' ? 'Columns'
+                        : 'Relationships';
             return (
               <button
                 key={f}
@@ -101,7 +144,7 @@ function ReviewQueueInner() {
                   active ? 'text-ink font-medium' : 'text-muted hover:text-ink-2'
                 }`}
               >
-                {f === 'all' ? 'All' : f === 'table' ? 'Tables' : 'Columns'}
+                {label}
                 <span className="ml-1.5 text-[11px] font-mono text-muted-2 tabular-nums">({count})</span>
                 {active && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
               </button>
@@ -141,9 +184,13 @@ function ReviewQueueInner() {
                         <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer px-1.5 py-0.5 rounded">
                           {item.type}
                         </span>
-                        <span className="text-[11px] text-muted-2 font-mono">
-                          {formatRelative(item.updated_at)}
-                        </span>
+                        {/* Relationships carry epoch-0 (no real updated_at column on
+                            table_relationships) — skip the relative-time chip for them. */}
+                        {item.type !== 'relationship' && (
+                          <span className="text-[11px] text-muted-2 font-mono">
+                            {formatRelative(item.updated_at)}
+                          </span>
+                        )}
                       </div>
                       <p className="font-mono text-[12px] text-ink-2 mb-1.5 truncate">{item.name}</p>
                       <p className="text-[13px] text-ink leading-relaxed">
@@ -160,15 +207,30 @@ function ReviewQueueInner() {
                         {isActing ? <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} /> : <Check className="w-3 h-3" strokeWidth={2.5} />}
                         Confirm
                       </button>
-                      <button
-                        onClick={() => flag(item)}
-                        disabled={isActing}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-warn-soft text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
-                        title="Flag for issue"
-                      >
-                        <Flag className="w-3 h-3" strokeWidth={2} />
-                        Flag
-                      </button>
+                      {/* Relationships have no soft-flag state in the schema —
+                          the only "this is wrong" action is delete, surfaced as
+                          "Reject". Tables/columns keep "Flag" (sets approval_status='flagged'). */}
+                      {item.type === 'relationship' ? (
+                        <button
+                          onClick={() => rejectRelationship(item)}
+                          disabled={isActing}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-err-soft text-err hover:bg-err hover:text-white transition-colors disabled:opacity-50"
+                          title="Delete this AI-suggested relationship"
+                        >
+                          <X className="w-3 h-3" strokeWidth={2.5} />
+                          Reject
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => flag(item)}
+                          disabled={isActing}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-warn-soft text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
+                          title="Flag for issue"
+                        >
+                          <Flag className="w-3 h-3" strokeWidth={2} />
+                          Flag
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
