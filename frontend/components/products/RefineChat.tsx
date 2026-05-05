@@ -19,6 +19,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   X, Send, Loader2, MessageSquarePlus, Sparkles,
   Check, Trash2, AlertCircle, HelpCircle, Ban, ChevronDown, ChevronUp,
+  RefreshCw,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -442,6 +443,36 @@ function ProposalCard({
           <div className="flex items-start gap-1.5">
             <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
             <span>{item.apply_error}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Refresh-required hint — visible on applied add_column / modify_column.
+          The metadata is in place but the parquet on disk hasn't been
+          re-written yet; users need to trigger a rebuild to see the new
+          column with values. KPIs don't need this because they're
+          formulas evaluated at query time. */}
+      {item.status === 'applied'
+       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column') && (
+        <div className="px-3 py-2 border-t border-amber-200 bg-amber-50 text-[11.5px] text-amber-900">
+          <div className="flex items-start gap-1.5">
+            <RefreshCw className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+            <span>
+              Metadata updated. <strong>Refresh the table</strong> to materialise this
+              change in your data — click <em>Rebuild</em> in the product header.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Pending hint — same flag but pre-approve so the user knows what
+          they're committing to before they click Approve. */}
+      {isPending
+       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column') && (
+        <div className="px-3 py-1.5 border-t border-line bg-softer text-[11px] text-muted">
+          <div className="flex items-start gap-1.5">
+            <RefreshCw className="w-3 h-3 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+            <span>Approving updates the SQL; a refresh is required before the new column appears in dashboards / Ask AI.</span>
           </div>
         </div>
       )}

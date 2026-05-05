@@ -242,7 +242,15 @@ Hard rules:
   or special chars.
 - summary should be readable by a non-technical user. ("Adds a margin_pct
   column to fact_sales", not "ALTER TABLE fact_sales ADD COLUMN margin_pct
-  NUMERIC")`;
+  NUMERIC")
+- For add_column and modify_column: the summary MUST end with a second
+  sentence telling the user "Refresh the table to see this in your data."
+  Approving only updates the table's metadata + transformation_sql; the
+  parquet on disk doesn't change until the next refresh runs the new SQL.
+  Don't bury this — it's the difference between "you can query it now"
+  and "you can query it after the next refresh." add_kpi does NOT need
+  a refresh (KPIs are formulas evaluated at query time against existing
+  data) so don't add the refresh sentence there.`;
 
 export function buildRefineChatUser(
   context: RefineChatProductContext,
