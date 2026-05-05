@@ -257,7 +257,31 @@ router.get('/recent', async (req: Request, res: Response, next: NextFunction) =>
         .orderBy('l.created_at', 'desc')
         .limit(limit),
     );
-    res.json({ ok: true, data: rows });
+    // Cast every numeric column to Number — pg returns `decimal` as a
+    // STRING by default (preserves precision) and `bigint` likewise,
+    // which then crashes the frontend's number formatters when it tries
+    // String.toFixed(). Doing the cast here keeps the API contract clean.
+    res.json({
+      ok: true,
+      data: (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
+        id:                    Number(r.id),
+        created_at:            String(r.created_at),
+        user_id:               r.user_id != null ? Number(r.user_id) : null,
+        display_name:          r.display_name ? String(r.display_name) : null,
+        model:                 String(r.model),
+        call_label:            String(r.call_label),
+        category:              String(r.category),
+        input_tokens:          Number(r.input_tokens ?? 0),
+        output_tokens:         Number(r.output_tokens ?? 0),
+        cache_read_tokens:     Number(r.cache_read_tokens ?? 0),
+        cache_creation_tokens: Number(r.cache_creation_tokens ?? 0),
+        cost_usd:              Number(r.cost_usd ?? 0),
+        duration_ms:           Number(r.duration_ms ?? 0),
+        cache_used:            !!r.cache_used,
+        failed:                !!r.failed,
+        error_code:            r.error_code ? String(r.error_code) : null,
+      })),
+    });
   } catch (err) { next(err); }
 });
 

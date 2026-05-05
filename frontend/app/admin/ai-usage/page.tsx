@@ -531,8 +531,14 @@ function RecentTable({ rows }: { rows: RecentRow[] }) {
 // helpers
 // ───────────────────────────────────────────────────────────────────────────
 
-function formatUsd(n: number, decimals = 2): string {
-  if (n === 0) return '$0.00';
-  if (n < 0.01 && decimals === 2) return '<$0.01';
-  return `$${n.toFixed(decimals)}`;
+function formatUsd(n: number | string | null | undefined, decimals = 2): string {
+  // Defensive coerce — Postgres `decimal` columns round-trip as STRING
+  // through pg by default. If a future endpoint forgets to cast, we'd
+  // rather render "$0.00" than crash the whole page on `.toFixed of
+  // string`. The route layer should still cast at the boundary; this
+  // is just belt-and-braces.
+  const num = typeof n === 'number' ? n : Number(n);
+  if (!Number.isFinite(num) || num === 0) return '$0.00';
+  if (num < 0.01 && decimals === 2) return '<$0.01';
+  return `$${num.toFixed(decimals)}`;
 }
