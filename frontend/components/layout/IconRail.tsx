@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
-  Home as HomeIcon,
+  Home as HomeIcon, DollarSign,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -32,6 +32,7 @@ const ICONS = {
   package: <Package        className={ICON_CLASS} strokeWidth={1.5} />,
   workflow: <Workflow      className={ICON_CLASS} strokeWidth={1.5} />,
   search:   <Search         className={ICON_CLASS} strokeWidth={1.5} />,
+  dollar:   <DollarSign     className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -69,6 +70,7 @@ const NAV_ITEMS: NavItem[] = [
   // Settings — admin only
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
+  { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {

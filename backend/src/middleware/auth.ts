@@ -95,12 +95,16 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
     }
 
-    // Run the rest of the request in an AsyncLocalStorage scope carrying the
-    // tenantId — AIService.callClaude reads this to enforce + record the
-    // per-tenant AI token budget. Every async operation inside `next()`
-    // inherits the scope automatically.
+    // Run the rest of the request in an AsyncLocalStorage scope carrying
+    // the tenantId + userId. AIService.callClaude reads this to (a) enforce
+    // the per-tenant monthly budget, (b) attribute the call to the right
+    // user in `ai_call_log` for the cost dashboard. Every async operation
+    // inside `next()` inherits the scope automatically.
     if (payload.tenantId) {
-      withTenantAiContext(payload.tenantId, async () => { next(); }).catch(next);
+      withTenantAiContext(
+        { tenantId: payload.tenantId, userId: payload.sub ?? null },
+        async () => { next(); },
+      ).catch(next);
     } else {
       next();
     }

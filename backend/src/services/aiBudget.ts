@@ -30,18 +30,38 @@ const log = logger.child({ module: 'ai-budget' });
 
 interface TenantAiContext {
   tenantId: number;
+  /** User attribution — optional so background jobs (cron-driven brief,
+   *  query starters) can run without a user. The cost dashboard groups
+   *  null user_id rows under "system / cron". */
+  userId?: number | null;
 }
 
 const store = new AsyncLocalStorage<TenantAiContext>();
 
-/** Run `fn` in an async scope carrying the given tenant id for AI budgeting. */
-export function withTenantAiContext<T>(tenantId: number, fn: () => Promise<T>): Promise<T> {
-  return store.run({ tenantId }, fn);
+/**
+ * Run `fn` inside an async scope carrying the given tenant + (optional)
+ * user id. Reads in nested AI calls via `getTenantAiContext()` (just the
+ * tenant) or `getAiUserContext()` (full context). Idempotent — nested
+ * calls inherit the parent's scope unless they re-set it.
+ */
+export function withTenantAiContext<T>(
+  arg: number | TenantAiContext,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const ctx: TenantAiContext = typeof arg === 'number' ? { tenantId: arg } : arg;
+  return store.run(ctx, fn);
 }
 
 /** Current tenant id from the AsyncLocalStorage scope, if any. */
 export function getTenantAiContext(): number | null {
   return store.getStore()?.tenantId ?? null;
+}
+
+/** Full context — tenantId + optional userId — for telemetry. */
+export function getAiUserContext(): { tenantId: number; userId: number | null } | null {
+  const s = store.getStore();
+  if (!s) return null;
+  return { tenantId: s.tenantId, userId: s.userId ?? null };
 }
 
 /** Thrown by callClaude when the caller's tenant has hit its monthly budget. */

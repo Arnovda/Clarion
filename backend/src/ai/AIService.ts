@@ -170,6 +170,7 @@ import {
   recordTenantAiUsage,
   AiBudgetExceededError,
 } from '../services/aiBudget';
+import { logAiCall } from '../services/aiCallLogger';
 import { getGlossaryPromptBlock } from '../services/glossaryContext';
 
 /**
@@ -316,6 +317,20 @@ async function callClaude(
         recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
       }
 
+      // Per-call telemetry → ai_call_log (fire-and-forget, fuels the
+      // /admin/ai-usage dashboard). Distinct from the monthly rollup
+      // above — this captures attribution + cost for slicing by
+      // category / user / call type.
+      logAiCall({
+        callLabel: callLabel!,
+        model,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens,
+        durationMs,
+      });
+
       return block.text;
     } catch (err: unknown) {
       const status = (err as { status?: number }).status;
@@ -329,6 +344,17 @@ async function callClaude(
       const durationMs = Date.now() - start;
       logger.error({ callLabel, model, status, durationMs, err }, 'AI call failed');
       trackEvent('ai_call_failed', { callLabel, model, status: String(status ?? 'unknown'), durationMs: String(durationMs) });
+      logAiCall({
+        callLabel: callLabel!,
+        model,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        durationMs,
+        failed: true,
+        errorCode: status ? String(status) : 'error',
+      });
       // Specifically tag the "your credit balance is too low" 400 from
       // Anthropic so callers in the refresh path can distinguish a real
       // SQL bug from a billing situation. Without this, the dock shows
@@ -401,11 +427,24 @@ async function callClaudeStreaming(
     const final = await stream.finalMessage();
     const inputTokens  = final.usage?.input_tokens  ?? 0;
     const outputTokens = final.usage?.output_tokens ?? 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const usage: any = final.usage ?? {};
+    const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
+    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
     trackMetric('ai_input_tokens',  inputTokens,  props);
     trackMetric('ai_output_tokens', outputTokens, props);
     if (tenantId) {
       recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
     }
+    logAiCall({
+      callLabel: callLabel!,
+      model: MODEL,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      durationMs,
+    });
     logger.info({ callLabel, durationMs, outputChars: fullText.length, inputTokens, outputTokens, streaming: true }, 'AI streaming call completed');
   } catch {
     logger.info({ callLabel, durationMs, outputChars: fullText.length, streaming: true }, 'AI streaming call completed (usage unavailable)');
@@ -420,6 +459,7 @@ export async function callClaudeMultiTurn(
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<string> {
   const tenantId = await enforceAiBudget('multi_turn');
+  const start = Date.now();
   const message = await getClient().messages.create({
     model: MODEL,
     max_tokens: 4096,
@@ -432,11 +472,25 @@ export async function callClaudeMultiTurn(
     throw new Error('AIService: unexpected non-text response from Claude');
   }
 
+  const inputTokens  = message.usage?.input_tokens  ?? 0;
+  const outputTokens = message.usage?.output_tokens ?? 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const usage: any = message.usage ?? {};
+  const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
+  const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+
   if (tenantId) {
-    const inputTokens  = message.usage?.input_tokens  ?? 0;
-    const outputTokens = message.usage?.output_tokens ?? 0;
     recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
   }
+  logAiCall({
+    callLabel: 'multi_turn',
+    model: MODEL,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    durationMs: Date.now() - start,
+  });
 
   return block.text;
 }
@@ -1011,6 +1065,8 @@ export async function generateSqlStreaming(
   conversationHistory?: Array<{ role: string; content: string }>,
 ): Promise<NlToSqlOutput> {
   const tenantId = await enforceAiBudget('generate_sql_streaming');
+  const streamCallLabel = 'generate_sql_streaming';
+  const streamStart = Date.now();
   const glossary = await loadGlossaryBlock();
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
@@ -1052,13 +1108,27 @@ export async function generateSqlStreaming(
     }
   }
 
-  if (tenantId) {
-    try {
-      const final = await stream.finalMessage();
-      recordTenantAiUsage(tenantId, final.usage?.input_tokens ?? 0, final.usage?.output_tokens ?? 0)
-        .catch(() => { /* logged inside */ });
-    } catch { /* usage attribution is best-effort for streaming */ }
-  }
+  try {
+    const final = await stream.finalMessage();
+    const inputTokens  = final.usage?.input_tokens  ?? 0;
+    const outputTokens = final.usage?.output_tokens ?? 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const usage: any = final.usage ?? {};
+    const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
+    const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+    if (tenantId) {
+      recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
+    }
+    logAiCall({
+      callLabel: streamCallLabel,
+      model: MODEL,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      durationMs: Date.now() - streamStart,
+    });
+  } catch { /* usage attribution is best-effort for streaming */ }
 
   return defaultSubScores(parseJson<Record<string, unknown>>(fullText));
 }
@@ -1224,6 +1294,8 @@ export async function generateStarSchemaDesignStreaming(
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
 ): Promise<StarSchemaDesignOutput> {
   const tenantId = await enforceAiBudget('star_schema_streaming');
+  const streamCallLabel = 'star_schema_streaming';
+  const streamStart = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
@@ -1280,6 +1352,8 @@ export async function generateBusMatrixStreaming(
   abortSignal?: AbortSignal,
 ): Promise<BusMatrixOutput> {
   const tenantId = await enforceAiBudget('bus_matrix_streaming');
+  const streamCallLabel = 'bus_matrix_streaming';
+  const streamStart = Date.now();
   const currentDate = currentDateStr();
   const corrId = `bm-${Date.now().toString(36)}`;
   const t0 = Date.now();

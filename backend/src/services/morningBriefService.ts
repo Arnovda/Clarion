@@ -20,6 +20,7 @@ import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { notify } from './notificationService';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+import { withTenantAiContext } from './aiBudget';
 import {
   type MorningBriefContext,
   type MorningBriefOutput,
@@ -109,7 +110,14 @@ export async function runDailyBriefs(): Promise<{ tenantsRun: number; briefsCrea
       );
       for (const userId of userIds) {
         try {
-          const brief = await generateBriefForUser(tenantId, userId);
+          // Set the AI context per-user so the AI calls land in
+          // ai_call_log attributed to this user, not "system / cron"
+          // — we want to see "Sara consumed $X on briefs this month"
+          // in the dashboard.
+          const brief = await withTenantAiContext(
+            { tenantId, userId },
+            () => generateBriefForUser(tenantId, userId),
+          );
           if (brief) briefsCreated++;
         } catch (err) {
           logger.error({ err, tenantId, userId }, 'morningBriefService: failed for user');

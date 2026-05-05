@@ -16,6 +16,7 @@
 
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
+import { withTenantAiContext } from './aiBudget';
 import {
   type QueryStartersContext,
   type QueryStartersResult,
@@ -41,8 +42,13 @@ export async function getQueryStarters(tenantId: number): Promise<QueryStartersR
   }
 
   try {
+    // No specific user — starters are tenant-scoped. The cost
+    // dashboard groups null user_id rows under "system / cron",
+    // which is correct here since the call serves all users.
     const { generateQueryStarters } = await import('../ai/AIService');
-    const result = await generateQueryStarters(ctx);
+    const result = await withTenantAiContext({ tenantId, userId: null }, () =>
+      generateQueryStarters(ctx),
+    );
     CACHE.set(tenantId, { result, expiresAt: Date.now() + TTL_MS });
     return result;
   } catch (err) {

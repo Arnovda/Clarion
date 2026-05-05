@@ -49,6 +49,7 @@ import homeRouter            from './routes/home';
 import pulseRouter           from './routes/pulse';
 import briefsRouter          from './routes/briefs';
 import investigationsRouter  from './routes/investigations';
+import aiUsageRouter         from './routes/aiUsage';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -162,6 +163,7 @@ app.use('/api/home',            homeRouter);
 app.use('/api/pulse',           pulseRouter);
 app.use('/api/briefs',          briefsRouter);
 app.use('/api/investigations',  investigationsRouter);
+app.use('/api/admin/ai-usage',  aiUsageRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
