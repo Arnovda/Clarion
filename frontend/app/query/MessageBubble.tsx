@@ -859,7 +859,40 @@ export default function MessageBubble({
             </div>
           )}
           <p className="text-ink leading-relaxed"><BoldText text={msg.text} /></p>
+
+          {/* Clarify intent — show ambiguity + clickable interpretation chips.
+              The chips send the interpretation as a follow-up message via onSend,
+              which goes through the existing conversation-history flow so Claude
+              has full context for the next turn. */}
+          {msg.intent === 'clarify' && msg.options && msg.options.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {msg.options.map((opt, i) => (
+                <button
+                  key={i}
+                  onClick={() => onSend(opt.interpretation)}
+                  className="px-3 py-1.5 rounded-md border border-ocean/30 bg-ocean-softer/40 text-[12px] text-ocean hover:bg-ocean-softer hover:border-ocean/60 transition-colors text-left"
+                  title={opt.interpretation}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {msg.forecast ? <ForecastChart forecast={msg.forecast} /> : (msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} hint={msg.visualization} />)}
+
+          {/* Assumptions footnote — small italic line under the answer.
+              Stays subtle so it doesn't compete with the main result. Each
+              assumption stands on its own line for scanability. */}
+          {msg.assumptions && msg.assumptions.length > 0 && (
+            <div className="text-[11px] text-ink-3 italic leading-relaxed border-t border-line/60 pt-2">
+              <span className="font-mono not-italic uppercase tracking-[0.08em] text-muted text-[10px] mr-1">Assumed</span>
+              {msg.assumptions.map((a, i) => (
+                <span key={i} className="block">— {a}</span>
+              ))}
+            </div>
+          )}
+
           {msg.warning && !msg.wasRepaired && (
             <div className="flex items-start gap-2 bg-warn-soft border border-line rounded-md px-3 py-2 text-[12px] text-ink-2">
               <span className="flex-shrink-0 mt-0.5 text-warn">⚠</span>

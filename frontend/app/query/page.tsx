@@ -551,6 +551,8 @@ function QueryPageInner() {
           id: assistantId, role: 'assistant', text: d.answer, question: q,
           sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
           blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
+          assumptions: d.assumptions,
+          intent: d.intent, ambiguity: d.ambiguity, options: d.options,
           needsClarification: d.needsClarification,
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
           queryLayer: d.queryLayer,
@@ -690,6 +692,10 @@ function QueryPageInner() {
               flagReason?: string;
               subScores?: { schema?: number; join?: number; formula?: number };
               uncertaintyNotes?: string[];
+              assumptions?: string[];
+              intent?: 'data' | 'explain' | 'clarify';
+              ambiguity?: string;
+              options?: import('./types').ClarifyOption[];
               visualization?: import('./types').VisualizationHint;
             };
             assistantId = nextId.current++;
@@ -697,6 +703,8 @@ function QueryPageInner() {
               id: assistantId, role: 'assistant', text: d.answer, question: q,
               sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
               blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
+              assumptions: d.assumptions,
+              intent: d.intent, ambiguity: d.ambiguity, options: d.options,
               needsClarification: d.needsClarification,
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
               reasoning: accumulatedThinking || undefined,

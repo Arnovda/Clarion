@@ -53,6 +53,12 @@ export interface ForecastData {
   explanation: string;
 }
 
+/** One option offered when intent === 'clarify'. */
+export interface ClarifyOption {
+  label:          string;
+  interpretation: string;
+}
+
 export interface Message {
   id:                  number;
   role:                'user' | 'assistant';
@@ -66,6 +72,19 @@ export interface Message {
   flagReason?:         string;             // why a query was blocked (sub-confidence breakdown)
   subScores?:          { schema?: number; join?: number; formula?: number };
   uncertaintyNotes?:   string[];
+  /**
+   * Material assumptions the AI made when generating the SQL. Rendered as
+   * a small footnote under the answer — must NOT compete with the main
+   * result. Examples: "Revenue excl. VAT", "Active customers only".
+   */
+  assumptions?:        string[];
+  /**
+   * Present when intent === 'clarify'. The bubble renders a different
+   * shape: ambiguity statement + clickable option chips. No rows/sql.
+   */
+  intent?:             'data' | 'explain' | 'clarify';
+  ambiguity?:          string;
+  options?:            ClarifyOption[];
   needsClarification?: boolean;            // entity pre-flight: mismatch or ambiguity
   mismatches?:         EntityMismatch[];   // unrecognised literals + fuzzy alternatives
   ambiguities?:        EntityAmbiguity[];  // literals that matched multiple rows

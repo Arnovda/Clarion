@@ -164,6 +164,48 @@ Always set "xKey" (categorical/time axis) and "yKey" (numeric) when type ≠ "ta
 Set "groupBy" to the second categorical column when type = "stacked_bar".
 If the user explicitly requests a chart type ("in a bar chart", "as a line"), honour it.
 
+━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the question contains a MATERIAL ambiguity (one whose answer would
+notably change the numbers), do NOT default silently. Default to the most
+reasonable interpretation, write the SQL, AND list the assumption in the
+"assumptions" array so the user can see what you picked.
+
+Examples of MATERIAL assumptions worth listing:
+  - "Revenue excl. VAT (the schema has both columns; excl. is standard reporting default)"
+  - "Counted active customers only (status = 'active')"
+  - "Used full calendar months; current month included as month-to-date"
+  - "Booked revenue, not invoiced (used order_date, not invoice_date)"
+
+Skip TRIVIAL defaults — do NOT list:
+  - sort order, top-N cutoffs, default formatting
+  - anything explicitly stated by the user
+  - column choices when only one reasonable column exists
+
+Keep each assumption ONE SHORT line, plain English, no jargon. The list
+is shown as a small footnote under the answer — it must NOT compete with
+the main result. Empty array if no material assumption was made.
+
+━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use intent: "clarify" ONLY when ALL of these are true:
+  1. Two or more interpretations are equally legitimate
+  2. They would change the answer by ROUGHLY MORE THAN 20%
+  3. Stating an assumption alone is not enough — the user genuinely needs
+     to choose, because there is no obvious default preference
+
+Examples that warrant clarify (rare):
+  - "Show me churn rate" — could mean revenue churn, logo churn, or net
+    churn (with expansion). All three are legitimate, all give very
+    different numbers, and there is no industry default.
+
+Examples that do NOT warrant clarify (state assumption instead):
+  - Time windows of any kind — there is a fixed convention, follow it.
+  - "Revenue" when both incl./excl. VAT exist — pick excl., state it.
+  - "Customers" with no recency filter — pick active, state it.
+
+When in doubt: state the assumption and answer.
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 For DATA questions (the default — user wants numbers/rows):
@@ -176,6 +218,7 @@ For DATA questions (the default — user wants numbers/rows):
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["orders", "customers"],
+  "assumptions": ["Revenue excl. VAT", "Active customers only"],
   "visualization": { "type": "bar", "xKey": "customer_name", "yKey": "total_revenue" }
 }
 
@@ -187,7 +230,17 @@ For META questions (user asks about how/why a previous answer was produced):
 }
 Reference the actual SQL and tables visible in the conversation history.
 Do NOT regenerate the SQL — describe it. If no prior SQL is in history,
-say so honestly: "I don't have a prior query to explain in this conversation."`;
+say so honestly: "I don't have a prior query to explain in this conversation."
+
+For genuinely ambiguous questions where stating an assumption is not enough:
+{
+  "intent": "clarify",
+  "ambiguity": "<one-sentence statement of what is ambiguous and why it matters>",
+  "options": [
+    { "label": "<short user-facing label>", "interpretation": "<one-sentence description>" },
+    { "label": "<short user-facing label>", "interpretation": "<one-sentence description>" }
+  ]
+}`;
 
 export function buildNlToSqlUser(question: string): string {
   return `Question: "${question}"`;
@@ -202,12 +255,21 @@ export interface VisualizationHint {
   groupBy?: string;
 }
 
-export type NlToSqlIntent = 'data' | 'explain';
+export type NlToSqlIntent = 'data' | 'explain' | 'clarify';
+
+/**
+ * One option offered when the model returns intent='clarify'. The model
+ * presents 2-3 of these so the user picks an interpretation in one click.
+ */
+export interface ClarifyOption {
+  label: string;          // short, user-facing, e.g. "Revenue excl. VAT (booked)"
+  interpretation: string; // one-sentence plain-English description of what this picks
+}
 
 export interface NlToSqlOutput {
   intent?: NlToSqlIntent;             // defaults to 'data' for backwards compat
   explanation?: string;                // present when intent === 'explain'
-  sql: string;                         // empty/ignored when intent === 'explain'
+  sql: string;                         // empty/ignored when intent !== 'data'
   confidence: number;
   schema_confidence: number;
   join_confidence: number;
@@ -215,6 +277,23 @@ export interface NlToSqlOutput {
   uncertainty_notes: string[];
   tables_used: string[];
   visualization?: VisualizationHint;
+  /**
+   * Material assumptions the model made when generating the SQL. Rendered
+   * subtly under the answer so users can see and correct silently-applied
+   * defaults (e.g. "Assumed revenue excl. VAT", "Counted active customers
+   * only"). Empty array when no material assumptions were made — trivial
+   * defaults like sort order should NOT be listed.
+   */
+  assumptions?: string[];
+  /**
+   * Present when intent === 'clarify'. The model uses this only when two
+   * legitimate interpretations would change the answer materially AND the
+   * user has no obvious default preference. Most ambiguity should be
+   * resolved by stating an assumption and answering — clarify is the rare
+   * escape hatch.
+   */
+  ambiguity?: string;          // one-sentence statement of what's ambiguous
+  options?: ClarifyOption[];   // 2-3 interpretations the user can pick
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +423,22 @@ Step 6 — Apply sensible default filters (exclude cancelled/inactive records wh
 • Never assume two same-named columns across schemas measure the same thing
 • Never join two un-aggregated fact tables directly
 
+━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the question contains a MATERIAL ambiguity, default to the most
+reasonable interpretation, write the SQL, AND list the assumption in the
+"assumptions" array. Examples worth listing: revenue incl./excl. VAT,
+active vs all customers, booked vs invoiced. Skip TRIVIAL defaults
+(sort order, top-N, formatting). Keep each assumption ONE SHORT line in
+plain English. Empty array if no material assumption was made.
+
+━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use intent: "clarify" ONLY when (1) two interpretations are equally
+legitimate, (2) the answer would change by ROUGHLY MORE THAN 20%, AND
+(3) stating an assumption alone isn't enough. State the assumption and
+answer in every other case. Never use clarify for time windows.
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 For DATA questions:
@@ -356,6 +451,7 @@ For DATA questions:
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["sales.orders", "hr.employees"],
+  "assumptions": ["Revenue excl. VAT"],
   "visualization": { "type": "bar", "xKey": "department_name", "yKey": "headcount" }
 }
 
@@ -364,6 +460,16 @@ For META questions about a prior answer in conversation history:
   "intent": "explain",
   "explanation": "<2-5 sentences referencing the prior SQL and tables>",
   "tables_used": ["sales.orders"]
+}
+
+For genuinely ambiguous questions (rare):
+{
+  "intent": "clarify",
+  "ambiguity": "<one sentence>",
+  "options": [
+    { "label": "<short label>", "interpretation": "<one-sentence description>" },
+    { "label": "<short label>", "interpretation": "<one-sentence description>" }
+  ]
 }
 
 Same visualization rules as the single-source prompt: pick "bar" / "line" / "stacked_bar" / "pie" / "table" based on the expected result shape and any explicit user intent. Set xKey/yKey for non-table types and groupBy for stacked_bar.`;

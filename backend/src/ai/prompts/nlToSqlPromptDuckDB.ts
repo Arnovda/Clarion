@@ -181,6 +181,49 @@ Score your confidence in three dimensions:
 The overall "confidence" should be the MINIMUM of these three sub-scores.
 List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "unsure if status refers to order status or customer status").
 
+━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the question contains a MATERIAL ambiguity (one whose answer would
+notably change the numbers), do NOT default silently. Default to the most
+reasonable interpretation, write the SQL, AND list the assumption in the
+"assumptions" array so the user can see what you picked.
+
+Examples of MATERIAL assumptions worth listing:
+  - "Revenue excl. VAT (the schema has both columns; excl. is standard reporting default)"
+  - "Counted active customers only (status = 'active')"
+  - "Used full calendar months; current month included as month-to-date"
+  - "Booked revenue, not invoiced (used order_date, not invoice_date)"
+
+Skip TRIVIAL defaults — do NOT list:
+  - sort order, top-N cutoffs, default formatting
+  - anything explicitly stated by the user
+  - column choices when only one reasonable column exists
+
+Keep each assumption ONE SHORT line, plain English, no jargon. The list
+is shown as a small footnote under the answer — it must NOT compete with
+the main result. Empty array if no material assumption was made.
+
+━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use intent: "clarify" ONLY when ALL of these are true:
+  1. Two or more interpretations are equally legitimate
+  2. They would change the answer by ROUGHLY MORE THAN 20%
+  3. Stating an assumption alone is not enough — the user genuinely needs
+     to choose, because there is no obvious default preference
+
+Examples that warrant clarify (rare):
+  - "Show me churn rate" — could mean revenue churn, logo churn, or net
+    churn (with expansion). All three are legitimate, all give very
+    different numbers, and there is no industry default.
+
+Examples that do NOT warrant clarify (state assumption instead):
+  - Time windows of any kind — there is a fixed convention, follow it.
+  - "Revenue" when both incl./excl. VAT exist — pick excl., state it.
+  - "Customers" with no recency filter — pick active, state it.
+
+When in doubt: state the assumption and answer. Do not pepper the user
+with questions.
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 For DATA questions:
@@ -192,7 +235,8 @@ For DATA questions:
   "join_confidence": 0.80,
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
-  "tables_used": ["orders", "customers"]
+  "tables_used": ["orders", "customers"],
+  "assumptions": ["Revenue excl. VAT", "Active customers only"]
 }
 
 For META questions about a prior answer:
@@ -200,6 +244,16 @@ For META questions about a prior answer:
   "intent": "explain",
   "explanation": "<2-5 sentences referencing prior SQL/tables>",
   "tables_used": ["orders"]
+}
+
+For genuinely ambiguous questions where stating an assumption is not enough:
+{
+  "intent": "clarify",
+  "ambiguity": "<one-sentence statement of what is ambiguous and why it matters>",
+  "options": [
+    { "label": "<short user-facing label>", "interpretation": "<one-sentence description>" },
+    { "label": "<short user-facing label>", "interpretation": "<one-sentence description>" }
+  ]
 }`;
 
 
@@ -272,15 +326,43 @@ Step 7 — Output for human consumption: SELECT human-readable name columns (e.g
 • Never assume two same-named columns across schemas measure the same thing
 • Never join two un-aggregated fact tables directly
 
+━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the question contains a MATERIAL ambiguity, default to the most
+reasonable interpretation, write the SQL, AND list the assumption in the
+"assumptions" array. Examples worth listing: revenue incl./excl. VAT,
+active vs all customers, booked vs invoiced. Skip TRIVIAL defaults
+(sort order, top-N, formatting). Keep each assumption ONE SHORT line in
+plain English. Empty array if no material assumption was made.
+
+━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Use intent: "clarify" ONLY when (1) two interpretations are equally
+legitimate, (2) the answer would change by ROUGHLY MORE THAN 20%, AND
+(3) stating an assumption alone isn't enough. State the assumption and
+answer in every other case. Never use clarify for time windows.
+
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Return exactly this JSON shape — nothing else:
+For DATA questions, return:
 {
+  "intent": "data",
   "sql": "SELECT ...",
   "confidence": 0.85,
   "schema_confidence": 0.95,
   "join_confidence": 0.80,
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
-  "tables_used": ["sales.orders", "hr.employees"]
+  "tables_used": ["sales.orders", "hr.employees"],
+  "assumptions": ["Revenue excl. VAT"]
+}
+
+For genuinely ambiguous questions (rare):
+{
+  "intent": "clarify",
+  "ambiguity": "<one sentence>",
+  "options": [
+    { "label": "<short label>", "interpretation": "<one-sentence description>" },
+    { "label": "<short label>", "interpretation": "<one-sentence description>" }
+  ]
 }`;

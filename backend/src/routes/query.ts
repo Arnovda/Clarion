@@ -90,6 +90,29 @@ function blockedUserMessage(r: NlToSqlOutput): string {
   return "I don't have enough context to answer that confidently yet. This question has been noted for review.";
 }
 
+/**
+ * Build a clarify-intent response payload. The model returns this only when
+ * stating an assumption isn't enough — two interpretations are both legitimate
+ * and would change the answer materially. The frontend renders the ambiguity
+ * statement with each option as a clickable chip; clicking sends the
+ * interpretation as the next user message via the existing conversation flow.
+ */
+function buildClarifyResponse(r: NlToSqlOutput, queryLayer: 'product' | 'source') {
+  return {
+    intent:        'clarify' as const,
+    answer:        r.ambiguity || 'I need a bit more detail before I can answer that confidently.',
+    ambiguity:     r.ambiguity ?? '',
+    options:       r.options ?? [],
+    confidence:    r.confidence,
+    subScores:     { schema: r.schema_confidence, join: r.join_confidence, formula: r.formula_confidence },
+    uncertaintyNotes: r.uncertainty_notes ?? [],
+    tablesUsed:    r.tables_used ?? [],
+    rows:          [],
+    sql:           '',
+    queryLayer,
+  };
+}
+
 // Detect columns that share the same name across 2+ tables in scope.
 // Returns a disambiguation warning to append to the semantic context.
 function buildColumnDisambiguationWarning(
@@ -264,6 +287,22 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       // Meta-question short-circuit: model classified this as a follow-up
       // about methodology, not a data request. Return the explanation and
       // skip SQL execution.
+      // Clarify-intent short-circuit: model couldn't pick a single
+      // interpretation. Return the ambiguity + options for the frontend
+      // to render as clickable chips. No SQL execution.
+      if (nlResult.intent === 'clarify') {
+        await semanticDb('query_log').insert({
+          tenant_id:        tenantId,
+          user_id:          req.user!.sub,
+          question_text:    question,
+          generated_sql:    null,
+          confidence_score: nlResult.confidence,
+          was_flagged:      false,
+        });
+        res.json({ ok: true, data: buildClarifyResponse(nlResult, 'product') });
+        return;
+      }
+
       if (nlResult.intent === 'explain' && nlResult.explanation) {
         await semanticDb('query_log').insert({
           tenant_id:        tenantId,
@@ -346,6 +385,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           answer, confidence: nlResult.confidence,
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
           uncertaintyNotes: nlResult.uncertainty_notes,
+          assumptions: nlResult.assumptions ?? [],
           blocked: false, tablesUsed: nlResult.tables_used,
           queryLayer: 'product',
           ...(productPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
@@ -729,6 +769,19 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     trackEvent(srcCacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'source' });
 
     // Meta-question short-circuit (source layer).
+    if (nlResult.intent === 'clarify') {
+      await semanticDb('query_log').insert({
+        tenant_id:        tenantId,
+        user_id:          req.user!.sub,
+        question_text:    question,
+        generated_sql:    null,
+        confidence_score: nlResult.confidence,
+        was_flagged:      false,
+      });
+      res.json({ ok: true, data: buildClarifyResponse(nlResult, 'source') });
+      return;
+    }
+
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await semanticDb('query_log').insert({
         tenant_id:        tenantId,
@@ -985,6 +1038,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           formula: nlResult.formula_confidence,
         },
         uncertaintyNotes: nlResult.uncertainty_notes,
+        assumptions: nlResult.assumptions ?? [],
         blocked:     false,
         crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
@@ -1073,6 +1127,21 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       );
 
       // Meta-question short-circuit (product layer). Skip SQL execution.
+      if (nlResult.intent === 'clarify') {
+        await semanticDb('query_log').insert({
+          tenant_id:        thinkTenantId,
+          user_id:          req.user!.sub,
+          question_text:    question,
+          generated_sql:    null,
+          confidence_score: nlResult.confidence,
+          was_flagged:      false,
+          flag_reason:      null,
+        });
+        emit({ type: 'done', data: buildClarifyResponse(nlResult, 'product') });
+        res.end();
+        return;
+      }
+
       if (nlResult.intent === 'explain' && nlResult.explanation) {
         await semanticDb('query_log').insert({
           tenant_id:        thinkTenantId,
@@ -1143,6 +1212,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       emit({ type: 'done', data: {
         answer, confidence: nlResult.confidence,
         subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
+        assumptions: nlResult.assumptions ?? [],
         blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
         rows: queryRows.slice(0, 200), sql: nlResult.sql,
@@ -1273,6 +1343,21 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // methodology of a previous answer), we skip SQL execution entirely and
     // emit the plain-language explanation as the final answer. This requires
     // conversation history to be loaded — which we already do above.
+    if (nlResult.intent === 'clarify') {
+      await semanticDb('query_log').insert({
+        tenant_id:        thinkTenantId,
+        user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
+        question_text:    question,
+        generated_sql:    null,
+        confidence_score: nlResult.confidence,
+        was_flagged:      false,
+        flag_reason:      null,
+      });
+      emit({ type: 'done', data: buildClarifyResponse(nlResult, 'source') });
+      res.end();
+      return;
+    }
+
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await semanticDb('query_log').insert({
         tenant_id:        thinkTenantId,
@@ -1418,6 +1503,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       answer, confidence: nlResult.confidence,
       subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
       uncertaintyNotes: nlResult.uncertainty_notes,
+      assumptions: nlResult.assumptions ?? [],
       blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'source',
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       rows: queryResult.rows.slice(0, 200),
