@@ -8,6 +8,7 @@ import path from 'path';
 import fs from 'fs';
 import { semanticDb } from '../db/knex';
 import { BaseConnector } from '../connectors/BaseConnector';
+import { tenantQuery } from '../services/tenantQuery';
 
 export interface FieldStat {
   field_name:     string;
@@ -45,6 +46,7 @@ export async function runQualityProfile(
   tableName:       string,
   filepath:        string,
   overrideBkColumn?: string,   // user-specified BK column; overrides auto-detection
+  tenantId?:       number,      // wraps inserts in tenantQuery so RLS sees the right tenant
 ): Promise<ProfileResult> {
   const absPath = path.resolve(filepath);
   if (!fs.existsSync(absPath)) throw new Error(`SQLite file not found: ${absPath}`);
@@ -215,61 +217,63 @@ export async function runQualityProfile(
     // Overall = simple average of available scores (2 now, 3 once rules run)
     const overallScore = (completenessScore + uniquenessScore) / 2;
 
-    // ── Persist dataset_profiles ─────────────────────────────────────────
-    const [pRow] = await semanticDb('dataset_profiles')
-      .insert({
-        connection_id:      connectionId,
-        table_name:         tableName,
-        row_count:          rowCount,
-        overall_score:      overallScore,
-        completeness_score: completenessScore,
-        uniqueness_score:   uniquenessScore,
-        validity_score:     validityScore,
-        consistency_score:  null,
-        timeliness_score:   null,
-        accuracy_score:     null,
-        business_key_column: bkColumnUsed,
-      })
-      .returning('id');
-    const profileId: number = typeof pRow === 'object' ? (pRow as { id: number }).id : pRow;
+    // ── Persist (all writes in a tenantQuery so RLS sees the right tenant) ──
+    const profileId: number = await tenantQuery(tenantId, async (trx) => {
+      const [pRow] = await trx('dataset_profiles')
+        .insert({
+          connection_id:      connectionId,
+          table_name:         tableName,
+          row_count:          rowCount,
+          overall_score:      overallScore,
+          completeness_score: completenessScore,
+          uniqueness_score:   uniquenessScore,
+          validity_score:     validityScore,
+          consistency_score:  null,
+          timeliness_score:   null,
+          accuracy_score:     null,
+          business_key_column: bkColumnUsed,
+        })
+        .returning('id');
+      const id: number = typeof pRow === 'object' ? (pRow as { id: number }).id : pRow;
 
-    // ── Persist field_profiles ───────────────────────────────────────────
-    for (const f of fields) {
-      await semanticDb('field_profiles').insert({
-        profile_id:     profileId,
-        field_name:     f.field_name,
-        data_type:      f.data_type,
-        null_count:     f.null_count,
-        null_pct:       f.null_pct,
-        distinct_count: f.distinct_count,
-        distinct_pct:   f.distinct_pct,
-        min_value:      f.min_value,
-        max_value:      f.max_value,
-        mean_value:     f.mean_value,
-        median_value:   f.median_value,
-        top_values:     JSON.stringify(f.top_values),
-        histogram:      JSON.stringify(f.histogram),
-      });
-    }
+      for (const f of fields) {
+        await trx('field_profiles').insert({
+          profile_id:     id,
+          field_name:     f.field_name,
+          data_type:      f.data_type,
+          null_count:     f.null_count,
+          null_pct:       f.null_pct,
+          distinct_count: f.distinct_count,
+          distinct_pct:   f.distinct_pct,
+          min_value:      f.min_value,
+          max_value:      f.max_value,
+          mean_value:     f.mean_value,
+          median_value:   f.median_value,
+          top_values:     JSON.stringify(f.top_values),
+          histogram:      JSON.stringify(f.histogram),
+        });
+      }
 
-    // ── Upsert daily score history ────────────────────────────────────────
-    const today = new Date().toISOString().split('T')[0];
-    await semanticDb('quality_score_history')
-      .insert({
-        connection_id:      connectionId,
-        table_name:         tableName,
-        score_date:         today,
-        overall_score:      overallScore,
-        completeness_score: completenessScore,
-        uniqueness_score:   uniquenessScore,
-        validity_score:     null,
-        consistency_score:  null,
-        timeliness_score:   null,
-        accuracy_score:     null,
-      })
-      .onConflict(['connection_id', 'table_name', 'score_date'])
-      .merge(['overall_score', 'completeness_score', 'uniqueness_score',
-              'validity_score', 'consistency_score', 'timeliness_score', 'accuracy_score']);
+      const today = new Date().toISOString().split('T')[0];
+      await trx('quality_score_history')
+        .insert({
+          connection_id:      connectionId,
+          table_name:         tableName,
+          score_date:         today,
+          overall_score:      overallScore,
+          completeness_score: completenessScore,
+          uniqueness_score:   uniquenessScore,
+          validity_score:     null,
+          consistency_score:  null,
+          timeliness_score:   null,
+          accuracy_score:     null,
+        })
+        .onConflict(['connection_id', 'table_name', 'score_date'])
+        .merge(['overall_score', 'completeness_score', 'uniqueness_score',
+                'validity_score', 'consistency_score', 'timeliness_score', 'accuracy_score']);
+
+      return id;
+    });
 
     return { profileId, rowCount, fields, overallScore, completenessScore, uniquenessScore, validityScore };
   } finally {
@@ -280,6 +284,11 @@ export async function runQualityProfile(
 /**
  * Connector-based quality profiler — works with any BaseConnector (DuckDB, SQLite, etc).
  * Uses generic SQL via executeQuery() instead of better-sqlite3 PRAGMAs.
+ *
+ * `tenantId` is required for the persistence step — without it, the inserts
+ * land on a pooled connection without `app.current_tenant` set, and RLS
+ * defaults / FK checks fail (e.g. `dataset_profiles_connection_id_foreign`
+ * fires because the visible connections set is empty).
  */
 export async function runQualityProfileWithConnector(
   connectionId: number,
@@ -287,6 +296,7 @@ export async function runQualityProfileWithConnector(
   connector: BaseConnector,
   columnDefs?: Array<{ name: string; type: string }>,
   overrideBkColumn?: string,
+  tenantId?: number,
 ): Promise<ProfileResult> {
   // Column definitions — use provided list, or introspect via DESCRIBE-style query
   let cols: Array<{ name: string; type: string }>;
@@ -436,59 +446,67 @@ export async function runQualityProfileWithConnector(
   const validityScore: number | null = null;
   const overallScore = (completenessScore + uniquenessScore) / 2;
 
-  // Persist
-  const [pRow] = await semanticDb('dataset_profiles')
-    .insert({
-      connection_id: connectionId,
-      table_name: tableName,
-      row_count: rowCount,
-      overall_score: overallScore,
-      completeness_score: completenessScore,
-      uniqueness_score: uniquenessScore,
-      validity_score: validityScore,
-      consistency_score: null,
-      timeliness_score: null,
-      accuracy_score: null,
-      business_key_column: bkColumnUsed,
-    })
-    .returning('id');
-  const profileId: number = typeof pRow === 'object' ? (pRow as { id: number }).id : pRow;
+  // Persist — wrapped in tenantQuery so SET LOCAL app.current_tenant is set
+  // for every insert. Without this, the pooled connection may not have tenant
+  // context, RLS blocks the FK lookup against `connections`, and we get
+  // "violates foreign key constraint dataset_profiles_connection_id_foreign"
+  // even when the connection exists.
+  const profileId: number = await tenantQuery(tenantId, async (trx) => {
+    const [pRow] = await trx('dataset_profiles')
+      .insert({
+        connection_id: connectionId,
+        table_name: tableName,
+        row_count: rowCount,
+        overall_score: overallScore,
+        completeness_score: completenessScore,
+        uniqueness_score: uniquenessScore,
+        validity_score: validityScore,
+        consistency_score: null,
+        timeliness_score: null,
+        accuracy_score: null,
+        business_key_column: bkColumnUsed,
+      })
+      .returning('id');
+    const id: number = typeof pRow === 'object' ? (pRow as { id: number }).id : pRow;
 
-  for (const f of fields) {
-    await semanticDb('field_profiles').insert({
-      profile_id: profileId,
-      field_name: f.field_name,
-      data_type: f.data_type,
-      null_count: f.null_count,
-      null_pct: f.null_pct,
-      distinct_count: f.distinct_count,
-      distinct_pct: f.distinct_pct,
-      min_value: f.min_value,
-      max_value: f.max_value,
-      mean_value: f.mean_value,
-      median_value: f.median_value,
-      top_values: JSON.stringify(f.top_values),
-      histogram: JSON.stringify(f.histogram),
-    });
-  }
+    for (const f of fields) {
+      await trx('field_profiles').insert({
+        profile_id: id,
+        field_name: f.field_name,
+        data_type: f.data_type,
+        null_count: f.null_count,
+        null_pct: f.null_pct,
+        distinct_count: f.distinct_count,
+        distinct_pct: f.distinct_pct,
+        min_value: f.min_value,
+        max_value: f.max_value,
+        mean_value: f.mean_value,
+        median_value: f.median_value,
+        top_values: JSON.stringify(f.top_values),
+        histogram: JSON.stringify(f.histogram),
+      });
+    }
 
-  const today = new Date().toISOString().split('T')[0];
-  await semanticDb('quality_score_history')
-    .insert({
-      connection_id: connectionId,
-      table_name: tableName,
-      score_date: today,
-      overall_score: overallScore,
-      completeness_score: completenessScore,
-      uniqueness_score: uniquenessScore,
-      validity_score: null,
-      consistency_score: null,
-      timeliness_score: null,
-      accuracy_score: null,
-    })
-    .onConflict(['connection_id', 'table_name', 'score_date'])
-    .merge(['overall_score', 'completeness_score', 'uniqueness_score',
-            'validity_score', 'consistency_score', 'timeliness_score', 'accuracy_score']);
+    const today = new Date().toISOString().split('T')[0];
+    await trx('quality_score_history')
+      .insert({
+        connection_id: connectionId,
+        table_name: tableName,
+        score_date: today,
+        overall_score: overallScore,
+        completeness_score: completenessScore,
+        uniqueness_score: uniquenessScore,
+        validity_score: null,
+        consistency_score: null,
+        timeliness_score: null,
+        accuracy_score: null,
+      })
+      .onConflict(['connection_id', 'table_name', 'score_date'])
+      .merge(['overall_score', 'completeness_score', 'uniqueness_score',
+              'validity_score', 'consistency_score', 'timeliness_score', 'accuracy_score']);
+
+    return id;
+  });
 
   return { profileId, rowCount, fields, overallScore, completenessScore, uniquenessScore, validityScore };
 }

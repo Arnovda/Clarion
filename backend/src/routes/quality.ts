@@ -24,7 +24,9 @@ import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
 import { resolveOwnerProductTable, OwnerResolveError } from '../services/productOwnership';
-import { productBasePath, productSlug, isAzurePath } from '../services/warehouse';
+import { isAzurePath } from '../services/warehouse';
+import { resolveProductTableById } from '../services/tableCatalog';
+import { tenantQuery } from '../services/tenantQuery';
 import { generateQualityAlertContext } from '../ai/AIService';
 
 const router = Router();
@@ -444,43 +446,56 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     }
 
     const pt = owner.productTable as { table_name: string };
-    const dp = owner.product as { id: number; name: string };
-    const conn = owner.connection as { id: number; warehouse_path?: string };
+    const conn = owner.connection as { id: number };
+    // owner.productTable.id is what we feed the catalog — that's the OWNER's
+    // product_table row id, which has the materialised delta_path. For stub
+    // rows in downstream products, the runner mirrors the upstream owner's
+    // path onto the stub via publishStubFromUpstream — but we route through
+    // the owner here for symmetry with how the rest of the app is wired.
+    const ownerPtId = owner.productTable as { id: number };
 
-    // Resolve the product warehouse directory the same way every other
-    // surface does — services/warehouse is the single source of truth.
-    const warehousePath = conn.warehouse_path ?? `./warehouse/conn_${conn.id}`;
-    const productDir = productBasePath(warehousePath, productSlug(dp.name));
-
-    // Verify that warehouse data actually exists for this table before profiling.
-    // Local fs check only — Azure (az://) paths can't be probed with fs, so we
-    // skip the pre-flight and let DuckDB surface a clean error if the blob is missing.
-    const isAzure = isAzurePath(productDir);
-    if (!isAzure) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require('fs') as typeof import('fs');
-      const tablePath = path.join(productDir, pt.table_name);
-      if (!fs.existsSync(tablePath) || !fs.readdirSync(tablePath).some((f) => f.endsWith('.parquet'))) {
-        res.status(404).json({ ok: false, error: `No warehouse data found for table "${pt.table_name}". Run the transformation first.` });
-        return;
-      }
+    // Resolve the table location through the catalog. Single source of truth:
+    //   • returns null if not yet materialised (rather than us doing fs checks)
+    //   • returns a host-usable URI (local path or az://) — works in either env
+    //   • internally tenant-scoped via tenantQuery so RLS gives us our rows
+    const resolved = await resolveProductTableById(tenantId, Number(ownerPtId.id));
+    if (!resolved) {
+      res.status(404).json({
+        ok: false,
+        error: `No warehouse data for "${pt.table_name}" yet. Run a refresh first (the table is in DRAFT state, or the upstream owner hasn't been materialised).`,
+      });
+      return;
     }
 
-    // Create DuckDB connector pointing at product warehouse
-    const connector = new DuckDBConnector(productDir, [pt.table_name]);
+    // Build a connector that points at the resolved URI. Parent-dir is the
+    // DuckDB "warehouse root"; tablePaths gives the explicit per-table URI
+    // so it works even when the row's path doesn't sit under productDir
+    // (e.g. stub rows pointing at the upstream owner's parquet directory).
+    const parentDir = isAzurePath(resolved.uri)
+      ? resolved.uri.substring(0, resolved.uri.lastIndexOf('/'))
+      : path.dirname(resolved.uri);
+    const tablePaths = new Map<string, string>([[resolved.tableName, resolved.uri]]);
+    const connector = new DuckDBConnector(parentDir, [resolved.tableName], tablePaths);
     await connector.connect();
 
     // Profile is keyed on the *consumer's* connection_id — the row the UI is
-    // asking about. That way the consumer's Quality tab shows fresh stats even
-    // though the parquet lives under the owner's product slug.
-    const requestedPt = await semanticDb('product_tables').where({ id: ptId }).first();
-    const consumerSchema = requestedPt
-      ? await semanticDb('star_schemas').where({ id: requestedPt.star_schema_id }).first()
-      : null;
-    const consumerProduct = consumerSchema
-      ? await semanticDb('data_products').where({ id: consumerSchema.data_product_id }).first()
-      : null;
-    const consumerConnId = (consumerProduct?.connection_id ?? dp.id) as number;
+    // asking about. The catalog query above returned the OWNER's row; for
+    // stubs that's a different product than what the user clicked on, so we
+    // look up the consumer separately. tenantQuery wraps in a transaction
+    // with SET LOCAL app.current_tenant so RLS sees our rows reliably.
+    const consumerConnId = await tenantQuery(tenantId, async (trx) => {
+      const row = await trx('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+        .where('pt.id', ptId)
+        .select('dp.connection_id as cid')
+        .first();
+      // Defensive fallback: if the consumer row can't be resolved (RLS,
+      // dropped product, broken state), use the owner's connection — that's
+      // a real connections.id, not a product id (was a bug in the previous
+      // implementation: `dp.id` is a product id and would FK-fail).
+      return row?.cid != null ? Number(row.cid) : Number(conn.id);
+    });
 
     let result;
     try {
@@ -488,6 +503,9 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
         consumerConnId,
         pt.table_name,
         connector,
+        undefined,
+        undefined,
+        tenantId,
       );
     } catch (err) {
       connector.disconnect();
@@ -581,7 +599,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async 
       .first() as { business_key_column: string | null } | undefined;
     const bkOverride = stRow?.business_key_column ?? undefined;
 
-    const result = await runQualityProfile(connId, table, fp, bkOverride);
+    const result = await runQualityProfile(connId, table, fp, bkOverride, req.user?.tenantId);
     await evaluateRules(connId, table, fp);
     await checkAndCreateAlerts(connId, table, req.user?.tenantId);
     // Return updated summary
