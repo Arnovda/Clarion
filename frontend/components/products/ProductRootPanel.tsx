@@ -38,6 +38,7 @@ const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlo
 const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
 const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: false });
 const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
+const RefineChat = dynamic(() => import('@/components/products/RefineChat'), { ssr: false });
 
 type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
 
@@ -90,6 +91,7 @@ export default function ProductRootPanel({
   const [rebuildResults, setRebuildResults] = useState<TransformResult[] | null>(null);
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
+  const [refineOpen, setRefineOpen] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -325,6 +327,14 @@ export default function ProductRootPanel({
               )}
             </div>
             <button
+              onClick={() => setRefineOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-ocean border border-ocean/30 rounded-md hover:bg-ocean/5 transition-colors"
+              title="Refine — chat to add columns, KPIs, or change SQL"
+            >
+              <Sparkles className="w-3 h-3" strokeWidth={2} />
+              Refine
+            </button>
+            <button
               onClick={handleDelete}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-err bg-err-soft border border-err/20 rounded-md hover:bg-err/10 transition-colors"
             >
@@ -405,6 +415,19 @@ export default function ProductRootPanel({
           </div>
         )}
       </div>
+
+      {/* Refine slide-over — single conversation per product, team-visible.
+          Lives outside the main column so it doesn't fight the embedded
+          AI panel for layout space. */}
+      {detail && (
+        <RefineChat
+          productId={productId}
+          productName={detail.name}
+          open={refineOpen}
+          onClose={() => setRefineOpen(false)}
+          onApplied={() => { loadDetail(); loadKpis(); }}
+        />
+      )}
     </div>
   );
 }

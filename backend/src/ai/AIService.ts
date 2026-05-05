@@ -81,6 +81,13 @@ import {
   KpiDraftProductContext,
 } from './prompts/kpiDraftPrompt';
 import {
+  REFINE_CHAT_SYSTEM,
+  buildRefineChatUser,
+  type RefineChatProductContext,
+  type RefineChatResult,
+  type ProposalPayload,
+} from './prompts/refineChatPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1470,6 +1477,64 @@ export async function draftKpiFormula(
     primaryTable:     typeof obj.primary_table === 'string' ? obj.primary_table : null,
     confidence:       obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
     notes:            typeof obj.notes === 'string' ? obj.notes : '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Refine Chat — per-product conversational editing.
+//
+// Phase 2 supports three apply intents (add_column / modify_column /
+// add_kpi) plus two non-apply outcomes (ask_clarification / unsupported).
+// Service-side persistence + apply lives in services/refineService.ts.
+// ---------------------------------------------------------------------------
+
+export async function proposeRefinement(
+  context: RefineChatProductContext,
+  userMessage: string,
+): Promise<RefineChatResult> {
+  const raw = await callClaude(
+    REFINE_CHAT_SYSTEM,
+    buildRefineChatUser(context, userMessage),
+    { model: MODEL_SONNET, maxTokens: 2500, callLabel: 'refine_chat' },
+  );
+
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'proposeRefinement: failed to parse JSON');
+    return {
+      intent: 'unsupported',
+      confidence: 'low',
+      reasoning: 'The model returned non-JSON output.',
+      summary: 'I could not understand that request well enough to propose a change.',
+      proposal: {
+        intent: 'unsupported',
+        reason: 'Internal: the model output was not valid JSON. Try rewording.',
+        suggested_action: null,
+      },
+    };
+  }
+
+  const obj = parsed as Partial<RefineChatResult> & { proposal?: unknown };
+  const intent = (obj.proposal as { intent?: string } | undefined)?.intent ?? obj.intent;
+  if (!intent) {
+    return {
+      intent: 'unsupported',
+      confidence: 'low',
+      reasoning: 'No intent in model output.',
+      summary: 'I could not produce a structured proposal for that.',
+      proposal: { intent: 'unsupported', reason: 'no intent', suggested_action: null },
+    };
+  }
+
+  return {
+    intent: intent as RefineChatResult['intent'],
+    confidence: (obj.confidence === 'high' || obj.confidence === 'low') ? obj.confidence : 'medium',
+    reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : '',
+    summary: typeof obj.summary === 'string' ? obj.summary : '',
+    proposal: obj.proposal as ProposalPayload,
   };
 }
 

@@ -2876,4 +2876,74 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
   } catch (err) { next(err); }
 });
 
+// ---------------------------------------------------------------------------
+// Refine chat — per-product conversational editing.
+//
+// GET    /api/products/:id/refinements           — list (team-visible log)
+// POST   /api/products/:id/refinements           — new chat message → AI proposal
+// POST   /api/products/refinements/:id/approve   — apply the proposal
+// POST   /api/products/refinements/:id/reject    — discard the proposal
+// ---------------------------------------------------------------------------
+
+router.get('/:id/refinements', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+    const { listRefinements } = await import('../services/refineService');
+    const rows = await listRefinements(tenantId, Number(req.params.id));
+    res.json({ ok: true, data: rows });
+  } catch (err) { next(err); }
+});
+
+router.post('/:id/refinements', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+    const { message, focusedTableId } = req.body as { message: string; focusedTableId?: number | null };
+    if (!message || typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ ok: false, error: 'Message is required' });
+      return;
+    }
+
+    const { createRefinement } = await import('../services/refineService');
+    const row = await createRefinement(
+      tenantId,
+      Number(req.params.id),
+      (req.user?.sub as number | undefined) ?? null,
+      (req.user?.name as string | undefined) ?? null,
+      message.trim(),
+      focusedTableId ?? null,
+    );
+    res.json({ ok: true, data: row });
+  } catch (err) { next(err); }
+});
+
+router.post('/refinements/:id/approve', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+    const userId = req.user?.sub as number | undefined;
+    const userName = (req.user?.name as string | undefined) ?? '';
+    if (!userId) { res.status(401).json({ ok: false, error: 'User id required' }); return; }
+
+    const { approveRefinement } = await import('../services/refineService');
+    const row = await approveRefinement(tenantId, Number(req.params.id), userId, userName);
+    res.json({ ok: true, data: row });
+  } catch (err) { next(err); }
+});
+
+router.post('/refinements/:id/reject', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+    const userId = req.user?.sub as number | undefined;
+    const userName = (req.user?.name as string | undefined) ?? '';
+    if (!userId) { res.status(401).json({ ok: false, error: 'User id required' }); return; }
+
+    const { rejectRefinement } = await import('../services/refineService');
+    const row = await rejectRefinement(tenantId, Number(req.params.id), userId, userName);
+    res.json({ ok: true, data: row });
+  } catch (err) { next(err); }
+});
+
 export default router;
