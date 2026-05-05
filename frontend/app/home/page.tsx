@@ -27,10 +27,14 @@ import {
   RefreshCw, Sparkles, Library, ShieldCheck, ChevronRight, BarChart3,
   Loader2, Star, Plus, X,
 } from 'lucide-react';
+import dynamic from 'next/dynamic';
 import api from '@/lib/api';
 import { OBSERVATORY } from '@/lib/observatory';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
+
+// Dynamic import — Pulse pulls in AI-related types and state, no need on first paint.
+const PulsePanel = dynamic(() => import('@/components/pulse/PulsePanel'), { ssr: false });
 
 interface HomeSummary {
   health: {
@@ -159,6 +163,14 @@ export default function HomePage() {
         {/* ATTENTION section */}
         <section className="mb-10">
           <AttentionSection summary={summary} onJump={(path) => router.push(path)} />
+        </section>
+
+        {/* PULSE — your watchlist that powers morning briefs + alerts.
+            Sits between Attention (today's issues) and Act (today's
+            tools) because it's the bridge: declaring what should
+            generate tomorrow's attention items. */}
+        <section className="mb-10">
+          <PulsePanel />
         </section>
 
         {/* ACT section */}

@@ -88,6 +88,12 @@ import {
   type ProposalPayload,
 } from './prompts/refineChatPrompt';
 import {
+  PULSE_SUGGEST_SYSTEM,
+  buildPulseSuggestUser,
+  type PulseSuggestContext,
+  type PulseSuggestResult,
+} from './prompts/pulseSuggestPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1477,6 +1483,37 @@ export async function draftKpiFormula(
     primaryTable:     typeof obj.primary_table === 'string' ? obj.primary_table : null,
     confidence:       obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
     notes:            typeof obj.notes === 'string' ? obj.notes : '',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pulse — propose a starter watchlist for a single user
+// ---------------------------------------------------------------------------
+
+export async function suggestPulseEntries(
+  context: PulseSuggestContext,
+): Promise<PulseSuggestResult> {
+  const raw = await callClaude(
+    PULSE_SUGGEST_SYSTEM,
+    buildPulseSuggestUser(context),
+    { model: MODEL_HAIKU, maxTokens: 1500, callLabel: 'pulse_suggest' },
+  );
+
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'suggestPulseEntries: failed to parse JSON');
+    return {
+      suggestions: [],
+      hint: 'I could not produce suggestions for your pulse — try again, or add entries by hand.',
+    };
+  }
+  const obj = parsed as Partial<PulseSuggestResult>;
+  return {
+    suggestions: Array.isArray(obj.suggestions) ? obj.suggestions : [],
+    hint: typeof obj.hint === 'string' && obj.hint.trim() ? obj.hint : null,
   };
 }
 

@@ -46,6 +46,7 @@ import sourcesRouter                  from './routes/sources';
 import connectionSyncSchedulesRouter   from './routes/connectionSyncSchedules';
 import catalogRouter         from './routes/catalog';
 import homeRouter            from './routes/home';
+import pulseRouter           from './routes/pulse';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -156,6 +157,7 @@ app.use('/api/source-types',    sourcesRouter);
 app.use('/api/connections',     connectionSyncSchedulesRouter);
 app.use('/api/catalog',         catalogRouter);
 app.use('/api/home',            homeRouter);
+app.use('/api/pulse',           pulseRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
