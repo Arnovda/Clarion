@@ -20,9 +20,24 @@ import {
   X, Send, Loader2, MessageSquarePlus, Sparkles,
   Check, Trash2, AlertCircle, HelpCircle, Ban, ChevronDown, ChevronUp,
 } from 'lucide-react';
+import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { formatRelativeShort } from '@/lib/dates';
+
+/**
+ * Pretty-print SQL with sql-formatter — same library + dialect the SQL
+ * tab uses. Falls back to the raw string if the parser chokes (rare;
+ * happens on very malformed AI output, in which case raw is more useful
+ * than a parser error).
+ */
+function prettySql(sql: string): string {
+  try {
+    return sqlFormatter(sql, { language: 'duckdb', tabWidth: 2, keywordCase: 'lower' });
+  } catch {
+    return sql;
+  }
+}
 
 interface RefineChatProps {
   productId: number;
@@ -484,8 +499,8 @@ function AddColumnDiff({ p }: { p: Extract<ProposalPayload, { intent: 'add_colum
       {p.description && <p className="text-[11.5px] text-muted leading-relaxed">{p.description}</p>}
       <div>
         <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 mb-1">Expression</div>
-        <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
-          {p.transformation_expression}
+        <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto leading-[1.5]">
+          {prettySql(p.transformation_expression)}
         </pre>
       </div>
       <SqlBlock label="New transformation_sql" sql={p.new_transformation_sql} />
@@ -507,8 +522,8 @@ function ModifyColumnDiff({ p }: { p: Extract<ProposalPayload, { intent: 'modify
         {p.transformation_expression && (
           <div>
             <div className="text-muted-2 font-mono text-[10px] mb-0.5">expression →</div>
-            <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
-              {p.transformation_expression}
+            <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto leading-[1.5]">
+              {prettySql(p.transformation_expression)}
             </pre>
           </div>
         )}
@@ -539,8 +554,8 @@ function SqlBlock({ label, sql }: { label: string; sql: string }) {
   return (
     <div>
       <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 mb-1">{label}</div>
-      <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
-        {sql}
+      <pre className="text-[11px] font-mono text-ink-2 bg-softer rounded px-2 py-1.5 overflow-x-auto max-h-72 overflow-y-auto leading-[1.5]">
+        {prettySql(sql)}
       </pre>
     </div>
   );

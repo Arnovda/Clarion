@@ -2910,7 +2910,7 @@ router.post('/:id/refinements', requireAuth, requireRole('admin', 'analyst'), as
       tenantId,
       Number(req.params.id),
       (req.user?.sub as number | undefined) ?? null,
-      (req.user?.name as string | undefined) ?? null,
+      (req.user?.displayName as string | undefined) ?? (req.user?.email as string | undefined) ?? null,
       message.trim(),
       focusedTableId ?? null,
     );
@@ -2923,7 +2923,7 @@ router.post('/refinements/:id/approve', requireAuth, requireRole('admin', 'analy
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const userId = req.user?.sub as number | undefined;
-    const userName = (req.user?.name as string | undefined) ?? '';
+    const userName = (req.user?.displayName as string | undefined) ?? (req.user?.email as string | undefined) ?? '';
     if (!userId) { res.status(401).json({ ok: false, error: 'User id required' }); return; }
 
     const { approveRefinement } = await import('../services/refineService');
@@ -2937,7 +2937,7 @@ router.post('/refinements/:id/reject', requireAuth, requireRole('admin', 'analys
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const userId = req.user?.sub as number | undefined;
-    const userName = (req.user?.name as string | undefined) ?? '';
+    const userName = (req.user?.displayName as string | undefined) ?? (req.user?.email as string | undefined) ?? '';
     if (!userId) { res.status(401).json({ ok: false, error: 'User id required' }); return; }
 
     const { rejectRefinement } = await import('../services/refineService');
