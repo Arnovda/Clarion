@@ -94,6 +94,12 @@ import {
   type PulseSuggestResult,
 } from './prompts/pulseSuggestPrompt';
 import {
+  MORNING_BRIEF_SYSTEM,
+  buildMorningBriefUser,
+  type MorningBriefContext,
+  type MorningBriefOutput,
+} from './prompts/morningBriefPrompt';
+import {
   BUS_MATRIX_SYSTEM,
   buildBusMatrixUser,
   BusMatrixOutput,
@@ -1514,6 +1520,42 @@ export async function suggestPulseEntries(
   return {
     suggestions: Array.isArray(obj.suggestions) ? obj.suggestions : [],
     hint: typeof obj.hint === 'string' && obj.hint.trim() ? obj.hint : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Morning Brief — narrate the day's pulse deltas in business voice
+// ---------------------------------------------------------------------------
+
+export async function composeMorningBrief(
+  context: MorningBriefContext,
+): Promise<MorningBriefOutput> {
+  const raw = await callClaude(
+    MORNING_BRIEF_SYSTEM,
+    buildMorningBriefUser(context),
+    { model: MODEL_HAIKU, maxTokens: 1000, callLabel: 'morning_brief' },
+  );
+
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'composeMorningBrief: failed to parse JSON');
+    return {
+      summary: 'Brief unavailable today — the narrator could not produce structured output.',
+      bullets: [],
+      suggested_focus: 'Check the pulse panel on Home for raw values.',
+      confidence: 'low',
+    };
+  }
+
+  const obj = parsed as Partial<MorningBriefOutput>;
+  return {
+    summary: typeof obj.summary === 'string' ? obj.summary : '',
+    bullets: Array.isArray(obj.bullets) ? obj.bullets : [],
+    suggested_focus: typeof obj.suggested_focus === 'string' ? obj.suggested_focus : '',
+    confidence: obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
   };
 }
 

@@ -1,6 +1,6 @@
 import { semanticDb } from '../db/knex';
 
-export type NotificationType = 'job_complete' | 'quality_alert' | 'new_gap' | 'invite_accepted' | 'approval';
+export type NotificationType = 'job_complete' | 'quality_alert' | 'new_gap' | 'invite_accepted' | 'approval' | 'morning_brief';
 
 interface CreateNotification {
   tenantId: number;

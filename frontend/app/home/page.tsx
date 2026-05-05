@@ -33,8 +33,10 @@ import { OBSERVATORY } from '@/lib/observatory';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 
-// Dynamic import — Pulse pulls in AI-related types and state, no need on first paint.
+// Dynamic imports — these aren't critical for first paint and pull
+// in their own state machinery, so let them stream in after.
 const PulsePanel = dynamic(() => import('@/components/pulse/PulsePanel'), { ssr: false });
+const MorningBriefCard = dynamic(() => import('@/components/briefs/MorningBriefCard'), { ssr: false });
 
 interface HomeSummary {
   health: {
@@ -150,6 +152,14 @@ export default function HomePage() {
             Refresh
           </button>
         </div>
+
+        {/* MORNING BRIEF — the new top-of-page beat. Renders nothing
+            unless a brief was generated for today, so the previous
+            visual weight stays the same on days the user has no pulse
+            entries or hasn't reached the 06:00 UTC cron yet. */}
+        <section className="mb-6">
+          <MorningBriefCard />
+        </section>
 
         {/* HEALTH section */}
         <section className="mb-10">

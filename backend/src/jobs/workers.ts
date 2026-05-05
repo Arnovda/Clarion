@@ -17,6 +17,7 @@ import { notify } from '../services/notificationService';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { trackEvent, trackException } from '../utils/monitoring';
 import { startMaintenanceWorker, stopMaintenanceWorker } from './warehouseMaintenance';
+import { startMorningBriefWorker, stopMorningBriefWorker } from './morningBriefJob';
 import { withTenantAiContext } from '../services/aiBudget';
 import type { OrchestratorEvent } from '../services/busMatrixOrchestrator';
 
@@ -448,6 +449,15 @@ export function startWorkers(): void {
     workers.push(maintenanceWorker);
   }
 
+  // Morning brief — daily snapshot + narration. Telemetry on failure.
+  const briefWorker = startMorningBriefWorker();
+  if (briefWorker) {
+    briefWorker.on('failed', (job, err) => {
+      trackException(err, { queue: 'morning-brief', jobId: job?.id ?? 'unknown' });
+    });
+    workers.push(briefWorker);
+  }
+
   console.log(`[workers] Started ${workers.length} workers`);
 }
 
@@ -458,4 +468,5 @@ export async function stopWorkers(): Promise<void> {
   await Promise.all(workers.map((w) => w.close()));
   workers.length = 0;
   await stopMaintenanceWorker();
+  await stopMorningBriefWorker();
 }

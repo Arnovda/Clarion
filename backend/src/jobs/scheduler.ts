@@ -12,6 +12,7 @@ import { TransformationJobData } from './queues';
 import { semanticDb } from '../db/knex';
 import { trackEvent } from '../utils/monitoring';
 import { registerWeeklyMaintenance } from './warehouseMaintenance';
+import { registerDailyBrief } from './morningBriefJob';
 
 const QUEUE_NAME = 'scheduled-transformation';
 let schedulerQueue: Queue<TransformationJobData> | null = null;
@@ -107,6 +108,10 @@ export async function loadSchedules(): Promise<void> {
   // Weekly warehouse OPTIMIZE + VACUUM — prevents small-file accumulation
   // from incremental loads. Idempotent; replaces any existing entry.
   await registerWeeklyMaintenance();
+
+  // Daily morning brief — runs the pulse-snapshot + brief-narration
+  // pipeline at 06:00 UTC for every active tenant. Idempotent.
+  await registerDailyBrief();
 }
 
 /**
