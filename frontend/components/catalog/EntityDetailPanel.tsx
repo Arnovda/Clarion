@@ -20,6 +20,7 @@ import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import ProductRootPanel from '@/components/products/ProductRootPanel';
 import SourceRootPanel from '@/components/catalog/SourceRootPanel';
+import ProductPreviewPanel from '@/components/catalog/ProductPreviewPanel';
 import type {
   SourceTable,
   SourceColumn,
@@ -39,6 +40,20 @@ interface Connection {
   domains?: string[];
 }
 
+interface ProductHint {
+  name: string;
+  description: string | null;
+  status: string;
+  source: {
+    id: number | null;
+    name: string | null;
+    connectorType: string | null;
+    multiSource?: boolean;
+    sourceDeleted?: boolean;
+  };
+  last_refreshed_at: string | null;
+}
+
 interface Props {
   selection: EntitySelection;
   /** Fired after a save inside any panel so the parent can refresh tree data. */
@@ -47,6 +62,20 @@ interface Props {
   onProductDeleted?: () => void;
   /** Optional: parent-supplied connection list so we don't re-fetch domains. */
   connections?: Connection[];
+  /**
+   * When true, product-root selections render the new clean preview panel
+   * (starter questions, key metrics, "see full details"). Defaults to
+   * false for backward compat with Structure mode, where the legacy
+   * full-tabs panel is the right surface for analysts. The Browse mode
+   * on /catalog opts in.
+   */
+  productPreview?: boolean;
+  /** When productPreview is on, an instant header hint avoids the layout
+   *  flash while the canonical detail loads. Comes from the card the
+   *  user just clicked. */
+  productHint?: ProductHint;
+  /** Close handler — slides the detail panel away. */
+  onClose?: () => void;
 }
 
 export default function EntityDetailPanel({
@@ -54,6 +83,9 @@ export default function EntityDetailPanel({
   onSaved,
   onProductDeleted,
   connections = [],
+  productPreview,
+  productHint,
+  onClose,
 }: Props) {
   if (selection.scope === 'empty') return <EmptyHint />;
   if (selection.scope === 'source-root') {
@@ -65,6 +97,21 @@ export default function EntityDetailPanel({
     );
   }
   if (selection.scope === 'product-root') {
+    // Browse mode (cards UX) defaults to the clean preview, with a
+    // "See full details" button inside that flips to ProductRootPanel
+    // for the full tabbed experience. Structure mode keeps the legacy
+    // full panel as the default for analyst workflows.
+    if (productPreview) {
+      return (
+        <ProductPreviewPanel
+          key={`pp-${selection.productId}`}
+          productId={selection.productId}
+          hint={productHint}
+          onProductDeleted={onProductDeleted}
+          onClose={onClose}
+        />
+      );
+    }
     return (
       <ProductRootPanel
         key={`pr-${selection.productId}`}

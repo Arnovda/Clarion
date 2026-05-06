@@ -265,6 +265,18 @@ function CatalogInner() {
           isAdmin={isAdmin()}
           showCuratorSignals={canSeeStructure}
           onCreate={() => router.push('/products')}
+          productHint={(() => {
+            if (!productRootId) return undefined;
+            const p = products.find((x) => x.id === productRootId);
+            if (!p) return undefined;
+            return {
+              name: p.name,
+              description: p.description,
+              status: p.status,
+              source: p.source,
+              last_refreshed_at: p.last_refreshed_at,
+            };
+          })()}
         />
       ) : (
         <StructureBody
@@ -308,6 +320,21 @@ function CardsBody(props: {
   isAdmin: boolean;
   showCuratorSignals: boolean;
   onCreate: () => void;
+  /** Card data for the currently-selected product — used to seed the
+   *  preview header so it renders instantly while the detail loads. */
+  productHint: {
+    name: string;
+    description: string | null;
+    status: string;
+    source: {
+      id: number | null;
+      name: string | null;
+      connectorType: string | null;
+      multiSource?: boolean;
+      sourceDeleted?: boolean;
+    };
+    last_refreshed_at: string | null;
+  } | undefined;
 }) {
   return (
     <div className="flex flex-1 min-h-0">
@@ -336,24 +363,22 @@ function CardsBody(props: {
       </div>
 
       {/* Detail panel — slides in from the right when something is selected.
-          Uses the existing EntityDetailPanel so every tab + edit affordance
-          stays intact. The close button clears selection and lets users
-          back out to the grid. */}
+          Uses EntityDetailPanel in PREVIEW mode, which renders a clean
+          summary (starter questions, key metrics, see-full-details button)
+          for product-root selections. The "See full details" button inside
+          the preview expands to the legacy ProductRootPanel with all tabs
+          intact. Other selection scopes (source-root, source-table,
+          product-table) render unchanged. */}
       {props.detailOpen && (
         <div className="hidden lg:flex flex-1 min-h-0 flex-col border-l border-line bg-canvas overflow-hidden relative">
-          <button
-            type="button"
-            onClick={props.onClearSelection}
-            className="absolute top-3 right-3 z-10 p-1.5 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
-            title="Close"
-          >
-            <X className="w-4 h-4" strokeWidth={2} />
-          </button>
           <EntityDetailPanel
             selection={props.selection}
             connections={props.connections}
             onSaved={props.onSaved}
             onProductDeleted={props.onProductDeleted}
+            productPreview={true}
+            productHint={props.productHint}
+            onClose={props.onClearSelection}
           />
         </div>
       )}
