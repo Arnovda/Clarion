@@ -23,7 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Sparkles, BarChart3, Database, ChevronRight, X } from 'lucide-react';
+import { ArrowRight, Sparkles, BarChart3, Database, ChevronRight, X, Boxes } from 'lucide-react';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
@@ -259,7 +259,9 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
         </button>
       )}
 
-      <div className="px-7 py-6 max-w-2xl mx-auto">
+      {/* Tighter padding now that the panel is fixed at 480px wide.
+          Inner max-w removed — content wraps naturally to the panel. */}
+      <div className="px-6 py-6">
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="mb-6">
           <div className="flex items-center gap-2.5 mb-3">
@@ -326,7 +328,10 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
             count={kpis.length}
             palette={palette}
           >
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* Single-column at 480px panel width — 2 columns squeezes
+                the descriptions into 2-line line-clamps that are usually
+                truncated. One per row reads cleaner. */}
+            <div className="space-y-2">
               {topKpis.map((k) => (
                 <div
                   key={k.id}
@@ -336,7 +341,7 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
                     {humanize(k.name)}
                   </div>
                   {k.description && (
-                    <p className="text-[11.5px] text-muted leading-snug line-clamp-2">
+                    <p className="text-[11.5px] text-muted leading-snug">
                       {k.description}
                     </p>
                   )}
@@ -351,6 +356,34 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
           </Section>
         )}
 
+        {/* ── Tables — what's actually inside this product ───────────────── */}
+        {allTables.length > 0 && (
+          <Section
+            title="Tables"
+            icon={<Boxes className="w-3.5 h-3.5" strokeWidth={1.75} />}
+            count={allTables.length}
+            palette={palette}
+          >
+            <div className="bg-raised border border-line rounded-md divide-y divide-line">
+              {allTables.map((t) => (
+                <div
+                  key={t.id}
+                  className="flex items-center gap-3 px-3.5 py-2.5"
+                >
+                  <span className="text-[13px] text-ink truncate flex-1">
+                    {t.display_name || humanizeTable(t)}
+                  </span>
+                  {typeof t.row_count === 'number' && t.row_count > 0 && (
+                    <span className="text-[11px] font-mono text-muted-2 tabular-nums">
+                      {compactNumber(t.row_count)} rows
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
+
         {/* ── At a glance — quick stats ──────────────────────────────────── */}
         {stats && (
           <Section
@@ -358,10 +391,12 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
             icon={<Database className="w-3.5 h-3.5" strokeWidth={1.75} />}
             palette={palette}
           >
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {/* 2x2 grid (instead of 4 across) — at 480px panel width
+                4 columns squeeze the values into a hard-to-scan row. */}
+            <div className="grid grid-cols-2 gap-3">
               <Stat label="Tables" value={stats.tableCount} />
-              <Stat label="Dimensions" value={stats.dimensionCount} />
               <Stat label="Metrics" value={stats.kpiCount} />
+              <Stat label="Dimensions" value={stats.dimensionCount} />
               <Stat label="Rows" value={stats.rowCount} format="compact" />
             </div>
           </Section>

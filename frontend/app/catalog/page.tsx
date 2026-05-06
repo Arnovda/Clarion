@@ -368,11 +368,11 @@ function CardsBody(props: {
 }) {
   return (
     <div className="flex flex-1 min-h-0">
-      {/* Cards column — always visible. Shrinks when detail is open. */}
-      <div className={cn(
-        'flex-1 min-h-0 overflow-y-auto px-6 py-6 transition-all',
-        props.detailOpen && 'lg:max-w-[640px]',
-      )}>
+      {/* Cards column — always visible. Detail panel uses a fixed width
+          on lg+ so the cards column always gets at least the rest of the
+          screen. No more max-w cap on cards (was needed when the detail
+          had flex-1 and could stretch to half the screen). */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6 transition-all">
         <div className="max-w-5xl mx-auto">
           {/* Search bar */}
           <div className="mb-6">
@@ -405,7 +405,13 @@ function CardsBody(props: {
           intact. Other selection scopes (source-root, source-table,
           product-table) render unchanged. */}
       {props.detailOpen && (
-        <div className="hidden lg:flex flex-1 min-h-0 flex-col border-l border-line bg-canvas overflow-hidden relative">
+        // Fixed-width detail panel so it never dominates the page. 480px
+        // is plenty for a focused product preview (header, starters, key
+        // metrics, table list, at-a-glance) without crowding the cards
+        // grid. When 'See full details' expands to ProductRootPanel
+        // inside the panel, content scrolls vertically — the width stays
+        // the same so the cards-column experience is consistent.
+        <div className="hidden lg:flex w-[480px] flex-shrink-0 min-h-0 flex-col border-l border-line bg-canvas overflow-hidden relative">
           <EntityDetailPanel
             selection={props.selection}
             connections={props.connections}
