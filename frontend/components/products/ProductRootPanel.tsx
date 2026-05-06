@@ -21,6 +21,7 @@ import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/cn';
+import { useRole, canCurate, isAdminRole } from '@/lib/role';
 import type {
   Connection,
   DataProduct,
@@ -78,6 +79,9 @@ export default function ProductRootPanel({
   embedAskAI = true,
   showBackButton = true,
 }: Props) {
+  const role = useRole();
+  const curator = canCurate(role);
+  const admin = isAdminRole(role);
   const [tab, setTab] = useState<DetailTab>('overview');
   const [detail, setDetail] = useState<FullDataProduct | null>(null);
   const [kpis, setKpis] = useState<ProductKpi[]>([]);
@@ -274,6 +278,10 @@ export default function ProductRootPanel({
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {/* Action buttons (Rebuild / Refine / Delete) are curator
+                surfaces \u2014 viewers don't get them. Backend enforces the
+                role check too; gating here keeps the UI honest. */}
+            {curator && (
             <div className="relative inline-flex">
               <button
                 onClick={() => handleRebuild()}
@@ -326,21 +334,27 @@ export default function ProductRootPanel({
                 </>
               )}
             </div>
-            <button
-              onClick={() => setRefineOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-ocean border border-ocean/30 rounded-md hover:bg-ocean/5 transition-colors"
-              title="Refine — chat to add columns, KPIs, or change SQL"
-            >
-              <Sparkles className="w-3 h-3" strokeWidth={2} />
-              Refine
-            </button>
-            <button
-              onClick={handleDelete}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-err bg-err-soft border border-err/20 rounded-md hover:bg-err/10 transition-colors"
-            >
-              <Trash2 className="w-3 h-3" strokeWidth={2} />
-              Delete
-            </button>
+            )}
+            {curator && (
+              <button
+                onClick={() => setRefineOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-ocean border border-ocean/30 rounded-md hover:bg-ocean/5 transition-colors"
+                title="Refine — chat to add columns, KPIs, or change SQL"
+              >
+                <Sparkles className="w-3 h-3" strokeWidth={2} />
+                Refine
+              </button>
+            )}
+            {/* Delete is admin-only; analysts can refine but not destroy. */}
+            {admin && (
+              <button
+                onClick={handleDelete}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-err bg-err-soft border border-err/20 rounded-md hover:bg-err/10 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" strokeWidth={2} />
+                Delete
+              </button>
+            )}
             {embedAskAI && (
               <button
                 onClick={toggleAiPanel}
@@ -372,14 +386,23 @@ export default function ProductRootPanel({
         {/* Left: tabbed content */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
           <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
+            {/* Schema diagram + SQL are curator surfaces. Viewers see
+                Overview / Tables / Data flow / KPIs / Quality only —
+                already plenty of business context without the FK arrows
+                and DuckDB transformation SQL. Admins/analysts keep
+                the full set. */}
             <nav className="flex gap-0">
               <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
               <TabBtn active={tab === 'tables'} onClick={() => setTab('tables')} icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
-              <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+              {curator && (
+                <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+              )}
               <TabBtn active={tab === 'lineage'} onClick={() => setTab('lineage')} icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
               <TabBtn active={tab === 'kpis'} onClick={() => setTab('kpis')} icon={<Gauge className="w-3.5 h-3.5" />}>KPIs</TabBtn>
               <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')} icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
-              <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
+              {curator && (
+                <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
+              )}
             </nav>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">

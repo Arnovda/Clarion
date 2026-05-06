@@ -53,13 +53,17 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
   { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
 
-  // Work — use it. Vocabulary cleanup: "Data products" → "Datasets"
-  // (avoids the data-engineering term for SMB users), "Pipelines" stays
-  // since it now has its own well-understood UX.
+  // Work — daily use. Vocabulary lock:
+  //   • /catalog → "Catalog" — the consumer discovery surface (cards UX)
+  //   • /products → "Build" — the curator authoring surface where admins
+  //     design star schemas, edit transformations, manage KPIs.
+  // Earlier "Datasets" label was a soften-the-engineering-term attempt;
+  // dropped because it collided semantically with "Catalog" and gave no
+  // hint about what the user does there.
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'investigate',href: '/investigate',label: 'Investigate',     icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
-  { key: 'products',   href: '/products',   label: 'Datasets',        icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
+  { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 

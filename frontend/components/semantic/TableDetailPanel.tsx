@@ -9,6 +9,7 @@ import HistoryPanel from './HistoryPanel';
 import HelpTooltip from '@/components/HelpTooltip';
 import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable } from './shared';
+import { useRole, canCurate } from '@/lib/role';
 
 type ViewTab = 'overview' | 'columns' | 'relationships' | 'quality' | 'history';
 
@@ -44,6 +45,8 @@ const columnCompleteness = (col: SourceColumn) =>
   );
 
 export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved }: Props) {
+  const role = useRole();
+  const curator = canCurate(role);
   const [tbl, setTbl]               = useState<SourceTable>(table);
   const [cols, setCols]             = useState<SourceColumn[]>(columns);
   const [savingTable, setSavingTable] = useState(false);
@@ -154,12 +157,14 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
   }
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
+  // History is an audit log — curator-only. Viewers see Overview + Columns
+  // + Relationships + Quality.
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
     { id: 'relationships', label: 'Relationships' },
     { id: 'quality', label: 'Quality' },
-    { id: 'history', label: 'History' },
+    ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
 
   return (
@@ -172,7 +177,10 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
             <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
               {tbl.display_name || tbl.table_name}
             </h2>
-            <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+            {/* Mono raw name only for curators — viewers see display name only. */}
+            {curator && (
+              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+            )}
             <div className="flex items-center gap-2 mt-2">
               <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
                 {cols.length} columns
@@ -184,14 +192,17 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
               )}
             </div>
           </div>
-          <ApprovalBadge
-            entityType="table"
-            entityId={tbl.id}
-            status={tbl.approval_status}
-            aiDraft={tbl.ai_draft}
-            rejectionReason={tbl.rejection_reason}
-            onChanged={onSaved}
-          />
+          {/* Approval badge is a governance signal — admin/analyst only. */}
+          {curator && (
+            <ApprovalBadge
+              entityType="table"
+              entityId={tbl.id}
+              status={tbl.approval_status}
+              aiDraft={tbl.ai_draft}
+              rejectionReason={tbl.rejection_reason}
+              onChanged={onSaved}
+            />
+          )}
         </div>
 
         {/* Tab strip */}
@@ -220,8 +231,10 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-          {/* AI suggested banner */}
-          {isAiDraft && (
+          {/* AI suggested banner — curator-only. Viewers don't get the
+              Confirm/Flag buttons (the PATCH would 403 anyway), so we
+              hide the whole banner instead of leaving it as visual noise. */}
+          {curator && isAiDraft && (
             <section className="bg-ocean-softer border border-ocean/30 rounded-lg p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3 min-w-0">

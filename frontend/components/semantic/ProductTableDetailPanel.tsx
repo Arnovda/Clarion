@@ -9,6 +9,7 @@ import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
+import { useRole, canCurate } from '@/lib/role';
 
 type ViewTab = 'overview' | 'columns' | 'relationships' | 'quality' | 'history';
 
@@ -77,6 +78,8 @@ interface RelRow {
 export default function ProductTableDetailPanel({
   tableId, productTree, columns, focusColumnId, onSaved,
 }: Props) {
+  const role = useRole();
+  const curator = canCurate(role);
   // Find the table in the product tree
   let table: ProductTable | null = null;
   let pgTableId: number | null = null;
@@ -248,12 +251,13 @@ export default function ProductTableDetailPanel({
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
 
+  // History is curator-only — viewers don't need the audit log.
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
     { id: 'relationships', label: 'Relationships' },
     { id: 'quality', label: 'Quality' },
-    { id: 'history', label: 'History' },
+    ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
 
   return (
@@ -267,11 +271,18 @@ export default function ProductTableDetailPanel({
               <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
                 {tbl.display_name || tbl.table_name}
               </h2>
-              <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${roleColor(tbl.table_role)}`}>
-                {tbl.table_role}
-              </span>
+              {/* Dimensional-modeling jargon (fact / dimension / bridge / junk)
+                  is curator vocabulary — viewers don't need it on a header. */}
+              {curator && (
+                <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${roleColor(tbl.table_role)}`}>
+                  {tbl.table_role}
+                </span>
+              )}
             </div>
-            <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+            {/* Mono raw name only for curators. */}
+            {curator && (
+              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+            )}
 
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
@@ -299,13 +310,16 @@ export default function ProductTableDetailPanel({
             </div>
           </div>
 
-          <ApprovalBadge
-            entityType="product_table"
-            entityId={tbl.id}
-            status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-            aiDraft={!!tbl.ai_draft}
-            onChanged={onSaved}
-          />
+          {/* Approval badge is governance — curator-only. */}
+          {curator && (
+            <ApprovalBadge
+              entityType="product_table"
+              entityId={tbl.id}
+              status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+              aiDraft={!!tbl.ai_draft}
+              onChanged={onSaved}
+            />
+          )}
         </div>
 
         {/* Tab strip */}
@@ -334,8 +348,9 @@ export default function ProductTableDetailPanel({
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-          {/* AI suggested banner — saving clears ai_draft via the update endpoint */}
-          {isAiDraft && (
+          {/* AI suggested banner — saving clears ai_draft via the update endpoint.
+              Curator-only — viewers don't get the inline edit form. */}
+          {curator && isAiDraft && (
             <section className="bg-ocean-softer border border-ocean/30 rounded-lg p-4">
               <div className="flex items-start gap-3 min-w-0">
                 <div className="min-w-0">
@@ -438,11 +453,14 @@ export default function ProductTableDetailPanel({
             </section>
           )}
 
-          {/* Data preview + SQL view */}
+          {/* Data preview + SQL view. SqlViewer is curator-only — the
+              transformation SQL is engineering content. Viewers see the
+              data preview only, which is what's useful for understanding
+              what the table actually contains. */}
           <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
             <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data preview</p>
             <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
-            <SqlViewer pgTableId={pgTableId ?? tableId} />
+            {curator && <SqlViewer pgTableId={pgTableId ?? tableId} />}
           </section>
         </div>
       )}

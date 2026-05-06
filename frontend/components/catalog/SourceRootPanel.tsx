@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { useRole, canCurate } from '@/lib/role';
 import { useSchema, type RelationshipRow } from '@/components/catalog/relationships/useSchema';
 import RelationshipsDiagramView from '@/components/catalog/relationships/RelationshipsDiagramView';
 import RelationshipsListView from '@/components/catalog/relationships/RelationshipsListView';
@@ -86,6 +87,8 @@ interface Props {
 }
 
 export default function SourceRootPanel({ connectionId }: Props) {
+  const role = useRole();
+  const curator = canCurate(role);
   const schema = useSchema(connectionId);
   const [tab, setTab] = useState<DetailTab>('overview');
   const [conn, setConn] = useState<ConnectionRow | null>(null);
@@ -205,14 +208,21 @@ export default function SourceRootPanel({ connectionId }: Props) {
       ) : (
         <>
           {/* ── Tabs ─────────────────────────────────────────────────────── */}
+          {/* Schema diagram + SQL are curator surfaces (FK arrows, "Add
+              relationship" CTAs, paste-ready SELECT snippets). Viewers
+              never need them; admins/analysts keep full access. */}
           <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
             <nav className="flex gap-0">
               <TabBtn active={tab === 'overview'}  onClick={() => setTab('overview')}  icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
               <TabBtn active={tab === 'tables'}    onClick={() => setTab('tables')}    icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
-              <TabBtn active={tab === 'schema'}    onClick={() => setTab('schema')}    icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+              {curator && (
+                <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+              )}
               <TabBtn active={tab === 'lineage'}   onClick={() => setTab('lineage')}   icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
               <TabBtn active={tab === 'quality'}   onClick={() => setTab('quality')}   icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
-              <TabBtn active={tab === 'sql'}       onClick={() => setTab('sql')}       icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
+              {curator && (
+                <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
+              )}
             </nav>
           </div>
 
@@ -497,6 +507,8 @@ function TablesSection({
   tables: SourceTable[];
   columnsByTable: Record<number, SourceColumn[]>;
 }) {
+  const role = useRole();
+  const curator = canCurate(role);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
 
@@ -555,7 +567,9 @@ function TablesSection({
                   <ChevronRight className={cn('w-3.5 h-3.5 text-muted-2 transition-transform', open && 'rotate-90')} strokeWidth={2} />
                   <div className="flex-1 min-w-0">
                     <span className="text-[13.5px] font-medium text-ink">{t.display_name || t.table_name}</span>
-                    {t.display_name && t.display_name !== t.table_name && (
+                    {/* snake_case raw name only for curators — viewers see
+                        the display name only. */}
+                    {curator && t.display_name && t.display_name !== t.table_name && (
                       <span className="text-[11px] font-mono text-muted-2 ml-2">{t.table_name}</span>
                     )}
                     {t.description && <span className="text-[12px] text-muted ml-2">{t.description}</span>}
@@ -564,7 +578,7 @@ function TablesSection({
                     <span className="text-[11px] font-mono text-muted-2 tabular-nums">
                       {cols.length} col{cols.length === 1 ? '' : 's'}
                     </span>
-                    {t.ai_draft && (
+                    {curator && t.ai_draft && (
                       <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-warn bg-warn-soft border border-line px-1.5 py-0.5 rounded">
                         draft
                       </span>
