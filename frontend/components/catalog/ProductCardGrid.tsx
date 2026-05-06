@@ -3,27 +3,32 @@
 /**
  * <ProductCardGrid> — the discovery surface for /catalog.
  *
- * Replaces the tree-as-default with a card grid: each data product is a
- * polished card showing what a business user actually wants — name,
- * plain-English description, freshness, metric count. Click → opens
- * detail in the existing panel (which the parent page mounts elsewhere).
+ * Cards are GROUPED BY SOURCE CONNECTION with a colored section header per
+ * group. Each connector type gets a deterministic color from the palette
+ * below (ExactOnline → emerald, Postgres → indigo, etc.) so the same
+ * source is always tinted the same way across the app — visual continuity,
+ * not random theming.
  *
- * Design choices:
- *   - Plain-English label only. No snake_case names, no IDs.
- *   - The source connection name is shown as a tiny eyebrow at the top of
- *     the card (small, muted) — gives context for multi-source setups
- *     without dominating the visual.
- *   - "Source deleted" / "Multi-source" rendered as quiet pills, not
- *     loud warnings.
- *   - Freshness shown as relative time ("2h ago", "yesterday"). If a
- *     product has never been refreshed, "Not refreshed yet".
- *   - No status badges (draft / approved) on viewer cards — those are
- *     curator concerns. Admins still see them as a faint top-right pill.
- *   - Hover lifts the card and tints the title; click navigates.
- *   - Empty state has a clear CTA for admins to design their first
- *     product, and a friendlier "ask your admin" message for viewers.
+ * Color is used sparingly: a thin left-edge bar on the card + a matching
+ * dot in the section header. The card body itself stays neutral so the
+ * data leads, not the chrome. "Tasteful color" — Atlassian / Linear
+ * vintage, not Google Drive folder colors.
  *
- * The grid is responsive: 1 column on mobile, 2 at md, 3 at lg.
+ * Visual hierarchy:
+ *   - Section header (display serif, large) — anchors the user in
+ *     "what source am I looking at?"
+ *   - Cards — title, description, footer stats. No redundant source
+ *     eyebrow (the section header already says it).
+ *
+ * Special groups:
+ *   - "Multi-source" products (touch >1 connection) get their own group
+ *     at the bottom with a neutral indigo accent.
+ *   - "Source deleted" products group at the very bottom with a muted
+ *     warning tint so admins can spot them.
+ *
+ * Status pills only render for off-normal states (draft, error, pending).
+ * Products in "approved" or "success" state — the steady state for most
+ * deployments — get no pill, since they're the default.
  */
 
 import { useMemo } from 'react';
@@ -54,12 +59,135 @@ interface ProductCardGridProps {
   search: string;
   selectedId: number | null;
   onSelect: (productId: number) => void;
-  onCreate?: () => void;        // admin-only "design your first product" CTA
+  onCreate?: () => void;
   isAdmin?: boolean;
   loading?: boolean;
-  /** Show admin-only signals (status pills, etc.) when true. */
   showCuratorSignals?: boolean;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Source palette — connector_type → tasteful color set
+//
+// Each entry is a self-contained set of Tailwind classes covering every
+// place the color appears: card left-edge, section dot, eyebrow text,
+// header background tint. Using fixed Tailwind palettes (emerald, amber,
+// indigo, etc.) keeps the look consistent across sessions and avoids
+// fighting the Observatory CSS variables (which can't take opacity
+// modifiers in Tailwind 3 — see the daily-spend chart fix).
+// ───────────────────────────────────────────────────────────────────────────
+
+interface SourcePalette {
+  edge:    string;   // 3px left bar on the card
+  dot:     string;   // small dot in section header
+  eyebrow: string;   // tint for the colored eyebrow + connector type label
+  tintBg:  string;   // very faint background tint for section header bar
+}
+
+const PALETTE_EMERALD: SourcePalette = { edge: 'bg-emerald-500',  dot: 'bg-emerald-500',  eyebrow: 'text-emerald-700',  tintBg: 'bg-emerald-50/60'  };
+const PALETTE_AMBER:   SourcePalette = { edge: 'bg-amber-500',    dot: 'bg-amber-500',    eyebrow: 'text-amber-700',    tintBg: 'bg-amber-50/60'    };
+const PALETTE_INDIGO:  SourcePalette = { edge: 'bg-indigo-500',   dot: 'bg-indigo-500',   eyebrow: 'text-indigo-700',   tintBg: 'bg-indigo-50/60'   };
+const PALETTE_ROSE:    SourcePalette = { edge: 'bg-rose-500',     dot: 'bg-rose-500',     eyebrow: 'text-rose-700',     tintBg: 'bg-rose-50/60'     };
+const PALETTE_TEAL:    SourcePalette = { edge: 'bg-teal-500',     dot: 'bg-teal-500',     eyebrow: 'text-teal-700',     tintBg: 'bg-teal-50/60'     };
+const PALETTE_VIOLET:  SourcePalette = { edge: 'bg-violet-500',   dot: 'bg-violet-500',   eyebrow: 'text-violet-700',   tintBg: 'bg-violet-50/60'   };
+const PALETTE_SLATE:   SourcePalette = { edge: 'bg-slate-400',    dot: 'bg-slate-400',    eyebrow: 'text-slate-600',    tintBg: 'bg-slate-50/80'    };
+const PALETTE_NEUTRAL: SourcePalette = { edge: 'bg-neutral-300',  dot: 'bg-neutral-300',  eyebrow: 'text-neutral-600',  tintBg: 'bg-neutral-50/80'  };
+
+/**
+ * Deterministic palette assignment — connector_type wins, then connection
+ * name as fallback. Keeps the same source tinted the same way across
+ * sessions and across tenants (every ExactOnline customer sees emerald).
+ */
+function paletteForSource(connectorType: string | null, sourceName: string | null, sourceDeleted: boolean): SourcePalette {
+  if (sourceDeleted) return PALETTE_NEUTRAL;
+
+  // Known connectors get a fixed brand color. Picked to evoke the
+  // connector's own brand where it's well-known, otherwise to avoid
+  // collisions inside one deployment.
+  if (connectorType) {
+    const ct = connectorType.toLowerCase();
+    if (ct === 'exactonline')   return PALETTE_EMERALD;
+    if (ct === 'netsuite')      return PALETTE_INDIGO;
+    if (ct === 'salesforce')    return PALETTE_TEAL;
+    if (ct === 'hubspot')       return PALETTE_AMBER;
+    if (ct === 'postgres')      return PALETTE_INDIGO;
+    if (ct === 'mysql')         return PALETTE_AMBER;
+    if (ct === 'sqlserver')     return PALETTE_ROSE;
+    if (ct === 'sqlite')        return PALETTE_SLATE;
+  }
+
+  // Fallback for unknown connectors / custom names — hash the source name
+  // into one of the remaining palettes so different sources within a
+  // tenant don't all collide on the same color.
+  const FALLBACK_PALETTES = [PALETTE_VIOLET, PALETTE_TEAL, PALETTE_AMBER, PALETTE_ROSE, PALETTE_INDIGO, PALETTE_EMERALD];
+  if (!sourceName) return PALETTE_SLATE;
+  const hash = Array.from(sourceName).reduce((a, c) => a + c.charCodeAt(0), 0);
+  return FALLBACK_PALETTES[hash % FALLBACK_PALETTES.length];
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Grouping
+// ───────────────────────────────────────────────────────────────────────────
+
+interface ProductGroup {
+  key: string;                    // unique group identity ('source-1', 'multi', 'deleted', 'unassigned')
+  title: string;                  // human-friendly section header label
+  subtitle?: string;              // optional small secondary line
+  connectorType: string | null;   // for palette lookup
+  sourceName: string | null;      // for palette fallback
+  sourceDeleted: boolean;
+  products: ProductCardData[];
+  sortKey: number;                // 0 = normal source, 1 = multi-source, 2 = source deleted, 3 = unassigned
+}
+
+function groupProducts(products: ProductCardData[]): ProductGroup[] {
+  const groups = new Map<string, ProductGroup>();
+
+  for (const p of products) {
+    let key: string;
+    let title: string;
+    let connectorType: string | null = null;
+    let sourceName: string | null = null;
+    let sourceDeleted = false;
+    let sortKey = 0;
+
+    if (p.source.multiSource) {
+      key = '__multi__';
+      title = 'Multi-source';
+      sortKey = 1;
+    } else if (p.source.sourceDeleted) {
+      key = '__deleted__';
+      title = 'Source deleted';
+      sourceDeleted = true;
+      sortKey = 2;
+    } else if (p.source.id == null) {
+      key = '__unassigned__';
+      title = 'Unassigned';
+      sortKey = 3;
+    } else {
+      key = `source-${p.source.id}`;
+      title = p.source.name ?? 'Unknown source';
+      connectorType = p.source.connectorType;
+      sourceName = p.source.name;
+    }
+
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, title, connectorType, sourceName, sourceDeleted, products: [], sortKey };
+      groups.set(key, g);
+    }
+    g.products.push(p);
+  }
+
+  // Sort: normal sources alphabetically by title; then multi/deleted/unassigned at the end
+  return Array.from(groups.values()).sort((a, b) => {
+    if (a.sortKey !== b.sortKey) return a.sortKey - b.sortKey;
+    return a.title.localeCompare(b.title);
+  });
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Public component
+// ───────────────────────────────────────────────────────────────────────────
 
 export default function ProductCardGrid({
   products,
@@ -71,9 +199,9 @@ export default function ProductCardGrid({
   loading,
   showCuratorSignals,
 }: ProductCardGridProps) {
-  // Client-side substring filter — fast, no round-trip. Match against
-  // name + description + source name so a search for "exact" finds the
-  // EO products, "revenue" finds Sales, etc.
+  // Substring filter against name + description + source name. Match is
+  // applied BEFORE grouping so a search that matches one source's products
+  // collapses the other source's section entirely (clean visual feedback).
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return products;
@@ -87,6 +215,8 @@ export default function ProductCardGrid({
       return haystack.includes(q);
     });
   }, [products, search]);
+
+  const groups = useMemo(() => groupProducts(filtered), [filtered]);
 
   if (loading) {
     return (
@@ -102,9 +232,7 @@ export default function ProductCardGrid({
   }
 
   if (products.length === 0) {
-    return (
-      <EmptyState onCreate={onCreate} isAdmin={isAdmin} />
-    );
+    return <EmptyState onCreate={onCreate} isAdmin={isAdmin} />;
   }
 
   if (filtered.length === 0) {
@@ -119,100 +247,139 @@ export default function ProductCardGrid({
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {filtered.map((p) => (
-        <ProductCard
-          key={p.id}
-          product={p}
-          selected={selectedId === p.id}
-          onSelect={() => onSelect(p.id)}
-          showCuratorSignals={showCuratorSignals}
-        />
-      ))}
+    <div className="space-y-10">
+      {groups.map((group) => {
+        const palette = paletteForSource(group.connectorType, group.sourceName, group.sourceDeleted);
+        return (
+          <section key={group.key}>
+            <SectionHeader group={group} palette={palette} />
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {group.products.map((p) => (
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  selected={selectedId === p.id}
+                  onSelect={() => onSelect(p.id)}
+                  showCuratorSignals={showCuratorSignals}
+                  palette={palette}
+                />
+              ))}
+            </div>
+          </section>
+        );
+      })}
     </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// One card
+// Section header — colored dot + title + count
+// ───────────────────────────────────────────────────────────────────────────
+
+function SectionHeader({ group, palette }: { group: ProductGroup; palette: SourcePalette }) {
+  const count = group.products.length;
+  return (
+    <div className="flex items-baseline justify-between mb-4 pb-2.5 border-b border-line">
+      <div className="flex items-center gap-3">
+        <span className={cn('inline-block w-2.5 h-2.5 rounded-full', palette.dot)} aria-hidden />
+        <h2 className="font-display text-[20px] text-ink tracking-[-0.01em]">
+          {group.title}
+        </h2>
+        {group.connectorType && (
+          <span className={cn('text-[10px] font-mono uppercase tracking-[0.12em]', palette.eyebrow)}>
+            {group.connectorType}
+          </span>
+        )}
+      </div>
+      <span className="text-[11.5px] font-mono text-muted-2 tabular-nums">
+        {count} {count === 1 ? 'product' : 'products'}
+      </span>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// One card — colored left edge + clean body
 // ───────────────────────────────────────────────────────────────────────────
 
 function ProductCard({
-  product, selected, onSelect, showCuratorSignals,
+  product, selected, onSelect, showCuratorSignals, palette,
 }: {
   product: ProductCardData;
   selected: boolean;
   onSelect: () => void;
   showCuratorSignals?: boolean;
+  palette: SourcePalette;
 }) {
   const refreshed = product.last_refreshed_at
     ? formatRelative(product.last_refreshed_at)
     : 'Not refreshed yet';
 
-  // Source eyebrow — only shown when there's something useful to say.
-  // For multi-source products we display "Multiple sources" rather than
-  // listing them; the detail panel has the full list.
-  const sourceLabel = product.source.sourceDeleted
-    ? 'Source deleted'
-    : product.source.multiSource
-      ? 'Multiple sources'
-      : product.source.name;
+  // Status pill: only render for off-normal states. "approved" and
+  // "success" are the steady state — no pill needed. "draft", "error",
+  // "pending" deserve attention.
+  const showStatus = showCuratorSignals
+    && product.status
+    && !['approved', 'success'].includes(product.status);
 
   return (
     <button
       type="button"
       onClick={onSelect}
       className={cn(
-        'group relative text-left bg-raised border rounded-lg p-5 transition-all',
+        'group relative text-left bg-raised border rounded-lg overflow-hidden',
+        'transition-all duration-150',
         'hover:shadow-md hover:-translate-y-0.5',
         selected
           ? 'border-ocean ring-2 ring-ocean/20'
           : 'border-line hover:border-ocean/40',
       )}
     >
-      {/* Top eyebrow: source name + status (curator-only). Kept small + muted
-          so it never dominates the title. */}
-      <div className="flex items-start justify-between gap-2 mb-2">
-        {sourceLabel ? (
-          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 truncate">
-            <Database className="w-3 h-3 flex-shrink-0" strokeWidth={1.75} />
-            <span className="truncate">{sourceLabel}</span>
+      {/* Colored left edge — the source's accent. 3px wide, full-height,
+          subtle but consistent. Strongest signal of "which source does
+          this product come from?" without any text. */}
+      <div className={cn('absolute left-0 top-0 bottom-0 w-1', palette.edge)} aria-hidden />
+
+      <div className="pl-5 pr-5 py-5">
+        {/* Status pill — top-right, curator-only, off-normal-only.
+            Pure cosmetic when steady-state. */}
+        {showStatus && (
+          <div className="absolute top-3 right-3">
+            <StatusPill status={product.status} />
           </div>
-        ) : <span />}
-        {showCuratorSignals && product.status && product.status !== 'success' && (
-          <StatusPill status={product.status} />
         )}
-      </div>
 
-      {/* Title + description — the visual centre of the card. */}
-      <h3 className={cn(
-        'font-display text-[18px] tracking-[-0.01em] leading-tight mb-1.5 transition-colors',
-        selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
-      )}>
-        {product.name}
-      </h3>
-      {product.description ? (
-        <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-4">
-          {product.description}
-        </p>
-      ) : (
-        <p className="text-[13px] text-muted italic mb-4">
-          No description yet.
-        </p>
-      )}
+        {/* Title. Display serif, slightly larger than v1 for visual weight. */}
+        <h3 className={cn(
+          'font-display text-[19px] tracking-[-0.01em] leading-tight mb-1.5 transition-colors',
+          selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
+        )}>
+          {product.name}
+        </h3>
 
-      {/* Footer stats — small, mono, scannable. */}
-      <div className="flex items-center gap-2 text-[11px] font-mono text-muted-2 tabular-nums pt-3 border-t border-line">
-        <span>
-          {product.kpi_count} {product.kpi_count === 1 ? 'metric' : 'metrics'}
-        </span>
-        <span className="text-muted-2/40">·</span>
-        <span>
-          {product.table_count} {product.table_count === 1 ? 'table' : 'tables'}
-        </span>
-        <span className="ml-auto">
-          {refreshed}
-        </span>
+        {/* Description — line-clamped to 2 lines so cards align to a grid. */}
+        {product.description ? (
+          <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-4 min-h-[2.5em]">
+            {product.description}
+          </p>
+        ) : (
+          <p className="text-[13px] text-muted italic mb-4 min-h-[2.5em]">
+            No description yet.
+          </p>
+        )}
+
+        {/* Footer stats — small mono, scannable. Refreshed time on the
+            right anchors the "is this current?" question. */}
+        <div className="flex items-center gap-2 text-[11px] font-mono text-muted-2 tabular-nums pt-3 border-t border-line">
+          <span className={cn('font-medium', product.kpi_count > 0 && palette.eyebrow)}>
+            {product.kpi_count} {product.kpi_count === 1 ? 'metric' : 'metrics'}
+          </span>
+          <span className="text-muted-2/40">·</span>
+          <span>
+            {product.table_count} {product.table_count === 1 ? 'table' : 'tables'}
+          </span>
+          <span className="ml-auto">{refreshed}</span>
+        </div>
       </div>
     </button>
   );
@@ -223,8 +390,9 @@ function ProductCard({
 // ───────────────────────────────────────────────────────────────────────────
 
 function StatusPill({ status }: { status: string }) {
-  const colour = status === 'draft' ? 'bg-warn-soft text-warn border-warn/30'
-              : status === 'error'  ? 'bg-err-soft text-err border-err/30'
+  const colour = status === 'draft'   ? 'bg-warn-soft text-warn border-warn/30'
+              : status === 'error'    ? 'bg-err-soft text-err border-err/30'
+              : status === 'pending'  ? 'bg-amber-50 text-amber-700 border-amber-200'
               : 'bg-soft text-muted-2 border-line';
   const label = status.charAt(0).toUpperCase() + status.slice(1);
   return (
