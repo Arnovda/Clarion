@@ -542,7 +542,14 @@ export default function QualityPanel({
     setActionError(null);
     setEvaluating(true);
     try {
-      await api.post(`${base}/evaluate`);
+      // Product tables route through the DuckDB-aware endpoint that
+      // resolves the parquet/delta URI via the catalog and runs rules
+      // against the warehouse. Source tables keep using the SQLite-only
+      // route. Same pattern as runProfile.
+      const evaluateUrl = productTableId
+        ? `/quality/product/${productTableId}/evaluate`
+        : `${base}/evaluate`;
+      await api.post(evaluateUrl);
       await loadQuality();
       await refreshRules();
       await loadFailures();
@@ -991,26 +998,20 @@ export default function QualityPanel({
           onToggle={() => setPanels((p) => ({ ...p, rules: !p.rules }))}
           action={
             <div className="flex gap-2">
-              {/* Evaluate rules currently only works against SQLite-backed
-                  source connections (it shells into the file directly).
-                  Product tables are DuckDB/Parquet-backed — there's no
-                  evaluator for them yet, so hide the button rather than
-                  surface the cryptic "paths[0] argument" path.resolve
-                  error. The Profile button on product tables uses the
-                  product-aware /quality/product/:id/profile endpoint
-                  (handled in runProfile via productTableId), which IS
-                  supported, so we leave that one. */}
-              {!productTableId && (
-                <button
-                  onClick={runEvaluate}
-                  disabled={evaluating || !rules.length}
-                  className="px-2.5 py-1 text-xs rounded-md bg-raised border border-line text-ink hover:bg-softer disabled:opacity-40 font-medium flex items-center gap-1"
-                >
-                  {evaluating
-                    ? <><span className="animate-spin inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full" />Evaluating…</>
-                    : '▶ Evaluate rules'}
-                </button>
-              )}
+              {/* Evaluate rules works against both layers: source tables
+                  via SQLite (shells into the file directly), product
+                  tables via DuckDB (catalog-resolved parquet/delta URI).
+                  runEvaluate routes to the right endpoint based on
+                  productTableId. */}
+              <button
+                onClick={runEvaluate}
+                disabled={evaluating || !rules.length}
+                className="px-2.5 py-1 text-xs rounded-md bg-raised border border-line text-ink hover:bg-softer disabled:opacity-40 font-medium flex items-center gap-1"
+              >
+                {evaluating
+                  ? <><span className="animate-spin inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full" />Evaluating…</>
+                  : '▶ Evaluate rules'}
+              </button>
               <button
                 className="px-2.5 py-1 text-xs rounded-md bg-ocean text-white hover:bg-ocean-hover font-medium"
                 onClick={() => setAddingRule(true)}
