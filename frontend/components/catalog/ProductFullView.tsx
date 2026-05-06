@@ -33,6 +33,7 @@ import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/dates';
 import { useRole, canCurate } from '@/lib/role';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
+import { PreviewTable } from '@/components/semantic/shared';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Data shapes — mirrors the backend product detail + KPIs response
@@ -425,18 +426,30 @@ function TableRow({
           strokeWidth={2}
         />
       </button>
-      {expanded && table.columns && table.columns.length > 0 && (
-        <div className="px-4 py-3 bg-softer border-t border-line">
-          <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Columns</div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
-            {table.columns.map((c) => (
-              <div key={c.id} className="text-[12.5px]">
-                <span className="text-ink font-medium">{c.display_name || humanize(c.column_name)}</span>
-                {c.description && (
-                  <span className="text-muted ml-1.5">— {c.description}</span>
-                )}
+      {expanded && (
+        <div className="px-4 py-3 bg-softer border-t border-line space-y-4">
+          {table.columns && table.columns.length > 0 && (
+            <div>
+              <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Columns</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+                {table.columns.map((c) => (
+                  <div key={c.id} className="text-[12.5px]">
+                    <span className="text-ink font-medium">{c.display_name || humanize(c.column_name)}</span>
+                    {c.description && (
+                      <span className="text-muted ml-1.5">— {c.description}</span>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
+          )}
+          {/* Sample-data preview — loads on demand (no AI cost, just a
+              SELECT * LIMIT 10 against the materialised parquet). Click
+              "Preview data" to peek at actual rows; users can verify the
+              shape of the data without going to /query. */}
+          <div>
+            <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Sample data</div>
+            <PreviewTable url={`/semantic/product-preview?productTableId=${table.id}&limit=10`} />
           </div>
         </div>
       )}
