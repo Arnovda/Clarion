@@ -30,6 +30,24 @@ import { cn } from '@/lib/cn';
 import ProductRootPanel from '@/components/products/ProductRootPanel';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 
+/**
+ * Shape of GET /api/products/:id — top-level product fields plus a
+ * `star_schemas` array. Each schema carries its own tables (with columns
+ * embedded). KPIs are NOT in this response — they live at GET /:id/kpis.
+ */
+interface ProductTable {
+  id: number;
+  table_name: string;
+  display_name?: string | null;
+  table_role: string;
+  row_count?: number | null;
+  columns?: Array<{
+    id: number;
+    column_name: string;
+    column_role?: string | null;
+  }>;
+}
+
 interface ProductDetail {
   id: number;
   name: string;
@@ -43,20 +61,17 @@ interface ProductDetail {
     multiSource?: boolean;
     sourceDeleted?: boolean;
   };
-  tables?: Array<{
-    id: number;
-    table_role: string;
-    row_count?: number | null;
-  }>;
-  columns?: Array<{
-    id: number;
-    column_role?: string | null;
-  }>;
-  kpis?: Array<{
+  star_schemas?: Array<{
     id: number;
     name: string;
-    description?: string | null;
+    tables: ProductTable[];
   }>;
+}
+
+interface Kpi {
+  id: number;
+  name: string;
+  description?: string | null;
 }
 
 interface Props {
@@ -83,6 +98,7 @@ interface Props {
 export default function ProductPreviewPanel({ productId, hint, onProductDeleted, onClose }: Props) {
   const router = useRouter();
   const [data, setData] = useState<ProductDetail | null>(null);
+  const [kpis, setKpis] = useState<Kpi[]>([]);
   const [loading, setLoading] = useState(true);
   const [showFull, setShowFull] = useState(false);
 
@@ -91,17 +107,26 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
   // product's expanded state.
   useEffect(() => { setShowFull(false); }, [productId]);
 
-  // Load full product detail. This is a heavier endpoint than what we
-  // strictly need for the preview, but it's the same call the full panel
-  // would make anyway — so when the user clicks "See full details" the
-  // ProductRootPanel mounts with the cache already warm.
+  // Load product detail + KPIs in parallel. The detail endpoint is a
+  // heavier shape than we strictly need (returns star_schemas with
+  // nested tables + columns), but it's the same payload the full panel
+  // already fetches — so when the user clicks "See full details" the
+  // network cache is warm.
+  //
+  // KPIs are a separate call: GET /api/products/:id/kpis. The detail
+  // endpoint doesn't include them, so we have to fetch alongside.
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get(`/products/${productId}`);
-      setData(res.data.data ?? null);
+      const [detailRes, kpiRes] = await Promise.all([
+        api.get(`/products/${productId}`),
+        api.get(`/products/${productId}/kpis`).catch(() => ({ data: { data: [] } })),
+      ]);
+      setData(detailRes.data.data ?? null);
+      setKpis((kpiRes.data?.data ?? []) as Kpi[]);
     } catch {
       setData(null);
+      setKpis([]);
     } finally {
       setLoading(false);
     }
@@ -128,25 +153,39 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
   const description = data?.description ?? hint?.description ?? '';
   const status      = data?.status      ?? hint?.status      ?? '';
 
-  // Stats — only shown once we have the canonical detail.
+  // Flatten tables + columns out of the star_schemas array. The detail
+  // endpoint groups them by schema; for stats we don't care about the
+  // grouping, just the totals.
+  const allTables = useMemo<ProductTable[]>(
+    () => (data?.star_schemas ?? []).flatMap((s) => s.tables ?? []),
+    [data],
+  );
+
+  // Stats — totals across all star schemas. Dimension count is the
+  // sum of columns whose role is descriptive (dimension / attribute /
+  // degenerate_dimension); we exclude technical roles like surrogate_key
+  // and natural_key from the user-facing count.
   const stats = useMemo(() => {
     if (!data) return null;
-    const tables = data.tables ?? [];
-    const cols = data.columns ?? [];
-    const factCount = tables.filter((t) => t.table_role === 'fact').length;
-    const dimCount = cols.filter((c) => c.column_role === 'dimension' || c.column_role === 'attribute').length;
-    const rowCount = tables.reduce((s, t) => s + (Number(t.row_count) || 0), 0);
+    let dimCount = 0;
+    for (const t of allTables) {
+      for (const c of t.columns ?? []) {
+        if (c.column_role === 'dimension' || c.column_role === 'attribute' || c.column_role === 'degenerate_dimension') {
+          dimCount++;
+        }
+      }
+    }
+    const rowCount = allTables.reduce((s, t) => s + (Number(t.row_count) || 0), 0);
     return {
-      tableCount: tables.length,
-      factCount,
+      tableCount: allTables.length,
       dimensionCount: dimCount,
       rowCount,
-      kpiCount: data.kpis?.length ?? 0,
+      kpiCount: kpis.length,
     };
-  }, [data]);
+  }, [data, allTables, kpis]);
 
-  const starters = useMemo(() => buildStarters(data), [data]);
-  const topKpis = (data?.kpis ?? []).slice(0, 5);
+  const starters = useMemo(() => buildStarters(data, allTables, kpis), [data, allTables, kpis]);
+  const topKpis = kpis.slice(0, 5);
 
   // Full-detail mode: punt to the existing ProductRootPanel. Same
   // selection, same component, same role-gated affordances. Adding a
@@ -267,7 +306,7 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
           <Section
             title="Key metrics"
             icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} />}
-            count={data?.kpis?.length}
+            count={kpis.length}
             palette={palette}
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -287,9 +326,9 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
                 </div>
               ))}
             </div>
-            {(data?.kpis?.length ?? 0) > topKpis.length && (
+            {kpis.length > topKpis.length && (
               <p className="text-[11.5px] text-muted-2 mt-2">
-                and {(data?.kpis?.length ?? 0) - topKpis.length} more →
+                and {kpis.length - topKpis.length} more →
               </p>
             )}
           </Section>
@@ -379,40 +418,112 @@ function Stat({ label, value, format }: { label: string; value: number; format?:
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a small, plain-English set of starter questions from the product's
- * KPI list. No AI call — uses the KPI display names directly. Falls back
- * to product-name-based generics when no KPIs exist so the section never
- * appears empty.
+ * Build plain-English starter questions for the Try-Asking section.
+ *
+ * Strategy (tries each step until it has 3 questions):
+ *   1. KPIs — if the product has metrics, generate question variants
+ *      from the top KPI names ("What's our revenue this month?").
+ *   2. Fact tables — if the product has fact tables (transaction-level
+ *      data) but no KPIs, ask aggregate questions about them
+ *      ("How many sales invoices have we issued this year?").
+ *   3. Dimension tables — for master-data products like "Reference"
+ *      (Accounts, Items, GL accounts), ask catalog-style questions
+ *      ("How many accounts do we have?", "List all GL accounts").
+ *
+ * No AI tokens — pure templating from existing schema metadata. The
+ * starter questions are good enough for SMB use cases without paying
+ * for a per-product AI generation.
  */
-function buildStarters(data: ProductDetail | null): string[] {
+function buildStarters(
+  data: ProductDetail | null,
+  allTables: ProductTable[],
+  kpis: Kpi[],
+): string[] {
   if (!data) return [];
-  const kpis = (data.kpis ?? []).slice(0, 3);
-  if (kpis.length >= 2) {
-    const k1 = humanize(kpis[0].name).toLowerCase();
-    const k2 = kpis[1] ? humanize(kpis[1].name).toLowerCase() : k1;
-    const k3 = kpis[2] ? humanize(kpis[2].name).toLowerCase() : k1;
-    return [
-      `What's our ${k1} this month?`,
-      `How has ${k2} changed over the last year?`,
-      `Show me ${k3} broken down by month.`,
-    ];
+
+  // Strategy 1: KPIs. Highest-quality starter source — these are the
+  // user-defined "what matters" metrics.
+  if (kpis.length > 0) {
+    const names = kpis.slice(0, 3).map((k) => humanize(k.name).toLowerCase());
+    const out: string[] = [];
+    if (names[0]) out.push(`What's our ${names[0]} this month?`);
+    if (names[1]) out.push(`How has ${names[1]} changed over the last year?`);
+    else if (names[0]) out.push(`How has ${names[0]} changed over the last year?`);
+    if (names[2]) out.push(`Show me ${names[2]} broken down by month.`);
+    else if (names[0]) out.push(`Show me ${names[0]} broken down by month.`);
+    return out.slice(0, 3);
   }
-  if (kpis.length === 1) {
-    const k = humanize(kpis[0].name).toLowerCase();
-    return [
-      `What's our ${k} this month?`,
-      `How has ${k} changed over the last year?`,
-      `Show me ${k} broken down by month.`,
+
+  // Strategy 2: fact tables — transaction-level data, ask volume questions.
+  const facts = allTables.filter((t) => t.table_role === 'fact');
+  if (facts.length > 0) {
+    const f0 = humanizeTable(facts[0]);
+    const f1 = facts[1] ? humanizeTable(facts[1]) : null;
+    const out = [
+      `How many ${pluralizeLower(f0)} were recorded this year?`,
+      `Show me ${pluralizeLower(f0)} by month.`,
     ];
+    out.push(f1
+      ? `What's the trend for ${pluralizeLower(f1)}?`
+      : `What's the most recent ${singularizeLower(f0)}?`,
+    );
+    return out;
   }
-  // No KPIs yet — fall back to generic discovery questions referencing the
-  // product name. Better than an empty section.
-  const product = data.name.toLowerCase();
+
+  // Strategy 3: dimension tables — master-data products. Ask catalog-
+  // style questions referencing the actual entities the data describes.
+  // This is what kicks in for products like "Reference" (Accounts,
+  // Items, GL accounts) — much better than the old "trends in reference"
+  // fallback.
+  const dims = allTables.filter((t) => t.table_role === 'dimension' || t.table_role === 'bridge');
+  if (dims.length > 0) {
+    const d0 = humanizeTable(dims[0]);
+    const d1 = dims[1] ? humanizeTable(dims[1]) : null;
+    const d2 = dims[2] ? humanizeTable(dims[2]) : null;
+    const out = [`How many ${pluralizeLower(d0)} do we have?`];
+    if (d1) out.push(`Show me a list of all ${pluralizeLower(d1)}.`);
+    if (d2) out.push(`Which ${pluralizeLower(d2)} are most active?`);
+    while (out.length < 3) {
+      out.push(`Tell me about our ${pluralizeLower(d0)}.`);
+    }
+    return out.slice(0, 3);
+  }
+
+  // Genuine empty state — no KPIs, no tables. The product hasn't been
+  // built yet. Use generic discovery questions but reference the
+  // product name verbatim, not as a topic.
+  const productName = data.name;
   return [
-    `What does the ${product} data show this month?`,
-    `Give me a summary of recent ${product} activity.`,
-    `What are the most important trends in ${product}?`,
+    `What's in the ${productName} product?`,
+    `Show me the latest data from ${productName}.`,
+    `What can I ask about ${productName}?`,
   ];
+}
+
+/** Prefer display_name over snake_case table_name. */
+function humanizeTable(t: ProductTable): string {
+  if (t.display_name) return t.display_name;
+  // Strip the dim_ / fact_ prefix if present, then humanize.
+  const stripped = t.table_name.replace(/^(dim|fact|bridge|junk)_/, '');
+  return humanize(stripped);
+}
+
+/**
+ * Crude singular/plural helpers — good enough for SMB English. We don't
+ * want a full inflection library for this. Always lowercases first since
+ * the templates use ${pluralizeLower(...)} mid-sentence.
+ */
+function pluralizeLower(s: string): string {
+  const lower = s.toLowerCase();
+  if (lower.endsWith('s') || lower.endsWith('x')) return lower;          // already plural
+  if (lower.endsWith('y') && !/[aeiou]y$/.test(lower)) return `${lower.slice(0, -1)}ies`;
+  return `${lower}s`;
+}
+function singularizeLower(s: string): string {
+  const lower = s.toLowerCase();
+  if (lower.endsWith('ies')) return `${lower.slice(0, -3)}y`;
+  if (lower.endsWith('s') && !lower.endsWith('ss')) return lower.slice(0, -1);
+  return lower;
 }
 
 /**
