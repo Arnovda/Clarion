@@ -38,6 +38,7 @@ import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import ProductCardGrid, { type ProductCardData } from '@/components/catalog/ProductCardGrid';
 import GlossaryMatchCards, { type GlossaryEntry } from '@/components/catalog/GlossaryMatchCards';
+import ProductFullView from '@/components/catalog/ProductFullView';
 
 type ViewMode = 'cards' | 'structure';
 type LayerFilter = 'all' | 'sources' | 'products';
@@ -386,7 +387,25 @@ function CardsBody(props: {
   // edge-to-edge with the legacy ProductRootPanel (full-width tabs).
   // Top bar adds a "Back to catalog" button so users can return to
   // the grid without using the IconRail.
+  // Full-view mode for product-root selections renders the consumer-grade
+  // <ProductFullView> (Phase 6) — Overview / Metrics / Tables / Quality
+  // / Lineage tabs, all read-only. The legacy ProductRootPanel (operator
+  // surface) is reachable via "Open in Build" in ProductFullView's header
+  // for admin/analyst.
+  //
+  // Other selection scopes (source-root, source-table, product-table —
+  // only reachable from Structure mode) fall back to EntityDetailPanel
+  // since they need the legacy panels.
+  if (props.fullView && props.detailOpen && props.selection.scope === 'product-root') {
+    return (
+      <ProductFullView
+        productId={props.selection.productId}
+        onBack={props.onExitFullView}
+      />
+    );
+  }
   if (props.fullView && props.detailOpen) {
+    // Non-product full view (source/table) — fall back to the legacy panel.
     return (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="bg-softer border-b border-line px-6 py-2.5 flex items-center gap-2 flex-shrink-0">
@@ -409,7 +428,7 @@ function CardsBody(props: {
             connections={props.connections}
             onSaved={props.onSaved}
             onProductDeleted={props.onProductDeleted}
-            productPreview={false}    /* Render the legacy full-tabs panel */
+            productPreview={false}
           />
         </div>
       </div>
