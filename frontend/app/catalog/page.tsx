@@ -37,6 +37,7 @@ import { parseIdFromSlug } from '@/lib/catalog';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import ProductCardGrid, { type ProductCardData } from '@/components/catalog/ProductCardGrid';
+import GlossaryMatchCards, { type GlossaryEntry } from '@/components/catalog/GlossaryMatchCards';
 
 type ViewMode = 'cards' | 'structure';
 type LayerFilter = 'all' | 'sources' | 'products';
@@ -117,6 +118,30 @@ function CatalogInner() {
     }
   }, []);
   useEffect(() => { loadProducts(); }, [loadProducts]);
+
+  // ── Glossary entries (for search-prioritised matches) ─────────────────────
+  // Loaded once and filtered client-side. The Atlan / Hex pattern: when
+  // the user types "revenue", we want to show the canonical glossary term
+  // BEFORE any matching products or tables. That helps the user learn
+  // what the org means by a word, then pick the right product.
+  const [glossary, setGlossary] = useState<GlossaryEntry[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/semantic/glossary')
+      .then((r) => {
+        if (cancelled) return;
+        const rows = (r.data?.data ?? []) as Array<Record<string, unknown>>;
+        setGlossary(rows.map((row) => ({
+          id:       Number(row.id),
+          term:     String(row.term ?? ''),
+          meaning:  String(row.meaning ?? ''),
+          examples: typeof row.examples === 'string' ? row.examples : null,
+          tags:     Array.isArray(row.tags) ? (row.tags as string[]) : null,
+        })));
+      })
+      .catch(() => { if (!cancelled) setGlossary([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   // ── Restore selection from URL on mount ────────────────────────────────────
   useEffect(() => {
@@ -265,6 +290,7 @@ function CatalogInner() {
           isAdmin={isAdmin()}
           showCuratorSignals={canSeeStructure}
           onCreate={() => router.push('/products')}
+          glossary={glossary}
           productHint={(() => {
             if (!productRootId) return undefined;
             const p = products.find((x) => x.id === productRootId);
@@ -320,6 +346,10 @@ function CardsBody(props: {
   isAdmin: boolean;
   showCuratorSignals: boolean;
   onCreate: () => void;
+  /** Glossary entries — surfaced as the top section when the user is
+   *  searching, so canonical business definitions appear before the
+   *  matching products. */
+  glossary: GlossaryEntry[];
   /** Card data for the currently-selected product — used to seed the
    *  preview header so it renders instantly while the detail loads. */
   productHint: {
@@ -348,6 +378,11 @@ function CardsBody(props: {
           <div className="mb-6">
             <SearchInput value={props.search} onChange={props.onSearchChange} />
           </div>
+
+          {/* Glossary terms surface ABOVE the product grid when the user
+              is searching. Canonical business definitions before products
+              — Atlan / Hex / Lightdash pattern. Hidden when search empty. */}
+          <GlossaryMatchCards entries={props.glossary} search={props.search} />
 
           <ProductCardGrid
             products={props.products}
