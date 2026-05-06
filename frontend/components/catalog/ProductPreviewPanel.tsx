@@ -99,6 +99,7 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
   const router = useRouter();
   const [data, setData] = useState<ProductDetail | null>(null);
   const [kpis, setKpis] = useState<Kpi[]>([]);
+  const [aiStarters, setAiStarters] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [showFull, setShowFull] = useState(false);
 
@@ -107,26 +108,33 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
   // product's expanded state.
   useEffect(() => { setShowFull(false); }, [productId]);
 
-  // Load product detail + KPIs in parallel. The detail endpoint is a
-  // heavier shape than we strictly need (returns star_schemas with
-  // nested tables + columns), but it's the same payload the full panel
-  // already fetches — so when the user clicks "See full details" the
-  // network cache is warm.
+  // Load product detail + KPIs + AI starters in parallel.
   //
-  // KPIs are a separate call: GET /api/products/:id/kpis. The detail
-  // endpoint doesn't include them, so we have to fetch alongside.
+  // - GET /products/:id   — heavier shape (star_schemas[].tables[]) but
+  //   it's the same payload ProductRootPanel will need when the user
+  //   clicks "See full details", so we warm the cache.
+  // - GET /products/:id/kpis — separate endpoint; the detail call
+  //   doesn't include KPIs.
+  // - GET /products/:id/starters — server-generated, AI-cached per
+  //   product for 24h. Returns { starters: [] } when the product has
+  //   nothing to anchor on (no KPIs, no facts) — we then fall back to
+  //   the dimension-table template generator client-side.
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [detailRes, kpiRes] = await Promise.all([
+      const [detailRes, kpiRes, starterRes] = await Promise.all([
         api.get(`/products/${productId}`),
         api.get(`/products/${productId}/kpis`).catch(() => ({ data: { data: [] } })),
+        api.get(`/products/${productId}/starters`).catch(() => ({ data: { data: { starters: [] } } })),
       ]);
       setData(detailRes.data.data ?? null);
       setKpis((kpiRes.data?.data ?? []) as Kpi[]);
+      const starters = (starterRes.data?.data?.starters ?? []) as Array<{ question: string }>;
+      setAiStarters(starters.length > 0 ? starters.map((s) => s.question).slice(0, 3) : null);
     } catch {
       setData(null);
       setKpis([]);
+      setAiStarters(null);
     } finally {
       setLoading(false);
     }
@@ -184,7 +192,16 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
     };
   }, [data, allTables, kpis]);
 
-  const starters = useMemo(() => buildStarters(data, allTables, kpis), [data, allTables, kpis]);
+  // Prefer AI-generated starters when available — they're business voice,
+  // ≤80 chars, mix question kinds. Fall back to the client-side template
+  // generator (which does a dimension-table-aware fallback for master-data
+  // products) when the AI returns nothing or errors.
+  const starters = useMemo(
+    () => aiStarters && aiStarters.length > 0
+      ? aiStarters
+      : buildStarters(data, allTables, kpis),
+    [aiStarters, data, allTables, kpis],
+  );
   const topKpis = kpis.slice(0, 5);
 
   // Full-detail mode: punt to the existing ProductRootPanel. Same

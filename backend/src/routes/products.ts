@@ -1488,6 +1488,29 @@ router.get('/:id/kpis', requireAuth, async (req: Request, res: Response, next: N
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/products/:id/starters — AI-generated starter questions
+//
+// Feeds the catalog preview's "Try asking" chips. Cached per (tenant,
+// product) for 24h so opening the same preview many times in a row
+// costs ~0 in tokens. Returns { starters: [] } if there's nothing to
+// anchor on (no KPIs, no facts) — frontend falls back to its
+// template-from-dimension-tables generator in that case.
+// ---------------------------------------------------------------------------
+router.get('/:id/starters', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const productId = Number(req.params.id);
+    if (!tenantId || !Number.isFinite(productId)) {
+      res.status(400).json({ ok: false, error: 'Invalid request' });
+      return;
+    }
+    const { getProductStarters } = await import('../services/queryStartersService');
+    const result = await getProductStarters(tenantId, productId);
+    res.json({ ok: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/:id/kpis — Create a KPI
 // Role widened to admin+analyst — analysts curate KPIs alongside admins
 // (matches the role gating on /semantic confirms).

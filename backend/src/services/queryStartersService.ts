@@ -63,6 +63,133 @@ export function clearStartersCache(tenantId?: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Per-product starters — feeds the catalog preview's "Try asking" chips.
+//
+// Same prompt + same model, narrower context (one product). Cached per
+// (tenantId, productId) for 24h so opening the same preview multiple times
+// in a row costs ~zero. Cache invalidates when the product is rebuilt
+// (caller can call clearProductStartersCache).
+//
+// Falls back to the existing template-based starters in the frontend if
+// the AI call fails or hasn't populated yet — no broken empty state.
+// ---------------------------------------------------------------------------
+
+interface ProductCacheEntry {
+  result: QueryStartersResult;
+  expiresAt: number;
+}
+
+const PRODUCT_CACHE = new Map<string, ProductCacheEntry>();
+
+function productCacheKey(tenantId: number, productId: number): string {
+  return `${tenantId}:${productId}`;
+}
+
+export async function getProductStarters(
+  tenantId: number,
+  productId: number,
+): Promise<QueryStartersResult> {
+  const key = productCacheKey(tenantId, productId);
+  const cached = PRODUCT_CACHE.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  const ctx = await buildProductContext(tenantId, productId);
+  if (!ctx) return { starters: [] };
+  // No KPIs and no facts → the AI has nothing to anchor on. Skip the
+  // call and let the frontend fall back to template-based starters
+  // generated from dimension table names.
+  if (ctx.products[0].kpis.length === 0 && ctx.products[0].factTables.length === 0) {
+    const empty: QueryStartersResult = { starters: [] };
+    PRODUCT_CACHE.set(key, { result: empty, expiresAt: Date.now() + TTL_MS });
+    return empty;
+  }
+
+  try {
+    const { generateQueryStarters } = await import('../ai/AIService');
+    const result = await withTenantAiContext({ tenantId, userId: null }, () =>
+      generateQueryStarters(ctx),
+    );
+    PRODUCT_CACHE.set(key, { result, expiresAt: Date.now() + TTL_MS });
+    return result;
+  } catch (err) {
+    logger.warn({ err, tenantId, productId }, 'getProductStarters: AI call failed — caller should fall back');
+    return { starters: [] };
+  }
+}
+
+export function clearProductStartersCache(tenantId?: number, productId?: number): void {
+  if (tenantId && productId) {
+    PRODUCT_CACHE.delete(productCacheKey(tenantId, productId));
+  } else if (tenantId) {
+    // Clear all entries for this tenant
+    for (const k of PRODUCT_CACHE.keys()) {
+      if (k.startsWith(`${tenantId}:`)) PRODUCT_CACHE.delete(k);
+    }
+  } else {
+    PRODUCT_CACHE.clear();
+  }
+}
+
+/**
+ * Build the same QueryStartersContext shape as the tenant-wide path,
+ * but scoped to a single product. Re-uses the existing prompt — no need
+ * to author a separate per-product prompt.
+ */
+async function buildProductContext(
+  tenantId: number,
+  productId: number,
+): Promise<QueryStartersContext | null> {
+  return tenantQuery(tenantId, async (trx) => {
+    const tenant = await trx('tenants').where({ id: tenantId }).first();
+    const product = await trx('data_products')
+      .where({ id: productId })
+      .first();
+    if (!product) return null;
+
+    const kpis = await trx('product_kpis')
+      .where({ data_product_id: productId })
+      .select('name', 'description');
+
+    const facts = await trx('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .where('ss.data_product_id', productId)
+      .where('pt.table_role', 'fact')
+      .select('pt.id', 'pt.table_name');
+
+    const factIds = facts.map((f) => Number(f.id));
+    const dims = factIds.length > 0
+      ? await trx('product_columns')
+          .whereIn('product_table_id', factIds)
+          .where('column_role', 'dimension')
+          .select('product_table_id', 'column_name')
+      : [];
+
+    const dimsByFact = new Map<number, string[]>();
+    for (const d of dims) {
+      const list = dimsByFact.get(Number(d.product_table_id)) ?? [];
+      list.push(String(d.column_name));
+      dimsByFact.set(Number(d.product_table_id), list);
+    }
+
+    return {
+      tenantName: tenant ? String(tenant.name) : null,
+      products: [{
+        productName: String(product.name),
+        productDescription: product.description ? String(product.description) : null,
+        kpis: kpis.map((k) => ({
+          name: String(k.name),
+          description: k.description ? String(k.description) : null,
+        })),
+        factTables: facts.map((f) => ({
+          tableName: String(f.table_name),
+          dimensions: (dimsByFact.get(Number(f.id)) ?? []).slice(0, 4),
+        })),
+      }],
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Context builder — pulls the tenant's products + KPIs + dimension
 // columns. Single tenantQuery so RLS is set once.
 // ---------------------------------------------------------------------------
