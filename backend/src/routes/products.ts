@@ -22,10 +22,31 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
   try {
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
     const [{ count: total }] = await semanticDb('data_products').count('* as count');
+    // Cards on /catalog need a few extra signals beyond raw row data:
+    //   - star_schema_count (existing)
+    //   - kpi_count          → "N metrics" stat on the card
+    //   - last_refreshed_at  → MAX(product_tables.last_run_at), the freshness
+    //     line on the card. Pulls from the catalog-source-of-truth column.
+    //   - table_count        → for the "N tables" muted secondary stat.
     const products = await semanticDb('data_products')
       .select('data_products.*')
       .select(
         semanticDb.raw('(SELECT COUNT(*) FROM star_schemas WHERE star_schemas.data_product_id = data_products.id) as star_schema_count'),
+        semanticDb.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
+        semanticDb.raw(`(
+          SELECT COUNT(*)
+          FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as table_count`),
+        semanticDb.raw(`(
+          SELECT MAX(pt.last_run_at)
+          FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as last_refreshed_at`),
       )
       .orderBy('data_products.created_at', 'desc')
       .limit(limit)
@@ -69,7 +90,15 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       inner.set(r.connection_id, (inner.get(r.connection_id) ?? 0) + 1);
     }
 
-    const enriched = (products as Array<{ id: number; connection_id: number | null }>).map((p) => {
+    type RawProduct = {
+      id: number;
+      connection_id: number | null;
+      star_schema_count?: string | number;
+      kpi_count?: string | number;
+      table_count?: string | number;
+      last_refreshed_at?: Date | string | null;
+    };
+    const enriched = (products as RawProduct[]).map((p) => {
       const inner = tallies.get(p.id);
       const contributors = inner
         ? Array.from(inner.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])
@@ -89,6 +118,14 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       const sourceDeleted = primaryId != null && !primaryConn;
       return {
         ...p,
+        // Cast pg COUNT(*) (string) and MAX(timestamp) (Date) so the
+        // frontend can use them without runtime coercion.
+        star_schema_count: Number(p.star_schema_count ?? 0),
+        kpi_count:         Number(p.kpi_count ?? 0),
+        table_count:       Number(p.table_count ?? 0),
+        last_refreshed_at: p.last_refreshed_at instanceof Date
+                             ? p.last_refreshed_at.toISOString()
+                             : (p.last_refreshed_at ?? null),
         source: {
           id: primaryConn?.id ?? null,
           name: primaryConn?.name ?? null,
