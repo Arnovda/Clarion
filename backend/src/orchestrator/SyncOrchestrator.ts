@@ -460,15 +460,107 @@ export function requestCancellation(syncRunId: number, tenantId: number): 'cance
 }
 
 // ─── Schema profiling trigger ────────────────────────────────────────────
+//
+// Cost model:
+//   • Default behaviour (AUTO_REPROFILE_ON_SYNC unset or 'false'): every
+//     sync runs a CHEAP introspection + hash compare, with NO AI calls.
+//     If the structure changed, we emit a notification asking the user to
+//     re-profile manually. The user controls when AI tokens are spent.
+//   • Opt-in legacy behaviour (AUTO_REPROFILE_ON_SYNC='true'): the post-
+//     sync auto-profile fires whenever the hash differs from the stored
+//     value, automatically spending ~$0.85 per source per drift event.
+//
+// Why default-off: routine SaaS source syncs (Exact Online, etc.) almost
+// never produce schema changes, but the auto-profile was firing anyway in
+// some cases (introspection non-determinism, missing schema_hash, etc.).
+// Cost was running into tens of dollars/day for no useful work. The new
+// default keeps refreshes free and surfaces drift via notification — the
+// user clicks Re-profile when they actually want to spend the tokens.
 async function runProfilerInBackground(args: {
   connectionId: number;
   tenantId: number;
 }): Promise<void> {
   const { connectionId, tenantId } = args;
-  const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
   const { profilingProgressPct } = await import('../routes/connections');
   await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
+  // Read the current connection state once. We need its stored
+  // schema_hash for drift detection, plus the live row to pass into
+  // introspectAndHash.
+  const conn = await semanticDb('connections')
+    .where({ id: connectionId, tenant_id: tenantId })
+    .first();
+  if (!conn) {
+    log.warn({ connectionId }, 'runProfilerInBackground: connection not found, skipping');
+    return;
+  }
+
+  // Cheap path: introspect + hash. No AI cost.
+  let currentHash: string | null = null;
+  try {
+    const result = await introspectAndHash(conn);
+    currentHash = result.hash;
+  } catch (err) {
+    log.warn({ err, connectionId }, 'introspectAndHash failed — skipping post-sync profile work');
+    return;
+  }
+
+  const existingTablesCount = (await semanticDb('source_tables')
+    .where({ connection_id: connectionId, tenant_id: tenantId })
+    .count<{ count: string }[]>('id as count')
+    .first())?.count ?? '0';
+  const existingTables = Number(existingTablesCount);
+
+  // Hash matches stored value AND we already have tables persisted →
+  // nothing to do. This is the steady-state branch for routine syncs.
+  if (currentHash && conn.schema_hash === currentHash && existingTables > 0) {
+    log.info({ connectionId, hash: currentHash }, 'schema unchanged — no profiling needed');
+    return;
+  }
+
+  // Drift detected (or first sync, or schema_hash never persisted).
+  // Decide based on the env var whether to spend AI tokens automatically
+  // or just notify the user.
+  const autoReprofile = String(process.env.AUTO_REPROFILE_ON_SYNC ?? '').toLowerCase() === 'true';
+
+  if (!autoReprofile) {
+    // Opt-out path: emit a notification, persist nothing. The user can
+    // click Re-profile manually to update descriptions; that path is
+    // unchanged and DOES update schema_hash on success. We don't update
+    // schema_hash here on purpose — we want the next sync to also see
+    // drift if the user hasn't acted yet (notifications dedupe at read
+    // time, and persistent drift is a real signal).
+    const driftKind = !conn.schema_hash || existingTables === 0 ? 'first_sync' : 'changed';
+    log.info(
+      { connectionId, driftKind, currentHash, storedHash: conn.schema_hash, existingTables },
+      'AUTO_REPROFILE_ON_SYNC disabled — notifying user instead of auto-profiling',
+    );
+
+    const connName = String(conn.name ?? `connection ${connectionId}`);
+    const title = driftKind === 'first_sync'
+      ? `${connName}: ready for AI profiling`
+      : `${connName}: schema changed — re-profile recommended`;
+    const message = driftKind === 'first_sync'
+      ? `Sync completed. Click Re-profile on the source to generate AI descriptions for the catalog.`
+      : `Sync detected structural changes (new or renamed columns). Click Re-profile to refresh AI descriptions. No AI tokens are being spent automatically.`;
+
+    try {
+      const { notifyAdmins } = await import('../services/notificationService');
+      await notifyAdmins(tenantId, 'approval', title, {
+        message,
+        entityType: 'connection',
+        entityId: connectionId,
+        link: `/setup?connectionId=${connectionId}`,
+      });
+    } catch (notifyErr) {
+      log.warn({ err: notifyErr, connectionId }, 'schema-drift notification failed (non-fatal)');
+    }
+    return;
+  }
+
+  // Legacy auto-profile path — only reached when AUTO_REPROFILE_ON_SYNC=true.
+  // Spends AI tokens to update descriptions whenever drift is detected.
+  const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
   await semanticDb('connections')
     .where({ id: connectionId, tenant_id: tenantId })
     .update({
@@ -478,46 +570,6 @@ async function runProfilerInBackground(args: {
       profiling_progress: 0,
       profiling_started_at: new Date().toISOString(),
     });
-
-  // ─── Schema-hash gate — the cost guard ──────────────────────────────────
-  // Introspect first (fast: 1-2s), hash the structure, compare to the
-  // previous run's hash. If unchanged AND we already have source_tables
-  // for this connection, skip the AI-draft step entirely — Claude
-  // generated the same answer last time, no point re-running it. This
-  // makes scheduled refreshes ~free (zero LLM calls on no-schema-change).
-  try {
-    const conn = await semanticDb('connections')
-      .where({ id: connectionId, tenant_id: tenantId })
-      .first();
-    if (conn) {
-      const { hash, hadSchema } = await introspectAndHash(conn);
-      if (hadSchema) {
-        const existingTablesCount = (await semanticDb('source_tables')
-          .where({ connection_id: connectionId, tenant_id: tenantId })
-          .count<{ count: string }[]>('id as count')
-          .first())?.count ?? '0';
-        const existingTables = Number(existingTablesCount);
-        if (hash && conn.schema_hash === hash && existingTables > 0) {
-          log.info({ connectionId, hash }, 'schema unchanged — skipping AI draft');
-          await semanticDb('connections')
-            .where({ id: connectionId, tenant_id: tenantId })
-            .update({
-              profiling_status: 'done',
-              profiling_phase: 'done',
-              profiling_message: 'Schema unchanged — analysis skipped (no LLM cost)',
-              profiling_progress: 100,
-              last_profiled_at: new Date().toISOString(),
-            });
-          return;
-        }
-      }
-    }
-  } catch (err) {
-    // Non-fatal — if the hash check itself errored, fall through to the
-    // full profiler. We'd rather pay a Claude run than skip an analysis
-    // we genuinely needed.
-    log.warn({ err, connectionId }, 'schema-hash gate errored — falling through to full profile');
-  }
 
   try {
     await runSchemaProfiler(connectionId, (p) => {
