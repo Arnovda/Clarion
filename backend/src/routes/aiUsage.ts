@@ -105,20 +105,40 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// Daily — one row per day, last N days. Drives the trend chart.
+// Daily — one row per day for the LAST N DAYS, including days with no calls.
+// Drives the trend chart. We LEFT JOIN against generate_series so the chart
+// always shows N evenly-spaced day slots (most rendering as zero-height
+// bars when there's no activity); without this the chart auto-zoomed to
+// just the days that had data, making sparse usage windows look "empty".
 // ───────────────────────────────────────────────────────────────────────────
 router.get('/daily', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.user!.tenantId;
     const days = parseDays(req);
     const rows = await tenantQuery(tenantId, (trx) =>
-      trx('ai_call_log')
-        .select(trx.raw(`date_trunc('day', created_at)::date as day`))
-        .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as cost_usd`))
-        .select(trx.raw(`COUNT(*) as calls`))
-        .whereRaw(`created_at >= now() - interval '${days} days'`)
-        .groupByRaw(`date_trunc('day', created_at)::date`)
-        .orderByRaw(`date_trunc('day', created_at)::date asc`),
+      trx
+        .select(trx.raw(`gs.day::date as day`))
+        .select(trx.raw(`COALESCE(SUM(acl.cost_usd), 0) as cost_usd`))
+        .select(trx.raw(`COUNT(acl.id) as calls`))
+        .from(trx.raw(
+          `generate_series(
+             (now() - interval '${days - 1} days')::date,
+             now()::date,
+             '1 day'::interval
+           ) as gs(day)`,
+        ))
+        .leftJoin(
+          { acl: 'ai_call_log' },
+          // Equality on the day plus a redundant created_at >= filter so
+          // Postgres prunes by index on created_at instead of scanning the
+          // full table — important when ai_call_log grows large.
+          trx.raw(
+            `date_trunc('day', acl.created_at)::date = gs.day::date `
+            + `AND acl.created_at >= now() - interval '${days} days'`,
+          ),
+        )
+        .groupByRaw('gs.day')
+        .orderByRaw('gs.day asc'),
     );
     res.json({
       ok: true,
