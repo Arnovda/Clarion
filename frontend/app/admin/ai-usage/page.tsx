@@ -326,40 +326,47 @@ function Kpi({
 // Daily trend — simple SVG bar chart
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * Format a 'YYYY-MM-DD' day as a short, human-friendly axis label like
+ * "Apr 7" or "May 6". Defensive: falls back to the raw string if the
+ * input doesn't parse as a date (shouldn't happen post-backend-fix, but
+ * cheap insurance).
+ */
+function formatDayShort(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 function DailyChart({ rows }: { rows: DailyRow[] }) {
   if (rows.length === 0) {
     return <div className="text-[12.5px] text-muted py-6 text-center">No calls yet in this window.</div>;
   }
-  // Note `rows` is now padded to N days by the backend (zero-cost for empty
-  // days), so the chart always shows a uniform timeline regardless of how
-  // sparse the activity is.
+  // `rows` is padded to N days by the backend (zero-cost for empty days),
+  // so the chart always reflects the full window. Empty days render as
+  // empty space — clean look — and the y-axis carries the structural
+  // anchor so users can read off spend levels.
   const max = Math.max(...rows.map((r) => r.cost_usd), 0.01);
   const total = rows.reduce((s, r) => s + r.cost_usd, 0);
   const calls = rows.reduce((s, r) => s + r.calls, 0);
 
-  // Y-axis tick values — three levels (0, half, max) so zero-spend days
-  // visibly anchor against the timeline rather than rendering as empty space.
-  const yMax = max;
-  const yMid = max / 2;
-
   return (
     <div>
       <div className="flex gap-3">
-        {/* Y-axis labels — sized to mirror the chart height (h-40 = 160px) */}
+        {/* Y-axis labels — three ticks (max / half / 0). Sized to mirror the
+            chart height (h-40 = 160px). */}
         <div className="flex flex-col justify-between h-40 text-[10px] font-mono text-muted-2 tabular-nums w-12 text-right">
-          <span>{formatUsd(yMax)}</span>
-          <span>{formatUsd(yMid)}</span>
+          <span>{formatUsd(max)}</span>
+          <span>{formatUsd(max / 2)}</span>
           <span>$0</span>
         </div>
 
-        {/* Chart body — each day is a fixed-width slot with a faint track
-            background and a colored bar inside. The track makes the timeline
-            visible even on $0 days; the bar's height encodes actual spend.
-            Without the track, sparse activity (one tall bar + 29 invisible
-            ones) looks like a broken chart. */}
+        {/* Chart body. No per-day track backgrounds — empty days are
+            simply blank space, which keeps the chart visually quiet.
+            The y-axis ticks + horizontal gridlines provide all the
+            structural reference the user needs. */}
         <div className="flex-1 relative">
-          {/* Horizontal gridlines (top, mid, bottom) — anchored to the same
-              160px height as the bars so they line up with the y-axis labels. */}
+          {/* Horizontal gridlines aligned to the y-axis ticks. */}
           <div className="absolute inset-0 h-40 pointer-events-none">
             <div className="absolute top-0 left-0 right-0 border-t border-dashed border-line" />
             <div className="absolute top-1/2 left-0 right-0 border-t border-dashed border-line" />
@@ -368,32 +375,18 @@ function DailyChart({ rows }: { rows: DailyRow[] }) {
 
           <div className="flex items-end gap-1 h-40 relative">
             {rows.map((r) => {
-              // Bar height as a fraction of the chart area. Zero-spend days
-              // get height 0 — the track behind it carries the slot's
-              // presence so the chart still reads as a 30-day timeline.
               const h = max > 0 ? (r.cost_usd / max) * 100 : 0;
               const isEmpty = r.cost_usd === 0;
               return (
                 <div
                   key={r.day}
-                  className="flex-1 min-w-[4px] h-full relative flex flex-col justify-end group"
-                  title={`${r.day} · ${formatUsd(r.cost_usd)} · ${r.calls} calls`}
+                  className="flex-1 min-w-[4px] h-full flex flex-col justify-end"
                 >
-                  {/* Track — always-visible neutral background so empty
-                      day-slots anchor against the timeline. Uses --soft
-                      (a solid token defined in globals.css) instead of an
-                      opacity modifier on --line, which doesn't work with
-                      hex CSS variables in Tailwind 3 (the /N suffix
-                      silently renders transparent). */}
-                  <div className="absolute inset-0 bg-soft rounded-sm" />
-                  {/* Bar — actual spend. Solid ocean colour, no opacity
-                      modifier (same Tailwind/hex-var caveat). Hover
-                      highlight uses a slightly lighter ocean tint by
-                      switching the parent group's hover state. */}
                   {!isEmpty && (
                     <div
-                      className="relative bg-ocean group-hover:bg-ocean-hover rounded-t-sm transition-colors"
+                      className="bg-ocean hover:bg-ocean-hover rounded-t-sm transition-colors cursor-pointer"
                       style={{ height: `${h}%`, minHeight: '2px' }}
+                      title={formatUsd(r.cost_usd)}
                     />
                   )}
                 </div>
@@ -403,14 +396,16 @@ function DailyChart({ rows }: { rows: DailyRow[] }) {
         </div>
       </div>
 
+      {/* X-axis: short readable date labels at the start and end of the
+          window, with the running total in the middle. */}
       <div className="flex items-baseline justify-between text-[11px] text-muted-2 mt-2 pl-[60px]">
-        <span>{rows[0]?.day}</span>
+        <span>{rows[0] ? formatDayShort(rows[0].day) : ''}</span>
         <span>
           Total: <span className="font-mono text-ink">{formatUsd(total)}</span>
           <span className="mx-2 text-muted-2/40">·</span>
           {calls.toLocaleString()} calls
         </span>
-        <span>{rows[rows.length - 1]?.day}</span>
+        <span>{rows[rows.length - 1] ? formatDayShort(rows[rows.length - 1].day) : ''}</span>
       </div>
     </div>
   );

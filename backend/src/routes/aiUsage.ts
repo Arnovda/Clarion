@@ -140,10 +140,16 @@ router.get('/daily', async (req: Request, res: Response, next: NextFunction) => 
         .groupByRaw('gs.day')
         .orderByRaw('gs.day asc'),
     );
+    // pg returns the ::date cast as a JS Date; default String() coerces to
+    // "Tue Apr 07 2026 00:00:00 GMT+0000 (Coordinated Universal Time)"
+    // which is what we don't want to surface to the client. Normalise to
+    // ISO 'YYYY-MM-DD' so the frontend can format consistently.
     res.json({
       ok: true,
       data: (rows as unknown as Array<{ day: unknown; cost_usd: unknown; calls: unknown }>).map((r) => ({
-        day:      String(r.day),
+        day:      r.day instanceof Date
+                    ? r.day.toISOString().slice(0, 10)
+                    : String(r.day).slice(0, 10),
         cost_usd: Number(r.cost_usd),
         calls:    Number(r.calls),
       })),
