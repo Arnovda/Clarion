@@ -29,7 +29,7 @@ export default function RegisterPage() {
     try {
       const res = await api.post('/auth/register', { companyName, email, password, displayName });
       setToken(res.data.data.token);
-      router.push('/setup');
+      router.push('/sources');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
       setError(msg || 'Registration failed. Please try again.');

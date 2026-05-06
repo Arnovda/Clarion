@@ -11,7 +11,7 @@
  *   />
  *
  *   // or with an href:
- *   <EmptyState action={{ label: 'Connect a source', href: '/setup' }} ... />
+ *   <EmptyState action={{ label: 'Connect a source', href: '/sources' }} ... />
  *
  *   // or with custom body (e.g. a full input + chips):
  *   <EmptyState title="..." description="...">

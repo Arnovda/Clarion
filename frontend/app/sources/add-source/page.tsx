@@ -85,7 +85,7 @@ export default function AddSourcePage() {
 
 function AddSourceWizard() {
   const router = useRouter();
-  // When the user clicks a connector tile on /setup, we route here with
+  // When the user clicks a connector tile on /sources, we route here with
   // ?type=<id>. The wizard skips the type-picker step and goes straight
   // to the configure form.
   const searchParams = useSearchParams();
@@ -369,7 +369,7 @@ function AddSourceWizard() {
           </h1>
         </div>
         <button
-          onClick={() => router.push('/setup')}
+          onClick={() => router.push('/sources')}
           className="text-[12.5px] text-muted hover:text-ink flex items-center gap-1.5"
         >
           <X className="w-4 h-4" /> Cancel

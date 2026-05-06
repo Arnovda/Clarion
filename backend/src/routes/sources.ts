@@ -187,7 +187,7 @@ router.post(
  * passed through a third-party login page like EO's auth screen). So
  * instead of rendering a postMessage page from backend's domain, we
  * 302-redirect the popup to a SAME-ORIGIN page on the frontend
- * (`/setup/oauth-return`) which then does the postMessage. Code + state
+ * (`/sources/oauth-return`) which then does the postMessage. Code + state
  * travel in the URL fragment (#…) so they never hit server logs.
  *
  * The actual code-exchange + DB write happens in a separate auth'd
@@ -219,7 +219,7 @@ router.get('/:type/oauth-callback', (req: Request, res: Response) => {
 
   // Use a 303 See Other so the GET-only nature is explicit. The fragment
   // is preserved by browsers when a Location header includes one.
-  res.redirect(303, `${frontendBase}/setup/oauth-return#${params}`);
+  res.redirect(303, `${frontendBase}/sources/oauth-return#${params}`);
 });
 
 // ─── POST /api/source-types/:type/oauth-finish ────────────────────────────

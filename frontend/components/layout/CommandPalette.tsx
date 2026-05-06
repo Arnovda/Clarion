@@ -45,7 +45,7 @@ const PALETTE_ICONS: Record<IconKey, React.ReactNode> = {
 const ACTIONS: SearchResult[] = [
   { type: 'action', id: 'ask',        title: 'Ask a question',    subtitle: 'Query your data with AI',  icon: 'chat',  href: '/query' },
   { type: 'action', id: 'dashboard',  title: 'Create dashboard',  subtitle: 'Build a new AI dashboard', icon: 'grid',  href: '/dashboards' },
-  { type: 'action', id: 'connect',    title: 'Connect a source',  subtitle: 'Add a new database',       icon: 'plug',  href: '/setup' },
+  { type: 'action', id: 'connect',    title: 'Connect a source',  subtitle: 'Add a new database',       icon: 'plug',  href: '/sources' },
   { type: 'action', id: 'catalog',    title: 'Catalog',           subtitle: 'Browse sources & products', icon: 'book',  href: '/catalog' },
   { type: 'action', id: 'team',       title: 'Team management',   subtitle: 'Users & invites',          icon: 'users', href: '/users' },
 ];

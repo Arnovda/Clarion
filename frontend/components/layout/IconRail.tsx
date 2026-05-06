@@ -68,7 +68,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
 
   // Curate — keep definitions correct (analyst+)
-  { key: 'sources',    href: '/setup',      label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
+  { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
   { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'review' },
 
   // Settings — admin only
@@ -86,7 +86,11 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/products':   ['/products'],
   '/pipelines':  ['/pipelines'],
   '/glossary':   ['/glossary'],
-  '/setup':      ['/setup', '/sources'],
+  // Curator's workshop. /setup retained as a back-compat alias so any
+  // bookmarked URLs from before the rename still light up the active
+  // state. Phase 4 of the catalog redesign moved /setup → /sources to
+  // give the curator surface an honest name.
+  '/sources':    ['/sources', '/setup'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],

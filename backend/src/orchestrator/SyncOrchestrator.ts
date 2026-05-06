@@ -550,7 +550,7 @@ async function runProfilerInBackground(args: {
         message,
         entityType: 'connection',
         entityId: connectionId,
-        link: `/setup?connectionId=${connectionId}`,
+        link: `/sources?connectionId=${connectionId}`,
       });
     } catch (notifyErr) {
       log.warn({ err: notifyErr, connectionId }, 'schema-drift notification failed (non-fatal)');

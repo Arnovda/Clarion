@@ -24,7 +24,7 @@ export default function LoginPage() {
       const res = await api.post('/auth/login', { email, password });
       setToken(res.data.data.token);
       const payload = getTokenPayload();
-      // Send admins-with-no-connections to /setup so they can connect
+      // Send admins-with-no-connections to /sources so they can connect
       // their first source — Home is empty without one. Everyone else
       // lands on /home, the daily-driver page (data health + alerts +
       // pinned dashboards + recent questions).
@@ -32,7 +32,7 @@ export default function LoginPage() {
         try {
           const connRes = await api.get('/connections');
           const hasConnections = (connRes.data.data?.length ?? 0) > 0;
-          router.push(hasConnections ? '/home' : '/setup');
+          router.push(hasConnections ? '/home' : '/sources');
         } catch {
           router.push('/home');
         }

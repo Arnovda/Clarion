@@ -42,7 +42,7 @@ interface Connection {
   query_engine?: string;          // 'source' | 'duckdb'
   ingestion_status?: string;      // null | 'pending' | 'running' | 'done' | 'error'
   last_ingested_at?: string;
-  // Source-connector fields (populated when this connection was created via /setup/add-source).
+  // Source-connector fields (populated when this connection was created via /sources/add-source).
   connector_type?: string | null; // e.g. 'exactonline'
   selected_entities?: string[];
   last_synced_at?: string | null;
@@ -1544,7 +1544,7 @@ function SourcesPageInner() {
 
   return (
     <AppShell
-      title="Connect"
+      title="Sources"
       subtitle={`${connections.length} source${connections.length !== 1 ? 's' : ''} connected`}
       contextPanel={isEmptyFirstRun ? undefined : contextPanel}
       pills={isEmptyFirstRun ? [] : [{ key: 'sources', label: 'Sources' }, { key: 'ingestion', label: 'Ingestion' }]}
@@ -1645,7 +1645,7 @@ function SourcesPageInner() {
               <ConnectorTile
                 key={`registry:${connector.id}`}
                 connector={connector}
-                onClick={() => router.push(`/setup/add-source?type=${encodeURIComponent(connector.id)}`)}
+                onClick={() => router.push(`/sources/add-source?type=${encodeURIComponent(connector.id)}`)}
               />
             ))}
           </div>
