@@ -991,15 +991,26 @@ export default function QualityPanel({
           onToggle={() => setPanels((p) => ({ ...p, rules: !p.rules }))}
           action={
             <div className="flex gap-2">
-              <button
-                onClick={runEvaluate}
-                disabled={evaluating || !rules.length}
-                className="px-2.5 py-1 text-xs rounded-md bg-raised border border-line text-ink hover:bg-softer disabled:opacity-40 font-medium flex items-center gap-1"
-              >
-                {evaluating
-                  ? <><span className="animate-spin inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full" />Evaluating…</>
-                  : '▶ Evaluate rules'}
-              </button>
+              {/* Evaluate rules currently only works against SQLite-backed
+                  source connections (it shells into the file directly).
+                  Product tables are DuckDB/Parquet-backed — there's no
+                  evaluator for them yet, so hide the button rather than
+                  surface the cryptic "paths[0] argument" path.resolve
+                  error. The Profile button on product tables uses the
+                  product-aware /quality/product/:id/profile endpoint
+                  (handled in runProfile via productTableId), which IS
+                  supported, so we leave that one. */}
+              {!productTableId && (
+                <button
+                  onClick={runEvaluate}
+                  disabled={evaluating || !rules.length}
+                  className="px-2.5 py-1 text-xs rounded-md bg-raised border border-line text-ink hover:bg-softer disabled:opacity-40 font-medium flex items-center gap-1"
+                >
+                  {evaluating
+                    ? <><span className="animate-spin inline-block w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full" />Evaluating…</>
+                    : '▶ Evaluate rules'}
+                </button>
+              )}
               <button
                 className="px-2.5 py-1 text-xs rounded-md bg-ocean text-white hover:bg-ocean-hover font-medium"
                 onClick={() => setAddingRule(true)}

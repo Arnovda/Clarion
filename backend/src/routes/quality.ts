@@ -33,11 +33,36 @@ const router = Router();
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * Custom error returned when a quality endpoint that requires direct
+ * SQLite file access is hit against a non-SQLite connection (e.g. a
+ * Postgres source, or a product/DuckDB connection). The route handler
+ * catches this and returns 400 instead of leaking the cryptic
+ * `path.resolve` "paths[0] argument must be of type string" error to
+ * the user.
+ */
+class UnsupportedConnectionTypeError extends Error {
+  status = 400;
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'UnsupportedConnectionTypeError';
+  }
+}
+
 async function getFilepath(connId: number): Promise<string> {
   const conn = await semanticDb('connections').where({ id: connId }).first();
   if (!conn) throw new Error('Connection not found');
   const cfg = typeof conn.config === 'string' ? JSON.parse(conn.config) : conn.config;
-  return path.resolve(cfg.filepath as string);
+  if (!cfg || typeof cfg.filepath !== 'string' || !cfg.filepath.trim()) {
+    // Most likely this is a product/DuckDB connection or a Postgres
+    // source — neither has a filepath. Don't crash with a path.resolve
+    // error; surface a friendly message so the frontend can hide the
+    // button or show a meaningful toast.
+    throw new UnsupportedConnectionTypeError(
+      'Rule evaluation against this connection is not yet supported — only SQLite-backed sources can be evaluated directly.',
+    );
+  }
+  return path.resolve(cfg.filepath);
 }
 
 function ragStatus(score: number | null): 'green' | 'amber' | 'red' | 'grey' {
@@ -575,7 +600,16 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin'), async
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
-    const fp     = await getFilepath(connId);
+    let fp: string;
+    try {
+      fp = await getFilepath(connId);
+    } catch (err) {
+      if (err instanceof UnsupportedConnectionTypeError) {
+        res.status(400).json({ ok: false, error: err.message });
+        return;
+      }
+      throw err;
+    }
     await evaluateRules(connId, table, fp);
     await checkAndCreateAlerts(connId, table, req.user?.tenantId);
     const updated = await semanticDb('dataset_profiles')
@@ -590,7 +624,19 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async 
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
-    const fp     = await getFilepath(connId);
+    let fp: string;
+    try {
+      fp = await getFilepath(connId);
+    } catch (err) {
+      if (err instanceof UnsupportedConnectionTypeError) {
+        res.status(400).json({
+          ok: false,
+          error: 'For product tables, use the product profile endpoint (/api/quality/product/:productTableId/profile) — direct file profiling is not available.',
+        });
+        return;
+      }
+      throw err;
+    }
 
     // Use user-configured BK column if one has been set for this table
     const stRow = await semanticDb('source_tables')
