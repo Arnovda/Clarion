@@ -97,6 +97,13 @@ function CatalogInner() {
   const [productRootId, setProductRootId]     = useState<number | null>(null);
   const [sourceRootConnId, setSourceRootConnId] = useState<number | null>(null);
 
+  // Cards-mode "Open full view" — when true, the slide-over expands to
+  // take the full screen width so ProductRootPanel renders with enough
+  // room for its 6 tabs. The cards grid hides while this is on. Resets
+  // whenever the user closes the panel or selects a different product.
+  const [productFullView, setProductFullView] = useState(false);
+  useEffect(() => { setProductFullView(false); }, [productRootId]);
+
   // ── Connection list (used to pass domains into source-table panel) ─────────
   const [connections, setConnections] = useState<Connection[]>([]);
   useEffect(() => {
@@ -291,6 +298,9 @@ function CatalogInner() {
           showCuratorSignals={canSeeStructure}
           onCreate={() => router.push('/products')}
           glossary={glossary}
+          fullView={productFullView}
+          onRequestFullView={() => setProductFullView(true)}
+          onExitFullView={() => setProductFullView(false)}
           productHint={(() => {
             if (!productRootId) return undefined;
             const p = products.find((x) => x.id === productRootId);
@@ -350,6 +360,12 @@ function CardsBody(props: {
    *  searching, so canonical business definitions appear before the
    *  matching products. */
   glossary: GlossaryEntry[];
+  /** When true, the slide-over expands to take the full screen for
+   *  the ProductRootPanel layout. Cards grid hides. Triggered by the
+   *  "Open full view" button inside ProductPreviewPanel. */
+  fullView: boolean;
+  onRequestFullView: () => void;
+  onExitFullView: () => void;
   /** Card data for the currently-selected product — used to seed the
    *  preview header so it renders instantly while the detail loads. */
   productHint: {
@@ -366,6 +382,40 @@ function CardsBody(props: {
     last_refreshed_at: string | null;
   } | undefined;
 }) {
+  // Full-view mode: hide the cards grid + render the detail panel
+  // edge-to-edge with the legacy ProductRootPanel (full-width tabs).
+  // Top bar adds a "Back to catalog" button so users can return to
+  // the grid without using the IconRail.
+  if (props.fullView && props.detailOpen) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="bg-softer border-b border-line px-6 py-2.5 flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={props.onExitFullView}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[12px] font-medium text-muted hover:text-ink rounded hover:bg-soft transition-colors"
+            title="Back to catalog"
+          >
+            <X className="w-3.5 h-3.5 rotate-45" strokeWidth={2} />
+            Back to catalog
+          </button>
+          <span className="text-[10.5px] font-mono text-muted-2 tracking-[0.12em] uppercase ml-auto">
+            Full view
+          </span>
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <EntityDetailPanel
+            selection={props.selection}
+            connections={props.connections}
+            onSaved={props.onSaved}
+            onProductDeleted={props.onProductDeleted}
+            productPreview={false}    /* Render the legacy full-tabs panel */
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 min-h-0">
       {/* Cards column — always visible. Detail panel uses a fixed width
@@ -399,18 +449,11 @@ function CardsBody(props: {
 
       {/* Detail panel — slides in from the right when something is selected.
           Uses EntityDetailPanel in PREVIEW mode, which renders a clean
-          summary (starter questions, key metrics, see-full-details button)
-          for product-root selections. The "See full details" button inside
-          the preview expands to the legacy ProductRootPanel with all tabs
-          intact. Other selection scopes (source-root, source-table,
-          product-table) render unchanged. */}
+          summary (starter questions, key metrics, "Open full view" button)
+          for product-root selections. The "Open full view" button signals
+          the parent (this component) to render the full-width view above
+          instead of cramming the legacy ProductRootPanel into 480px. */}
       {props.detailOpen && (
-        // Fixed-width detail panel so it never dominates the page. 480px
-        // is plenty for a focused product preview (header, starters, key
-        // metrics, table list, at-a-glance) without crowding the cards
-        // grid. When 'See full details' expands to ProductRootPanel
-        // inside the panel, content scrolls vertically — the width stays
-        // the same so the cards-column experience is consistent.
         <div className="hidden lg:flex w-[480px] flex-shrink-0 min-h-0 flex-col border-l border-line bg-canvas overflow-hidden relative">
           <EntityDetailPanel
             selection={props.selection}
@@ -419,6 +462,7 @@ function CardsBody(props: {
             onProductDeleted={props.onProductDeleted}
             productPreview={true}
             productHint={props.productHint}
+            onOpenFullView={props.onRequestFullView}
             onClose={props.onClearSelection}
           />
         </div>

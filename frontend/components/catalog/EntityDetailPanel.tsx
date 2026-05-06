@@ -74,6 +74,10 @@ interface Props {
    *  flash while the canonical detail loads. Comes from the card the
    *  user just clicked. */
   productHint?: ProductHint;
+  /** Called when the user clicks "Open full view" inside the preview.
+   *  The parent expands the slide-over to full-screen for the proper
+   *  ProductRootPanel layout (tabs need width). */
+  onOpenFullView?: () => void;
   /** Close handler — slides the detail panel away. */
   onClose?: () => void;
 }
@@ -85,6 +89,7 @@ export default function EntityDetailPanel({
   connections = [],
   productPreview,
   productHint,
+  onOpenFullView,
   onClose,
 }: Props) {
   if (selection.scope === 'empty') return <EmptyHint />;
@@ -107,6 +112,7 @@ export default function EntityDetailPanel({
           key={`pp-${selection.productId}`}
           productId={selection.productId}
           hint={productHint}
+          onOpenFullView={onOpenFullView}
           onProductDeleted={onProductDeleted}
           onClose={onClose}
         />

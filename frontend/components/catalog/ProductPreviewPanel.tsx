@@ -91,16 +91,24 @@ interface Props {
     };
     last_refreshed_at: string | null;
   };
+  /** Optional handler — when provided, the "Open full view" button
+   *  delegates to the parent (which expands the slide-over to take the
+   *  full width). Without it, the button falls back to inline expand
+   *  inside the slide-over (useful in tests / standalone mounts). */
+  onOpenFullView?: () => void;
   onProductDeleted?: () => void;
   onClose?: () => void;
 }
 
-export default function ProductPreviewPanel({ productId, hint, onProductDeleted, onClose }: Props) {
+export default function ProductPreviewPanel({ productId, hint, onOpenFullView, onProductDeleted, onClose }: Props) {
   const router = useRouter();
   const [data, setData] = useState<ProductDetail | null>(null);
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [aiStarters, setAiStarters] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
+  // Inline showFull mode is now a fallback for when the parent doesn't
+  // provide an `onOpenFullView` callback — the catalog page DOES, so in
+  // practice this is always handled by parent expansion to full width.
   const [showFull, setShowFull] = useState(false);
 
   // Reset full-mode flag whenever the selected product changes — new
@@ -402,19 +410,24 @@ export default function ProductPreviewPanel({ productId, hint, onProductDeleted,
           </Section>
         )}
 
-        {/* ── See full details ───────────────────────────────────────────── */}
+        {/* ── Open full view ─────────────────────────────────────────────── */}
+        {/* Renamed from "See full details" because the action is bigger
+            than viewing detail — it expands the panel to full-width
+            (parent handles via onOpenFullView). The label "Open full
+            view" makes that intent obvious. Falls back to inline expand
+            if no callback (e.g. tests). */}
         <div className="mt-8 pt-6 border-t border-line">
           <button
             type="button"
-            onClick={() => setShowFull(true)}
+            onClick={() => onOpenFullView ? onOpenFullView() : setShowFull(true)}
             disabled={loading}
             className="group/full inline-flex items-center gap-2 text-[13px] font-medium text-ocean hover:text-ocean-hover transition-colors disabled:opacity-50"
           >
-            See full details
+            Open full view
             <ArrowRight className="w-3.5 h-3.5 group-hover/full:translate-x-0.5 transition-transform" strokeWidth={2} />
           </button>
           <p className="text-[11.5px] text-muted-2 mt-1">
-            Schema diagram, transformation SQL, quality history, and admin tools.
+            Tables, schema, lineage, quality history, and admin tools.
           </p>
         </div>
       </div>
