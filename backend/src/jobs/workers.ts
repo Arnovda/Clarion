@@ -44,7 +44,6 @@ async function processSchemaProfilingJob(job: Job<SchemaProfilingJobData>): Prom
   try {
     const result = await runSchemaProfiler(
       connectionId,
-      null,
       (p) => {
         job.updateProgress(p).catch(() => {});
       },

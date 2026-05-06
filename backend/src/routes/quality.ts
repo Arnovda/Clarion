@@ -16,16 +16,15 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
-import Database from 'better-sqlite3';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
-import { runQualityProfile, runQualityProfileWithConnector } from '../quality/QualityProfiler';
+import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
 import { notifyTenant } from '../services/notificationService';
 import { resolveOwnerProductTable, OwnerResolveError } from '../services/productOwnership';
 import { isAzurePath } from '../services/warehouse';
-import { resolveProductTableById } from '../services/tableCatalog';
+import { resolveProductTableById, resolveSourceTable } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
 import { generateQualityAlertContext } from '../ai/AIService';
 
@@ -33,43 +32,36 @@ const router = Router();
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-/**
- * Custom error returned when a quality endpoint that requires direct
- * SQLite file access is hit against a non-SQLite connection (e.g. a
- * Postgres source, or a product/DuckDB connection). The route handler
- * catches this and returns 400 instead of leaking the cryptic
- * `path.resolve` "paths[0] argument must be of type string" error to
- * the user.
- */
-class UnsupportedConnectionTypeError extends Error {
-  status = 400;
-  constructor(msg: string) {
-    super(msg);
-    this.name = 'UnsupportedConnectionTypeError';
-  }
-}
-
-async function getFilepath(connId: number): Promise<string> {
-  const conn = await semanticDb('connections').where({ id: connId }).first();
-  if (!conn) throw new Error('Connection not found');
-  const cfg = typeof conn.config === 'string' ? JSON.parse(conn.config) : conn.config;
-  if (!cfg || typeof cfg.filepath !== 'string' || !cfg.filepath.trim()) {
-    // Most likely this is a product/DuckDB connection or a Postgres
-    // source — neither has a filepath. Don't crash with a path.resolve
-    // error; surface a friendly message so the frontend can hide the
-    // button or show a meaningful toast.
-    throw new UnsupportedConnectionTypeError(
-      'Rule evaluation against this connection is not yet supported — only SQLite-backed sources can be evaluated directly.',
-    );
-  }
-  return path.resolve(cfg.filepath);
-}
-
 function ragStatus(score: number | null): 'green' | 'amber' | 'red' | 'grey' {
   if (score == null) return 'grey';
   if (score >= 0.9) return 'green';
   if (score >= 0.75) return 'amber';
   return 'red';
+}
+
+/**
+ * Build a DuckDBConnector for a source table. Resolves the table location
+ * via the catalog (handles ingested_tables rows AND the source-connector
+ * flow that writes parquet directly to connections.warehouse_path), then
+ * constructs a connector pointing at the resolved URI.
+ *
+ * Returns null if the table hasn't been synced yet — the route handler
+ * surfaces a clean 409 with a "run sync first" message.
+ */
+async function buildSourceConnector(
+  tenantId: number | undefined,
+  connectionId: number,
+  tableName: string,
+): Promise<{ connector: DuckDBConnector; resolved: { tableName: string; uri: string } } | null> {
+  const resolved = await resolveSourceTable(tenantId, connectionId, tableName);
+  if (!resolved) return null;
+  const parentDir = isAzurePath(resolved.uri)
+    ? resolved.uri.substring(0, resolved.uri.lastIndexOf('/'))
+    : path.dirname(resolved.uri);
+  const tablePaths = new Map<string, string>([[resolved.tableName, resolved.uri]]);
+  const connector = new DuckDBConnector(parentDir, [resolved.tableName], tablePaths);
+  await connector.connect();
+  return { connector, resolved };
 }
 
 // ─── Rule evaluation — dialect-agnostic core + per-engine adapters ──────────
@@ -259,80 +251,6 @@ async function evaluateRulesCore(
   }
 }
 
-// ─── SQLite dialect adapter ────────────────────────────────────────────────
-
-class SqliteRuleDialect implements RuleDialect {
-  private db: Database.Database;
-  private tableName: string;
-  private pkCol: string;
-  private cachedTotal: number | null = null;
-
-  constructor(filepath: string, tableName: string) {
-    this.db = new Database(filepath, { readonly: true });
-    this.tableName = tableName;
-    const colDefs = this.db.prepare(`PRAGMA table_info("${tableName}")`).all() as Array<{ name: string; pk: number }>;
-    this.pkCol = colDefs.find((c) => c.pk === 1)?.name ?? colDefs[0]?.name ?? 'rowid';
-  }
-
-  async total(): Promise<number> {
-    if (this.cachedTotal == null) {
-      const { cnt } = this.db.prepare(`SELECT COUNT(*) AS cnt FROM "${this.tableName}"`).get() as { cnt: number };
-      this.cachedTotal = cnt;
-    }
-    return this.cachedTotal;
-  }
-
-  async findFailures(rule: QualityRuleRow): Promise<FailureRow[]> {
-    const fields = parseRuleFields(rule);
-    const field = fields[0] ?? '';
-    const cfg = parseRuleConfig(rule);
-    const t = this.tableName;
-    const pk = this.pkCol;
-
-    if (rule.rule_type === 'null_check' && field) {
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid FROM "${t}" WHERE "${field}" IS NULL LIMIT 200`).all() as { rid: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: field, actual_value: 'NULL', expected_description: `${field} must not be null` }));
-    }
-
-    if (rule.rule_type === 'range' && field) {
-      const conds: string[] = [];
-      if (cfg.min != null) conds.push(`CAST("${field}" AS REAL) < ${Number(cfg.min)}`);
-      if (cfg.max != null) conds.push(`CAST("${field}" AS REAL) > ${Number(cfg.max)}`);
-      if (!conds.length) return [];
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid, "${field}" AS val FROM "${t}" WHERE "${field}" IS NOT NULL AND (${conds.join(' OR ')}) LIMIT 200`).all() as { rid: unknown; val: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: field, actual_value: String(r.val), expected_description: `${field} must be between ${cfg.min ?? '-∞'} and ${cfg.max ?? '+∞'}` }));
-    }
-
-    if (rule.rule_type === 'uniqueness' && field) {
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid, "${field}" AS val FROM "${t}" WHERE "${field}" IN (SELECT "${field}" FROM "${t}" GROUP BY "${field}" HAVING COUNT(*)>1) LIMIT 200`).all() as { rid: unknown; val: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: field, actual_value: String(r.val), expected_description: `${field} must be unique` }));
-    }
-
-    if (rule.rule_type === 'format' && field && cfg.pattern) {
-      const pattern = String(cfg.pattern).replace(/'/g, "''");
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid, "${field}" AS val FROM "${t}" WHERE "${field}" IS NOT NULL AND "${field}" NOT GLOB '${pattern}' LIMIT 200`).all() as { rid: unknown; val: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: field, actual_value: String(r.val), expected_description: `${field} must match pattern: ${cfg.pattern}` }));
-    }
-
-    if (rule.rule_type === 'freshness' && cfg.date_field && cfg.max_age_hours != null) {
-      const cutoff = new Date(Date.now() - Number(cfg.max_age_hours) * 3600 * 1000).toISOString();
-      const dateField = String(cfg.date_field);
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid, "${dateField}" AS val FROM "${t}" WHERE "${dateField}" < '${cutoff}' LIMIT 200`).all() as { rid: unknown; val: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: dateField, actual_value: String(r.val), expected_description: `${dateField} must be within last ${cfg.max_age_hours}h` }));
-    }
-
-    if (rule.rule_type === 'custom' && cfg.sql) {
-      const sql = String(cfg.sql);
-      const rows = this.db.prepare(`SELECT "${pk}" AS rid FROM "${t}" WHERE NOT (${sql}) LIMIT 200`).all() as { rid: unknown }[];
-      return rows.map((r) => ({ record_id: String(r.rid), field_name: field || 'multiple', actual_value: '—', expected_description: rule.description || sql }));
-    }
-
-    return [];
-  }
-
-  close(): void { this.db.close(); }
-}
-
 // ─── DuckDB dialect adapter ────────────────────────────────────────────────
 //
 // Wraps the (already-connected) DuckDBConnector that the caller built via
@@ -457,19 +375,14 @@ class DuckDBRuleDialect implements RuleDialect {
   }
 }
 
-// ─── Public entry points ───────────────────────────────────────────────────
+// ─── Public entry point ────────────────────────────────────────────────────
 //
-// The two existing call sites (POST /:connId/:table/evaluate and POST
-// /:connId/:table/profile) keep calling evaluateRules(connId, table, fp)
-// which routes through the SQLite adapter. The new product route calls
-// evaluateRulesDuckDB instead. Both ultimately funnel into evaluateRulesCore.
+// Single evaluator for every layer (source + product). Caller resolves the
+// table to a URI via the catalog and hands us a connected DuckDBConnector;
+// we just run rules against the registered view. No SQLite path exists —
+// the platform standardised on DuckDB-on-parquet for all data access.
 
-async function evaluateRules(connId: number, tableName: string, filepath: string): Promise<void> {
-  const dialect = new SqliteRuleDialect(filepath, tableName);
-  await evaluateRulesCore(connId, tableName, dialect);
-}
-
-async function evaluateRulesDuckDB(
+async function evaluateRules(
   connId: number,
   tableName: string,
   connector: DuckDBExecutor,
@@ -825,7 +738,7 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
 // POST /api/quality/product/:productTableId/evaluate — run rule evaluation
 // against a product table via DuckDB. Mirrors the resolve+connector dance
 // from /product/:productTableId/profile above, then routes through
-// evaluateRulesDuckDB instead of profiling. Cheaper than profiling: skips
+// evaluateRules instead of profiling. Cheaper than profiling: skips
 // per-field stats and only runs the active rules.
 router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -898,7 +811,7 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
     });
 
     try {
-      await evaluateRulesDuckDB(consumerConnId, pt.table_name, connector);
+      await evaluateRules(consumerConnId, pt.table_name, connector);
       await checkAndCreateAlerts(consumerConnId, pt.table_name, tenantId);
     } catch (err) {
       connector.disconnect();
@@ -963,23 +876,33 @@ router.get('/:connId/:table/history', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/quality/:connId/:table/evaluate  — run rule evaluation only (no re-profiling)
-router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin'), async (req, res, next) => {
+// POST /api/quality/:connId/:table/evaluate  — run rule evaluation only (no re-profiling).
+// Resolves the source table via the catalog, builds a DuckDB connector
+// pointing at its parquet/delta URI, and evaluates rules through the same
+// engine the product-table route uses. Pre-condition: source must have
+// been synced (the catalog returns null otherwise).
+router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin', 'analyst'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
-    let fp: string;
-    try {
-      fp = await getFilepath(connId);
-    } catch (err) {
-      if (err instanceof UnsupportedConnectionTypeError) {
-        res.status(400).json({ ok: false, error: err.message });
-        return;
-      }
-      throw err;
+    const tenantId = req.user?.tenantId;
+
+    const built = await buildSourceConnector(tenantId, connId, table);
+    if (!built) {
+      res.status(409).json({
+        ok: false,
+        error: `No warehouse data for "${table}" yet. Sync the source first (the table has not been ingested to parquet).`,
+      });
+      return;
     }
-    await evaluateRules(connId, table, fp);
-    await checkAndCreateAlerts(connId, table, req.user?.tenantId);
+
+    try {
+      await evaluateRules(connId, table, built.connector);
+      await checkAndCreateAlerts(connId, table, tenantId);
+    } finally {
+      built.connector.disconnect();
+    }
+
     const updated = await semanticDb('dataset_profiles')
       .where({ connection_id: connId, table_name: table })
       .orderBy('profiled_at', 'desc').first();
@@ -988,22 +911,24 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin'), async
 });
 
 // POST /api/quality/:connId/:table/profile  — trigger profiling + rule eval
-router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
+// for a SOURCE table. Same DuckDB-on-parquet path as the product variant —
+// resolves the URI via the catalog, uses runQualityProfileWithConnector,
+// then runs evaluateRules. Field profiles use generic SQL (COUNT/DISTINCT/
+// MIN/MAX/AVG/PERCENTILE_CONT) so they work uniformly across source and
+// product layers.
+router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analyst'), async (req, res, next) => {
   try {
     const connId = Number(req.params.connId);
     const table  = req.params.table;
-    let fp: string;
-    try {
-      fp = await getFilepath(connId);
-    } catch (err) {
-      if (err instanceof UnsupportedConnectionTypeError) {
-        res.status(400).json({
-          ok: false,
-          error: 'For product tables, use the product profile endpoint (/api/quality/product/:productTableId/profile) — direct file profiling is not available.',
-        });
-        return;
-      }
-      throw err;
+    const tenantId = req.user?.tenantId;
+
+    const built = await buildSourceConnector(tenantId, connId, table);
+    if (!built) {
+      res.status(409).json({
+        ok: false,
+        error: `No warehouse data for "${table}" yet. Sync the source first (the table has not been ingested to parquet).`,
+      });
+      return;
     }
 
     // Use user-configured BK column if one has been set for this table
@@ -1013,9 +938,15 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin'), async 
       .first() as { business_key_column: string | null } | undefined;
     const bkOverride = stRow?.business_key_column ?? undefined;
 
-    const result = await runQualityProfile(connId, table, fp, bkOverride, req.user?.tenantId);
-    await evaluateRules(connId, table, fp);
-    await checkAndCreateAlerts(connId, table, req.user?.tenantId);
+    let result;
+    try {
+      result = await runQualityProfileWithConnector(connId, table, built.connector, undefined, bkOverride, tenantId);
+      await evaluateRules(connId, table, built.connector);
+      await checkAndCreateAlerts(connId, table, tenantId);
+    } finally {
+      built.connector.disconnect();
+    }
+
     // Return updated summary
     const updated = await semanticDb('dataset_profiles').where({ id: result.profileId }).first();
 

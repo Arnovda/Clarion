@@ -520,7 +520,7 @@ async function runProfilerInBackground(args: {
   }
 
   try {
-    await runSchemaProfiler(connectionId, null, (p) => {
+    await runSchemaProfiler(connectionId, (p) => {
       log.debug({ connectionId, phase: p.phase, msg: p.message }, 'profiler progress');
       // Best-effort persistence of progress — never break the profiler if
       // the DB write hiccups.

@@ -1,4 +1,3 @@
-import { SqliteConnector } from '../connectors/SqliteConnector';
 import { BaseConnector, FkCandidate } from '../connectors/BaseConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
 import {
@@ -9,7 +8,7 @@ import {
 } from '../ai/AIService';
 import type { TableContextOutput, FkCandidateLike } from '../ai/prompts/schemaContextPrompt';
 import { semanticDb } from '../db/knex';
-import { runQualityProfile, runQualityProfileWithConnector } from '../quality/QualityProfiler';
+import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 import { getConnector as getSourceConnector } from '@databridge/connectors';
@@ -54,7 +53,6 @@ export interface ProfilerProgress {
  */
 export async function runSchemaProfiler(
   connectionId: number,
-  filePath: string | null,
   onProgress?: (p: ProfilerProgress) => void,
   connectorOverride?: BaseConnector,
 ): Promise<ProfilerResult> {
@@ -76,15 +74,12 @@ export async function runSchemaProfiler(
     selectedEntities = (conn?.selected_entities as string[] | null) ?? null;
   } else {
     const conn = await semanticDb('connections').where({ id: connectionId }).first();
-    if (conn) {
-      connector = await createConnector(conn);
-      connectorType = conn.connector_type ?? null;
-      selectedEntities = (conn.selected_entities as string[] | null) ?? null;
-    } else if (filePath) {
-      connector = new SqliteConnector(filePath);
-    } else {
-      throw new Error(`Connection ${connectionId} not found and no file path provided`);
+    if (!conn) {
+      throw new Error(`Connection ${connectionId} not found`);
     }
+    connector = await createConnector(conn);
+    connectorType = conn.connector_type ?? null;
+    selectedEntities = (conn.selected_entities as string[] | null) ?? null;
   }
 
   await connector.connect();
@@ -191,13 +186,16 @@ export async function runSchemaProfiler(
     const table = schema.tables[ti];
     emit({ phase: 'quality', message: `Profiling ${table.tableName}…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
     try {
-      const useDuckDb = connectorOverride || (await semanticDb('connections').where({ id: connectionId }).first())?.query_engine === 'duckdb';
-      let result: Awaited<ReturnType<typeof runQualityProfile>>;
-      if (useDuckDb && connectorOverride) {
-        result = await runQualityProfileWithConnector(connectionId, table.tableName, connectorOverride, table.columns.map(c => ({ name: c.name, type: c.type })));
-      } else {
-        result = await runQualityProfile(connectionId, table.tableName, filePath ?? '');
-      }
+      // Always use the connector-based profiler — every connection type
+      // (SQLite for local dev, the source connectors for live data, DuckDB
+      // for product warehouses) implements the BaseConnector interface, so
+      // there's a single code path.
+      const result = await runQualityProfileWithConnector(
+        connectionId,
+        table.tableName,
+        connector,
+        table.columns.map(c => ({ name: c.name, type: c.type })),
+      );
       qualityStats.push({
         table_name: table.tableName,
         row_count:  result.rowCount,

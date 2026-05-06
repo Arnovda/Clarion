@@ -172,9 +172,11 @@ app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), asyn
     const { runSchemaProfiler } = await import('./semantic/SchemaProfiler');
     const connection = await semanticDb('connections').where({ id: req.params.id }).first();
     if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
-    const config = (typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config) as { filepath: string };
     await semanticDb('source_tables').where({ connection_id: connection.id }).delete();
-    const result = await runSchemaProfiler(connection.id as number, config.filepath);
+    // SchemaProfiler builds its own connector from the connection record
+    // via createConnector() — no filepath parameter needed since we
+    // standardised on connector-based introspection for every source type.
+    const result = await runSchemaProfiler(connection.id as number);
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });
