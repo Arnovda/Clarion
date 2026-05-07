@@ -32,6 +32,11 @@ data/
 # Terraform plans (binary, regenerable)
 *.tfplan
 
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # OS
 .DS_Store
 Thumbs.db

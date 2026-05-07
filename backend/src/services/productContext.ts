@@ -188,9 +188,14 @@ export async function buildProductSemanticContext(
 
   const tableIds = tables.map((t) => t.id);
 
-  // Get all columns
+  // Get all columns. Exclude technical columns (e.g. `_row_hash` today;
+  // `_valid_from` / `_valid_to` / `_is_current` / `_hash_schema_version`
+  // when SCD2 lands). The `is_technical` flag is the single firewall that
+  // keeps these out of every AI/UI surface — see
+  // docs/backlog/SCD2.md and the Phase 1 migration.
   const columns: ProductColumnRow[] = await semanticDb('product_columns')
     .whereIn('product_table_id', tableIds)
+    .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
     .orderBy(['sort_order', 'id']);
 
   // Get relationships

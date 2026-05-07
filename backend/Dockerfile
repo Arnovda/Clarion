@@ -34,8 +34,19 @@ FROM node:20-slim AS production
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-      wget python3 make g++ ca-certificates libcurl4-openssl-dev \
+      wget python3 python3-pip python3-venv make g++ ca-certificates libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Python deps for the SCD1/SCD2 sidecar (etl/scd2/commit_table.py). The
+# sidecar is invoked by `services/warehouse/deltaWriter.ts` whenever a
+# product transformation runs under `STORAGE_FORMAT=delta_v1`. Install
+# into a venv to sidestep PEP 668's "externally-managed-environment"
+# guard on Debian; expose the venv on PATH so plain `python3` resolves
+# to it (matches the default `PYTHON_BIN=python3`).
+RUN python3 -m venv /opt/sidecar-venv \
+    && /opt/sidecar-venv/bin/pip install --no-cache-dir \
+        deltalake==0.23.2 pandas==2.2.3 pyarrow==18.1.0
+ENV PATH="/opt/sidecar-venv/bin:${PATH}"
 
 # The backend's `file:../packages/connectors` dep resolution looks RELATIVE to
 # the backend's package.json. Recreate the same on-disk layout the build had:
@@ -54,6 +65,14 @@ RUN npm ci --omit=dev
 # Copy compiled JS + knexfile
 COPY --from=builder /build/backend/dist ./dist
 COPY backend/knexfile.ts ./
+
+# SCD1/SCD2 sidecar — invoked via child_process.spawn from
+# services/warehouse/deltaWriter.ts. The default resolver in deltaWriter
+# walks up four levels from __dirname (`dist/services/warehouse/`) to
+# `etl/scd2/commit_table.py`, so place it at /app/etl/scd2/ to match.
+# Override at runtime with `SCD2_SIDECAR_PATH` if a different layout is
+# preferred.
+COPY etl/scd2/ /app/etl/scd2/
 
 # Migrations are run via `knex migrate:latest` which loads knexfile.ts via
 # ts-node, so we need it at runtime even though the app itself is plain JS.

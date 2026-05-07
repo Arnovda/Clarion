@@ -355,6 +355,9 @@ async function loadAgentContext(
     const columns = tableIds.length > 0
       ? await trx('product_columns')
           .whereIn('product_table_id', tableIds)
+          // Hide technical columns (`_row_hash`; future SCD2 metadata) from
+          // the investigate-agent's schema context.
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['product_table_id', 'sort_order'])
           .select('product_table_id', 'column_name', 'data_type', 'column_role', 'description')
       : [];

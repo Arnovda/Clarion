@@ -29,7 +29,11 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
     const tables = await semanticDb('product_tables').whereIn('star_schema_id', schemaIds);
     const tableIds = tables.map((t: { id: number }) => t.id);
     const columns = tableIds.length
-      ? await semanticDb('product_columns').whereIn('product_table_id', tableIds)
+      ? await semanticDb('product_columns')
+          .whereIn('product_table_id', tableIds)
+          // Don't sync technical columns to Neo4j — they're physical-storage
+          // metadata, not semantic, and would clutter the graph.
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
       : [];
 
     // Allocate neo4j_pg_id for tables that don't have one

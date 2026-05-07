@@ -282,11 +282,14 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       };
     });
 
-    // Columns
+    // Columns. Hide technical columns (`_row_hash` today; future SCD2
+    // metadata) from the product detail panel — these are physical-storage
+    // concerns the curator never authors or describes.
     const tableIds = tables.map((t: { id: number }) => t.id);
     const columns = tableIds.length
       ? await semanticDb('product_columns')
           .whereIn('product_table_id', tableIds)
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['sort_order', 'id'])
       : [];
 
@@ -1277,6 +1280,8 @@ router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next
     const columns = tableIds.length
       ? await semanticDb('product_columns')
           .whereIn('product_table_id', tableIds)
+          // Refine prompts must not see technical columns.
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['sort_order', 'id'])
       : [];
     const kpis = await semanticDb('product_kpis')

@@ -219,6 +219,9 @@ router.post('/generate', async (req: Request, res: Response, next: NextFunction)
       const tIds = tables.map((t: { id: number }) => t.id);
       const prodCols = await semanticDb('product_columns')
         .whereIn('product_table_id', tIds)
+        // Hide technical columns (`_row_hash`; future SCD2 metadata) from the
+        // notebook schema explorer + AI prompt context.
+        .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
         .select('product_table_id', 'column_name', 'data_type', 'display_name', 'description', 'column_role', 'fk_target_table')
         .orderBy(['product_table_id', 'sort_order', 'id']);
       const pColMap = new Map<number, typeof prodCols>();
@@ -385,6 +388,8 @@ router.get('/schema/:connectionId', async (req: Request, res: Response, next: Ne
       const columns = tableIds.length
         ? await semanticDb('product_columns')
             .whereIn('product_table_id', tableIds)
+            // Hide technical columns from the notebook schema panel.
+            .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
             .select('id', 'product_table_id', 'column_name', 'data_type', 'display_name', 'description', 'column_role', 'fk_target_table')
             .orderBy(['product_table_id', 'sort_order', 'id'])
         : [];

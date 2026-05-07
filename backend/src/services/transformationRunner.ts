@@ -708,8 +708,19 @@ export async function runProductTransformation(
         // Replaces the parquet write entirely when STORAGE_FORMAT=delta_v1.
         // Same code path for dim and fact (per user spec: facts overwrite
         // each refresh too, change counts tracked for the chart).
-        const { isDeltaStorageEnabled, writeDeltaWithSidecar } = await import('./warehouse/deltaWriter');
+        const { isDeltaStorageEnabled, writeDeltaWithSidecar, isSidecarReachable } = await import('./warehouse/deltaWriter');
         if (isDeltaStorageEnabled()) {
+          // Fast-fail check — the sidecar is a separate Python process
+          // and a missing script / missing python3 should surface here
+          // (before we run the AI-generated SQL into a tmp parquet) not
+          // 30 seconds later when spawn fails. Same error class either
+          // way; this just turns a deferred failure into an immediate one.
+          if (!isSidecarReachable()) {
+            throw new Error(
+              'STORAGE_FORMAT=delta_v1 is set but the Python sidecar is not reachable. ' +
+              'Check SCD2_SIDECAR_PATH / PYTHON_BIN, or unset STORAGE_FORMAT to fall back to parquet.',
+            );
+          }
           // Pull business-key columns (for diffing) + all column names (for
           // hashing) in one round-trip.
           const cols = await tenantQuery(tenantId, (trx) =>

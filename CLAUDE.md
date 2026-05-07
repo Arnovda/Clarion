@@ -31,7 +31,73 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-05 (Storage layer consolidation — Phase 3)
+**Last updated:** 2026-05-07 (SCD1 foundation: Delta + Python sidecar + change-evolution chart)
+
+**SCD1 + change tracking — Delta + Python sidecar (2026-05-07):** Replaces
+the parquet-overwrite write path for product tables with Delta Lake +
+a small Python sidecar that diffs new vs existing state on a business
+key. Per-refresh `unchanged / updated / inserted / deleted` counts are
+persisted to a new `product_table_refresh_history` table and surfaced
+as a per-table change-evolution mini chart on `/products/[id]`. Gated
+on `STORAGE_FORMAT=delta_v1`; default keeps the legacy parquet path.
+Sets the foundation SCD2 will extend later — full design captured in
+`docs/backlog/SCD2.md`.
+
+- **New migration `20260508000052_create_refresh_history.ts`:**
+  - `product_table_refresh_history` (RLS-protected, one row per refresh
+    attempt, keeps counts + status + error + storage_format)
+  - `product_columns.is_technical` boolean — firewall flag that keeps
+    `_row_hash` and future SCD2 columns out of every UI/AI surface.
+- **Python sidecar `etl/scd2/commit_table.py`:**
+  - JSON-over-stdin/stdout protocol; deltalake + pandas, no extra deps
+  - md5 row-hash with ASCII unit separator; explicit NULL handling
+  - Outer-merge diff on business key; falls back to "all inserted" when
+    no BK is declared
+  - `mode='overwrite'`, `schema_mode='merge'` so the writer widens
+    schema automatically when a transformation produces new columns
+  - 11 pytest cases covering hash + diff (`scd2/test_commit_table.py`)
+- **Node `services/warehouse/deltaWriter.ts`:**
+  - Spawns sidecar via `child_process.spawn`, 15-min timeout, SIGKILL
+  - Records `product_table_refresh_history` row regardless of outcome
+    (failed rows show up on the chart so users see "something tried")
+  - `isSidecarReachable()` fast-fail check called from
+    `transformationRunner` BEFORE the AI-generated SQL runs — turns a
+    deferred "spawn failed" into an immediate "config wrong" error.
+- **`transformationRunner.ts` integration:** Feature-flagged Delta
+  branch runs before the legacy parquet branch; `_row_hash` filtered
+  out of `syncProductColumns` so it never lands in `product_columns`.
+  Same code path for dim and fact (per spec — facts overwrite each
+  refresh too, change counts tracked for the chart).
+- **`is_technical` firewall wired into 7 surfaces:** `productContext`
+  (NL→SQL prompt context), `investigateService` + `refineService` (AI
+  prompts), `routes/products.ts` GET `/:id` and `/:id/refine` (UI panel
+  + refine prompt), `routes/notebooks.ts` (schema explorer + AI prompt),
+  `productGraphSync` (Neo4j sync). Every read of `product_columns` for
+  a user/AI-facing surface now appends
+  `WHERE is_technical = false OR is_technical IS NULL`.
+- **API `GET /api/products/tables/:tableId/refresh-history?limit=N`:**
+  Returns chronological refresh rows under tenant RLS; default 30, max
+  200.
+- **Frontend mini chart (`components/products/RefreshHistoryChart.tsx`):**
+  Two variants — `compact` (32px sparkline shown inline in each table
+  row) and `full` (200px chart with axes, legend, "last refresh"
+  summary strip, shown in the expanded view). Wired into
+  `ProductRootPanel` so it surfaces on both `/products/[id]` and
+  `/catalog?productId=…`.
+- **Backend Dockerfile:** Production image now bakes Python venv with
+  deltalake/pandas/pyarrow pinned to the same versions as
+  `etl/requirements.txt`. Sidecar copied to `/app/etl/scd2/` so the
+  default path resolver in `deltaWriter` finds it without env-var
+  overrides.
+- **New env vars (documented in `.env.example`):** `STORAGE_FORMAT`
+  (default unset = parquet), `PYTHON_BIN` (default `python3`),
+  `SCD2_SIDECAR_PATH` (override for non-default deployment layouts).
+- **What's NOT in this commit (next ops steps):**
+  - Notification on anomalous deletes (e.g. >50% rows deleted) — the
+    data is there, no UI hook yet.
+  - Production rollout: flip `STORAGE_FORMAT=delta_v1` per-tenant once
+    the local smoke test confirms behaviour.
+  - SCD2 itself — see `docs/backlog/SCD2.md` for the design.
 
 **Storage layer consolidation — Phase 3 (2026-05-05):** Tenant-prefixed,
 id-stable warehouse layout for product tables. Eliminates the cross-tenant
@@ -1043,6 +1109,17 @@ SMTP_SECURE=false
 SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=Clarion <noreply@yourdomain.com>
+
+# Storage format for product tables. `delta_v1` enables the Delta Lake +
+# Python sidecar write path with row-hash change tracking. Unset (or any
+# other value) → legacy parquet COPY TO. Foundation for SCD2.
+STORAGE_FORMAT=
+
+# Python interpreter the SCD1/SCD2 sidecar runs under. Defaults to `python3`.
+PYTHON_BIN=
+
+# Override sidecar script path. Defaults to <repo>/etl/scd2/commit_table.py.
+SCD2_SIDECAR_PATH=
 
 # Azure (optional — only needed for production / Azure deployment)
 # AZURE_STORAGE_CONNECTION_STRING=

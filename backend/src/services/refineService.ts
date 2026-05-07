@@ -73,6 +73,9 @@ export async function buildRefineContext(
     const columns = tableIds.length > 0
       ? await trx('product_columns')
           .whereIn('product_table_id', tableIds)
+          // Hide technical columns (`_row_hash`; future SCD2 metadata) from
+          // refine prompts so Claude doesn't try to modify or describe them.
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['product_table_id', 'sort_order'])
           .select('id', 'product_table_id', 'column_name', 'data_type',
                   'column_role', 'description', 'transformation_expression')
