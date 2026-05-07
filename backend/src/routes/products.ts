@@ -1178,6 +1178,55 @@ router.get('/tables/:tableId/checks', requireAuth, async (req: Request, res: Res
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/products/tables/:tableId/refresh-history — Per-table refresh history
+//
+// Powers the per-table change-evolution mini chart on /products/[id]. Returns
+// the most recent N refresh rows (default 30, max 200) ordered by
+// refresh_started_at DESC. RLS isolates by tenant.
+// ---------------------------------------------------------------------------
+
+router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tableId = Number(req.params.tableId);
+    if (!Number.isFinite(tableId)) {
+      res.status(400).json({ ok: false, error: 'invalid tableId' });
+      return;
+    }
+    const limitRaw = Number(req.query.limit);
+    const limit = Math.min(
+      Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 30, 1),
+      200,
+    );
+
+    const tenantId = req.user?.tenantId;
+    if (tenantId) {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    }
+
+    const rows = await semanticDb('product_table_refresh_history')
+      .where({ product_table_id: tableId })
+      .orderBy('refresh_started_at', 'desc')
+      .limit(limit)
+      .select(
+        'id',
+        'refresh_started_at',
+        'refresh_completed_at',
+        'status',
+        'rows_unchanged',
+        'rows_updated',
+        'rows_inserted',
+        'rows_deleted',
+        'rows_total',
+        'error_message',
+        'storage_format',
+      );
+
+    // Return chronological order (oldest → newest) for direct charting.
+    res.json({ ok: true, data: rows.reverse() });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // PUT /api/products/columns/:columnId — Update a product column
 // ---------------------------------------------------------------------------
 

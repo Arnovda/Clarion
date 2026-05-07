@@ -40,6 +40,7 @@ const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), {
 const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: false });
 const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
 const RefineChat = dynamic(() => import('@/components/products/RefineChat'), { ssr: false });
+const RefreshHistoryChart = dynamic(() => import('@/components/products/RefreshHistoryChart'), { ssr: false });
 
 type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
 
@@ -612,6 +613,14 @@ function TablesSection({
                 {t.description && <span className="text-[12px] text-muted ml-2">{t.description}</span>}
               </div>
               <div className="flex items-center gap-3 shrink-0">
+                {/* Compact change-evolution sparkline — only shown when there's
+                    at least one successful refresh (avoids a "loading" state in
+                    every row on mount). */}
+                {t.transformation_status === 'success' && (
+                  <div className="w-[120px] hidden md:block" aria-hidden>
+                    <RefreshHistoryChart productTableId={t.id} variant="compact" limit={20} />
+                  </div>
+                )}
                 {t.row_count !== null && (
                   <span className="text-[11px] text-muted-2 tabular-nums">{t.row_count.toLocaleString('en-GB')} rows</span>
                 )}
@@ -619,7 +628,19 @@ function TablesSection({
               </div>
             </button>
             {open && (
-              <div className="px-4 pb-4 bg-softer/30">
+              <div className="px-4 pb-4 bg-softer/30 space-y-4">
+                {/* Full change-evolution chart — only meaningful once a refresh
+                    has run; the chart itself surfaces an empty state otherwise. */}
+                <div className="bg-raised border border-line rounded-md overflow-hidden">
+                  <div className="px-3 py-2 border-b border-line bg-softer/40">
+                    <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">
+                      Change history
+                    </p>
+                  </div>
+                  <div className="px-4 py-3">
+                    <RefreshHistoryChart productTableId={t.id} variant="full" limit={30} />
+                  </div>
+                </div>
                 <div className="bg-raised border border-line rounded-md overflow-hidden">
                   <div className="px-3 py-2 border-b border-line bg-softer/40">
                     <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">

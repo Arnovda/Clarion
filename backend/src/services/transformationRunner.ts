@@ -703,6 +703,70 @@ export async function runProductTransformation(
           ? false  // Azure: always overwrite for now (incremental merge on blob needs read-back)
           : fs.existsSync(path.join(tableOutputPath, 'data.parquet'));
 
+        // Feature-flagged Delta write path. Routes through the Python
+        // sidecar which computes row_hash + change counts + writes Delta.
+        // Replaces the parquet write entirely when STORAGE_FORMAT=delta_v1.
+        // Same code path for dim and fact (per user spec: facts overwrite
+        // each refresh too, change counts tracked for the chart).
+        const { isDeltaStorageEnabled, writeDeltaWithSidecar } = await import('./warehouse/deltaWriter');
+        if (isDeltaStorageEnabled()) {
+          // Pull business-key columns (for diffing) + all column names (for
+          // hashing) in one round-trip.
+          const cols = await tenantQuery(tenantId, (trx) =>
+            trx('product_columns')
+              .where({ product_table_id: table.id })
+              .select('column_name', 'column_role'),
+          ) as Array<{ column_name: string; column_role: string | null }>;
+          const businessKeyColumns = cols
+            .filter((c) => c.column_role === 'surrogate_key' || c.column_role === 'natural_key')
+            .map((c) => c.column_name);
+          const businessColumns = cols.map((c) => c.column_name);
+
+          // The Delta path writes directly at `tableOutputPath` (the dim's
+          // directory). No `data.parquet` suffix — Delta owns the directory
+          // layout (`_delta_log/` + parquet data files inside).
+          await writeDeltaWithSidecar({
+            db,
+            deltaUri: tableOutputPath,
+            selectSql: `SELECT * FROM ${tempTable}`,
+            productTableId: table.id,
+            tenantId,
+            businessKeyColumns,
+            businessColumns,
+          });
+
+          await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
+          await publishProductTable(tenantId, table.id, tableOutputPath, rowCount);
+
+          // Sync product_columns from the same DESCRIBE we'd have done on
+          // parquet — uses the existing scan view machinery to read the
+          // freshly-written Delta.
+          try {
+            const descView = `__desc_${table.table_name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+            await createScanView(db, descView, tableOutputPath);
+            const actualCols = await db.all(`DESCRIBE "${descView}"`) as Array<{ column_name: string; column_type: string }>;
+            await db.exec(`DROP VIEW IF EXISTS "${descView}";`);
+            // Filter out the technical _row_hash column before sync — it's
+            // an implementation detail, never a business column.
+            const businessCols = actualCols.filter((c) => c.column_name !== '_row_hash');
+            await syncProductColumns(table.id, businessCols, tenantId);
+          } catch (syncErr) {
+            console.warn(`[transformationRunner] Column sync failed for ${table.table_name}:`, syncErr);
+          }
+
+          results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
+
+          // Generate monthly rollup for fact tables — best-effort, non-fatal
+          if (table.table_role === 'fact') {
+            try {
+              await generateMonthlyRollup(db, table.id, table.table_name, productDir, useAzure);
+            } catch (rollupErr) {
+              console.warn(`[transformationRunner] Rollup failed for ${table.table_name}:`, rollupErr);
+            }
+          }
+          continue;  // Skip the legacy parquet branch entirely
+        }
+
         if (table.load_mode === 'incremental' && existingParquet && !useAzure) {
           // Incremental (local only for now)
           const bkCols = await tenantQuery(tenantId, (trx) =>
