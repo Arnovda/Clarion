@@ -73,34 +73,40 @@ export default function InvestigationView({
         </div>
       )}
 
-      {/* Trail */}
-      <div className="px-5 py-4">
-        <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted-2 mb-3">
-          {steps.length === 0
-            ? 'Planning the first step…'
-            : `Trail · ${steps.length} step${steps.length === 1 ? '' : 's'}`}
-        </div>
-
-        {steps.length === 0 && streamStatus === 'starting' && (
-          <div className="flex items-center gap-2 text-[12.5px] text-muted py-4">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Reading the schema and your pulse to plan the first move…</span>
+      {/* Trail — suppressed when this is a rehydrated message from
+          conversation history (status concluded/failed but no steps
+          stored). Live runs always have at least one step by the time
+          the stream concludes, so this only suppresses the empty
+          "0 steps" header on reload. */}
+      {!(steps.length === 0 && (streamStatus === 'done' || streamStatus === 'failed')) && (
+        <div className="px-5 py-4">
+          <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted-2 mb-3">
+            {steps.length === 0
+              ? 'Planning the first step…'
+              : `Trail · ${steps.length} step${steps.length === 1 ? '' : 's'}`}
           </div>
-        )}
 
-        <div className="space-y-2">
-          {steps.map((step) => (
-            <StepCard key={step.id} step={step} />
-          ))}
-        </div>
+          {steps.length === 0 && streamStatus === 'starting' && (
+            <div className="flex items-center gap-2 text-[12.5px] text-muted py-4">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Reading the schema and your pulse to plan the first move…</span>
+            </div>
+          )}
 
-        {streamStatus === 'running' && steps.length > 0 && (
-          <div className="flex items-center gap-2 text-[12px] text-muted py-3 mt-2">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            <span>Deciding the next step…</span>
+          <div className="space-y-2">
+            {steps.map((step) => (
+              <StepCard key={step.id} step={step} />
+            ))}
           </div>
-        )}
-      </div>
+
+          {streamStatus === 'running' && steps.length > 0 && (
+            <div className="flex items-center gap-2 text-[12px] text-muted py-3 mt-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span>Deciding the next step…</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

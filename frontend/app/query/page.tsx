@@ -295,29 +295,53 @@ function QueryPageInner() {
     try {
       const res = await api.get(`/conversations/${id}`);
       const data = res.data.data;
-      const msgs: Message[] = (data.messages ?? []).map((m: Record<string, unknown>) => ({
-        id: m.id as number,
-        serverId: m.id as number,
-        role: m.role as 'user' | 'assistant',
-        text: m.content as string,
-        question: m.question as string | undefined,
-        sql: m.sql as string | undefined,
-        tablesUsed: m.tables_used ? (typeof m.tables_used === 'string' ? JSON.parse(m.tables_used as string) : m.tables_used) : undefined,
-        confidence: m.confidence as number | undefined,
-        warning: m.warning as string | undefined,
-        blocked: m.blocked as boolean | undefined,
-        needsClarification: m.needs_clarification as boolean | undefined,
-        mismatches: m.mismatches ? (typeof m.mismatches === 'string' ? JSON.parse(m.mismatches as string) : m.mismatches) : undefined,
-        ambiguities: m.ambiguities ? (typeof m.ambiguities === 'string' ? JSON.parse(m.ambiguities as string) : m.ambiguities) : undefined,
-        error: m.error as boolean | undefined,
-        debug: m.debug ? (typeof m.debug === 'string' ? JSON.parse(m.debug as string) : m.debug) : undefined,
-        rows: m.rows ? (typeof m.rows === 'string' ? JSON.parse(m.rows as string) : m.rows) : undefined,
-        wasRepaired: m.was_repaired as boolean | undefined,
-        reasoning: m.reasoning as string | undefined,
-        queryLayer: m.query_layer as 'product' | 'source' | undefined,
-        feedback: m.feedback as 'up' | 'down' | null,
-        feedbackComment: m.feedback_comment as string | undefined,
-      }));
+      const msgs: Message[] = (data.messages ?? []).map((m: Record<string, unknown>) => {
+        const debug = m.debug ? (typeof m.debug === 'string' ? JSON.parse(m.debug as string) : m.debug) : undefined;
+        // Rehydrate investigate-mode messages from the `debug` marker we
+        // wrote on persist. Steps aren't stored — `Replay full trail`
+        // re-fetches them from /api/investigations/:id on demand.
+        const isInvestigation = !!(debug && (debug as Record<string, unknown>).investigation_mode);
+        const investigation = isInvestigation ? (() => {
+          const d = debug as Record<string, unknown>;
+          const status = d.investigation_status === 'failed' ? 'failed' : 'done';
+          return {
+            id: (d.investigation_id as number | undefined) ?? undefined,
+            question: (m.question as string | undefined) ?? '',
+            focus: null,
+            productId: 0, // unknown on reload; only used for live runs
+            streamStatus: status as 'done' | 'failed',
+            steps: [],
+            conclusion: status === 'done' ? (m.content as string) : null,
+            conclusionConfidence: (d.investigation_confidence as 'high' | 'medium' | 'low' | null) ?? null,
+            failureReason: (d.investigation_failure_reason as string | null) ?? null,
+            full: null,
+          };
+        })() : undefined;
+        return {
+          id: m.id as number,
+          serverId: m.id as number,
+          role: m.role as 'user' | 'assistant',
+          text: m.content as string,
+          question: m.question as string | undefined,
+          sql: m.sql as string | undefined,
+          tablesUsed: m.tables_used ? (typeof m.tables_used === 'string' ? JSON.parse(m.tables_used as string) : m.tables_used) : undefined,
+          confidence: m.confidence as number | undefined,
+          warning: m.warning as string | undefined,
+          blocked: m.blocked as boolean | undefined,
+          needsClarification: m.needs_clarification as boolean | undefined,
+          mismatches: m.mismatches ? (typeof m.mismatches === 'string' ? JSON.parse(m.mismatches as string) : m.mismatches) : undefined,
+          ambiguities: m.ambiguities ? (typeof m.ambiguities === 'string' ? JSON.parse(m.ambiguities as string) : m.ambiguities) : undefined,
+          error: m.error as boolean | undefined,
+          debug,
+          rows: m.rows ? (typeof m.rows === 'string' ? JSON.parse(m.rows as string) : m.rows) : undefined,
+          wasRepaired: m.was_repaired as boolean | undefined,
+          reasoning: m.reasoning as string | undefined,
+          queryLayer: m.query_layer as 'product' | 'source' | undefined,
+          feedback: m.feedback as 'up' | 'down' | null,
+          feedbackComment: m.feedback_comment as string | undefined,
+          ...(isInvestigation ? { mode: 'investigate' as const, investigation } : {}),
+        };
+      });
       setMessages(msgs);
       nextId.current = msgs.length > 0 ? Math.max(...msgs.map((m) => m.id)) + 1 : 0;
     } catch {
@@ -617,6 +641,12 @@ function QueryPageInner() {
         },
       ]);
       const controller = new AbortController();
+      // Capture the final state so we can persist after the stream ends.
+      // Using local refs avoids racing the React state batch.
+      let finalConclusion: string | null = null;
+      let finalFailure: string | null = null;
+      let finalInvestigationId: number | null = null;
+      let finalConfidence: 'high' | 'medium' | 'low' | null = null;
       try {
         await runInvestigation({
           question: q,
@@ -636,6 +666,9 @@ function QueryPageInner() {
                 return { ...m, investigation: { ...inv, steps: upsertStep(inv.steps, evt.step) } };
               }
               if (evt.type === 'concluded') {
+                finalConclusion = evt.investigation.conclusion;
+                finalInvestigationId = evt.investigation.id;
+                finalConfidence = evt.investigation.conclusion_confidence;
                 return {
                   ...m,
                   text: evt.investigation.conclusion ?? '',
@@ -651,6 +684,7 @@ function QueryPageInner() {
                 };
               }
               if (evt.type === 'failed') {
+                finalFailure = evt.reason;
                 return {
                   ...m,
                   investigation: { ...inv, streamStatus: 'failed', failureReason: evt.reason },
@@ -660,6 +694,31 @@ function QueryPageInner() {
             }));
           },
         });
+        // Persist the result. We store the conclusion as the message text
+        // so it shows on reload as a regular assistant reply, and stash
+        // the investigation_id + flags in `debug` (a free-form JSON
+        // column) so the loader can re-render the 🕵️ eyebrow and offer
+        // "Replay full trail" without a schema migration.
+        if (cid && cid > 0) {
+          const text = finalConclusion ?? (finalFailure ? `Investigation failed: ${finalFailure}` : 'Investigation produced no conclusion.');
+          const persistDebug: Record<string, unknown> = {
+            investigation_id: finalInvestigationId,
+            investigation_mode: true,
+            investigation_status: finalFailure ? 'failed' : 'concluded',
+            investigation_confidence: finalConfidence,
+            investigation_failure_reason: finalFailure,
+          };
+          const serverId = await persistMessage(cid, {
+            role: 'assistant',
+            text,
+            question: q,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            debug: persistDebug as any,
+          });
+          if (serverId) {
+            setMessages((prev) => prev.map((m) => m.id === investigateMsgId ? { ...m, serverId } : m));
+          }
+        }
       } catch (err) {
         const reason = err instanceof Error ? err.message : 'Investigation failed';
         setMessages((prev) => prev.map((m) =>
