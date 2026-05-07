@@ -287,12 +287,47 @@ function SchemaChangesPanel({
     return () => { cancelled = true; };
   }, [connId]);
 
-  // Loading / error / empty states are intentionally invisible to keep
-  // the card layout calm when nothing's relevant. Only the "we have
-  // data" path renders chrome.
+  // Loading state and hard errors stay invisible — the card layout
+  // shouldn't twitch while we're fetching.
   if (error) return null;
   if (changes === null) return null;
-  if (changes.length === 0) return null;
+
+  // Empty state is reached when the user landed from a notification
+  // (parent only mounts this panel when `?connectionId` matches) but
+  // we have no captured diff. Two common reasons:
+  //   1. The notification was fired BEFORE the schema-diff capture
+  //      shipped (older syncs don't have rows in `schema_changes`).
+  //   2. The diff write itself failed at the time (rare — code is
+  //      wrapped in try/catch so notification still fires generically).
+  // Either way the user came looking for "what changed" and deserves
+  // an answer, not silence. Re-analyse refreshes AI descriptions
+  // against the current live schema regardless.
+  if (changes.length === 0) {
+    return (
+      <div className="mt-2 px-3 py-2.5 rounded-md border border-line bg-softer">
+        <div className="flex items-start gap-2">
+          <span className="text-muted-2 mt-0.5">ℹ</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-[12.5px] text-ink-2 leading-snug">
+              No schema-change details recorded for this source yet.
+            </p>
+            <p className="text-[11px] text-muted-2 mt-1 leading-relaxed">
+              Older notifications didn&apos;t capture per-column diffs. The next sync
+              that detects drift will record the changes here. Re-analyse to refresh
+              AI descriptions against the current schema.
+            </p>
+            <button
+              onClick={onReProfile}
+              disabled={reprofiling}
+              className="mt-2 text-[10.5px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover disabled:opacity-50 transition-colors"
+            >
+              {reprofiling ? 'Re-analysing…' : 'Re-analyse now →'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   function toggle(id: number) {
     setExpanded((prev) => {
