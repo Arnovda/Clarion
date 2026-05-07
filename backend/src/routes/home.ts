@@ -122,6 +122,64 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
       .where({ ai_draft: true })
       .count<[{ tot: string | number }]>('* as tot');
 
+    // ── Quality (table profiles + rule executions) ─────────────────────
+    // Two signals get blended into one sub-score:
+    //   • profiledTables: avg of latest dataset_profiles.overall_score per
+    //     (connection, table). 0–1 in storage; we scale to 0–100.
+    //   • activeRules:    avg of latest rule_executions.pass_rate per rule.
+    //     Same 0–1 scale.
+    // Coverage stats (X/Y profiled, Y/Z rules passing) drive the card
+    // description so users can see what's actually being measured.
+    let profiledTablesAvg: number | null = null;
+    let profiledTablesCount = 0;
+    let profiledTablesPassing = 0;
+    let activeRulesAvg: number | null = null;
+    let activeRulesCount = 0;
+    let activeRulesPassing = 0;
+    const PROFILE_PASS_THRESHOLD = 0.75; // matches the existing alert threshold
+    try {
+      // Latest profile per (connection, table). Use a window function so
+      // we don't double-count older runs of the same table.
+      const profileRows = await semanticDb.raw<{ rows: Array<{ overall_score: number | null }> }>(
+        `SELECT overall_score FROM (
+           SELECT overall_score,
+                  ROW_NUMBER() OVER (PARTITION BY connection_id, table_name ORDER BY profiled_at DESC) AS rn
+           FROM dataset_profiles
+           WHERE tenant_id = ?
+         ) latest WHERE rn = 1 AND overall_score IS NOT NULL`,
+        [tenantId],
+      );
+      const scores = (profileRows.rows ?? []).map((r) => Number(r.overall_score)).filter((n) => !Number.isNaN(n));
+      profiledTablesCount = scores.length;
+      profiledTablesPassing = scores.filter((s) => s >= PROFILE_PASS_THRESHOLD).length;
+      if (scores.length > 0) {
+        profiledTablesAvg = scores.reduce((s, x) => s + x, 0) / scores.length;
+      }
+    } catch { /* dataset_profiles missing or empty */ }
+    try {
+      // Latest execution per rule. Same window-function pattern.
+      const ruleRows = await semanticDb.raw<{ rows: Array<{ pass_rate: number | null; pass_threshold: number | null }> }>(
+        `SELECT re.pass_rate, qr.pass_threshold FROM (
+           SELECT rule_id, pass_rate,
+                  ROW_NUMBER() OVER (PARTITION BY rule_id ORDER BY executed_at DESC) AS rn
+           FROM rule_executions
+           WHERE tenant_id = ?
+         ) re
+         JOIN quality_rules qr ON qr.id = re.rule_id AND qr.tenant_id = ? AND qr.is_active = true
+         WHERE re.rn = 1 AND re.pass_rate IS NOT NULL`,
+        [tenantId, tenantId],
+      );
+      const rates = (ruleRows.rows ?? []).map((r) => ({
+        rate: Number(r.pass_rate),
+        threshold: Number(r.pass_threshold ?? 0.95),
+      })).filter((r) => !Number.isNaN(r.rate));
+      activeRulesCount = rates.length;
+      activeRulesPassing = rates.filter((r) => r.rate >= r.threshold).length;
+      if (rates.length > 0) {
+        activeRulesAvg = rates.reduce((s, x) => s + x.rate, 0) / rates.length;
+      }
+    } catch { /* rule_executions missing or empty */ }
+
     // ── Pipeline activity ──────────────────────────────────────────────
     let pipelineRunsThisWeek = 0;
     let pipelineSuccess = 0;
@@ -212,11 +270,26 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     const scorePipelines = pipelineRunsThisWeek === 0
       ? null
       : Math.round((pipelineSuccess / pipelineRunsThisWeek) * 100);
+    // Blend profile + rule signals. Both stored as 0–1, scaled to 0–100.
+    // If only one signal exists we use it alone; if neither, sub-score is null.
+    const qualityComponents: number[] = [];
+    if (profiledTablesAvg != null) qualityComponents.push(profiledTablesAvg * 100);
+    if (activeRulesAvg != null) qualityComponents.push(activeRulesAvg * 100);
+    const scoreQuality = qualityComponents.length === 0
+      ? null
+      : Math.round(qualityComponents.reduce((s, x) => s + x, 0) / qualityComponents.length);
 
+    // Quality is the most direct "is the data actually correct?" signal,
+    // so it carries the heaviest weight. Definitions still matter (drives
+    // NL→SQL accuracy via semantic context). Freshness + pipelines are
+    // operational hygiene. The presentScores filter below reweights
+    // automatically when any sub-score is null (e.g. no profiles yet),
+    // so a fresh tenant doesn't get punished for missing dimensions.
     const subScores = [
-      { name: 'freshness',   score: scoreFreshness,   weight: 0.30 },
-      { name: 'definitions', score: scoreDefinitions, weight: 0.40 },
-      { name: 'pipelines',   score: scorePipelines,   weight: 0.30 },
+      { name: 'freshness',   score: scoreFreshness,   weight: 0.20 },
+      { name: 'definitions', score: scoreDefinitions, weight: 0.25 },
+      { name: 'quality',     score: scoreQuality,     weight: 0.35 },
+      { name: 'pipelines',   score: scorePipelines,   weight: 0.20 },
     ];
     const presentScores = subScores.filter((s): s is { name: string; score: number; weight: number } => s.score != null);
     const overall = presentScores.length === 0
@@ -233,6 +306,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
           overall,
           freshness:   scoreFreshness,
           definitions: scoreDefinitions,
+          quality:     scoreQuality,
           pipelines:   scorePipelines,
         },
         freshness: {
@@ -260,6 +334,10 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
           failureCount: pipelineFailures,
           activeNow: activeRuns,
           successRate: scorePipelines,
+        },
+        quality: {
+          profiledTables: { passing: profiledTablesPassing, total: profiledTablesCount },
+          activeRules:    { passing: activeRulesPassing,    total: activeRulesCount },
         },
         dashboards,
         recentQuestions,

@@ -25,7 +25,7 @@ import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, Calendar, CheckCircle2, Clock, Database, Boxes,
   RefreshCw, Sparkles, Library, ShieldCheck, ChevronRight, BarChart3,
-  Loader2, Star, Plus, X,
+  Loader2, Star, Plus, X, Gauge,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import api from '@/lib/api';
@@ -43,7 +43,12 @@ interface HomeSummary {
     overall: number | null;
     freshness: number | null;
     definitions: number | null;
+    quality: number | null;
     pipelines: number | null;
+  };
+  quality: {
+    profiledTables: { passing: number; total: number };
+    activeRules:    { passing: number; total: number };
   };
   freshness: {
     sources:  { fresh: number; total: number };
@@ -220,7 +225,7 @@ function HealthSection({ summary, onJump, onOpenFreshnessDetail }: { summary: Ho
     <div className="bg-raised border border-line rounded-lg p-6">
       <div className="flex items-baseline gap-2 mb-4">
         <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Data health</p>
-        <p className="text-[11px] text-muted-2">— a quick measure of fresh data + curated definitions + clean pipeline runs</p>
+        <p className="text-[11px] text-muted-2">— fresh data + curated definitions + correct values + clean pipeline runs</p>
       </div>
       <div className="flex flex-col lg:flex-row items-stretch gap-6">
         {/* Big ring */}
@@ -238,8 +243,11 @@ function HealthSection({ summary, onJump, onOpenFreshnessDetail }: { summary: Ho
           </div>
         </div>
 
-        {/* Sub-score tiles */}
-        <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Sub-score tiles — 2×2 on tablet, 1×4 on wide screens. Quality
+            sits next to Definitions because they answer the same shape
+            of question (is the data correct?) at different layers:
+            metadata vs values. */}
+        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
           <SubScoreTile
             label="Freshness"
             score={summary.health.freshness}
@@ -256,6 +264,24 @@ function HealthSection({ summary, onJump, onOpenFreshnessDetail }: { summary: Ho
             description={`${summary.definitions.tables.defined}/${summary.definitions.tables.total} tables · ${summary.definitions.columns.defined}/${summary.definitions.columns.total} columns · ${summary.definitions.relationships.approved}/${summary.definitions.relationships.total} relationships`}
             icon={<ShieldCheck className="w-3.5 h-3.5" strokeWidth={2} />}
             onClick={() => onJump('/review')}
+          />
+          <SubScoreTile
+            label="Quality"
+            score={summary.health.quality}
+            description={
+              summary.quality.profiledTables.total === 0 && summary.quality.activeRules.total === 0
+                ? 'No tables profiled yet · add a quality rule or run a profile'
+                : [
+                    summary.quality.profiledTables.total > 0
+                      ? `${summary.quality.profiledTables.passing}/${summary.quality.profiledTables.total} tables passing`
+                      : null,
+                    summary.quality.activeRules.total > 0
+                      ? `${summary.quality.activeRules.passing}/${summary.quality.activeRules.total} rules passing`
+                      : null,
+                  ].filter(Boolean).join(' · ')
+            }
+            icon={<Gauge className="w-3.5 h-3.5" strokeWidth={2} />}
+            onClick={() => onJump('/products?tab=quality')}
           />
           <SubScoreTile
             label="Pipelines"
