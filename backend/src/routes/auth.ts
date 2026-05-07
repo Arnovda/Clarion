@@ -229,11 +229,41 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
       password_reset_expires: expires.toISOString(),
     });
 
-    // TODO: Send email with reset link containing rawToken
-    // For now, log it (dev only)
+    // Send the reset email. emailService is a no-op when SMTP isn't
+    // configured (dev), and we still log the URL so devs can paste it
+    // into their browser. Wrapped in try/catch — a delivery failure
+    // shouldn't leak the existence of the account or 500 the request.
+    const baseUrl = process.env.FRONTEND_URL
+      ?? process.env.PUBLIC_APP_URL
+      ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
+    const resetUrl = `${baseUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`;
+    try {
+      const { sendEmail } = await import('../services/emailService');
+      await sendEmail({
+        to: normalizedEmail,
+        subject: 'Reset your Clarion password',
+        text:
+          `Hi ${user.name ?? 'there'},\n\n` +
+          `We received a request to reset your Clarion password.\n\n` +
+          `Click the link below to set a new one (valid for 1 hour):\n${resetUrl}\n\n` +
+          `If you didn't request this, you can safely ignore this email — your password won't change.\n\n` +
+          `— Clarion`,
+        html:
+          `<p>Hi ${user.name ?? 'there'},</p>` +
+          `<p>We received a request to reset your Clarion password.</p>` +
+          `<p><a href="${resetUrl}" style="background:#0d4a6f;color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none;display:inline-block">Set a new password</a></p>` +
+          `<p style="color:#666;font-size:12px">Or paste this link in your browser (valid for 1 hour):<br>${resetUrl}</p>` +
+          `<p style="color:#999;font-size:12px">If you didn't request this, you can safely ignore this email — your password won't change.</p>`,
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[auth] forgot-password email send failed', e);
+      // Fall through — we still respond with the generic message so we
+      // don't leak whether SMTP is broken vs the account doesn't exist.
+    }
     if (process.env.NODE_ENV !== 'production') {
       console.log(`[auth] Password reset token for ${normalizedEmail}: ${rawToken}`);
-      console.log(`[auth] Reset URL: http://localhost:3000/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`);
+      console.log(`[auth] Reset URL: ${resetUrl}`);
     }
 
     res.json({ ok: true, data: { message: 'If an account exists, a reset link has been sent.' } });

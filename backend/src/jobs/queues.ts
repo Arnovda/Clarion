@@ -78,6 +78,17 @@ export interface ConnectionSyncScheduleJobData {
   tenantId: number;
 }
 
+/**
+ * Job data for the `pipeline-schedule` queue — fired by BullMQ repeatable
+ * jobs configured in `pipelineScheduler.ts` from cron triggers persisted
+ * on the `pipelines.triggers` JSONB column. The worker resolves the
+ * pipeline + enqueues a `pipeline-run` on the bus-matrix queue.
+ */
+export interface PipelineScheduleJobData {
+  pipelineId: number;
+  tenantId: number;
+}
+
 // ---------------------------------------------------------------------------
 // Queue instances (null if Redis not configured)
 // ---------------------------------------------------------------------------
@@ -88,6 +99,7 @@ let transformationQueue: Queue<TransformationJobData> | null = null;
 let emailReportQueue: Queue<EmailReportJobData> | null = null;
 let busMatrixQueue: Queue<BusMatrixJobData> | null = null;
 let connectionSyncScheduleQueue: Queue<ConnectionSyncScheduleJobData> | null = null;
+let pipelineScheduleQueue: Queue<PipelineScheduleJobData> | null = null;
 
 export function getSchemaProfilingQueue(): Queue<SchemaProfilingJobData> | null {
   if (schemaProfilingQueue) return schemaProfilingQueue;
@@ -142,6 +154,21 @@ export function getConnectionSyncScheduleQueue(): Queue<ConnectionSyncScheduleJo
   if (!conn) return null;
   connectionSyncScheduleQueue = new Queue<ConnectionSyncScheduleJobData>('connection-sync-schedule', { connection: conn });
   return connectionSyncScheduleQueue;
+}
+
+/**
+ * Queue for scheduled pipeline cron triggers. Holds repeatable jobs
+ * registered via `pipelineScheduler.registerPipelineTriggers()` from
+ * cron-kind entries on `pipelines.triggers`. The worker enqueues a
+ * `pipeline-run` job on the bus-matrix queue (same flow as the manual
+ * /run-pipeline endpoint).
+ */
+export function getPipelineScheduleQueue(): Queue<PipelineScheduleJobData> | null {
+  if (pipelineScheduleQueue) return pipelineScheduleQueue;
+  const conn = getRedisConnection();
+  if (!conn) return null;
+  pipelineScheduleQueue = new Queue<PipelineScheduleJobData>('pipeline-schedule', { connection: conn });
+  return pipelineScheduleQueue;
 }
 
 /**

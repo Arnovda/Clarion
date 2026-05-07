@@ -419,3 +419,87 @@ export async function listBuiltinPipelines(tenantId: number): Promise<BuiltinPip
     productCount: dag.products.length,
   }];
 }
+
+// ── Shared "enqueue a pipeline run" helper ─────────────────────────────
+//
+// Three call sites need to enqueue a pipeline run with identical
+// semantics: the manual /run-pipeline endpoint, the cron-fired worker
+// (pipeline-schedule queue), and the on-source-sync hook in
+// SyncOrchestrator. Without this helper each path was at risk of drifting
+// — e.g. one creates pipeline_runs but another forgets, one resolves
+// scope but another doesn't. Single function, called everywhere.
+//
+// Returns null when the pipeline can't be enqueued (Redis missing,
+// pipeline disabled, scope empty). Caller decides whether to treat as
+// error or silent skip — manual run = error, automated trigger = skip.
+
+export interface EnqueuePipelineResult {
+  jobId: string | number | null;
+  pipelineRunId: number;
+  resolved: ResolvedScope;
+  pipelineName: string;
+}
+
+export async function enqueueSavedPipelineRun(opts: {
+  pipelineId: number;
+  tenantId: number;
+  /** Free-form attribution string for pipeline_runs.triggered_by, e.g.
+   *  'user:alice@x.com' / 'cron' / 'on-source-sync:42' */
+  triggeredBy: string;
+}): Promise<EnqueuePipelineResult | null> {
+  await semanticDb.raw(`SET app.current_tenant = '${Number(opts.tenantId)}'`);
+
+  const row = await semanticDb('pipelines')
+    .where({ id: opts.pipelineId, tenant_id: opts.tenantId })
+    .first();
+  if (!row) return null;
+  if (!row.enabled) return null; // disabled pipelines never auto-fire
+
+  const scope = (typeof row.scope === 'string' ? JSON.parse(row.scope) : row.scope) as PipelineScope;
+  const resolved = await resolveScope(scope, opts.tenantId);
+  if (resolved.sourceIds.length === 0 && resolved.productIds.length === 0) return null;
+
+  // Persist the run row first so the bus-matrix worker can update its
+  // status as it progresses.
+  const [runRow] = await semanticDb('pipeline_runs').insert({
+    tenant_id: opts.tenantId,
+    pipeline_id: opts.pipelineId,
+    status: 'queued',
+    triggered_by: opts.triggeredBy,
+  }).returning('id');
+  const pipelineRunId = typeof runRow === 'object' ? (runRow as { id: number }).id : (runRow as number);
+
+  // Lazy-import to avoid a cycle between services and jobs.
+  const { getBusMatrixQueue } = await import('../jobs/queues');
+  const queue = getBusMatrixQueue();
+  if (!queue) {
+    await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({
+      status: 'failed',
+      error_message: 'Job queue not available — Redis is not configured.',
+    });
+    return null;
+  }
+
+  const job = await queue.add('pipeline-run', {
+    connectionId: 0, // unused in pipeline mode but JobData requires it
+    tenantId: opts.tenantId,
+    triggeredBy: opts.triggeredBy,
+    mode: 'pipeline' as const,
+    pipelineScope: resolved,
+    pipelineRunId,
+    pipelineName: row.name,
+  });
+
+  await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) });
+  await semanticDb('pipelines').where({ id: opts.pipelineId }).update({
+    last_run_at: new Date().toISOString(),
+    last_status: 'queued',
+  });
+
+  return {
+    jobId: job.id ?? null,
+    pipelineRunId,
+    resolved,
+    pipelineName: row.name,
+  };
+}

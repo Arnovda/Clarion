@@ -455,6 +455,24 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
       created_by: req.user?.email ?? null,
     }).returning('id');
     const id = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+
+    // Register cron triggers in BullMQ so they actually fire. Loaded
+    // inline so the route doesn't pay the import cost when triggers are
+    // empty (vast majority of pipelines today). Errors in the scheduler
+    // shouldn't fail the create — log and continue.
+    try {
+      const { registerPipelineTriggers } = await import('../jobs/pipelineScheduler');
+      await registerPipelineTriggers({
+        id,
+        tenant_id: tenantId,
+        enabled: enabled ?? true,
+        triggers: triggers ?? [],
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[pipelines POST /saved] registerPipelineTriggers failed', e);
+    }
+
     res.json({ ok: true, data: { id, stableId: `custom:${id}` } });
   } catch (err) { next(err); }
 });
@@ -485,6 +503,25 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (re
       .update(patch);
     if (!updated) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
 
+    // Re-register triggers whenever triggers OR enabled change. Reading
+    // the row back ensures we use the merged state (enabled may have
+    // come from this PATCH, triggers from a previous one).
+    if (body.triggers !== undefined || body.enabled !== undefined) {
+      try {
+        const fresh = await semanticDb('pipelines')
+          .where({ id, tenant_id: tenantId })
+          .select('id', 'tenant_id', 'enabled', 'triggers')
+          .first();
+        if (fresh) {
+          const { registerPipelineTriggers } = await import('../jobs/pipelineScheduler');
+          await registerPipelineTriggers(fresh);
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error('[pipelines PUT /saved] registerPipelineTriggers failed', e);
+      }
+    }
+
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -499,6 +536,19 @@ router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async 
     const id = Number(req.params.id);
     const deleted = await semanticDb('pipelines').where({ id, tenant_id: tenantId }).delete();
     if (!deleted) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
+
+    // Drop any registered cron triggers so they don't keep firing for
+    // a pipeline that no longer exists. Failure here is non-fatal —
+    // the orphan triggers will eventually be removed by the next
+    // boot's loadPipelineSchedules() (it wipes-and-replaces by id).
+    try {
+      const { unregisterPipelineTriggers } = await import('../jobs/pipelineScheduler');
+      await unregisterPipelineTriggers(id);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[pipelines DELETE /saved] unregisterPipelineTriggers failed', e);
+    }
+
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

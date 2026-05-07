@@ -383,6 +383,34 @@ function QueryPageInner() {
     } catch { /* non-fatal */ }
   }
 
+  /**
+   * Re-fetch a persisted investigation's full trail and hydrate the
+   * matching message in place. Used by MessageBubble's "Replay full
+   * trail" button on rehydrated investigate-mode messages — steps
+   * aren't persisted row-by-row, only the conclusion + investigation_id
+   * survive in `debug` JSONB.
+   */
+  async function handleReplayInvestigation(msgId: number, investigationId: number) {
+    try {
+      const res = await api.get(`/investigations/${investigationId}`);
+      const inv = res.data.data as import('@/lib/investigationTypes').Investigation | null;
+      if (!inv) return;
+      setMessages((prev) => prev.map((m) => {
+        if (m.id !== msgId || !m.investigation) return m;
+        return {
+          ...m,
+          investigation: {
+            ...m.investigation,
+            steps: inv.steps,
+            full: inv,
+          },
+        };
+      }));
+    } catch (err) {
+      console.error('[chat] replay investigation failed', err);
+    }
+  }
+
   function handleExport(format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) {
     const params = messageServerId ? `?messageId=${messageServerId}` : '';
     const url = `${BACKEND_URL}/api/conversations/${conversationId}/export/${format}${params}`;
@@ -1047,7 +1075,7 @@ function QueryPageInner() {
               <div className="space-y-4">
                 {messages.map((m) => (
                   <div key={m.id}>
-                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} />
+                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} onReplayInvestigation={handleReplayInvestigation} />
                     {repairState?.forMessageId === m.id && (
                       <div className="mt-3">
                         <ThinkingPanel repair={repairState} onClarify={handleClarify} />

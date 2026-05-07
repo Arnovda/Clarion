@@ -117,9 +117,11 @@ function DashboardBody() {
   const [byLabel, setByLabel] = useState<CallLabelRow[]>([]);
   const [recent, setRecent] = useState<RecentRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [s, d, c, u, l, r] = await Promise.all([
         api.get('/admin/ai-usage/summary'),
@@ -135,7 +137,15 @@ function DashboardBody() {
       setByUser(u.data.data);
       setByLabel(l.data.data);
       setRecent(r.data.data);
-    } catch { /* TODO: surface error */ }
+    } catch (e) {
+      // Surface so admins know loading failed instead of staring at
+      // empty charts. Most likely failure: 401 (token expired —
+      // already triggers auto-redirect via api interceptor) or 503
+      // (database hiccup). Either way, show + offer retry.
+      const msg = e instanceof Error ? e.message : 'Could not load AI usage data.';
+      setError(msg);
+      console.error('[ai-usage] load failed', e);
+    }
     finally { setLoading(false); }
   }, [days]);
 
@@ -169,6 +179,21 @@ function DashboardBody() {
         </select>
       </header>
 
+      {error && (
+        <div className="mb-6 px-4 py-3 bg-err-soft border border-line rounded-md flex items-start gap-3">
+          <span className="text-err mt-0.5 flex-shrink-0">⚠</span>
+          <div className="flex-1 text-[13px] text-ink">
+            <p className="font-medium">Couldn&apos;t load AI usage data.</p>
+            <p className="text-[12px] text-ink-3 mt-0.5">{error}</p>
+          </div>
+          <button
+            onClick={() => load()}
+            className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors flex-shrink-0"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {loading && !summary ? (
         <div className="py-16 text-center text-muted text-[12.5px]">
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" />

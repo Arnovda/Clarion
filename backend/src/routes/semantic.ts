@@ -796,7 +796,12 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       ? (typeof currentVersion.snapshot === 'string' ? JSON.parse(currentVersion.snapshot) : currentVersion.snapshot)
       : {};
 
-    // Apply the snapshot to the entity
+    // Apply the snapshot to the entity. Each entity type writes to Neo4j
+    // (source of truth) AND mirrors to Postgres (source_tables /
+    // source_columns / kpi_definitions) so Home health counts and /review
+    // queue aggregates pick up reverts. See "Dual-write contract" in
+    // CLAUDE.md for the full list of mirrored surfaces.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     if (entityType === 'table') {
       const patch: Record<string, unknown> = {};
       if (snapshot.display_name !== undefined) patch.display_name = snapshot.display_name;
@@ -806,6 +811,17 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.grain !== undefined) patch.grain = snapshot.grain;
       if (snapshot.is_active !== undefined) patch.is_active = snapshot.is_active;
       await graph.updateTable(entityId, patch);
+      // Mirror to Postgres
+      const pgPatch: Record<string, unknown> = {};
+      if (snapshot.display_name !== undefined) pgPatch.display_name = snapshot.display_name;
+      if (snapshot.description !== undefined) pgPatch.description = snapshot.description;
+      if (snapshot.is_active !== undefined) pgPatch.is_active = !!snapshot.is_active;
+      if (snapshot.domains !== undefined) {
+        pgPatch.domains = Array.isArray(snapshot.domains) ? JSON.stringify(snapshot.domains) : snapshot.domains;
+      }
+      if (Object.keys(pgPatch).length > 0) {
+        await semanticDb('source_tables').where({ id: entityId }).update(pgPatch);
+      }
     } else if (entityType === 'column') {
       const patch: Record<string, unknown> = {};
       if (snapshot.display_name !== undefined) patch.display_name = snapshot.display_name;
@@ -814,6 +830,15 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.is_dimension !== undefined) patch.is_dimension = snapshot.is_dimension;
       if (snapshot.is_measure !== undefined) patch.is_measure = snapshot.is_measure;
       await graph.updateColumn(entityId, patch);
+      // Mirror to Postgres
+      const pgPatch: Record<string, unknown> = {};
+      if (snapshot.display_name !== undefined) pgPatch.display_name = snapshot.display_name;
+      if (snapshot.description !== undefined) pgPatch.description = snapshot.description;
+      if (snapshot.is_dimension !== undefined) pgPatch.is_dimension = !!snapshot.is_dimension;
+      if (snapshot.is_measure !== undefined) pgPatch.is_measure = !!snapshot.is_measure;
+      if (Object.keys(pgPatch).length > 0) {
+        await semanticDb('source_columns').where({ id: entityId }).update(pgPatch);
+      }
     } else if (entityType === 'kpi') {
       const patch: Record<string, unknown> = {};
       if (snapshot.name !== undefined) patch.name = snapshot.name;
@@ -822,6 +847,19 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.formula_sql !== undefined) patch.formula_sql = snapshot.formula_sql;
       if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
       await graph.updateKpi(entityId, patch);
+      // Mirror to Postgres kpi_definitions if present (table is dual-
+      // written today; some old tenants may not have it but the column
+      // set is stable). Tolerate missing rows / table.
+      try {
+        const pgPatch: Record<string, unknown> = {};
+        if (snapshot.name !== undefined) pgPatch.name = snapshot.name;
+        if (snapshot.description !== undefined) pgPatch.description = snapshot.description;
+        if (snapshot.formula_plain_text !== undefined) pgPatch.formula_plain_text = snapshot.formula_plain_text;
+        if (snapshot.formula_sql !== undefined) pgPatch.formula_sql = snapshot.formula_sql;
+        if (Object.keys(pgPatch).length > 0) {
+          await semanticDb('kpi_definitions').where({ id: entityId }).update(pgPatch);
+        }
+      } catch { /* kpi_definitions table optional in Phase 7 */ }
     }
 
     await invalidateSemanticCache();
@@ -976,6 +1014,34 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
     }
 
     await graph.updateApprovalStatus(entityType as 'table' | 'column' | 'kpi' | 'product_table' | 'product_column', entityId, updates);
+
+    // Mirror approval status to Postgres for the entity types that have
+    // approval columns. Home health counts + /review queue read these
+    // directly. table/column/kpi each have approval_status; product_*
+    // entities live only in Neo4j today (no Postgres mirror needed).
+    try {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+      const pgPatch: Record<string, unknown> = {
+        approval_status: updates.approval_status,
+        approved_by: updates.approved_by ?? null,
+        approved_at: updates.approved_at ?? null,
+        rejection_reason: updates.rejection_reason ?? null,
+      };
+      // Approving an AI draft also clears the draft flag — same
+      // semantic as PATCH /tables/:id, /columns/:id confirm flow.
+      if (action === 'approve') pgPatch.ai_draft = false;
+      if (entityType === 'table') {
+        await semanticDb('source_tables').where({ id: entityId }).update(pgPatch);
+      } else if (entityType === 'column') {
+        await semanticDb('source_columns').where({ id: entityId }).update(pgPatch);
+      } else if (entityType === 'kpi') {
+        await semanticDb('kpi_definitions').where({ id: entityId }).update(pgPatch).catch(() => { /* table optional */ });
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('[semantic POST /approve] postgres mirror failed', e);
+    }
+
     await invalidateSemanticCache();
     await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, action, entityType, entityId, null, { reason });
 
@@ -1024,6 +1090,9 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
     let updated = 0;
     let skipped = 0;
 
+    // Tenant-scope so the Postgres mirror writes pass RLS.
+    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
+
     for (const def of definitions) {
       if (def.column_name) {
         // Column-level update: find table then column
@@ -1041,6 +1110,13 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
 
         if (Object.keys(patch).length > 0) {
           await graph.updateColumn(col.id, patch);
+          // Mirror to Postgres source_columns. Importing a CSV is a
+          // confirm-style action — clear ai_draft so Home counts pick
+          // it up. Tolerate any single-row mismatch.
+          await semanticDb('source_columns')
+            .where({ id: col.id })
+            .update({ ...patch, ai_draft: false })
+            .catch(() => { /* skip silently — Neo4j write already succeeded */ });
           await recordVersion(req.user!.tenantId, 'column', col.id, patch, null, req.user!.sub, 'bulk import');
           updated++;
         }
@@ -1057,6 +1133,16 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
 
         if (Object.keys(patch).length > 0) {
           await graph.updateTable(table.id as number, patch);
+          // Mirror to Postgres source_tables.
+          const pgPatch: Record<string, unknown> = { ai_draft: false };
+          if (def.display_name !== undefined) pgPatch.display_name = def.display_name;
+          if (def.description !== undefined) pgPatch.description = def.description;
+          if (def.domains !== undefined) pgPatch.domains = JSON.stringify(def.domains);
+          // grain has no Postgres column today — Neo4j-only. Skip silently.
+          await semanticDb('source_tables')
+            .where({ id: table.id as number })
+            .update(pgPatch)
+            .catch(() => { /* skip silently — Neo4j write already succeeded */ });
           await recordVersion(req.user!.tenantId, 'table', table.id as number, patch, null, req.user!.sub, 'bulk import');
           updated++;
         }

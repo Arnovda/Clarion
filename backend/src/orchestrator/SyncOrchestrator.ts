@@ -340,6 +340,17 @@ async function runSyncInBackground(args: {
       void runProfilerInBackground({ connectionId, tenantId }).catch((e) => {
         childLog.error({ err: e }, 'schema profiling failed (sync still counted as succeeded)');
       });
+
+      // Fire any pipelines configured with `on_source_sync_succeeded`
+      // for this connection. Fire-and-forget by design: a missing
+      // pipeline or downstream queue failure must NOT mark the source
+      // sync as failed (it's already succeeded). Errors are logged
+      // inside the helper.
+      void import('../jobs/pipelineScheduler').then(({ firePipelineTriggersOnSourceSync }) =>
+        firePipelineTriggersOnSourceSync({ connectionId, tenantId }),
+      ).catch((e) => {
+        childLog.error({ err: e }, 'on-source-sync pipeline triggers failed (sync still counted as succeeded)');
+      });
     } else if (exitCode === EXIT_CANCELLED) {
       await semanticDb('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })

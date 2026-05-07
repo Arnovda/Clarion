@@ -9,7 +9,7 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
-import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData } from './queues';
+import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData } from './queues';
 import { registerJobAbortController, unregisterJob, isJobCancelled } from './cancellation';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
@@ -438,6 +438,29 @@ export function startWorkers(): void {
     trackException(err, { queue: 'connection-sync-schedule', jobId: job?.id ?? 'unknown' });
   });
   workers.push(connSyncWorker);
+
+  // pipeline-schedule worker — drains cron-fired pipeline triggers.
+  // Each fire enqueues a `pipeline-run` on the bus-matrix queue (same
+  // path as the manual /run-pipeline endpoint), so SSE attach + cancel
+  // + active-job all keep working without changes.
+  const pipelineSchedWorker = new Worker<PipelineScheduleJobData>(
+    'pipeline-schedule',
+    async (job) => {
+      const { pipelineId, tenantId } = job.data;
+      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+      const { enqueueSavedPipelineRun } = await import('../services/pipelineService');
+      const result = await enqueueSavedPipelineRun({ pipelineId, tenantId, triggeredBy: 'cron' });
+      // null result means the pipeline was disabled, scope was empty, or
+      // Redis is unavailable. Not worth failing the cron job over —
+      // pipeline_runs already records the failed state when applicable.
+      return result;
+    },
+    { connection: conn, concurrency: 4 },
+  );
+  pipelineSchedWorker.on('failed', (job, err) => {
+    trackException(err, { queue: 'pipeline-schedule', jobId: job?.id ?? 'unknown' });
+  });
+  workers.push(pipelineSchedWorker);
 
   // Warehouse maintenance — weekly OPTIMIZE + VACUUM
   const maintenanceWorker = startMaintenanceWorker();

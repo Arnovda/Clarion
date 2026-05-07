@@ -57,6 +57,7 @@ import { closeRedis } from './jobs/redis';
 import { loadSchedules, closeScheduler } from './jobs/scheduler';
 import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
+import { loadPipelineSchedules } from './jobs/pipelineScheduler';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
@@ -220,6 +221,10 @@ if (!process.env.VITEST) {
     loadEmailSchedules().catch(err => console.error('Email schedule loading error:', err));
     // Load connection sync schedules from DB into BullMQ
     loadConnectionSyncSchedules().catch(err => console.error('Connection sync schedule loading error:', err));
+    // Load pipeline cron triggers from DB into BullMQ. on-source-sync
+    // triggers are evaluated in-process in SyncOrchestrator; nothing to
+    // pre-load for those.
+    loadPipelineSchedules().catch(err => console.error('Pipeline schedule loading error:', err));
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {

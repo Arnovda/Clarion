@@ -607,13 +607,20 @@ interface MessageBubbleProps {
   onFeedback:     (msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) => void;
   onExport:       (format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) => void;
   conversationId: number | null;
+  /** Optional: re-fetch a persisted investigation's full trail from
+   *  /api/investigations/:id and hydrate the message in place. Called by
+   *  the "Replay full trail" button on rehydrated investigate-mode
+   *  messages whose steps[] is empty (steps aren't persisted row-by-row;
+   *  only the conclusion + investigation_id survive). */
+  onReplayInvestigation?: (msgId: number, investigationId: number) => Promise<void> | void;
 }
 
 export default function MessageBubble({
-  msg, showSql, isAdmin, onSend, onFeedback, onExport, conversationId,
+  msg, showSql, isAdmin, onSend, onFeedback, onExport, conversationId, onReplayInvestigation,
 }: MessageBubbleProps) {
   const [sqlOpen,       setSqlOpen]       = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [replayLoading, setReplayLoading] = useState(false);
   const brainRef = useRef<HTMLDivElement>(null);
 
   function toggleReasoning() {
@@ -680,6 +687,30 @@ export default function MessageBubble({
               errorReason={inv.failureReason}
             />
           </div>
+          {/* Replay full trail — only when this is a rehydrated message
+              from history (steps weren't persisted row-by-row, only the
+              conclusion + investigation_id survive in `debug` JSONB).
+              Click fetches /api/investigations/:id and re-renders the
+              steps inline, no slide-over. */}
+          {inv.streamStatus === 'done'
+            && inv.steps.length === 0
+            && inv.id
+            && onReplayInvestigation && (
+            <div className="pl-1">
+              <button
+                onClick={async () => {
+                  if (replayLoading) return;
+                  setReplayLoading(true);
+                  try { await onReplayInvestigation(msg.id, inv.id!); }
+                  finally { setReplayLoading(false); }
+                }}
+                disabled={replayLoading}
+                className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {replayLoading ? 'Loading trail…' : '→ Replay full trail'}
+              </button>
+            </div>
+          )}
           {/* Follow-up chips after conclusion (Phase 2) */}
           {inv.streamStatus === 'done' && inv.conclusion && (
             <div className="pl-1 pt-1">
