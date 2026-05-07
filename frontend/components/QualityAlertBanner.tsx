@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, ChevronDown } from 'lucide-react';
 import api from '@/lib/api';
+import { compactNarrative } from '@/lib/qualityNarrative';
 
 interface QualityAlert {
   id: number;
@@ -111,9 +112,15 @@ export default function QualityAlertBanner() {
               }`} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm text-slate-700">{alert.message}</p>
-                {alert.ai_context && (
-                  <p className="text-xs text-slate-600 italic mt-1 leading-relaxed">{alert.ai_context}</p>
-                )}
+                {(() => {
+                  // Compact at render time: strips markdown labels +
+                  // takes the first sentence so old alerts (paragraphs
+                  // with **Business Impact:** labels) match the
+                  // single-sentence shape new ones produce.
+                  const compact = compactNarrative(alert.ai_context);
+                  if (!compact) return null;
+                  return <p className="text-xs text-slate-600 italic mt-1 leading-relaxed">{compact}</p>;
+                })()}
                 <p className="text-xs text-slate-400 mt-0.5">
                   {alert.table_name} &middot;{' '}
                   {new Date(alert.created_at).toLocaleString('en-GB', {

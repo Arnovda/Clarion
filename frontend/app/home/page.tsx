@@ -31,6 +31,7 @@ import dynamic from 'next/dynamic';
 import api from '@/lib/api';
 import { OBSERVATORY } from '@/lib/observatory';
 import { formatRelative } from '@/lib/dates';
+import { compactNarrative } from '@/lib/qualityNarrative';
 import { cn } from '@/lib/cn';
 
 // Dynamic imports — these aren't critical for first paint and pull
@@ -461,7 +462,9 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
       color,
       title: a.message,
       description: a.createdAt ? `Detected ${formatRelative(a.createdAt)}` : '',
-      narrative: a.aiContext,
+      // Compact at the render boundary so older alerts (paragraphs +
+      // markdown labels) display as tightly as new ones (one short sentence).
+      narrative: compactNarrative(a.aiContext),
     });
   }
 
