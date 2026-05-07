@@ -136,6 +136,76 @@ def derive_storage_options(path: str) -> dict[str, str]:
     return {"use_azure_cli": "true"} if os.environ.get("AZURE_USE_AZURE_CLI") == "true" else {}
 
 
+# ── Legacy parquet cleanup ──────────────────────────────────────────────────
+
+
+def remove_legacy_parquet(delta_path: str, storage_options: dict[str, str]) -> Optional[str]:
+    """
+    On first Delta commit at a path that previously held the legacy
+    `data.parquet` writer's output, remove that one orphan so it doesn't
+    sit in the storage account forever consuming bytes that no reader
+    references.
+
+    Best-effort. We deliberately only target the EXACT filename the
+    legacy writer used (`data.parquet`) — never anything else — so the
+    cleanup can't accidentally nuke a real Delta data file or some
+    unrelated artifact.
+
+    Returns a human-readable description of the action taken (or None
+    if there was nothing to do). Failures are caught and logged to
+    stderr; they never fail the refresh — Delta is already committed
+    by the time this runs.
+    """
+    LEGACY_FILENAME = "data.parquet"
+
+    if not delta_path.startswith("az://"):
+        # Local path
+        try:
+            from pathlib import Path
+            target = Path(delta_path) / LEGACY_FILENAME
+            if target.is_file():
+                target.unlink()
+                return f"removed legacy {target}"
+            return None
+        except Exception as e:
+            sys.stderr.write(f"[sidecar] local cleanup error: {e}\n")
+            return None
+
+    # Azure path. Use pyarrow.fs.AzureFileSystem with the same credentials
+    # we already passed to deltalake. PyPI's pyarrow wheels include Azure
+    # support as of pyarrow 14+.
+    try:
+        from urllib.parse import urlparse
+        u = urlparse(delta_path)
+        container = u.netloc
+        prefix = u.path.lstrip("/").rstrip("/")
+        legacy_blob = f"{prefix}/{LEGACY_FILENAME}" if prefix else LEGACY_FILENAME
+        full_path = f"{container}/{legacy_blob}"
+
+        account_name = storage_options.get("account_name")
+        if not account_name:
+            sys.stderr.write("[sidecar] Azure cleanup skipped: no account_name in storage_options\n")
+            return None
+
+        import pyarrow.fs as pafs
+        fs_kwargs: dict[str, object] = {"account_name": account_name}
+        if "account_key" in storage_options:
+            fs_kwargs["account_key"] = storage_options["account_key"]
+        if "sas_token" in storage_options:
+            fs_kwargs["sas_token"] = storage_options["sas_token"]
+        fs = pafs.AzureFileSystem(**fs_kwargs)  # type: ignore[arg-type]
+
+        info = fs.get_file_info(full_path)
+        if info.type == pafs.FileType.File:
+            fs.delete_file(full_path)
+            return f"removed legacy az://{full_path}"
+        return None
+    except Exception as e:
+        # Best-effort — never fail the refresh on cleanup.
+        sys.stderr.write(f"[sidecar] Azure cleanup skipped: {type(e).__name__}: {e}\n")
+        return None
+
+
 # ── Diff ────────────────────────────────────────────────────────────────────
 
 
@@ -291,11 +361,23 @@ def main() -> int:
             storage_options=storage_options,
         )
 
-        result = {
+        # 6. On first Delta commit at this path, remove the legacy
+        #    `data.parquet` orphan left behind by the old parquet
+        #    writer. Best-effort — the Delta commit already succeeded,
+        #    so a cleanup failure is logged but never fails the
+        #    refresh. Only fires when first_run is True (so it can't
+        #    double-delete on subsequent runs).
+        cleanup_msg: Optional[str] = None
+        if first_run:
+            cleanup_msg = remove_legacy_parquet(delta_path, storage_options)
+
+        result: dict[str, Any] = {
             "status": "ok",
             "first_run": first_run,
             **counts,
         }
+        if cleanup_msg:
+            result["legacy_cleanup"] = cleanup_msg
         sys.stdout.write(json.dumps(result))
         return 0
 

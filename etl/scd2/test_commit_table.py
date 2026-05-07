@@ -33,6 +33,7 @@ from commit_table import (  # noqa: E402
     add_row_hash,
     diff_states,
     hash_row,
+    remove_legacy_parquet,
 )
 
 
@@ -179,6 +180,60 @@ def test_diff_composite_business_key() -> None:
     assert counts["rows_updated"] == 1
     assert counts["rows_inserted"] == 0
     assert counts["rows_deleted"] == 0
+
+
+# ── remove_legacy_parquet (local paths only — Azure is best-effort) ────────
+
+
+def test_cleanup_removes_legacy_parquet_when_present(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    delta_dir = tmp_path / "dim_supplier"
+    delta_dir.mkdir()
+    legacy = delta_dir / "data.parquet"
+    legacy.write_bytes(b"legacy content")
+    # A real-Delta data file should NOT be touched.
+    keeper = delta_dir / "part-00000-uuid.parquet"
+    keeper.write_bytes(b"delta data")
+
+    msg = remove_legacy_parquet(str(delta_dir), {})
+    assert msg is not None
+    assert "data.parquet" in msg
+    assert not legacy.exists(), "data.parquet should have been removed"
+    assert keeper.exists(), "non-legacy files must not be touched"
+
+
+def test_cleanup_no_op_when_legacy_missing(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    delta_dir = tmp_path / "dim_supplier"
+    delta_dir.mkdir()
+    msg = remove_legacy_parquet(str(delta_dir), {})
+    assert msg is None
+
+
+def test_cleanup_does_not_raise_on_missing_dir(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    nonexistent = tmp_path / "does_not_exist"
+    # No exception even though path doesn't exist; returns None.
+    msg = remove_legacy_parquet(str(nonexistent), {})
+    assert msg is None
+
+
+def test_cleanup_only_targets_data_parquet(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The cleanup is deliberately narrow — only `data.parquet`, never anything else."""
+    delta_dir = tmp_path / "dim_supplier"
+    delta_dir.mkdir()
+    other_files = [
+        delta_dir / "schema.json",
+        delta_dir / "metadata.parquet",
+        delta_dir / "data.csv",
+        delta_dir / "_delta_log",
+    ]
+    for f in other_files[:-1]:
+        f.write_bytes(b"x")
+    other_files[-1].mkdir()
+
+    msg = remove_legacy_parquet(str(delta_dir), {})
+    assert msg is None
+    for f in other_files[:-1]:
+        assert f.exists(), f"{f.name} must not be removed"
+    assert other_files[-1].is_dir(), "_delta_log must not be removed"
 
 
 def test_diff_handles_resurrected_row() -> None:

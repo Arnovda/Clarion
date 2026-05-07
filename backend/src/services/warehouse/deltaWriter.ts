@@ -71,6 +71,9 @@ interface SidecarResult {
   rows_inserted?: number;
   rows_deleted?: number;
   rows_total?: number;
+  /** Set when the sidecar removed a legacy `data.parquet` on first
+   *  Delta commit. Logged for audit; not surfaced on the chart. */
+  legacy_cleanup?: string;
 }
 
 /**
@@ -153,6 +156,12 @@ export async function writeDeltaWithSidecar(opts: {
         rowsDeleted: sidecarResult.rows_deleted ?? 0,
         rowsTotal: sidecarResult.rows_total ?? 0,
       };
+      if (sidecarResult.legacy_cleanup) {
+        log.info(
+          { productTableId: opts.productTableId, action: sidecarResult.legacy_cleanup },
+          'sidecar cleaned up legacy parquet on first Delta commit',
+        );
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
