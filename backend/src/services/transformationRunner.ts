@@ -717,8 +717,9 @@ export async function runProductTransformation(
           // way; this just turns a deferred failure into an immediate one.
           if (!isSidecarReachable()) {
             throw new Error(
-              'STORAGE_FORMAT=delta_v1 is set but the Python sidecar is not reachable. ' +
-              'Check SCD2_SIDECAR_PATH / PYTHON_BIN, or unset STORAGE_FORMAT to fall back to parquet.',
+              'Delta storage is enabled (default) but the Python sidecar script is not reachable. ' +
+              'Check SCD2_SIDECAR_PATH (defaults to <repo>/etl/scd2/commit_table.py), ' +
+              'or set STORAGE_FORMAT=parquet to opt out of Delta storage.',
             );
           }
           // Pull business-key columns (for diffing) + all column names (for

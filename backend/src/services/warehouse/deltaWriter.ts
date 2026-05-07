@@ -74,11 +74,21 @@ interface SidecarResult {
 }
 
 /**
- * Returns true when the Delta-storage feature flag is on. Off by default
- * so existing tenants keep the parquet path until we're ready to flip.
+ * Returns true when product transformations should write Delta + run
+ * the Python sidecar.
+ *
+ * Delta is the DEFAULT as of 2026-05-07 — the production image bakes
+ * the Python venv + sidecar in, and Azure Blob auth flows through the
+ * existing AZURE_STORAGE_CONNECTION_STRING env var. The only escape
+ * hatch is `STORAGE_FORMAT=parquet`, which keeps the legacy parquet
+ * COPY TO path (useful for local dev environments that don't have
+ * `deltalake`/`pandas`/`pyarrow` installed in their Python).
+ *
+ * Unset → Delta. `delta_v1` → Delta. `parquet` → legacy. Any other
+ * value is treated as "Delta" too, so a typo doesn't silently downgrade.
  */
 export function isDeltaStorageEnabled(): boolean {
-  return process.env.STORAGE_FORMAT === 'delta_v1';
+  return process.env.STORAGE_FORMAT !== 'parquet';
 }
 
 /**
@@ -260,12 +270,16 @@ async function recordRefreshHistory(opts: {
 
 /**
  * Sanity check helper — used by transformationRunner to confirm the
- * sidecar binary is reachable before starting a long transformation. If
+ * sidecar script is reachable before starting a long transformation. If
  * we're going to fail, we'd rather fail fast (before running the AI
  * transformation SQL) than after.
+ *
+ * Returns true if the script file exists at the expected path. Doesn't
+ * verify Python itself is on PATH or that deltalake is installed —
+ * those failures surface cleanly via spawnSidecar's child_process error
+ * path with the actual error message.
  */
 export function isSidecarReachable(): boolean {
-  if (!isDeltaStorageEnabled()) return false;
   const sidecarPath = process.env.SCD2_SIDECAR_PATH
     ?? path.resolve(__dirname, '../../../../etl/scd2/commit_table.py');
   return fs.existsSync(sidecarPath);

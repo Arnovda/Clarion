@@ -38,10 +38,12 @@ the parquet-overwrite write path for product tables with Delta Lake +
 a small Python sidecar that diffs new vs existing state on a business
 key. Per-refresh `unchanged / updated / inserted / deleted` counts are
 persisted to a new `product_table_refresh_history` table and surfaced
-as a per-table change-evolution mini chart on `/products/[id]`. Gated
-on `STORAGE_FORMAT=delta_v1`; default keeps the legacy parquet path.
-Sets the foundation SCD2 will extend later — full design captured in
-`docs/backlog/SCD2.md`.
+as a per-table change-evolution mini chart on `/products/[id]`. **Delta
+is the default** — production images bake the Python venv +
+deltalake/pandas/pyarrow in, so no env var is needed in Azure. Set
+`STORAGE_FORMAT=parquet` to opt out (the escape hatch for local dev
+where Python deps aren't installed). Sets the foundation SCD2 will
+extend later — full design captured in `docs/backlog/SCD2.md`.
 
 - **New migration `20260508000052_create_refresh_history.ts`:**
   - `product_table_refresh_history` (RLS-protected, one row per refresh
@@ -95,8 +97,9 @@ Sets the foundation SCD2 will extend later — full design captured in
 - **What's NOT in this commit (next ops steps):**
   - Notification on anomalous deletes (e.g. >50% rows deleted) — the
     data is there, no UI hook yet.
-  - Production rollout: flip `STORAGE_FORMAT=delta_v1` per-tenant once
-    the local smoke test confirms behaviour.
+  - Backfill of refresh-history rows for refreshes that ran before
+    this commit shipped — they're invisible on the chart until the
+    next refresh of each table populates a row.
   - SCD2 itself — see `docs/backlog/SCD2.md` for the design.
 
 **Storage layer consolidation — Phase 3 (2026-05-05):** Tenant-prefixed,
@@ -1110,9 +1113,9 @@ SMTP_USER=
 SMTP_PASS=
 SMTP_FROM=Clarion <noreply@yourdomain.com>
 
-# Storage format for product tables. `delta_v1` enables the Delta Lake +
-# Python sidecar write path with row-hash change tracking. Unset (or any
-# other value) → legacy parquet COPY TO. Foundation for SCD2.
+# Storage format for product tables. Delta Lake + Python sidecar is the
+# DEFAULT — production images bake Python + deltalake in. Set
+# STORAGE_FORMAT=parquet to opt out (e.g. local dev without Python deps).
 STORAGE_FORMAT=
 
 # Python interpreter the SCD1/SCD2 sidecar runs under. Defaults to `python3`.
