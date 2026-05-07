@@ -60,8 +60,11 @@ const NAV_ITEMS: NavItem[] = [
   // Earlier "Datasets" label was a soften-the-engineering-term attempt;
   // dropped because it collided semantically with "Catalog" and gave no
   // hint about what the user does there.
+  // /query (Ask AI) auto-detects investigate questions ("Why did revenue
+  // drop?") and renders the multi-step trail inline with a 🕵️ indicator.
+  // /investigate is no longer in the rail — it stays as a deep-link alias
+  // for morning-brief "Why?" buttons and replay URLs.
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
-  { key: 'investigate',href: '/investigate',label: 'Investigate',     icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
   { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },

@@ -19,6 +19,8 @@ import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
 import type { DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
+import InvestigationView from '@/components/investigate/InvestigationView';
+import type { Investigation } from '@/lib/investigationTypes';
 
 // ─── Result visualizer ───────────────────────────────────────────────────────
 
@@ -639,6 +641,69 @@ export default function MessageBubble({
     );
   }
 
+  // ── Investigate-mode message: embed the investigation trail inline ────────
+  if (msg.mode === 'investigate' && msg.investigation) {
+    const inv = msg.investigation;
+    // Build a minimal Investigation shape from the message state for the
+    // renderer. Once concluded, the full hydrated object lives at inv.full.
+    const investigation: Investigation | null = inv.full ?? (
+      inv.streamStatus === 'done' || inv.streamStatus === 'failed'
+        ? {
+            id: inv.id ?? 0,
+            question: inv.question,
+            focus: inv.focus,
+            status: inv.streamStatus === 'done' ? 'concluded' : 'failed',
+            conclusion: inv.conclusion,
+            conclusion_confidence: inv.conclusionConfidence,
+            failure_reason: inv.failureReason,
+            steps: inv.steps,
+          }
+        : null
+    );
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-[90%] w-full space-y-2">
+          {/* Detective header — visible cue that this is investigate mode */}
+          <div className="flex items-center gap-2 pl-1">
+            <span className="text-[18px] leading-none" role="img" aria-label="Detective">🕵️</span>
+            <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean">
+              Investigate mode
+            </span>
+            <StreamStatusPill status={inv.streamStatus} />
+          </div>
+          {/* Inline trail */}
+          <div className="border border-line rounded-lg overflow-hidden bg-raised">
+            <InvestigationView
+              investigation={investigation}
+              steps={inv.steps}
+              streamStatus={inv.streamStatus}
+              errorReason={inv.failureReason}
+            />
+          </div>
+          {/* Follow-up chips after conclusion (Phase 2) */}
+          {inv.streamStatus === 'done' && inv.conclusion && (
+            <div className="pl-1 pt-1">
+              <div className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted-2 mb-2">
+                Follow-up questions
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {buildFollowUps(inv.question).map((fu) => (
+                  <button
+                    key={fu}
+                    onClick={() => onSend(fu)}
+                    className="px-2.5 py-1 text-[12px] font-medium rounded-md border border-line bg-raised text-ink-2 hover:bg-soft hover:border-ocean/40 transition-colors"
+                  >
+                    {fu}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (msg.blocked) {
     // ── Entity ambiguity: same name, multiple records ─────────────────────────
     if (msg.needsClarification && msg.ambiguities && msg.ambiguities.length > 0) {
@@ -955,6 +1020,20 @@ export default function MessageBubble({
                   )}
                 </div>
               )}
+              {/* Why? chip — escalates the answered question into an investigation.
+                  The heuristic classifier in `lib/questionMode.ts` picks up the
+                  "why" prefix and routes back to investigate mode (when a
+                  product context is active). */}
+              {msg.question && !msg.error && !msg.blocked && (
+                <button
+                  onClick={() => onSend(`Why ${cleanForWhy(msg.question!)}?`)}
+                  className="ml-2 flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 hover:text-ocean hover:bg-ocean-softer rounded transition-colors"
+                  title="Investigate the cause"
+                >
+                  <span aria-hidden="true">🕵️</span>
+                  Why?
+                </button>
+              )}
               {/* Export buttons */}
               {msg.rows && msg.rows.length > 0 && conversationId && (
                 <div className="flex items-center gap-1 ml-auto">
@@ -1027,4 +1106,49 @@ function ErrorDetail({ detail, stack }: { detail?: string; stack?: string }) {
       )}
     </div>
   );
+}
+
+// ─── Helpers for investigate-mode messages ──────────────────────────────────
+
+function StreamStatusPill({ status }: { status: 'idle' | 'starting' | 'running' | 'done' | 'failed' }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    starting:  { label: 'starting',  cls: 'bg-ocean/10 text-ocean border-ocean/20' },
+    running:   { label: 'running',   cls: 'bg-ocean/10 text-ocean border-ocean/20' },
+    done:      { label: 'concluded', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+    failed:    { label: 'failed',    cls: 'bg-red-50 text-red-700 border-red-200' },
+    idle:      { label: '',          cls: '' },
+  };
+  const v = map[status] ?? map.idle;
+  if (!v.label) return null;
+  return (
+    <span className={`px-1.5 py-0.5 text-[9.5px] font-mono uppercase tracking-[0.1em] rounded border ${v.cls}`}>
+      {v.label}
+    </span>
+  );
+}
+
+/**
+ * Strip a leading "Why" / "How come" / "Investigate" / question mark so we
+ * can re-prefix it cleanly. Used by the "Why?" escalate chip to convert
+ * "Revenue last month?" into "Why Revenue last month?".
+ */
+function cleanForWhy(q: string): string {
+  return q
+    .replace(/^\s*(why|how come|investigate|explain|tell me why|find out why)\b[\s,:]*/i, '')
+    .replace(/\?+\s*$/, '')
+    .trim();
+}
+
+/**
+ * Build a small set of follow-up question chips shown below an
+ * investigation conclusion. Heuristic-only; routes back through the
+ * standard ask flow via `onSend()`.
+ */
+function buildFollowUps(question: string): string[] {
+  const q = cleanForWhy(question);
+  return [
+    `Show me ${q} broken down by month`,
+    `Which segments contributed most to ${q.toLowerCase()}?`,
+    `How does ${q.toLowerCase()} compare to last year?`,
+  ];
 }

@@ -4,6 +4,8 @@
  * can import them without pulling the whole page module.
  */
 
+import type { Investigation, InvestigationStep, InvestigationStreamStatus } from '@/lib/investigationTypes';
+
 export interface DebugInfo {
   confirmedTables:        number;
   confirmedColumns:       number;
@@ -101,6 +103,27 @@ export interface Message {
   serverId?:           number;             // DB id from conversation_messages table
   forecast?:           ForecastData;       // forecast visualization data
   visualization?:      VisualizationHint;  // LLM-suggested chart type for the result rows
+  /**
+   * Mode for this assistant message. 'ask' is the standard NL→SQL flow.
+   * 'investigate' renders an embedded multi-step investigation trail
+   * inside the message bubble (drives the same backend SSE stream as
+   * /investigate, just rendered inline).
+   */
+  mode?:               'ask' | 'investigate';
+  /** Live + final state for an in-bubble investigation. */
+  investigation?: {
+    id?:                   number;
+    question:              string;
+    focus:                 string | null;
+    productId:             number;
+    streamStatus:          InvestigationStreamStatus;
+    steps:                 InvestigationStep[];
+    conclusion:            string | null;
+    conclusionConfidence:  'high' | 'medium' | 'low' | null;
+    failureReason:         string | null;
+    /** Hydrated `Investigation` object once the stream concludes. */
+    full?:                 Investigation | null;
+  };
 }
 
 export interface Conversation {

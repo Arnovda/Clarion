@@ -21,6 +21,9 @@ import type {
   Conversation,
   RepairState,
 } from './types';
+import { classifyQuestion, type QuestionMode } from '@/lib/questionMode';
+import { runInvestigation } from '@/lib/investigateRunner';
+import { upsertStep } from '@/lib/investigationTypes';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -69,6 +72,15 @@ function QueryPageInner() {
   const [thinkingText,  setThinkingText]  = useState<string>('');
   const [thinkingSql,   setThinkingSql]   = useState<string | null>(null);
   const [thinkingConf,  setThinkingConf]  = useState<number | null>(null);
+
+  // Mode override for the next question. 'auto' uses the heuristic
+  // classifier; 'ask' / 'investigate' force a specific path. Resets to
+  // 'auto' after each send so users don't get stuck in one mode.
+  const [modeOverride, setModeOverride] = useState<'auto' | QuestionMode>('auto');
+
+  // Live preview of which mode the current input would route to.
+  const detectedMode: QuestionMode = classifyQuestion(input);
+  const canInvestigate = !!urlProductId; // investigate requires a product context
 
   const nextId      = useRef(0);
   const bottomRef   = useRef<HTMLDivElement>(null);
@@ -534,6 +546,106 @@ function QueryPageInner() {
     setThinkingSql(null);
     setThinkingConf(null);
 
+    // Resolve mode: explicit override > heuristic. Investigate also requires
+    // a product context (productId from URL); otherwise we silently fall back
+    // to ask mode so users without a product still get an answer.
+    const resolvedMode: QuestionMode = (() => {
+      if (modeOverride === 'investigate' && urlProductId) return 'investigate';
+      if (modeOverride === 'ask') return 'ask';
+      // 'auto' — classify
+      const classified = classifyQuestion(q);
+      return classified === 'investigate' && urlProductId ? 'investigate' : 'ask';
+    })();
+    // Reset override after each send.
+    if (modeOverride !== 'auto') setModeOverride('auto');
+
+    // ── Investigate path: spawn an in-bubble investigation ────────────────────
+    if (resolvedMode === 'investigate' && urlProductId) {
+      const productIdNum = Number(urlProductId);
+      const investigateMsgId = nextId.current++;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: investigateMsgId,
+          role: 'assistant',
+          text: '',
+          question: q,
+          mode: 'investigate',
+          investigation: {
+            question: q,
+            focus: null,
+            productId: productIdNum,
+            streamStatus: 'starting',
+            steps: [],
+            conclusion: null,
+            conclusionConfidence: null,
+            failureReason: null,
+            full: null,
+          },
+        },
+      ]);
+      const controller = new AbortController();
+      try {
+        await runInvestigation({
+          question: q,
+          focus: null,
+          dataProductId: productIdNum,
+          pulseEntryId: null,
+          briefId: null,
+          signal: controller.signal,
+          onEvent: (evt) => {
+            setMessages((prev) => prev.map((m) => {
+              if (m.id !== investigateMsgId || !m.investigation) return m;
+              const inv = m.investigation;
+              if (evt.type === 'step_started') {
+                return { ...m, investigation: { ...inv, streamStatus: 'running', steps: upsertStep(inv.steps, evt.step) } };
+              }
+              if (evt.type === 'step_completed') {
+                return { ...m, investigation: { ...inv, steps: upsertStep(inv.steps, evt.step) } };
+              }
+              if (evt.type === 'concluded') {
+                return {
+                  ...m,
+                  text: evt.investigation.conclusion ?? '',
+                  investigation: {
+                    ...inv,
+                    id: evt.investigation.id,
+                    streamStatus: 'done',
+                    steps: evt.investigation.steps,
+                    conclusion: evt.investigation.conclusion,
+                    conclusionConfidence: evt.investigation.conclusion_confidence,
+                    full: evt.investigation,
+                  },
+                };
+              }
+              if (evt.type === 'failed') {
+                return {
+                  ...m,
+                  investigation: { ...inv, streamStatus: 'failed', failureReason: evt.reason },
+                };
+              }
+              return m;
+            }));
+          },
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : 'Investigation failed';
+        setMessages((prev) => prev.map((m) =>
+          m.id === investigateMsgId && m.investigation
+            ? { ...m, investigation: { ...m.investigation, streamStatus: 'failed', failureReason: reason } }
+            : m,
+        ));
+      } finally {
+        setLoading(false);
+        setThinkingPhase('');
+        setThinkingText('');
+        setThinkingSql(null);
+        setThinkingConf(null);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }
+      return;
+    }
+
     try {
       const isCrossView = selectedSource.startsWith('v:');
       const sourceId    = Number(selectedSource.split(':')[1]);
@@ -752,7 +864,7 @@ function QueryPageInner() {
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, activeId, selectedSource]);
+  }, [loading, activeId, selectedSource, modeOverride, urlProductId]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -905,8 +1017,56 @@ function QueryPageInner() {
                 {loading ? 'Thinking…' : 'Ask'}
               </button>
             </form>
-            {isAdmin && (
-              <div className="max-w-2xl mx-auto mt-2 flex items-center justify-end gap-2">
+            {/* Mode hint — shows the auto-detected mode for the current input,
+                lets the user flip it. Investigate requires a product context. */}
+            <div className="max-w-2xl mx-auto mt-2 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2">
+                {input.trim() ? (
+                  modeOverride !== 'auto' ? (
+                    <span className="flex items-center gap-1.5">
+                      <span>{modeOverride === 'investigate' ? '🕵️ Investigate' : '💬 Ask'} (forced)</span>
+                      <button
+                        type="button"
+                        onClick={() => setModeOverride('auto')}
+                        className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                      >
+                        reset
+                      </button>
+                    </span>
+                  ) : detectedMode === 'investigate' && canInvestigate ? (
+                    <span className="flex items-center gap-1.5">
+                      <span>🕵️ Investigate mode</span>
+                      <button
+                        type="button"
+                        onClick={() => setModeOverride('ask')}
+                        className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                      >
+                        switch to ask
+                      </button>
+                    </span>
+                  ) : detectedMode === 'investigate' && !canInvestigate ? (
+                    <span className="text-amber-700">
+                      🕵️ Investigate needs a product · ask mode used
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      <span>💬 Ask mode</span>
+                      {canInvestigate && (
+                        <button
+                          type="button"
+                          onClick={() => setModeOverride('investigate')}
+                          className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                        >
+                          switch to investigate
+                        </button>
+                      )}
+                    </span>
+                  )
+                ) : (
+                  <span>&nbsp;</span>
+                )}
+              </div>
+              {isAdmin && (
                 <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
                   <input
                     type="checkbox"
@@ -916,8 +1076,8 @@ function QueryPageInner() {
                   />
                   Query source data
                 </label>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
       </div>
