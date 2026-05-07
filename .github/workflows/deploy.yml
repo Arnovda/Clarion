@@ -127,9 +127,39 @@ jobs:
             ${{ env.ACR_REGISTRY }}/databridge-sync-worker:${{ steps.tag.outputs.tag }}
             ${{ env.ACR_REGISTRY }}/databridge-sync-worker:${{ github.ref_name }}-latest
 
+  # ── Run SQL migrations BEFORE deploy ──────────────────────────────────────
+  # Migrations are kept strictly additive (CREATE TABLE / ADD COLUMN — no
+  # DROP / RENAME without a multi-stage rollout), so running them ahead of
+  # the new container image is safe: old code ignores the new schema.
+  # Order matters: previously this ran AFTER deploy, which meant any
+  # request hitting a new endpoint (e.g. GET /schema-changes) during the
+  # ~60s migration window would 500 with "relation does not exist".
+  migrate-sql:
+    needs: [build, build-backend, build-worker]
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Run Knex migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run migrate:latest
+
   # ── Deploy to Azure Container Apps ────────────────────────────────────────
   deploy:
-    needs: [build, build-backend, build-worker]
+    needs: [build, build-backend, build-worker, migrate-sql]
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
@@ -173,8 +203,13 @@ jobs:
       # the next sync triggered by the orchestrator will use the new code.
       # If you ever pin the Job to a SHA tag, add an update step here.
 
-  # ── Run migrations after deploy ───────────────────────────────────────────
-  migrate:
+  # ── Neo4j constraints (idempotent, after deploy) ──────────────────────────
+  # Constraint creation uses `IF NOT EXISTS` semantics in semanticGraph,
+  # so it's safe to run on every deploy. Kept after the container flip
+  # because the constraint logic occasionally evolves alongside backend
+  # code that uses it; running last means we never have a constraint
+  # mismatch against an older container.
+  neo4j-constraints:
     needs: deploy
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
@@ -190,12 +225,6 @@ jobs:
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci
-
-      - name: Run Knex migrations
-        working-directory: backend
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run migrate:latest
 
       - name: Ensure Neo4j constraints
         working-directory: backend
