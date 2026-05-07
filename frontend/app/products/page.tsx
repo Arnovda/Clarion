@@ -1,13 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Database, X, ChevronRight, Sparkles, Plus, RefreshCw, ChevronDown } from 'lucide-react';
 import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import RequireRole from '@/components/RequireRole';
 import dynamic from 'next/dynamic';
+const QualityTab = dynamic(() => import('./QualityTab'), { ssr: false });
 import type {
   Connection,
   DataProduct,
@@ -34,7 +35,16 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'htt
 
 function ProductsPageInner() {
   const router = useRouter();
-  const [tab, setTab] = useState<ActiveTab>('overview');
+  const searchParams = useSearchParams();
+  // Initialise from URL so deep-links like /products?tab=quality (used by
+  // the Home Quality card) land on the right tab. Validates against the
+  // small allow-list to keep an unknown value from breaking the render.
+  const initialTab: ActiveTab = (() => {
+    const raw = searchParams.get('tab');
+    if (raw === 'quality' || raw === 'bus-matrix' || raw === 'overview') return raw;
+    return 'overview';
+  })();
+  const [tab, setTab] = useState<ActiveTab>(initialTab);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [products, setProducts] = useState<DataProduct[]>([]);
   const [loading, setLoading] = useState(true);
@@ -444,6 +454,7 @@ function ProductsPageInner() {
   const tabs: { key: ActiveTab; label: string }[] = [
     { key: 'overview', label: 'Overview' },
     { key: 'bus-matrix', label: 'Data tables' },
+    { key: 'quality', label: 'Quality' },
   ];
 
   return (
@@ -611,6 +622,12 @@ function ProductsPageInner() {
           {tab === 'bus-matrix' && (
             <BusMatrixTab products={products} details={details} onLoadProduct={loadFullProduct} />
           )}
+
+          {/* ── Quality Tab ────────────────────────────────────────────
+              Sorts product tables by score (worst first) so users can
+              act on the lowest-quality items first. The "Worth your
+              attention" feed on Home now lands here via /products?tab=quality. */}
+          {tab === 'quality' && <QualityTab />}
         </div>
       </div>
 
@@ -1188,7 +1205,9 @@ function BusMatrixTab({
 export default function ProductsPage() {
   return (
     <RequireRole roles={['admin', 'analyst']}>
-      <ProductsPageInner />
+      <Suspense>
+        <ProductsPageInner />
+      </Suspense>
     </RequireRole>
   );
 }

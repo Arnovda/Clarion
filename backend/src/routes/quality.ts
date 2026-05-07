@@ -1158,6 +1158,67 @@ router.patch('/failures/:failId', requireAuth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── failing rules feed ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/quality/rules/failing
+ *
+ * Returns active quality rules whose latest execution has pass_rate below
+ * the rule's pass_threshold. Used by the Quality tab on /products to give
+ * users a clickable list of "what's actually broken" — distinct from the
+ * per-table profile scores the same tab already shows.
+ *
+ * One row per rule (latest execution wins). Joins back to connections so
+ * the UI can show "<connection> · <table>: <rule>" without an extra
+ * lookup.
+ */
+router.get('/rules/failing', requireAuth, async (req, res, next) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    const rows = await semanticDb.raw<{ rows: Array<{
+      rule_id: number;
+      rule_name: string;
+      dimension: string;
+      connection_id: number;
+      connection_name: string | null;
+      table_name: string;
+      pass_rate: number | null;
+      pass_threshold: number | null;
+      executed_at: string | null;
+      total_records: number | null;
+      failing_records: number | null;
+    }> }>(
+      `SELECT qr.id AS rule_id,
+              qr.rule_name,
+              qr.dimension,
+              qr.connection_id,
+              c.name AS connection_name,
+              qr.table_name,
+              re.pass_rate,
+              qr.pass_threshold,
+              re.executed_at,
+              re.total_records,
+              re.failing_records
+         FROM quality_rules qr
+         JOIN (
+           SELECT rule_id, pass_rate, executed_at, total_records, failing_records,
+                  ROW_NUMBER() OVER (PARTITION BY rule_id ORDER BY executed_at DESC) AS rn
+             FROM rule_executions
+            WHERE tenant_id = ?
+         ) re ON re.rule_id = qr.id AND re.rn = 1
+         LEFT JOIN connections c ON c.id = qr.connection_id
+        WHERE qr.tenant_id = ?
+          AND qr.is_active = true
+          AND re.pass_rate IS NOT NULL
+          AND re.pass_rate < COALESCE(qr.pass_threshold, 0.95)
+        ORDER BY re.pass_rate ASC, re.executed_at DESC`,
+      [tenantId, tenantId],
+    );
+    res.json({ ok: true, data: rows.rows ?? [] });
+  } catch (err) { next(err); }
+});
+
 // ─── quality alerts ─────────────────────────────────────────────────────────
 
 // GET /api/quality/alerts?dismissed=false
