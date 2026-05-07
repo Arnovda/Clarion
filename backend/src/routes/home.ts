@@ -231,18 +231,25 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     } catch { /* ignore */ }
 
     // ── Active alerts (quality, undismissed) ───────────────────────────
-    let alerts: Array<{ id: number; severity: string; message: string; kind: string; createdAt: string | null }> = [];
+    // Now also returns ai_context — Claude's plain-English explanation
+    // that's been written to the column for ages but never surfaced on
+    // Home. Without it the user gets "Gross margin on SKU dropped 14%"
+    // and no narrative; with it they get "...likely a unit-of-measure
+    // mismatch on the supplier import" which is the actual differentiator.
+    let alerts: Array<{ id: number; severity: string; message: string; aiContext: string | null; kind: string; createdAt: string | null }> = [];
     try {
       const rows = await semanticDb('quality_alerts')
         .where('tenant_id', tenantId)
         .where('dismissed', false)
         .orderBy('created_at', 'desc')
         .limit(10)
-        .select<{ id: number; severity: string; message: string; alert_type: string; created_at: Date | string | null }[]>(
-          'id', 'severity', 'message', 'alert_type', 'created_at',
+        .select<{ id: number; severity: string; message: string; ai_context: string | null; alert_type: string; created_at: Date | string | null }[]>(
+          'id', 'severity', 'message', 'ai_context', 'alert_type', 'created_at',
         );
       alerts = rows.map((r) => ({
-        id: r.id, severity: r.severity, message: r.message, kind: r.alert_type,
+        id: r.id, severity: r.severity, message: r.message,
+        aiContext: r.ai_context ?? null,
+        kind: r.alert_type,
         createdAt: r.created_at ? String(r.created_at) : null,
       }));
     } catch { /* ignore */ }

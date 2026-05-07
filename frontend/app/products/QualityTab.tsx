@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Loader2, Play, AlertTriangle, ChevronRight } from 'lucide-react';
 import api from '@/lib/api';
 import QualityPanel from '@/components/QualityPanel';
+import QualityAlertBanner from '@/components/QualityAlertBanner';
 
 interface ProductTableHealth {
   id: number;
@@ -263,6 +264,12 @@ export default function QualityTab({ productNameFilter }: { productNameFilter?: 
 
   return (
     <div className="max-w-5xl mx-auto px-6 pt-8 pb-10 space-y-6">
+      {/* Quality alerts — auto-detected drops, threshold misses, drift.
+          AI narrative ("...likely a unit-of-measure mismatch") is in
+          the alert's ai_context column and rendered by the banner.
+          Self-hides when there are no undismissed alerts. */}
+      <QualityAlertBanner />
+
       {/* Hero score */}
       <div className="bg-raised border border-line rounded-lg p-8 flex items-center gap-8">
         <div

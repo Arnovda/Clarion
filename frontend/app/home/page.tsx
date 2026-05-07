@@ -73,7 +73,7 @@ interface HomeSummary {
   };
   dashboards: Array<{ id: number; title: string; starred: boolean; updatedAt: string | null }>;
   recentQuestions: Array<{ id: number; title: string | null; lastMessageAt: string | null }>;
-  alerts: Array<{ id: number; severity: string; message: string; kind: string; createdAt: string | null }>;
+  alerts: Array<{ id: number; severity: string; message: string; aiContext: string | null; kind: string; createdAt: string | null }>;
 }
 
 export default function HomePage() {
@@ -377,6 +377,12 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
     color: string;
     title: string;
     description: string;
+    /** Optional plain-English narrative under the description. Used by
+     *  quality alerts to surface Claude's `ai_context` ("...likely a
+     *  unit-of-measure mismatch") that's been written into the column
+     *  forever but never rendered on Home. The signature use case from
+     *  the marketing journey doc. */
+    narrative?: string | null;
     action?: { label: string; path: string };
   };
 
@@ -455,6 +461,7 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
       color,
       title: a.message,
       description: a.createdAt ? `Detected ${formatRelative(a.createdAt)}` : '',
+      narrative: a.aiContext,
     });
   }
 
@@ -481,6 +488,11 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
             <span className="mt-0.5 shrink-0" style={{ color: item.color }}>{item.icon}</span>
             <div className="flex-1 min-w-0">
               <p className="text-[13px] text-ink leading-tight">{item.title}</p>
+              {item.narrative && (
+                <p className="text-[12px] italic text-ink-3 mt-1 leading-relaxed font-display">
+                  {item.narrative}
+                </p>
+              )}
               {item.description && (
                 <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">{item.description}</p>
               )}

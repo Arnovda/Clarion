@@ -975,7 +975,13 @@ export default function MessageBubble({
             </div>
           )}
 
-          {msg.forecast ? <ForecastChart forecast={msg.forecast} /> : (msg.rows && msg.rows.length > 0 && <ResultVisualizer rows={msg.rows} hint={msg.visualization} />)}
+          {msg.forecast
+            ? <ForecastChart forecast={msg.forecast} />
+            : (msg.rows && msg.rows.length > 0 && (
+                isKpiShaped(msg.rows)
+                  ? <AnswerKpis row={msg.rows[0]} />
+                  : <ResultVisualizer rows={msg.rows} hint={msg.visualization} />
+              ))}
 
           {/* Assumptions footnote — small italic line under the answer.
               Stays subtle so it doesn't compete with the main result. Each
@@ -1137,6 +1143,86 @@ function ErrorDetail({ detail, stack }: { detail?: string; stack?: string }) {
       )}
     </div>
   );
+}
+
+// ─── KPI tiles for single-row aggregate answers ─────────────────────────────
+//
+// When a question like "what was our gross margin last month?" returns a
+// single row with multiple numeric columns, the result is KPI-shaped, not
+// chart-shaped. Render it as a tile grid (Revenue · Cost · Gross margin ·
+// Top mover) to match the marketing journey's "answer leads with the
+// numbers, not a table" pattern.
+//
+// Heuristic: rows.length === 1 AND ≥2 columns AND ≥1 of them is numeric
+// (excluding id-shaped columns that AI sometimes leaks into aggregates).
+// Multi-row responses still go to ResultVisualizer for chart/table.
+
+function isKpiShaped(rows: Record<string, unknown>[]): boolean {
+  if (!rows || rows.length !== 1) return false;
+  const row = rows[0];
+  const cols = Object.keys(row);
+  if (cols.length < 2 || cols.length > 6) return false;
+  const isIdCol = (c: string) => /(_id|_key|_nr|_number|_code|^id$)/i.test(c);
+  const isNumeric = (v: unknown) =>
+    typeof v === 'number'
+    || (typeof v === 'string' && v !== '' && !Number.isNaN(Number(v)));
+  // Need at least one numeric non-id column for the grid to make sense.
+  const numericNonId = cols.filter((c) => !isIdCol(c) && isNumeric(row[c]));
+  return numericNonId.length >= 1;
+}
+
+function AnswerKpis({ row }: { row: Record<string, unknown> }) {
+  const isIdCol = (c: string) => /(_id|_key|_nr|_number|_code|^id$)/i.test(c);
+  const entries = Object.entries(row)
+    .filter(([k, v]) => v != null && v !== '' && !isIdCol(k))
+    .slice(0, 6);
+  if (entries.length === 0) return null;
+  // 4 cols on wide screens, 2 on narrow. Mirrors the journey's KPI strip.
+  const gridCols = entries.length >= 4 ? 'sm:grid-cols-4' : entries.length === 3 ? 'sm:grid-cols-3' : 'sm:grid-cols-2';
+  return (
+    <div className={`grid grid-cols-2 ${gridCols} gap-2 mt-3`}>
+      {entries.map(([key, value]) => (
+        <div key={key} className="bg-raised border border-line rounded-md px-3 py-2.5">
+          <p className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted leading-tight mb-1.5">
+            {humaniseKpiLabel(key)}
+          </p>
+          <p className="font-mono text-[20px] leading-none tabular-nums tracking-[-0.01em] text-ink">
+            {formatKpiValue(value, key)}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Convert a column key like "gross_margin_pct" → "Gross margin %" for the tile label. */
+function humaniseKpiLabel(key: string): string {
+  let label = key.replace(/_/g, ' ').trim();
+  // Common suffix → percent symbol replacement at the end of the label.
+  if (/(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(key)) {
+    label = label.replace(/(pct|percent|percentage|rate|ratio|share)$/i, '').trim() + ' %';
+  }
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/** Format a value with the right precision + currency / percent hints based
+ *  on the column key. Falls back to the existing formatCellValue. */
+function formatKpiValue(value: unknown, key: string): string {
+  if (value == null || value === '') return '—';
+  const isPct = /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(key);
+  const isMoney = /(amount|revenue|cost|price|total|value|spend|cogs|gmv|arr|mrr)/i.test(key);
+  const num = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(num)) {
+    if (isPct) return `${num.toLocaleString('en-GB', { maximumFractionDigits: 1 })}%`;
+    if (isMoney) {
+      if (Math.abs(num) >= 1_000_000) return `€${(num / 1_000_000).toLocaleString('en-GB', { maximumFractionDigits: 2 })}M`;
+      if (Math.abs(num) >= 1_000) return `€${(num / 1_000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k`;
+      return `€${num.toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
+    }
+    if (Math.abs(num) >= 10_000) return num.toLocaleString('en-GB', { maximumFractionDigits: 0 });
+    return num.toLocaleString('en-GB', { maximumFractionDigits: 2 });
+  }
+  return formatCellValue(value);
 }
 
 // ─── Helpers for investigate-mode messages ──────────────────────────────────

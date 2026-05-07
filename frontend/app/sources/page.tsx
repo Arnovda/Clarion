@@ -228,6 +228,113 @@ function ConnectorIcon({ connector, size = 'md' }: { connector: Connector; size?
 // ---------------------------------------------------------------------------
 
 // ────────────────────────────────────────────────────────────────────────────
+// TryAskingCallout — the "now ask the data something" handoff that turns
+// /sources from a setup screen into a launchpad.
+//
+// Renders above the Connected Sources list when:
+//   - at least one connection has profiling_status === 'done'
+//     (so we know the catalog is queryable, not still profiling), AND
+//   - the user hasn't dismissed it this session.
+//
+// Pulls 3 starters from /api/query/starters (the same endpoint /query's
+// empty state uses, cached server-side for 24h, so there's no extra
+// per-page-load cost). Each chip click navigates to /query with
+// `?seedQuestion=` — that param is already wired in /query/page.tsx and
+// pre-fills the input.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface PersonalisedStarter {
+  question: string;
+  category?: string;
+}
+
+const FALLBACK_TRY_ASKING: string[] = [
+  'What was our gross margin last month?',
+  'Which customers haven\'t ordered in the last 30 days?',
+  'Which suppliers have raised prices this quarter?',
+];
+
+function TryAskingCallout({ connections }: { connections: Connection[] }) {
+  const router = useRouter();
+  const [starters, setStarters] = useState<string[] | null>(null);
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return sessionStorage.getItem('clarion_try_asking_dismissed') === '1';
+  });
+
+  // Eligibility: at least one profiled connection. Without this gate the
+  // panel can suggest questions that hit empty source_tables.
+  const hasProfiledSource = connections.some((c) =>
+    (c as { profiling_status?: string }).profiling_status === 'done',
+  );
+
+  useEffect(() => {
+    if (!hasProfiledSource || dismissed) return;
+    let cancelled = false;
+    api.get('/query/starters')
+      .then((res) => {
+        if (cancelled) return;
+        const data = (res.data?.data ?? {}) as { starters?: PersonalisedStarter[] };
+        const list = (data.starters ?? [])
+          .map((s) => s.question)
+          .filter((q): q is string => typeof q === 'string' && q.length > 0)
+          .slice(0, 3);
+        setStarters(list.length > 0 ? list : FALLBACK_TRY_ASKING);
+      })
+      .catch(() => {
+        if (!cancelled) setStarters(FALLBACK_TRY_ASKING);
+      });
+    return () => { cancelled = true; };
+  }, [hasProfiledSource, dismissed]);
+
+  if (!hasProfiledSource || dismissed) return null;
+  if (starters === null) return null; // first paint: avoid layout shift
+
+  function dismiss() {
+    sessionStorage.setItem('clarion_try_asking_dismissed', '1');
+    setDismissed(true);
+  }
+
+  function ask(q: string) {
+    router.push(`/query?seedQuestion=${encodeURIComponent(q)}`);
+  }
+
+  return (
+    <section className="mb-6 bg-raised border border-line rounded-lg overflow-hidden">
+      <header className="px-5 py-3 bg-ocean-softer/50 border-b border-line flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean font-medium">
+            Try asking
+          </span>
+          <span className="text-[10.5px] font-mono text-muted-2">
+            · your data is ready
+          </span>
+        </div>
+        <button
+          onClick={dismiss}
+          className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink-2 transition-colors"
+        >
+          Dismiss
+        </button>
+      </header>
+      <div className="px-5 py-4 flex flex-col gap-2">
+        {starters.map((q) => (
+          <button
+            key={q}
+            onClick={() => ask(q)}
+            className="text-left px-3.5 py-2.5 bg-bg border border-line rounded-md hover:border-ocean hover:bg-ocean-softer/30 transition-colors group"
+          >
+            <span className="font-display italic text-[15px] text-ink-2 group-hover:text-ink leading-snug">
+              {q}
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // SchemaChangesPanel — renders recent schema-drift detections for one
 // connection, with the per-table additions/removals/type changes the
 // SyncOrchestrator captured at detection time. Lazy-loaded; renders
@@ -1845,6 +1952,12 @@ function SourcesPageInner() {
             onDismiss={() => { setProfiling(null); api.get('/connections').then((r) => setConnections(r.data.data ?? [])); }}
           />
         )}
+
+        {/* Post-ingest "Try asking" handoff. Renders when at least one
+            connection has been profiled — the natural moment to nudge
+            the user from "I set things up" to "now ask the data
+            something." Dismissable per session so it doesn't nag. */}
+        <TryAskingCallout connections={connections} />
 
         {/* Connected Sources */}
         <section>
