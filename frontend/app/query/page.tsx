@@ -78,9 +78,41 @@ function QueryPageInner() {
   // 'auto' after each send so users don't get stuck in one mode.
   const [modeOverride, setModeOverride] = useState<'auto' | QuestionMode>('auto');
 
+  // Investigate requires a data product. Most users land on /query without
+  // a productId in the URL — they pick a CONNECTION via the source dropdown.
+  // We resolve a default product per connection so investigate just works
+  // for them, without surfacing yet another picker.
+  const [productsByConnection, setProductsByConnection] = useState<Record<number, number>>({});
+  useEffect(() => {
+    api.get('/products').then((res) => {
+      const list = (res.data.data ?? []) as Array<{ id: number; source?: { id?: number | null } }>;
+      const map: Record<number, number> = {};
+      // First product per connection wins. Good enough for MVP — when a
+      // connection has multiple products we'd want to pick the most-used
+      // or let the user choose, but a sensible default beats nothing.
+      for (const p of list) {
+        const cid = p.source?.id;
+        if (cid != null && !(cid in map)) map[cid] = p.id;
+      }
+      setProductsByConnection(map);
+    }).catch(() => {});
+  }, []);
+
+  // Resolve the productId we'd pass to investigate, in priority order:
+  //   1. Explicit `?productId=N` on the URL (came from /products).
+  //   2. First product for the currently selected connection.
+  const resolvedProductId: number | null = (() => {
+    if (urlProductId) return Number(urlProductId);
+    if (selectedSource.startsWith('c:')) {
+      const cid = Number(selectedSource.split(':')[1]);
+      return productsByConnection[cid] ?? null;
+    }
+    return null;
+  })();
+
   // Live preview of which mode the current input would route to.
   const detectedMode: QuestionMode = classifyQuestion(input);
-  const canInvestigate = !!urlProductId; // investigate requires a product context
+  const canInvestigate = resolvedProductId != null;
 
   const nextId      = useRef(0);
   const bottomRef   = useRef<HTMLDivElement>(null);
@@ -547,21 +579,21 @@ function QueryPageInner() {
     setThinkingConf(null);
 
     // Resolve mode: explicit override > heuristic. Investigate also requires
-    // a product context (productId from URL); otherwise we silently fall back
-    // to ask mode so users without a product still get an answer.
+    // a resolved product (URL `productId` or default product for the active
+    // connection); otherwise we silently fall back to ask mode.
     const resolvedMode: QuestionMode = (() => {
-      if (modeOverride === 'investigate' && urlProductId) return 'investigate';
+      if (modeOverride === 'investigate' && resolvedProductId != null) return 'investigate';
       if (modeOverride === 'ask') return 'ask';
       // 'auto' — classify
       const classified = classifyQuestion(q);
-      return classified === 'investigate' && urlProductId ? 'investigate' : 'ask';
+      return classified === 'investigate' && resolvedProductId != null ? 'investigate' : 'ask';
     })();
     // Reset override after each send.
     if (modeOverride !== 'auto') setModeOverride('auto');
 
     // ── Investigate path: spawn an in-bubble investigation ────────────────────
-    if (resolvedMode === 'investigate' && urlProductId) {
-      const productIdNum = Number(urlProductId);
+    if (resolvedMode === 'investigate' && resolvedProductId != null) {
+      const productIdNum = resolvedProductId;
       const investigateMsgId = nextId.current++;
       setMessages((prev) => [
         ...prev,
@@ -864,7 +896,7 @@ function QueryPageInner() {
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, activeId, selectedSource, modeOverride, urlProductId]);
+  }, [loading, activeId, selectedSource, modeOverride, resolvedProductId]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
