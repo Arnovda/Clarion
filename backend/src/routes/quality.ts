@@ -541,19 +541,26 @@ router.get('/tables', requireAuth, async (req, res, next) => {
   try {
     const connId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
 
-    // 1. Source tables
-    const srcQuery = semanticDb('source_tables').where({ is_active: true });
-    if (connId) srcQuery.where({ connection_id: connId });
-    const srcTables = await srcQuery.select('id', 'connection_id', 'table_name', 'display_name');
+    // 1. Source tables — left-joined to connections so the response
+    // carries connection_name (used by QualityTab for source grouping).
+    const srcQuery = semanticDb('source_tables as st')
+      .leftJoin('connections as c', 'st.connection_id', 'c.id')
+      .where({ 'st.is_active': true });
+    if (connId) srcQuery.where({ 'st.connection_id': connId });
+    const srcTables = await srcQuery.select(
+      'st.id', 'st.connection_id', 'st.table_name', 'st.display_name',
+      'c.name as connection_name',
+    );
 
     const sourceResult = await Promise.all(
-      (srcTables as { id: number; connection_id: number; table_name: string; display_name: string }[]).map(async (t) => {
+      (srcTables as { id: number; connection_id: number; table_name: string; display_name: string; connection_name: string | null }[]).map(async (t) => {
         const latest = await semanticDb('dataset_profiles')
           .where({ connection_id: t.connection_id, table_name: t.table_name })
           .orderBy('profiled_at', 'desc').first();
         return {
           ...t,
           layer:          'source' as const,
+          product_id:     null as number | null,
           product_name:   null as string | null,
           product_table_id: null as number | null,
           table_role:     null as string | null,
@@ -565,16 +572,22 @@ router.get('/tables', requireAuth, async (req, res, next) => {
       }),
     );
 
-    // 2. Product tables (from star schemas)
+    // 2. Product tables (from star schemas) — joined to connections so
+    // the QualityTab can group by source name (matches /catalog +
+    // BuildDashboard grouping pattern; also fixes the silent collision
+    // where two products with the same name from different sources
+    // merged into one bucket).
     const ptQuery = semanticDb('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .leftJoin('connections as c', 'dp.connection_id', 'c.id')
       .whereIn('dp.status', ['approved', 'success']);
     if (connId) ptQuery.where('dp.connection_id', connId);
     const productTables = await ptQuery.select(
       'pt.id as pt_id', 'pt.table_name', 'pt.display_name as pt_display_name',
       'pt.table_role', 'pt.row_count as pt_row_count',
       'dp.id as dp_id', 'dp.name as product_name', 'dp.connection_id',
+      'c.name as connection_name',
     );
 
     const productResult = await Promise.all(
@@ -582,6 +595,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
         pt_id: number; table_name: string; pt_display_name: string | null;
         table_role: string; pt_row_count: number | null;
         dp_id: number; product_name: string; connection_id: number;
+        connection_name: string | null;
       }[]).map(async (t) => {
         const latest = await semanticDb('dataset_profiles')
           .where({ connection_id: t.connection_id, table_name: t.table_name })
@@ -589,9 +603,11 @@ router.get('/tables', requireAuth, async (req, res, next) => {
         return {
           id:               t.pt_id,
           connection_id:    t.connection_id,
+          connection_name:  t.connection_name,
           table_name:       t.table_name,
           display_name:     t.pt_display_name || t.table_name.replace(/_/g, ' '),
           layer:            'product' as const,
+          product_id:       t.dp_id,
           product_name:     t.product_name,
           product_table_id: t.pt_id,
           table_role:       t.table_role,

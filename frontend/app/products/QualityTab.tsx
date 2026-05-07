@@ -8,9 +8,11 @@ import QualityPanel from '@/components/QualityPanel';
 interface ProductTableHealth {
   id: number;
   connection_id: number;
+  connection_name: string | null;
   table_name: string;
   display_name: string | null;
   layer: 'source' | 'product';
+  product_id: number | null;
   product_name: string | null;
   product_table_id: number | null;
   table_role: string | null;
@@ -81,9 +83,11 @@ export default function QualityTab({ productNameFilter }: { productNameFilter?: 
     setSelected({
       id: -rule.rule_id, // negative so it can't collide with a real table id
       connection_id: rule.connection_id,
+      connection_name: rule.connection_name,
       table_name: rule.table_name,
       display_name: rule.table_name.replace(/_/g, ' '),
       layer: 'product',
+      product_id: null,
       product_name: null,
       product_table_id: null,
       table_role: null,
@@ -138,13 +142,32 @@ export default function QualityTab({ productNameFilter }: { productNameFilter?: 
     ? Math.round((profiled.reduce((s, t) => s + (t.overall_score ?? 0), 0) / profiled.length) * 100)
     : 0;
 
-  // Group by product
-  const byProduct: Record<string, ProductTableHealth[]> = {};
+  // Group source → product. Same-name products from different sources
+  // (e.g. two "Sales" products, one per ERP) used to merge silently
+  // because the key was `product_name` alone. Now keyed first by source
+  // name, then by product_id, so they stay distinct + render under the
+  // correct source bucket — matches /catalog + BuildDashboard grouping.
+  type ProductGroup = { productId: number; productName: string; tables: ProductTableHealth[] };
+  const bySource: Record<string, Record<number, ProductGroup>> = {};
   for (const t of tables) {
-    const k = t.product_name ?? 'Untitled';
-    if (!byProduct[k]) byProduct[k] = [];
-    byProduct[k].push(t);
+    const sourceKey = t.connection_name ?? '__unassigned';
+    const productKey = t.product_id ?? -1;
+    if (!bySource[sourceKey]) bySource[sourceKey] = {};
+    if (!bySource[sourceKey][productKey]) {
+      bySource[sourceKey][productKey] = {
+        productId: t.product_id ?? -1,
+        productName: t.product_name ?? 'Untitled',
+        tables: [],
+      };
+    }
+    bySource[sourceKey][productKey].tables.push(t);
   }
+  const orderedSources = Object.keys(bySource).sort((a, b) => {
+    if (a === '__unassigned') return 1;
+    if (b === '__unassigned') return -1;
+    return a.localeCompare(b);
+  });
+  const totalProducts = orderedSources.reduce((n, s) => n + Object.keys(bySource[s]).length, 0);
 
   if (tables.length === 0) {
     return (
@@ -252,7 +275,10 @@ export default function QualityTab({ productNameFilter }: { productNameFilter?: 
           <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Overall score</p>
           <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.01em]">Product health</h2>
           <p className="text-[13px] text-ink-3 mt-1 leading-relaxed">
-            {profiled.length} of {tables.length} product tables profiled across {Object.keys(byProduct).length} products
+            {profiled.length} of {tables.length} product tables profiled across {totalProducts} products
+            {orderedSources.filter((s) => s !== '__unassigned').length > 1 && (
+              <> · {orderedSources.filter((s) => s !== '__unassigned').length} sources</>
+            )}
           </p>
         </div>
       </div>
@@ -303,65 +329,88 @@ export default function QualityTab({ productNameFilter }: { productNameFilter?: 
         </div>
       )}
 
-      {/* Per-product groups */}
-      {Object.entries(byProduct).map(([productName, ptables]) => {
-        const isProfiling = profilingProduct === productName;
-        const sorted = [...ptables].sort((a, b) => (a.overall_score ?? 2) - (b.overall_score ?? 2));
+      {/* Source → product → tables. Source headers suppressed when only
+          one source is in scope; otherwise each source gets its own
+          ocean-coloured eyebrow band so users can scan to the right
+          ERP first, then drill into a specific product. */}
+      {orderedSources.map((sourceKey) => {
+        const productGroups = Object.values(bySource[sourceKey])
+          .sort((a, b) => a.productName.localeCompare(b.productName));
+        const showSourceHeader = orderedSources.length > 1;
         return (
-          <div key={productName} className="bg-raised border border-line rounded-lg overflow-hidden">
-            <div className="px-5 py-3 bg-softer border-b border-line flex items-center justify-between">
-              <p className="text-[11px] font-mono tracking-[0.1em] uppercase text-ink-2 font-medium">{productName}</p>
-              {isProfiling ? (
-                <div className="flex items-center gap-2 text-[11px] text-ocean">
-                  <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} />
-                  Profiling {profilingProgress.done}/{profilingProgress.total}…
-                </div>
-              ) : (
-                <button
-                  onClick={() => profileAll(productName, ptables)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-ocean hover:bg-ocean-softer transition-colors"
-                >
-                  <Play className="w-2.5 h-2.5" strokeWidth={2} fill="currentColor" />
-                  Profile all
-                </button>
-              )}
-            </div>
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-line">
-                  <th className="text-left px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Table</th>
-                  <th className="text-center px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Score</th>
-                  <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Rows</th>
-                  <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Last profiled</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((t) => (
-                  <tr
-                    key={t.id}
-                    onClick={() => setSelected(t)}
-                    className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
-                  >
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-2">
-                        <ScoreDot score={t.overall_score} />
-                        <span className="text-[13px] font-medium text-ink">{t.display_name || t.table_name}</span>
-                        {t.display_name && t.display_name !== t.table_name && (
-                          <span className="text-[11px] font-mono text-muted-2">{t.table_name}</span>
-                        )}
+          <div key={sourceKey} className="space-y-3">
+            {showSourceHeader && (
+              <div className="flex items-baseline gap-2 px-1">
+                <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean">
+                  {sourceKey === '__unassigned' ? 'Unassigned' : sourceKey}
+                </span>
+                <span className="text-[10.5px] font-mono tabular-nums text-muted-2">
+                  {productGroups.length} product{productGroups.length === 1 ? '' : 's'}
+                </span>
+              </div>
+            )}
+            {productGroups.map((pg) => {
+              const ptables = pg.tables;
+              const isProfiling = profilingProduct === pg.productName;
+              const sorted = [...ptables].sort((a, b) => (a.overall_score ?? 2) - (b.overall_score ?? 2));
+              return (
+                <div key={pg.productId} className="bg-raised border border-line rounded-lg overflow-hidden">
+                  <div className="px-5 py-3 bg-softer border-b border-line flex items-center justify-between">
+                    <p className="text-[11px] font-mono tracking-[0.1em] uppercase text-ink-2 font-medium">{pg.productName}</p>
+                    {isProfiling ? (
+                      <div className="flex items-center gap-2 text-[11px] text-ocean">
+                        <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} />
+                        Profiling {profilingProgress.done}/{profilingProgress.total}…
                       </div>
-                    </td>
-                    <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
-                    <td className="px-5 py-3 text-right text-[12px] text-ink-3 tabular-nums">
-                      {t.row_count != null ? t.row_count.toLocaleString() : '—'}
-                    </td>
-                    <td className="px-5 py-3 text-right text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
-                      {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    ) : (
+                      <button
+                        onClick={() => profileAll(pg.productName, ptables)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium text-ocean hover:bg-ocean-softer transition-colors"
+                      >
+                        <Play className="w-2.5 h-2.5" strokeWidth={2} fill="currentColor" />
+                        Profile all
+                      </button>
+                    )}
+                  </div>
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-line">
+                        <th className="text-left px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Table</th>
+                        <th className="text-center px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Score</th>
+                        <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Rows</th>
+                        <th className="text-right px-5 py-2.5 text-[10px] font-mono font-medium text-muted uppercase tracking-[0.1em]">Last profiled</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sorted.map((t) => (
+                        <tr
+                          key={t.id}
+                          onClick={() => setSelected(t)}
+                          className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
+                        >
+                          <td className="px-5 py-3">
+                            <div className="flex items-center gap-2">
+                              <ScoreDot score={t.overall_score} />
+                              <span className="text-[13px] font-medium text-ink">{t.display_name || t.table_name}</span>
+                              {t.display_name && t.display_name !== t.table_name && (
+                                <span className="text-[11px] font-mono text-muted-2">{t.table_name}</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
+                          <td className="px-5 py-3 text-right text-[12px] text-ink-3 tabular-nums">
+                            {t.row_count != null ? t.row_count.toLocaleString() : '—'}
+                          </td>
+                          <td className="px-5 py-3 text-right text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
+                            {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
           </div>
         );
       })}

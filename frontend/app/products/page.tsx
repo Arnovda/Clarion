@@ -1086,10 +1086,17 @@ function BusMatrixTab({
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-on-surface-variant">
-                      <span className="inline-flex items-center gap-1.5">
-                        <ProductIcon product={row.product} className="w-3.5 h-3.5 text-ocean" />
-                        <span>{cleanTopicName(row.product.name)}</span>
-                      </span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="inline-flex items-center gap-1.5">
+                          <ProductIcon product={row.product} className="w-3.5 h-3.5 text-ocean" />
+                          <span>{cleanTopicName(row.product.name)}</span>
+                        </span>
+                        {row.product.source?.name && (
+                          <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted-2 ml-5">
+                            {row.product.source.name}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     {dimensionNames.map((dim) => (
                       <td key={dim} className="text-center px-2 py-2.5">
