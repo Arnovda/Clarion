@@ -13,7 +13,7 @@ import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-type Group = 'home' | 'discover' | 'work' | 'curate' | 'settings';
+type Group = 'home' | 'discover' | 'analyze' | 'build' | 'curate' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
@@ -53,22 +53,28 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
   { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
 
-  // Work — daily use. Vocabulary lock:
-  //   • /catalog → "Catalog" — the consumer discovery surface (cards UX)
-  //   • /products → "Build" — the curator authoring surface where admins
-  //     design star schemas, edit transformations, manage KPIs.
-  // Earlier "Datasets" label was a soften-the-engineering-term attempt;
-  // dropped because it collided semantically with "Catalog" and gave no
-  // hint about what the user does there.
+  // Analyze — consumer surfaces. "What does my data tell me?"
   // /query (Ask AI) auto-detects investigate questions ("Why did revenue
   // drop?") and renders the multi-step trail inline with a 🕵️ indicator.
   // /investigate is no longer in the rail — it stays as a deep-link alias
   // for morning-brief "Why?" buttons and replay URLs.
-  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'work' },
-  { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'work' },
-  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'work' },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'work' },
+  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
+  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'analyze' },
+
+  // Build — producer surfaces. "How do I design and refresh my data products?"
+  // Vocabulary lock:
+  //   • /catalog → "Catalog" — the consumer discovery surface (cards UX)
+  //   • /products → "Build" — the producer authoring surface where admins/
+  //     analysts design star schemas, edit transformations, manage KPIs.
+  // The "Build" label appears twice (group header + destination): the group
+  // is uppercase mono eyebrow type, the destination is sentence-case sans
+  // — typographically distinct, semantically aligned (this is where you
+  // build things). Earlier "Datasets" label was a soften-the-engineering-
+  // term attempt; dropped because it collided with "Catalog" and gave no
+  // hint about what the user does there.
+  { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'build' },
+  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'build' },
 
   // Curate — keep definitions correct (analyst+)
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
@@ -104,12 +110,13 @@ const GROUP_LABELS: Record<Group, string> = {
   // header would be visual noise. The rendering loop skips empty labels.
   home:     '',
   discover: 'Discover',
-  work:     'Work',
+  analyze:  'Analyze',
+  build:    'Build',
   curate:   'Curate',
   settings: 'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['home', 'discover', 'work', 'curate', 'settings'];
+const GROUP_ORDER: Group[] = ['home', 'discover', 'analyze', 'build', 'curate', 'settings'];
 
 export default function IconRail() {
   const pathname = usePathname();
