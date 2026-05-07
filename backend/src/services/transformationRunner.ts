@@ -767,14 +767,12 @@ export async function runProductTransformation(
 
           results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
 
-          // Generate monthly rollup for fact tables — best-effort, non-fatal
-          if (table.table_role === 'fact') {
-            try {
-              await generateMonthlyRollup(db, table.id, table.table_name, productDir, useAzure);
-            } catch (rollupErr) {
-              console.warn(`[transformationRunner] Rollup failed for ${table.table_name}:`, rollupErr);
-            }
-          }
+          // Monthly rollup is intentionally skipped on the Delta path —
+          // generateMonthlyRollup() reads via DuckDB read_parquet() which
+          // doesn't understand Delta directory layouts. Rollups are
+          // best-effort (dashboards fall back to raw fact scans), so we
+          // leave them off until the rollup helper is generalised to read
+          // through the shared createScanView. Tracked in the SCD2 backlog.
           continue;  // Skip the legacy parquet branch entirely
         }
 
