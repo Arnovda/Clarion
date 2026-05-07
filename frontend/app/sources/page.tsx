@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import IngestionWizard from '@/components/IngestionWizard';
@@ -227,6 +227,193 @@ function ConnectorIcon({ connector, size = 'md' }: { connector: Connector; size?
 // ConnectionCard
 // ---------------------------------------------------------------------------
 
+// ────────────────────────────────────────────────────────────────────────────
+// SchemaChangesPanel — renders recent schema-drift detections for one
+// connection, with the per-table additions/removals/type changes the
+// SyncOrchestrator captured at detection time. Lazy-loaded; renders
+// nothing if there are no recorded changes (keeps cards uncluttered for
+// connections with stable schemas).
+//
+// Auto-fetches on mount whenever `connId` is set; the parent only
+// passes it in when the user landed here from a notification (i.e. the
+// URL carries `?connectionId=N`). Other cards skip the fetch entirely.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface SchemaChange {
+  id: number;
+  detected_at: string;
+  summary: string;
+  diff: {
+    added_tables:   Array<{ name: string; columns: Array<{ name: string; type: string }> }>;
+    removed_tables: Array<{ name: string }>;
+    changed_tables: Array<{
+      name: string;
+      added_columns:   Array<{ name: string; type: string }>;
+      removed_columns: Array<{ name: string; type: string }>;
+      changed_columns: Array<{ name: string; old_type: string; new_type: string }>;
+    }>;
+  };
+  tables_added: number;
+  tables_removed: number;
+  columns_added: number;
+  columns_removed: number;
+  columns_changed: number;
+}
+
+function SchemaChangesPanel({
+  connId, highlightedChangeId, onReProfile, reprofiling,
+}: {
+  connId: number;
+  highlightedChangeId?: number;
+  onReProfile: () => void;
+  reprofiling: boolean;
+}) {
+  const [changes, setChanges] = useState<SchemaChange[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set(highlightedChangeId ? [highlightedChangeId] : []));
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/connections/${connId}/schema-changes?limit=10`)
+      .then((res) => {
+        if (cancelled) return;
+        setChanges(res.data?.data ?? []);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : 'Failed to load schema changes';
+        setError(msg);
+      });
+    return () => { cancelled = true; };
+  }, [connId]);
+
+  // Loading / error / empty states are intentionally invisible to keep
+  // the card layout calm when nothing's relevant. Only the "we have
+  // data" path renders chrome.
+  if (error) return null;
+  if (changes === null) return null;
+  if (changes.length === 0) return null;
+
+  function toggle(id: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div className="mt-2 px-3 py-2.5 rounded-md border border-line bg-warn-soft">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-warn">⚠</span>
+          <p className="text-[11px] font-mono uppercase tracking-[0.08em] text-ink-2 font-medium">
+            {changes.length} schema change{changes.length === 1 ? '' : 's'} detected
+          </p>
+        </div>
+        <button
+          onClick={onReProfile}
+          disabled={reprofiling}
+          className="text-[10.5px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover disabled:opacity-50 transition-colors"
+        >
+          {reprofiling ? 'Re-analysing…' : 'Re-analyse now'}
+        </button>
+      </div>
+      <ul className="space-y-1.5">
+        {changes.map((c) => {
+          const open = expanded.has(c.id);
+          return (
+            <li key={c.id} className="border-t border-line first:border-t-0 pt-1.5 first:pt-0">
+              <button
+                onClick={() => toggle(c.id)}
+                className="w-full text-left flex items-start gap-2 hover:bg-warn-soft/60 rounded transition-colors"
+              >
+                <span className="text-[10px] mt-0.5 text-muted-2 flex-shrink-0">{open ? '▾' : '▸'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12.5px] text-ink leading-snug">{c.summary}</p>
+                  <p className="text-[10.5px] font-mono uppercase tracking-[0.06em] text-muted-2">
+                    {new Date(c.detected_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
+                  </p>
+                </div>
+              </button>
+              {open && <SchemaDiffDetail diff={c.diff} />}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function SchemaDiffDetail({ diff }: { diff: SchemaChange['diff'] }) {
+  return (
+    <div className="ml-4 mt-2 space-y-2 text-[11.5px]">
+      {diff.added_tables.length > 0 && (
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-[0.08em] text-ok mb-1">+ Tables added</p>
+          <ul className="space-y-0.5 pl-2">
+            {diff.added_tables.map((t) => (
+              <li key={t.name} className="text-ink-2">
+                <span className="font-mono">{t.name}</span>{' '}
+                <span className="text-muted-2">({t.columns.length} columns)</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {diff.removed_tables.length > 0 && (
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-[0.08em] text-rose-700 mb-1">− Tables removed</p>
+          <ul className="space-y-0.5 pl-2">
+            {diff.removed_tables.map((t) => (
+              <li key={t.name} className="font-mono text-ink-2">{t.name}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {diff.changed_tables.length > 0 && (
+        <div>
+          <p className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted mb-1">~ Tables changed</p>
+          <ul className="space-y-1.5 pl-2">
+            {diff.changed_tables.map((t) => (
+              <li key={t.name}>
+                <p className="font-mono text-ink-2">{t.name}</p>
+                {t.added_columns.length > 0 && (
+                  <p className="pl-3 text-ok">
+                    +{' '}
+                    {t.added_columns.map((c) => (
+                      <span key={c.name} className="font-mono mr-2">{c.name}<span className="text-muted-2 ml-0.5">:{c.type}</span></span>
+                    ))}
+                  </p>
+                )}
+                {t.removed_columns.length > 0 && (
+                  <p className="pl-3 text-rose-700">
+                    −{' '}
+                    {t.removed_columns.map((c) => (
+                      <span key={c.name} className="font-mono mr-2">{c.name}</span>
+                    ))}
+                  </p>
+                )}
+                {t.changed_columns.length > 0 && (
+                  <ul className="pl-3 text-muted">
+                    {t.changed_columns.map((c) => (
+                      <li key={c.name} className="font-mono">
+                        ~ {c.name}: <span className="text-rose-700">{c.old_type}</span>{' '}
+                        <span className="text-muted-2">→</span>{' '}
+                        <span className="text-ok">{c.new_type}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConnectionCard({
   conn,
   onDelete,
@@ -234,6 +421,8 @@ function ConnectionCard({
   onReProfileDone,
   onEdit,
   onReIngest,
+  highlightedFromUrl,
+  highlightedSchemaChangeId,
 }: {
   conn: Connection;
   onDelete: (id: number) => void;
@@ -241,6 +430,13 @@ function ConnectionCard({
   onReProfileDone: (id: number) => void;
   onEdit: (conn: Connection) => void;
   onReIngest: (conn: Connection) => void;
+  /** True when this card matches `?connectionId=` on the URL — typically
+   *  set by clicking a schema-drift notification. Used to auto-fetch
+   *  the schema-changes panel on mount. */
+  highlightedFromUrl?: boolean;
+  /** Auto-expand this specific schema_changes row (from `?schemaChange=`).
+   *  Only meaningful when highlightedFromUrl is true. */
+  highlightedSchemaChangeId?: number;
 }) {
   const router = useRouter();
   const connector = connectorForType(conn.type);
@@ -548,6 +744,19 @@ function ConnectionCard({
             )}
           </div>
         )}
+        {/* Schema-changes panel — only fetches when the user landed here
+            from a notification (?connectionId on URL matches this card).
+            Shows the human-readable diff with per-table additions /
+            removals / type changes, then hands off to Re-profile. */}
+        {highlightedFromUrl && (
+          <SchemaChangesPanel
+            connId={conn.id}
+            highlightedChangeId={highlightedSchemaChangeId}
+            onReProfile={handleReProfile}
+            reprofiling={reprofiling}
+          />
+        )}
+
         {/* Sync history panel — collapsed by default; loads on first expand. */}
         {isSourceConnector && historyOpen && (
           <div className="mt-2 px-3 py-2 rounded-md border border-line bg-raised text-[11.5px]">
@@ -1403,6 +1612,19 @@ function EmptyWorkspaceHero({
 
 function SourcesPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Schema-drift notifications fire links like
+  //   /sources?connectionId=12&schemaChange=47
+  // We pluck both so the matching ConnectionCard can auto-open the
+  // SchemaChangesPanel pre-expanded on the right row.
+  const urlConnectionId = (() => {
+    const v = Number(searchParams.get('connectionId'));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  })();
+  const urlSchemaChangeId = (() => {
+    const v = Number(searchParams.get('schemaChange'));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  })();
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
@@ -1620,6 +1842,8 @@ function SourcesPageInner() {
                   onReProfileDone={handleReProfileDone}
                   onEdit={openEdit}
                   onReIngest={handleReIngest}
+                  highlightedFromUrl={urlConnectionId === conn.id}
+                  highlightedSchemaChangeId={urlConnectionId === conn.id ? urlSchemaChangeId ?? undefined : undefined}
                 />
               ))}
             </div>
@@ -1669,7 +1893,9 @@ function SourcesPageInner() {
 export default function SourcesPage() {
   return (
     <RequireRole roles={['admin', 'analyst']}>
-      <SourcesPageInner />
+      <Suspense>
+        <SourcesPageInner />
+      </Suspense>
     </RequireRole>
   );
 }

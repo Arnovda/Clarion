@@ -508,9 +508,11 @@ async function runProfilerInBackground(args: {
 
   // Cheap path: introspect + hash. No AI cost.
   let currentHash: string | null = null;
+  let nextTables: NormalisedTable[] | null = null;
   try {
     const result = await introspectAndHash(conn);
     currentHash = result.hash;
+    nextTables = result.tables ?? null;
   } catch (err) {
     log.warn({ err, connectionId }, 'introspectAndHash failed — skipping post-sync profile work');
     return;
@@ -548,20 +550,67 @@ async function runProfilerInBackground(args: {
     );
 
     const connName = String(conn.name ?? `connection ${connectionId}`);
+
+    // Compute + persist the diff so the user can review before re-profiling.
+    // First-sync = no previous shape to diff against, so we skip the
+    // schema_changes row but still notify ("ready for AI profiling").
+    let diffSummary: string | null = null;
+    let schemaChangeId: number | null = null;
+    if (driftKind === 'changed' && nextTables) {
+      try {
+        const prevTables = await loadPersistedSchema(connectionId, tenantId);
+        const diff = diffSchema(prevTables, nextTables);
+        diffSummary = summariseSchemaDiff(diff);
+        // Only persist when something real actually changed. A hash
+        // mismatch with an empty diff means a normalisation edge case
+        // (e.g. case-insensitive types) — log and move on.
+        const hasContent =
+          diff.added_tables.length || diff.removed_tables.length || diff.changed_tables.length;
+        if (hasContent && diffSummary) {
+          const colsAdded = diff.changed_tables.reduce((n, t) => n + t.added_columns.length, 0);
+          const colsRemoved = diff.changed_tables.reduce((n, t) => n + t.removed_columns.length, 0);
+          const colsChanged = diff.changed_tables.reduce((n, t) => n + t.changed_columns.length, 0);
+          const [row] = await semanticDb('schema_changes').insert({
+            tenant_id: tenantId,
+            connection_id: connectionId,
+            summary: diffSummary,
+            diff: JSON.stringify(diff),
+            tables_added: diff.added_tables.length,
+            tables_removed: diff.removed_tables.length,
+            columns_added: colsAdded,
+            columns_removed: colsRemoved,
+            columns_changed: colsChanged,
+          }).returning('id');
+          schemaChangeId = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+        } else {
+          log.info({ connectionId }, 'schema_hash differs but normalised diff is empty — skipping persist');
+        }
+      } catch (e) {
+        log.warn({ err: e, connectionId }, 'schema-diff capture failed (non-fatal — notification still fires)');
+      }
+    }
+
     const title = driftKind === 'first_sync'
       ? `${connName}: ready for AI profiling`
       : `${connName}: schema changed — re-profile recommended`;
     const message = driftKind === 'first_sync'
       ? `Sync completed. Click Re-profile on the source to generate AI descriptions for the catalog.`
-      : `Sync detected structural changes (new or renamed columns). Click Re-profile to refresh AI descriptions. No AI tokens are being spent automatically.`;
+      : (diffSummary
+          ? `Sync detected: ${diffSummary}. Click through to review, then Re-profile to refresh AI descriptions. No AI tokens are being spent automatically.`
+          : `Sync detected structural changes (new or renamed columns). Click Re-profile to refresh AI descriptions. No AI tokens are being spent automatically.`);
 
     try {
       const { notifyAdmins } = await import('../services/notificationService');
+      // Link includes ?schemaChange=<id> when we have one so the
+      // /sources page can scroll/expand directly to the diff.
+      const link = schemaChangeId != null
+        ? `/sources?connectionId=${connectionId}&schemaChange=${schemaChangeId}`
+        : `/sources?connectionId=${connectionId}`;
       await notifyAdmins(tenantId, 'approval', title, {
         message,
         entityType: 'connection',
         entityId: connectionId,
-        link: `/sources?connectionId=${connectionId}`,
+        link,
       });
     } catch (notifyErr) {
       log.warn({ err: notifyErr, connectionId }, 'schema-drift notification failed (non-fatal)');
@@ -654,7 +703,25 @@ async function runProfilerInBackground(args: {
  * Used by `runProfilerInBackground` to skip the AI-draft step when nothing
  * structural changed since the last successful profile.
  */
-async function introspectAndHash(conn: Record<string, unknown>): Promise<{ hash: string | null; hadSchema: boolean }> {
+/**
+ * Normalised schema shape used for both hashing and diffing. Sorted +
+ * structural fields only — sample values, comments, etc. excluded so
+ * cosmetic-only changes don't trigger "schema drift".
+ */
+interface NormalisedTable {
+  name: string;
+  columns: Array<{ name: string; type: string }>;
+}
+
+async function introspectAndHash(conn: Record<string, unknown>): Promise<{
+  hash: string | null;
+  hadSchema: boolean;
+  /** Present when hadSchema is true. Used by callers that need to diff
+   *  the new shape against the old (Postgres `source_tables`/`source_columns`
+   *  hold the previous shape — we don't persist a normalised snapshot
+   *  separately). */
+  tables?: NormalisedTable[];
+}> {
   const { createConnector } = await import('../connectors/ConnectorFactory');
   const crypto = await import('crypto');
 
@@ -673,7 +740,7 @@ async function introspectAndHash(conn: Record<string, unknown>): Promise<{ hash:
     }
     // Normalised representation — sorted, only structural fields, no
     // sample values. Stable across runs as long as the structure is.
-    const normalised = schema.tables
+    const normalised: NormalisedTable[] = schema.tables
       .map((t) => ({
         name: t.tableName,
         columns: t.columns
@@ -683,8 +750,116 @@ async function introspectAndHash(conn: Record<string, unknown>): Promise<{ hash:
       .sort((a, b) => a.name.localeCompare(b.name));
     const json = JSON.stringify(normalised);
     const hash = crypto.createHash('sha256').update(json).digest('hex');
-    return { hash, hadSchema: true };
+    return { hash, hadSchema: true, tables: normalised };
   } finally {
     try { connector.disconnect(); } catch { /* swallow */ }
   }
+}
+
+/**
+ * Compute a structural diff between two normalised schemas. Same shape
+ * persisted to `schema_changes.diff`. Renames are intentionally treated
+ * as remove+add — reliable detection requires a similarity heuristic,
+ * which costs more than it saves at this scope.
+ */
+interface SchemaDiff {
+  added_tables:   Array<{ name: string; columns: Array<{ name: string; type: string }> }>;
+  removed_tables: Array<{ name: string }>;
+  changed_tables: Array<{
+    name: string;
+    added_columns:   Array<{ name: string; type: string }>;
+    removed_columns: Array<{ name: string; type: string }>;
+    changed_columns: Array<{ name: string; old_type: string; new_type: string }>;
+  }>;
+}
+
+function diffSchema(prev: NormalisedTable[], next: NormalisedTable[]): SchemaDiff {
+  const prevByName = new Map(prev.map((t) => [t.name, t] as const));
+  const nextByName = new Map(next.map((t) => [t.name, t] as const));
+
+  const added_tables: SchemaDiff['added_tables'] = [];
+  const removed_tables: SchemaDiff['removed_tables'] = [];
+  const changed_tables: SchemaDiff['changed_tables'] = [];
+
+  for (const [name, t] of nextByName) {
+    if (!prevByName.has(name)) added_tables.push({ name, columns: t.columns });
+  }
+  for (const [name] of prevByName) {
+    if (!nextByName.has(name)) removed_tables.push({ name });
+  }
+  for (const [name, prevT] of prevByName) {
+    const nextT = nextByName.get(name);
+    if (!nextT) continue;
+    const prevCols = new Map(prevT.columns.map((c) => [c.name, c] as const));
+    const nextCols = new Map(nextT.columns.map((c) => [c.name, c] as const));
+    const added_columns: typeof prevT.columns = [];
+    const removed_columns: typeof prevT.columns = [];
+    const changed_columns: SchemaDiff['changed_tables'][number]['changed_columns'] = [];
+    for (const [cName, c] of nextCols) {
+      if (!prevCols.has(cName)) added_columns.push(c);
+    }
+    for (const [cName, c] of prevCols) {
+      if (!nextCols.has(cName)) removed_columns.push(c);
+    }
+    for (const [cName, prevC] of prevCols) {
+      const nextC = nextCols.get(cName);
+      if (!nextC) continue;
+      if (prevC.type !== nextC.type) {
+        changed_columns.push({ name: cName, old_type: prevC.type, new_type: nextC.type });
+      }
+    }
+    if (added_columns.length || removed_columns.length || changed_columns.length) {
+      changed_tables.push({ name, added_columns, removed_columns, changed_columns });
+    }
+  }
+  return { added_tables, removed_tables, changed_tables };
+}
+
+/**
+ * Build a one-line human summary of a schema diff. Used in the
+ * notification body so the user has context before clicking through.
+ * Returns null when the diff is empty (caller can short-circuit).
+ */
+function summariseSchemaDiff(diff: SchemaDiff): string | null {
+  const parts: string[] = [];
+  if (diff.added_tables.length) parts.push(`${diff.added_tables.length} new table${diff.added_tables.length === 1 ? '' : 's'}`);
+  if (diff.removed_tables.length) parts.push(`${diff.removed_tables.length} removed table${diff.removed_tables.length === 1 ? '' : 's'}`);
+  const colsAdded = diff.changed_tables.reduce((n, t) => n + t.added_columns.length, 0);
+  const colsRemoved = diff.changed_tables.reduce((n, t) => n + t.removed_columns.length, 0);
+  const colsChanged = diff.changed_tables.reduce((n, t) => n + t.changed_columns.length, 0);
+  if (colsAdded) parts.push(`${colsAdded} new column${colsAdded === 1 ? '' : 's'}`);
+  if (colsRemoved) parts.push(`${colsRemoved} removed column${colsRemoved === 1 ? '' : 's'}`);
+  if (colsChanged) parts.push(`${colsChanged} type change${colsChanged === 1 ? '' : 's'}`);
+  if (parts.length === 0) return null;
+  return parts.join(', ');
+}
+
+/**
+ * Load the previous normalised schema from Postgres `source_tables` +
+ * `source_columns`. Returns the same shape as `introspectAndHash`
+ * produces, so the two can be diffed directly.
+ */
+async function loadPersistedSchema(connectionId: number, tenantId: number): Promise<NormalisedTable[]> {
+  const tables = await semanticDb('source_tables')
+    .where({ connection_id: connectionId, tenant_id: tenantId, is_active: true })
+    .select('id', 'table_name');
+  if (tables.length === 0) return [];
+  const tableIds = (tables as Array<{ id: number; table_name: string }>).map((t) => t.id);
+  const cols = await semanticDb('source_columns')
+    .whereIn('source_table_id', tableIds)
+    .select<Array<{ source_table_id: number; column_name: string; data_type: string | null }>>(
+      'source_table_id', 'column_name', 'data_type',
+    );
+  const colsByTable = new Map<number, NormalisedTable['columns']>();
+  for (const c of cols) {
+    const arr = colsByTable.get(c.source_table_id) ?? [];
+    arr.push({ name: c.column_name, type: String(c.data_type ?? '').toLowerCase() });
+    colsByTable.set(c.source_table_id, arr);
+  }
+  return (tables as Array<{ id: number; table_name: string }>)
+    .map((t) => ({
+      name: t.table_name,
+      columns: (colsByTable.get(t.id) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }

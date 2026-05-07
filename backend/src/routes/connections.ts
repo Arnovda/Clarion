@@ -543,6 +543,47 @@ router.get('/:id/profile/status', requireAuth, async (req: Request, res: Respons
   res.json({ ok: true, data: row });
 });
 
+/**
+ * GET /api/connections/:id/schema-changes?limit=20
+ *
+ * Returns recent schema-drift detections for a connection, newest first.
+ * Backs the "Recent schema changes" callout on /sources — the surface
+ * the user lands on when they click the bell notification fired by
+ * `runProfilerInBackground` in `SyncOrchestrator`.
+ *
+ * Each row carries the full diff JSONB so the frontend can render
+ * per-table additions/removals without a second round-trip.
+ */
+router.get('/:id/schema-changes', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    const connectionId = Number(req.params.id);
+    if (!Number.isFinite(connectionId)) {
+      return res.status(400).json({ ok: false, error: 'invalid connection id' });
+    }
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const rows = await semanticDb('schema_changes')
+      .where({ connection_id: connectionId, tenant_id: tenantId })
+      .orderBy('detected_at', 'desc')
+      .limit(limit)
+      .select(
+        'id', 'detected_at', 'summary', 'diff',
+        'tables_added', 'tables_removed',
+        'columns_added', 'columns_removed', 'columns_changed',
+      );
+    // Postgres returns JSONB as a parsed object via pg's automatic
+    // type parser, but knex sometimes hands it back as a string
+    // depending on driver version — normalise so the client can
+    // always treat it as an object.
+    const data = rows.map((r: { diff: unknown }) => ({
+      ...r,
+      diff: typeof r.diff === 'string' ? JSON.parse(r.diff) : r.diff,
+    }));
+    res.json({ ok: true, data });
+  } catch (err) { next(err); }
+});
+
 // POST /api/connections/:id/introspect — lightweight column refresh (no AI)
 // Re-reads actual column names + types from the source database and updates
 // source_columns rows. Preserves existing AI-generated descriptions.
