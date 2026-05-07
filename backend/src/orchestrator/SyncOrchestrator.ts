@@ -556,17 +556,15 @@ async function runProfilerInBackground(args: {
     // schema_changes row but still notify ("ready for AI profiling").
     let diffSummary: string | null = null;
     let schemaChangeId: number | null = null;
+    let diffHasContent = false;
     if (driftKind === 'changed' && nextTables) {
       try {
         const prevTables = await loadPersistedSchema(connectionId, tenantId);
         const diff = diffSchema(prevTables, nextTables);
         diffSummary = summariseSchemaDiff(diff);
-        // Only persist when something real actually changed. A hash
-        // mismatch with an empty diff means a normalisation edge case
-        // (e.g. case-insensitive types) — log and move on.
-        const hasContent =
-          diff.added_tables.length || diff.removed_tables.length || diff.changed_tables.length;
-        if (hasContent && diffSummary) {
+        diffHasContent =
+          (diff.added_tables.length + diff.removed_tables.length + diff.changed_tables.length) > 0;
+        if (diffHasContent && diffSummary) {
           const colsAdded = diff.changed_tables.reduce((n, t) => n + t.added_columns.length, 0);
           const colsRemoved = diff.changed_tables.reduce((n, t) => n + t.removed_columns.length, 0);
           const colsChanged = diff.changed_tables.reduce((n, t) => n + t.changed_columns.length, 0);
@@ -582,12 +580,36 @@ async function runProfilerInBackground(args: {
             columns_changed: colsChanged,
           }).returning('id');
           schemaChangeId = typeof row === 'object' ? (row as { id: number }).id : (row as number);
-        } else {
-          log.info({ connectionId }, 'schema_hash differs but normalised diff is empty — skipping persist');
         }
       } catch (e) {
-        log.warn({ err: e, connectionId }, 'schema-diff capture failed (non-fatal — notification still fires)');
+        log.warn({ err: e, connectionId }, 'schema-diff capture failed');
+        // Treat as empty diff — better to swallow one notification than
+        // to spam the user. They'll get one for the NEXT real change.
+        diffHasContent = false;
+        diffSummary = null;
       }
+    }
+
+    // ── Hash mismatch with empty diff = false positive ──────────────────
+    // The normalised structures match (same tables, same columns, same
+    // types) but the SHA differs. Causes include: connector returning
+    // metadata in different order, type coercion edge cases, or transient
+    // introspection artefacts. Sync the stored hash silently — no
+    // notification, no row, no spam. Real changes will trip the diff and
+    // come through normally.
+    if (driftKind === 'changed' && !diffHasContent) {
+      try {
+        await semanticDb('connections')
+          .where({ id: connectionId, tenant_id: tenantId })
+          .update({ schema_hash: currentHash });
+        log.info(
+          { connectionId, currentHash, storedHash: conn.schema_hash },
+          'hash mismatch with empty diff — sync\'d hash silently (no notification fired)',
+        );
+      } catch (e) {
+        log.warn({ err: e, connectionId }, 'failed to sync schema_hash on empty-diff drift');
+      }
+      return;
     }
 
     const title = driftKind === 'first_sync'
@@ -614,6 +636,24 @@ async function runProfilerInBackground(args: {
       });
     } catch (notifyErr) {
       log.warn({ err: notifyErr, connectionId }, 'schema-drift notification failed (non-fatal)');
+    }
+
+    // ── Update stored hash so we don't re-fire on every subsequent sync ──
+    // Previous design was "remind every sync until the user acts" but
+    // that produced notification spam — the user already has an unread
+    // notification in the bell, that IS the reminder. Update the hash
+    // so the next sync only re-fires if ANOTHER change happens.
+    // Re-profile (when the user clicks "Re-analyse now") still updates
+    // schema_hash on success, so this code path harmonises with the
+    // existing acted-on path.
+    if (driftKind === 'changed' && currentHash) {
+      try {
+        await semanticDb('connections')
+          .where({ id: connectionId, tenant_id: tenantId })
+          .update({ schema_hash: currentHash });
+      } catch (e) {
+        log.warn({ err: e, connectionId }, 'failed to update schema_hash post-notification');
+      }
     }
     return;
   }
