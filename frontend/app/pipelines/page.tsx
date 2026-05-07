@@ -500,14 +500,13 @@ function PipelinesInner() {
 
   return (
     <div className="h-full flex flex-col bg-bg">
-      {/* Top bar */}
-      <div className="px-6 py-3 border-b border-line bg-raised flex items-center justify-between">
-        <div>
-          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Pipelines</p>
-          <h1 className="font-display text-[20px] text-ink leading-tight tracking-[-0.01em]">
-            Refresh schedules and runs
-          </h1>
-        </div>
+      {/* Top bar — single-line header, no eyebrow stack. The page lives
+          under the "Refresh" rail entry; the title doubles up didn't
+          add information, just visual weight. */}
+      <div className="px-6 py-2.5 border-b border-line bg-raised flex items-center justify-between">
+        <h1 className="font-display text-[18px] text-ink tracking-[-0.01em]">
+          Refresh pipelines
+        </h1>
         <button
           onClick={() => { setShowCustomEditor({ mode: 'create' }); }}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
@@ -653,7 +652,7 @@ function PipelineList({
 
   if (loading) {
     return (
-      <div className="w-[320px] shrink-0 border-r border-line bg-soft flex items-center justify-center">
+      <div className="w-[240px] shrink-0 border-r border-line bg-soft flex items-center justify-center">
         <Loader2 className="w-4 h-4 animate-spin text-muted" />
       </div>
     );
@@ -661,21 +660,24 @@ function PipelineList({
 
   return (
     <div className="w-[320px] shrink-0 border-r border-line bg-soft overflow-y-auto">
-      <Section title="Built-in" eyebrow="default">
+      <Section title="Built-in">
         {groups.builtinGlobal.map((p) => {
           const id = p.id;
           return (
             <ListItem key={id}
               id={id}
               name={p.name}
-              sub={p.description}
+              // Drop the description sub-line for built-ins too — the name
+              // already says "Refresh everything" which is self-explanatory.
+              // The full description still renders in the header on the right.
+              sub={undefined}
               selected={selectedId === id}
               onSelect={onSelect}
               counts={p.kind === 'builtin' ? `${p.sourceCount}s · ${p.productCount}p` : undefined} />
           );
         })}
       </Section>
-      <Section title="Custom" eyebrow={`${groups.custom.length}`}>
+      <Section title="Custom">
         {groups.custom.length === 0 && (
           <div className="px-3 py-3 text-[12px] text-muted italic">
             No custom pipelines yet. Click <span className="font-medium">+ New pipeline</span>.
@@ -688,7 +690,12 @@ function PipelineList({
               <ListItem
                 id={cp.stableId}
                 name={cp.name}
-                sub={cp.description ?? `${cp.scope.type} · ${cp.triggers.length} trigger${cp.triggers.length === 1 ? '' : 's'}`}
+                // Sub-line: ONLY shows the user's own description, if any.
+                // The previous fallback ("custom · 0 triggers") added noise
+                // for the common case where users don't write descriptions —
+                // and trigger counts already render as chips in the header
+                // when a pipeline is selected, so they aren't lost.
+                sub={cp.description ?? undefined}
                 selected={selectedId === cp.stableId}
                 onSelect={onSelect}
                 counts={cp.lastStatus ?? undefined}
@@ -1532,6 +1539,12 @@ function RunActivityDock({
   const [done, setDone] = useState(false);
   const [allOk, setAllOk] = useState<boolean | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  // Active tab inside the dock body. Activity is the structured per-node
+  // view (default — what most users want). Output is the raw streaming log
+  // (kept for power-user debugging / sharing exact error text). Was
+  // previously a 50/50 grid but the two halves duplicated information and
+  // halved the canvas's vertical room.
+  const [activeTab, setActiveTab] = useState<'activity' | 'output'>('activity');
 
   // Seed node table from the scope hint so users see queued nodes IMMEDIATELY
   // (before the first SSE event arrives).
@@ -1737,11 +1750,12 @@ function RunActivityDock({
     onLiveNodesChange?.(nodes);
   }, [nodes, onLiveNodesChange]);
 
-  // Auto-scroll log to bottom
+  // Auto-scroll log to bottom. Re-runs on `activeTab` so switching from
+  // Activity → Output lands at the latest line, not at the top.
   const logRef = React.useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [log]);
+  }, [log, activeTab]);
 
   const orderedNodes = useMemo(
     () => Array.from(nodes.values()).sort((a, b) => {
@@ -1798,40 +1812,64 @@ function RunActivityDock({
       </div>
 
       {!collapsed && (
-        <div className="grid grid-cols-2" style={{ height: 240 }}>
-          {/* Node status table */}
-          <div className="border-r border-line overflow-y-auto">
-            <div className="sticky top-0 bg-raised border-b border-line px-3 py-1.5 flex items-center gap-2">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Activity</p>
-            </div>
-            {orderedNodes.length === 0 ? (
-              <div className="px-3 py-3 text-[12px] text-muted italic">No nodes in scope.</div>
-            ) : (
-              <div>
-                {orderedNodes.map((n) => <NodeStatusRow key={n.key} node={n} />)}
-              </div>
-            )}
+        <div style={{ height: 220 }} className="flex flex-col">
+          {/* Tab switcher — Activity (structured per-node) | Output (raw log).
+              Activity is the default because it answers "what's happening
+              now?" at a glance. Output stays one click away for users who
+              want to read the orchestrator's exact log output. */}
+          <div className="border-b border-line bg-raised flex items-center gap-0 px-3">
+            {(['activity', 'output'] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setActiveTab(t)}
+                className={cn(
+                  'px-3 py-1.5 text-[10.5px] font-mono uppercase tracking-[0.12em] border-b-2 -mb-px transition-colors',
+                  activeTab === t
+                    ? 'text-ocean border-ocean'
+                    : 'text-muted border-transparent hover:text-ink-2',
+                )}
+              >
+                {t}
+                {t === 'output' && log.length > 0 && (
+                  <span className="ml-1.5 text-muted-2 normal-case tracking-normal">
+                    {log.length}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
 
-          {/* Cumulative log */}
-          <div className="overflow-y-auto bg-ink" ref={logRef}>
-            <div className="sticky top-0 bg-ink border-b border-white/10 px-3 py-1.5">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-white/50">Output</p>
-            </div>
-            <div className="px-3 py-2 font-mono text-[11.5px] leading-relaxed">
-              {log.length === 0 && <div className="text-white/40 italic">Waiting for output…</div>}
-              {log.map((entry, i) => (
-                <div key={i} className={cn(
-                  entry.kind === 'error'  ? 'text-err' :
-                  entry.kind === 'done'   ? 'text-ok' :
-                  entry.kind === 'phase'  ? 'text-white/90 font-medium' :
-                  entry.text.startsWith('  ') ? 'text-white/55' : 'text-white/80',
-                )}>
-                  {entry.text}
+          {/* Activity — structured per-node table */}
+          {activeTab === 'activity' && (
+            <div className="flex-1 overflow-y-auto">
+              {orderedNodes.length === 0 ? (
+                <div className="px-3 py-3 text-[12px] text-muted italic">No nodes in scope.</div>
+              ) : (
+                <div>
+                  {orderedNodes.map((n) => <NodeStatusRow key={n.key} node={n} />)}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
+          )}
+
+          {/* Output — raw streaming log, terminal-styled */}
+          {activeTab === 'output' && (
+            <div className="flex-1 overflow-y-auto bg-ink" ref={logRef}>
+              <div className="px-3 py-2 font-mono text-[11.5px] leading-relaxed">
+                {log.length === 0 && <div className="text-white/40 italic">Waiting for output…</div>}
+                {log.map((entry, i) => (
+                  <div key={i} className={cn(
+                    entry.kind === 'error'  ? 'text-err' :
+                    entry.kind === 'done'   ? 'text-ok' :
+                    entry.kind === 'phase'  ? 'text-white/90 font-medium' :
+                    entry.text.startsWith('  ') ? 'text-white/55' : 'text-white/80',
+                  )}>
+                    {entry.text}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
