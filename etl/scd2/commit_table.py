@@ -79,13 +79,42 @@ def hash_row(values: list[Any]) -> str:
 
 
 def add_row_hash(df: pd.DataFrame, business_columns: list[str]) -> pd.DataFrame:
-    """Add a `_row_hash` column computed from the listed business columns."""
+    """
+    Add a `_row_hash` column computed from the listed business columns.
+
+    Tolerant of `business_columns` listing names that aren't present in
+    `df` — that happens when `product_columns` declares a column the
+    transformation SQL doesn't actually produce (often the case after
+    an AI design where an FK column is named in the catalog but the
+    transformation skipped or renamed it). We log to stderr and hash
+    on the intersection. Better to ship an approximate hash than to
+    fail the whole refresh.
+    """
     if df.empty:
         df = df.copy()
         df["_row_hash"] = pd.Series([], dtype="string")
         return df
+
+    present = [c for c in business_columns if c in df.columns]
+    missing = [c for c in business_columns if c not in df.columns]
+    if missing:
+        sys.stderr.write(
+            f"[sidecar] WARN: business_columns includes name(s) not in the "
+            f"data: {missing}. Hashing on present columns only: {present}.\n"
+        )
+    if not present:
+        # Degenerate case — nothing to hash. Every row gets the same
+        # placeholder hash; downstream diff will mark all rows as
+        # unchanged-vs-each-other. The change-counts chart will show
+        # all-inserted on first run and all-unchanged thereafter, which
+        # is the most honest answer when we genuinely can't tell rows
+        # apart.
+        df = df.copy()
+        df["_row_hash"] = "no-business-columns"
+        return df
+
     # Apply over selected cols only — much faster than hashing whole rows.
-    sub = df[business_columns]
+    sub = df[present]
     df = df.copy()
     df["_row_hash"] = sub.apply(lambda row: hash_row(list(row)), axis=1)
     return df

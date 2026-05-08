@@ -84,6 +84,32 @@ def test_add_row_hash_handles_empty_dataframe() -> None:
     assert len(out) == 0
 
 
+def test_add_row_hash_tolerates_missing_columns() -> None:
+    """
+    business_columns may list names the transformation SQL didn't
+    produce. Hash on what's present; don't fail.
+    """
+    df = pd.DataFrame({
+        "id": [1, 2],
+        "v": ["a", "b"],
+    })
+    out = add_row_hash(df, ["id", "v", "phantom_fk", "another_missing"])
+    assert "_row_hash" in out.columns
+    assert len(out) == 2
+    # The hash should match what we'd get with just the present columns.
+    expected = add_row_hash(df, ["id", "v"])
+    assert list(out["_row_hash"]) == list(expected["_row_hash"])
+
+
+def test_add_row_hash_zero_present_columns() -> None:
+    """If NO business columns are present, every row gets the same
+    placeholder hash so the refresh still ships."""
+    df = pd.DataFrame({"id": [1, 2, 3]})
+    out = add_row_hash(df, ["all_missing", "also_missing"])
+    assert "_row_hash" in out.columns
+    assert all(h == "no-business-columns" for h in out["_row_hash"])
+
+
 def test_add_row_hash_subset_of_columns() -> None:
     df = pd.DataFrame({
         "id": [1, 2, 3],
