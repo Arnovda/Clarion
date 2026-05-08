@@ -44,6 +44,7 @@ from typing import Any, Optional
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 # deltalake import is conditional below — keeps the script importable in
 # environments where it isn't installed (CI lint passes don't need it).
@@ -283,30 +284,36 @@ def diff_states(
             "rows_total": int(len(new_state)),
         }
 
-    # Defensive: validate BK columns exist in both sides BEFORE the
-    # pandas merge. The raw merge would otherwise raise a confusing
-    # `KeyError: "['col1', 'col2'] not in index"` that surfaces all
-    # the way to the user via the orchestrator. The clearer error
-    # below makes the cause obvious — almost always one of:
-    #   1. The transformation SQL didn't produce a column that's
-    #      tagged as surrogate_key/natural_key in product_columns
-    #      (often a cascade from a failed upstream dim).
-    #   2. The BK was renamed in the schema but product_columns
-    #      wasn't re-synced.
-    missing_in_new = [c for c in business_key_columns if c not in new_state.columns]
-    missing_in_old = [c for c in business_key_columns if c not in existing.columns]
-    if missing_in_new or missing_in_old:
-        bits = []
-        if missing_in_new:
-            bits.append(f"missing in new state: {missing_in_new}")
-        if missing_in_old:
-            bits.append(f"missing in existing Delta: {missing_in_old}")
-        raise ValueError(
-            "business_key_columns reference columns that don't exist "
-            "in the data. " + "; ".join(bits)
-            + ". Check product_columns column_role tagging or whether "
-            "the upstream transformation produced these columns."
+    # Tolerant BK validation: if some BK columns aren't present in the
+    # data (common when a column is tagged surrogate_key/natural_key in
+    # `product_columns` but the transformation SQL doesn't produce it
+    # under that exact name), drop the missing ones and proceed with
+    # what we have. Better to ship a slightly approximate diff than to
+    # fail the whole refresh — the chart still tells a useful story
+    # with the BKs that did line up.
+    #
+    # Raise only if ZERO BKs remain after filtering — at that point the
+    # diff would be meaningless and "all inserted" is a more honest
+    # answer (handled by the no-BK branch above by re-entering it).
+    present_in_new = set(new_state.columns)
+    present_in_old = set(existing.columns)
+    usable = [c for c in business_key_columns if c in present_in_new and c in present_in_old]
+    missing = [c for c in business_key_columns if c not in usable]
+    if missing:
+        sys.stderr.write(
+            f"[sidecar] WARN: BK column(s) {missing} not present in both "
+            f"new state and existing Delta — diffing on {usable or '(none)'} only.\n"
         )
+    if not usable:
+        # Nothing to diff on — degrade to "all inserted" (the honest answer).
+        return {
+            "rows_unchanged": 0,
+            "rows_updated": 0,
+            "rows_inserted": int(len(new_state)),
+            "rows_deleted": 0,
+            "rows_total": int(len(new_state)),
+        }
+    business_key_columns = usable
 
     # Outer-merge on BK with hash-on-each-side suffixes so we can categorise.
     merged = existing[[*business_key_columns, "_row_hash"]].rename(
@@ -370,11 +377,22 @@ def main() -> int:
 
     try:
         # 1. Read the new state Node DuckDB just produced.
-        new_state_raw = pd.read_parquet(new_state_parquet)
+        #    Use pyarrow directly (not pd.read_parquet) so we preserve
+        #    the original Arrow schema — UUID, decimal, fixed_size_binary,
+        #    timestamp tzs etc. that get degraded by a pandas round-trip.
+        #    The bug we're fighting: DuckDB writes UUID columns as parquet
+        #    UUID logical type; pandas materialises them as `bytes`; then
+        #    `pa.Table.from_pandas` lifts them back to variable `binary`,
+        #    which Delta accepts but DuckDB delta_scan returns as BLOB.
+        #    Then JOINs to UUID-side columns from another table fail at
+        #    runtime ("Could not convert string to INT128"). Keeping the
+        #    arrow schema unchanged across the round-trip avoids it.
+        new_state_arrow = pq.read_table(new_state_parquet)
+        new_state = new_state_arrow.to_pandas()
 
         # 2. Compute row hashes for the new state. Persisted to Delta so
         #    SCD2 can later use it as `_row_hash` without a schema change.
-        new_state = add_row_hash(new_state_raw, business_columns)
+        new_state = add_row_hash(new_state, business_columns)
 
         # 3. Read existing Delta if it exists.
         from deltalake import DeltaTable, write_deltalake
@@ -416,12 +434,18 @@ def main() -> int:
             counts = diff_states(existing, new_state, business_key_columns)
 
         # 5. Write the new state to Delta.
+        #    Build the final arrow table from the ORIGINAL `new_state_arrow`
+        #    schema (preserving UUID/decimal/binary types) plus the
+        #    `_row_hash` column we just computed via pandas. This is the
+        #    fix for the type-degradation bug above.
+        #
         #    schema_mode='merge' lets deltalake widen the schema when the
         #    transformation produces new columns (SCD1 schema evolution).
         #    coerce_null_columns_to_string() handles the case where a
         #    column is all-NULL in this refresh — Delta refuses `null`
         #    Arrow type, so we cast to STRING preserving NULL semantics.
-        arrow_table = pa.Table.from_pandas(new_state, preserve_index=False)
+        hash_array = pa.array(new_state["_row_hash"].tolist(), type=pa.string())
+        arrow_table = new_state_arrow.append_column("_row_hash", hash_array)
         arrow_table = coerce_null_columns_to_string(arrow_table)
         write_deltalake(
             delta_path,

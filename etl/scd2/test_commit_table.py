@@ -281,18 +281,43 @@ def test_coerce_handles_multiple_null_columns() -> None:
 # ── BK validation in diff_states ────────────────────────────────────────────
 
 
-def test_diff_raises_clear_error_when_bk_missing_in_new_state() -> None:
+def test_diff_filters_missing_bks_and_proceeds() -> None:
+    """
+    A BK tagged in product_columns but not produced by the transformation
+    SQL should not fail the refresh — diff falls back to the BKs that ARE
+    present, with a stderr warning. The chart still tells a useful story.
+    """
+    biz_cols = ["v"]
+    existing = _hashed([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}], biz_cols)
+    new_state = _hashed(
+        [{"id": 1, "v": "a"}, {"id": 2, "v": "B"}, {"id": 3, "v": "c"}],
+        biz_cols,
+    )
+    # 'phantom_fk' is tagged as a BK but doesn't exist in either side.
+    counts = diff_states(existing, new_state, ["id", "phantom_fk"])
+    # Diff still ran on `id` only.
+    assert counts["rows_unchanged"] == 1
+    assert counts["rows_updated"] == 1
+    assert counts["rows_inserted"] == 1
+    assert counts["rows_deleted"] == 0
+
+
+def test_diff_zero_usable_bks_falls_back_to_all_inserted() -> None:
+    """
+    Edge case: every BK is missing. The diff would be meaningless, so
+    we degrade to "all inserted" (the same answer as no-BK-declared).
+    """
     biz_cols = ["v"]
     existing = _hashed([{"id": 1, "v": "a"}], biz_cols)
-    # New state has 'id' but is missing the BK column we're about to ask for.
-    new_state = pd.DataFrame({"id": [1], "_row_hash": ["abc"]})
-    try:
-        diff_states(existing, new_state, ["id", "missing_col"])
-    except ValueError as e:
-        assert "missing_col" in str(e)
-        assert "missing in new state" in str(e)
-    else:
-        raise AssertionError("expected ValueError when BK missing")
+    new_state = _hashed([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}], biz_cols)
+    counts = diff_states(existing, new_state, ["totally_missing"])
+    assert counts == {
+        "rows_unchanged": 0,
+        "rows_updated": 0,
+        "rows_inserted": 2,
+        "rows_deleted": 0,
+        "rows_total": 2,
+    }
 
 
 def test_diff_handles_resurrected_row() -> None:
