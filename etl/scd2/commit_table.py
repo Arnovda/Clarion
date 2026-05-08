@@ -206,6 +206,46 @@ def remove_legacy_parquet(delta_path: str, storage_options: dict[str, str]) -> O
         return None
 
 
+# ── Schema coercion ─────────────────────────────────────────────────────────
+
+
+def coerce_null_columns_to_string(table: pa.Table) -> pa.Table:
+    """
+    Delta Lake refuses Arrow `null`-type columns — that's the type Arrow
+    assigns when EVERY value in the column is null and there's no other
+    signal about what type the column should be. The error you'd see
+    without this coercion is:
+
+        SchemaMismatchError: Invalid data type for Delta Lake: Null
+
+    DuckDB's COPY TO parquet produces these columns surprisingly often
+    in real workloads — a dim that always has a NULL `parent_id`, a
+    fact whose `archived_at` is never populated, etc. We can't ask the
+    upstream SQL to know in advance which columns will be all-null in
+    a given refresh.
+
+    Fix: cast `null` columns to STRING (preserving NULL semantics —
+    every cell stays NULL — while giving Delta a real type to commit).
+    On the next refresh that actually has data, the type can widen via
+    `schema_mode='merge'` if pandas/Arrow infers something more
+    specific. STRING is the safest landing spot because every type
+    coerces TO it cheaply.
+
+    Returns the same table when no coercion is needed (cheap fast-path).
+    """
+    needs_cast = False
+    new_fields: list[pa.Field] = []
+    for field in table.schema:
+        if pa.types.is_null(field.type):
+            new_fields.append(pa.field(field.name, pa.string()))
+            needs_cast = True
+        else:
+            new_fields.append(field)
+    if not needs_cast:
+        return table
+    return table.cast(pa.schema(new_fields))
+
+
 # ── Diff ────────────────────────────────────────────────────────────────────
 
 
@@ -242,6 +282,31 @@ def diff_states(
             "rows_deleted": 0,
             "rows_total": int(len(new_state)),
         }
+
+    # Defensive: validate BK columns exist in both sides BEFORE the
+    # pandas merge. The raw merge would otherwise raise a confusing
+    # `KeyError: "['col1', 'col2'] not in index"` that surfaces all
+    # the way to the user via the orchestrator. The clearer error
+    # below makes the cause obvious — almost always one of:
+    #   1. The transformation SQL didn't produce a column that's
+    #      tagged as surrogate_key/natural_key in product_columns
+    #      (often a cascade from a failed upstream dim).
+    #   2. The BK was renamed in the schema but product_columns
+    #      wasn't re-synced.
+    missing_in_new = [c for c in business_key_columns if c not in new_state.columns]
+    missing_in_old = [c for c in business_key_columns if c not in existing.columns]
+    if missing_in_new or missing_in_old:
+        bits = []
+        if missing_in_new:
+            bits.append(f"missing in new state: {missing_in_new}")
+        if missing_in_old:
+            bits.append(f"missing in existing Delta: {missing_in_old}")
+        raise ValueError(
+            "business_key_columns reference columns that don't exist "
+            "in the data. " + "; ".join(bits)
+            + ". Check product_columns column_role tagging or whether "
+            "the upstream transformation produced these columns."
+        )
 
     # Outer-merge on BK with hash-on-each-side suffixes so we can categorise.
     merged = existing[[*business_key_columns, "_row_hash"]].rename(
@@ -353,9 +418,14 @@ def main() -> int:
         # 5. Write the new state to Delta.
         #    schema_mode='merge' lets deltalake widen the schema when the
         #    transformation produces new columns (SCD1 schema evolution).
+        #    coerce_null_columns_to_string() handles the case where a
+        #    column is all-NULL in this refresh — Delta refuses `null`
+        #    Arrow type, so we cast to STRING preserving NULL semantics.
+        arrow_table = pa.Table.from_pandas(new_state, preserve_index=False)
+        arrow_table = coerce_null_columns_to_string(arrow_table)
         write_deltalake(
             delta_path,
-            pa.Table.from_pandas(new_state, preserve_index=False),
+            arrow_table,
             mode="overwrite",
             schema_mode="merge",
             storage_options=storage_options,

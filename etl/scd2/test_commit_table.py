@@ -28,9 +28,12 @@ import pandas as pd
 # different cwd. The sidecar lives next to this file.
 sys.path.insert(0, str(Path(__file__).parent))
 
+import pyarrow as pa  # noqa: E402
+
 from commit_table import (  # noqa: E402
     HASH_SEP,
     add_row_hash,
+    coerce_null_columns_to_string,
     diff_states,
     hash_row,
     remove_legacy_parquet,
@@ -234,6 +237,62 @@ def test_cleanup_only_targets_data_parquet(tmp_path) -> None:  # type: ignore[no
     for f in other_files[:-1]:
         assert f.exists(), f"{f.name} must not be removed"
     assert other_files[-1].is_dir(), "_delta_log must not be removed"
+
+
+# ── coerce_null_columns_to_string ──────────────────────────────────────────
+
+
+def test_coerce_null_column_to_string() -> None:
+    """An all-NULL column would fail Delta's schema check otherwise."""
+    table = pa.table({
+        "id": pa.array([1, 2, 3], type=pa.int64()),
+        "all_null": pa.array([None, None, None], type=pa.null()),
+        "name": pa.array(["a", "b", "c"], type=pa.string()),
+    })
+    out = coerce_null_columns_to_string(table)
+    assert out.schema.field("all_null").type == pa.string()
+    assert out.schema.field("id").type == pa.int64()  # untouched
+    assert out.schema.field("name").type == pa.string()  # untouched
+    # Values stay null.
+    assert out.column("all_null").to_pylist() == [None, None, None]
+
+
+def test_coerce_no_op_when_no_null_columns() -> None:
+    table = pa.table({
+        "id": pa.array([1, 2], type=pa.int64()),
+        "name": pa.array(["a", "b"], type=pa.string()),
+    })
+    out = coerce_null_columns_to_string(table)
+    # Identical schema; same object is fine but not required.
+    assert out.schema == table.schema
+
+
+def test_coerce_handles_multiple_null_columns() -> None:
+    table = pa.table({
+        "id": pa.array([1], type=pa.int64()),
+        "a": pa.array([None], type=pa.null()),
+        "b": pa.array([None], type=pa.null()),
+    })
+    out = coerce_null_columns_to_string(table)
+    assert out.schema.field("a").type == pa.string()
+    assert out.schema.field("b").type == pa.string()
+
+
+# ── BK validation in diff_states ────────────────────────────────────────────
+
+
+def test_diff_raises_clear_error_when_bk_missing_in_new_state() -> None:
+    biz_cols = ["v"]
+    existing = _hashed([{"id": 1, "v": "a"}], biz_cols)
+    # New state has 'id' but is missing the BK column we're about to ask for.
+    new_state = pd.DataFrame({"id": [1], "_row_hash": ["abc"]})
+    try:
+        diff_states(existing, new_state, ["id", "missing_col"])
+    except ValueError as e:
+        assert "missing_col" in str(e)
+        assert "missing in new state" in str(e)
+    else:
+        raise AssertionError("expected ValueError when BK missing")
 
 
 def test_diff_handles_resurrected_row() -> None:
