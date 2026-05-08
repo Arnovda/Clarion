@@ -34,6 +34,7 @@ from commit_table import (  # noqa: E402
     HASH_SEP,
     add_row_hash,
     coerce_null_columns_to_string,
+    coerce_uuid_columns_to_string,
     diff_states,
     hash_row,
     remove_legacy_parquet,
@@ -265,6 +266,61 @@ def test_coerce_no_op_when_no_null_columns() -> None:
     out = coerce_null_columns_to_string(table)
     # Identical schema; same object is fine but not required.
     assert out.schema == table.schema
+
+
+def test_coerce_uuid_column_to_string() -> None:
+    """fixed_size_binary[16] → STRING (UUID hex). Solves the BLOB-vs-UUID
+    JOIN failure when DuckDB delta_scan reads back binary columns."""
+    uuid_bytes = [
+        bytes.fromhex("12345678123456781234567812345678"),
+        bytes.fromhex("aabbccddaabbccddaabbccddaabbccdd"),
+    ]
+    table = pa.table({
+        "id": pa.array([1, 2], type=pa.int64()),
+        "account_id": pa.array(uuid_bytes, type=pa.binary(16)),
+    })
+    out = coerce_uuid_columns_to_string(table)
+    assert out.schema.field("account_id").type == pa.string()
+    assert out.schema.field("id").type == pa.int64()  # untouched
+    vals = out.column("account_id").to_pylist()
+    # UUID-hex format: 8-4-4-4-12 with dashes.
+    assert vals[0] == "12345678-1234-5678-1234-567812345678"
+    assert vals[1] == "aabbccdd-aabb-ccdd-aabb-ccddaabbccdd"
+
+
+def test_coerce_uuid_no_op_when_no_uuid_columns() -> None:
+    table = pa.table({
+        "id": pa.array([1, 2], type=pa.int64()),
+        "name": pa.array(["a", "b"], type=pa.string()),
+        # Variable binary is left alone — only fixed[16] is converted.
+        "blob_data": pa.array([b"x", b"yy"], type=pa.binary()),
+    })
+    out = coerce_uuid_columns_to_string(table)
+    assert out.schema == table.schema
+
+
+def test_coerce_uuid_handles_nulls() -> None:
+    table = pa.table({
+        "account_id": pa.array(
+            [bytes.fromhex("12345678123456781234567812345678"), None],
+            type=pa.binary(16),
+        ),
+    })
+    out = coerce_uuid_columns_to_string(table)
+    vals = out.column("account_id").to_pylist()
+    assert vals[0] == "12345678-1234-5678-1234-567812345678"
+    assert vals[1] is None
+
+
+def test_coerce_uuid_only_targets_16_byte_fixed_binary() -> None:
+    """Other fixed sizes (e.g. 8-byte, 32-byte) must not be touched."""
+    table = pa.table({
+        "eight_byte": pa.array([b"01234567", b"abcdefgh"], type=pa.binary(8)),
+        "uuid": pa.array([b"\x00" * 16, b"\xff" * 16], type=pa.binary(16)),
+    })
+    out = coerce_uuid_columns_to_string(table)
+    assert out.schema.field("eight_byte").type == pa.binary(8)  # untouched
+    assert out.schema.field("uuid").type == pa.string()
 
 
 def test_coerce_handles_multiple_null_columns() -> None:

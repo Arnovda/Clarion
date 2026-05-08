@@ -247,6 +247,66 @@ def coerce_null_columns_to_string(table: pa.Table) -> pa.Table:
     return table.cast(pa.schema(new_fields))
 
 
+def _bytes_to_uuid_str(b: Optional[bytes]) -> Optional[str]:
+    """Format 16 raw bytes as a UUID hex string. None passes through."""
+    if b is None:
+        return None
+    import uuid as _uuid
+    try:
+        return str(_uuid.UUID(bytes=bytes(b)))
+    except Exception:
+        # Not a real UUID — fall back to hex. Rare but happens on
+        # malformed inputs; better to ship a deterministic hex string
+        # than to fail the refresh.
+        return bytes(b).hex()
+
+
+def coerce_uuid_columns_to_string(table: pa.Table) -> pa.Table:
+    """
+    Delta has no UUID type. It accepts Arrow `fixed_size_binary[16]`
+    but DOWNCASTS it to plain variable `binary` on write — verified
+    by round-tripping through `write_deltalake` + `DeltaTable`. Once
+    a column is plain binary in Delta, DuckDB's `delta_scan` returns
+    it as BLOB on read.
+
+    That breaks JOINs from product Delta tables (BLOB) to source-side
+    UUID columns (still UUID, never went through Delta), with errors
+    like "Could not convert string '\\x1A\\xFF...' to INT128" — the
+    binary bytes interpreted as a UTF-8 string trying to cast to UUID.
+
+    Fix: ahead of the Delta write, convert any 16-byte fixed-size
+    binary column to a UUID-hex STRING (e.g. "12345678-1234-..."). The
+    column is then stored as STRING in Delta. DuckDB delta_scan reads
+    it as VARCHAR, and joins to UUID-typed source columns work because
+    DuckDB happily compares UUID = VARCHAR when the string is in
+    UUID-hex format.
+
+    Only fixed-size 16-byte binary is converted (UUIDs are exactly 16
+    bytes). Variable-binary columns and other fixed sizes are left
+    alone — they're rare and may legitimately hold arbitrary bytes.
+    """
+    needs_cast = False
+    for field in table.schema:
+        if pa.types.is_fixed_size_binary(field.type) and field.type.byte_width == 16:
+            needs_cast = True
+            break
+    if not needs_cast:
+        return table
+
+    new_columns: list[pa.ChunkedArray] = []
+    new_fields: list[pa.Field] = []
+    for i, field in enumerate(table.schema):
+        col = table.column(i)
+        if pa.types.is_fixed_size_binary(field.type) and field.type.byte_width == 16:
+            uuid_strs = [_bytes_to_uuid_str(v) for v in col.to_pylist()]
+            new_columns.append(pa.chunked_array([pa.array(uuid_strs, type=pa.string())]))
+            new_fields.append(pa.field(field.name, pa.string()))
+        else:
+            new_columns.append(col)
+            new_fields.append(field)
+    return pa.Table.from_arrays(new_columns, schema=pa.schema(new_fields))
+
+
 # ── Diff ────────────────────────────────────────────────────────────────────
 
 
@@ -447,6 +507,7 @@ def main() -> int:
         hash_array = pa.array(new_state["_row_hash"].tolist(), type=pa.string())
         arrow_table = new_state_arrow.append_column("_row_hash", hash_array)
         arrow_table = coerce_null_columns_to_string(arrow_table)
+        arrow_table = coerce_uuid_columns_to_string(arrow_table)
         write_deltalake(
             delta_path,
             arrow_table,
