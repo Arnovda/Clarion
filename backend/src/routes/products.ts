@@ -142,6 +142,354 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/products/catalog/by-source — Two-tier catalog grouped by source
+//
+// Drives the new /catalog split view: per-source bands with two columns
+// (Analytics on the left, Reference data on the right). Reference products
+// are "unfolded" — each constituent product_table becomes its own first-
+// class card so users see the actual entity (Customer / Item / GL account)
+// instead of a vague "Reference" wrapper. The product_id is preserved on
+// each reference card so downstream APIs (refresh-history, quality, etc.)
+// keep working unchanged.
+// ---------------------------------------------------------------------------
+
+interface AnalyticsCardOut {
+  productId: number;
+  name: string;
+  description: string | null;
+  status: string;
+  metricCount: number;
+  factCount: number;
+  tableCount: number;
+  lastRefreshedAt: string | null;
+}
+
+interface ReferenceCardOut {
+  productId: number;       // the wrapping data_product (kept for stability)
+  tableId: number;         // the addressable product_table — what we open
+  name: string;            // table display_name or table_name
+  description: string | null;
+  rowCount: number | null;
+  lastRefreshedAt: string | null;
+  usedIn: Array<{ productId: number; name: string }>;
+}
+
+interface SourceBlockOut {
+  connectionId: number | null;
+  name: string;
+  connectorType: string | null;
+  sourceDeleted: boolean;
+  analytics: AnalyticsCardOut[];
+  reference: ReferenceCardOut[];
+}
+
+router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    if (tenantId) {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    }
+
+    // 1. Pull every data_product with the same primary-source enrichment
+    //    used by GET /. Same rules: most-tables-contributed connection wins,
+    //    falls back to data_products.connection_id, sourceDeleted when the
+    //    connection has been removed.
+    const products = await semanticDb('data_products')
+      .select(
+        'id', 'name', 'description', 'status', 'kind', 'connection_id',
+      )
+      .select(
+        semanticDb.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
+        semanticDb.raw(`(
+          SELECT COUNT(*) FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as table_count`),
+        semanticDb.raw(`(
+          SELECT COUNT(*) FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.table_role = 'fact'
+        ) as fact_count`),
+        semanticDb.raw(`(
+          SELECT MAX(pt.last_run_at) FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as last_refreshed_at`),
+      )
+      .orderBy('data_products.name');
+
+    if (products.length === 0) {
+      res.json({ ok: true, data: { sources: [] } });
+      return;
+    }
+
+    const productIds = products.map((p: { id: number }) => p.id);
+
+    // 2. Resolve primary source per product (tally + fallback).
+    const sourceRows = await semanticDb('data_product_sources as dps')
+      .join('source_tables as st', 'st.id', 'dps.source_table_id')
+      .whereIn('dps.data_product_id', productIds)
+      .select('dps.data_product_id as product_id', 'st.connection_id as connection_id');
+
+    const tallies = new Map<number, Map<number, number>>();
+    for (const r of sourceRows as { product_id: number; connection_id: number }[]) {
+      if (!r.connection_id) continue;
+      let inner = tallies.get(r.product_id);
+      if (!inner) { inner = new Map(); tallies.set(r.product_id, inner); }
+      inner.set(r.connection_id, (inner.get(r.connection_id) ?? 0) + 1);
+    }
+
+    const connIds = new Set<number>();
+    for (const p of products as Array<{ connection_id: number | null }>) {
+      if (p.connection_id) connIds.add(p.connection_id);
+    }
+    for (const r of sourceRows as { connection_id: number }[]) {
+      if (r.connection_id) connIds.add(r.connection_id);
+    }
+    const connRows = connIds.size
+      ? await semanticDb('connections')
+          .whereIn('id', Array.from(connIds))
+          .select('id', 'name', 'type', 'connector_type')
+      : [];
+    const connMap = new Map<number, { id: number; name: string; type: string; connectorType: string | null }>(
+      connRows.map((c: { id: number; name: string; type: string; connector_type: string | null }) =>
+        [c.id, { id: c.id, name: c.name, type: c.type, connectorType: c.connector_type }] as const,
+      ),
+    );
+
+    // 3. For reference-kind products, pull every product_table so we can
+    //    unfold them into individual reference cards.
+    const referenceProductIds = (products as Array<{ id: number; kind: string }>)
+      .filter((p) => p.kind === 'reference')
+      .map((p) => p.id);
+
+    const referenceTables = referenceProductIds.length
+      ? await semanticDb('product_tables as pt')
+          .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+          .whereIn('ss.data_product_id', referenceProductIds)
+          .where('pt.transformation_status', 'success')
+          .select(
+            'pt.id as table_id',
+            'pt.table_name',
+            'pt.display_name',
+            'pt.description',
+            'pt.row_count',
+            'pt.last_run_at',
+            'ss.data_product_id as product_id',
+          )
+          .orderBy(['ss.data_product_id', 'pt.table_name'])
+      : [];
+
+    // 4. Compute "used by" per reference table — analytics products whose
+    //    star schemas relate INTO this dim. product_relationships gives us
+    //    exactly that link.
+    const refTableIds = referenceTables.map((t: { table_id: number }) => t.table_id);
+    const usageRows = refTableIds.length
+      ? await semanticDb('product_relationships as pr')
+          .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
+          .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
+          .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+          .whereIn('pr.to_table_id', refTableIds)
+          .where('dp.kind', 'analytics')
+          .select(
+            'pr.to_table_id as ref_table_id',
+            'dp.id as analytics_product_id',
+            'dp.name as analytics_product_name',
+          )
+      : [];
+
+    const usedByMap = new Map<number, Array<{ productId: number; name: string }>>();
+    for (const u of usageRows as { ref_table_id: number; analytics_product_id: number; analytics_product_name: string }[]) {
+      const list = usedByMap.get(u.ref_table_id) ?? [];
+      // dedupe by productId — multiple FK columns to the same dim count once.
+      if (!list.some((x) => x.productId === u.analytics_product_id)) {
+        list.push({ productId: u.analytics_product_id, name: u.analytics_product_name });
+      }
+      usedByMap.set(u.ref_table_id, list);
+    }
+
+    // 5. Assemble per-source blocks. A source's block contains its analytics
+    //    products and its reference cards (one per dim table from any
+    //    reference-kind product attributed to that source).
+    type RawProduct = {
+      id: number;
+      name: string;
+      description: string | null;
+      status: string;
+      kind: 'analytics' | 'reference';
+      connection_id: number | null;
+      kpi_count?: string | number;
+      table_count?: string | number;
+      fact_count?: string | number;
+      last_refreshed_at?: Date | string | null;
+    };
+
+    function isoOrNull(v: Date | string | null | undefined): string | null {
+      if (!v) return null;
+      return v instanceof Date ? v.toISOString() : String(v);
+    }
+
+    type Block = {
+      connectionId: number | null;
+      name: string;
+      connectorType: string | null;
+      sourceDeleted: boolean;
+      analytics: AnalyticsCardOut[];
+      reference: ReferenceCardOut[];
+    };
+
+    const blocks = new Map<string, Block>();
+    function bucketKey(connId: number | null, sourceDeleted: boolean): string {
+      if (sourceDeleted) return 'deleted';
+      if (connId == null) return 'unassigned';
+      return `c:${connId}`;
+    }
+    function ensureBlock(connId: number | null, name: string, connectorType: string | null, sourceDeleted: boolean): Block {
+      const key = bucketKey(connId, sourceDeleted);
+      let b = blocks.get(key);
+      if (!b) {
+        b = {
+          connectionId: connId,
+          name,
+          connectorType,
+          sourceDeleted,
+          analytics: [],
+          reference: [],
+        };
+        blocks.set(key, b);
+      }
+      return b;
+    }
+
+    for (const raw of products as RawProduct[]) {
+      const inner = tallies.get(raw.id);
+      const contributors = inner
+        ? Array.from(inner.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])
+        : [];
+      const primaryId = contributors[0]?.[0] ?? raw.connection_id ?? null;
+      const primaryConn = primaryId != null ? connMap.get(primaryId) ?? null : null;
+      const sourceDeleted = primaryId != null && !primaryConn;
+      const blockName = primaryConn?.name ?? (sourceDeleted ? 'Source deleted' : 'Unassigned');
+      const block = ensureBlock(primaryConn?.id ?? null, blockName, primaryConn?.connectorType ?? null, sourceDeleted);
+
+      if (raw.kind === 'reference') {
+        // Unfold into individual reference cards.
+        const dims = referenceTables.filter((t: { product_id: number }) => t.product_id === raw.id);
+        for (const t of dims as Array<{
+          table_id: number; table_name: string; display_name: string | null;
+          description: string | null; row_count: number | null;
+          last_run_at: Date | string | null;
+        }>) {
+          block.reference.push({
+            productId: raw.id,
+            tableId: t.table_id,
+            name: t.display_name ?? t.table_name,
+            description: t.description ?? raw.description,
+            rowCount: t.row_count != null ? Number(t.row_count) : null,
+            lastRefreshedAt: isoOrNull(t.last_run_at),
+            usedIn: usedByMap.get(t.table_id) ?? [],
+          });
+        }
+      } else {
+        block.analytics.push({
+          productId: raw.id,
+          name: raw.name,
+          description: raw.description,
+          status: raw.status,
+          metricCount: Number(raw.kpi_count ?? 0),
+          factCount: Number(raw.fact_count ?? 0),
+          tableCount: Number(raw.table_count ?? 0),
+          lastRefreshedAt: isoOrNull(raw.last_refreshed_at ?? null),
+        });
+      }
+    }
+
+    // Sort: real sources alphabetically, then 'Unassigned', then 'Source deleted'.
+    const ordered: SourceBlockOut[] = Array.from(blocks.values())
+      .sort((a, b) => {
+        const aBucket = a.sourceDeleted ? 2 : a.connectionId == null ? 1 : 0;
+        const bBucket = b.sourceDeleted ? 2 : b.connectionId == null ? 1 : 0;
+        if (aBucket !== bBucket) return aBucket - bBucket;
+        return a.name.localeCompare(b.name);
+      });
+
+    res.json({ ok: true, data: { sources: ordered } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/products/tables/:tableId/used-by — Reverse-lineage for a dim
+//
+// Powers the "Used in" tab on the new ReferenceDetailPanel. Returns the
+// list of analytics products whose star-schema relationships reach into
+// this dim table. Cheap join; useful for the curator answering "who
+// would I break if I rename a column on this dim?"
+// ---------------------------------------------------------------------------
+
+router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tableId = Number(req.params.tableId);
+    if (!Number.isFinite(tableId)) {
+      res.status(400).json({ ok: false, error: 'invalid tableId' });
+      return;
+    }
+    const tenantId = req.user?.tenantId;
+    if (tenantId) {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    }
+
+    const rows = await semanticDb('product_relationships as pr')
+      .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
+      .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+      .where('pr.to_table_id', tableId)
+      .select(
+        'dp.id as product_id',
+        'dp.name as product_name',
+        'dp.kind as kind',
+        'pt_from.table_name as fact_table_name',
+        'pr.from_column_name as fact_column',
+        'pr.to_column_name as dim_column',
+      )
+      .orderBy(['dp.name', 'pt_from.table_name']);
+
+    // Dedupe to (productId, factTable) pairs since a fact can have multiple
+    // FK columns to the same dim — surface as one row with all columns.
+    interface UsageOut {
+      productId: number;
+      productName: string;
+      kind: string;
+      factTable: string;
+      joinColumns: Array<{ fact: string; dim: string }>;
+    }
+    const byKey = new Map<string, UsageOut>();
+    for (const r of rows as Array<{
+      product_id: number; product_name: string; kind: string;
+      fact_table_name: string; fact_column: string; dim_column: string;
+    }>) {
+      const key = `${r.product_id}::${r.fact_table_name}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.joinColumns.push({ fact: r.fact_column, dim: r.dim_column });
+      } else {
+        byKey.set(key, {
+          productId: r.product_id,
+          productName: r.product_name,
+          kind: r.kind,
+          factTable: r.fact_table_name,
+          joinColumns: [{ fact: r.fact_column, dim: r.dim_column }],
+        });
+      }
+    }
+
+    res.json({ ok: true, data: Array.from(byKey.values()) });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products — Create a data product
 // ---------------------------------------------------------------------------
 

@@ -37,6 +37,7 @@ import { parseIdFromSlug } from '@/lib/catalog';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import ProductCardGrid, { type ProductCardData } from '@/components/catalog/ProductCardGrid';
+import CatalogSplitView, { type SourceBlockData } from '@/components/catalog/CatalogSplitView';
 import GlossaryMatchCards, { type GlossaryEntry } from '@/components/catalog/GlossaryMatchCards';
 import ProductFullView from '@/components/catalog/ProductFullView';
 
@@ -127,6 +128,31 @@ function CatalogInner() {
   }, []);
   useEffect(() => { loadProducts(); }, [loadProducts]);
 
+  // ── Two-tier catalog feed (per-source bands w/ Analytics + Reference) ─────
+  // Loaded in parallel with /products so the cards body can swap to the
+  // new split layout without an extra round-trip. The legacy /products
+  // feed is still used as a fallback (productHint, ProductCardGrid in
+  // structure mode).
+  const [catalogBlocks, setCatalogBlocks] = useState<SourceBlockData[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
+    try {
+      const res = await api.get('/products/catalog/by-source');
+      setCatalogBlocks((res.data?.data?.sources ?? []) as SourceBlockData[]);
+    } catch {
+      setCatalogBlocks([]);
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, []);
+  useEffect(() => { loadCatalog(); }, [loadCatalog]);
+
+  // Reference card selection — separate from product/source root selection
+  // so detail-panel routing can switch panels without clobbering productRootId.
+  const [referenceTableId, setReferenceTableId] = useState<number | null>(null);
+  const [referenceProductId, setReferenceProductId] = useState<number | null>(null);
+
   // ── Glossary entries (for search-prioritised matches) ─────────────────────
   // Loaded once and filtered client-side. The Atlan / Hex pattern: when
   // the user types "revenue", we want to show the canonical glossary term
@@ -198,13 +224,33 @@ function CatalogInner() {
   const handleSelectProductCard = useCallback((productId: number) => {
     setProductRootId(productId);
     setSourceRootConnId(null);
+    setReferenceTableId(null);
+    setReferenceProductId(null);
     setTableSel(null);
     setSchemaSel(null);
     router.replace(`/catalog?productId=${productId}`);
   }, [router]);
 
+  // Click on a ReferenceCard → open ReferenceDetailPanel in the same inset
+  // that today shows ProductPreviewPanel for analytics. We track the
+  // wrapping productId too because it disambiguates the few cases where
+  // the same table_name appears in multiple reference products (rare,
+  // but possible during AI-design churn).
+  const handleSelectReferenceCard = useCallback((tableId: number, productId: number) => {
+    setReferenceTableId(tableId);
+    setReferenceProductId(productId);
+    setProductRootId(null);
+    setSourceRootConnId(null);
+    setTableSel(null);
+    setSchemaSel(null);
+    router.replace(`/catalog?refTableId=${tableId}`);
+  }, [router]);
+
   // ── Compute the selection passed to the detail panel ──────────────────────
   const selection = useMemo<EntitySelection>(() => {
+    if (referenceTableId && referenceProductId) {
+      return { scope: 'reference-table', tableId: referenceTableId, productId: referenceProductId };
+    }
     if (productRootId) return { scope: 'product-root', productId: productRootId };
     if (tableSel) {
       const id = Number(tableSel.tableId);
@@ -218,14 +264,15 @@ function CatalogInner() {
     }
     if (sourceRootConnId) return { scope: 'source-root', connectionId: sourceRootConnId };
     return { scope: 'empty' };
-  }, [productRootId, tableSel, sourceRootConnId]);
+  }, [referenceTableId, referenceProductId, productRootId, tableSel, sourceRootConnId]);
 
   // ── Refresh trigger so child saves can flow to siblings/tree ──────────────
   const [refreshKey, setRefreshKey] = useState(0);
   const handleSaved = useCallback(() => {
     setRefreshKey((k) => k + 1);
     loadProducts();   // refresh the card data too
-  }, [loadProducts]);
+    loadCatalog();    // and the two-tier feed
+  }, [loadProducts, loadCatalog]);
 
   const hideCatalog: CatalogId | undefined =
     layer === 'sources' ? 'products' :
@@ -273,14 +320,20 @@ function CatalogInner() {
       {viewMode === 'cards' ? (
         <CardsBody
           products={products}
+          catalogBlocks={catalogBlocks}
+          catalogLoading={catalogLoading}
           loading={productsLoading}
           search={search}
           onSearchChange={setSearch}
           selectedId={productRootId}
+          selectedReferenceTableId={referenceTableId}
           onSelectProduct={handleSelectProductCard}
+          onSelectReference={handleSelectReferenceCard}
           detailOpen={detailOpen}
           onClearSelection={() => {
             setProductRootId(null);
+            setReferenceTableId(null);
+            setReferenceProductId(null);
             setTableSel(null);
             setSchemaSel(null);
             setSourceRootConnId(null);
@@ -294,6 +347,7 @@ function CatalogInner() {
             setSchemaSel(null);
             setRefreshKey((k) => k + 1);
             loadProducts();
+            loadCatalog();
           }}
           isAdmin={isAdmin()}
           showCuratorSignals={canSeeStructure}
@@ -343,11 +397,17 @@ function CatalogInner() {
 
 function CardsBody(props: {
   products: ProductCardData[];
+  /** Two-tier catalog blocks (per-source bands w/ Analytics + Reference).
+   *  Drives the new CatalogSplitView. Loaded in parallel with /products. */
+  catalogBlocks: SourceBlockData[];
+  catalogLoading: boolean;
   loading: boolean;
   search: string;
   onSearchChange: (s: string) => void;
   selectedId: number | null;
+  selectedReferenceTableId: number | null;
   onSelectProduct: (id: number) => void;
+  onSelectReference: (tableId: number, productId: number) => void;
   detailOpen: boolean;
   onClearSelection: () => void;
   selection: EntitySelection;
@@ -453,14 +513,25 @@ function CardsBody(props: {
               — Atlan / Hex / Lightdash pattern. Hidden when search empty. */}
           <GlossaryMatchCards entries={props.glossary} search={props.search} />
 
-          <ProductCardGrid
-            products={props.products}
+          <CatalogSplitView
+            sources={props.catalogBlocks}
             search={props.search}
-            selectedId={props.selectedId}
-            onSelect={props.onSelectProduct}
+            selectedAnalyticsId={props.selectedId}
+            selectedReferenceTableId={props.selectedReferenceTableId}
+            onSelectAnalytics={props.onSelectProduct}
+            onSelectReference={(tableId) => {
+              // Look up which wrapping product this table belongs to so the
+              // selection memo upstream can build a `reference-table` scope
+              // with both ids — see EntitySelection in EntityDetailPanel.
+              const block = props.catalogBlocks.find((s) =>
+                s.reference.some((r) => r.tableId === tableId),
+              );
+              const card = block?.reference.find((r) => r.tableId === tableId);
+              if (card) props.onSelectReference(tableId, card.productId);
+            }}
             onCreate={props.onCreate}
             isAdmin={props.isAdmin}
-            loading={props.loading}
+            loading={props.catalogLoading}
             showCuratorSignals={props.showCuratorSignals}
           />
         </div>

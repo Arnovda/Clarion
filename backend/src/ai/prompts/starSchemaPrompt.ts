@@ -110,6 +110,29 @@ ${semanticContext}
   In fact SQL, compute date keys as: TRY_CAST(strftime(TRY_CAST(date_col AS DATE), '%Y%m%d') AS INTEGER)
   Use COALESCE(..., -1) for nullable dates.
 
+━━━ PRODUCT KIND (analytics vs reference) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The catalog now classifies every data product as either ANALYTICS or REFERENCE.
+You are designing an ANALYTICS product — one that has at least one fact table
+and produces measurable business outcomes (Sales, Procurement, Inventory).
+
+DO NOT:
+- Produce a product called "Reference", "Master data", "Dimensions", or any
+  variant of a catch-all wrapper. These names became the legacy bucketing that
+  the new catalog explicitly fixes.
+- Bundle dimensions that aren't joined to a fact in this design into the
+  product. Loose dims belong as their own reference products (designed
+  separately when needed); they don't ride along with an analytics design.
+- Include a dim that has no FK from any fact in this design. If a dim isn't
+  joined to a fact here, drop it — it doesn't belong.
+
+DO:
+- Name the product after the business process or capability ("Sales",
+  "Procurement & Inventory", "Customer engagement"). Never after the storage
+  shape or contents.
+- Keep the product tight: one process, the facts that measure it, and the
+  dims those facts join to. Cohesion over completeness.
+
 ━━━ KIMBALL METHODOLOGY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **Four-step design process:**

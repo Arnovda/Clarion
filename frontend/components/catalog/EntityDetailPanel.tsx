@@ -16,11 +16,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Database } from 'lucide-react';
 import api from '@/lib/api';
+import dynamic from 'next/dynamic';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import ProductRootPanel from '@/components/products/ProductRootPanel';
 import SourceRootPanel from '@/components/catalog/SourceRootPanel';
 import ProductPreviewPanel from '@/components/catalog/ProductPreviewPanel';
+
+// Lazy: pulls in recharts via refresh-history chart, not needed on most loads.
+const ReferenceDetailPanel = dynamic(
+  () => import('@/components/catalog/ReferenceDetailPanel'),
+  { ssr: false },
+);
 import type {
   SourceTable,
   SourceColumn,
@@ -31,6 +38,14 @@ import type {
 export type EntitySelection =
   | { scope: 'source-table'; tableId: number; connectionId: number; columnId?: number | null }
   | { scope: 'product-table'; tableId: number; productId?: number; columnId?: number | null }
+  /**
+   * `reference-table` — same data shape as `product-table`, but routed
+   * to ReferenceDetailPanel. Used by the new two-column /catalog when
+   * the user clicks a reference (dim) card. Distinct scope so the
+   * detail panel can lead with reference-flavoured framing (definition,
+   * Used-by, sample) instead of the analytics-flavoured tabs.
+   */
+  | { scope: 'reference-table'; tableId: number; productId: number }
   | { scope: 'product-root'; productId: number }
   | { scope: 'source-root'; connectionId: number }
   | { scope: 'empty' };
@@ -150,6 +165,18 @@ export default function EntityDetailPanel({
       />
     );
   }
+  if (selection.scope === 'reference-table') {
+    // Lazy import keeps the bundle slim until the user actually opens a
+    // reference card — the panel pulls in recharts via the refresh-history
+    // chart and isn't needed on the discovery view.
+    return (
+      <ReferenceLoader
+        key={`rt-${selection.tableId}`}
+        tableId={selection.tableId}
+        productId={selection.productId}
+      />
+    );
+  }
   return <EmptyHint />;
 }
 
@@ -244,6 +271,18 @@ function ProductTableLoader({
       columns={cols}
       focusColumnId={focusColumnId}
       onSaved={() => { load(); onSaved?.(); }}
+    />
+  );
+}
+
+// ── Reference loader ───────────────────────────────────────────────────────
+
+function ReferenceLoader({ tableId, productId }: { tableId: number; productId: number }) {
+  return (
+    <ReferenceDetailPanel
+      key={`rd-${tableId}`}
+      tableId={tableId}
+      productId={productId}
     />
   );
 }
