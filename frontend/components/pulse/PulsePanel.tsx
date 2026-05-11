@@ -15,12 +15,14 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Activity, Plus, Sparkles, Trash2, Loader2, Pencil, X, Check,
   AlertCircle, Lightbulb,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
+import PulseTile, { type PulseTileState } from './PulseTile';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Types — kept local to avoid a shared-types round-trip; backend owns the
@@ -66,15 +68,24 @@ interface Suggestion {
 
 export default function PulsePanel() {
   const toast = useToast();
+  // Two parallel loads. /pulse/state drives the tile rendering with
+  // live values + comparisons + sparkline. /pulse remains the source
+  // for edit forms which need the raw entry shape (kpi_id, etc).
+  const [tiles, setTiles] = useState<PulseTileState[] | null>(null);
   const [entries, setEntries] = useState<PulseEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/pulse');
-      setEntries(res.data.data ?? []);
+      const [stateRes, listRes] = await Promise.all([
+        api.get('/pulse/state'),
+        api.get('/pulse'),
+      ]);
+      setTiles(stateRes.data?.data ?? []);
+      setEntries(listRes.data?.data ?? []);
     } catch {
+      setTiles([]);
       setEntries([]);
     } finally {
       setLoading(false);
@@ -83,7 +94,7 @@ export default function PulsePanel() {
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading || entries == null) {
+  if (loading || tiles == null || entries == null) {
     return (
       <Section>
         <div className="flex items-center gap-2 text-[12px] text-muted-2">
@@ -99,6 +110,7 @@ export default function PulsePanel() {
 
   return (
     <PulseList
+      tiles={tiles}
       entries={entries}
       onChanged={load}
       onAdd={() => { /* delegated to inline AddRow */ }}
@@ -537,30 +549,42 @@ function SaveBar({
 // ───────────────────────────────────────────────────────────────────────────
 
 function PulseList({
-  entries, onChanged,
+  tiles, entries, onChanged,
 }: {
+  tiles: PulseTileState[];
   entries: PulseEntry[];
   onChanged: () => void;
   onAdd: () => void;
 }) {
   const toast = useToast();
+  const router = useRouter();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  const remove = useCallback(async (entry: PulseEntry) => {
-    if (!confirm(`Stop watching "${entry.label ?? entry.kpi_name ?? 'this metric'}"?`)) return;
+  // Map tile.id → matching raw entry for the edit form.
+  const entryById = new Map(entries.map((e) => [e.id, e]));
+
+  // Failure summary at the top: when any tile failed, surface it as a
+  // strip so the user knows something needs attention without scanning
+  // every card.
+  const failed = tiles.filter((t) => t.status === 'snapshot_failed').length;
+
+  const remove = useCallback(async (entryId: number) => {
+    const e = entryById.get(entryId);
+    const label = e?.label ?? e?.kpi_name ?? 'this metric';
+    if (!confirm(`Stop watching "${label}"?`)) return;
     try {
-      await api.delete(`/pulse/${entry.id}`);
+      await api.delete(`/pulse/${entryId}`);
       toast.success('Removed from pulse');
       onChanged();
     } catch {
       toast.error('Could not remove');
     }
-  }, [onChanged, toast]);
+  }, [entryById, onChanged, toast]);
 
   return (
     <Section
-      subtitle={`${entries.length} ${entries.length === 1 ? 'metric' : 'metrics'} watched · drives your morning brief and alerts`}
+      subtitle={`${tiles.length} ${tiles.length === 1 ? 'metric' : 'metrics'} watched · drives your morning brief and alerts`}
       action={
         <button
           onClick={() => setShowSuggestions((v) => !v)}
@@ -572,23 +596,43 @@ function PulseList({
         </button>
       }
     >
-      <div className="space-y-2">
-        {entries.map((entry) => (
-          editingId === entry.id ? (
+      {failed > 0 && (
+        <div className="mb-3 px-3 py-2 bg-warn-soft/40 border border-warn/30 rounded-md text-[11.5px] text-ink">
+          <AlertCircle className="w-3.5 h-3.5 text-warn inline-block mr-1.5 -mt-0.5" strokeWidth={2} />
+          {failed} {failed === 1 ? 'metric' : 'metrics'} couldn&rsquo;t be computed in the latest run.
+          The underlying product probably needs a refresh.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {tiles.map((tile) => (
+          editingId === tile.id && entryById.get(tile.id) ? (
             <EditRow
-              key={entry.id}
-              entry={entry}
+              key={tile.id}
+              entry={entryById.get(tile.id)!}
               onSaved={() => { setEditingId(null); onChanged(); }}
               onCancel={() => setEditingId(null)}
             />
           ) : (
-            <DisplayRow
-              key={entry.id}
-              entry={entry}
-              onEdit={() => setEditingId(entry.id)}
-              onDelete={() => remove(entry)}
-              disabled={editingId !== null}
-            />
+            <div key={tile.id} className="relative">
+              <PulseTile
+                state={tile}
+                onOpenProduct={(productId) => router.push(`/products/${productId}`)}
+                onEdit={(id) => setEditingId(id)}
+              />
+              {/* Floating delete — kept out of the tile so the tile renders
+                  read-mostly and the destructive action stays one extra
+                  affordance away. */}
+              <button
+                type="button"
+                onClick={() => remove(tile.id)}
+                className="absolute top-2 right-2 p-1 text-muted-2/0 hover:text-err opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity"
+                title="Stop watching"
+                aria-label="Stop watching"
+              >
+                <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
+              </button>
+            </div>
           )
         ))}
       </div>

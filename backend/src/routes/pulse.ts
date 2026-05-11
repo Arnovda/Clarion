@@ -16,6 +16,7 @@ import {
   suggestPulse, applySuggestions,
   type PulseSensitivity, type PulseFrequency, type PulseKind,
 } from '../services/pulseService';
+import { getPulseState } from '../services/pulseStateService';
 
 const router = Router();
 
@@ -26,6 +27,23 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     if (!tenantId || !userId) { res.status(401).json({ ok: false, error: 'Auth required' }); return; }
     const entries = await listPulse(tenantId, userId);
     res.json({ ok: true, data: entries });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/pulse/state — drives the new Home pulse tiles.
+ *
+ * Per-entry: current value, comparisons, sparkline, latest brief
+ * bullet, status (ok | no_observations_yet | snapshot_failed). One
+ * call, one render.
+ */
+router.get('/state', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user?.tenantId;
+    const userId = req.user?.sub as number | undefined;
+    if (!tenantId || !userId) { res.status(401).json({ ok: false, error: 'Auth required' }); return; }
+    const data = await getPulseState(tenantId, userId);
+    res.json({ ok: true, data });
   } catch (err) { next(err); }
 });
 

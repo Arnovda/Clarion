@@ -51,8 +51,17 @@ interface Brief {
   created_at: string;
 }
 
+// Used to drive the "why isn't a brief here?" placeholder. Keep the
+// shape minimal — we only need the status counts to decide messaging.
+interface PulseStatusSummary {
+  total: number;
+  failed: number;
+  withObservations: number;
+}
+
 export default function MorningBriefCard() {
   const [brief, setBrief] = useState<Brief | null>(null);
+  const [pulseStatus, setPulseStatus] = useState<PulseStatusSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(true);
   // Investigation slide-over — opened by clicking "Why?" on any bullet.
@@ -65,10 +74,24 @@ export default function MorningBriefCard() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get('/briefs/today');
-      setBrief(res.data.data ?? null);
+      // Load today's brief AND a snapshot of pulse status in parallel.
+      // The pulse-status feed is what lets the placeholder explain WHY
+      // a brief is missing — otherwise this card stays silently empty,
+      // which is exactly the gap the user reported.
+      const [briefRes, stateRes] = await Promise.all([
+        api.get('/briefs/today').catch(() => ({ data: { data: null } })),
+        api.get('/pulse/state').catch(() => ({ data: { data: [] } })),
+      ]);
+      setBrief(briefRes.data?.data ?? null);
+      const tiles = (stateRes.data?.data ?? []) as Array<{ status: string }>;
+      setPulseStatus({
+        total: tiles.length,
+        failed: tiles.filter((t) => t.status === 'snapshot_failed').length,
+        withObservations: tiles.filter((t) => t.status === 'ok').length,
+      });
     } catch {
       setBrief(null);
+      setPulseStatus(null);
     } finally {
       setLoading(false);
     }
@@ -89,7 +112,22 @@ export default function MorningBriefCard() {
   }, [brief, expanded, markOpened]);
 
   if (loading) return null;
-  if (!brief) return null;
+
+  // No brief today, but the user has pulse entries — render an honest
+  // placeholder explaining why instead of silently showing nothing.
+  // The previous behavior left users (correctly) frustrated: they
+  // configure a pulse, see no brief for days, no signal as to whether
+  // the system is working at all.
+  if (!brief) {
+    if (!pulseStatus || pulseStatus.total === 0) {
+      // No pulse configured yet — the seed flow inside PulsePanel
+      // covers this state; we stay quiet.
+      return null;
+    }
+    return (
+      <BriefPlaceholder status={pulseStatus} />
+    );
+  }
 
   const c = brief.content;
   const briefAge = brief.created_at ? formatRelative(new Date(brief.created_at)) : 'today';
@@ -251,4 +289,63 @@ function verbForBullet(b: BriefBullet): string {
   if (b.kind === 'steady') return 'stay flat';
   const isUp = !b.delta.trim().startsWith('-') && !b.delta.trim().startsWith('−');
   return isUp ? 'rise' : 'drop';
+}
+
+// ── Placeholder shown when pulse exists but no brief landed today ─────────
+
+function BriefPlaceholder({ status }: { status: PulseStatusSummary }) {
+  // Three sub-cases worth distinguishing for the user:
+  //   - all snapshots succeeded but it's still the first day → wait
+  //   - all snapshots failed → call out the breakage explicitly
+  //   - mixed → wait, but mention the partial failure
+  const allFailing = status.failed > 0 && status.withObservations === 0;
+  const mixed = status.failed > 0 && status.withObservations > 0;
+
+  return (
+    <section className="bg-softer/60 border border-line rounded-md overflow-hidden">
+      <div className="px-5 py-3.5 flex items-start gap-3">
+        <Sparkles className="w-4 h-4 text-muted-2 shrink-0 mt-0.5" strokeWidth={1.75} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted">
+            Morning brief
+          </p>
+          {allFailing ? (
+            <>
+              <p className="font-display text-[15px] text-ink mt-0.5 leading-snug">
+                We couldn&rsquo;t compute your brief today.
+              </p>
+              <p className="text-[12px] text-muted-2 mt-1.5 leading-relaxed">
+                All {status.failed} of your watched {status.failed === 1 ? 'metric' : 'metrics'}{' '}
+                failed to snapshot. The underlying product probably needs a refresh, or its KPI
+                formula references a table that&rsquo;s currently broken. See the pulse cards
+                below for the specific error.
+              </p>
+            </>
+          ) : mixed ? (
+            <>
+              <p className="font-display text-[15px] text-ink mt-0.5 leading-snug">
+                Brief lands tomorrow at 06:00 UTC.
+              </p>
+              <p className="text-[12px] text-muted-2 mt-1.5 leading-relaxed">
+                Today is the first day with observations for your pulse — there&rsquo;s nothing
+                to compare against yet. {status.failed} of {status.total} metrics also failed
+                to snapshot; see the pulse cards below for details.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-display text-[15px] text-ink mt-0.5 leading-snug">
+                First brief lands tomorrow at 06:00 UTC.
+              </p>
+              <p className="text-[12px] text-muted-2 mt-1.5 leading-relaxed">
+                Snapshots have recorded today&rsquo;s values for {status.withObservations}{' '}
+                {status.withObservations === 1 ? 'metric' : 'metrics'}; we&rsquo;ll generate
+                the first comparison brief once tomorrow&rsquo;s values land.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
