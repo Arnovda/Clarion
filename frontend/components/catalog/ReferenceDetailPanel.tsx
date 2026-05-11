@@ -23,7 +23,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Loader2, Tag, ArrowRight, AlertCircle } from 'lucide-react';
+import { Loader2, Tag, ArrowRight, AlertCircle, Maximize2, X } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import api from '@/lib/api';
 import QualityPanel from '@/components/QualityPanel';
@@ -36,6 +36,13 @@ const RefreshHistoryChart = dynamic(
 );
 
 type Tab = 'overview' | 'columns' | 'used' | 'sample' | 'quality' | 'history';
+
+// Tabs that need horizontal real estate to render properly. We hide them
+// when the panel is in compact (inset) mode — Quality has multi-column
+// score cards, Sample is a wide table, History needs an x-axis. Showing
+// them at 480px wide gave a cramped, broken layout (the bug the user
+// hit on first land).
+const FULL_VIEW_ONLY_TABS: ReadonlySet<Tab> = new Set<Tab>(['sample', 'quality', 'history']);
 
 interface ProductTable {
   id: number;
@@ -81,14 +88,33 @@ interface DataProduct {
 interface Props {
   tableId: number;
   productId: number;
+  /** True in the narrow inset on /catalog — hides wide tabs (Sample,
+   *  Quality, History) that don't fit at 480px. Defaults to false,
+   *  matching the full-screen view's behaviour. */
+  compact?: boolean;
+  /** Wire to flip the inset into full-screen mode. Renders an "Open
+   *  full view" button in the header when supplied. */
+  onOpenFullView?: () => void;
+  /** Wire to close the panel — renders an X button (compact mode only). */
+  onClose?: () => void;
 }
 
-export default function ReferenceDetailPanel({ tableId, productId }: Props) {
+export default function ReferenceDetailPanel({
+  tableId, productId, compact = false, onOpenFullView, onClose,
+}: Props) {
   const [table, setTable] = useState<ProductTable | null>(null);
   const [columns, setColumns] = useState<ProductColumn[]>([]);
   const [product, setProduct] = useState<DataProduct | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('overview');
+
+  // If the user navigates from full → compact while a full-only tab is
+  // active, snap back to Overview so they don't see a blank pane.
+  useEffect(() => {
+    if (compact && FULL_VIEW_ONLY_TABS.has(tab)) {
+      setTab('overview');
+    }
+  }, [compact, tab]);
 
   // Load the table + columns from the wrapping data_product feed. We use
   // /api/products/:id since it returns the full tables+columns tree, then
@@ -156,6 +182,34 @@ export default function ReferenceDetailPanel({ tableId, productId }: Props) {
               <span className="text-[11px] text-muted-2">{product.name}</span>
             </>
           )}
+          {/* Right-hand actions — only in compact (inset) mode. The full-
+              screen view has its own back-chrome from the parent wrapper. */}
+          {compact && (
+            <span className="ml-auto inline-flex items-center gap-1">
+              {onOpenFullView && (
+                <button
+                  type="button"
+                  onClick={onOpenFullView}
+                  className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted hover:text-ocean hover:bg-soft rounded transition-colors"
+                  title="Open full view (Sample, Quality, History)"
+                >
+                  <Maximize2 className="w-3 h-3" strokeWidth={2} />
+                  Full view
+                </button>
+              )}
+              {onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex items-center justify-center w-6 h-6 text-muted-2 hover:text-ink hover:bg-soft rounded transition-colors"
+                  title="Close"
+                  aria-label="Close"
+                >
+                  <X className="w-3.5 h-3.5" strokeWidth={2} />
+                </button>
+              )}
+            </span>
+          )}
         </div>
         <h1 className="font-display text-[22px] tracking-[-0.01em] text-ink leading-tight">
           {displayName}
@@ -176,16 +230,21 @@ export default function ReferenceDetailPanel({ tableId, productId }: Props) {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="px-6 border-b border-line bg-raised flex-shrink-0 flex gap-0.5">
+      {/* Tabs. Sample/Quality/History only render in full view — they
+          need horizontal space the inset doesn't have. */}
+      <div className="px-6 border-b border-line bg-raised flex-shrink-0 flex gap-0.5 overflow-x-auto">
         <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabBtn>
         <TabBtn active={tab === 'columns'} onClick={() => setTab('columns')}>
           Columns <span className="ml-1 text-muted-2">({columns.length})</span>
         </TabBtn>
         <TabBtn active={tab === 'used'} onClick={() => setTab('used')}>Used in</TabBtn>
-        <TabBtn active={tab === 'sample'} onClick={() => setTab('sample')}>Sample</TabBtn>
-        <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')}>Quality</TabBtn>
-        <TabBtn active={tab === 'history'} onClick={() => setTab('history')}>History</TabBtn>
+        {!compact && (
+          <>
+            <TabBtn active={tab === 'sample'} onClick={() => setTab('sample')}>Sample</TabBtn>
+            <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')}>Quality</TabBtn>
+            <TabBtn active={tab === 'history'} onClick={() => setTab('history')}>History</TabBtn>
+          </>
+        )}
       </div>
 
       {/* Body */}
@@ -404,17 +463,23 @@ function SampleTab({ tableId, productId }: { tableId: number; productId: number 
     let cancelled = false;
     setRows(null);
     setError(null);
-    // The semantic product-preview endpoint accepts a table id and runs
-    // SELECT * LIMIT 100 against the materialised Delta. Reuses existing
-    // auth + tenant context.
-    api.post('/semantic/product-preview', { product_table_id: tableId })
+    // GET /api/semantic/product-preview?productTableId=…&limit=100.
+    // Note: this endpoint is admin-only; viewers and analysts will get a
+    // 403 — the catch surfaces a friendly message in that case.
+    api.get('/semantic/product-preview', { params: { productTableId: tableId, limit: 100 } })
       .then((r) => {
         if (cancelled) return;
-        setRows((r.data?.rows ?? r.data?.data?.rows ?? []) as SampleRow[]);
+        const data = r.data?.data ?? r.data;
+        setRows((data?.rows ?? data ?? []) as SampleRow[]);
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(e?.response?.data?.error ?? e?.message ?? 'Failed to load');
+        const status = e?.response?.status;
+        if (status === 403) {
+          setError('Sample data is admin-only on this surface.');
+        } else {
+          setError(e?.response?.data?.error ?? e?.message ?? 'Failed to load');
+        }
       });
     return () => { cancelled = true; };
   }, [tableId, productId]);

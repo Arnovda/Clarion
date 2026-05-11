@@ -169,11 +169,20 @@ export default function EntityDetailPanel({
     // Lazy import keeps the bundle slim until the user actually opens a
     // reference card — the panel pulls in recharts via the refresh-history
     // chart and isn't needed on the discovery view.
+    //
+    // productPreview doubles as the "are we in the narrow inset?" hint:
+    // when true (cards-mode default), the panel runs in `compact` mode
+    // (Overview/Columns/Used-in only, plus an "Open full view" button
+    // wired to onOpenFullView). When false (full-screen wrapper) the
+    // panel shows all six tabs including Sample/Quality/History.
     return (
       <ReferenceLoader
         key={`rt-${selection.tableId}`}
         tableId={selection.tableId}
         productId={selection.productId}
+        compact={productPreview === true}
+        onOpenFullView={onOpenFullView}
+        onClose={onClose}
       />
     );
   }
@@ -277,12 +286,23 @@ function ProductTableLoader({
 
 // ── Reference loader ───────────────────────────────────────────────────────
 
-function ReferenceLoader({ tableId, productId }: { tableId: number; productId: number }) {
+function ReferenceLoader({
+  tableId, productId, compact, onOpenFullView, onClose,
+}: {
+  tableId: number;
+  productId: number;
+  compact?: boolean;
+  onOpenFullView?: () => void;
+  onClose?: () => void;
+}) {
   return (
     <ReferenceDetailPanel
       key={`rd-${tableId}`}
       tableId={tableId}
       productId={productId}
+      compact={compact}
+      onOpenFullView={onOpenFullView}
+      onClose={onClose}
     />
   );
 }

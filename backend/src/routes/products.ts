@@ -283,10 +283,19 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
           .orderBy(['ss.data_product_id', 'pt.table_name'])
       : [];
 
-    // 4. Compute "used by" per reference table — analytics products whose
-    //    star schemas relate INTO this dim. product_relationships gives us
-    //    exactly that link.
+    // 4. Compute "used by" per reference table. Two strategies, unioned:
+    //    (a) product_relationships rows linking a fact INTO this dim
+    //        — works for the rare same-star-schema case.
+    //    (b) product_columns.fk_target_table name-matching across
+    //        analytics products attributed to the same source — the
+    //        dominant real-world case where a dim lives in a "Reference"
+    //        product and the consuming fact lives in a "Sales" product
+    //        (different data_products, different star_schemas, so (a)
+    //        can never find them by design).
     const refTableIds = referenceTables.map((t: { table_id: number }) => t.table_id);
+    const usedByMap = new Map<number, Array<{ productId: number; name: string }>>();
+
+    // (a) Same-star-schema relationship rows
     const usageRows = refTableIds.length
       ? await semanticDb('product_relationships as pr')
           .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
@@ -300,15 +309,82 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
             'dp.name as analytics_product_name',
           )
       : [];
-
-    const usedByMap = new Map<number, Array<{ productId: number; name: string }>>();
     for (const u of usageRows as { ref_table_id: number; analytics_product_id: number; analytics_product_name: string }[]) {
       const list = usedByMap.get(u.ref_table_id) ?? [];
-      // dedupe by productId — multiple FK columns to the same dim count once.
       if (!list.some((x) => x.productId === u.analytics_product_id)) {
         list.push({ productId: u.analytics_product_id, name: u.analytics_product_name });
       }
       usedByMap.set(u.ref_table_id, list);
+    }
+
+    // (b) FK-name match across same-source analytics products. We need
+    //     name -> tableId mapping per reference table to know which
+    //     "fk_target_table" string a fact would name.
+    if (refTableIds.length > 0) {
+      // Per ref table: candidate names (table_name + display_name) + which
+      // source they belong to.
+      type RefMeta = {
+        tableId: number;
+        productId: number;
+        connectionId: number | null;
+        candidateNames: string[];
+      };
+      const refMeta: RefMeta[] = (referenceTables as Array<{
+        table_id: number; table_name: string; display_name: string | null; product_id: number;
+      }>).map((t) => {
+        const owner = (products as Array<{ id: number; connection_id: number | null; kind: string }>)
+          .find((p) => p.id === t.product_id);
+        const ownerContributors = tallies.get(t.product_id);
+        const inferredConn = ownerContributors && ownerContributors.size > 0
+          ? Array.from(ownerContributors.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]
+          : (owner?.connection_id ?? null);
+        const names: string[] = [t.table_name];
+        if (t.display_name && t.display_name !== t.table_name) names.push(t.display_name);
+        return {
+          tableId: t.table_id,
+          productId: t.product_id,
+          connectionId: inferredConn,
+          candidateNames: names,
+        };
+      });
+
+      // Group analytics-product ids per connection so we can do one
+      // bulk lookup per source.
+      const analyticsByConn = new Map<number, number[]>();
+      for (const p of products as Array<{ id: number; kind: string; connection_id: number | null }>) {
+        if (p.kind !== 'analytics') continue;
+        const inner = tallies.get(p.id);
+        const primary = inner && inner.size > 0
+          ? Array.from(inner.entries()).sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]
+          : p.connection_id;
+        if (primary == null) continue;
+        const list = analyticsByConn.get(primary) ?? [];
+        list.push(p.id);
+        analyticsByConn.set(primary, list);
+      }
+
+      // For each (connection, ref-table names) pair, find facts whose
+      // fk_target_table matches any of those names.
+      for (const meta of refMeta) {
+        if (meta.connectionId == null) continue;
+        const analyticsIds = analyticsByConn.get(meta.connectionId) ?? [];
+        if (analyticsIds.length === 0) continue;
+        const fkRows = await semanticDb('product_columns as pc')
+          .join('product_tables as pt_from', 'pt_from.id', 'pc.product_table_id')
+          .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
+          .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+          .whereIn('dp.id', analyticsIds)
+          .whereIn('pc.fk_target_table', meta.candidateNames)
+          .andWhere('pt_from.table_role', 'fact')
+          .select('dp.id as analytics_product_id', 'dp.name as analytics_product_name');
+        const list = usedByMap.get(meta.tableId) ?? [];
+        for (const r of fkRows as Array<{ analytics_product_id: number; analytics_product_name: string }>) {
+          if (!list.some((x) => x.productId === r.analytics_product_id)) {
+            list.push({ productId: r.analytics_product_id, name: r.analytics_product_name });
+          }
+        }
+        if (list.length > 0) usedByMap.set(meta.tableId, list);
+      }
     }
 
     // 5. Assemble per-source blocks. A source's block contains its analytics
@@ -441,7 +517,40 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
       await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     }
 
-    const rows = await semanticDb('product_relationships as pr')
+    // Identify the dim we're being asked about + its source. We need the
+    // source so the FK-name-matching fallback below stays scoped to the
+    // same connection — otherwise EO.dim_account would claim to be "used
+    // by" any wholesale_erp fact with a similarly-named FK column.
+    const dimRow = await semanticDb('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+      .where('pt.id', tableId)
+      .select(
+        'pt.table_name as dim_table_name',
+        'pt.display_name as dim_display_name',
+        'dp.id as dim_product_id',
+        'dp.connection_id as dim_connection_id',
+      )
+      .first();
+
+    if (!dimRow) {
+      res.json({ ok: true, data: [] });
+      return;
+    }
+
+    interface UsageOut {
+      productId: number;
+      productName: string;
+      kind: string;
+      factTable: string;
+      joinColumns: Array<{ fact: string; dim: string }>;
+    }
+    const byKey = new Map<string, UsageOut>();
+
+    // Strategy 1: product_relationships within a star_schema (rare to hit
+    // for cross-product refs because the FK is scoped to star_schema_id,
+    // but kept for the same-product case).
+    const relRows = await semanticDb('product_relationships as pr')
       .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
       .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
       .join('data_products as dp', 'dp.id', 'ss.data_product_id')
@@ -453,23 +562,14 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
         'pt_from.table_name as fact_table_name',
         'pr.from_column_name as fact_column',
         'pr.to_column_name as dim_column',
-      )
-      .orderBy(['dp.name', 'pt_from.table_name']);
+      );
 
-    // Dedupe to (productId, factTable) pairs since a fact can have multiple
-    // FK columns to the same dim — surface as one row with all columns.
-    interface UsageOut {
-      productId: number;
-      productName: string;
-      kind: string;
-      factTable: string;
-      joinColumns: Array<{ fact: string; dim: string }>;
-    }
-    const byKey = new Map<string, UsageOut>();
-    for (const r of rows as Array<{
+    for (const r of relRows as Array<{
       product_id: number; product_name: string; kind: string;
       fact_table_name: string; fact_column: string; dim_column: string;
     }>) {
+      // Skip self-reference: a dim's relationship to itself isn't usage.
+      if (r.product_id === Number(dimRow.dim_product_id)) continue;
       const key = `${r.product_id}::${r.fact_table_name}`;
       const existing = byKey.get(key);
       if (existing) {
@@ -485,7 +585,74 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
       }
     }
 
-    res.json({ ok: true, data: Array.from(byKey.values()) });
+    // Strategy 2: FK-name-matching across products attributed to the same
+    // source. Catches the dominant case where a dim is owned by a
+    // "Reference" product but consumed by Sales / Procurement product
+    // facts in the same source. We match on either table_name (the
+    // Kimball-style `dim_account`) OR display_name (`Account`) since the
+    // AI design step sometimes uses one or the other in fk_target_table.
+    const candidateNames: string[] = [];
+    if (dimRow.dim_table_name) candidateNames.push(String(dimRow.dim_table_name));
+    if (dimRow.dim_display_name && dimRow.dim_display_name !== dimRow.dim_table_name) {
+      candidateNames.push(String(dimRow.dim_display_name));
+    }
+
+    if (candidateNames.length > 0) {
+      const sameSourceProductIds = dimRow.dim_connection_id != null
+        ? (await semanticDb('data_products')
+            .where('connection_id', dimRow.dim_connection_id)
+            .andWhere('kind', 'analytics')
+            .pluck<number[]>('id'))
+        : [];
+
+      if (sameSourceProductIds.length > 0) {
+        const fkRows = await semanticDb('product_columns as pc')
+          .join('product_tables as pt_from', 'pt_from.id', 'pc.product_table_id')
+          .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
+          .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+          .whereIn('dp.id', sameSourceProductIds)
+          .whereIn('pc.fk_target_table', candidateNames)
+          .andWhere('pt_from.table_role', 'fact')
+          .select(
+            'dp.id as product_id',
+            'dp.name as product_name',
+            'dp.kind as kind',
+            'pt_from.table_name as fact_table_name',
+            'pc.column_name as fact_column',
+            'pc.fk_target_column as dim_column',
+          );
+
+        for (const r of fkRows as Array<{
+          product_id: number; product_name: string; kind: string;
+          fact_table_name: string; fact_column: string; dim_column: string | null;
+        }>) {
+          const key = `${r.product_id}::${r.fact_table_name}`;
+          const existing = byKey.get(key);
+          const join = { fact: r.fact_column, dim: r.dim_column ?? '' };
+          if (existing) {
+            // Dedup by fact column name — a column shouldn't appear twice.
+            if (!existing.joinColumns.some((j) => j.fact === join.fact)) {
+              existing.joinColumns.push(join);
+            }
+          } else {
+            byKey.set(key, {
+              productId: r.product_id,
+              productName: r.product_name,
+              kind: r.kind,
+              factTable: r.fact_table_name,
+              joinColumns: [join],
+            });
+          }
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      data: Array.from(byKey.values()).sort((a, b) =>
+        a.productName.localeCompare(b.productName) || a.factTable.localeCompare(b.factTable),
+      ),
+    });
   } catch (err) { next(err); }
 });
 
