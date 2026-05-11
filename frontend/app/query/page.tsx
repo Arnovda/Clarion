@@ -8,7 +8,7 @@ import api from '@/lib/api';
 import { getToken, getTokenPayload } from '@/lib/auth';
 import { formatRelativeTime, getOverallFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
 import { X, Loader2, ArrowRight } from 'lucide-react';
-import { SourceSelector, type DataSource } from './components';
+import { type DataSource } from './components';
 import MessageBubble from './MessageBubble';
 import { ThinkingBubble, ThinkingPanel } from './thinking';
 import ChatSidebar from './ChatSidebar';
@@ -1012,7 +1012,14 @@ function QueryPageInner() {
       contextPanel={sidebarContent}
     >
       <div className="flex flex-col flex-1 min-h-0">
-        {/* Sub-header: source selector + show SQL toggle */}
+        {/* Sub-header: optional product-context pill + show SQL toggle.
+            The source picker used to live here. It was removed —
+            users shouldn't be deciding which source to query against
+            up front. The backend defaults to the user's primary
+            connection (URL param > last-used > first). If a question
+            is ambiguous across sources, the AI clarifies via its
+            existing intent='clarify' response shape rather than
+            forcing the user to pre-select. */}
         <div className="flex-shrink-0 px-6 py-2.5 flex items-center justify-between border-b border-line bg-raised">
           <div className="flex items-center gap-3">
             {productContext ? (
@@ -1022,13 +1029,11 @@ function QueryPageInner() {
                 <button
                   onClick={() => setProductContext(null)}
                   className="text-muted-2 hover:text-ink-2 ml-1 transition-colors"
-                  title="Switch to all sources"
+                  title="Clear product focus"
                 >
                   <X className="w-3.5 h-3.5" strokeWidth={2} />
                 </button>
               </div>
-            ) : sources.length > 1 ? (
-              <SourceSelector sources={sources} selectedId={selectedSource} onChange={(id) => { setSelectedSource(id); localStorage.setItem('clarion_query_source', id); }} />
             ) : null}
           </div>
           <div className="flex items-center gap-4">
