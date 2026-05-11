@@ -14,13 +14,46 @@ import {
   LineChart, PieChart, Pie, Cell,
   ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
-import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon } from 'lucide-react';
+import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff } from 'lucide-react';
 import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
 import type { DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
 import InvestigationView from '@/components/investigate/InvestigationView';
 import type { Investigation } from '@/lib/investigationTypes';
+
+// ─── Technical-column detection ──────────────────────────────────────────────
+//
+// Safety net for when the NL→SQL prompt rules slip and a technical
+// identifier (UUID, surrogate key) lands in the result. The toggle lets
+// users opt back in for debugging.
+//
+// Detection is based on the column NAME + a sampled VALUE, since we
+// don't have schema metadata at this layer:
+//   - value matches a UUID/GUID pattern → technical
+//   - column_name ends in `_key`        → technical (Kimball surrogate)
+//   - column_name ends in `_id` AND value looks like a UUID → technical
+//   - column_name is exactly `id`       → technical
+// All other columns (including business identifiers like `invoice_number`,
+// `customer_code`, `sku`) stay visible.
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sampleValue(rows: Record<string, unknown>[], col: string): unknown {
+  for (const r of rows) {
+    const v = r[col];
+    if (v !== null && v !== undefined && v !== '') return v;
+  }
+  return null;
+}
+
+function looksTechnical(col: string, sample: unknown): boolean {
+  if (typeof sample === 'string' && UUID_RE.test(sample)) return true;
+  const lower = col.toLowerCase();
+  if (lower === 'id' || lower.endsWith('_key')) return true;
+  if (lower.endsWith('_id') && typeof sample === 'string' && UUID_RE.test(sample)) return true;
+  return false;
+}
 
 // ─── Result visualizer ───────────────────────────────────────────────────────
 
@@ -198,35 +231,85 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-md border border-line text-[12px] bg-raised">
-        <table className="w-full">
-          <thead>
-            <tr className="bg-softer border-b border-line">
-              {columns.map((col) => (
-                <th key={col} className="px-3 py-2 text-left font-mono font-medium text-muted uppercase tracking-[0.08em] text-[10px]">
-                  {col.replace(/_/g, ' ')}
-                </th>
+      <ResultDataTable
+        rows={rows}
+        columns={columns}
+        numericCols={numericCols}
+      />
+    </div>
+  );
+}
+
+// ─── Result data table — with technical-column safety net ───────────────────
+//
+// Hides UUID / surrogate-key columns by default. The NL→SQL prompt
+// forbids them in SELECT, but if one slips through (legacy product,
+// AI mistake, debug request) the user shouldn't have to wade through
+// columns of "f8706af1-74cf-..." to find a recognisable identifier.
+// Toggle restores them for the curious / debugging.
+
+function ResultDataTable({
+  rows, columns, numericCols,
+}: {
+  rows: Record<string, unknown>[];
+  columns: string[];
+  numericCols: string[];
+}) {
+  const [showTechnical, setShowTechnical] = useState(false);
+
+  // Detect technical-shape columns from name + sampled value. Computed
+  // once per render — not in a useMemo because columns array shape is
+  // stable for the bubble.
+  const technicalCols = columns.filter((c) => looksTechnical(c, sampleValue(rows, c)));
+  const visibleCols = showTechnical
+    ? columns
+    : columns.filter((c) => !technicalCols.includes(c));
+
+  return (
+    <div className="overflow-x-auto rounded-md border border-line text-[12px] bg-raised">
+      <table className="w-full">
+        <thead>
+          <tr className="bg-softer border-b border-line">
+            {visibleCols.map((col) => (
+              <th key={col} className="px-3 py-2 text-left font-mono font-medium text-muted uppercase tracking-[0.08em] text-[10px]">
+                {col.replace(/_/g, ' ')}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className={`border-b border-line last:border-0 ${i % 2 === 1 ? 'bg-softer/50' : ''}`}>
+              {visibleCols.map((col) => (
+                <td key={col} className={`px-3 py-2 ${numericCols.includes(col) ? 'text-right font-mono text-ink' : 'text-ink'}`}>
+                  {formatCellValue(row[col], col)}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} className={`border-b border-line last:border-0 ${i % 2 === 1 ? 'bg-softer/50' : ''}`}>
-                {columns.map((col) => (
-                  <td key={col} className={`px-3 py-2 ${numericCols.includes(col) ? 'text-right font-mono text-ink' : 'text-ink'}`}>
-                    {formatCellValue(row[col], col)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {rows.length >= 200 && (
-          <p className="text-center text-[10px] font-mono tracking-[0.06em] uppercase text-muted py-1.5 bg-softer border-t border-line">
-            Showing first 200 rows
-          </p>
-        )}
-      </div>
+          ))}
+        </tbody>
+      </table>
+      {(technicalCols.length > 0 || rows.length >= 200) && (
+        <div className="px-3 py-1.5 bg-softer border-t border-line flex items-center gap-3 text-[10px] font-mono tracking-[0.06em] uppercase text-muted">
+          {rows.length >= 200 && <span>Showing first 200 rows</span>}
+          {technicalCols.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowTechnical((v) => !v)}
+              className="ml-auto inline-flex items-center gap-1 hover:text-ink transition-colors"
+              title={
+                showTechnical
+                  ? 'Hide technical ID columns (UUIDs, surrogate keys)'
+                  : `Show ${technicalCols.length} hidden technical ID column${technicalCols.length === 1 ? '' : 's'}`
+              }
+            >
+              {showTechnical
+                ? <><EyeOff className="w-3 h-3" strokeWidth={2} /> Hide tech IDs</>
+                : <><Eye className="w-3 h-3" strokeWidth={2} /> {technicalCols.length} hidden ID{technicalCols.length === 1 ? '' : 's'}</>}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

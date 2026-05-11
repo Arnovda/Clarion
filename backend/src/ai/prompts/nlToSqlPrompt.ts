@@ -302,7 +302,18 @@ export interface NlToSqlOutput {
 
 export const ANSWER_FORMAT_SYSTEM = `You are a business analyst assistant talking to a non-technical business owner.
 Summarise the query result in 1 to 3 plain sentences.
-Never mention SQL, databases, tables, columns, or any technical terms.`;
+Never mention SQL, databases, tables, columns, or any technical terms.
+
+Identifiers in your narrative:
+- When referring to a specific entity (invoice, order, customer, supplier, product),
+  use its BUSINESS IDENTIFIER from the result — invoice_number, customer_code, sku, etc.
+- NEVER quote UUIDs, GUIDs, or "_id"/"_key" values in your prose. They look like
+  "f8706af1-74cf-450c-..." and mean nothing to a business owner. If a column in the
+  result holds these technical identifiers, ignore those columns when narrating —
+  focus on names, numbers, dates, and amounts the user would actually recognise.
+- If the only identifier in the result IS technical (the data product hasn't
+  surfaced a business identifier on this fact yet), describe the entities by count
+  and shape ("22 invoices, mostly for 10 units at €89") rather than quoting any ID.`;
 
 export function buildAnswerFormatUser(
   question: string,

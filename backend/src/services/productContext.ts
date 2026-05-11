@@ -33,6 +33,7 @@ interface ProductColumnRow {
   column_role: string | null;
   fk_target_table: string | null;
   additivity: string | null;
+  is_technical: boolean | null;
 }
 
 interface ProductRelRow {
@@ -188,14 +189,19 @@ export async function buildProductSemanticContext(
 
   const tableIds = tables.map((t) => t.id);
 
-  // Get all columns. Exclude technical columns (e.g. `_row_hash` today;
-  // `_valid_from` / `_valid_to` / `_is_current` / `_hash_schema_version`
-  // when SCD2 lands). The `is_technical` flag is the single firewall that
-  // keeps these out of every AI/UI surface — see
-  // docs/backlog/SCD2.md and the Phase 1 migration.
+  // Get all columns INCLUDING is_technical ones — the AI needs the
+  // technical FK columns (account_id GUID, customer_key, etc.) to build
+  // JOIN clauses. The prompt rules then forbid the AI from putting
+  // is_technical columns in SELECT (they appear as JOIN-only annotated
+  // in the schema string downstream).
+  //
+  // The ONLY columns we filter out entirely are pure infrastructure
+  // (`_row_hash`, future `_valid_from` / `_valid_to` / `_is_current`).
+  // These start with an underscore by convention and the AI never needs
+  // to reference them — they're SCD machinery, not data.
   const columns: ProductColumnRow[] = await semanticDb('product_columns')
     .whereIn('product_table_id', tableIds)
-    .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
+    .andWhereRaw(`column_name NOT LIKE '\\_%' ESCAPE '\\'`)
     .orderBy(['sort_order', 'id']);
 
   // Get relationships
@@ -230,6 +236,10 @@ export async function buildProductSemanticContext(
   const semanticContext = tables.map((t) => {
     const cols = columns
       .filter((c) => c.product_table_id === t.id)
+      // Business columns first, JOIN-only (is_technical) columns last
+      // so the AI sees the user-facing identifiers as the natural
+      // SELECT candidates.
+      .sort((a, b) => Number(a.is_technical ?? false) - Number(b.is_technical ?? false))
       .map((c) => {
         const typePart = c.data_type ? ` (${c.data_type})` : '';
         const isMeasure = c.column_role === 'measure';
@@ -237,8 +247,14 @@ export async function buildProductSemanticContext(
           ? (c.additivity ? ` [m,${c.additivity}]` : ' [m]')
           : '';
         const fkNote = c.fk_target_table ? ` →${c.fk_target_table}` : '';
+        // [JOIN-ONLY] tag for is_technical columns. The NL→SQL prompt
+        // explicitly forbids putting these in SELECT — they're for
+        // JOIN clauses only. Makes the firewall visible at every
+        // column-mention rather than a separate rule the AI has to
+        // remember.
+        const technicalTag = c.is_technical ? ' [JOIN-ONLY]' : '';
         const descPart = c.description ? `: ${c.description}` : '';
-        return `    ${c.column_name}${typePart}${measureTag}${fkNote}${descPart}`;
+        return `    ${c.column_name}${typePart}${measureTag}${fkNote}${technicalTag}${descPart}`;
       })
       .join('\n');
 

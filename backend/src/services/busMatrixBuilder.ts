@@ -23,6 +23,35 @@ export interface BuildBusMatrixResult {
 }
 
 /**
+ * Decide is_technical for a column when the AI didn't set it explicitly.
+ *
+ * Two layers:
+ *   1. If the AI provided `is_technical`, trust it.
+ *   2. Otherwise fall back to heuristics — surrogate keys and foreign
+ *      keys in facts are always technical; UUID-typed columns are
+ *      always technical; everything else is business-visible by
+ *      default.
+ *
+ * The flag firewalls technical IDs from chat results, narratives, and
+ * default sample previews. They remain available for JOINs in NL→SQL.
+ */
+function inferIsTechnical(col: {
+  column_name?: string;
+  data_type?: string;
+  column_role?: string;
+  is_technical?: boolean;
+}): boolean {
+  if (typeof col.is_technical === 'boolean') return col.is_technical;
+  if (col.column_role === 'surrogate_key' || col.column_role === 'foreign_key') return true;
+  const type = (col.data_type ?? '').toUpperCase();
+  if (type.includes('UUID') || type === 'BLOB' || type.startsWith('BINARY')) return true;
+  // Trailing-key heuristic — `*_key` in a fact is a surrogate FK by
+  // naming convention even when the AI tags it differently.
+  if (/_key$/.test(col.column_name ?? '')) return true;
+  return false;
+}
+
+/**
  * Validate the AI-output shape. Returns an array of human-readable errors;
  * empty array means the spec is good enough to attempt persistence.
  */
@@ -202,6 +231,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
             additivity: col.additivity ?? null,
             scd_type: col.scd_type ?? 1,
             sort_order: col.sort_order ?? 0,
+            is_technical: inferIsTechnical(col),
             ai_draft: true,
           }).returning('id');
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
@@ -256,6 +286,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
             additivity: col.additivity ?? null,
             scd_type: col.scd_type ?? 1,
             sort_order: col.sort_order ?? 0,
+            is_technical: inferIsTechnical(col),
             ai_draft: true,
           }).returning('id');
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
@@ -311,6 +342,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
               additivity: col.additivity ?? null,
               scd_type: col.scd_type ?? 1,
               sort_order: col.sort_order ?? 0,
+              is_technical: inferIsTechnical(col),
               ai_draft: true,
             });
           }

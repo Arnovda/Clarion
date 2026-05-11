@@ -25,6 +25,22 @@ export interface ColumnDesign {
   column_role: 'surrogate_key' | 'natural_key' | 'foreign_key' | 'measure' | 'attribute' | 'degenerate_dimension';
   fk_target_table?: string;
   fk_target_column?: string;
+  /**
+   * When TRUE, this column is technical/infrastructure and must never
+   * surface in end-user output (chat results, narratives, default sample
+   * previews). It remains available for JOINs in NL→SQL.
+   *
+   * AI should set TRUE for:
+   *   - UUID/GUID-shaped FK columns (account_id from a source like EO,
+   *     where the user knows accounts by name, not by GUID)
+   *   - Surrogate FK keys (`customer_key`, `account_key`) in facts
+   *   - Internal infrastructure (`_row_hash`, etc.)
+   *
+   * AI should set FALSE for:
+   *   - Business identifiers (invoice_number, sku, customer_code)
+   *   - All measures, attributes, dates
+   */
+  is_technical?: boolean;
   transformation_expression: string;
   additivity?: 'additive' | 'semi_additive' | 'non_additive';
   scd_type: number;
@@ -175,6 +191,85 @@ DO:
 - Surrogate keys: {entity}_key
 - FKs: match the target dimension's key name exactly
 
+━━━ HEADER / DETAIL (PARENT / CHILD) MODELING ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Many SMB sources have parent/child structures: invoices/invoice_lines,
+orders/order_lines, deliveries/delivery_lines, tickets/ticket_replies,
+opportunities/quote_items, etc. The temptation is to model only the
+child fact and link to the parent via a technical FK (e.g. an
+invoice_id GUID on fact_sales_invoice_lines pointing at
+fact_sales_invoices). DO NOT do this alone — it leaves the child
+fact unable to answer "which {parent} contains X?" without forcing a
+JOIN whose only purpose is recovering a human-readable identifier.
+
+RULES:
+
+1. **Model both parent and child as separate fact tables** at their
+   respective grains when both exist in the source.
+
+2. **DENORMALIZE the parent's natural business identifier onto every
+   child row** as a degenerate dimension. If the source has
+   invoices.invoice_number and invoice_lines.invoice_id, the child
+   fact MUST carry invoice_number (column_role: 'degenerate_dimension')
+   — JOINed in during the transformation_sql from the parent table.
+   Same for invoice_date, customer_key, supplier_key, and any other
+   commonly-sliced parent attributes.
+
+3. **The child fact must be self-describing at its grain.** A user
+   querying "which invoices contain product X" against
+   fact_sales_invoice_lines should get back recognisable invoice
+   numbers WITHOUT joining to the header fact.
+
+4. The technical parent FK (e.g. invoice_id GUID) still goes on the
+   child fact (for explicit JOINs when needed) — but it MUST be
+   marked is_technical: true so it never reaches end users.
+
+WHAT THIS LOOKS LIKE IN A FACT'S COLUMNS:
+
+  fact_sales_invoice_lines:
+    invoice_id           UUID    (FK to header, is_technical: true)
+    invoice_number       TEXT    (denormalized from header, degenerate_dimension, is_technical: false)
+    invoice_date         DATE    (denormalized from header, is_technical: false)
+    customer_key         INTEGER (FK to dim_customer, is_technical: true)
+    line_no              INTEGER (the lines own grain identifier, is_technical: false)
+    product_key          INTEGER (FK to dim_product, is_technical: true)
+    quantity             DECIMAL (measure)
+    unit_price           DECIMAL (measure)
+    line_revenue         DECIMAL (measure)
+
+This applies to EVERY parent/child relationship discovered in the
+source, not just invoices.
+
+━━━ TECHNICAL vs BUSINESS COLUMNS (is_technical flag) ━━━━━━━━━━━━━━━━━━━
+
+Every column you design carries an is_technical: boolean flag. The
+flag is the firewall that keeps system-generated identifiers from
+leaking into chat results, narratives, and sample previews. The
+column remains available for JOINs in NL→SQL — it is hidden, not
+deleted.
+
+Set is_technical: true when:
+  - The column is a UUID/GUID-shaped identifier from the source (e.g.
+    ExactOnlines account_id, Salesforce-style 0064x... IDs). The
+    user knows the entity by name, not by GUID.
+  - The column is a surrogate FK key with _key suffix in a fact
+    (e.g. customer_key, product_key, account_key).
+  - The column is internal infrastructure (_row_hash, _valid_from,
+    _is_current, ...).
+
+Set is_technical: false (the default) when:
+  - The column is a business-meaningful natural key the user would
+    recognise: invoice_number, order_number, customer_code, sku,
+    iban, vat_number, tracking_number, email, etc.
+  - All measures, attributes, dates, descriptions.
+  - Degenerate dimensions (line_no, etc.).
+
+**Rule of thumb:** would a non-data person at this business recognise
+the value as something they'd say out loud to identify the thing?
+("INV-2024-0123" yes; "f8706af1-74cf-450c-..." no). If yes →
+is_technical=false. If it is a system-generated identifier nobody
+says out loud → is_technical=true.
+
 ━━━ BUSINESS-FRIENDLY DESCRIPTIONS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Your audience is a business owner, not a data engineer. All display_name and description fields must be written in plain business English.
@@ -280,6 +375,7 @@ always put the alias immediately after \`}}\`:
           "column_role": "surrogate_key",
           "fk_target_table": null,
           "fk_target_column": null,
+          "is_technical": true,
           "transformation_expression": "ROW_NUMBER() OVER (ORDER BY ...)",
           "additivity": null,
           "scd_type": 1,
