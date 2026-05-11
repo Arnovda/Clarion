@@ -24,13 +24,24 @@ export function formatSql(raw: string): string {
  *  - percentage: ends in _pct, _percent, _percentage, _rate, _ratio, _share, _utilization, _occupancy, _margin (when also _pct/_percent), or contains "percent"
  *  - currency:   contains revenue, amount, cost, price, total, profit, spend, budget, salary, value (excl. _key/_id), turnover, sales (when numeric), gross/net (when numeric), invoice
  *  - count:      ends in _count, _qty, _quantity, starts with "num_" or "n_", or named "count", "orders", "items"
- *  - id:         ends in _id, _key, _nr, _number, _code  → render as plain string, never as money
+ *  - id:         ends in `id`/`key`/`nr`/`number`/`code` (with OR without an underscore
+ *                separator) → render as plain string, never as money.
+ *                This is the firewall preventing "INVOICENUMBER" (no underscore) from
+ *                being formatted as currency just because "invoice" appears in the name.
+ *                Order matters: ID check runs BEFORE currency check so the keyword-based
+ *                currency rule can't override an identifier-shaped column name.
  */
 function classifyColumn(col: string): 'percentage' | 'currency' | 'count' | 'id' | 'unknown' {
   const c = col.toLowerCase();
   if (/(_pct|_percent|_percentage|_rate|_ratio|_share|_utilization|_occupancy)$/.test(c)) return 'percentage';
   if (/percent/.test(c)) return 'percentage';
-  if (/(_id|_key|_nr|_number|_code|artikelnr|customer_nr|order_nr)$/.test(c)) return 'id';
+  // Match identifier suffixes regardless of whether there's an underscore
+  // separator. "INVOICENUMBER", "invoice_number", "invoicelineid" all
+  // classify as id. The currency check below would otherwise catch
+  // "invoicenumber" via the "invoice" keyword — that's the bug this
+  // matches against.
+  if (/(id|key|nr|number|code|guid|uuid)$/.test(c)) return 'id';
+  if (/(artikelnr|customer_nr|order_nr)$/.test(c)) return 'id';
   if (/(_count|_qty|_quantity|n_|^num_|^count$|^orders$|^items$|_orders$|_items$)/.test(c)) return 'count';
   if (/(revenue|amount|cost|price|total|profit|spend|budget|salary|turnover|sales|gross|net|invoice|margin|cogs|payable|receivable|payment|expense)/.test(c)) return 'currency';
   return 'unknown';
