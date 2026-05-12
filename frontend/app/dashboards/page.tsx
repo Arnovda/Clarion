@@ -50,6 +50,7 @@ import { CreateInput } from './components/CreateInput';
 import { EmptyDashboardHero } from './components/EmptyDashboardHero';
 import { EmailSchedulePanel } from './components/EmailSchedulePanel';
 import { DrillDetailModal } from './components/DrillDetailModal';
+import { WidgetContextMenu, type ContextMenuState } from './components/WidgetContextMenu';
 import { InsightsStrip, InsightsStripSkeleton } from './components/InsightsStrip';
 import { InvestigationPanel } from './components/InvestigationPanel';
 import { StoryModal } from './components/StoryModal';
@@ -114,6 +115,10 @@ export default function DashboardsPage() {
   const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [drillModal, setDrillModal] = useState<{ title: string; loading: boolean; rows: Record<string, unknown>[] } | null>(null);
+  // Right-click context menu state — coordinates + which widget+value the
+  // user clicked on. Cleared on close, outside-click, or Escape (the menu
+  // component handles those listeners itself).
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [insights, setInsights] = useState<string[] | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsDismissed, setInsightsDismissed] = useState(false);
@@ -479,6 +484,82 @@ export default function DashboardsPage() {
     } catch {
       setDrillModal({ title, loading: false, rows: [] });
     }
+  }
+
+  // ── Right-click "show source rows" — Power BI's "see records" ────────────
+  // Calls the /drill-rows backend, which rewrites the widget SQL to drop
+  // the aggregation and add WHERE <clicked-dim> = <clicked-value>. Falls
+  // back to the widget's own drillDownSql when the auto-rewrite is
+  // unsupported (CTEs etc).
+  async function openSourceRows(state: ContextMenuState) {
+    if (!currentSpec || !connectionId) return;
+    const widget = currentSpec.widgets.find((w) => w.id === state.widgetId);
+    if (!widget) return;
+    const title = `${widget.title} — source rows for "${state.value}"`;
+    setDrillModal({ title, loading: true, rows: [] });
+
+    // Prefer the auto-derived drill-rows endpoint when the widget has a
+    // crossFilterKey we can use. KPI cards typically don't — fall back
+    // to their explicit drillDownSql.
+    if (widget.crossFilterKey) {
+      try {
+        const res = await api.post('/dashboards/drill-rows', {
+          connectionId,
+          widgetSql: widget.sql,
+          crossFilterKey: widget.crossFilterKey,
+          value: state.value,
+          filterValues,
+          ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+        });
+        const rows = res.data.data?.rows ?? [];
+        setDrillModal({ title, loading: false, rows });
+        return;
+      } catch (err: unknown) {
+        // Some widgets (CTEs, subqueries) can't be auto-rewritten — fall
+        // through to drillDownSql below if available, otherwise surface
+        // the error.
+        const isUnsupported = (err as { response?: { data?: { unsupported?: boolean } } })?.response?.data?.unsupported;
+        if (!isUnsupported || !widget.drillDownSql) {
+          const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+            ?? 'Could not load source rows.';
+          setDrillModal({ title: msg, loading: false, rows: [] });
+          return;
+        }
+      }
+    }
+
+    // Fallback: the widget's hand-written drillDownSql, parameterised with
+    // the clicked value via `drill_value`.
+    if (widget.drillDownSql) {
+      try {
+        const res = await api.post('/dashboards/batch-execute', {
+          connectionId,
+          widgets: [{
+            id: widget.id,
+            sql: widget.drillDownSql,
+            filterValues: { ...filterValues, drill_value: state.value },
+          }],
+          ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+        });
+        const rows = res.data.data?.results?.[widget.id]?.rows ?? [];
+        setDrillModal({ title, loading: false, rows });
+      } catch {
+        setDrillModal({ title: 'Could not load source rows.', loading: false, rows: [] });
+      }
+    } else {
+      setDrillModal({ title: 'This widget does not support drill-through.', loading: false, rows: [] });
+    }
+  }
+
+  // Copy the clicked value to clipboard. Best-effort — older browsers fall
+  // back to a no-op silently. We don't surface a confirmation; modern UI
+  // pattern is that "copy" is silent and trusted.
+  function copyContextValue(state: ContextMenuState) {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+        navigator.clipboard.writeText(state.value).catch(() => { /* ignore */ });
+      }
+    } catch { /* ignore */ }
   }
 
   // ── Handle cross-filter / drill-down ─────────────────────────────────────
@@ -894,6 +975,14 @@ export default function DashboardsPage() {
     const xfKey = widget.crossFilterKey ?? widget.id;
     const onCF = (val: string | null) => handleCrossFilter(widget.id, xfKey, val);
     const hasCrossFilter = Boolean(widget.crossFilterKey);
+    // Right-click handler — surfaces the context menu at click coords with
+    // the widget+value context. Each widget type wires this to whatever
+    // makes sense (bar = bar's label, table cell = row's text column, KPI
+    // = headline value).
+    const onCtx = (e: React.MouseEvent, value: string, series?: string) => {
+      e.preventDefault();
+      setContextMenu({ x: e.clientX, y: e.clientY, widgetId: widget.id, value, series });
+    };
 
     // Widget export callbacks (only when dashboard is saved)
     const widgetIdx = currentSpec ? currentSpec.widgets.indexOf(widget) : -1;
@@ -936,6 +1025,7 @@ export default function DashboardsPage() {
             <KpiCard
               {...widgetProps}
               onDrillDetail={widget.drillDownSql ? () => openDrillDetail(widget) : undefined}
+              onContextMenu={onCtx}
             />
           </WidgetCard>
         );
@@ -947,6 +1037,7 @@ export default function DashboardsPage() {
               onCrossFilter={hasCrossFilter ? onCF : undefined}
               isCrossFilterActive={isCrossFilterSource}
               drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
+              onContextMenu={hasCrossFilter ? onCtx : undefined}
             />
           </WidgetCard>
         );
@@ -959,7 +1050,11 @@ export default function DashboardsPage() {
       case 'vertical_bar_chart':
         return (
           <WidgetCard {...cardProps}>
-            <VerticalBarChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+            <VerticalBarChartWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+              onContextMenu={hasCrossFilter ? onCtx : undefined}
+            />
           </WidgetCard>
         );
       case 'stacked_bar_chart':
@@ -983,7 +1078,11 @@ export default function DashboardsPage() {
       case 'data_table':
         return (
           <WidgetCard {...cardProps}>
-            <DataTableWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
+            <DataTableWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+              onContextMenu={hasCrossFilter ? onCtx : undefined}
+            />
           </WidgetCard>
         );
       case 'combo_chart':
@@ -1126,6 +1225,23 @@ export default function DashboardsPage() {
           onClose={() => setDrillModal(null)}
         />
       )}
+
+      {/* Right-click context menu — single instance, position driven by
+          `contextMenu.{x,y}`. Each menu action calls a page-level handler
+          and clears the state via onClose. */}
+      <WidgetContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        onShowSourceRows={(s) => { openSourceRows(s); }}
+        onCrossFilter={(s) => {
+          // Re-use the existing cross-filter handler. We need the widget's
+          // crossFilterKey for that — look it up from the spec.
+          const widget = currentSpec?.widgets.find((w) => w.id === s.widgetId);
+          if (!widget?.crossFilterKey) return;
+          handleCrossFilter(s.widgetId, widget.crossFilterKey, s.value);
+        }}
+        onCopyValue={copyContextValue}
+      />
 
       {/* ── Left sidebar ── */}
       <aside className="w-60 bg-soft border-r border-line flex flex-col shrink-0 overflow-hidden">

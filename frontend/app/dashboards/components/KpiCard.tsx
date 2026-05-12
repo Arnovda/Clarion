@@ -8,7 +8,7 @@ import { PALETTE } from '../utils/chart-theme';
 import { formatValue } from '../utils/format';
 import { WidgetSkeleton, WidgetError } from './WidgetSkeletons';
 
-export function KpiCard({ spec, data, onDrillDetail }: WidgetExecutionProps) {
+export function KpiCard({ spec, data, onDrillDetail, onContextMenu }: WidgetExecutionProps) {
   if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
 
@@ -42,8 +42,18 @@ export function KpiCard({ spec, data, onDrillDetail }: WidgetExecutionProps) {
       ? PALETTE.negative.solid
       : PALETTE.series[0].solid;
 
+  // Right-click on the card surfaces the same drill / copy menu as
+  // any chart. We use the KPI's headline value as the "clicked value"
+  // so "Show source rows" reaches the underlying detail SQL.
+  const headlineValue = !isNaN(numVal) ? String(numVal) : String(val ?? '');
+
   return (
-    <div>
+    <div
+      onContextMenu={onContextMenu ? (e) => {
+        e.preventDefault();
+        onContextMenu(e, headlineValue);
+      } : undefined}
+    >
       {/* Title */}
       <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-3">
         {spec.title}

@@ -589,6 +589,171 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/dashboards/drill-rows  —  "show source rows" right-click action
+//
+// Given a widget's SQL + the clicked dimension column + clicked value +
+// any active dashboard filters, return the underlying raw rows that
+// aggregated to the clicked value. The Power-BI-style "see records"
+// action.
+//
+// Approach: take the widget's SQL, keep its FROM/JOIN/WHERE clauses
+// intact (preserves any active filter substitutions), strip the
+// aggregation (SELECT becomes `*`, GROUP BY/HAVING/ORDER BY/LIMIT are
+// removed), then add an extra WHERE clause for the clicked dimension =
+// clicked value. Returns up to MAX_DRILL_ROWS rows.
+//
+// Body: { connectionId, widgetSql, crossFilterKey, value, filterValues,
+//         dataLayer? }
+//
+// Failure cases (returns 400 with `unsupported` flag so the frontend
+// can fall back to the explicit drillDownSql if the widget has one):
+//   - widget SQL has CTEs / nested subqueries we can't safely strip
+//   - we can't isolate a FROM clause
+// ---------------------------------------------------------------------------
+
+const MAX_DRILL_ROWS = 1000;
+
+/**
+ * Transform a widget's aggregating SQL into a "show all source rows
+ * matching the clicked dimension value" SQL. Returns null if we can't
+ * confidently rewrite the SQL — caller should fall back to an explicit
+ * drillDownSql or surface a friendly error.
+ */
+export function buildDrillSql(
+  widgetSql: string,
+  crossFilterKey: string,
+  value: string,
+): string | null {
+  if (!widgetSql || !crossFilterKey) return null;
+
+  // Refuse SQL with leading CTEs (WITH ...) — the regex below would
+  // accidentally drill into the CTE's source table, which gives wrong
+  // rows. The caller falls back to drillDownSql for these widgets.
+  if (/^\s*WITH\s+/i.test(widgetSql)) return null;
+
+  // Find the FIRST `FROM` at top level. We assume top-level — a
+  // SELECT-from-subquery widget would also fall into the unsupported
+  // path. Common AI-generated widgets are flat.
+  const fromMatch = widgetSql.match(/\bFROM\b/i);
+  if (!fromMatch || fromMatch.index == null) return null;
+
+  // Tail = everything from FROM onwards. Strip the post-aggregation
+  // bits one at a time (case-insensitive, dot-matches-newline).
+  let tail = widgetSql.slice(fromMatch.index);
+
+  // Strip ORDER BY clause (must come before GROUP BY removal because
+  // ORDER BY can reference aliases like "value DESC" that GROUP BY
+  // doesn't).
+  tail = tail.replace(/\s+ORDER\s+BY\s+[\s\S]*$/i, '');
+
+  // Strip LIMIT / OFFSET (defensive — usually after ORDER BY).
+  tail = tail.replace(/\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$/i, '');
+
+  // Strip GROUP BY (and HAVING if present after it).
+  tail = tail.replace(/\s+GROUP\s+BY\s+[\s\S]*?(?=\s+(HAVING|ORDER|LIMIT)|$)/i, '');
+
+  // Strip HAVING if it survived (was attached to ORDER BY which we
+  // already removed).
+  tail = tail.replace(/\s+HAVING\s+[\s\S]*$/i, '');
+
+  // Escape the value — single quotes doubled per SQL convention.
+  const escapedValue = String(value).replace(/'/g, "''");
+
+  // The clicked column might be qualified ("p.category") or bare
+  // ("category"). We pass it through verbatim — both are valid in SQL.
+  // Caller already validated crossFilterKey is a SQL-safe identifier-ish.
+  const safeKey = crossFilterKey.replace(/[^a-zA-Z0-9_."`\[\]]/g, '');
+  if (!safeKey) return null;
+
+  const extraWhere = `${safeKey} = '${escapedValue}'`;
+  if (/\bWHERE\b/i.test(tail)) {
+    tail = tail + ` AND ${extraWhere}`;
+  } else {
+    tail = tail + ` WHERE ${extraWhere}`;
+  }
+
+  return `SELECT * ${tail} LIMIT ${MAX_DRILL_ROWS}`;
+}
+
+router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, widgetSql, crossFilterKey, value, filterValues, dataLayer } = req.body as {
+      connectionId: number;
+      widgetSql: string;
+      crossFilterKey: string;
+      value: string;
+      filterValues?: Record<string, string>;
+      dataLayer?: 'product' | 'source';
+    };
+
+    if (!connectionId || !widgetSql || !crossFilterKey || value === undefined || value === null) {
+      res.status(400).json({ ok: false, error: 'connectionId, widgetSql, crossFilterKey, and value are required' });
+      return;
+    }
+
+    const drillSqlTemplate = buildDrillSql(widgetSql, crossFilterKey, value);
+    if (!drillSqlTemplate) {
+      res.status(400).json({
+        ok: false,
+        error: 'This widget\'s SQL is too complex for automatic drill-through. Use the chart\'s built-in drill if available.',
+        unsupported: true,
+      });
+      return;
+    }
+
+    // Resolve any active dashboard filter placeholders the same way
+    // the widget SQL would have been resolved when the widget ran.
+    const resolvedSql = resolveWidgetFilters(drillSqlTemplate, filterValues ?? {});
+
+    const tenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const connector = productPath
+      ? await createProductConnector(productPath, connection.id, tenantId)
+      : await createConnector(connection);
+    await connector.connect();
+
+    try {
+      const result = await connector.executeQuery(resolvedSql);
+      const rows = result.rows as Record<string, unknown>[];
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      res.json({
+        ok: true,
+        data: {
+          rows,
+          columns,
+          rowCount: rows.length,
+          truncated: rows.length >= MAX_DRILL_ROWS,
+        },
+      });
+    } catch (err: unknown) {
+      const raw = err instanceof Error ? err.message : String(err);
+      console.error(`[drill-rows] FAILED: ${raw.slice(0, 400)}`);
+      console.error(`[drill-rows] SQL: ${resolvedSql.slice(0, 800)}`);
+      const friendly = raw.includes('does not exist')
+        ? 'The underlying table is not available right now.'
+        : 'Could not load source rows for this value.';
+      res.status(500).json({ ok: false, error: friendly });
+    } finally {
+      connector.disconnect();
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/dashboards/filter-options
 // ---------------------------------------------------------------------------
 

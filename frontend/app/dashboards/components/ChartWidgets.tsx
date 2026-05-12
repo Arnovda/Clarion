@@ -31,7 +31,7 @@ const TICK = { fontSize: 11, fill: PALETTE.axisLabel };
 // ─── BarChartWidget (horizontal bars) ────────────────────────────────────────
 
 export function BarChartWidget({
-  spec, data, onCrossFilter, isCrossFilterActive, drillLabel,
+  spec, data, onCrossFilter, isCrossFilterActive, drillLabel, onContextMenu,
 }: WidgetExecutionProps) {
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
@@ -64,8 +64,13 @@ export function BarChartWidget({
           <Bar
             dataKey="value"
             radius={[0, 4, 4, 0]}
-            cursor={onCrossFilter ? 'pointer' : undefined}
+            cursor={onCrossFilter || onContextMenu ? 'pointer' : undefined}
             onClick={onCrossFilter ? (entry) => onCrossFilter(String((entry as unknown as Record<string, unknown>).label)) : undefined}
+            onContextMenu={onContextMenu ? ((entry: unknown, _i: number, e: React.MouseEvent) => {
+              e.preventDefault();
+              const label = String((entry as Record<string, unknown>).label ?? '');
+              if (label) onContextMenu(e, label);
+            }) as unknown as (data: unknown) => void : undefined}
           >
             {chartData.map((_, i) => (
               <Cell key={i} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
@@ -74,7 +79,9 @@ export function BarChartWidget({
         </BarChart>
       </ResponsiveContainer>
       {onCrossFilter && !isCrossFilterActive && (
-        <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 mt-2 text-center">Click a bar to cross-filter</p>
+        <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 mt-2 text-center">
+          Click a bar to cross-filter{onContextMenu ? ' · right-click for more' : ''}
+        </p>
       )}
     </div>
   );
@@ -83,7 +90,7 @@ export function BarChartWidget({
 // ─── VerticalBarChartWidget ──────────────────────────────────────────────────
 
 export function VerticalBarChartWidget({
-  spec, data, onCrossFilter,
+  spec, data, onCrossFilter, onContextMenu,
 }: WidgetExecutionProps) {
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
@@ -105,13 +112,22 @@ export function VerticalBarChartWidget({
         margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
         barCategoryGap="30%"
         onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
+        style={{ cursor: onCrossFilter || onContextMenu ? 'pointer' : undefined }}
       >
         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={PALETTE.grid} />
         <XAxis dataKey="label" tick={TICK} axisLine={false} tickLine={false} />
         <YAxis tickFormatter={yFmt} tick={TICK} axisLine={false} tickLine={false} />
         <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Bar dataKey="value" fill={SERIES_COLORS[0]} radius={[4, 4, 0, 0]} />
+        <Bar
+          dataKey="value"
+          fill={SERIES_COLORS[0]}
+          radius={[4, 4, 0, 0]}
+          onContextMenu={onContextMenu ? ((entry: unknown, _i: number, e: React.MouseEvent) => {
+            e.preventDefault();
+            const label = String((entry as Record<string, unknown>).label ?? '');
+            if (label) onContextMenu(e, label);
+          }) as unknown as (data: unknown) => void : undefined}
+        />
         {hasTarget && (
           <Line type="monotone" dataKey="target" stroke={PALETTE.axisLabel} strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
         )}
@@ -408,7 +424,7 @@ function evalFormula(expr: string, row: Record<string, unknown>): number | null 
 // ─── DataTableWidget ─────────────────────────────────────────────────────────
 
 export function DataTableWidget({
-  spec: _spec, data, onCrossFilter,
+  spec: _spec, data, onCrossFilter, onContextMenu,
 }: WidgetExecutionProps) {
   const [calcCols, setCalcCols] = useState<Array<{ name: string; expr: string }>>([]);
   const [showFormulaForm, setShowFormulaForm] = useState(false);
@@ -515,8 +531,14 @@ export function DataTableWidget({
                   ? () => onCrossFilter(String(row[firstTextKey] ?? ''))
                   : undefined
               }
+              onContextMenu={onContextMenu && firstTextKey ? (e) => {
+                const label = String(row[firstTextKey] ?? '');
+                if (!label) return;
+                e.preventDefault();
+                onContextMenu(e, label);
+              } : undefined}
               className={`border-b border-line last:border-b-0 transition-colors ${
-                onCrossFilter ? 'cursor-pointer hover:bg-softer' : ''
+                onCrossFilter || onContextMenu ? 'cursor-pointer hover:bg-softer' : ''
               }`}
             >
               {allKeys.map((k) => {

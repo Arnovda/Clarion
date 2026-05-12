@@ -124,4 +124,8 @@ export interface WidgetExecutionProps {
   drillLabel?: string;
   /** Called when the user clicks a KPI card to view the underlying records */
   onDrillDetail?: () => void;
+  /** Right-click on a data point — opens the context menu at the click
+   *  coordinates with the dimension value the user clicked on. Optional
+   *  `series` carries the second axis for stacked / pivot widgets. */
+  onContextMenu?: (e: React.MouseEvent, value: string, series?: string) => void;
 }
