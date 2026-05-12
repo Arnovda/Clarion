@@ -9,6 +9,7 @@ import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react'
 import { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
+import { cn } from '@/lib/cn';
 import { useToast } from '@/components/ui/Toast';
 
 // ─── Extracted types ─────────────────────────────────────────────────────────
@@ -51,6 +52,9 @@ import { EmptyDashboardHero } from './components/EmptyDashboardHero';
 import { EmailSchedulePanel } from './components/EmailSchedulePanel';
 import { DrillDetailModal } from './components/DrillDetailModal';
 import { WidgetContextMenu, type ContextMenuState } from './components/WidgetContextMenu';
+import { isWasmSupported } from '@/lib/wasm/duckdb';
+import { loadCube, runWidgetSql, type CubeHandle } from '@/lib/wasm/cube';
+import { resolveFilters as resolveFiltersLocal, injectCrossFilter as injectCrossFilterLocal } from '@/lib/wasm/sql';
 import { InsightsStrip, InsightsStripSkeleton } from './components/InsightsStrip';
 import { InvestigationPanel } from './components/InvestigationPanel';
 import { StoryModal } from './components/StoryModal';
@@ -129,6 +133,39 @@ export default function DashboardsPage() {
   const dashboardGridRef = useRef<HTMLDivElement>(null);
   const widgetCacheRef = useRef<Record<string, WidgetData>>({});
 
+  // ── DuckDB-WASM "Fast mode" (Phase 5a, beta) ─────────────────────────────
+  // Per-user opt-in. When on AND the cube fits the memory budget, every
+  // widget query runs locally in the browser — zero server round-trips
+  // per filter / cross-filter / drill click. When off (the default),
+  // everything falls back to the existing server-side path.
+  //
+  // The toggle is persisted globally per user (one setting across all
+  // dashboards) so the user opts in once and we don't pepper their UI
+  // with per-dashboard toggles. Pre-existing dashboards keep working
+  // identically — the WASM path only activates after a successful cube
+  // load.
+  const [fastMode, setFastMode] = useState(false);
+  const [cubeStatus, setCubeStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  const [cubeMessage, setCubeMessage] = useState<string | null>(null);
+  const cubeRef = useRef<CubeHandle | null>(null);
+  const cubeSpecKeyRef = useRef<string | null>(null);  // tracks which spec the cube is for
+
+  // Hydrate the toggle from localStorage once on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = window.localStorage.getItem('clarion:fastMode');
+      if (stored === '1') setFastMode(true);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem('clarion:fastMode', fastMode ? '1' : '0');
+    } catch { /* ignore */ }
+  }, [fastMode]);
+
   // ── Load saved dashboards ──────────────────────────────────────────────────
 
   const loadDashboards = useCallback(async () => {
@@ -173,6 +210,89 @@ export default function DashboardsPage() {
           }
           return next;
         });
+      }
+
+      // ── Phase 5a: DuckDB-WASM "Fast mode" short-circuit ─────────────────
+      // When fast mode is on AND the browser supports WASM AND the cube
+      // either is already loaded for this spec OR loads successfully now,
+      // we run every widget query locally and return early. The server
+      // path below is the fallback for everything else (toggle off, WASM
+      // unsupported, cube too big, cube load failed, etc.).
+      if (fastMode && isWasmSupported()) {
+        const specKey = JSON.stringify(spec.widgets.map((w) => w.sql));
+        let cube = cubeRef.current;
+        const needLoad = !cube || cubeSpecKeyRef.current !== specKey;
+
+        if (needLoad) {
+          setCubeStatus('loading');
+          setCubeMessage('Loading data into browser…');
+          const loadResult = await loadCube({
+            connectionId: connId,
+            widgetSqls: spec.widgets.map((w) => w.sql),
+            dataLayer: spec.dataLayer,
+          });
+          if (loadResult.ok) {
+            cubeRef.current = loadResult.handle;
+            cubeSpecKeyRef.current = specKey;
+            cube = loadResult.handle;
+            setCubeStatus('ready');
+            setCubeMessage(`Fast mode · ${(loadResult.handle.totalBytes / 1024 / 1024).toFixed(1)} MB in browser`);
+          } else {
+            // Cube load failed (budget, network, parser). Drop the
+            // cached handle so we don't keep retrying mid-session, and
+            // fall through to the server path below.
+            cubeRef.current = null;
+            cubeSpecKeyRef.current = null;
+            setCubeStatus('failed');
+            setCubeMessage(loadResult.error);
+          }
+        }
+
+        if (cube) {
+          // Run every widget query against WASM, in parallel. Each
+          // widget transitions to its result independently — same
+          // perceived-speed behaviour as the SSE path.
+          const finalResults: Record<string, { rows?: Record<string, unknown>[]; error?: string }> = {};
+          await Promise.all(
+            spec.widgets.map(async (widget) => {
+              const isDrilled = xFilter?.widgetId === widget.id && widget.drillDownSql;
+              let sql = isDrilled ? widget.drillDownSql! : widget.sql;
+              // Same rewrites the server does: filter substitution +
+              // optional cross-filter injection on non-source widgets.
+              sql = resolveFiltersLocal(sql, {
+                ...filters,
+                ...(isDrilled ? { drill_value: xFilter!.value } : {}),
+              });
+              if (xFilter && widget.id !== xFilter.widgetId) {
+                sql = injectCrossFilterLocal(sql, xFilter.key, xFilter.value);
+              }
+              const result = await runWidgetSql(cube!, sql);
+              const data: WidgetData = 'error' in result
+                ? { rows: [], loading: false, error: result.error }
+                : { rows: result.rows ?? [], loading: false };
+              finalResults[widget.id] = 'error' in result ? { error: result.error } : { rows: result.rows };
+              widgetCacheRef.current[widget.id] = data;
+              setWidgetData((prev) => ({ ...prev, [widget.id]: data }));
+            }),
+          );
+
+          // Insights fires once on first load, same as the server path.
+          if (!hasCachedData) {
+            const summaries = spec.widgets.map((w) => ({
+              title: w.title,
+              type: w.type,
+              rows: (finalResults[w.id]?.rows ?? []).slice(0, 5),
+            }));
+            setInsights(null);
+            setInsightsDismissed(false);
+            setInsightsLoading(true);
+            api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
+              .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
+              .catch(() => {})
+              .finally(() => setInsightsLoading(false));
+          }
+          return;  // WASM path handled everything — skip server path
+        }
       }
 
       const widgetsPayload = spec.widgets.map((widget) => {
@@ -300,7 +420,7 @@ export default function DashboardsPage() {
         markAllAsError(msg);
       }
     },
-    [],
+    [fastMode],
   );
 
   // ── Load filter options ───────────────────────────────────────────────────
@@ -1629,6 +1749,61 @@ export default function DashboardsPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {/* Fast mode (beta) — DuckDB-WASM toggle. Renders only
+                      when the browser supports WASM. Persisted globally
+                      per user. When ON, every filter / cross-filter /
+                      drill runs in-browser with zero server round-trip
+                      (once the cube is loaded). When OFF (default),
+                      the existing server SSE path is used. */}
+                  {isWasmSupported() && (
+                    <button
+                      onClick={() => {
+                        setFastMode((v) => !v);
+                        // Bust the widget cache so the next executeAllWidgets
+                        // call re-runs with the (now-different) execution mode.
+                        // Without this, switching off fast mode keeps showing
+                        // WASM-derived rows until the next filter change.
+                        widgetCacheRef.current = {};
+                        cubeRef.current = null;
+                        cubeSpecKeyRef.current = null;
+                        setCubeStatus('idle');
+                        setCubeMessage(null);
+                        if (currentSpec) {
+                          executeAllWidgets(currentSpec, filterValues, crossFilter, connectionId!);
+                        }
+                      }}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md border text-[11px] font-mono uppercase tracking-[0.08em] transition-colors',
+                        fastMode
+                          ? 'border-ocean bg-ocean-softer text-ocean'
+                          : 'border-line text-muted hover:text-ink-2 hover:bg-softer',
+                      )}
+                      title={fastMode ? 'Disable fast mode' : 'Run queries in-browser (beta)'}
+                    >
+                      <Zap className="w-3.5 h-3.5" strokeWidth={fastMode ? 2 : 1.5} />
+                      Fast
+                      <span className={cn(
+                        'ml-0.5 px-1 py-0.5 text-[9px] tracking-wider rounded',
+                        fastMode ? 'bg-ocean text-white' : 'bg-softer text-muted-2 border border-line',
+                      )}>
+                        BETA
+                      </span>
+                    </button>
+                  )}
+                  {fastMode && cubeMessage && (
+                    <span
+                      className={cn(
+                        'text-[10px] font-mono uppercase tracking-[0.06em] px-2 py-1 rounded border',
+                        cubeStatus === 'failed' ? 'bg-warn-soft text-warn border-warn/30'
+                          : cubeStatus === 'ready' ? 'bg-ok-soft text-ok border-ok/30'
+                          : 'bg-softer text-muted-2 border-line',
+                      )}
+                      title={cubeMessage}
+                    >
+                      {cubeStatus === 'loading' ? 'Loading…' : cubeStatus === 'ready' ? 'In browser' : 'Server'}
+                    </span>
+                  )}
+
                   {/* Settings dropdown (share, folder, auto-refresh) */}
                   {activeId && !isUnsaved && (() => {
                     const activeDash = dashboards.find((d) => d.id === activeId);

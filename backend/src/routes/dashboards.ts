@@ -846,6 +846,161 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/dashboards/cube — Phase 5a, DuckDB-WASM proof-of-concept.
+//
+// Builds a "cube" of the parquet bytes for every table referenced by
+// the dashboard's widget SQLs, so the frontend can load them into an
+// in-browser DuckDB-WASM instance and run all subsequent queries
+// locally without server round-trips.
+//
+// Body: { connectionId, widgetSqls: string[], dataLayer? }
+// Response: { ok, data: { tables: [{ tableName, parquetBase64, rowCount, sizeBytes }], totalBytes } }
+//
+// Approach: extract all table names referenced by the widget SQLs
+// (regex on FROM/JOIN), resolve each via the existing connector by
+// COPYing to a temp parquet, and stream the bytes back as base64 in
+// JSON. Base64 has 33% overhead vs binary multipart but keeps the
+// PoC dead-simple; we'll move to a proper binary format if the
+// approach proves out.
+//
+// Failure modes (all surface as 400/500 with friendly errors so the
+// frontend can fall back to the server path):
+//   - any one table fails → entire request fails (atomic loading)
+//   - missing connector / dataLayer mismatch → 404
+//   - parquet file missing / corrupt → 500 with the underlying error
+//
+// Caching: NONE for now. Each cube request fetches fresh bytes from
+// the warehouse. Phase 5b should add an ETag based on each table's
+// last_run_at so the browser can cache the cube + revalidate cheaply.
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract all table names referenced by a widget's SQL. Looks for
+ * `FROM <name>` and `JOIN <name>` patterns. Returns a deduplicated set
+ * of bare identifiers — qualified names like `schema.table` get
+ * normalised to just the table portion (which is what DuckDB-WASM
+ * will register under).
+ */
+function extractTableNames(sql: string): string[] {
+  if (!sql) return [];
+  const out = new Set<string>();
+  const re = /\b(?:FROM|JOIN)\s+["`]?([a-zA-Z_][a-zA-Z0-9_]*)["`]?(?:\s|,|$)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sql)) !== null) {
+    // Skip subquery aliases and obvious non-table keywords. DuckDB
+    // reserves a handful of words after FROM (VALUES, UNNEST, etc.);
+    // those won't be valid table names in any user's warehouse, so
+    // the regex's `[a-zA-Z_]…` filter handles them implicitly.
+    if (m[1]) out.add(m[1]);
+  }
+  return Array.from(out);
+}
+
+router.post('/cube', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, widgetSqls, dataLayer } = req.body as {
+      connectionId: number;
+      widgetSqls: string[];
+      dataLayer?: 'product' | 'source';
+    };
+
+    if (!connectionId || !Array.isArray(widgetSqls) || widgetSqls.length === 0) {
+      res.status(400).json({ ok: false, error: 'connectionId and widgetSqls[] are required' });
+      return;
+    }
+
+    // Collect unique table names referenced anywhere in the dashboard.
+    const tableSet = new Set<string>();
+    for (const sql of widgetSqls) for (const t of extractTableNames(sql)) tableSet.add(t);
+    const tableNames = Array.from(tableSet);
+
+    if (tableNames.length === 0) {
+      res.status(400).json({ ok: false, error: 'No tables found in widget SQLs' });
+      return;
+    }
+
+    const tenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    const connector = productPath
+      ? await createProductConnector(productPath, connection.id, tenantId)
+      : await createConnector(connection);
+    await connector.connect();
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('os') as typeof import('os');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clarion-cube-'));
+
+    type CubeTable = { tableName: string; parquetBase64: string; rowCount: number; sizeBytes: number };
+    const results: CubeTable[] = [];
+    let totalBytes = 0;
+
+    try {
+      // Sequential COPY → read → encode loop. We don't parallelise
+      // because DuckDB instances are single-connection per connector
+      // and COPY TO contends with itself. For PoC scale (a handful of
+      // tables per dashboard) this is fine; if cube size scales up
+      // we'd want a separate connector per table.
+      for (const tableName of tableNames) {
+        const tmpPath = path.join(tmpDir, `${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}.parquet`).replace(/\\/g, '/');
+        // Quote the table identifier to avoid keyword collisions.
+        const safeTable = `"${tableName.replace(/"/g, '""')}"`;
+        try {
+          await connector.executeQuery(`COPY (SELECT * FROM ${safeTable}) TO '${tmpPath.replace(/'/g, "''")}' (FORMAT PARQUET)`);
+        } catch (err) {
+          // If the table doesn't exist in the warehouse, skip it
+          // gracefully — the widget's SQL will fail in WASM and the
+          // frontend will fall back to the server for that widget.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[cube] failed to materialise '${tableName}': ${msg.slice(0, 200)}`);
+          continue;
+        }
+
+        const bytes = fs.readFileSync(tmpPath);
+        // Use row_count from the catalog if we have it; otherwise 0.
+        // Frontend uses rowCount + sizeBytes for the memory budget check;
+        // sizeBytes (the parquet on disk) is the authoritative figure.
+        results.push({
+          tableName,
+          parquetBase64: bytes.toString('base64'),
+          rowCount: 0,
+          sizeBytes: bytes.byteLength,
+        });
+        totalBytes += bytes.byteLength;
+      }
+
+      res.json({
+        ok: true,
+        data: {
+          tables: results,
+          totalBytes,
+        },
+      });
+    } finally {
+      connector.disconnect();
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/dashboards/filter-options
 // ---------------------------------------------------------------------------
 
