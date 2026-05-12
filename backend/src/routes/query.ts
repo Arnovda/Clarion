@@ -1,8 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
 import Database from 'better-sqlite3';
+import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { notifyAdmins } from '../services/notificationService';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
@@ -139,11 +141,12 @@ function buildColumnDisambiguationWarning(
 // Conversation history loader — fetches the last N messages for follow-up context
 // ---------------------------------------------------------------------------
 async function loadConversationHistory(
+  db: Knex | Knex.Transaction,
   conversationId: number,
   limit = 5,
 ): Promise<Array<{ role: string; content: string }>> {
   try {
-    const rows = await semanticDb('conversation_messages')
+    const rows = await db('conversation_messages')
       .where({ conversation_id: conversationId })
       .orderBy('created_at', 'desc')
       .limit(limit)
@@ -189,16 +192,22 @@ async function loadConversationHistory(
 
 // Dedup-or-increment gap: if a similar unresolved gap exists (keyword overlap),
 // bump its hit_count instead of creating a duplicate.
-async function upsertDefinitionGap(queryLogId: number, description: string, question: string, tenantId?: number): Promise<void> {
+async function upsertDefinitionGap(
+  db: Knex | Knex.Transaction,
+  queryLogId: number,
+  description: string,
+  question: string,
+  tenantId?: number,
+): Promise<void> {
   const words = question.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
   if (words.length > 0) {
-    const existing = await semanticDb('definition_gaps').where({ resolved: false });
+    const existing = await db('definition_gaps').where({ resolved: false });
     for (const gap of existing) {
       const gapWords = (gap.gap_description as string).toLowerCase();
       const overlap = words.filter((w) => gapWords.includes(w));
       if (overlap.length >= 2) {
-        await semanticDb('definition_gaps').where({ id: gap.id }).update({
-          hit_count: semanticDb.raw('hit_count + 1'),
+        await db('definition_gaps').where({ id: gap.id }).update({
+          hit_count: db.raw('hit_count + 1'),
           last_hit_at: new Date().toISOString(),
         });
         return;
@@ -208,7 +217,7 @@ async function upsertDefinitionGap(queryLogId: number, description: string, ques
   // tenant_id has a Postgres default that reads from current_setting('app.current_tenant'),
   // but pooled connections sometimes route the INSERT to a connection without that GUC,
   // producing a NOT NULL violation. Pass it explicitly when the caller knows it.
-  await semanticDb('definition_gaps').insert({
+  await db('definition_gaps').insert({
     ...(tenantId != null ? { tenant_id: tenantId } : {}),
     query_log_id: queryLogId,
     gap_description: description,
@@ -220,6 +229,7 @@ async function upsertDefinitionGap(queryLogId: number, description: string, ques
 // POST /api/query
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, question, domains, conversationId, dataLayer: requestedLayer } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
@@ -232,7 +242,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId
-      ? await loadConversationHistory(conversationId)
+      ? await loadConversationHistory(db, conversationId)
       : undefined;
 
     // 0. Resolve data layer. Default = product (when one exists). Explicit
@@ -251,7 +261,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     if (layer === 'product' && productCtx && productWarehouse) {
       // ── PRODUCT LAYER QUERY PATH ──────────────────────────────────────
-      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connection = await db('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb'; // product layer always uses DuckDB
 
       // Skip the Claude round-trip if the same question against an
@@ -291,7 +301,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       // interpretation. Return the ambiguity + options for the frontend
       // to render as clickable chips. No SQL execution.
       if (nlResult.intent === 'clarify') {
-        await semanticDb('query_log').insert({
+        await db('query_log').insert({
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -304,7 +314,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       }
 
       if (nlResult.intent === 'explain' && nlResult.explanation) {
-        await semanticDb('query_log').insert({
+        await db('query_log').insert({
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -324,7 +334,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       }
 
       const blockCheck = shouldBlockQuery(nlResult);
-      const [logRow] = await semanticDb('query_log')
+      const [logRow] = await db('query_log')
         .insert({
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
@@ -338,7 +348,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
       if (blockCheck.blocked) {
-        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, tenantId);
+        await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, tenantId);
         res.json({
           ok: true,
           data: {
@@ -377,7 +387,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         validateQueryResultIfNeeded(nlResult.confidence, question, productExecSql, execRows),
       ]);
 
-      await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+      await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
       res.json({
         ok: true,
@@ -492,26 +502,26 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // Latest profile per table (one row per table — highest id = most recent)
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
-      ? await semanticDb('dataset_profiles')
+      ? await db('dataset_profiles')
           .where({ connection_id: connectionId })
           .whereIn('table_name', tableNames)
           .orderBy('id', 'desc')
           // Keep only the latest per table_name
-          .select(semanticDb.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
+          .select(db.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
           .catch(() => []) // gracefully skip if profiling hasn't run
       : [];
 
     const profileIds = latestProfiles.map((p) => p.id);
 
     const fieldProfiles: (FieldProfile & { profile_id: number })[] = profileIds.length
-      ? await semanticDb('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      ? await db('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
       : [];
 
     // Active quality rules with their most recent execution result
     const qualityRules: QualityRule[] = tableNames.length
-      ? await semanticDb('quality_rules as qr')
+      ? await db('quality_rules as qr')
           .leftJoin(
-            semanticDb('rule_executions').select('rule_id').max('id as latest_exec_id').groupBy('rule_id').as('le'),
+            db('rule_executions').select('rule_id').max('id as latest_exec_id').groupBy('rule_id').as('le'),
             'le.rule_id', 'qr.id',
           )
           .leftJoin('rule_executions as re', 're.id', 'le.latest_exec_id')
@@ -608,7 +618,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     if (tableIds.length) {
       // Find all cross-view relationships where at least one side belongs to this connection
-      const crossRels: CrossRel[] = await semanticDb('cross_view_relationships as r')
+      const crossRels: CrossRel[] = await db('cross_view_relationships as r')
         .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
         .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
         .leftJoin('source_tables  as ft', 'r.from_table_id',  'ft.id')
@@ -641,7 +651,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
           ...crossRels.map((r) => r.to_table),
         ])];
 
-        const xTables: XTable[] = await semanticDb('source_tables as st')
+        const xTables: XTable[] = await db('source_tables as st')
           .join('connections as c', 'st.connection_id', 'c.id')
           .whereIn('st.connection_id', relatedConnIds)
           .whereIn('st.table_name',    relatedTableNames)
@@ -667,12 +677,12 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         // Load columns for all cross-source tables
         const xTableIds = xTables.map((t) => t.table_id);
         const xCols: XCol[] = xTableIds.length
-          ? await semanticDb('source_columns').whereIn('table_id', xTableIds)
+          ? await db('source_columns').whereIn('table_id', xTableIds)
           : [];
 
         // Build enriched semantic context — primary tables + cross-source tables, all aliased
         const primaryAlias = crossConnAliasMap.get(connectionId)?.alias ?? sanitizeAlias(
-          (await semanticDb('connections').where({ id: connectionId }).first())?.name ?? 'primary',
+          (await db('connections').where({ id: connectionId }).first())?.name ?? 'primary',
         );
 
         // Re-build primary tables with alias prefix
@@ -730,7 +740,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 2. Generate SQL + confidence (Call Type 2a)
     //    Use cross-source SQL generator when integration context is present.
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     const dialect = getDialect(connection);
 
     // Check the NL→SQL cache first (source-layer, same-tenant, same context).
@@ -770,7 +780,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // Meta-question short-circuit (source layer).
     if (nlResult.intent === 'clarify') {
-      await semanticDb('query_log').insert({
+      await db('query_log').insert({
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
@@ -783,7 +793,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     }
 
     if (nlResult.intent === 'explain' && nlResult.explanation) {
-      await semanticDb('query_log').insert({
+      await db('query_log').insert({
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
@@ -804,7 +814,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 3. Log the query regardless of outcome
     const blockCheck = shouldBlockQuery(nlResult);
-    const [logRow] = await semanticDb('query_log')
+    const [logRow] = await db('query_log')
       .insert({
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
@@ -819,7 +829,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // 4. Block low-confidence queries (overall < 0.7 OR any sub-score < 0.5)
     if (blockCheck.blocked) {
-      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, tenantId);
+      await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, tenantId);
       // Notify admins about the new gap
       if (req.user?.tenantId) {
         notifyAdmins(req.user.tenantId, 'new_gap', 'New definition gap', {
@@ -1022,7 +1032,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     ]);
 
     // 8. Update query log as executed
-    await semanticDb('query_log').where({ id: queryLogId }).update({
+    await db('query_log').where({ id: queryLogId }).update({
       executed:       true,
       result_summary: answer,
     });
@@ -1083,6 +1093,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
   };
 
   try {
+    const db = reqDb(req);
     const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
@@ -1096,7 +1107,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId
-      ? await loadConversationHistory(conversationId)
+      ? await loadConversationHistory(db, conversationId)
       : undefined;
 
     // ── 0. Resolve data layer (default = product when available) ───────────
@@ -1115,7 +1126,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     if (thinkLayer === 'product' && thinkProductCtx && thinkProductWarehouse) {
       // ── PRODUCT LAYER STREAMING PATH ──────────────────────────────────
-      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connection = await db('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb';
 
       emit({ type: 'phase', text: 'Reasoning about your question (star schema)…' });
@@ -1128,7 +1139,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
       // Meta-question short-circuit (product layer). Skip SQL execution.
       if (nlResult.intent === 'clarify') {
-        await semanticDb('query_log').insert({
+        await db('query_log').insert({
           tenant_id:        thinkTenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -1143,7 +1154,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       }
 
       if (nlResult.intent === 'explain' && nlResult.explanation) {
-        await semanticDb('query_log').insert({
+        await db('query_log').insert({
           tenant_id:        thinkTenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -1171,7 +1182,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
 
       const thinkBlockCheck = shouldBlockQuery(nlResult);
-      const [logRow] = await semanticDb('query_log').insert({
+      const [logRow] = await db('query_log').insert({
         tenant_id: thinkTenantId,
         user_id: req.user!.sub, question_text: question, generated_sql: nlResult.sql,
         confidence_score: nlResult.confidence, was_flagged: thinkBlockCheck.blocked,
@@ -1180,7 +1191,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       const queryLogId: number = typeof logRow === 'object' ? (logRow as { id: number }).id : (logRow as number);
 
       if (thinkBlockCheck.blocked) {
-        await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
+        await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
         emit({ type: 'done', data: {
           answer: blockedUserMessage(nlResult), confidence: nlResult.confidence,
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
@@ -1207,7 +1218,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         formatAnswer(question, queryRows),
         validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryRows),
       ]);
-      await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+      await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
       emit({ type: 'done', data: {
         answer, confidence: nlResult.confidence,
@@ -1287,16 +1298,16 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 2b. Quality hints ────────────────────────────────────────────────────
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
-      ? await semanticDb('dataset_profiles')
+      ? await db('dataset_profiles')
           .where({ connection_id: connectionId })
           .whereIn('table_name', tableNames)
           .orderBy('id', 'desc')
-          .select(semanticDb.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
+          .select(db.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
           .catch(() => [])
       : [];
     const profileIds = latestProfiles.map((p) => p.id);
     const fieldProfiles: ({ profile_id: number; field_name: string; null_pct: number; distinct_count: number; min_value: string | null; max_value: string | null; mean_value: number | null; top_values: { value: unknown; pct: number }[] | null })[] = profileIds.length
-      ? await semanticDb('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      ? await db('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
       : [];
 
     const qualityHints = latestProfiles.map((prof) => {
@@ -1328,7 +1339,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // ── 3. Stream SQL generation with extended thinking ─────────────────────
     emit({ type: 'phase', text: 'Reasoning about your question…' });
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     const dialect = getDialect(connection);
 
     const nlResult = await generateSqlStreaming(
@@ -1344,7 +1355,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // emit the plain-language explanation as the final answer. This requires
     // conversation history to be loaded — which we already do above.
     if (nlResult.intent === 'clarify') {
-      await semanticDb('query_log').insert({
+      await db('query_log').insert({
         tenant_id:        thinkTenantId,
         user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
         question_text:    question,
@@ -1359,7 +1370,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     }
 
     if (nlResult.intent === 'explain' && nlResult.explanation) {
-      await semanticDb('query_log').insert({
+      await db('query_log').insert({
         tenant_id:        thinkTenantId,
         user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
         question_text:    question,
@@ -1388,7 +1399,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 4. Log ──────────────────────────────────────────────────────────────
     const thinkBlockCheck = shouldBlockQuery(nlResult);
-    const [logRow] = await semanticDb('query_log').insert({
+    const [logRow] = await db('query_log').insert({
       tenant_id:        thinkTenantId,
       user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
       question_text:    question,
@@ -1401,7 +1412,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 5. Block low-confidence (overall < 0.7 OR any sub-score < 0.5) ────
     if (thinkBlockCheck.blocked) {
-      await upsertDefinitionGap(queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
+      await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
       emit({ type: 'done', data: {
         answer: blockedUserMessage(nlResult),
         confidence: nlResult.confidence,
@@ -1497,7 +1508,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryResult.rows),
     ]);
 
-    await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+    await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
     emit({ type: 'done', data: {
       answer, confidence: nlResult.confidence,
@@ -1552,6 +1563,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
   let sqliteConnector: import('../connectors/BaseConnector').BaseConnector | null = null;
 
   try {
+    const db = reqDb(req);
     const {
       connectionId, question, originalSql, originalRows, warning,
       conversationHistory, clarificationAnswer,
@@ -1592,10 +1604,10 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
       relationshipContext = repairProductCtx.relationshipContext;
     } else {
       // ── Source-layer context (legacy path) ──
-      const tables = await semanticDb('source_tables')
+      const tables = await db('source_tables')
         .where({ connection_id: connectionId, is_active: true });
 
-      const columns = await semanticDb('source_columns')
+      const columns = await db('source_columns')
         .join('source_tables', 'source_columns.table_id', 'source_tables.id')
         .where('source_tables.connection_id', connectionId)
         .where('source_tables.is_active', true)
@@ -1603,7 +1615,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
       const tableIds = tables.map((t: { id: number }) => t.id);
       const relationships = tableIds.length
-        ? await semanticDb('table_relationships')
+        ? await db('table_relationships')
             .leftJoin('source_columns as fc', 'table_relationships.from_column_id', 'fc.id')
             .leftJoin('source_columns as tc', 'table_relationships.to_column_id', 'tc.id')
             .leftJoin('source_tables  as ft', 'table_relationships.from_table_id', 'ft.id')
@@ -1640,7 +1652,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     }
 
     // ── Connection + connector for diagnostics — match the layer ──
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     sqliteConnector = repairLayer === 'product' && repairProductWarehouse
       ? await createProductConnector(repairProductWarehouse, connection.id, repairTenantId)
       : await createConnector(connection);
@@ -1777,6 +1789,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 router.post('/cross-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   let inMemDb: Database.Database | null = null;
   try {
+    const db = reqDb(req);
     const { viewId, question, conversationId } = req.body as { viewId: number; question: string; conversationId?: number };
 
     if (!question?.trim()) {
@@ -1786,11 +1799,11 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId
-      ? await loadConversationHistory(conversationId)
+      ? await loadConversationHistory(db, conversationId)
       : undefined;
 
     // 1. Load view tables with connection info
-    const viewTables = await semanticDb('cross_view_tables as vt')
+    const viewTables = await db('cross_view_tables as vt')
       .join('source_tables as st', 'vt.table_id', 'st.id')
       .join('connections as c', 'st.connection_id', 'c.id')
       .where('vt.view_id', viewId)
@@ -1825,10 +1838,10 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
     // 3. Load columns for all tables in the view
     const tableIds = (viewTables as { table_id: number }[]).map((t) => t.table_id);
-    const columns = await semanticDb('source_columns').whereIn('table_id', tableIds).orderBy('id');
+    const columns = await db('source_columns').whereIn('table_id', tableIds).orderBy('id');
 
     // 4. Load cross-view relationships with resolved names
-    const rawRels = await semanticDb('cross_view_relationships as r')
+    const rawRels = await db('cross_view_relationships as r')
       .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
       .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
       .leftJoin('source_tables  as ft', 'r.from_table_id',  'ft.id')
@@ -1875,7 +1888,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
     const nlResult = await generateCrossSourceSql(question, semanticContext, relationshipContext, 'No KPIs defined yet.', 'sqlite', conversationHistory);
 
     // 8. Log the query
-    const [logRow] = await semanticDb('query_log')
+    const [logRow] = await db('query_log')
       .insert({
         tenant_id:        req.user!.tenantId,
         user_id:          req.user!.sub,
@@ -1890,7 +1903,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
     // 9. Block low-confidence queries
     if (nlResult.confidence < 0.7) {
-      await upsertDefinitionGap(queryLogId, `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`, question, req.user!.tenantId);
+      await upsertDefinitionGap(db, queryLogId, `Cross-source low confidence (${nlResult.confidence}) for: "${question}"`, question, req.user!.tenantId);
       res.json({
         ok: true,
         data: {
@@ -1921,7 +1934,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
       validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, rows),
     ]);
 
-    await semanticDb('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+    await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
     res.json({
       ok: true,
@@ -1960,6 +1973,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 
 router.post('/forecast', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, question, domains } = req.body as {
       connectionId: number; question: string; domains?: string[];
     };
@@ -2024,7 +2038,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
             .join('\n')
         : 'No KPIs defined yet.';
 
-      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connection = await db('connections').where({ id: connectionId }).first();
       dialect = getDialect(connection);
     }
 
@@ -2047,7 +2061,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
     let histRows: Record<string, unknown>[];
 
     if (productCtx && productWarehouse) {
-      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connection = await db('connections').where({ id: connectionId }).first();
       const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       try {
@@ -2057,7 +2071,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
         connector.disconnect();
       }
     } else {
-      const connection = await semanticDb('connections').where({ id: connectionId }).first();
+      const connection = await db('connections').where({ id: connectionId }).first();
       const connector = await createConnector(connection);
       await connector.connect();
       try {
@@ -2092,7 +2106,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
     const forecastResult = computeForecast(timeSeries, fcResult.forecastPeriods, fcResult.periodUnit);
 
     // 6. Log the query
-    await semanticDb('query_log').insert({
+    await db('query_log').insert({
       tenant_id:        req.user!.tenantId,
       user_id:          req.user!.sub,
       question_text:    question,
