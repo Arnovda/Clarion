@@ -122,6 +122,9 @@ export interface WidgetExecutionProps {
   isCrossFilterActive?: boolean;
   /** Human-readable label for the active drill-down value (shown in widget header) */
   drillLabel?: string;
+  /** When this widget is the cross-filter source, the clicked value
+   *  (used for Power-BI-style visual highlight — non-matching bars dim). */
+  crossFilterValue?: string;
   /** Called when the user clicks a KPI card to view the underlying records */
   onDrillDetail?: () => void;
   /** Right-click on a data point — opens the context menu at the click

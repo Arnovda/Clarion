@@ -192,10 +192,23 @@ export default function DashboardsPage() {
       // SSE-streamed batch execute. Each widget is emitted as soon as its
       // SQL resolves on the server, so a slow widget no longer holds back
       // fast ones. Final `done` event triggers the insights post-step.
+      //
+      // Phase 3: pass the active cross-filter as a structured param. The
+      // server uses injectCrossFilter() to add a deterministic AND clause
+      // to every non-source widget's SQL — no more dependency on the AI
+      // having embedded `{{xf_<key>}}` placeholders. Legacy filterValues
+      // entry is kept too so old saved dashboards still substitute.
       const body = JSON.stringify({
         connectionId: connId,
         widgets: widgetsPayload,
         ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+        ...(xFilter
+          ? { crossFilter: {
+              sourceWidgetId: xFilter.widgetId,
+              dimension: xFilter.key,
+              value: xFilter.value,
+            } }
+          : {}),
       });
       const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
       const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
@@ -1037,6 +1050,7 @@ export default function DashboardsPage() {
               onCrossFilter={hasCrossFilter ? onCF : undefined}
               isCrossFilterActive={isCrossFilterSource}
               drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
+              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
               onContextMenu={hasCrossFilter ? onCtx : undefined}
             />
           </WidgetCard>
@@ -1053,6 +1067,7 @@ export default function DashboardsPage() {
             <VerticalBarChartWidget
               {...widgetProps}
               onCrossFilter={hasCrossFilter ? onCF : undefined}
+              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
               onContextMenu={hasCrossFilter ? onCtx : undefined}
             />
           </WidgetCard>

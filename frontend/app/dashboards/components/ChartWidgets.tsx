@@ -31,7 +31,7 @@ const TICK = { fontSize: 11, fill: PALETTE.axisLabel };
 // ─── BarChartWidget (horizontal bars) ────────────────────────────────────────
 
 export function BarChartWidget({
-  spec, data, onCrossFilter, isCrossFilterActive, drillLabel, onContextMenu,
+  spec, data, onCrossFilter, isCrossFilterActive, drillLabel, crossFilterValue, onContextMenu,
 }: WidgetExecutionProps) {
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
@@ -72,9 +72,20 @@ export function BarChartWidget({
               if (label) onContextMenu(e, label);
             }) as unknown as (data: unknown) => void : undefined}
           >
-            {chartData.map((_, i) => (
-              <Cell key={i} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
-            ))}
+            {chartData.map((row, i) => {
+              // Phase 3 visual feedback: when this widget is the source
+              // of the active cross-filter, the clicked bar stays bright;
+              // all others fade so the user immediately sees what's
+              // driving the rest of the dashboard.
+              const dimmed = crossFilterValue !== undefined && row.label !== crossFilterValue;
+              return (
+                <Cell
+                  key={i}
+                  fill={SERIES_COLORS[i % SERIES_COLORS.length]}
+                  opacity={dimmed ? 0.25 : 1}
+                />
+              );
+            })}
           </Bar>
         </BarChart>
       </ResponsiveContainer>
@@ -90,7 +101,7 @@ export function BarChartWidget({
 // ─── VerticalBarChartWidget ──────────────────────────────────────────────────
 
 export function VerticalBarChartWidget({
-  spec, data, onCrossFilter, onContextMenu,
+  spec, data, onCrossFilter, crossFilterValue, onContextMenu,
 }: WidgetExecutionProps) {
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
@@ -127,7 +138,18 @@ export function VerticalBarChartWidget({
             const label = String((entry as Record<string, unknown>).label ?? '');
             if (label) onContextMenu(e, label);
           }) as unknown as (data: unknown) => void : undefined}
-        />
+        >
+          {chartData.map((row, i) => {
+            const dimmed = crossFilterValue !== undefined && row.label !== crossFilterValue;
+            return (
+              <Cell
+                key={i}
+                fill={SERIES_COLORS[0]}
+                opacity={dimmed ? 0.25 : 1}
+              />
+            );
+          })}
+        </Bar>
         {hasTarget && (
           <Line type="monotone" dataKey="target" stroke={PALETTE.axisLabel} strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
         )}

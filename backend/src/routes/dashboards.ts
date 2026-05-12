@@ -388,10 +388,11 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
 
 router.post('/batch-execute', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, widgets, dataLayer } = req.body as {
+    const { connectionId, widgets, dataLayer, crossFilter } = req.body as {
       connectionId: number;
       widgets: Array<{ id: string; sql: string; filterValues: Record<string, string> }>;
       dataLayer?: 'product' | 'source';
+      crossFilter?: { sourceWidgetId: string; dimension: string; value: string };
     };
 
     if (!Array.isArray(widgets) || widgets.length === 0) {
@@ -423,7 +424,15 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 
       await Promise.all(
         widgets.map(async ({ id, sql, filterValues }) => {
-          const resolvedSql = resolveWidgetFilters(sql, filterValues ?? {});
+          // Apply declarative cross-filter (Phase 3) to non-source
+          // widgets BEFORE filter-placeholder substitution. Source
+          // widget keeps its SQL untouched so the user can keep
+          // clicking to refilter.
+          let withXf = sql;
+          if (crossFilter && crossFilter.dimension && crossFilter.value !== undefined && id !== crossFilter.sourceWidgetId) {
+            withXf = injectCrossFilter(sql, crossFilter.dimension, String(crossFilter.value));
+          }
+          const resolvedSql = resolveWidgetFilters(withXf, filterValues ?? {});
 
           const cached = tenantId ? getWidgetCache(tenantId, resolvedSql) : null;
           if (cached) {
@@ -479,10 +488,16 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 
 router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { connectionId, widgets, dataLayer } = req.body as {
+    const { connectionId, widgets, dataLayer, crossFilter } = req.body as {
       connectionId: number;
       widgets: Array<{ id: string; sql: string; filterValues: Record<string, string> }>;
       dataLayer?: 'product' | 'source';
+      /** Declarative cross-filter — Phase 3. Server-side AND injection
+       *  into every non-source widget's SQL. Replaces the fragile
+       *  AI-embedded `{{xf_<key>}}` placeholder pattern. The legacy
+       *  placeholder substitution still runs (via resolveWidgetFilters)
+       *  so saved dashboards keep working. */
+      crossFilter?: { sourceWidgetId: string; dimension: string; value: string };
     };
 
     if (!Array.isArray(widgets) || widgets.length === 0) {
@@ -520,12 +535,21 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
       try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client disconnected */ }
     };
 
-    // Resolve each widget's SQL + cache lookup synchronously. Cache hits
-    // get flushed first so the user sees them within a tick.
-    const resolved = widgets.map(({ id, sql, filterValues }) => ({
-      id,
-      resolvedSql: resolveWidgetFilters(sql, filterValues ?? {}),
-    }));
+    // Resolve each widget's SQL: programmatic cross-filter injection
+    // (Phase 3) → filter placeholder substitution (legacy) → cache
+    // lookup. The injection is skipped for the SOURCE widget (the one
+    // the user clicked) so its chart keeps showing all bars and they
+    // can pick another or click again to clear.
+    const resolved = widgets.map(({ id, sql, filterValues }) => {
+      let sqlWithCrossFilter = sql;
+      if (crossFilter && crossFilter.dimension && crossFilter.value !== undefined && id !== crossFilter.sourceWidgetId) {
+        sqlWithCrossFilter = injectCrossFilter(sql, crossFilter.dimension, String(crossFilter.value));
+      }
+      return {
+        id,
+        resolvedSql: resolveWidgetFilters(sqlWithCrossFilter, filterValues ?? {}),
+      };
+    });
 
     // Emit any cache hits IMMEDIATELY. Drop them from the to-fetch list.
     const remaining: Array<{ id: string; resolvedSql: string }> = [];
@@ -612,6 +636,74 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
 // ---------------------------------------------------------------------------
 
 const MAX_DRILL_ROWS = 1000;
+
+/**
+ * Inject an `AND <dimension> = '<value>'` clause into a widget's SQL so
+ * that aggregations are filtered by the clicked dimension value WITHOUT
+ * relying on AI-prompted placeholders. The widget's SELECT and GROUP BY
+ * stay intact — only the WHERE clause is modified.
+ *
+ * This is the Phase 3 "declarative cross-filter" plumbing. Previously
+ * the AI prompt had to remember to embed `{{xf_<key>}}` placeholders in
+ * each widget's WHERE — fragile because a forgotten placeholder meant
+ * that widget silently ignored cross-filters. Now we inject the clause
+ * deterministically server-side.
+ *
+ * Failure modes — returns the original SQL unchanged when:
+ *   - The widget's SQL starts with WITH (CTEs) and we can't safely
+ *     locate the top-level FROM.
+ *   - We can't find a FROM clause.
+ *   - The dimension name fails sanitisation.
+ *
+ * When the injected column doesn't exist in the widget's FROM chain the
+ * SQL itself will fail at execution; the caller's per-widget error
+ * handler renders a friendly message instead of crashing the dashboard.
+ */
+export function injectCrossFilter(
+  widgetSql: string,
+  dimension: string,
+  value: string,
+): string {
+  if (!widgetSql || !dimension) return widgetSql;
+  if (/^\s*WITH\s+/i.test(widgetSql)) return widgetSql;
+
+  const fromMatch = widgetSql.match(/\bFROM\b/i);
+  if (!fromMatch || fromMatch.index == null) return widgetSql;
+
+  const safeKey = dimension.replace(/[^a-zA-Z0-9_."`\[\]]/g, '');
+  if (!safeKey) return widgetSql;
+  const escapedValue = String(value).replace(/'/g, "''");
+  const filterClause = `${safeKey} = '${escapedValue}'`;
+
+  // The boundary regex marks where the WHERE clause must end and any
+  // post-aggregation clauses begin. Anything before the boundary is in
+  // the FROM/WHERE region we want to augment.
+  const boundaryRe = /\s+(GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT)\b/i;
+  const whereRe = /\bWHERE\b/i;
+
+  const tail = widgetSql.slice(fromMatch.index);
+  const whereInTail = tail.match(whereRe);
+
+  if (whereInTail && whereInTail.index != null) {
+    // WHERE exists. Insert ` AND <clause>` just before the post-aggregation
+    // boundary (so the AND doesn't accidentally land inside an ORDER BY).
+    const boundaryInTail = tail.match(boundaryRe);
+    if (boundaryInTail && boundaryInTail.index != null) {
+      const splitPoint = fromMatch.index + boundaryInTail.index;
+      return widgetSql.slice(0, splitPoint) + ` AND ${filterClause}` + widgetSql.slice(splitPoint);
+    }
+    return widgetSql.trimEnd() + ` AND ${filterClause}`;
+  }
+
+  // No WHERE clause — add one. Same boundary logic so the WHERE is
+  // inserted between FROM-chain and any GROUP BY.
+  const boundaryInTail = tail.match(boundaryRe);
+  if (boundaryInTail && boundaryInTail.index != null) {
+    const splitPoint = fromMatch.index + boundaryInTail.index;
+    return widgetSql.slice(0, splitPoint) + ` WHERE ${filterClause}` + widgetSql.slice(splitPoint);
+  }
+  return widgetSql.trimEnd() + ` WHERE ${filterClause}`;
+}
 
 /**
  * Transform a widget's aggregating SQL into a "show all source rows
