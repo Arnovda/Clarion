@@ -172,6 +172,7 @@ import {
 } from '../services/aiBudget';
 import { logAiCall } from '../services/aiCallLogger';
 import { getGlossaryPromptBlock } from '../services/glossaryContext';
+import { pickBackend, callAzureBackend, type AiCallKind } from '../services/ai/router';
 
 /**
  * Load the tenant-wide business glossary block for inclusion in AI prompts.
@@ -258,6 +259,16 @@ interface CallClaudeOptions {
    * starters) where variety is desirable.
    */
   temperature?: number;
+  /**
+   * Privacy classification of the prompt. Drives the tenant-level
+   * Claude/Hybrid/Azure routing toggle. Defaults to 'schema' (safe
+   * for any backend). Set to 'row' for any call that includes
+   * customer row data in the prompt — insights, narration, format
+   * answer, explain widget, schema sample values, investigation
+   * step summaries, etc. In 'hybrid' mode those route to Azure
+   * Foundry; everything else stays on Claude.
+   */
+  kind?: AiCallKind;
 }
 
 async function callClaude(
@@ -283,6 +294,50 @@ async function callClaude(
 
   // Per-tenant budget gate (throws AiBudgetExceededError if capped).
   const tenantId = await enforceAiBudget(callLabel);
+
+  // ── AI backend router (Phase B.1) ──────────────────────────────────────
+  // Tenant-level Claude/Hybrid/Azure toggle. If the tenant has opted
+  // into Azure for this call's `kind`, route to Foundry. On ANY Azure
+  // failure (network, 5xx, malformed response) we silently fall back
+  // to the Claude path below — never let a misconfigured Foundry break
+  // the user-facing AI.
+  const callKind: AiCallKind = opts.kind ?? 'schema';
+  const backend = await pickBackend({ kind: callKind, tenantId: tenantId ?? undefined });
+  if (backend === 'azure') {
+    const azureStart = Date.now();
+    try {
+      const result = await callAzureBackend({
+        kind:         callKind,
+        tenantId:     tenantId ?? undefined,
+        systemPrompt,
+        userPrompt,
+        maxTokens,
+        temperature:  opts.temperature,
+      });
+      const durationMs = Date.now() - azureStart;
+      const props = { callLabel, model: 'azure-foundry', attempt: '1' };
+      trackMetric('ai_call_duration_ms', durationMs, props);
+      trackMetric('ai_input_tokens',     result.inputTokens,  props);
+      trackMetric('ai_output_tokens',    result.outputTokens, props);
+      trackMetric('ai_total_tokens',     result.inputTokens + result.outputTokens, props);
+      logger.info({ callLabel, backend: 'azure', durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via Azure');
+      if (tenantId) recordTenantAiUsage(tenantId, result.inputTokens, result.outputTokens).catch(() => { /* noop */ });
+      logAiCall({
+        callLabel: callLabel!,
+        model: 'azure-foundry',
+        inputTokens:  result.inputTokens,
+        outputTokens: result.outputTokens,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        durationMs,
+      });
+      return result.text;
+    } catch (err) {
+      // Fall through to the Claude path below. The router already
+      // logged the failure with context.
+      logger.warn({ callLabel, err: err instanceof Error ? err.message : String(err) }, 'azure backend failed; falling back to Claude');
+    }
+  }
 
   const start = Date.now();
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -664,7 +719,7 @@ async function draftOneBatch(
   const raw = await callClaude(
     SCHEMA_DRAFT_SYSTEM,
     buildSchemaDraftUser(sourceType, batch, batchStats, fkCandidates, glossary),
-    { maxTokens: 16000, cacheSystem: true },
+    { maxTokens: 16000, cacheSystem: true, kind: 'row' },
   );
   try {
     return parseJson<SchemaDraftOutput>(raw);
@@ -760,7 +815,7 @@ export async function generateColumnDescriptions(
       const raw = await callClaude(
         COLUMN_DESCRIPTIONS_SYSTEM,
         buildColumnDescriptionsUser(sourceSystem, tableContext, batch, batchStats, glossary),
-        { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions' },
+        { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions', kind: 'row' },
       );
       const part = parseJson<ColumnDescriptionsOutput>(raw);
       merged.columns.push(...part.columns);
@@ -779,7 +834,7 @@ export async function generateColumnDescriptions(
           const raw = await callClaude(
             COLUMN_DESCRIPTIONS_SYSTEM,
             buildColumnDescriptionsUser(sourceSystem, tableContext, sub, sub2Stats, glossary),
-            { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions' },
+            { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions', kind: 'row' },
           );
           const part = parseJson<ColumnDescriptionsOutput>(raw);
           merged.columns.push(...part.columns);
@@ -859,7 +914,7 @@ Which unmatched columns are business keys to which dimension columns?`;
   console.log(`[FK AI] Asking Claude to match ${unmatchedColumns.length} unmatched key column(s) against ${dimensionTables.length} dimension table(s)…`);
   try {
     // temperature 0: same unmatched columns + dimension tables → same FK suggestions.
-    const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, { maxTokens: 4096, temperature: 0 });
+    const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, { maxTokens: 4096, temperature: 0, kind: 'row' });
     const result = parseJson<{ suggestions: AiFkSuggestion[] }>(raw);
     console.log(`[FK AI] Claude suggested ${result.suggestions.length} match(es):`);
     for (const s of result.suggestions) {
@@ -1027,7 +1082,7 @@ export async function validateQueryResult(
       RESULT_VALIDATION_SYSTEM,
       buildResultValidationUser(question, sql, rows, rows.length),
       // temperature 0: validator should give the same verdict on the same evidence.
-      { model: MODEL_HAIKU, cacheSystem: true, temperature: 0 },
+      { model: MODEL_HAIKU, cacheSystem: true, temperature: 0, kind: 'row' },
     );
     return parseJson<ResultValidationOutput>(raw);
   } catch {
@@ -1195,7 +1250,7 @@ export async function formatAnswer(
   return callClaude(
     ANSWER_FORMAT_SYSTEM,
     buildAnswerFormatUser(question, rows),
-    { model: MODEL_HAIKU, cacheSystem: true },
+    { model: MODEL_HAIKU, cacheSystem: true, kind: 'row' },
   );
 }
 
@@ -1211,6 +1266,7 @@ export async function generateReportNarrative(
   return callClaude(
     REPORT_NARRATIVE_SYSTEM,
     buildReportNarrativeUser(title, period, kpiResults),
+    { kind: 'row' },
   );
 }
 
@@ -1310,7 +1366,7 @@ export async function checkWidgetSemantics(
       SEMANTIC_CHECK_SYSTEM,
       buildSemanticCheckUser(title, chartType, sampleRows),
       // temperature 0: same title + sample → same verdict.
-      { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'widget_semantic_check', temperature: 0 },
+      { model: MODEL_HAIKU, maxTokens: 120, callLabel: 'widget_semantic_check', temperature: 0, kind: 'row' },
     );
     const parsed = parseJson<{ ok: boolean; issue?: string }>(raw);
     return parsed.ok ? null : (parsed.issue ?? 'Data does not match the title.');
@@ -1711,7 +1767,7 @@ export async function investigatePlanNext(
     // investigation. Without caching, the ~2K-token system prompt is paid
     // fresh on every PLAN_NEXT call. With caching, turns 2–6 read it at 10×
     // discount → ~40% drop on Investigate cost.
-    { model: MODEL, maxTokens: 800, callLabel: 'investigate_plan_next', cacheSystem: true },
+    { model: MODEL, maxTokens: 800, callLabel: 'investigate_plan_next', cacheSystem: true, kind: 'row' },
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   let parsed: unknown;
@@ -1734,7 +1790,7 @@ export async function investigateSummariseStep(opts: {
   const raw = await callClaude(
     AGENT_SUMMARISE_STEP_SYSTEM,
     buildAgentSummariseUser(opts),
-    { model: MODEL_HAIKU, maxTokens: 200, callLabel: 'investigate_summarise' },
+    { model: MODEL_HAIKU, maxTokens: 200, callLabel: 'investigate_summarise', kind: 'row' },
   );
   return raw.trim().replace(/^["']|["']$/g, '');
 }
@@ -1749,7 +1805,7 @@ export async function investigateConclude(
     // cacheSystem: same stable conclude-system prompt across every
     // investigation. Cheap win since the prompt is ≥1K tokens.
     // temperature 0: same evidence trail should produce the same conclusion.
-    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude', cacheSystem: true, temperature: 0 },
+    { model: MODEL, maxTokens: 600, callLabel: 'investigate_conclude', cacheSystem: true, temperature: 0, kind: 'row' },
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   try {
@@ -1777,7 +1833,7 @@ export async function composeMorningBrief(
     // tiny ($0.03/MTok) but still strictly cheaper than fresh input —
     // and the cron fires once per user per day, so cache hits on the
     // 2nd+ user re-use the same system prompt.
-    { model: MODEL_HAIKU, maxTokens: 1000, callLabel: 'morning_brief', cacheSystem: true },
+    { model: MODEL_HAIKU, maxTokens: 1000, callLabel: 'morning_brief', cacheSystem: true, kind: 'row' },
   );
 
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
@@ -2096,7 +2152,7 @@ export async function explainWidget(
   return callClaude(
     EXPLAIN_WIDGET_SYSTEM,
     buildExplainWidgetUser(title, chartType, rows),
-    { model: MODEL_HAIKU, maxTokens: 150, callLabel: 'explain_widget' },
+    { model: MODEL_HAIKU, maxTokens: 150, callLabel: 'explain_widget', kind: 'row' },
   );
 }
 
@@ -2161,7 +2217,7 @@ export async function planInvestigation(
     INVESTIGATE_PLAN_SYSTEM,
     buildInvestigatePlanUser(widgetTitle, widgetSql, widgetRows, question),
     // temperature 0: same widget context → same diagnostic plan.
-    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'investigate_plan', temperature: 0 },
+    { model: MODEL_HAIKU, maxTokens: 800, callLabel: 'investigate_plan', temperature: 0, kind: 'row' },
   );
   try {
     return parseJson<InvestigationPlan>(raw);
@@ -2178,7 +2234,7 @@ export async function synthesizeInvestigation(
   return callClaude(
     INVESTIGATE_SYNTHESIZE_SYSTEM,
     buildInvestigateSynthesizeUser(question, hypothesis, results),
-    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'investigate_synthesize' },
+    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'investigate_synthesize', kind: 'row' },
   );
 }
 
@@ -2193,7 +2249,7 @@ export async function narrateDashboard(
   const raw = await callClaude(
     NARRATE_SYSTEM,
     buildNarrateUser(dashboardTitle, widgets),
-    { maxTokens: 1200, callLabel: 'narrate_dashboard' },
+    { maxTokens: 1200, callLabel: 'narrate_dashboard', kind: 'row' },
   );
   try {
     return parseJson<NarrativeOutput>(raw);
@@ -2215,7 +2271,7 @@ export async function generateDashboardInsights(
   const raw = await callClaude(
     INSIGHTS_SYSTEM,
     buildInsightsUser(dashboardTitle, widgets),
-    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'dashboard_insights' },
+    { model: MODEL_HAIKU, maxTokens: 300, callLabel: 'dashboard_insights', kind: 'row' },
   );
   try {
     // Strip markdown code fences, then extract the outermost [...] array

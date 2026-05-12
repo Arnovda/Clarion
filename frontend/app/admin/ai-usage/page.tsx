@@ -21,7 +21,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   DollarSign, Activity, TrendingUp, TrendingDown, Users,
-  Loader2,
+  Loader2, Sparkles, AlertTriangle, Check,
 } from 'lucide-react';
 import api from '@/lib/api';
 import AppShell from '@/components/layout/AppShell';
@@ -206,6 +206,9 @@ function DashboardBody() {
           {/* KPIs */}
           <SummaryStrip summary={summary} />
 
+          {/* AI routing toggle */}
+          <RoutingPanel />
+
           {/* Trend chart */}
           <section className="bg-raised border border-line rounded-md p-5 mb-8">
             <header className="mb-4 flex items-baseline justify-between">
@@ -258,6 +261,159 @@ function DashboardBody() {
         </>
       )}
     </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// AI routing toggle — Claude Full / Hybrid / Azure Full
+// ───────────────────────────────────────────────────────────────────────────
+
+type RoutingMode = 'claude' | 'hybrid' | 'azure';
+
+const ROUTING_OPTIONS: Array<{
+  mode: RoutingMode;
+  title: string;
+  blurb: string;
+  detail: string;
+}> = [
+  {
+    mode: 'claude',
+    title: 'Claude Full',
+    blurb: 'Every AI call goes to Anthropic Claude.',
+    detail: 'Highest quality across NL→SQL, dashboards, insights. Row-touching calls (insights, narrations, answer formatting) send sample customer data to Anthropic.',
+  },
+  {
+    mode: 'hybrid',
+    title: 'Hybrid',
+    blurb: 'Row-touching AI runs on Azure; schema design stays on Claude.',
+    detail: 'Customer row data never leaves Azure. Schema-only work (NL→SQL, dashboard specs, transformations) still uses Claude for quality.',
+  },
+  {
+    mode: 'azure',
+    title: 'Azure Full',
+    blurb: 'Every AI call goes to Azure AI Foundry.',
+    detail: 'No customer data leaves Azure. Quality depends on the deployed model — expect some regressions versus Claude.',
+  },
+];
+
+function RoutingPanel() {
+  const [mode, setMode] = useState<RoutingMode | null>(null);
+  const [azureConfigured, setAzureConfigured] = useState<boolean>(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/admin/ai-routing');
+        if (cancelled) return;
+        setMode(res.data.data.mode as RoutingMode);
+        setAzureConfigured(!!res.data.data.azureConfigured);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load routing mode.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSelect = async (next: RoutingMode) => {
+    if (next === mode || saving) return;
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const res = await api.put('/admin/ai-routing', { mode: next });
+      setMode(res.data.data.mode as RoutingMode);
+      setAzureConfigured(!!res.data.data.azureConfigured);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save routing mode.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="bg-raised border border-line rounded-md p-5 mb-8">
+      <header className="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
+            <h2 className="font-display text-[16px] font-medium text-ink">AI backend routing</h2>
+            {saved && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700">
+                <Check className="w-3 h-3" strokeWidth={2} />
+                Saved
+              </span>
+            )}
+          </div>
+          <p className="text-[12px] text-muted mt-0.5">
+            Choose which backend answers AI calls for this workspace. Changes take effect within 15 seconds.
+          </p>
+        </div>
+      </header>
+
+      {!azureConfigured && (
+        <div className="mb-4 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-md flex items-start gap-2.5">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-700 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+          <div className="text-[12px] text-ink leading-relaxed">
+            <span className="font-medium">Azure not configured.</span>{' '}
+            <span className="text-muted">
+              Set <code className="font-mono text-[11px]">AZURE_AI_ENDPOINT</code>, <code className="font-mono text-[11px]">AZURE_AI_API_KEY</code> and <code className="font-mono text-[11px]">AZURE_AI_DEPLOYMENT</code> on the backend. Until then, Hybrid and Azure Full silently fall back to Claude.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-4 px-3 py-2 bg-err-soft border border-line rounded-md text-[12px] text-ink">
+          {error}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="py-8 text-center text-muted text-[12.5px]">
+          <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-2" />
+          Loading…
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {ROUTING_OPTIONS.map((opt) => {
+            const selected = mode === opt.mode;
+            return (
+              <button
+                key={opt.mode}
+                type="button"
+                disabled={saving}
+                onClick={() => handleSelect(opt.mode)}
+                className={`text-left px-4 py-3.5 rounded-md border transition-all ${
+                  selected
+                    ? 'border-ocean bg-ocean/5 ring-1 ring-ocean'
+                    : 'border-line bg-bg hover:border-ocean/40'
+                } ${saving && !selected ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="font-display text-[14.5px] font-medium text-ink">{opt.title}</span>
+                  <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center ${
+                    selected ? 'border-ocean bg-ocean' : 'border-line'
+                  }`}>
+                    {selected && <span className="w-1 h-1 rounded-full bg-white" />}
+                  </span>
+                </div>
+                <p className="text-[12px] text-ink mb-2 leading-snug">{opt.blurb}</p>
+                <p className="text-[11.5px] text-muted leading-relaxed">{opt.detail}</p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
