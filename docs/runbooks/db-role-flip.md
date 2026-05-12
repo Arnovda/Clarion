@@ -159,22 +159,15 @@ scale-from-zero, ~5 seconds otherwise).
 
 ### 7. Update knex.ts to remove the "always admin in prod" override
 
-After verifying the flip works for at least 24 hours, simplify
-`backend/src/db/knex.ts`:
-
-```typescript
-// BEFORE:
-const useAppRole = process.env.NODE_ENV !== 'production';
-
-// AFTER:
-// The backend ALWAYS connects via the role bound to DATABASE_URL —
-// which is `databridge_app` (RLS-enforced) in all environments since
-// the May 2026 role flip. The legacy `useAppRole` toggle is gone.
-```
-
-Commit + redeploy. This makes the role separation invariant — no
-future developer can accidentally re-enable admin-role-in-prod via
-env var.
+**Pre-completed in code.** The `useAppRole` toggle has been removed
+from `backend/src/db/knex.ts`. The backend now connects via whatever
+role `DATABASE_URL` specifies — there is no longer a non-prod-only
+URL rewrite. Prod behaviour is unchanged until step 5 above is done
+(the env var still resolves to the admin role until you update Key
+Vault). Local dev's fallback default is now
+`postgresql://databridge_app:databridge@localhost:5432/databridge` —
+local devs running without an explicit `.env` get the unprivileged
+role automatically.
 
 ### 8. Update `docs/SECURITY.md`
 

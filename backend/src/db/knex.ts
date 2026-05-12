@@ -14,6 +14,17 @@ if (!process.env.VITEST) {
  * Row-Level Security policies are enforced. The superuser `databridge`
  * role is only used for migrations (via knexfile.ts).
  *
+ * The DATABASE_URL env var is the single source of truth — in every
+ * environment it should point at the `databridge_app` role with the
+ * appropriate password. See docs/runbooks/db-role-flip.md for the
+ * one-time production cutover (Key Vault env update + restart).
+ *
+ * Earlier, this file rewrote the URL to swap the role to
+ * `databridge_app` only in non-prod (NODE_ENV !== 'production'). That
+ * was a transition shim while prod still ran as the admin role.
+ * Removed now so the invariant "the backend always connects with
+ * least privilege" holds at the code level too.
+ *
  * NB: the Postgres role is named `databridge` for historical reasons
  * (the project was originally called DataBridge). The brand was renamed
  * to Clarion but the role + DB names + Docker volumes were kept to avoid
@@ -23,17 +34,11 @@ if (!process.env.VITEST) {
  * and RLS policies filter all queries to the authenticated tenant.
  */
 
-const baseUrl = process.env.DATABASE_URL ?? 'postgresql://databridge:databridge@localhost:5432/databridge';
-
-// In production (Azure), use the admin role directly — databridge_app role
-// is only created when RLS setup script runs. Locally, try app role if available.
-const useAppRole = process.env.NODE_ENV !== 'production';
-const connectionUrl = useAppRole
-  ? baseUrl.replace(/^postgresql:\/\/[^:]+:[^@]+@/, 'postgresql://databridge_app:databridge@')
-  : baseUrl;
+const connectionUrl = process.env.DATABASE_URL
+  ?? 'postgresql://databridge_app:databridge@localhost:5432/databridge';
 
 // Azure Postgres requires SSL
-const needsSsl = baseUrl.includes('azure.com') || baseUrl.includes('sslmode=require');
+const needsSsl = connectionUrl.includes('azure.com') || connectionUrl.includes('sslmode=require');
 
 export const semanticDb: Knex = knex({
   client: 'pg',
