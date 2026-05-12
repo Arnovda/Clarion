@@ -220,6 +220,64 @@ router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: 
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/users/audit — admin-action audit log (admin only)
+//
+// Query params: ?limit=50&offset=0&action=<filter>&entity_type=<filter>
+//
+// Returns the most recent audit_events for the tenant, joined with the
+// users table for actor display_name. Auto-RLS filters per tenant.
+// ---------------------------------------------------------------------------
+
+router.get('/audit', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 50, 1), 200);
+    const offsetRaw = Number(req.query.offset);
+    const offset = Math.max(Number.isFinite(offsetRaw) ? Math.floor(offsetRaw) : 0, 0);
+
+    const actionFilter = typeof req.query.action === 'string' ? req.query.action : null;
+    const entityTypeFilter = typeof req.query.entity_type === 'string' ? req.query.entity_type : null;
+
+    let query = semanticDb('audit_events as ae')
+      .leftJoin('users as u', 'u.id', 'ae.actor_user_id')
+      .orderBy('ae.created_at', 'desc')
+      .limit(limit)
+      .offset(offset)
+      .select(
+        'ae.id',
+        'ae.created_at',
+        'ae.action',
+        'ae.entity_type',
+        'ae.entity_id',
+        'ae.context',
+        'ae.ip',
+        'ae.actor_user_id',
+        'ae.actor_email',
+        'ae.actor_role',
+        'u.display_name as actor_display_name',
+      );
+
+    if (actionFilter) query = query.where('ae.action', 'like', `${actionFilter}%`);
+    if (entityTypeFilter) query = query.where('ae.entity_type', entityTypeFilter);
+
+    const rows = await query;
+
+    const [{ count }] = await semanticDb('audit_events')
+      .modify((qb) => {
+        if (actionFilter) qb.where('action', 'like', `${actionFilter}%`);
+        if (entityTypeFilter) qb.where('entity_type', entityTypeFilter);
+      })
+      .count<{ count: string }[]>('* as count');
+
+    res.json({
+      ok: true,
+      data: rows,
+      pagination: { limit, offset, total: Number(count) },
+    });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/users/profile — get own profile (any authenticated user)
 // ---------------------------------------------------------------------------
 router.get('/profile', async (req: Request, res: Response, next: NextFunction) => {

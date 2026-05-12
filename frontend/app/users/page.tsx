@@ -134,7 +134,11 @@ function UsersPageInner() {
   return (
     <AppShell
       contextPanel={contextPanel}
-      pills={[{ key: 'members', label: 'Members' }, { key: 'invites', label: 'Invites' }]}
+      pills={[
+        { key: 'members', label: 'Members' },
+        { key: 'invites', label: 'Invites' },
+        { key: 'audit',   label: 'Audit log' },
+      ]}
       activePill={activePill}
       onPillChange={setActivePill}
     >
@@ -237,7 +241,7 @@ function UsersPageInner() {
             </div>
           )}
         </div>
-      ) : (
+      ) : activePill === 'invites' ? (
         /* Invites pill */
         <div className="max-w-2xl mx-auto px-6 pt-10 pb-10">
           <header className="mb-6">
@@ -288,7 +292,9 @@ function UsersPageInner() {
             )}
           </div>
         </div>
-      )}
+      ) : activePill === 'audit' ? (
+        <AuditLogPanel />
+      ) : null}
     </AppShell>
   );
 }
@@ -296,6 +302,167 @@ function UsersPageInner() {
 function extractError(err: unknown): string {
   const e = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
   return e?.response?.data?.error ?? e?.response?.data?.message ?? e?.message ?? 'Please try again.';
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Audit log panel — shows admin-action history for the tenant.
+// Read-only. Filterable by action prefix / entity type. Pagination via
+// "load more" — most tenants won't have many events, so a simple list is
+// fine; a full table view can come if anyone asks.
+// ───────────────────────────────────────────────────────────────────────────
+
+interface AuditEvent {
+  id: number;
+  created_at: string;
+  action: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  context: Record<string, unknown> | null;
+  ip: string | null;
+  actor_user_id: number | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  actor_display_name: string | null;
+}
+
+function AuditLogPanel() {
+  const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [actionFilter, setActionFilter] = useState<string>('');
+
+  useEffect(() => { load(0, actionFilter, true); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [actionFilter]);
+
+  async function load(off: number, filter: string, replace: boolean) {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: '50', offset: String(off) });
+      if (filter) params.set('action', filter);
+      const res = await api.get(`/users/audit?${params.toString()}`);
+      const fresh = (res.data?.data ?? []) as AuditEvent[];
+      setTotal(res.data?.pagination?.total ?? 0);
+      setEvents(replace ? fresh : [...events, ...fresh]);
+      setOffset(off + fresh.length);
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto px-6 pt-10 pb-10 space-y-6">
+      <header>
+        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Security</p>
+        <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+          Audit log
+        </h1>
+        <p className="text-[13px] text-muted mt-1.5 leading-relaxed">
+          Every administrative action — user invites, role changes, connection edits,
+          product deletions, password changes. Append-only, scoped to your organisation.
+        </p>
+      </header>
+
+      {/* Action filter — prefix match. Common prefixes: user.*, connection.*, product.* */}
+      <div className="flex items-center gap-2 text-[12px]">
+        <span className="text-muted font-mono tracking-[0.08em] uppercase">Filter</span>
+        {(['', 'user', 'connection', 'product'] as const).map((f) => (
+          <button
+            key={f || 'all'}
+            type="button"
+            onClick={() => setActionFilter(f)}
+            className={`px-2.5 py-1 rounded-md border text-[11.5px] font-mono ${
+              actionFilter === f
+                ? 'border-ocean bg-ocean-softer text-ocean'
+                : 'border-line bg-raised text-muted hover:text-ink'
+            }`}
+          >
+            {f === '' ? 'All' : f}
+          </button>
+        ))}
+        <span className="ml-auto text-[11px] text-muted-2 font-mono tabular-nums">
+          {total} {total === 1 ? 'event' : 'events'}
+        </span>
+      </div>
+
+      {/* Event list */}
+      <div className="bg-raised border border-line rounded-lg overflow-hidden divide-y divide-line">
+        {events.length === 0 && !loading && (
+          <div className="px-5 py-12 text-center text-[13px] text-muted-2">
+            No audit events yet.
+          </div>
+        )}
+        {events.map((e) => (
+          <AuditEventRow key={e.id} event={e} />
+        ))}
+      </div>
+
+      {offset < total && (
+        <div className="text-center">
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => load(offset, actionFilter, false)}
+            className="px-4 py-2 text-[12px] font-medium text-muted hover:text-ink border border-line rounded-md hover:bg-soft disabled:opacity-50"
+          >
+            {loading ? 'Loading…' : `Load ${Math.min(50, total - offset)} more`}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditEventRow({ event }: { event: AuditEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const ts = new Date(event.created_at);
+  const tsLabel = ts.toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+  const actor = event.actor_display_name ?? event.actor_email ?? `User #${event.actor_user_id ?? '?'}`;
+
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className="w-full text-left px-5 py-3 hover:bg-softer/40 transition-colors"
+    >
+      <div className="flex items-center gap-3 text-[12.5px]">
+        <span className="font-mono text-ocean min-w-[180px]">{event.action}</span>
+        <span className="text-ink-2 truncate flex-1">
+          {actor}
+          {event.entity_type && event.entity_id && (
+            <span className="text-muted-2 ml-2 font-mono">
+              → {event.entity_type}#{event.entity_id}
+            </span>
+          )}
+        </span>
+        <span className="text-[11px] text-muted-2 font-mono tabular-nums whitespace-nowrap">
+          {tsLabel}
+        </span>
+      </div>
+      {expanded && (
+        <div className="mt-2.5 pl-3 border-l-2 border-ocean/30 text-[11.5px] space-y-1">
+          <div className="text-muted">
+            <span className="font-mono uppercase tracking-wider">Actor role:</span> {event.actor_role ?? '—'}
+          </div>
+          {event.ip && (
+            <div className="text-muted">
+              <span className="font-mono uppercase tracking-wider">IP:</span>{' '}
+              <code className="font-mono">{event.ip}</code>
+            </div>
+          )}
+          {event.context && (
+            <div className="text-muted">
+              <span className="font-mono uppercase tracking-wider">Context:</span>
+              <pre className="mt-1 px-3 py-2 bg-softer border border-line rounded text-[10.5px] font-mono text-ink-2 overflow-x-auto">
+                {JSON.stringify(event.context, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </button>
+  );
 }
 
 export default function UsersPage() {
