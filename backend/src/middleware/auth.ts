@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import type { Knex } from 'knex';
 import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
 import { withTenantAiContext } from '../services/aiBudget';
+import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
 // Re-export types for convenience
@@ -19,6 +21,16 @@ declare global {
   namespace Express {
     interface Request {
       user?: JwtPayload;
+      /**
+       * Per-request, tenant-scoped Knex transaction. Opened by requireAuth
+       * immediately after JWT verify; committed automatically when the
+       * response completes. Routes that adopt `req.dbTrx` instead of the
+       * global `semanticDb` are bulletproof against the connection-pool
+       * leak that affects session-level `SET app.current_tenant` (see
+       * security audit, May 2026). New / sensitive routes SHOULD use
+       * this; existing routes are migrated incrementally.
+       */
+      dbTrx?: Knex.Transaction;
     }
   }
 }
@@ -44,6 +56,21 @@ export async function verifyPassword(plain: string, hash: string): Promise<boole
 function getSecret(): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('JWT_SECRET not set');
+  // Fail loudly in production if the secret is the dev default OR
+  // obviously weak. Token forgery becomes trivial if the secret is
+  // shared with public examples.
+  if (process.env.NODE_ENV === 'production') {
+    const tooWeak = secret.length < 32
+      || secret === 'change_me_in_production'
+      || secret === 'changeme'
+      || /^(test|dev|local)/i.test(secret);
+    if (tooWeak) {
+      throw new Error(
+        'JWT_SECRET is too weak for production. ' +
+        'Provide a random ≥32-character secret via JWT_SECRET (or Key Vault).',
+      );
+    }
+  }
   return secret;
 }
 
@@ -84,32 +111,106 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
+  let payload: JwtPayload;
   try {
     const token = header.slice(7);
-    const payload = verifyToken(token);
+    payload = verifyToken(token);
     req.user = payload;
-
-    // Set Postgres RLS tenant context so queries are automatically filtered
-    if (payload.tenantId) {
-      // SET doesn't support parameterized queries in Postgres — Number() coercion prevents injection
-      await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
-    }
-
-    // Run the rest of the request in an AsyncLocalStorage scope carrying
-    // the tenantId + userId. AIService.callClaude reads this to (a) enforce
-    // the per-tenant monthly budget, (b) attribute the call to the right
-    // user in `ai_call_log` for the cost dashboard. Every async operation
-    // inside `next()` inherits the scope automatically.
-    if (payload.tenantId) {
-      withTenantAiContext(
-        { tenantId: payload.tenantId, userId: payload.sub ?? null },
-        async () => { next(); },
-      ).catch(next);
-    } else {
-      next();
-    }
   } catch {
     res.status(401).json({ ok: false, error: 'Invalid or expired token' });
+    return;
+  }
+
+  // Session-level SET on the pool. Existing routes that use the global
+  // `semanticDb` rely on this. It is racy under pool reuse (a connection
+  // returned from request A may be acquired by request B before B's SET
+  // runs). The PROPER fix is `req.dbTrx` below — but we keep this here
+  // during the migration period so unmigrated routes still see SOMETHING.
+  // SET doesn't support parameterized queries in Postgres — Number()
+  // coercion prevents injection.
+  if (payload.tenantId) {
+    try {
+      await semanticDb.raw(`SET app.current_tenant = '${Number(payload.tenantId)}'`);
+    } catch (err) {
+      logger.warn({ err }, 'failed to set session-level tenant context (non-fatal)');
+    }
+  }
+
+  // Open a request-scoped transaction with SET LOCAL. Every query that
+  // uses `req.dbTrx` is guaranteed to run with this tenant's context —
+  // immune to the connection-pool leak class of bug because a Knex
+  // transaction holds the same physical connection for its lifetime.
+  //
+  // The transaction commits when the response completes (res 'finish'
+  // or 'close'). On unexpected error before commit, it rolls back —
+  // this is read-mostly so rollback is safe.
+  //
+  // Cost: 1 dedicated pool connection held per in-flight request.
+  // Backend pool size needs to be ≥ peak concurrent requests. Tune
+  // `KNEX_POOL_MAX` if you see acquire timeouts at peak.
+  if (payload.tenantId) {
+    let resolvedDone = false;
+    const trxReady = new Promise<void>((resolveReady, rejectReady) => {
+      // We hold the transaction inside a knex.transaction() callback so
+      // it can't accidentally outlive its physical connection. The
+      // callback only resolves once res emits 'finish' or 'close'.
+      semanticDb.transaction(async (trx) => {
+        try {
+          await trx.raw(`SET LOCAL app.current_tenant = '${Number(payload.tenantId)}'`);
+        } catch (err) {
+          rejectReady(err);
+          return;
+        }
+        req.dbTrx = trx;
+        resolveReady();
+        // Block this callback until the response is fully sent —
+        // throwing causes Knex to rollback, returning causes commit.
+        await new Promise<void>((finishResolve, finishReject) => {
+          const onFinish = () => {
+            if (resolvedDone) return;
+            resolvedDone = true;
+            res.removeListener('close', onClose);
+            finishResolve();
+          };
+          const onClose = () => {
+            if (resolvedDone) return;
+            resolvedDone = true;
+            res.removeListener('finish', onFinish);
+            // Aborted / disconnected before finish — rollback by throwing.
+            finishReject(new Error('request_closed_before_finish'));
+          };
+          res.once('finish', onFinish);
+          res.once('close', onClose);
+        });
+      }).catch((err) => {
+        // Swallow the rollback marker; surface real errors as logger.warn.
+        if (err?.message !== 'request_closed_before_finish') {
+          logger.warn({ err }, 'tenant transaction rolled back unexpectedly');
+        }
+      });
+    });
+
+    try {
+      await trxReady;
+    } catch (err) {
+      logger.error({ err }, 'failed to open tenant transaction');
+      res.status(500).json({ ok: false, error: 'Internal server error' });
+      return;
+    }
+  }
+
+  // Run the rest of the request in an AsyncLocalStorage scope carrying
+  // the tenantId + userId. AIService.callClaude reads this to (a) enforce
+  // the per-tenant monthly budget, (b) attribute the call to the right
+  // user in `ai_call_log` for the cost dashboard. Every async operation
+  // inside `next()` inherits the scope automatically.
+  if (payload.tenantId) {
+    withTenantAiContext(
+      { tenantId: payload.tenantId, userId: payload.sub ?? null },
+      async () => { next(); },
+    ).catch(next);
+  } else {
+    next();
   }
 }
 

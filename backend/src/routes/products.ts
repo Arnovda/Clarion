@@ -7,6 +7,7 @@ import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productG
 import { refineProduct } from '../ai/AIService';
 import { isAzurePath, productSlug as toProductSlug } from '../services/warehouse';
 import { tenantQuery } from '../services/tenantQuery';
+import { recordAudit } from '../services/auditService';
 import type {
   ProductSummary,
   RefineChange,
@@ -1171,6 +1172,18 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 
     // Remove product graph from Neo4j
     deleteProductFromNeo4j(productId).catch(() => {});
+
+    await recordAudit(req, {
+      action:     'product.delete',
+      entityType: 'product',
+      entityId:   productId,
+      context: {
+        product_name:   product.name,
+        kind:           product.kind,
+        tables_deleted: tables.length,
+      },
+    });
+
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

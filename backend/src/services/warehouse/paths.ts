@@ -57,7 +57,12 @@ export function warehouseRoot(): string {
 export type WarehouseLayoutVersion = 'v1' | 'v2';
 
 export function warehouseLayoutVersion(): WarehouseLayoutVersion {
-  return process.env.WAREHOUSE_LAYOUT_VERSION === 'v2' ? 'v2' : 'v1';
+  // v2 is the default as of the May 2026 security hardening (tenant-prefixed
+  // paths eliminate cross-tenant collision risk for product warehouses).
+  // Set WAREHOUSE_LAYOUT_VERSION=v1 explicitly to opt back into the legacy
+  // non-prefixed layout — useful only when a deployment still has existing
+  // v1 directories that haven't yet been migrated.
+  return process.env.WAREHOUSE_LAYOUT_VERSION === 'v1' ? 'v1' : 'v2';
 }
 
 /**

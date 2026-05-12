@@ -261,9 +261,12 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
       // Fall through — we still respond with the generic message so we
       // don't leak whether SMTP is broken vs the account doesn't exist.
     }
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`[auth] Password reset token for ${normalizedEmail}: ${rawToken}`);
-      console.log(`[auth] Reset URL: ${resetUrl}`);
+    // Dev convenience: log the reset URL to stdout so a developer can
+    // grab it without running SMTP locally. Gated tightly on NODE_ENV
+    // === 'development' (NOT just != 'production') — staging logs are
+    // routinely searched by ops people, and a reset URL is a credential.
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[auth-dev] Password reset URL for ${normalizedEmail}: ${resetUrl}`);
     }
 
     res.json({ ok: true, data: { message: 'If an account exists, a reset link has been sent.' } });

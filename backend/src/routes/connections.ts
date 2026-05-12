@@ -8,6 +8,7 @@ import {
   ConfigValidationError,
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { recordAudit } from '../services/auditService';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
@@ -748,6 +749,17 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
     }
+
+    await recordAudit(req, {
+      action:     'connection.delete',
+      entityType: 'connection',
+      entityId:   id,
+      context: {
+        connection_name: conn?.name,
+        connector_type:  conn?.connector_type,
+        tables_deleted:  tableIds.length,
+      },
+    });
 
     res.json({ ok: true });
   } catch (err) {

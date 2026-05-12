@@ -119,8 +119,11 @@ resource "azurerm_postgresql_flexible_server" "main" {
   administrator_password        = var.pg_admin_password
   storage_mb                    = 32768
   sku_name                      = var.pg_sku
-  backup_retention_days         = 7
-  geo_redundant_backup_enabled  = false
+  # 14-day point-in-time recovery + geo-redundant backups to a paired
+  # Azure region. Survives a single-region Azure outage; minimum bar
+  # for SOC 2 / ISO 27001 customer expectations on data durability.
+  backup_retention_days         = 14
+  geo_redundant_backup_enabled  = true
   public_network_access_enabled = true
   tags                          = var.tags
 
@@ -162,8 +165,28 @@ resource "azurerm_storage_account" "warehouse" {
   resource_group_name      = azurerm_resource_group.main.name
   location                 = azurerm_resource_group.main.location
   account_tier             = "Standard"
-  account_replication_type = "LRS"
+  # GRS = geo-redundant storage. Data is asynchronously replicated to a
+  # paired Azure region. Survives a single-region outage. Slight cost
+  # increase (~2× LRS) but customer expectation for any production
+  # SaaS holding their data.
+  account_replication_type = "GRS"
   min_tls_version          = "TLS1_2"
+  # Disable shared-key access where possible; backend uses managed
+  # identity for blob ops. The Neo4j file share and a few legacy code
+  # paths still need shared key — leave enabled but track the gap.
+  # shared_access_key_enabled = false  # uncomment after migrating Neo4j to managed identity
+
+  # Soft-delete for blobs so an accidental delete is recoverable.
+  blob_properties {
+    delete_retention_policy {
+      days = 30
+    }
+    container_delete_retention_policy {
+      days = 30
+    }
+    versioning_enabled = true
+  }
+
   tags                     = var.tags
 }
 
@@ -189,8 +212,13 @@ resource "azurerm_key_vault" "main" {
   resource_group_name        = azurerm_resource_group.main.name
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
-  soft_delete_retention_days = 7
-  purge_protection_enabled   = false
+  # 90 days soft-delete + purge protection on. Auditors want a clear
+  # recovery window for accidentally-deleted secrets, and purge
+  # protection prevents a panicked operator from wiping the vault
+  # before someone can intervene. Once enabled, purge protection
+  # CANNOT be disabled on this vault.
+  soft_delete_retention_days = 90
+  purge_protection_enabled   = true
   tags                       = var.tags
 
   access_policy {

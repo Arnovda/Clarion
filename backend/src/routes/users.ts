@@ -17,6 +17,7 @@ import { semanticDb } from '../db/knex';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { inviteUserSchema } from '../middleware/schemas';
+import { recordAudit } from '../services/auditService';
 
 const router = Router();
 
@@ -89,10 +90,19 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
       })
       .returning(['id', 'email', 'display_name', 'role', 'is_active', 'created_at']);
 
-    // In production, send an email with the invite link
-    // For now, log the invite URL (includes reset token for setting password)
+    // Dev convenience: log the invite URL so a developer can grab it
+    // without SMTP. Production must have SMTP configured.
     const inviteUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/reset-password?token=${resetToken}&email=${encodeURIComponent(email.toLowerCase())}`;
-    console.log(`[invite] Invite link for ${email}: ${inviteUrl}`);
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[invite-dev] Invite URL for ${email}: ${inviteUrl}`);
+    }
+
+    await recordAudit(req, {
+      action:     'user.invite',
+      entityType: 'user',
+      entityId:   (user as { id: number }).id,
+      context:    { invited_email: email.toLowerCase(), role, display_name: displayName.trim() },
+    });
 
     res.json({
       ok: true,
@@ -120,6 +130,13 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
     if (role && ['admin', 'analyst', 'viewer'].includes(role)) update.role = role;
     if (displayName?.trim()) update.display_name = displayName.trim();
 
+    // Capture previous state for the audit row — surfacing 'role changed
+    // from analyst → admin' is more useful than just 'role changed'.
+    const before = await semanticDb('users')
+      .where({ id: userId })
+      .select('role', 'display_name')
+      .first();
+
     const count = await semanticDb('users').where({ id: userId }).update(update);
     if (count === 0) {
       res.status(404).json({ ok: false, error: 'User not found' });
@@ -130,6 +147,16 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
       .where({ id: userId })
       .select('id', 'email', 'display_name', 'role', 'is_active', 'created_at', 'updated_at')
       .first();
+
+    await recordAudit(req, {
+      action:     'user.update',
+      entityType: 'user',
+      entityId:   userId,
+      context: {
+        before: { role: before?.role, display_name: before?.display_name },
+        after:  { role: user?.role, display_name: user?.display_name },
+      },
+    });
 
     res.json({ ok: true, data: user });
   } catch (err) { next(err); }
@@ -156,6 +183,12 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
       return;
     }
 
+    await recordAudit(req, {
+      action:     'user.deactivate',
+      entityType: 'user',
+      entityId:   userId,
+    });
+
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -174,6 +207,12 @@ router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: 
       res.status(404).json({ ok: false, error: 'User not found' });
       return;
     }
+
+    await recordAudit(req, {
+      action:     'user.reactivate',
+      entityType: 'user',
+      entityId:   userId,
+    });
 
     res.json({ ok: true });
   } catch (err) { next(err); }

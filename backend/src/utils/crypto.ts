@@ -22,13 +22,32 @@ function getKey(): Buffer | null {
 }
 
 /**
+ * Production guard: refuse to encrypt-as-noop when the key is missing.
+ * In dev, returning plaintext is convenient (no key setup). In prod,
+ * silently storing connection credentials in plaintext is a real risk
+ * that wouldn't surface until someone reads the database — by which
+ * time the damage is done. Hard-fail at first write instead.
+ */
+function ensureKeyOrFail(operation: 'encrypt' | 'decrypt'): void {
+  if (process.env.NODE_ENV === 'production' && !getKey()) {
+    throw new Error(
+      `CREDENTIALS_ENCRYPTION_KEY is not set in production. ` +
+      `Refusing to ${operation} credentials. ` +
+      `Provide a random ≥32-byte key via the env var or Key Vault.`,
+    );
+  }
+}
+
+/**
  * Encrypt a plain-text string. Returns a base64-encoded string
  * containing iv + authTag + ciphertext.
  *
- * If CREDENTIALS_ENCRYPTION_KEY is not set, returns the input unchanged
- * (dev-mode passthrough).
+ * In development with CREDENTIALS_ENCRYPTION_KEY unset, returns the
+ * input unchanged (passthrough — convenient for local dev). In
+ * production, refuses to passthrough and throws.
  */
 export function encryptCredentials(plaintext: string): string {
+  ensureKeyOrFail('encrypt');
   const key = getKey();
   if (!key) return plaintext;
 

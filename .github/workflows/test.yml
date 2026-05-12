@@ -58,6 +58,13 @@ jobs:
         run: npm audit --audit-level=high
         continue-on-error: true  # frontend deps often have non-exploitable advisories
 
+      # Strict type-check gate so a broken build doesn't slip past PR review.
+      # tsconfig.build.json is what the prod Docker image compiles with —
+      # using it here catches issues that the looser dev tsconfig hides.
+      - name: Type-check backend (strict)
+        working-directory: backend
+        run: npx tsc --project tsconfig.build.json --noEmit
+
       - name: Run tests
         working-directory: backend
         run: npx vitest run
