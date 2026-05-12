@@ -21,6 +21,16 @@ import {
   revokeRefreshToken,
   revokeAllForUser,
 } from '../services/refreshTokenService';
+import jwt from 'jsonwebtoken';
+import {
+  setupMfa,
+  enableMfa,
+  verifyMfaCode,
+  disableMfa,
+  regenerateBackupCodes,
+  isMfaEnabled,
+} from '../services/mfaService';
+import { verifyPassword as verifyPasswordFn } from '../middleware/auth';
 
 const router = Router();
 
@@ -147,6 +157,28 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       return;
     }
 
+    // MFA gate — if the user has enrolled TOTP, we don't issue real
+    // tokens yet. Instead we return a short-lived "mfa challenge"
+    // token. The frontend prompts for the 6-digit code; POST to
+    // /auth/mfa/verify with the challenge token + code completes the
+    // login and issues real access + refresh tokens.
+    if (user.mfa_enabled_at) {
+      const mfaChallengeToken = jwt.sign(
+        {
+          purpose: 'mfa_challenge',
+          sub:     user.id,
+          tenant:  user.tenant_id,
+        },
+        getMfaChallengeSecret(),
+        { expiresIn: '5m' },
+      );
+      res.json({
+        ok: true,
+        data: { mfaRequired: true, mfaChallengeToken },
+      });
+      return;
+    }
+
     // Issue access + refresh tokens. The access token expires in 15min
     // (default); when the frontend gets a 401 on an expired access
     // token, it POSTs /auth/refresh with the refresh token to swap for
@@ -184,6 +216,18 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
     });
   } catch (err) { console.error('[auth/login] Error:', err); next(err); }
 });
+
+/**
+ * Helper — the secret used for the short-lived MFA challenge token.
+ * We use the same JWT_SECRET as for access tokens. The challenge token
+ * is purpose-tagged (`purpose: 'mfa_challenge'`) so we can distinguish
+ * it from a real access token at verification time.
+ */
+function getMfaChallengeSecret(): string {
+  const s = process.env.JWT_SECRET;
+  if (!s) throw new Error('JWT_SECRET not set');
+  return s;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/auth/me — Returns current user info
@@ -412,5 +456,237 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     res.json({ ok: true, data: { message: 'Password has been reset. You can now log in.' } });
   } catch (err) { next(err); }
 });
+
+// ===========================================================================
+// MFA (TOTP) endpoints
+// ===========================================================================
+
+interface MfaChallengePayload {
+  purpose: 'mfa_challenge';
+  sub: number;
+  tenant: number;
+}
+
+function verifyMfaChallenge(token: string): MfaChallengePayload {
+  const payload = jwt.verify(token, getMfaChallengeSecret()) as unknown as MfaChallengePayload;
+  if (payload?.purpose !== 'mfa_challenge') {
+    throw new Error('Invalid MFA challenge token');
+  }
+  return payload;
+}
+
+/**
+ * POST /api/auth/mfa/verify
+ * Body: { mfaChallengeToken, code }
+ *
+ * Completes a login when the user has MFA enabled. The challenge token
+ * was issued by /auth/login after a successful password check. On
+ * valid code: issues real access + refresh tokens (same shape as a
+ * non-MFA login response).
+ */
+router.post('/mfa/verify', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { mfaChallengeToken, code } = req.body as {
+      mfaChallengeToken?: string;
+      code?: string;
+    };
+    if (!mfaChallengeToken || !code) {
+      res.status(400).json({ ok: false, error: 'mfaChallengeToken and code are required' });
+      return;
+    }
+    let challenge: MfaChallengePayload;
+    try {
+      challenge = verifyMfaChallenge(mfaChallengeToken);
+    } catch {
+      res.status(401).json({ ok: false, error: 'Invalid or expired challenge token' });
+      return;
+    }
+
+    const ok = await verifyMfaCode(challenge.sub, code);
+    if (!ok) {
+      res.status(401).json({ ok: false, error: 'Invalid MFA code' });
+      return;
+    }
+
+    const user = await semanticDb('users')
+      .where({ id: challenge.sub, is_active: true })
+      .first();
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'User not found' });
+      return;
+    }
+
+    const token = signToken({
+      sub:         user.id,
+      tenantId:    user.tenant_id,
+      email:       user.email,
+      displayName: user.display_name,
+      role:        user.role,
+    });
+    const refresh = await createRefreshToken({
+      userId:      user.id,
+      tenantId:    user.tenant_id,
+      email:       user.email,
+      displayName: user.display_name,
+      role:        user.role,
+    }, req);
+
+    res.json({
+      ok: true,
+      data: {
+        token,
+        refreshToken: refresh.raw,
+        refreshExpiresAt: refresh.expiresAt.toISOString(),
+        user: {
+          id: user.id,
+          tenantId: user.tenant_id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+        },
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/auth/mfa/setup
+ * Auth: bearer token (user enrolling for the first time)
+ *
+ * Returns the TOTP secret + a QR-code data URL. User scans, then
+ * confirms via /mfa/enable with the first valid code.
+ */
+router.post('/mfa/setup', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user!.sub;
+    const email = req.user!.email;
+    const enrolment = await setupMfa(userId, email);
+    res.json({ ok: true, data: enrolment });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to start MFA setup';
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+/**
+ * POST /api/auth/mfa/enable
+ * Body: { code }
+ * Auth: bearer token
+ *
+ * Activates MFA. Returns 10 single-use backup codes. The frontend MUST
+ * display these to the user EXACTLY ONCE — they're never retrievable
+ * again, only regenerable (which invalidates the prior set).
+ */
+router.post('/mfa/enable', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { code } = req.body as { code?: string };
+    if (!code) {
+      res.status(400).json({ ok: false, error: 'code is required' });
+      return;
+    }
+    const result = await enableMfa(req.user!.sub, code);
+    // Audit the MFA enable as a security-significant action.
+    await recordAuditSafe(req, 'mfa.enable');
+    res.json({ ok: true, data: result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to enable MFA';
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+/**
+ * POST /api/auth/mfa/disable
+ * Body: { password, code? }
+ * Auth: bearer token
+ *
+ * Disables MFA. Requires password re-auth — otherwise an attacker who
+ * compromised a session could turn off MFA. If MFA is currently
+ * enforced for this user, also requires a current TOTP code.
+ */
+router.post('/mfa/disable', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { password, code } = req.body as { password?: string; code?: string };
+    if (!password) {
+      res.status(400).json({ ok: false, error: 'password is required' });
+      return;
+    }
+    const user = await semanticDb('users').where({ id: req.user!.sub }).first();
+    if (!user) {
+      res.status(404).json({ ok: false, error: 'User not found' });
+      return;
+    }
+    const passwordOk = await verifyPasswordFn(password, user.password_hash);
+    if (!passwordOk) {
+      res.status(401).json({ ok: false, error: 'Invalid password' });
+      return;
+    }
+    if (user.mfa_enabled_at) {
+      if (!code) {
+        res.status(400).json({ ok: false, error: 'code is required while MFA is active' });
+        return;
+      }
+      const codeOk = await verifyMfaCode(user.id, code);
+      if (!codeOk) {
+        res.status(401).json({ ok: false, error: 'Invalid MFA code' });
+        return;
+      }
+    }
+    await disableMfa(user.id);
+    await recordAuditSafe(req, 'mfa.disable');
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/auth/mfa/regenerate-backup-codes
+ * Body: { code }
+ * Auth: bearer token + MFA enabled
+ *
+ * Replaces backup codes. User must prove identity with a current TOTP
+ * code (or one of the EXISTING backup codes — verifyMfaCode accepts
+ * either). Returns the new 10 codes.
+ */
+router.post('/mfa/regenerate-backup-codes', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { code } = req.body as { code?: string };
+    if (!code) {
+      res.status(400).json({ ok: false, error: 'code is required' });
+      return;
+    }
+    const ok = await verifyMfaCode(req.user!.sub, code);
+    if (!ok) {
+      res.status(401).json({ ok: false, error: 'Invalid MFA code' });
+      return;
+    }
+    const codes = await regenerateBackupCodes(req.user!.sub);
+    await recordAuditSafe(req, 'mfa.regenerate_backup_codes');
+    res.json({ ok: true, data: { backupCodes: codes } });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/auth/mfa/status
+ * Auth: bearer token
+ *
+ * Returns whether MFA is enabled for the caller. Frontend reads this
+ * to decide whether to surface "Set up 2FA" vs "Disable 2FA" UI.
+ */
+router.get('/mfa/status', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const enabled = await isMfaEnabled(req.user!.sub);
+    res.json({ ok: true, data: { enabled } });
+  } catch (err) { next(err); }
+});
+
+// Lightweight audit wrapper — keeps this file from depending on the
+// auditService import path (which lives in services/). Best-effort.
+async function recordAuditSafe(req: Request, action: string): Promise<void> {
+  try {
+    const { recordAudit } = await import('../services/auditService');
+    await recordAudit(req, { action, entityType: 'user', entityId: req.user?.sub ?? null });
+  } catch {
+    // ignore — audit failures must not break the user action
+  }
+}
 
 export default router;

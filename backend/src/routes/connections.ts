@@ -9,6 +9,7 @@ import {
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
+import { reqDb } from '../db/reqDb';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
@@ -37,6 +38,7 @@ router.post('/test', requireAuth, requireRole('admin'), validate(testConnectionS
 // POST /api/connections — create a connection and run schema profiling
 router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);   // tenant-scoped per-request transaction
     const { name, type, config, domains } = req.body as {
       name: string;
       type: string;
@@ -63,7 +65,7 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
     // Wrap encrypted string in a JSON object so it's valid JSONB
     const configForDb = JSON.stringify({ encrypted: encryptedConfig });
 
-    const [row] = await semanticDb('connections')
+    const [row] = await db('connections')
       .insert({
         tenant_id: req.user!.tenantId,
         name,
@@ -75,6 +77,13 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
       .returning('id');
 
     const connectionId: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+
+    await recordAudit(req, {
+      action:     'connection.create',
+      entityType: 'connection',
+      entityId:   connectionId,
+      context:    { name, type, domains: domains ?? [] },
+    });
 
     // Do NOT run schema profiling here — the frontend will trigger it via
     // POST /:id/profile with SSE so the user sees real-time progress.
@@ -378,6 +387,7 @@ router.post(
 // PATCH /api/connections/:id — update name and/or config
 router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { name, config, domains } = req.body as { name?: string; config?: Record<string, unknown>; domains?: string[] };
     const updates: Record<string, unknown> = {};
     if (name) updates.name = name;
@@ -386,11 +396,19 @@ router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectio
     }
     if (domains !== undefined) updates.domains = JSON.stringify(domains);
 
-    const updated = await semanticDb('connections').where({ id: req.params.id }).update(updates);
+    const updated = await db('connections').where({ id: req.params.id }).update(updates);
     if (!updated) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
     }
+
+    await recordAudit(req, {
+      action:     'connection.update',
+      entityType: 'connection',
+      entityId:   Number(req.params.id),
+      context:    { fields_changed: Object.keys(updates) },
+    });
+
     res.json({ ok: true });
   } catch (err) {
     next(err);

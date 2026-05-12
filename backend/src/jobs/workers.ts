@@ -18,6 +18,7 @@ import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { trackEvent, trackException } from '../utils/monitoring';
 import { startMaintenanceWorker, stopMaintenanceWorker } from './warehouseMaintenance';
 import { startMorningBriefWorker, stopMorningBriefWorker } from './morningBriefJob';
+import { startSecurityMaintenanceWorker, stopSecurityMaintenanceWorker } from './securityMaintenanceJob';
 import { withTenantAiContext } from '../services/aiBudget';
 import type { OrchestratorEvent } from '../services/busMatrixOrchestrator';
 
@@ -478,6 +479,17 @@ export function startWorkers(): void {
       trackException(err, { queue: 'morning-brief', jobId: job?.id ?? 'unknown' });
     });
     workers.push(briefWorker);
+  }
+
+  // Security maintenance — daily cleanup of expired refresh tokens etc.
+  // Keeps the refresh_tokens table from growing unboundedly. Cheap;
+  // non-critical if it skips a day.
+  const secWorker = startSecurityMaintenanceWorker();
+  if (secWorker) {
+    secWorker.on('failed', (job, err) => {
+      trackException(err, { queue: 'security-maintenance', jobId: job?.id ?? 'unknown' });
+    });
+    workers.push(secWorker);
   }
 
   console.log(`[workers] Started ${workers.length} workers`);

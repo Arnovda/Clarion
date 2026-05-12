@@ -16,33 +16,65 @@ export default function LoginPage() {
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
 
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState('');
+
+  async function landAfterLogin() {
+    const payload = getTokenPayload();
+    // Send admins-with-no-connections to /sources so they can connect
+    // their first source — Home is empty without one. Everyone else
+    // lands on /home, the daily-driver page (data health + alerts +
+    // pinned dashboards + recent questions).
+    if (payload?.role === 'admin') {
+      try {
+        const connRes = await api.get('/connections');
+        const hasConnections = (connRes.data.data?.length ?? 0) > 0;
+        router.push(hasConnections ? '/home' : '/sources');
+      } catch {
+        router.push('/home');
+      }
+    } else {
+      router.push('/home');
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
-      // Store BOTH tokens — access (short-lived JWT for Bearer header)
-      // and refresh (long-lived, swap for new access on 401).
-      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
-      const payload = getTokenPayload();
-      // Send admins-with-no-connections to /sources so they can connect
-      // their first source — Home is empty without one. Everyone else
-      // lands on /home, the daily-driver page (data health + alerts +
-      // pinned dashboards + recent questions).
-      if (payload?.role === 'admin') {
-        try {
-          const connRes = await api.get('/connections');
-          const hasConnections = (connRes.data.data?.length ?? 0) > 0;
-          router.push(hasConnections ? '/home' : '/sources');
-        } catch {
-          router.push('/home');
-        }
-      } else {
-        router.push('/home');
+      // MFA gate — server tells us "password OK but TOTP required".
+      // Show the code prompt; keep the challenge token in state. The
+      // user then submits the 6-digit code via handleMfaSubmit.
+      if (res.data?.data?.mfaRequired) {
+        setMfaChallenge(res.data.data.mfaChallengeToken);
+        return;
       }
+      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
+      await landAfterLogin();
     } catch {
       setError('Invalid email or password.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMfaSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const res = await api.post('/auth/mfa/verify', {
+        mfaChallengeToken: mfaChallenge,
+        code: mfaCode.trim(),
+      });
+      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
+      setMfaChallenge(null);
+      setMfaCode('');
+      await landAfterLogin();
+    } catch {
+      setError('Invalid code. Try again or use a backup code.');
     } finally {
       setLoading(false);
     }
@@ -65,6 +97,43 @@ export default function LoginPage() {
         </>
       }
     >
+      {mfaChallenge ? (
+        // MFA challenge step. Password was correct; user must prove
+        // possession of their 2FA device. Backup codes (in XXXXX-XXXXX
+        // format) are accepted by the same field.
+        <form onSubmit={handleMfaSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
+          <div className="text-[13px] text-ink-2 leading-relaxed">
+            Enter the 6-digit code from your authenticator app — or a backup code
+            in <code className="text-[12px] font-mono">XXXXX-XXXXX</code> format.
+          </div>
+          <Input
+            label="Code"
+            type="text"
+            value={mfaCode}
+            onChange={(e) => setMfaCode(e.target.value)}
+            placeholder="123 456"
+            autoComplete="one-time-code"
+            autoFocus
+            required
+            disabled={loading}
+          />
+          {error && (
+            <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
+              {error}
+            </div>
+          )}
+          <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
+            {loading ? 'Verifying…' : 'Verify'}
+          </Button>
+          <button
+            type="button"
+            onClick={() => { setMfaChallenge(null); setMfaCode(''); setError(''); }}
+            className="text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
+          >
+            Back to sign in
+          </button>
+        </form>
+      ) : (
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
         <Input
           label="Work email"
@@ -114,6 +183,7 @@ export default function LoginPage() {
           {loading ? 'Signing in…' : 'Sign in'}
         </Button>
       </form>
+      )}
     </AuthLayout>
   );
 }

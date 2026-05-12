@@ -144,6 +144,9 @@ export default function ProfilePage() {
             ))}
           </div>
 
+          {/* Two-factor authentication */}
+          <MfaSection />
+
           {/* Password */}
           <div className="bg-raised border border-line rounded-lg overflow-hidden">
             <div className="px-6 py-4 flex items-center justify-between border-b border-line">
@@ -182,5 +185,231 @@ export default function ProfilePage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// MfaSection — enrol / disable TOTP. Three-state widget:
+//   - !enabled && !enrolment   → "Set up 2FA" button
+//   - !enabled && enrolment    → QR code + code prompt
+//   - enabled                  → "2FA is on" + disable button + regen-codes
+// Backup codes are shown ONCE on enable; user must save them before
+// confirming.
+// ───────────────────────────────────────────────────────────────────────────
+
+function MfaSection() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [enrolment, setEnrolment] = useState<{ secret: string; qrCodeDataUrl: string } | null>(null);
+  const [confirmCode, setConfirmCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Disable flow state
+  const [disabling, setDisabling] = useState(false);
+  const [dispassword, setDispassword] = useState('');
+  const [discode, setDiscode] = useState('');
+
+  useEffect(() => {
+    api.get('/auth/mfa/status').then((r) => {
+      setEnabled(!!r.data?.data?.enabled);
+    }).catch(() => setEnabled(false));
+  }, []);
+
+  async function handleStart() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.post('/auth/mfa/setup');
+      setEnrolment(r.data.data);
+    } catch (e) {
+      setErr((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not start MFA setup');
+    } finally { setBusy(false); }
+  }
+
+  async function handleConfirm() {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.post('/auth/mfa/enable', { code: confirmCode.trim() });
+      setBackupCodes(r.data.data.backupCodes);
+      setEnabled(true);
+      setEnrolment(null);
+      setConfirmCode('');
+    } catch (e) {
+      setErr((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Invalid code');
+    } finally { setBusy(false); }
+  }
+
+  async function handleDisable() {
+    setBusy(true); setErr(null);
+    try {
+      await api.post('/auth/mfa/disable', { password: dispassword, code: discode.trim() });
+      setEnabled(false);
+      setDisabling(false);
+      setDispassword('');
+      setDiscode('');
+    } catch (e) {
+      setErr((e as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not disable MFA');
+    } finally { setBusy(false); }
+  }
+
+  if (enabled === null) return null;
+
+  return (
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+      <div className="px-6 py-4 flex items-center justify-between border-b border-line">
+        <div>
+          <h2 className="text-[14px] font-medium text-ink">Two-factor authentication</h2>
+          <p className="text-[11.5px] text-muted-2 mt-0.5">
+            Time-based one-time passwords (TOTP). Compatible with Google
+            Authenticator, 1Password, Authy, Bitwarden.
+          </p>
+        </div>
+        {enabled && !disabling && (
+          <span className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.1em] bg-ok-soft text-ok border border-ok/30 rounded">
+            On
+          </span>
+        )}
+      </div>
+
+      <div className="px-6 py-5 space-y-4">
+        {/* CASE 1: not enabled, no enrolment yet */}
+        {!enabled && !enrolment && (
+          <>
+            <p className="text-[13px] text-ink-2">
+              Add a second factor to your account. After enabling, you&rsquo;ll need a
+              6-digit code from your authenticator app every time you sign in.
+            </p>
+            <button
+              type="button"
+              onClick={handleStart}
+              disabled={busy}
+              className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50"
+            >
+              {busy ? 'Starting…' : 'Set up 2FA'}
+            </button>
+          </>
+        )}
+
+        {/* CASE 2: enrolment in progress, show QR + confirm */}
+        {!enabled && enrolment && !backupCodes && (
+          <>
+            <p className="text-[12.5px] text-ink-2">
+              1. Scan this QR with your authenticator app.<br/>
+              2. Enter the first 6-digit code below to confirm.
+            </p>
+            <div className="bg-white border border-line rounded-md p-3 inline-block">
+              <img src={enrolment.qrCodeDataUrl} alt="MFA QR code" width={180} height={180} />
+            </div>
+            <p className="text-[11.5px] text-muted-2">
+              Or enter this secret manually:{' '}
+              <code className="font-mono text-[12px] px-2 py-0.5 bg-softer rounded border border-line">
+                {enrolment.secret}
+              </code>
+            </p>
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                6-digit code
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={confirmCode}
+                onChange={(e) => setConfirmCode(e.target.value)}
+                placeholder="123 456"
+                className={inputCls + ' max-w-[180px]'}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={busy || !confirmCode.trim()}
+              className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50"
+            >
+              {busy ? 'Verifying…' : 'Confirm and enable'}
+            </button>
+          </>
+        )}
+
+        {/* CASE 3: just enabled, show backup codes ONCE */}
+        {enabled && backupCodes && (
+          <>
+            <div className="p-3 bg-warn-soft border border-warn/30 rounded-md text-[13px] text-ink leading-snug">
+              <strong>Save these backup codes.</strong> Each one works once and
+              substitutes for your 2FA code when you don&rsquo;t have your authenticator.
+              You won&rsquo;t see them again.
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {backupCodes.map((c) => (
+                <code key={c} className="font-mono text-[12px] px-2 py-1.5 bg-softer rounded border border-line text-ink">
+                  {c}
+                </code>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setBackupCodes(null)}
+              className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover"
+            >
+              I&rsquo;ve saved them
+            </button>
+          </>
+        )}
+
+        {/* CASE 4: enabled, idle */}
+        {enabled && !backupCodes && !disabling && (
+          <>
+            <p className="text-[13px] text-ink-2">
+              2FA is active on your account. You&rsquo;ll be prompted for a code
+              on every sign-in.
+            </p>
+            <button
+              type="button"
+              onClick={() => setDisabling(true)}
+              className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-err hover:text-err/80"
+            >
+              Disable 2FA
+            </button>
+          </>
+        )}
+
+        {/* CASE 5: disable confirmation */}
+        {enabled && disabling && (
+          <>
+            <p className="text-[12.5px] text-ink-2">
+              To disable 2FA, confirm your password and a current authenticator code.
+            </p>
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Password</label>
+              <input type="password" value={dispassword} onChange={(e) => setDispassword(e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Current 6-digit code</label>
+              <input type="text" inputMode="numeric" value={discode} onChange={(e) => setDiscode(e.target.value)} placeholder="123 456" className={inputCls + ' max-w-[180px]'} />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleDisable}
+                disabled={busy || !dispassword || !discode.trim()}
+                className="px-4 py-2 bg-err text-white rounded-md text-[13px] font-medium hover:bg-err/80 disabled:opacity-50"
+              >
+                {busy ? 'Disabling…' : 'Confirm disable'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setDisabling(false); setErr(null); }}
+                className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
+
+        {err && (
+          <div className="p-2 bg-err-soft text-err border border-err/30 rounded-md text-[12px]">{err}</div>
+        )}
+      </div>
+    </div>
   );
 }

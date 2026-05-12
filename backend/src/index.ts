@@ -109,13 +109,36 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// Strict rate limiter for auth endpoints: 20 per minute per IP
+// Rate limit for /api/auth/* generally — refresh, me, etc. Generous
+// because legitimate clients hit /refresh every 15min and a busy
+// browser tab can issue several /me calls per second on startup.
 const authLimiter = rateLimit({
   windowMs:  60 * 1000,
   max:       20,
   standardHeaders: true,
   legacyHeaders:   false,
   message: { ok: false, error: 'Too many authentication attempts, please try again later' },
+});
+
+// MUCH stricter limit for the routes that an attacker would actually
+// hammer in a brute-force attempt: login, forgot-password, reset-password.
+// 5 attempts per 15-min window per IP makes brute-forcing impractical
+// (a 6-char numeric password has 10^6 combinations → ~500 years at this
+// rate) while still allowing a legitimate user who fumbles their password
+// a few tries.
+//
+// Bypasses are still possible from a botnet (different IPs), which is
+// why we ALSO have account lockout / monitoring on the application
+// layer (audit_events action='login.fail' tracked separately).
+const bruteForceLimiter = rateLimit({
+  windowMs:  15 * 60 * 1000,
+  max:       5,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message: { ok: false, error: 'Too many attempts. Please wait 15 minutes and try again.' },
+  // Only count failed attempts so a legit user who logs in successfully
+  // doesn't consume a "slot" needed for a retry on a typo.
+  skipSuccessfulRequests: true,
 });
 
 // Strict rate limiter for AI-intensive endpoints: 30 per minute per IP
@@ -131,6 +154,12 @@ const aiLimiter = rateLimit({
 // Auth routes (register, login, forgot-password, reset-password, refresh, me)
 // ---------------------------------------------------------------------------
 
+// Strict brute-force limiters apply to the specific routes BEFORE the
+// general authLimiter. Order matters — express-rate-limit checks each
+// middleware in the chain; the stricter one fires first.
+app.use('/api/auth/login', bruteForceLimiter);
+app.use('/api/auth/forgot-password', bruteForceLimiter);
+app.use('/api/auth/reset-password', bruteForceLimiter);
 app.use('/api/auth', authLimiter, authRouter);
 
 // ---------------------------------------------------------------------------

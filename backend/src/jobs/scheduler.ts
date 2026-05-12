@@ -13,6 +13,7 @@ import { semanticDb } from '../db/knex';
 import { trackEvent } from '../utils/monitoring';
 import { registerWeeklyMaintenance } from './warehouseMaintenance';
 import { registerDailyBrief } from './morningBriefJob';
+import { registerSecurityMaintenance } from './securityMaintenanceJob';
 
 const QUEUE_NAME = 'scheduled-transformation';
 let schedulerQueue: Queue<TransformationJobData> | null = null;
@@ -112,6 +113,11 @@ export async function loadSchedules(): Promise<void> {
   // Daily morning brief — runs the pulse-snapshot + brief-narration
   // pipeline at 06:00 UTC for every active tenant. Idempotent.
   await registerDailyBrief();
+
+  // Daily security housekeeping — cleanup expired/revoked refresh
+  // tokens at 03:30 UTC. Keeps the refresh_tokens table small.
+  // Idempotent — replaces the existing repeatable if present.
+  await registerSecurityMaintenance();
 }
 
 /**
