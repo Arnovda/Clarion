@@ -1,6 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
-import fs from 'fs';
 import { z } from 'zod';
 import {
   createAdapterLogger,
@@ -11,6 +10,13 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
+import {
+  deleteWarehousePaths,
+  productBasePath,
+  productBasePathV2,
+  productSlug as toProductSlug,
+} from '../services/warehouse';
+import { listProductTables } from '../services/tableCatalog';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
@@ -730,13 +736,43 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
+    const tenantId = req.user!.tenantId;
 
     // Fetch connection before deleting — need warehouse_path for cleanup
     const conn = await db('connections').where({ id }).first();
+    if (!conn) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
 
     // Get table IDs for this connection so we can cascade manually
     const tables = await db('source_tables').where({ connection_id: id }).select('id');
     const tableIds = tables.map((t: { id: number }) => t.id);
+
+    // Collect every data_product that will be cascade-deleted when the
+    // connection row goes. data_products.connection_id has ON DELETE
+    // CASCADE, so the rows disappear silently — but the warehouse files
+    // those products materialised on disk / in Blob do NOT. We resolve
+    // and delete their URIs HERE, before the FK cascade fires, so we
+    // don't orphan parquet/delta files.
+    const dependentProducts = await db('data_products')
+      .where({ connection_id: id })
+      .select<{ id: number; name: string }[]>('id', 'name');
+    const productWarehouseUris = new Set<string>();
+    for (const dp of dependentProducts) {
+      try {
+        const resolved = await listProductTables(tenantId, dp.id);
+        for (const t of resolved) if (t.uri) productWarehouseUris.add(t.uri);
+      } catch (err) {
+        console.warn(`[connections.delete] catalog lookup for product=${dp.id} failed`, err);
+      }
+      // Also the v2 product directory + v1 slug-based directory, same
+      // as the product DELETE route. Catches v2 deployments where the
+      // catalog rows might miss empty/never-written directories, AND
+      // legacy v1 deployments where the catalog rows are gone.
+      productWarehouseUris.add(productBasePathV2(tenantId, dp.id));
+      productWarehouseUris.add(productBasePath(conn.warehouse_path ?? '', toProductSlug(dp.name)));
+    }
 
     if (tableIds.length) {
       // Delete ALL relationships touching any of these tables (from or to)
@@ -753,20 +789,42 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     await db('ingested_tables').where({ connection_id: id }).delete();
     await db('kpi_definitions').where({ connection_id: id }).delete();
     await db('dashboards').where({ connection_id: id }).delete();
+
+    // notebooks.connection_id has NO ON DELETE action set (it predates
+    // the cascade audit), so deleting a connection that has notebooks
+    // pointing at it would fail with a FK violation. Unlink instead —
+    // notebooks are user-owned analytical artifacts; the user keeps the
+    // cells, they just lose the connection binding and need to repick
+    // one before re-running SQL cells.
+    await db('notebooks').where({ connection_id: id }).update({ connection_id: null });
+
     const deleted = await db('connections').where({ id }).delete();
 
-    // Clean up Delta Lake warehouse files on disk
-    if (conn) {
-      const warehouseDir = conn.warehouse_path
-        ?? path.resolve(__dirname, '../../../warehouse', `conn_${id}`);
-      try {
-        if (fs.existsSync(warehouseDir)) {
-          fs.rmSync(warehouseDir, { recursive: true, force: true });
-          console.log(`[connections] Deleted warehouse: ${warehouseDir}`);
-        }
-      } catch (err) {
-        console.warn(`[connections] Failed to delete warehouse ${warehouseDir}:`, err);
-      }
+    // Clean up the warehouse data files. Two roots to consider:
+    //   - The connection's own ingested-table directory
+    //     (`./warehouse/conn_<id>` or `az://warehouse/tenant_<tid>/conn_<id>`).
+    //     This is where the ETL drops parquet for synced tables.
+    //   - The product warehouse URIs collected earlier — one per
+    //     dependent data_product that's about to be cascade-deleted.
+    //     The DB cascade would silently leave these orphaned otherwise.
+    // Best-effort — errors logged into the audit context, never block
+    // the row deletion. Orphan blobs are recoverable; we'd rather have
+    // some orphans than a half-deleted database state.
+    const connWarehouseDir = conn.warehouse_path
+      ?? path.resolve(__dirname, '../../../warehouse', `conn_${id}`);
+
+    const allUris = [connWarehouseDir, ...productWarehouseUris];
+    const warehouseResult = await deleteWarehousePaths(allUris);
+    console.log(
+      `[connections] connection=${id} deleted ${warehouseResult.deleted} warehouse file(s) ` +
+      `(${warehouseResult.kind}) from ${allUris.length} candidate path(s) ` +
+      `(${dependentProducts.length} dependent product(s) cascade-cleaned)`,
+    );
+    if (warehouseResult.errors.length > 0) {
+      console.warn(
+        `[connections] connection=${id} warehouse cleanup had ${warehouseResult.errors.length} errors:`,
+        warehouseResult.errors.slice(0, 5),
+      );
     }
 
     if (!deleted) {
@@ -779,9 +837,13 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
       entityType: 'connection',
       entityId:   id,
       context: {
-        connection_name: conn?.name,
-        connector_type:  conn?.connector_type,
-        tables_deleted:  tableIds.length,
+        connection_name:           conn.name,
+        connector_type:            conn.connector_type,
+        tables_deleted:            tableIds.length,
+        dependent_products_deleted: dependentProducts.length,
+        warehouse_files_deleted:   warehouseResult.deleted,
+        warehouse_storage_kind:    warehouseResult.kind,
+        warehouse_errors:          warehouseResult.errors.length || undefined,
       },
     });
 

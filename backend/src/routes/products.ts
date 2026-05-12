@@ -4,7 +4,8 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
 import { refineProduct } from '../ai/AIService';
-import { isAzurePath, productSlug as toProductSlug } from '../services/warehouse';
+import { deleteWarehousePaths, productBasePath, productBasePathV2, warehouseLayoutVersion, productSlug as toProductSlug } from '../services/warehouse';
+import { listProductTables } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
@@ -1165,21 +1166,63 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
       }
     }
 
-    // Clean up warehouse Parquet files
+    // Clean up the warehouse data files. We collect every possible
+    // location the product's data might live BEFORE we wipe the
+    // metadata rows (the catalog reads from those rows).
+    //
+    // Three sources, in priority order:
+    //   1. The catalog's resolved URIs — what `delta_path` actually
+    //      says for each materialised product_tables row. Authoritative
+    //      because it captures the historical writer's exact location,
+    //      including the v1 vs v2 layout chosen at write time.
+    //   2. The expected v2 product directory — `tenant_<tid>/product_<pid>`
+    //      under the warehouse root. Catches v2 deployments where the
+    //      catalog rows might miss empty/never-written directories.
+    //   3. The expected v1 product directory — `./warehouse/product/<slug>`
+    //      (local) or `az://.../products/<slug>` (azure). Catches
+    //      legacy deployments where the catalog rows are gone but the
+    //      files were never migrated.
+    //
+    // Best-effort: per-blob failures are logged into the audit
+    // context, never block the DB-row deletion. Orphan blobs are
+    // recoverable (and we can re-run cleanup), orphan rows are not.
     const slug = toProductSlug(product.name as string);
+    const tenantId = req.user!.tenantId;
     const conn = await db('connections').where({ id: connId }).first();
-    const warehousePath = conn?.warehouse_path ?? `./warehouse/conn_${connId}`;
-    if (!isAzurePath(warehousePath)) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const path = require('path') as typeof import('path');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require('fs') as typeof import('fs');
-      const productDir = path.resolve('./warehouse/product', slug);
-      if (fs.existsSync(productDir)) {
-        fs.rmSync(productDir, { recursive: true, force: true });
-        console.log(`[products] Deleted warehouse dir: ${productDir}`);
+    const sourceWarehousePath: string = conn?.warehouse_path ?? `./warehouse/conn_${connId}`;
+
+    const urisToDelete = new Set<string>();
+
+    // (1) Resolved URIs from the catalog — one per ready product_tables row.
+    try {
+      const resolved = await listProductTables(tenantId, productId);
+      for (const t of resolved) {
+        if (t.uri) urisToDelete.add(t.uri);
       }
+    } catch (err) {
+      console.warn('[products.delete] catalog lookup failed; falling back to layout-based paths', err);
     }
+
+    // (2) Expected v2 product directory. Stable across renames.
+    urisToDelete.add(productBasePathV2(tenantId, productId));
+
+    // (3) Expected v1 product directory. Slug-based; only matters for
+    //     legacy deployments. productBasePath handles azure vs local.
+    if (warehouseLayoutVersion() === 'v1' || sourceWarehousePath) {
+      urisToDelete.add(productBasePath(sourceWarehousePath, slug));
+    }
+
+    const warehouseDeleteResult = await deleteWarehousePaths(Array.from(urisToDelete));
+    if (warehouseDeleteResult.errors.length > 0) {
+      console.warn(
+        `[products.delete] product=${productId} warehouse cleanup had ${warehouseDeleteResult.errors.length} errors:`,
+        warehouseDeleteResult.errors.slice(0, 5),
+      );
+    }
+    console.log(
+      `[products] product=${productId} deleted ${warehouseDeleteResult.deleted} warehouse file(s) ` +
+      `(${warehouseDeleteResult.kind}) from ${urisToDelete.size} candidate path(s)`,
+    );
 
     // Delete product row (cascades to star_schemas → product_tables → product_columns)
     await db('data_products').where({ id: productId }).delete();
@@ -1192,9 +1235,12 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
       entityType: 'product',
       entityId:   productId,
       context: {
-        product_name:   product.name,
-        kind:           product.kind,
-        tables_deleted: tables.length,
+        product_name:           product.name,
+        kind:                   product.kind,
+        tables_deleted:         tables.length,
+        warehouse_files_deleted: warehouseDeleteResult.deleted,
+        warehouse_storage_kind:  warehouseDeleteResult.kind,
+        warehouse_errors:        warehouseDeleteResult.errors.length || undefined,
       },
     });
 
