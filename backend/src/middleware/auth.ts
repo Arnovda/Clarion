@@ -74,10 +74,29 @@ function getSecret(): string {
   return secret;
 }
 
-export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
+/**
+ * Sign an access token. Short-lived (15 minutes by default) — pair with
+ * a refresh token to extend a session without re-login. Old single-
+ * token callers can still use `signToken` (alias kept for back-compat
+ * during the transition; existing 8-hour tokens issued before this
+ * commit remain valid until their natural expiry).
+ */
+export function signAccessToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
   return jwt.sign(payload, getSecret(), {
-    expiresIn: process.env.JWT_EXPIRES_IN ?? '8h',
+    expiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
   } as jwt.SignOptions);
+}
+
+/**
+ * Back-compat alias. Existing call sites still using `signToken` continue
+ * to work but now issue a short-lived access token. They should pair the
+ * issuance with `createRefreshToken()` from authTokens.ts.
+ */
+export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
+  // Allow JWT_EXPIRES_IN as the legacy override knob during the transition.
+  // The plan is to drop this once every caller has been migrated.
+  const expiresIn = process.env.JWT_EXPIRES_IN ?? process.env.JWT_ACCESS_EXPIRES_IN ?? '15m';
+  return jwt.sign(payload, getSecret(), { expiresIn } as jwt.SignOptions);
 }
 
 export function verifyToken(token: string): JwtPayload {

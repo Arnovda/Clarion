@@ -15,6 +15,12 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
 } from '../middleware/schemas';
+import {
+  createRefreshToken,
+  validateRefreshToken,
+  revokeRefreshToken,
+  revokeAllForUser,
+} from '../services/refreshTokenService';
 
 const router = Router();
 
@@ -72,7 +78,8 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
 
     const userId: number = typeof userRow === 'object' ? (userRow as { id: number }).id : (userRow as number);
 
-    // Sign JWT
+    // Sign JWT access token (short-lived) + create refresh token
+    // (long-lived, server-side revocable).
     const token = signToken({
       sub: userId,
       tenantId,
@@ -80,11 +87,20 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
       displayName: displayName.trim(),
       role: 'admin',
     });
+    const refresh = await createRefreshToken({
+      userId,
+      tenantId,
+      email: normalizedEmail,
+      displayName: displayName.trim(),
+      role: 'admin',
+    }, req);
 
     res.status(201).json({
       ok: true,
       data: {
         token,
+        refreshToken: refresh.raw,
+        refreshExpiresAt: refresh.expiresAt.toISOString(),
         user: {
           id: userId,
           tenantId,
@@ -131,7 +147,11 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       return;
     }
 
-    // Sign JWT
+    // Issue access + refresh tokens. The access token expires in 15min
+    // (default); when the frontend gets a 401 on an expired access
+    // token, it POSTs /auth/refresh with the refresh token to swap for
+    // a fresh access token. Refresh tokens are stored hashed and can
+    // be revoked server-side (logout, password change, admin action).
     const token = signToken({
       sub: user.id,
       tenantId: user.tenant_id,
@@ -139,11 +159,20 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       displayName: user.display_name,
       role: user.role,
     });
+    const refresh = await createRefreshToken({
+      userId:      user.id,
+      tenantId:    user.tenant_id,
+      email:       user.email,
+      displayName: user.display_name,
+      role:        user.role,
+    }, req);
 
     res.json({
       ok: true,
       data: {
         token,
+        refreshToken: refresh.raw,
+        refreshExpiresAt: refresh.expiresAt.toISOString(),
         user: {
           id: user.id,
           tenantId: user.tenant_id,
@@ -185,20 +214,79 @@ router.get('/me', requireAuth, async (req: Request, res: Response, next: NextFun
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/refresh — Extend session without re-login
+// POST /api/auth/refresh — Exchange a refresh token for a fresh access token
+//
+// Body: { refreshToken: string }
+//
+// Public endpoint (no requireAuth) — the whole point is that the access
+// token has expired. Validates the refresh token against refresh_tokens
+// (hash match + not revoked + not expired + user still active), then
+// issues a new access token. The refresh token itself stays valid
+// until its natural expiry (no rotation in v1).
 // ---------------------------------------------------------------------------
 
-router.post('/refresh', requireAuth, (req: Request, res: Response) => {
-  // Re-sign with fresh expiry using the same payload
-  const token = signToken({
-    sub: req.user!.sub,
-    tenantId: req.user!.tenantId,
-    email: req.user!.email,
-    displayName: req.user!.displayName,
-    role: req.user!.role,
-  });
+router.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { refreshToken } = (req.body ?? {}) as { refreshToken?: string };
+    if (!refreshToken) {
+      res.status(400).json({ ok: false, error: 'refreshToken is required' });
+      return;
+    }
+    const payload = await validateRefreshToken(refreshToken, req);
+    if (!payload) {
+      // Single error message for every failure mode to avoid leaking
+      // which step failed (unknown vs revoked vs expired vs deactivated).
+      res.status(401).json({ ok: false, error: 'Invalid or expired refresh token' });
+      return;
+    }
+    const token = signToken({
+      sub:         payload.userId,
+      tenantId:    payload.tenantId,
+      email:       payload.email,
+      displayName: payload.displayName ?? '',
+      role:        payload.role,
+    });
+    res.json({ ok: true, data: { token } });
+  } catch (err) { next(err); }
+});
 
-  res.json({ ok: true, data: { token } });
+// ---------------------------------------------------------------------------
+// POST /api/auth/logout — Revoke the caller's refresh token
+//
+// Body: { refreshToken: string }
+//
+// Public endpoint (the access token may already be expired by the time
+// the user clicks logout). Idempotent — revoking an already-revoked
+// token is a no-op.
+// ---------------------------------------------------------------------------
+
+router.post('/logout', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { refreshToken } = (req.body ?? {}) as { refreshToken?: string };
+    if (refreshToken) {
+      await revokeRefreshToken(refreshToken, 'logout');
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/logout-all — Revoke all refresh tokens for the caller
+//
+// Useful for "log me out everywhere" UX + the password-change cascade.
+// Requires a valid access token (so we know who's asking).
+// ---------------------------------------------------------------------------
+
+router.post('/logout-all', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) {
+      res.status(401).json({ ok: false, error: 'No user' });
+      return;
+    }
+    const revoked = await revokeAllForUser(userId, 'logout_all');
+    res.json({ ok: true, data: { revoked } });
+  } catch (err) { next(err); }
 });
 
 // ---------------------------------------------------------------------------
@@ -311,6 +399,15 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
       password_reset_expires: null,
       updated_at: new Date().toISOString(),
     });
+
+    // Revoke every active refresh token for this user. A password
+    // reset commonly follows a suspected compromise — the user should
+    // be logged out of every device. Best-effort; non-fatal.
+    try {
+      await revokeAllForUser(user.id, 'password_reset');
+    } catch (err) {
+      console.warn('[auth/reset-password] revokeAllForUser failed', err);
+    }
 
     res.json({ ok: true, data: { message: 'Password has been reset. You can now log in.' } });
   } catch (err) { next(err); }

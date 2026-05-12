@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
-import { setToken, getTokenPayload } from '@/lib/auth';
+import { setAuthTokens, getTokenPayload } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
@@ -22,7 +22,9 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
-      setToken(res.data.data.token);
+      // Store BOTH tokens — access (short-lived JWT for Bearer header)
+      // and refresh (long-lived, swap for new access on 401).
+      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
       const payload = getTokenPayload();
       // Send admins-with-no-connections to /sources so they can connect
       // their first source — Home is empty without one. Everyone else

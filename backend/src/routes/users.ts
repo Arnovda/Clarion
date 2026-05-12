@@ -18,6 +18,7 @@ import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middl
 import { validate } from '../middleware/validate';
 import { inviteUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
+import { revokeAllForUser } from '../services/refreshTokenService';
 
 const router = Router();
 
@@ -298,6 +299,23 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
     await semanticDb('users')
       .where({ id: req.user!.sub })
       .update({ password_hash: newHash, updated_at: new Date().toISOString() });
+
+    // A password change invalidates every existing session on every
+    // device — if an attacker had access to ONE of the user's tokens,
+    // the user resetting their password should kick them out
+    // everywhere. The user's current session is also invalidated;
+    // frontend should redirect to login after a successful change.
+    try {
+      await revokeAllForUser(req.user!.sub, 'password_change');
+    } catch (err) {
+      console.warn('[users/profile/password] revokeAllForUser failed', err);
+    }
+
+    await recordAudit(req, {
+      action:     'user.password_change',
+      entityType: 'user',
+      entityId:   req.user!.sub,
+    });
 
     res.json({ ok: true, message: 'Password updated successfully' });
   } catch (err) { next(err); }

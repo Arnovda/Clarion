@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
-import { setToken } from '@/lib/auth';
+import { setAuthTokens } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
@@ -28,7 +28,7 @@ export default function RegisterPage() {
     setLoading(true);
     try {
       const res = await api.post('/auth/register', { companyName, email, password, displayName });
-      setToken(res.data.data.token);
+      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
       router.push('/sources');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
