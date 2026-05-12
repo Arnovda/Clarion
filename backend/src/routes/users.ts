@@ -13,12 +13,13 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { inviteUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
 import { revokeAllForUser } from '../services/refreshTokenService';
+import { disableMfa } from '../services/mfaService';
 
 const router = Router();
 
@@ -30,9 +31,10 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 router.get('/', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const users = await semanticDb('users')
+    const db = reqDb(req);
+    const users = await db('users')
       .where({ tenant_id: req.user!.tenantId })
-      .select('id', 'email', 'display_name', 'role', 'is_active', 'created_at', 'updated_at')
+      .select('id', 'email', 'display_name', 'role', 'is_active', 'mfa_enabled_at', 'created_at', 'updated_at')
       .orderBy('created_at', 'asc');
 
     res.json({ ok: true, data: users });
@@ -44,13 +46,10 @@ router.get('/', requireRole('admin'), async (req: Request, res: Response, next: 
 // ---------------------------------------------------------------------------
 router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Use the per-request tenant-scoped transaction (req.dbTrx) opened by
-    // requireAuth. Every query through it runs inside a SET LOCAL block,
-    // immune to the connection-pool leak that affects session-level
-    // tenant context. See middleware/auth.ts. Falls back to semanticDb
-    // when the trx wasn't available (anonymous routes, but this one is
-    // auth'd so it's always there in practice).
-    const db = req.dbTrx ?? semanticDb;
+    // Use the per-request tenant-scoped transaction via reqDb — every
+    // query inside this handler is SET-LOCAL-scoped, immune to the
+    // connection-pool race that affects session-level tenant context.
+    const db = reqDb(req);
 
     const { email, displayName, role } = req.body as {
       email: string;
@@ -126,7 +125,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
 // ---------------------------------------------------------------------------
 router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = req.dbTrx ?? semanticDb;
+    const db = reqDb(req);
     const userId = Number(req.params.id);
     const { role, displayName } = req.body as { role?: string; displayName?: string };
 
@@ -190,7 +189,7 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
 // ---------------------------------------------------------------------------
 router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = req.dbTrx ?? semanticDb;
+    const db = reqDb(req);
     const userId = Number(req.params.id);
 
     if (userId === req.user!.sub) {
@@ -231,8 +230,9 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
 // ---------------------------------------------------------------------------
 router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = Number(req.params.id);
-    const count = await semanticDb('users')
+    const count = await db('users')
       .where({ id: userId })
       .update({ is_active: true, updated_at: new Date().toISOString() });
 
@@ -252,6 +252,74 @@ router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: 
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/users/:id/reset-mfa — clear MFA for a user (admin only)
+//
+// Recovery path for "I lost both my authenticator AND my backup codes".
+// Without this, the only fix is a direct DB UPDATE by a developer.
+// Wipes the TOTP secret, mfa_enabled_at, and all backup codes. The user
+// can log in with just their password until they re-enrol.
+//
+// Self-reset is blocked: an admin who wants to remove their own MFA
+// must use POST /auth/mfa/disable, which requires password re-auth.
+// Going through this endpoint would let a compromised admin session
+// remove MFA without proving identity.
+// ---------------------------------------------------------------------------
+router.post('/:id/reset-mfa', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const userId = Number(req.params.id);
+
+    if (!Number.isFinite(userId) || userId <= 0) {
+      res.status(400).json({ ok: false, error: 'Invalid user id' });
+      return;
+    }
+    if (userId === req.user!.sub) {
+      res.status(400).json({ ok: false, error: 'Use /auth/mfa/disable to remove your own 2FA' });
+      return;
+    }
+
+    // RLS scopes this to the admin's tenant — admins cannot reset MFA
+    // for users in other tenants.
+    const target = await db('users')
+      .where({ id: userId })
+      .select('id', 'email', 'mfa_enabled_at')
+      .first();
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'User not found' });
+      return;
+    }
+    if (!target.mfa_enabled_at) {
+      res.status(400).json({ ok: false, error: '2FA is not enabled for this user' });
+      return;
+    }
+
+    // disableMfa() opens its own SET LOCAL transaction. It's not joined
+    // to req.dbTrx — that's OK; the audit row commits inside req.dbTrx
+    // and the MFA wipe in its own. If audit fails it'll get logged but
+    // the user-facing action still succeeded.
+    await disableMfa(userId);
+
+    // Kick the target user out of every device. A user who's just had
+    // their 2FA reset shouldn't be silently logged in elsewhere with
+    // their old session.
+    try {
+      await revokeAllForUser(userId, 'mfa_reset_by_admin');
+    } catch (err) {
+      console.warn('[users/reset-mfa] revokeAllForUser failed', err);
+    }
+
+    await recordAudit(req, {
+      action:     'mfa.disable',
+      entityType: 'user',
+      entityId:   userId,
+      context:    { reset_by_admin: true, target_email: target.email },
+    });
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/users/audit — admin-action audit log (admin only)
 //
 // Query params: ?limit=50&offset=0&action=<filter>&entity_type=<filter>
@@ -262,6 +330,7 @@ router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: 
 
 router.get('/audit', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const limitRaw = Number(req.query.limit);
     const limit = Math.min(Math.max(Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 50, 1), 200);
     const offsetRaw = Number(req.query.offset);
@@ -270,7 +339,7 @@ router.get('/audit', requireRole('admin'), async (req: Request, res: Response, n
     const actionFilter = typeof req.query.action === 'string' ? req.query.action : null;
     const entityTypeFilter = typeof req.query.entity_type === 'string' ? req.query.entity_type : null;
 
-    let query = semanticDb('audit_events as ae')
+    let query = db('audit_events as ae')
       .leftJoin('users as u', 'u.id', 'ae.actor_user_id')
       .orderBy('ae.created_at', 'desc')
       .limit(limit)
@@ -294,7 +363,7 @@ router.get('/audit', requireRole('admin'), async (req: Request, res: Response, n
 
     const rows = await query;
 
-    const [{ count }] = await semanticDb('audit_events')
+    const [{ count }] = await db('audit_events')
       .modify((qb) => {
         if (actionFilter) qb.where('action', 'like', `${actionFilter}%`);
         if (entityTypeFilter) qb.where('entity_type', entityTypeFilter);
@@ -314,7 +383,8 @@ router.get('/audit', requireRole('admin'), async (req: Request, res: Response, n
 // ---------------------------------------------------------------------------
 router.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await semanticDb('users')
+    const db = reqDb(req);
+    const user = await db('users')
       .where({ id: req.user!.sub })
       .select('id', 'email', 'display_name', 'role', 'is_active', 'avatar_url', 'created_at')
       .first();
@@ -325,7 +395,7 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
     }
 
     // Get tenant info
-    const tenant = await semanticDb('tenants')
+    const tenant = await db('tenants')
       .where({ id: req.user!.tenantId })
       .select('name', 'slug')
       .first();
@@ -339,6 +409,7 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
 // ---------------------------------------------------------------------------
 router.patch('/profile', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { displayName } = req.body as { displayName: string };
 
     if (!displayName?.trim()) {
@@ -346,7 +417,7 @@ router.patch('/profile', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    await semanticDb('users')
+    await db('users')
       .where({ id: req.user!.sub })
       .update({ display_name: displayName.trim(), updated_at: new Date().toISOString() });
 
@@ -359,6 +430,7 @@ router.patch('/profile', async (req: Request, res: Response, next: NextFunction)
 // ---------------------------------------------------------------------------
 router.post('/profile/password', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { currentPassword, newPassword } = req.body as {
       currentPassword: string;
       newPassword: string;
@@ -373,7 +445,7 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
       return;
     }
 
-    const user = await semanticDb('users').where({ id: req.user!.sub }).first();
+    const user = await db('users').where({ id: req.user!.sub }).first();
     if (!user) {
       res.status(404).json({ ok: false, error: 'User not found' });
       return;
@@ -386,7 +458,7 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
     }
 
     const newHash = await hashPassword(newPassword);
-    await semanticDb('users')
+    await db('users')
       .where({ id: req.user!.sub })
       .update({ password_hash: newHash, updated_at: new Date().toISOString() });
 
@@ -416,6 +488,7 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
 // ---------------------------------------------------------------------------
 router.post('/profile/avatar', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { avatar } = req.body as { avatar: string | null };
 
     // avatar is a data URL like "data:image/png;base64,..." or null to remove
@@ -430,7 +503,7 @@ router.post('/profile/avatar', async (req: Request, res: Response, next: NextFun
       return;
     }
 
-    await semanticDb('users')
+    await db('users')
       .where({ id: req.user!.sub })
       .update({ avatar_url: avatar ?? null, updated_at: new Date().toISOString() });
 

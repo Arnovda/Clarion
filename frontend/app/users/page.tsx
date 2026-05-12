@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
+import { getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
 
 interface User {
@@ -12,6 +13,7 @@ interface User {
   display_name: string;
   role: string;
   is_active: boolean;
+  mfa_enabled_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -104,6 +106,23 @@ function UsersPageInner() {
     }
   }
 
+  async function handleResetMfa(user: User) {
+    const msg =
+      `Reset 2FA for ${user.display_name}?\n\n` +
+      `They will be able to log in with just their password until they re-enrol. ` +
+      `Any active sessions will be signed out.\n\n` +
+      `Only do this if they've lost both their authenticator and their backup codes.`;
+    if (!confirm(msg)) return;
+    try {
+      await api.post(`/users/${user.id}/reset-mfa`);
+      loadUsers();
+      toast.success('2FA reset', { description: `${user.display_name} can now log in without 2FA.` });
+    } catch (err) {
+      toast.error('Could not reset 2FA', { description: extractError(err) });
+    }
+  }
+
+  const selfId = getTokenPayload()?.sub;
   const activeUsers = users.filter((u) => u.is_active);
   const deactivatedUsers = users.filter((u) => !u.is_active);
 
@@ -192,13 +211,32 @@ function UsersPageInner() {
                       )}
                     </td>
                     <td className="px-5 py-3 text-[12px] text-ink-3">
-                      {new Date(user.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      <div className="flex items-center gap-2">
+                        <span>{new Date(user.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                        {user.mfa_enabled_at && (
+                          <span
+                            title={`2FA enabled on ${new Date(user.mfa_enabled_at).toLocaleDateString('en-GB')}`}
+                            className="text-[9.5px] font-mono uppercase tracking-[0.1em] px-1.5 py-0.5 rounded bg-ok-soft text-ok border border-ok/30"
+                          >
+                            2FA
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-5 py-3 text-right">
-                      <button onClick={() => handleDeactivate(user.id)}
-                        className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-err transition-colors">
-                        Deactivate
-                      </button>
+                      <div className="flex items-center justify-end gap-4">
+                        {user.mfa_enabled_at && user.id !== selfId && (
+                          <button onClick={() => handleResetMfa(user)}
+                            className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ocean transition-colors"
+                            title="Clear 2FA for this user (use only when they've lost both their authenticator and their backup codes)">
+                            Reset 2FA
+                          </button>
+                        )}
+                        <button onClick={() => handleDeactivate(user.id)}
+                          className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-err transition-colors">
+                          Deactivate
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

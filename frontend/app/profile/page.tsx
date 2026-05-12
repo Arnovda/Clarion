@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
-import { getTokenPayload } from '@/lib/auth';
+import { clearToken, getRefreshToken, getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
 
 const inputCls =
@@ -18,6 +19,7 @@ interface Profile {
 
 export default function ProfilePage() {
   const toast = useToast();
+  const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [editingName, setEditingName] = useState(false);
@@ -29,6 +31,8 @@ export default function ProfilePage() {
   const [confirmPw, setConfirmPw] = useState('');
   const [savingPw, setSavingPw] = useState(false);
   const [pwMessage, setPwMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [confirmingLogoutAll, setConfirmingLogoutAll] = useState(false);
+  const [logoutAllBusy, setLogoutAllBusy] = useState(false);
 
   useEffect(() => { loadProfile(); }, []);
 
@@ -62,6 +66,30 @@ export default function ProfilePage() {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to change password';
       setPwMessage({ type: 'error', text: msg });
     } finally { setSavingPw(false); }
+  }
+
+  async function handleLogoutAll() {
+    setLogoutAllBusy(true);
+    try {
+      // Best-effort: also revoke the current refresh token explicitly. The
+      // logout-all call below revokes every token for the user including
+      // this one, but sending the refresh token gives the server a stable
+      // audit trail of "this device asked to log out everywhere."
+      const refresh = getRefreshToken();
+      if (refresh) {
+        try { await api.post('/auth/logout', { refreshToken: refresh }); }
+        catch { /* ignore — logout-all is what counts */ }
+      }
+      await api.post('/auth/logout-all');
+      clearToken();
+      toast.success('Signed out of every device');
+      router.push('/');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not sign out everywhere';
+      toast.error(msg);
+      setLogoutAllBusy(false);
+      setConfirmingLogoutAll(false);
+    }
   }
 
   const roleLabels: Record<string, string> = { admin: 'Administrator', analyst: 'Analyst', viewer: 'Viewer' };
@@ -181,6 +209,51 @@ export default function ProfilePage() {
                 )}
               </form>
             )}
+          </div>
+
+          {/* Sessions */}
+          <div className="bg-raised border border-line rounded-lg overflow-hidden">
+            <div className="px-6 py-4 border-b border-line">
+              <h2 className="text-[14px] font-medium text-ink">Active sessions</h2>
+              <p className="text-[11.5px] text-muted-2 mt-0.5">
+                Revoke every session on every device. Use this if you think your account may have been compromised.
+              </p>
+            </div>
+            <div className="px-6 py-5">
+              {!confirmingLogoutAll ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingLogoutAll(true)}
+                  className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-err hover:text-err/80"
+                >
+                  Sign out of every device
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-[13px] text-ink-2">
+                    This will sign you out everywhere, including this browser. You&rsquo;ll need to log in again.
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={handleLogoutAll}
+                      disabled={logoutAllBusy}
+                      className="px-4 py-2 bg-err text-white rounded-md text-[13px] font-medium hover:bg-err/80 disabled:opacity-50"
+                    >
+                      {logoutAllBusy ? 'Signing out…' : 'Yes, sign out everywhere'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingLogoutAll(false)}
+                      disabled={logoutAllBusy}
+                      className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
