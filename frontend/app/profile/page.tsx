@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { startRegistration } from '@simplewebauthn/browser';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { clearToken, getRefreshToken, getTokenPayload } from '@/lib/auth';
@@ -174,6 +175,9 @@ export default function ProfilePage() {
 
           {/* Two-factor authentication */}
           <MfaSection />
+
+          {/* Security keys / passkeys */}
+          <WebauthnSection />
 
           {/* Password */}
           <div className="bg-raised border border-line rounded-lg overflow-hidden">
@@ -477,6 +481,193 @@ function MfaSection() {
               </button>
             </div>
           </>
+        )}
+
+        {err && (
+          <div className="p-2 bg-err-soft text-err border border-err/30 rounded-md text-[12px]">{err}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// WebauthnSection — register / list / remove hardware keys + passkeys.
+// Phishing-resistant alternative to TOTP. A user can have BOTH enrolled;
+// the login flow surfaces whichever is available. Removing the last
+// WebAuthn credential does NOT remove TOTP — they're independent factors.
+// ───────────────────────────────────────────────────────────────────────────
+
+interface WebauthnCredential {
+  id: number;
+  nickname: string;
+  created_at: string;
+  last_used_at: string | null;
+  device_type: string | null;
+  backed_up: boolean;
+}
+
+function WebauthnSection() {
+  const toast = useToast();
+  const [credentials, setCredentials] = useState<WebauthnCredential[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [nickname, setNickname] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // The browser's PublicKeyCredential is only defined in secure contexts
+  // (HTTPS or localhost). Avoid offering the feature when it won't work.
+  const supported = typeof window !== 'undefined' && !!window.PublicKeyCredential;
+
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    try {
+      const r = await api.get('/auth/webauthn/credentials');
+      setCredentials(r.data?.data ?? []);
+    } catch {
+      setCredentials([]);
+    }
+  }
+
+  async function handleAdd() {
+    if (!nickname.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const opts = await api.post('/auth/webauthn/register-options');
+      const optionsJSON = opts.data?.data?.options;
+      const challengeToken = opts.data?.data?.challengeToken;
+      if (!optionsJSON || !challengeToken) throw new Error('Server did not return registration options');
+
+      const attestation = await startRegistration({ optionsJSON });
+
+      await api.post('/auth/webauthn/register-verify', {
+        response: attestation,
+        challengeToken,
+        nickname: nickname.trim(),
+      });
+
+      toast.success('Security key added');
+      setNickname('');
+      setAdding(false);
+      await load();
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
+        ?? (e as { message?: string })?.message
+        ?? 'Could not register security key';
+      setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRemove(c: WebauthnCredential) {
+    if (!confirm(`Remove "${c.nickname}"? You won't be able to sign in with this device until you register it again.`)) return;
+    try {
+      await api.delete(`/auth/webauthn/credentials/${c.id}`);
+      toast.success('Security key removed');
+      await load();
+    } catch {
+      toast.error('Could not remove security key');
+    }
+  }
+
+  if (credentials === null) return null;
+
+  return (
+    <div className="bg-raised border border-line rounded-lg overflow-hidden">
+      <div className="px-6 py-4 flex items-center justify-between border-b border-line">
+        <div>
+          <h2 className="text-[14px] font-medium text-ink">Security keys &amp; passkeys</h2>
+          <p className="text-[11.5px] text-muted-2 mt-0.5">
+            YubiKey, Touch ID, Windows Hello, password-manager passkeys. Phishing-resistant — bound
+            to this site&rsquo;s domain.
+          </p>
+        </div>
+        {credentials.length > 0 && (
+          <span className="px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.1em] bg-ok-soft text-ok border border-ok/30 rounded">
+            {credentials.length} active
+          </span>
+        )}
+      </div>
+
+      <div className="px-6 py-5 space-y-4">
+        {!supported && (
+          <div className="p-2 bg-warn-soft text-ink border border-warn/30 rounded-md text-[12px]">
+            Your browser doesn&rsquo;t support security keys. Try a recent Chrome, Edge, Safari, or Firefox.
+          </div>
+        )}
+
+        {credentials.length > 0 && (
+          <ul className="divide-y divide-line border border-line rounded-md overflow-hidden">
+            {credentials.map((c) => (
+              <li key={c.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="text-[13px] text-ink truncate">{c.nickname}</div>
+                  <div className="text-[11px] text-muted-2 mt-0.5">
+                    Added {new Date(c.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {c.last_used_at && ` · last used ${new Date(c.last_used_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`}
+                    {c.backed_up && ' · passkey (synced)'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRemove(c)}
+                  className="text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-err transition-colors"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {!adding && supported && (
+          <button
+            type="button"
+            onClick={() => { setAdding(true); setErr(null); }}
+            className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50"
+          >
+            {credentials.length === 0 ? 'Add a security key' : 'Add another'}
+          </button>
+        )}
+
+        {adding && supported && (
+          <div className="space-y-3">
+            <div>
+              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">
+                Name this device
+              </label>
+              <input
+                type="text"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="e.g. YubiKey 5C — work laptop"
+                maxLength={64}
+                autoFocus
+                className={inputCls + ' max-w-[360px]'}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleAdd}
+                disabled={busy || !nickname.trim()}
+                className="px-4 py-2 bg-ocean text-white rounded-md text-[13px] font-medium hover:bg-ocean-hover disabled:opacity-50"
+              >
+                {busy ? 'Waiting for device…' : 'Register'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAdding(false); setNickname(''); setErr(null); }}
+                disabled={busy}
+                className="text-[11.5px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
 
         {err && (

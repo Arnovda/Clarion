@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { startAuthentication } from '@simplewebauthn/browser';
 import api from '@/lib/api';
 import { setAuthTokens, getTokenPayload } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
@@ -16,8 +17,14 @@ export default function LoginPage() {
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
 
+  // After a successful password check, the server may demand a second
+  // factor. We can have TOTP, WebAuthn, or both available — the user
+  // picks. preferredMethod tracks the active panel.
   const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState('');
+  const [webauthnOptions, setWebauthnOptions] = useState<unknown>(null);
+  const [webauthnChallenge, setWebauthnChallenge] = useState<string | null>(null);
+  const [preferredMethod, setPreferredMethod] = useState<'totp' | 'webauthn'>('totp');
 
   async function landAfterLogin() {
     const payload = getTokenPayload();
@@ -44,14 +51,20 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
-      // MFA gate — server tells us "password OK but TOTP required".
-      // Show the code prompt; keep the challenge token in state. The
-      // user then submits the 6-digit code via handleMfaSubmit.
-      if (res.data?.data?.mfaRequired) {
-        setMfaChallenge(res.data.data.mfaChallengeToken);
+      const data = res.data?.data ?? {};
+      // 2FA gate — server returns whichever factors the user has
+      // enrolled. We default to WebAuthn when available (one tap on
+      // their phone / hardware key), with TOTP as the fallback choice.
+      if (data.mfaRequired || data.webauthnRequired) {
+        if (data.mfaChallengeToken) setMfaChallenge(data.mfaChallengeToken);
+        if (data.webauthnOptions && data.webauthnChallengeToken) {
+          setWebauthnOptions(data.webauthnOptions);
+          setWebauthnChallenge(data.webauthnChallengeToken);
+          setPreferredMethod('webauthn');
+        }
         return;
       }
-      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
+      setAuthTokens(data.token, data.refreshToken);
       await landAfterLogin();
     } catch {
       setError('Invalid email or password.');
@@ -70,8 +83,7 @@ export default function LoginPage() {
         code: mfaCode.trim(),
       });
       setAuthTokens(res.data.data.token, res.data.data.refreshToken);
-      setMfaChallenge(null);
-      setMfaCode('');
+      clearChallenge();
       await landAfterLogin();
     } catch {
       setError('Invalid code. Try again or use a backup code.');
@@ -79,6 +91,45 @@ export default function LoginPage() {
       setLoading(false);
     }
   }
+
+  async function handleWebauthnSubmit() {
+    setError('');
+    setLoading(true);
+    try {
+      // startAuthentication takes the options object the server built
+      // and presents the platform's WebAuthn picker. The user picks an
+      // authenticator (hardware key, Touch ID, Windows Hello, etc.);
+      // result is the assertion the server verifies.
+      const assertion = await startAuthentication({
+        optionsJSON: webauthnOptions as Parameters<typeof startAuthentication>[0]['optionsJSON'],
+      });
+      const res = await api.post('/auth/webauthn/login-verify', {
+        response: assertion,
+        challengeToken: webauthnChallenge,
+      });
+      setAuthTokens(res.data.data.token, res.data.data.refreshToken);
+      clearChallenge();
+      await landAfterLogin();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
+        ?? (err as { message?: string })?.message
+        ?? 'Could not sign in with security key';
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function clearChallenge() {
+    setMfaChallenge(null);
+    setMfaCode('');
+    setWebauthnOptions(null);
+    setWebauthnChallenge(null);
+    setPreferredMethod('totp');
+    setError('');
+  }
+
+  const challengeActive = mfaChallenge != null || webauthnOptions != null;
 
   return (
     <AuthLayout
@@ -97,42 +148,86 @@ export default function LoginPage() {
         </>
       }
     >
-      {mfaChallenge ? (
-        // MFA challenge step. Password was correct; user must prove
-        // possession of their 2FA device. Backup codes (in XXXXX-XXXXX
-        // format) are accepted by the same field.
-        <form onSubmit={handleMfaSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
-          <div className="text-[13px] text-ink-2 leading-relaxed">
-            Enter the 6-digit code from your authenticator app — or a backup code
-            in <code className="text-[12px] font-mono">XXXXX-XXXXX</code> format.
-          </div>
-          <Input
-            label="Code"
-            type="text"
-            value={mfaCode}
-            onChange={(e) => setMfaCode(e.target.value)}
-            placeholder="123 456"
-            autoComplete="one-time-code"
-            autoFocus
-            required
-            disabled={loading}
-          />
-          {error && (
-            <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
-              {error}
-            </div>
+      {challengeActive ? (
+        // 2FA challenge. Password was correct; the user must complete a
+        // second factor. We show WebAuthn first when available (one tap
+        // vs. typing a 6-digit code), TOTP otherwise, and let the user
+        // switch between them via the small link below.
+        <div className="flex flex-col gap-4" suppressHydrationWarning>
+          {preferredMethod === 'webauthn' && webauthnOptions ? (
+            <>
+              <div className="text-[13px] text-ink-2 leading-relaxed">
+                Use your security key, Touch ID, Windows Hello, or your saved
+                passkey to sign in.
+              </div>
+              {error && (
+                <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
+                  {error}
+                </div>
+              )}
+              <Button
+                type="button"
+                size="lg"
+                className="w-full justify-center mt-3"
+                loading={loading}
+                onClick={handleWebauthnSubmit}
+              >
+                {loading ? 'Waiting…' : 'Use security key'}
+              </Button>
+              {mfaChallenge && (
+                <button
+                  type="button"
+                  onClick={() => { setPreferredMethod('totp'); setError(''); }}
+                  className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover"
+                >
+                  Use an authenticator code instead →
+                </button>
+              )}
+            </>
+          ) : (
+            <form onSubmit={handleMfaSubmit} className="flex flex-col gap-4">
+              <div className="text-[13px] text-ink-2 leading-relaxed">
+                Enter the 6-digit code from your authenticator app — or a backup
+                code in <code className="text-[12px] font-mono">XXXXX-XXXXX</code> format.
+              </div>
+              <Input
+                label="Code"
+                type="text"
+                value={mfaCode}
+                onChange={(e) => setMfaCode(e.target.value)}
+                placeholder="123 456"
+                autoComplete="one-time-code"
+                autoFocus
+                required
+                disabled={loading}
+              />
+              {error && (
+                <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
+                  {error}
+                </div>
+              )}
+              <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
+                {loading ? 'Verifying…' : 'Verify'}
+              </Button>
+              {webauthnOptions != null && (
+                <button
+                  type="button"
+                  onClick={() => { setPreferredMethod('webauthn'); setError(''); }}
+                  className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover"
+                >
+                  Use security key instead →
+                </button>
+              )}
+            </form>
           )}
-          <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
-            {loading ? 'Verifying…' : 'Verify'}
-          </Button>
           <button
             type="button"
-            onClick={() => { setMfaChallenge(null); setMfaCode(''); setError(''); }}
+            onClick={clearChallenge}
             className="text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
           >
             Back to sign in
           </button>
-        </form>
+        </div>
       ) : (
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
         <Input

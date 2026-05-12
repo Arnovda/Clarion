@@ -30,7 +30,17 @@ import {
   regenerateBackupCodes,
   isMfaEnabled,
 } from '../services/mfaService';
+import {
+  buildRegistrationOptions,
+  verifyAndStoreRegistration,
+  buildAuthenticationOptions,
+  verifyAuthentication,
+  listUserCredentials,
+  deleteCredential,
+  userHasWebauthn,
+} from '../services/webauthnService';
 import { verifyPassword as verifyPasswordFn } from '../middleware/auth';
+import { reqDb } from '../db/reqDb';
 
 const router = Router();
 
@@ -157,25 +167,46 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       return;
     }
 
-    // MFA gate — if the user has enrolled TOTP, we don't issue real
-    // tokens yet. Instead we return a short-lived "mfa challenge"
-    // token. The frontend prompts for the 6-digit code; POST to
-    // /auth/mfa/verify with the challenge token + code completes the
-    // login and issues real access + refresh tokens.
-    if (user.mfa_enabled_at) {
-      const mfaChallengeToken = jwt.sign(
-        {
-          purpose: 'mfa_challenge',
-          sub:     user.id,
-          tenant:  user.tenant_id,
-        },
-        getMfaChallengeSecret(),
-        { expiresIn: '5m' },
-      );
-      res.json({
-        ok: true,
-        data: { mfaRequired: true, mfaChallengeToken },
-      });
+    // 2FA gate — if the user has enrolled TOTP or a WebAuthn credential,
+    // we don't issue real tokens yet. Instead we return a short-lived
+    // challenge: a JWT for TOTP completion plus, when applicable, a
+    // navigator.credentials.get() options bundle for WebAuthn. The
+    // frontend offers whichever methods are available; the user picks.
+    // POST to /auth/mfa/verify (TOTP) or /auth/webauthn/login-verify
+    // (WebAuthn) completes the login and issues real access + refresh
+    // tokens.
+    const hasWebauthn = await userHasWebauthn(user.id);
+    if (user.mfa_enabled_at || hasWebauthn) {
+      const payload: {
+        mfaRequired: boolean;
+        mfaChallengeToken?: string;
+        webauthnRequired?: boolean;
+        webauthnOptions?: unknown;
+        webauthnChallengeToken?: string;
+      } = { mfaRequired: !!user.mfa_enabled_at };
+
+      if (user.mfa_enabled_at) {
+        payload.mfaChallengeToken = jwt.sign(
+          {
+            purpose: 'mfa_challenge',
+            sub:     user.id,
+            tenant:  user.tenant_id,
+          },
+          getMfaChallengeSecret(),
+          { expiresIn: '5m' },
+        );
+      }
+
+      if (hasWebauthn) {
+        const opts = await buildAuthenticationOptions(user.id);
+        if (opts) {
+          payload.webauthnRequired = true;
+          payload.webauthnOptions = opts.options;
+          payload.webauthnChallengeToken = opts.challengeToken;
+        }
+      }
+
+      res.json({ ok: true, data: payload });
       return;
     }
 
@@ -680,13 +711,186 @@ router.get('/mfa/status', requireAuth, async (req: Request, res: Response, next:
 
 // Lightweight audit wrapper — keeps this file from depending on the
 // auditService import path (which lives in services/). Best-effort.
-async function recordAuditSafe(req: Request, action: string): Promise<void> {
+async function recordAuditSafe(req: Request, action: string, context?: Record<string, unknown>): Promise<void> {
   try {
     const { recordAudit } = await import('../services/auditService');
-    await recordAudit(req, { action, entityType: 'user', entityId: req.user?.sub ?? null });
+    await recordAudit(req, { action, entityType: 'user', entityId: req.user?.sub ?? null, context });
   } catch {
     // ignore — audit failures must not break the user action
   }
 }
+
+// ===========================================================================
+// WebAuthn / passkey endpoints
+// ===========================================================================
+
+/**
+ * POST /api/auth/webauthn/register-options
+ * Auth: bearer token
+ *
+ * Returns PublicKeyCredentialCreationOptionsJSON for the browser's
+ * navigator.credentials.create() call. The challenge is bound to a
+ * short-lived signed token the frontend echoes back on register-verify.
+ */
+router.post('/webauthn/register-options', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { options, challengeToken } = await buildRegistrationOptions(
+      req.user!.sub,
+      req.user!.email,
+      req.user!.displayName ?? req.user!.email,
+    );
+    res.json({ ok: true, data: { options, challengeToken } });
+  } catch (err) { next(err); }
+});
+
+/**
+ * POST /api/auth/webauthn/register-verify
+ * Body: { response, challengeToken, nickname }
+ * Auth: bearer token
+ *
+ * Verifies the attestation response against the challenge token, then
+ * stores the credential. The nickname is required so the user can
+ * identify which credential to delete later ("My YubiKey").
+ */
+router.post('/webauthn/register-verify', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { response, challengeToken, nickname } = req.body as {
+      response?: unknown;
+      challengeToken?: string;
+      nickname?: string;
+    };
+    if (!response || !challengeToken || !nickname?.trim()) {
+      res.status(400).json({ ok: false, error: 'response, challengeToken, and nickname are required' });
+      return;
+    }
+    const db = reqDb(req);
+    const { credentialId } = await verifyAndStoreRegistration(
+      req.user!.sub,
+      req.user!.tenantId,
+      response as Parameters<typeof verifyAndStoreRegistration>[2],
+      challengeToken,
+      nickname,
+      db,
+    );
+    await recordAuditSafe(req, 'mfa.webauthn_register', { nickname: nickname.trim() });
+    res.json({ ok: true, data: { credentialId } });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Registration failed';
+    res.status(400).json({ ok: false, error: msg });
+  }
+});
+
+/**
+ * POST /api/auth/webauthn/login-verify
+ * Body: { response, challengeToken }
+ *
+ * Public (no requireAuth) — the whole point is that the user isn't
+ * logged in yet. Verifies the assertion against the challenge token
+ * (issued by /auth/login when the user has WebAuthn registered) and
+ * issues real access + refresh tokens on success.
+ */
+router.post('/webauthn/login-verify', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { response, challengeToken } = req.body as {
+      response?: unknown;
+      challengeToken?: string;
+    };
+    if (!response || !challengeToken) {
+      res.status(400).json({ ok: false, error: 'response and challengeToken are required' });
+      return;
+    }
+    let userId: number;
+    try {
+      ({ userId } = await verifyAuthentication(
+        response as Parameters<typeof verifyAuthentication>[0],
+        challengeToken,
+      ));
+    } catch {
+      // Single generic 401 — never leak which step failed (unknown
+      // credential vs invalid signature vs replayed challenge).
+      res.status(401).json({ ok: false, error: 'Invalid security key response' });
+      return;
+    }
+
+    const user = await semanticDb('users').where({ id: userId, is_active: true }).first();
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'User not found' });
+      return;
+    }
+
+    const token = signToken({
+      sub:         user.id,
+      tenantId:    user.tenant_id,
+      email:       user.email,
+      displayName: user.display_name,
+      role:        user.role,
+    });
+    const refresh = await createRefreshToken({
+      userId:      user.id,
+      tenantId:    user.tenant_id,
+      email:       user.email,
+      displayName: user.display_name,
+      role:        user.role,
+    }, req);
+
+    res.json({
+      ok: true,
+      data: {
+        token,
+        refreshToken: refresh.raw,
+        refreshExpiresAt: refresh.expiresAt.toISOString(),
+        user: {
+          id: user.id,
+          tenantId: user.tenant_id,
+          email: user.email,
+          displayName: user.display_name,
+          role: user.role,
+        },
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+/**
+ * GET /api/auth/webauthn/credentials
+ * Auth: bearer token
+ *
+ * Returns the caller's registered WebAuthn credentials so /profile
+ * can render "My security keys" with last-used timestamps + a delete
+ * button per key.
+ */
+router.get('/webauthn/credentials', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const credentials = await listUserCredentials(req.user!.sub, db);
+    res.json({ ok: true, data: credentials });
+  } catch (err) { next(err); }
+});
+
+/**
+ * DELETE /api/auth/webauthn/credentials/:id
+ * Auth: bearer token
+ *
+ * Removes one of the caller's registered credentials. Doesn't disable
+ * any other 2FA factors — TOTP stays active even if all WebAuthn
+ * credentials are removed.
+ */
+router.delete('/webauthn/credentials/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const credentialRowId = Number(req.params.id);
+    if (!Number.isFinite(credentialRowId)) {
+      res.status(400).json({ ok: false, error: 'Invalid credential id' });
+      return;
+    }
+    const removed = await deleteCredential(req.user!.sub, credentialRowId, db);
+    if (!removed) {
+      res.status(404).json({ ok: false, error: 'Credential not found' });
+      return;
+    }
+    await recordAuditSafe(req, 'mfa.webauthn_remove', { credential_row_id: credentialRowId });
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
 
 export default router;
