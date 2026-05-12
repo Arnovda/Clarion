@@ -141,7 +141,7 @@ These are real gaps. Listed so we're transparent with customers and ourselves.
 - ✅ **JWT refresh tokens + revocation** — 15-min access + 30-day refresh; revokeAll on password change / role change / deactivate
 - ✅ **Audit log UI** — `/users → Audit log` (admin only)
 - ✅ **Public `/security` page**
-- ⚠️ **Migrate remaining routes to `req.dbTrx`** — `users.ts` admin mutations migrated as the pattern reference. The remaining ~25 route files use the session-level SET fallback (which IS racy under concurrency). Migration is mechanical and incremental.
+- ⚠️ **Migrate remaining routes to `req.dbTrx`** — incremental migration. Done so far: every mutation on `users.ts`, `connections.ts`, `policies.ts`; `dashboards.ts` POST + DELETE; `products.ts` POST. The remaining read endpoints + non-critical mutations still use the session-level SET fallback (which IS racy under concurrency). Helper at `db/reqDb.ts` (`const db = reqDb(req)`) is the migration pattern.
 - 🟦 **Penetration test** — budget allocated, vendor TBD.
 
 ### Medium-term (Sprint 3 — 1-2 months)

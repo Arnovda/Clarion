@@ -8,6 +8,7 @@ import { refineProduct } from '../ai/AIService';
 import { isAzurePath, productSlug as toProductSlug } from '../services/warehouse';
 import { tenantQuery } from '../services/tenantQuery';
 import { recordAudit } from '../services/auditService';
+import { reqDb } from '../db/reqDb';
 import type {
   ProductSummary,
   RefineChange,
@@ -835,6 +836,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
 
 router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { name, description, connectionId, sourceTables } = req.body as {
       name: string;
       description?: string;
@@ -847,7 +849,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
       return;
     }
 
-    const [row] = await semanticDb('data_products')
+    const [row] = await db('data_products')
       .insert({
         name,
         description: description ?? null,
@@ -861,7 +863,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
 
     // Insert source table selections
     if (sourceTables?.length) {
-      await semanticDb('data_product_sources').insert(
+      await db('data_product_sources').insert(
         sourceTables.map((s) => ({
           data_product_id: productId,
           source_table_id: s.sourceTableId,
@@ -869,6 +871,13 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
         })),
       );
     }
+
+    await recordAudit(req, {
+      action:     'product.create',
+      entityType: 'product',
+      entityId:   productId,
+      context:    { name, connection_id: connectionId, source_table_count: sourceTables?.length ?? 0 },
+    });
 
     res.json({ ok: true, data: { id: productId } });
   } catch (err) { next(err); }

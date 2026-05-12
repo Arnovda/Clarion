@@ -9,6 +9,7 @@ import { buildProductSemanticContext, getProductWarehousePath } from '../service
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBuilder';
 import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
+import { reqDb } from '../db/reqDb';
 
 const router = Router();
 
@@ -596,6 +597,7 @@ router.get('/folders', requireAuth, async (req: Request, res: Response, next: Ne
 
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, title, description, spec, folder } = req.body as {
       connectionId: number;
       title: string;
@@ -604,7 +606,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       folder?: string;
     };
 
-    const [row] = await semanticDb('dashboards')
+    const [row] = await db('dashboards')
       .insert({
         user_id:       req.user!.sub,
         connection_id: connectionId,
@@ -775,7 +777,8 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
 router.delete('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const deleted = await semanticDb('dashboards')
+    const db = reqDb(req);
+    const deleted = await db('dashboards')
       .where({ id: req.params.id, user_id: req.user!.sub })
       .delete();
 

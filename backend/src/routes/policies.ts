@@ -12,6 +12,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { semanticDb } from '../db/knex';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validateFilterExpression } from '../services/policyEngine';
+import { reqDb } from '../db/reqDb';
+import { recordAudit } from '../services/auditService';
 
 const router = Router();
 
@@ -61,6 +63,7 @@ router.get('/mine', async (req: Request, res: Response, next: NextFunction) => {
 // ---------------------------------------------------------------------------
 router.post('/', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const {
       name, description, user_id, role, table_name,
       column_name, filter_expression, policy_type,
@@ -118,7 +121,7 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response, next:
 
     // If user_id is specified, verify user exists in the same tenant
     if (user_id) {
-      const targetUser = await semanticDb('users')
+      const targetUser = await db('users')
         .where({ id: user_id, tenant_id: req.user!.tenantId })
         .first();
       if (!targetUser) {
@@ -127,7 +130,7 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response, next:
       }
     }
 
-    const [policy] = await semanticDb('data_policies')
+    const [policy] = await db('data_policies')
       .insert({
         tenant_id: req.user!.tenantId,
         name: name.trim(),
@@ -143,6 +146,13 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response, next:
       })
       .returning('*');
 
+    await recordAudit(req, {
+      action:     'policy.create',
+      entityType: 'policy',
+      entityId:   (policy as { id: number }).id,
+      context:    { name, table_name, target_user_id: user_id ?? null, target_role: role ?? null, policy_type },
+    });
+
     res.json({ ok: true, data: policy });
   } catch (err) { next(err); }
 });
@@ -152,6 +162,7 @@ router.post('/', requireRole('admin'), async (req: Request, res: Response, next:
 // ---------------------------------------------------------------------------
 router.put('/:id', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const policyId = Number(req.params.id);
     const {
       name, description, user_id, role, table_name,
@@ -169,7 +180,7 @@ router.put('/:id', requireRole('admin'), async (req: Request, res: Response, nex
     };
 
     // Check policy exists in this tenant
-    const existing = await semanticDb('data_policies')
+    const existing = await db('data_policies')
       .where({ id: policyId, tenant_id: req.user!.tenantId })
       .first();
     if (!existing) {
@@ -211,9 +222,17 @@ router.put('/:id', requireRole('admin'), async (req: Request, res: Response, nex
       update.role = role;
     }
 
-    await semanticDb('data_policies').where({ id: policyId }).update(update);
+    await db('data_policies').where({ id: policyId }).update(update);
 
-    const updated = await semanticDb('data_policies').where({ id: policyId }).first();
+    const updated = await db('data_policies').where({ id: policyId }).first();
+
+    await recordAudit(req, {
+      action:     'policy.update',
+      entityType: 'policy',
+      entityId:   policyId,
+      context:    { fields_changed: Object.keys(update) },
+    });
+
     res.json({ ok: true, data: updated });
   } catch (err) { next(err); }
 });
@@ -223,9 +242,10 @@ router.put('/:id', requireRole('admin'), async (req: Request, res: Response, nex
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const policyId = Number(req.params.id);
 
-    const count = await semanticDb('data_policies')
+    const count = await db('data_policies')
       .where({ id: policyId, tenant_id: req.user!.tenantId })
       .delete();
 
@@ -233,6 +253,12 @@ router.delete('/:id', requireRole('admin'), async (req: Request, res: Response, 
       res.status(404).json({ ok: false, error: 'Policy not found' });
       return;
     }
+
+    await recordAudit(req, {
+      action:     'policy.delete',
+      entityType: 'policy',
+      entityId:   policyId,
+    });
 
     res.json({ ok: true });
   } catch (err) { next(err); }
