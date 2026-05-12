@@ -1,17 +1,21 @@
 'use client';
 
 /**
- * <AnalyticsCard> — left-column card on the new two-column /catalog.
+ * <AnalyticsCard> — left-column card on the two-column /catalog layout.
  *
- * Visual identity: bigger than a reference card, ocean-tinted accent,
- * metric count emphasised. Reads "this is something you analyse."
- * Mirrors the existing ProductCard styling for visual continuity but
- * trims the source-name eyebrow (the per-source band header already
- * says it).
+ * Visual identity:
+ *   - Tinted top-left accent (palette.edge, vertical 4px bar)
+ *   - Small uppercase mono `ANALYTICS` eyebrow with database icon
+ *   - Large product name (display font)
+ *   - 2-line description
+ *   - Three large stat boxes side-by-side: metrics / facts / tables
+ *
+ * The big stat boxes are the punchline. They tell the user at a glance
+ * how rich this data product is — "12 metrics" is meaningfully different
+ * from "1 metric" and the visual weight should reflect that.
  */
 
 import { Database } from 'lucide-react';
-import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 import type { SourcePalette } from './sourcePalette';
 
@@ -37,10 +41,6 @@ interface Props {
 export default function AnalyticsCard({
   data, selected, onSelect, palette, showCuratorSignals,
 }: Props) {
-  const refreshed = data.lastRefreshedAt
-    ? formatRelative(data.lastRefreshedAt)
-    : 'Not refreshed yet';
-
   // Off-normal status only — steady-state ("approved" / "success") is the
   // default and doesn't need chrome.
   const showStatus = showCuratorSignals
@@ -60,6 +60,7 @@ export default function AnalyticsCard({
           : 'border-line hover:border-ocean/40',
       )}
     >
+      {/* Left colored accent bar. */}
       <div className={cn('absolute left-0 top-0 bottom-0 w-1', palette.edge)} aria-hidden />
 
       <div className="pl-5 pr-5 py-5">
@@ -69,40 +70,79 @@ export default function AnalyticsCard({
           </div>
         )}
 
+        {/* Tiny "ANALYTICS" eyebrow above the name. */}
+        <div className={cn('flex items-center gap-1.5 mb-1', palette.eyebrow)}>
+          <Database className="w-3 h-3" strokeWidth={2} />
+          <span className="text-[10px] font-mono uppercase tracking-[0.14em]">
+            Analytics
+          </span>
+        </div>
+
         <h3 className={cn(
-          'font-display text-[19px] tracking-[-0.01em] leading-tight mb-1.5 transition-colors',
+          'font-display text-[22px] tracking-[-0.01em] leading-tight mb-2 transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
           {data.name}
         </h3>
 
         {data.description ? (
-          <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-4 min-h-[2.5em]">
+          <p className="text-[13.5px] text-ink-2 leading-relaxed line-clamp-2 mb-5">
             {data.description}
           </p>
         ) : (
-          <p className="text-[13px] text-muted italic mb-4 min-h-[2.5em]">
+          <p className="text-[13.5px] text-muted italic mb-5">
             No description yet.
           </p>
         )}
 
-        <div className="flex items-center gap-2 text-[11px] font-mono text-muted-2 tabular-nums pt-3 border-t border-line">
-          <span className={cn('font-medium', data.metricCount > 0 && palette.eyebrow)}>
-            {data.metricCount} {data.metricCount === 1 ? 'metric' : 'metrics'}
-          </span>
-          <span className="text-muted-2/40">·</span>
-          <span className="inline-flex items-center gap-1">
-            <Database className="w-3 h-3" strokeWidth={2} />
-            {data.factCount} {data.factCount === 1 ? 'fact' : 'facts'}
-          </span>
-          <span className="text-muted-2/40">·</span>
-          <span>
-            {data.tableCount} {data.tableCount === 1 ? 'table' : 'tables'}
-          </span>
-          <span className="ml-auto">{refreshed}</span>
+        {/* Three stat boxes. The first one uses the source palette tint so the
+            primary stat (metrics) gets visual emphasis; facts/tables stay neutral. */}
+        <div className="flex items-stretch gap-2">
+          <StatBox
+            value={data.metricCount}
+            label="metrics"
+            highlighted
+            palette={palette}
+          />
+          <StatBox
+            value={data.factCount}
+            label={data.factCount === 1 ? 'fact' : 'facts'}
+          />
+          <StatBox
+            value={data.tableCount}
+            label={data.tableCount === 1 ? 'table' : 'tables'}
+          />
         </div>
       </div>
     </button>
+  );
+}
+
+function StatBox({
+  value, label, highlighted, palette,
+}: {
+  value: number;
+  label: string;
+  highlighted?: boolean;
+  palette?: SourcePalette;
+}) {
+  return (
+    <div className={cn(
+      'flex-1 min-w-0 px-3 py-2.5 rounded-md border text-center',
+      highlighted && palette
+        ? cn(palette.tintBg, 'border-line')
+        : 'bg-softer/60 border-line',
+    )}>
+      <div className={cn(
+        'font-display text-[22px] tracking-[-0.01em] leading-none mb-1 tabular-nums',
+        highlighted && palette ? palette.eyebrow : 'text-ink',
+      )}>
+        {value}
+      </div>
+      <div className="text-[9.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
+        {label}
+      </div>
+    </div>
   );
 }
 

@@ -1,38 +1,32 @@
 'use client';
 
 /**
- * <CatalogSplitView> — the new two-column /catalog layout.
+ * <CatalogSplitView> — the two-column /catalog layout.
  *
- * Per-source bands stacked vertically. Each band has a colored header
- * (palette tied to the source's connector type) and two columns:
+ * Per-source bands stacked vertically. Each band is a rounded card with
+ * a colored top accent (palette.edge) + tinted header bar. Inside:
  *
- *   ┌─ Source name ─────────────────────────────────────────┐
- *   │  Analytics              │  Reference data             │
- *   │  ┌─────────────┐        │  ┌──────────┐ ┌──────────┐  │
- *   │  │ Sales       │        │  │ Customer │ │ Item     │  │
- *   │  └─────────────┘        │  └──────────┘ └──────────┘  │
- *   └────────────────────────────────────────────────────────┘
+ *   ┌─ Source name  · EXACTONLINE   1 analytic · 5 reference · • 2h ago ─┐
+ *   │  ANALYTICS — WHAT YOU CAN ANALYSE   REFERENCE DATA — WHAT YOU CAN ANALYSE IT BY  │
+ *   │  ┌─────────────┐                  ┌──────────┐ ┌──────────┐ ┌────────┐  │
+ *   │  │ Sales       │                  │ Customer │ │ Item     │ │ Date   │  │
+ *   │  │  [stats]    │                  └──────────┘ └──────────┘ └────────┘  │
+ *   │  └─────────────┘                  ┌──────────┐ ┌──────────┐             │
+ *   │                                    │ Journal │ │ ...      │             │
+ *   │                                    └──────────┘ └──────────┘             │
+ *   └────────────────────────────────────────────────────────────────────────┘
  *
- * Why this layout (not a global Analytics/Reference tab toggle):
- *   - User explicitly wants source-isolated mental model — no cross-
- *     source dim conformance today.
- *   - Two columns let users see "what to analyse" and "what to slice
- *     by" within the same source at a glance.
- *   - Asymmetric column widths (40 / 60) reflect typical density —
- *     2-3 analytics products vs 5-10 dimensions per source.
+ * The band collapses to just the header on chevron click.
  *
  * Search filters BOTH columns simultaneously. An empty source band
  * (after filtering) collapses cleanly so the user isn't staring at
- * empty rows. A source with zero analytics still renders the analytics
- * column header with an empty-state nudge so the asymmetry stays
- * visible.
- *
- * On <1100px wide the columns stack — analytics on top.
+ * empty rows.
  */
 
-import { useMemo } from 'react';
-import { Plus, AlertCircle } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Plus, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { formatRelativeShort } from '@/lib/dates';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 import AnalyticsCard, { type AnalyticsCardData } from './AnalyticsCard';
 import ReferenceCard, { type ReferenceCardData } from './ReferenceCard';
@@ -65,6 +59,18 @@ function matchSearch(needle: string, hay: string | null | undefined): boolean {
   return hay.toLowerCase().includes(needle.toLowerCase());
 }
 
+/** Latest refresh timestamp across all entities in a source block. */
+function latestRefresh(block: SourceBlockData): string | null {
+  let latest: string | null = null;
+  const consider = (ts: string | null) => {
+    if (!ts) return;
+    if (!latest || ts > latest) latest = ts;
+  };
+  block.analytics.forEach((a) => consider(a.lastRefreshedAt));
+  block.reference.forEach((r) => consider(r.lastRefreshedAt));
+  return latest;
+}
+
 export default function CatalogSplitView({
   sources, search, selectedAnalyticsId, selectedReferenceTableId,
   onSelectAnalytics, onSelectReference, onCreate, isAdmin, loading,
@@ -90,18 +96,16 @@ export default function CatalogSplitView({
 
   if (loading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-6">
         {[0, 1].map((i) => (
-          <div key={i} className="border border-line rounded-lg overflow-hidden bg-raised">
-            <div className="h-10 bg-softer/60 border-b border-line" />
-            <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6 p-5">
-              <div className="space-y-3">
-                <div className="h-32 bg-softer/40 rounded animate-pulse" />
-              </div>
-              <div className="space-y-2">
-                <div className="h-14 bg-softer/40 rounded animate-pulse" />
-                <div className="h-14 bg-softer/40 rounded animate-pulse" />
-                <div className="h-14 bg-softer/40 rounded animate-pulse" />
+          <div key={i} className="border border-line rounded-2xl overflow-hidden bg-raised">
+            <div className="h-12 bg-softer/60 border-b border-line" />
+            <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6 p-6">
+              <div className="h-40 bg-softer/40 rounded-lg animate-pulse" />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="h-28 bg-softer/40 rounded-md animate-pulse" />
+                <div className="h-28 bg-softer/40 rounded-md animate-pulse" />
+                <div className="h-28 bg-softer/40 rounded-md animate-pulse" />
               </div>
             </div>
           </div>
@@ -112,7 +116,7 @@ export default function CatalogSplitView({
 
   if (filtered.length === 0) {
     return (
-      <div className="border border-line rounded-lg p-12 text-center bg-raised">
+      <div className="border border-line rounded-2xl p-12 text-center bg-raised">
         <p className="text-[14px] text-muted">
           {search.trim()
             ? `No products or reference entities match "${search}".`
@@ -131,7 +135,7 @@ export default function CatalogSplitView({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       {filtered.map((s) => {
         const palette = paletteForSource(s.connectorType, s.name, s.sourceDeleted);
         return (
@@ -154,7 +158,7 @@ export default function CatalogSplitView({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// One source band: header + two columns
+// One source band: header + two columns. Collapsible.
 // ───────────────────────────────────────────────────────────────────────────
 
 function SourceBand({
@@ -173,16 +177,42 @@ function SourceBand({
   isAdmin?: boolean;
   onCreate?: () => void;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const refreshedAt = latestRefresh(block);
+  const refreshedLabel = refreshedAt ? formatRelativeShort(refreshedAt) : null;
+
   return (
-    <section className="border border-line rounded-lg overflow-hidden bg-raised">
-      {/* Source header — palette dot + connector type eyebrow + counts. */}
-      <header className={cn('px-5 py-3 border-b border-line flex items-center gap-3', palette.tintBg)}>
+    <section
+      className={cn(
+        'border border-line rounded-2xl overflow-hidden bg-raised',
+        // Subtle colored top edge — wraps over the header. ~3px tall, palette-tinted.
+        'shadow-sm',
+      )}
+    >
+      {/* Colored top accent strip. */}
+      <div className={cn('h-1', palette.edge)} aria-hidden />
+
+      {/* Header — clickable to collapse/expand. */}
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className={cn(
+          'w-full px-6 py-4 flex items-center gap-3 text-left transition-colors',
+          palette.tintBg,
+          'hover:brightness-[0.99]',
+        )}
+        aria-expanded={!collapsed}
+      >
         <span className={cn('w-2.5 h-2.5 rounded-full shrink-0', palette.dot)} aria-hidden />
-        <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink">
+        <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">
           {block.name}
         </h2>
         {block.connectorType && !block.sourceDeleted && (
-          <span className={cn('text-[10px] uppercase font-mono tracking-[0.1em]', palette.eyebrow)}>
+          <span className={cn(
+            'text-[10px] uppercase font-mono tracking-[0.14em] px-2 py-0.5 rounded border',
+            palette.eyebrow,
+            'border-current/30 bg-raised/60',
+          )}>
             {block.connectorType}
           </span>
         )}
@@ -191,75 +221,105 @@ function SourceBand({
             source deleted
           </span>
         )}
-        <span className="ml-auto text-[11px] font-mono text-muted-2 tabular-nums">
-          {block.analytics.length} {block.analytics.length === 1 ? 'analytic' : 'analytics'}
-          <span className="text-muted-2/40 mx-1.5">·</span>
-          {block.reference.length} reference
+        <span className="ml-auto flex items-center gap-3 text-[12px] font-mono text-muted-2 tabular-nums">
+          <span className={cn(palette.eyebrow, 'font-medium')}>
+            {block.analytics.length} {block.analytics.length === 1 ? 'analytic' : 'analytics'}
+          </span>
+          <span className="text-muted-2/40">·</span>
+          <span>{block.reference.length} reference</span>
+          {refreshedLabel && (
+            <>
+              <span className="text-muted-2/40">·</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className={cn('w-1.5 h-1.5 rounded-full', palette.dot)} aria-hidden />
+                {refreshedLabel}
+              </span>
+            </>
+          )}
+          <ChevronUp
+            className={cn(
+              'w-4 h-4 text-muted-2 transition-transform duration-200 ml-1',
+              collapsed && 'rotate-180',
+            )}
+            strokeWidth={2}
+          />
         </span>
-      </header>
+      </button>
 
-      {/* Two columns. 40 / 60 split — reference data tends to be denser. */}
-      <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6 p-5">
-        {/* Left: Analytics */}
-        <div>
-          <ColumnHeader title="Analytics" subtitle="What you can analyse" />
-          {block.analytics.length === 0 ? (
-            <EmptyAnalytics
-              isAdmin={isAdmin}
-              onCreate={onCreate}
-              connectionName={block.name}
+      {!collapsed && (
+        <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6 p-6">
+          {/* Left: Analytics */}
+          <div>
+            <ColumnHeader
+              title="Analytics"
+              subtitle="What you can analyse"
             />
-          ) : (
-            <div className="space-y-3">
-              {block.analytics.map((a) => (
-                <AnalyticsCard
-                  key={a.productId}
-                  data={a}
-                  selected={selectedAnalyticsId === a.productId}
-                  onSelect={() => onSelectAnalytics(a.productId)}
-                  palette={palette}
-                  showCuratorSignals={showCuratorSignals}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+            {block.analytics.length === 0 ? (
+              <EmptyAnalytics
+                isAdmin={isAdmin}
+                onCreate={onCreate}
+                connectionName={block.name}
+              />
+            ) : (
+              <div className="space-y-3">
+                {block.analytics.map((a) => (
+                  <AnalyticsCard
+                    key={a.productId}
+                    data={a}
+                    selected={selectedAnalyticsId === a.productId}
+                    onSelect={() => onSelectAnalytics(a.productId)}
+                    palette={palette}
+                    showCuratorSignals={showCuratorSignals}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
-        {/* Right: Reference data */}
-        <div>
-          <ColumnHeader title="Reference data" subtitle="What you can analyse it by" />
-          {block.reference.length === 0 ? (
-            <p className="text-[12px] text-muted italic px-1">
-              No reference entities for this source yet.
-            </p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {block.reference.map((r) => (
-                <ReferenceCard
-                  key={r.tableId}
-                  data={r}
-                  selected={selectedReferenceTableId === r.tableId}
-                  onSelect={() => onSelectReference(r.tableId)}
-                  palette={palette}
-                />
-              ))}
-            </div>
-          )}
+          {/* Right: Reference data — 3 columns on wide screens. */}
+          <div>
+            <ColumnHeader
+              title="Reference data"
+              subtitle="What you can analyse it by"
+            />
+            {block.reference.length === 0 ? (
+              <p className="text-[12px] text-muted italic px-1">
+                No reference entities for this source yet.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                {block.reference.map((r) => (
+                  <ReferenceCard
+                    key={r.tableId}
+                    data={r}
+                    selected={selectedReferenceTableId === r.tableId}
+                    onSelect={() => onSelectReference(r.tableId)}
+                    palette={palette}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
 
-function ColumnHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+/**
+ * Section header — `LABEL — SUBTITLE` on one line, all in mono uppercase.
+ * Matches the eyebrow style used across Observatory chrome.
+ */
+function ColumnHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="mb-3">
-      <p className="text-[10px] font-mono tracking-[0.16em] uppercase text-muted">
+    <div className="mb-4 flex items-baseline gap-2">
+      <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted">
         {title}
-      </p>
-      {subtitle && (
-        <p className="text-[11px] text-muted-2 mt-0.5">{subtitle}</p>
-      )}
+      </span>
+      <span className="text-muted-2/50 text-[10.5px]">—</span>
+      <span className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
+        {subtitle}
+      </span>
     </div>
   );
 }

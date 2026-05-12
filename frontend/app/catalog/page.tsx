@@ -285,17 +285,22 @@ function CatalogInner() {
   // in structure mode the layout is the legacy tree + center detail.
   const detailOpen = selection.scope !== 'empty';
 
+  // Subtitle stats — "N sources · N analytics · N dimensions" — computed
+  // from the catalog blocks. Used in the body hero (cards mode only).
+  const headerStats = useMemo(() => {
+    const sources = catalogBlocks.length;
+    const analytics = catalogBlocks.reduce((a, b) => a + b.analytics.length, 0);
+    const dimensions = catalogBlocks.reduce((a, b) => a + b.reference.length, 0);
+    return { sources, analytics, dimensions };
+  }, [catalogBlocks]);
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* Top bar */}
-      <div className="bg-raised border-b border-line px-6 py-3 flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-4 min-w-0">
-          <div className="min-w-0">
-            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Catalog</p>
-            <h1 className="font-display text-[20px] text-ink leading-tight tracking-[-0.02em] truncate">
-              {viewMode === 'cards' ? 'Data products' : 'Data sources & products'}
-            </h1>
-          </div>
+      {/* Slim chrome bar — only the controls live here now. The hero
+          (title + subtitle stats + search) lives inside the body so it
+          can scroll with the content like a normal page. */}
+      <div className="bg-raised border-b border-line px-6 py-2.5 flex items-center justify-between flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
           {viewMode === 'structure' && <LayerChips value={layer} onChange={updateLayer} />}
         </div>
         <div className="flex items-center gap-2">
@@ -325,6 +330,7 @@ function CatalogInner() {
           loading={productsLoading}
           search={search}
           onSearchChange={setSearch}
+          headerStats={headerStats}
           selectedId={productRootId}
           selectedReferenceTableId={referenceTableId}
           onSelectProduct={handleSelectProductCard}
@@ -404,6 +410,8 @@ function CardsBody(props: {
   loading: boolean;
   search: string;
   onSearchChange: (s: string) => void;
+  /** Counts shown in the hero subtitle — N sources / analytics / dimensions. */
+  headerStats: { sources: number; analytics: number; dimensions: number };
   selectedId: number | null;
   selectedReferenceTableId: number | null;
   onSelectProduct: (id: number) => void;
@@ -501,12 +509,14 @@ function CardsBody(props: {
           on lg+ so the cards column always gets at least the rest of the
           screen. No more max-w cap on cards (was needed when the detail
           had flex-1 and could stretch to half the screen). */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6 transition-all">
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-8 transition-all">
         <div className="max-w-5xl mx-auto">
-          {/* Search bar */}
-          <div className="mb-6">
-            <SearchInput value={props.search} onChange={props.onSearchChange} />
-          </div>
+          {/* Hero — large display title, mono subtitle counts, search inline. */}
+          <CatalogHero
+            stats={props.headerStats}
+            search={props.search}
+            onSearchChange={props.onSearchChange}
+          />
 
           {/* Glossary terms surface ABOVE the product grid when the user
               is searching. Canonical business definitions before products
@@ -667,22 +677,61 @@ function LayerChips({ value, onChange }: { value: LayerFilter; onChange: (v: Lay
   );
 }
 
+/**
+ * <CatalogHero> — the page header for cards mode.
+ *
+ *   Data Catalog                        ┌────────────────────┐
+ *   2 sources · 3 analytics · 11 dimensions   │ search…            │
+ *                                       └────────────────────┘
+ *
+ * Display-font title on the left, mono-uppercase subtitle counts below
+ * (filled in from the catalog feed); search input on the right of the
+ * same row on wide screens, wrapping below the title on narrow.
+ */
+function CatalogHero({
+  stats, search, onSearchChange,
+}: {
+  stats: { sources: number; analytics: number; dimensions: number };
+  search: string;
+  onSearchChange: (s: string) => void;
+}) {
+  return (
+    <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-8">
+      <div className="flex-1 min-w-0">
+        <h1 className="font-display text-[36px] text-ink leading-[1.05] tracking-[-0.025em] mb-1.5">
+          Data Catalog
+        </h1>
+        <p className="text-[11.5px] font-mono tracking-[0.06em] text-muted-2 tabular-nums">
+          {stats.sources} {stats.sources === 1 ? 'source' : 'sources'}
+          <span className="text-muted-2/40 mx-1.5">·</span>
+          {stats.analytics} {stats.analytics === 1 ? 'analytic' : 'analytics'}
+          <span className="text-muted-2/40 mx-1.5">·</span>
+          {stats.dimensions} {stats.dimensions === 1 ? 'dimension' : 'dimensions'}
+        </p>
+      </div>
+      <div className="lg:flex-1 lg:max-w-md lg:mt-1">
+        <SearchInput value={search} onChange={onSearchChange} />
+      </div>
+    </header>
+  );
+}
+
 function SearchInput({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   return (
-    <div className="relative max-w-xl">
-      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-2" strokeWidth={1.75} />
+    <div className="relative">
+      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-2" strokeWidth={1.75} />
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search data products by name or description…"
-        className="w-full pl-9 pr-9 py-2.5 text-[13.5px] bg-raised border border-line rounded-md focus:outline-none focus:border-ocean focus:ring-2 focus:ring-ocean/20 transition-colors"
+        className="w-full pl-10 pr-9 py-3 text-[13.5px] bg-raised border border-line rounded-full focus:outline-none focus:border-ocean focus:ring-2 focus:ring-ocean/20 transition-colors shadow-sm"
       />
       {value && (
         <button
           type="button"
           onClick={() => onChange('')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-soft text-muted hover:text-ink"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full hover:bg-soft text-muted hover:text-ink"
           title="Clear"
         >
           <X className="w-3.5 h-3.5" strokeWidth={2} />
