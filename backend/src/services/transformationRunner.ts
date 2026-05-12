@@ -15,6 +15,7 @@ import { tenantQuery } from './tenantQuery';
 import { syncProductToNeo4j } from './productGraphSync';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { invalidateWidgetCache } from './widgetCache';
+import { invalidateFilterOptionsCache } from './filterOptionsCache';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import {
   publishProductTable,
@@ -882,9 +883,13 @@ export async function runProductTransformation(
       .then(() => { warmConn.disconnect(); })
       .catch((err) => console.warn('[transformationRunner] DuckDB pool warm-up failed (non-fatal):', err));
 
-    // Bust the widget result cache so stale rows aren't served from memory.
+    // Bust the widget result cache + filter dropdown options cache so
+    // stale rows / stale dropdowns aren't served from memory. Both
+    // cache-bust on the same trigger because new data may add new
+    // dimension values AND make old aggregates stale.
     if (tenantId) {
       invalidateWidgetCache(tenantId);
+      invalidateFilterOptionsCache(tenantId);
     }
   }
 

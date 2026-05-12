@@ -9,6 +9,7 @@ import { buildProductSemanticContext, getProductWarehousePath } from '../service
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBuilder';
 import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
+import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
 
 const router = Router();
@@ -460,6 +461,134 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/dashboards/batch-execute-stream — SSE variant of /batch-execute
+//
+// Emits one `widget` event per widget as its SQL resolves, so the frontend
+// can render each widget independently and a slow widget no longer holds
+// back fast ones. End-to-end shape is identical to /batch-execute; just
+// streamed instead of batched.
+//
+// Events:
+//   data: {"type":"widget","id":"w1","rows":[…]}       — success
+//   data: {"type":"widget","id":"w2","error":"…"}      — per-widget failure
+//   data: {"type":"done"}                              — all widgets resolved
+//
+// Cache behaviour: cache lookup happens BEFORE the connector is opened,
+// so a fully-cached dashboard emits every event without touching DuckDB.
+// ---------------------------------------------------------------------------
+
+router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { connectionId, widgets, dataLayer } = req.body as {
+      connectionId: number;
+      widgets: Array<{ id: string; sql: string; filterValues: Record<string, string> }>;
+      dataLayer?: 'product' | 'source';
+    };
+
+    if (!Array.isArray(widgets) || widgets.length === 0) {
+      res.status(400).json({ ok: false, error: 'widgets array required' });
+      return;
+    }
+
+    const tenantId = req.user!.tenantId;
+    const useSource = dataLayer === 'source';
+
+    // Resolve connection + warehouse path under a tenant-scoped trx (same
+    // pattern as /batch-execute) BEFORE we start streaming, so a 404 on
+    // the connection is still a normal JSON error not a partial SSE.
+    const { connection, productPath } = await semanticDb.transaction(async (trx) => {
+      if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const conn = await trx('connections').where({ id: connectionId }).first();
+      const pp = useSource ? null : await getProductWarehousePath(connectionId, trx);
+      return { connection: conn, productPath: pp };
+    });
+
+    if (!connection) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+
+    // Start SSE. From here on every error path emits a `done` event
+    // instead of throwing JSON.
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const emit = (event: Record<string, unknown>) => {
+      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client disconnected */ }
+    };
+
+    // Resolve each widget's SQL + cache lookup synchronously. Cache hits
+    // get flushed first so the user sees them within a tick.
+    const resolved = widgets.map(({ id, sql, filterValues }) => ({
+      id,
+      resolvedSql: resolveWidgetFilters(sql, filterValues ?? {}),
+    }));
+
+    // Emit any cache hits IMMEDIATELY. Drop them from the to-fetch list.
+    const remaining: Array<{ id: string; resolvedSql: string }> = [];
+    for (const w of resolved) {
+      const cached = tenantId ? getWidgetCache(tenantId, w.resolvedSql) : null;
+      if (cached) {
+        emit({ type: 'widget', id: w.id, rows: cached, cached: true });
+      } else {
+        remaining.push(w);
+      }
+    }
+
+    if (remaining.length === 0) {
+      emit({ type: 'done' });
+      res.end();
+      return;
+    }
+
+    const connector = productPath
+      ? await createProductConnector(productPath, connection.id, tenantId)
+      : await createConnector(connection);
+    await connector.connect();
+
+    let aborted = false;
+    req.on('close', () => { aborted = true; });
+
+    try {
+      // Fire all queries in parallel; emit each result as it resolves.
+      // Promise.all wouldn't give us per-resolution timing — but firing
+      // promises and emitting on .then() does.
+      await Promise.all(
+        remaining.map(async ({ id, resolvedSql }) => {
+          try {
+            const result = await connector.executeQuery(resolvedSql);
+            if (aborted) return;
+            const rows = result.rows as Record<string, unknown>[];
+            if (tenantId) putWidgetCache(tenantId, resolvedSql, rows);
+            emit({ type: 'widget', id, rows });
+          } catch (err: unknown) {
+            if (aborted) return;
+            const raw = err instanceof Error ? err.message : String(err);
+            console.error(`[batch-execute-stream] widget ${id} FAILED: ${raw.slice(0, 400)}`);
+            console.error(`[batch-execute-stream] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
+            const friendly = raw.includes('does not exist')
+              ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
+              : raw.includes('Serialization')
+                ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
+                : 'This chart could not load data. Try regenerating the dashboard.';
+            emit({ type: 'widget', id, error: friendly });
+          }
+        }),
+      );
+      if (!aborted) emit({ type: 'done' });
+    } finally {
+      connector.disconnect();
+      try { res.end(); } catch { /* ignore */ }
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/dashboards/filter-options
 // ---------------------------------------------------------------------------
 
@@ -477,8 +606,18 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
       return;
     }
 
-    // Wrap all RLS-dependent queries in a single transaction
     const filterTenantId = req.user!.tenantId;
+
+    // Cache check — distinct values change only on refresh, so cached
+    // dropdowns are correct between refreshes. Invalidated from the
+    // transformation runner on success.
+    const cached = getFilterOptionsCache(filterTenantId, connectionId, table, column);
+    if (cached) {
+      res.json({ ok: true, data: { options: cached, cached: true } });
+      return;
+    }
+
+    // Wrap all RLS-dependent queries in a single transaction
     const useSource = dataLayer === 'source';
     const { connection: filterConn, productPath: filterProductPath } = await semanticDb.transaction(async (trx) => {
       if (filterTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(filterTenantId)}'`);
@@ -502,6 +641,7 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
         `SELECT DISTINCT "${column}" FROM "${table}" WHERE "${column}" IS NOT NULL ORDER BY "${column}" LIMIT 100`,
       );
       const options = result.rows.map((r) => String((r as Record<string, unknown>)[column]));
+      putFilterOptionsCache(filterTenantId, connectionId, table, column, options);
       res.json({ ok: true, data: { options } });
     } finally {
       connector.disconnect();

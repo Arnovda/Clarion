@@ -184,50 +184,22 @@ export default function DashboardsPage() {
         };
       });
 
-      try {
-        const res = await api.post('/dashboards/batch-execute', {
-          connectionId: connId,
-          widgets: widgetsPayload,
-          ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
-        });
+      // SSE-streamed batch execute. Each widget is emitted as soon as its
+      // SQL resolves on the server, so a slow widget no longer holds back
+      // fast ones. Final `done` event triggers the insights post-step.
+      const body = JSON.stringify({
+        connectionId: connId,
+        widgets: widgetsPayload,
+        ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+      });
+      const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
+      const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
 
-        if (res.data.ok) {
-          const results = res.data.data.results as Record<string, { rows?: Record<string, unknown>[]; error?: string }>;
-          const newEntries: Record<string, WidgetData> = {};
-          for (const [id, r] of Object.entries(results)) {
-            newEntries[id] = r.error
-              ? { rows: [], loading: false, error: r.error }
-              : { rows: r.rows ?? [], loading: false };
-          }
-          // Update the client-side cache with fresh data
-          widgetCacheRef.current = { ...widgetCacheRef.current, ...newEntries };
-          setWidgetData((prev) => ({ ...prev, ...newEntries }));
+      // Collected widget results — fed into insights at the end. Mirrors
+      // the shape the old batch-execute response returned.
+      const finalResults: Record<string, { rows?: Record<string, unknown>[]; error?: string }> = {};
 
-          // Fire insights once on first load (not on filter/drill changes)
-          if (!hasCachedData) {
-            const summaries = spec.widgets.map((w) => ({
-              title: w.title,
-              type: w.type,
-              rows: (results[w.id]?.rows ?? []).slice(0, 5),
-            }));
-            setInsights(null);
-            setInsightsDismissed(false);
-            setInsightsLoading(true);
-            api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
-              .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
-              .catch(() => {})
-              .finally(() => setInsightsLoading(false));
-          }
-        } else {
-          setWidgetData((prev) => {
-            const next = { ...prev };
-            for (const w of spec.widgets) next[w.id] = { rows: [], loading: false, error: res.data.error ?? 'Query failed' };
-            return next;
-          });
-        }
-      } catch (err: unknown) {
-        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Query failed';
-        // On error, clear the revalidating flag but keep showing cached data
+      const markAllAsError = (msg: string) => {
         setWidgetData((prev) => {
           const next = { ...prev };
           for (const w of spec.widgets) {
@@ -236,6 +208,78 @@ export default function DashboardsPage() {
           }
           return next;
         });
+      };
+
+      try {
+        const res = await fetch(`${baseURL}/dashboards/batch-execute-stream`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body,
+        });
+
+        if (!res.ok || !res.body) {
+          markAllAsError(res.statusText || 'Query failed');
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        // Parse SSE — events are separated by blank lines, each starting
+        // with "data: ". We accumulate partial chunks until we see "\n\n".
+        const processEvent = (raw: string) => {
+          const line = raw.split('\n').find((l) => l.startsWith('data: '));
+          if (!line) return;
+          const payload = line.slice(6);
+          let evt: { type?: string; id?: string; rows?: Record<string, unknown>[]; error?: string };
+          try { evt = JSON.parse(payload); } catch { return; }
+          if (evt.type === 'widget' && evt.id) {
+            const data: WidgetData = evt.error
+              ? { rows: [], loading: false, error: evt.error }
+              : { rows: evt.rows ?? [], loading: false };
+            finalResults[evt.id] = evt.error ? { error: evt.error } : { rows: evt.rows ?? [] };
+            widgetCacheRef.current[evt.id] = data;
+            setWidgetData((prev) => ({ ...prev, [evt.id!]: data }));
+          }
+        };
+
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buf.indexOf('\n\n')) >= 0) {
+            const eventStr = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            if (eventStr.trim()) processEvent(eventStr);
+          }
+        }
+
+        // Fire insights once on first load (not on filter/drill changes).
+        // Same behaviour as the old non-streaming path.
+        if (!hasCachedData) {
+          const summaries = spec.widgets.map((w) => ({
+            title: w.title,
+            type: w.type,
+            rows: (finalResults[w.id]?.rows ?? []).slice(0, 5),
+          }));
+          setInsights(null);
+          setInsightsDismissed(false);
+          setInsightsLoading(true);
+          api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
+            .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
+            .catch(() => {})
+            .finally(() => setInsightsLoading(false));
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Query failed';
+        markAllAsError(msg);
       }
     },
     [],
