@@ -25,8 +25,10 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 | Control | Implementation |
 |---|---|
 | Password hashing | bcrypt, cost factor 12 |
-| Token format | JWT (HS256), 8h expiry |
+| Access token | JWT (HS256), 15-minute expiry |
+| Refresh token | 30-day expiry, sha256-hashed in `refresh_tokens` table, server-side revocable |
 | Token secret strength | Production refuses to start with `< 32 chars` or known-weak secrets |
+| Cascade revocations | password change, password reset, user deactivate, role change → revokes all refresh tokens for affected user |
 | Role model | 3 roles: `admin`, `analyst`, `viewer` |
 | Role enforcement | Per-route `requireRole(...)` middleware after `requireAuth` |
 | Self-demotion guard | Admin cannot change their own role or deactivate themselves |
@@ -35,8 +37,8 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 **Gaps still open:**
 
-- No JWT refresh tokens / revocation table. A stolen 8h token stays valid until natural expiry. Planned as Sprint 2.
 - No MFA. Planned as Sprint 3 when first enterprise customer asks.
+- Refresh tokens stored in localStorage (not httpOnly cookies). XSS protection is therefore not absolute — partially mitigated by short access-token lifetime + server-side revocation. httpOnly cookies are a follow-up.
 
 ---
 
@@ -134,12 +136,13 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 These are real gaps. Listed so we're transparent with customers and ourselves.
 
-### Short-term (Sprint 2 — 3-4 weeks)
+### Short-term (Sprint 2 — partially shipped)
 
-1. **JWT refresh-token rotation + revocation** — 8h access tokens stay valid until natural expiry if stolen.
-2. **Audit log UI** — table exists, no admin-facing view to browse it.
-3. **Migrate remaining routes to `req.dbTrx`** — critical mutations are done, broader migration is incremental.
-4. **Penetration test** — budget allocated, vendor TBD.
+- ✅ **JWT refresh tokens + revocation** — 15-min access + 30-day refresh; revokeAll on password change / role change / deactivate
+- ✅ **Audit log UI** — `/users → Audit log` (admin only)
+- ✅ **Public `/security` page**
+- ⚠️ **Migrate remaining routes to `req.dbTrx`** — `users.ts` admin mutations migrated as the pattern reference. The remaining ~25 route files use the session-level SET fallback (which IS racy under concurrency). Migration is mechanical and incremental.
+- 🟦 **Penetration test** — budget allocated, vendor TBD.
 
 ### Medium-term (Sprint 3 — 1-2 months)
 

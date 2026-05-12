@@ -44,6 +44,14 @@ router.get('/', requireRole('admin'), async (req: Request, res: Response, next: 
 // ---------------------------------------------------------------------------
 router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // Use the per-request tenant-scoped transaction (req.dbTrx) opened by
+    // requireAuth. Every query through it runs inside a SET LOCAL block,
+    // immune to the connection-pool leak that affects session-level
+    // tenant context. See middleware/auth.ts. Falls back to semanticDb
+    // when the trx wasn't available (anonymous routes, but this one is
+    // auth'd so it's always there in practice).
+    const db = req.dbTrx ?? semanticDb;
+
     const { email, displayName, role } = req.body as {
       email: string;
       displayName: string;
@@ -64,7 +72,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
     }
 
     // Check if email already exists in this tenant
-    const existing = await semanticDb('users').where({ email: email.toLowerCase() }).first();
+    const existing = await db('users').where({ email: email.toLowerCase() }).first();
     if (existing) {
       res.status(409).json({ ok: false, error: 'A user with this email already exists' });
       return;
@@ -78,7 +86,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
     const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
     const resetExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-    const [user] = await semanticDb('users')
+    const [user] = await db('users')
       .insert({
         tenant_id: req.user!.tenantId,
         email: email.toLowerCase(),
@@ -118,6 +126,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
 // ---------------------------------------------------------------------------
 router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = req.dbTrx ?? semanticDb;
     const userId = Number(req.params.id);
     const { role, displayName } = req.body as { role?: string; displayName?: string };
 
@@ -133,21 +142,34 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
 
     // Capture previous state for the audit row — surfacing 'role changed
     // from analyst → admin' is more useful than just 'role changed'.
-    const before = await semanticDb('users')
+    const before = await db('users')
       .where({ id: userId })
       .select('role', 'display_name')
       .first();
 
-    const count = await semanticDb('users').where({ id: userId }).update(update);
+    const count = await db('users').where({ id: userId }).update(update);
     if (count === 0) {
       res.status(404).json({ ok: false, error: 'User not found' });
       return;
     }
 
-    const user = await semanticDb('users')
+    const user = await db('users')
       .where({ id: userId })
       .select('id', 'email', 'display_name', 'role', 'is_active', 'created_at', 'updated_at')
       .first();
+
+    // If the role actually changed, invalidate the affected user's
+    // refresh tokens so the new role takes effect within at most one
+    // access-token lifetime (~15 min). Without this, a demoted user
+    // could keep their old elevated JWT until natural expiry. Best-
+    // effort — non-fatal if it fails.
+    if (before?.role && user?.role && before.role !== user.role) {
+      try {
+        await revokeAllForUser(userId, 'role_change');
+      } catch (err) {
+        console.warn('[users.patch] revokeAllForUser failed', err);
+      }
+    }
 
     await recordAudit(req, {
       action:     'user.update',
@@ -168,6 +190,7 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
 // ---------------------------------------------------------------------------
 router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = req.dbTrx ?? semanticDb;
     const userId = Number(req.params.id);
 
     if (userId === req.user!.sub) {
@@ -175,13 +198,22 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
       return;
     }
 
-    const count = await semanticDb('users')
+    const count = await db('users')
       .where({ id: userId })
       .update({ is_active: false, updated_at: new Date().toISOString() });
 
     if (count === 0) {
       res.status(404).json({ ok: false, error: 'User not found' });
       return;
+    }
+
+    // Deactivating a user must kick them out immediately. Without
+    // revoking their tokens, a soft-deleted user could keep using
+    // the platform until their access token naturally expired.
+    try {
+      await revokeAllForUser(userId, 'user_deactivated');
+    } catch (err) {
+      console.warn('[users.deactivate] revokeAllForUser failed', err);
     }
 
     await recordAudit(req, {
