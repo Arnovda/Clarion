@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
-  Home as HomeIcon, DollarSign,
+  Home as HomeIcon, DollarSign, ChevronLeft,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -46,41 +46,16 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // Home — daily driver, default landing
   { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'home' },
-
-  // Discover — find your data
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
   { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
-
-  // Analyze — consumer surfaces. "What does my data tell me?"
-  // /query (Ask AI) auto-detects investigate questions ("Why did revenue
-  // drop?") and renders the multi-step trail inline with a 🕵️ indicator.
-  // /investigate is no longer in the rail — it stays as a deep-link alias
-  // for morning-brief "Why?" buttons and replay URLs.
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'analyze' },
-
-  // Build — producer surfaces. "How do I design and refresh my data products?"
-  // Vocabulary lock:
-  //   • /catalog → "Catalog" — the consumer discovery surface (cards UX)
-  //   • /products → "Build" — the producer authoring surface where admins/
-  //     analysts design star schemas, edit transformations, manage KPIs.
-  // The "Build" label appears twice (group header + destination): the group
-  // is uppercase mono eyebrow type, the destination is sentence-case sans
-  // — typographically distinct, semantically aligned (this is where you
-  // build things). Earlier "Datasets" label was a soften-the-engineering-
-  // term attempt; dropped because it collided with "Catalog" and gave no
-  // hint about what the user does there.
   { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'build' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'build' },
-
-  // Curate — keep definitions correct (analyst+)
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
   { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'review' },
-
-  // Settings — admin only
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
   { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
@@ -95,10 +70,6 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/products':   ['/products'],
   '/pipelines':  ['/pipelines'],
   '/glossary':   ['/glossary'],
-  // Curator's workshop. /setup retained as a back-compat alias so any
-  // bookmarked URLs from before the rename still light up the active
-  // state. Phase 4 of the catalog redesign moved /setup → /sources to
-  // give the curator surface an honest name.
   '/sources':    ['/sources', '/setup'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
@@ -106,8 +77,6 @@ const ROUTE_ALIASES: Record<string, string[]> = {
 };
 
 const GROUP_LABELS: Record<Group, string> = {
-  // Home is unlabelled — it's the only item in its group, a nameless
-  // header would be visual noise. The rendering loop skips empty labels.
   home:     '',
   discover: 'Discover',
   analyze:  'Analyze',
@@ -118,17 +87,59 @@ const GROUP_LABELS: Record<Group, string> = {
 
 const GROUP_ORDER: Group[] = ['home', 'discover', 'analyze', 'build', 'curate', 'settings'];
 
+// ─── Sizing constants ─────────────────────────────────────────────────────
+// Width range for the resize handle. Below MIN we'd start clipping labels;
+// above MAX the rail starts to feel like a sidebar instead of a nav.
+const NAV_DEFAULT_WIDTH   = 220;
+const NAV_MIN_WIDTH       = 180;
+const NAV_MAX_WIDTH       = 360;
+const NAV_COLLAPSED_WIDTH = 56;
+const STORAGE_KEY         = 'clarion:navRail';
+
+interface PersistedState {
+  width: number;
+  collapsed: boolean;
+}
+
 export default function IconRail() {
   const pathname = usePathname();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [sourcesCount, setSourcesCount] = useState<number>(0);
 
+  // Width + collapsed state — hydrated from localStorage on first effect
+  // so the SSR render stays deterministic (avoids hydration warnings).
+  const [width, setWidth] = useState<number>(NAV_DEFAULT_WIDTH);
+  const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [hydrated, setHydrated] = useState<boolean>(false);
+
   useEffect(() => {
     setPayload(getTokenPayload());
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<PersistedState>;
+        if (typeof parsed.width === 'number' && parsed.width >= NAV_MIN_WIDTH && parsed.width <= NAV_MAX_WIDTH) {
+          setWidth(parsed.width);
+        }
+        if (typeof parsed.collapsed === 'boolean') {
+          setCollapsed(parsed.collapsed);
+        }
+      }
+    } catch { /* ignore — fall back to defaults */ }
+    setHydrated(true);
   }, []);
 
-  // Load badge counts for analyst+
+  // Persist on change (but skip until after hydration so we don't immediately
+  // overwrite the stored value with a default-state snapshot).
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ width, collapsed } satisfies PersistedState));
+    } catch { /* ignore */ }
+  }, [width, collapsed, hydrated]);
+
+  // Badge counts for analyst+
   useEffect(() => {
     const role = payload?.role;
     if (role !== 'admin' && role !== 'analyst') return;
@@ -141,7 +152,6 @@ export default function IconRail() {
       try {
         const res = await api.get('/connections');
         const conns = (res.data.data ?? []) as Array<{ profiling_status?: string | null }>;
-        // "pending" sources = those without a successful profiling run
         const pending = conns.filter((c) => !c.profiling_status || c.profiling_status === 'pending' || c.profiling_status === 'failed').length;
         if (!cancelled) setSourcesCount(pending);
       } catch { /* noop */ }
@@ -163,56 +173,186 @@ export default function IconRail() {
     return 0;
   }
 
+  // ─── Drag-to-resize handle ─────────────────────────────────────────────
+  // While the user drags we attach window-level listeners so the gesture
+  // continues even when the cursor leaves the handle. body cursor + select
+  // overrides give visual + interaction feedback during the drag.
+  const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const startResize = (e: React.MouseEvent) => {
+    if (collapsed) return;
+    e.preventDefault();
+    dragStateRef.current = { startX: e.clientX, startWidth: width };
+    const onMove = (ev: MouseEvent) => {
+      const s = dragStateRef.current;
+      if (!s) return;
+      const next = Math.min(NAV_MAX_WIDTH, Math.max(NAV_MIN_WIDTH, s.startWidth + ev.clientX - s.startX));
+      setWidth(next);
+    };
+    const onUp = () => {
+      dragStateRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  const effectiveWidth = collapsed ? NAV_COLLAPSED_WIDTH : width;
+
   return (
-    <aside
-      aria-label="Primary navigation"
-      className="w-[220px] min-w-[220px] h-full flex flex-col bg-raised border-r border-line shrink-0 overflow-y-auto"
+    <div
+      className="relative h-full shrink-0 transition-[width] duration-150 ease-out"
+      style={{ width: effectiveWidth }}
     >
-      <nav className="flex-1 flex flex-col gap-0.5 px-2.5 py-3.5">
-        {GROUP_ORDER.map((g) => {
-          const items = visible.filter((i) => i.group === g);
-          if (items.length === 0) return null;
-          return (
-            <div key={g} className="contents">
-              {GROUP_LABELS[g] && (
-                <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted px-2.5 pt-3 pb-1.5 font-medium">
-                  {GROUP_LABELS[g]}
-                </div>
-              )}
-              {items.map((it) => {
-                const active = isActive(it.href);
-                const badge = badgeFor(it);
-                return (
-                  <Link
-                    key={it.key}
-                    href={it.href}
-                    className={cn(
-                      'flex items-center gap-2.5 px-2.5 py-2 rounded-sm text-[13.5px]',
-                      'transition-colors duration-1 ease-observatory',
-                      'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]',
-                      active
-                        ? 'bg-ocean-softer text-ocean font-medium'
-                        : 'text-ink-2 hover:bg-soft hover:text-ink'
-                    )}
-                    aria-current={active ? 'page' : undefined}
-                  >
-                    <span className={cn('opacity-85', active && 'opacity-100')}>{it.icon}</span>
-                    <span className="truncate flex-1">{it.label}</span>
-                    {badge > 0 && (
+      <aside
+        aria-label="Primary navigation"
+        className={cn(
+          'h-full w-full flex flex-col overflow-hidden',
+          // Ocean-blue chrome — same brand colour the rest of the app uses
+          // for primary actions and active states. Sets a clear visual
+          // anchor for the navigation surface.
+          'bg-[var(--ocean)]',
+          // A slightly darker right edge so the rail visually separates
+          // from the main content without a hard line.
+          'border-r border-[var(--ocean-hover)]/70',
+        )}
+      >
+        <nav className="flex-1 flex flex-col gap-0.5 px-2 py-3.5 overflow-y-auto scrollbar-thin">
+          {GROUP_ORDER.map((g) => {
+            const items = visible.filter((i) => i.group === g);
+            if (items.length === 0) return null;
+            return (
+              <div key={g} className="contents">
+                {/* Group eyebrow — hidden when collapsed; replaced with a
+                    subtle horizontal divider so the visual grouping still
+                    reads even without the label. */}
+                {GROUP_LABELS[g] && (
+                  collapsed ? (
+                    <div className="mx-3 my-2 border-t border-white/10" aria-hidden />
+                  ) : (
+                    <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/55 px-2.5 pt-3 pb-1.5 font-medium">
+                      {GROUP_LABELS[g]}
+                    </div>
+                  )
+                )}
+                {items.map((it) => {
+                  const active = isActive(it.href);
+                  const badge = badgeFor(it);
+                  return (
+                    <Link
+                      key={it.key}
+                      href={it.href}
+                      // The native title is the accessibility + power-user
+                      // hover hint for the collapsed mode. Cheap, works
+                      // without a tooltip component, screen-reader friendly.
+                      title={collapsed ? `${it.label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
+                      className={cn(
+                        'group flex items-center rounded-sm text-[13.5px]',
+                        'transition-colors duration-1 ease-observatory',
+                        'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(255,255,255,0.25)]',
+                        collapsed
+                          ? 'justify-center px-2 py-2'
+                          : 'gap-2.5 px-2.5 py-2',
+                        active
+                          // Active: brighter overlay + crisp white text — the
+                          // route the user is on gets the loudest voice in
+                          // the rail.
+                          ? 'bg-white/15 text-white font-medium'
+                          // Inactive: ocean-soft for text (the natural light
+                          // tint of the brand) with a gentle hover overlay.
+                          : 'text-[var(--ocean-soft)] hover:bg-white/10 hover:text-white',
+                      )}
+                      aria-current={active ? 'page' : undefined}
+                    >
                       <span className={cn(
-                        'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
-                        active ? 'bg-ocean text-white' : 'bg-ocean-softer text-ocean'
+                        active ? 'text-white' : 'text-[var(--ocean-soft)] group-hover:text-white',
                       )}>
-                        {badge > 99 ? '99+' : badge}
+                        {it.icon}
                       </span>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
-          );
-        })}
-      </nav>
-    </aside>
+                      {!collapsed && (
+                        <>
+                          <span className="truncate flex-1">{it.label}</span>
+                          {badge > 0 && (
+                            <span className={cn(
+                              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
+                              // Active row: white pill, ocean text — high
+                              // contrast against the active overlay.
+                              // Inactive: dark-tinted pill that pops out of
+                              // the inactive text without competing with
+                              // the active state.
+                              active
+                                ? 'bg-white text-[var(--ocean)]'
+                                : 'bg-[var(--ocean-hover)] text-white',
+                            )}>
+                              {badge > 99 ? '99+' : badge}
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {/* Collapsed-mode badge — small dot in the top-right
+                          corner of the icon tile so the user still sees
+                          "something's waiting" without the count. */}
+                      {collapsed && badge > 0 && (
+                        <span
+                          className="absolute mt-[-12px] ml-[14px] w-[8px] h-[8px] rounded-full bg-white border border-[var(--ocean)]"
+                          aria-label={`${badge} pending`}
+                        />
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </nav>
+
+        {/* Collapse toggle pinned to the bottom. Borders use a faint white
+            overlay so they harmonise with the ocean chrome rather than
+            cutting it with a hard line. */}
+        <div className="px-2 py-2 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className={cn(
+              'w-full flex items-center rounded-sm py-1.5 text-[12px]',
+              'text-[var(--ocean-soft)] hover:text-white hover:bg-white/10 transition-colors',
+              collapsed ? 'justify-center px-2' : 'gap-2 px-2.5',
+            )}
+            title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+            aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+          >
+            <ChevronLeft
+              className={cn('w-4 h-4 transition-transform duration-150', collapsed && 'rotate-180')}
+              strokeWidth={1.75}
+            />
+            {!collapsed && (
+              <span className="font-mono uppercase tracking-[0.1em] text-[10.5px]">
+                Collapse
+              </span>
+            )}
+          </button>
+        </div>
+      </aside>
+
+      {/* Drag handle — sits on the right edge, slim by default, lights up
+          on hover/drag. Hidden when collapsed because resizing only makes
+          sense in expanded mode. */}
+      {!collapsed && (
+        <div
+          onMouseDown={startResize}
+          className={cn(
+            'absolute top-0 right-0 h-full w-1.5 -mr-[2px] cursor-col-resize',
+            'transition-colors duration-150',
+            'hover:bg-white/30 active:bg-white/40',
+          )}
+          title="Drag to resize"
+          aria-hidden
+        />
+      )}
+    </div>
   );
 }
