@@ -20,7 +20,6 @@ import {
   startInvestigation, getInvestigation,
   type InvestigateEvent,
 } from '../services/investigateService';
-import { semanticDb } from '../db/knex';
 import { tenantQuery } from '../services/tenantQuery';
 import { logger } from '../utils/logger';
 
@@ -167,9 +166,12 @@ async function resolveProductId(
     if (row?.data_product_id) return Number(row.data_product_id);
   }
   if (body.brief_id) {
-    // Brief has no FK to a single product — pick the first product the
-    // user has access to as a fallback.
-    const fallback = await semanticDb('data_products').first('id');
+    // Brief has no FK to a single product — pick the first product in
+    // the user's tenant as a fallback. Must run inside tenantQuery so
+    // the SET LOCAL app.current_tenant is in effect for the RLS policy.
+    const fallback = await tenantQuery(tenantId, (trx) =>
+      trx('data_products').first('id'),
+    );
     return fallback ? Number(fallback.id) : null;
   }
   return null;

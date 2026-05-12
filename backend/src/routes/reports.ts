@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
 import { generateReportNarrative } from '../ai/AIService';
@@ -13,6 +13,7 @@ const router = Router();
 // POST /api/reports/generate
 router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, title, period, kpiIds } = req.body as {
       connectionId: number;
       title: string;
@@ -34,7 +35,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     }
 
     // 2. Get source connection
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
     const sqliteConnector = await createConnector(connection);
     await sqliteConnector.connect();
@@ -73,9 +74,10 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 // GET /api/reports/query-log — admin only (via role check in frontend)
 router.get('/query-log', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
-    const [{ count: total }] = await semanticDb('query_log').count('* as count');
-    const rows = await semanticDb('query_log')
+    const [{ count: total }] = await db('query_log').count('* as count');
+    const rows = await db('query_log')
       .orderBy('created_at', 'desc')
       .limit(limit)
       .offset(offset);
@@ -86,8 +88,9 @@ router.get('/query-log', requireAuth, async (req: Request, res: Response, next: 
 // GET /api/reports/gaps — definition gaps for admin review
 router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
-    const baseQuery = semanticDb('definition_gaps')
+    const baseQuery = db('definition_gaps')
       .join('query_log', 'definition_gaps.query_log_id', 'query_log.id');
     const [{ count: total }] = await baseQuery.clone().count('* as count');
     const rows = await baseQuery
@@ -102,7 +105,8 @@ router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextF
 // PATCH /api/reports/gaps/:id/resolve
 router.patch('/gaps/:id/resolve', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await semanticDb('definition_gaps').where({ id: req.params.id }).update({ resolved: true });
+    const db = reqDb(req);
+    await db('definition_gaps').where({ id: req.params.id }).update({ resolved: true });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

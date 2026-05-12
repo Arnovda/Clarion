@@ -12,6 +12,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import {
   ConfigValidationError,
@@ -22,7 +23,7 @@ import {
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
@@ -68,13 +69,13 @@ const probeSchema = z.object({
  * from one tenant is meaningless to another, even if the random bits leaked.
  */
 async function resolveProbeConfig(
+  db: Knex | Knex.Transaction,
   body: { config?: Record<string, unknown>; oauthStateToken?: string },
   user: { tenantId: number; sub: number },
 ): Promise<Record<string, unknown>> {
   if (body.config) return body.config;
   if (!body.oauthStateToken) throw new Error('Missing config or oauthStateToken');
-  await semanticDb.raw(`SET app.current_tenant = '${Number(user.tenantId)}'`);
-  const row = await semanticDb('oauth_pending')
+  const row = await db('oauth_pending')
     .where({
       state_token: body.oauthStateToken,
       tenant_id: user.tenantId,
@@ -122,6 +123,7 @@ router.post(
   })),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const { type } = req.params;
       const { config } = req.body as { config: Record<string, unknown> };
 
@@ -152,14 +154,13 @@ router.post(
       const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 minutes
       const encryptedConfig = encryptCredentials(JSON.stringify(config));
 
-      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
       // Opportunistic GC: drop expired rows for this tenant.
-      await semanticDb('oauth_pending')
+      await db('oauth_pending')
         .where('tenant_id', req.user!.tenantId)
         .andWhere('expires_at', '<', new Date())
         .del();
 
-      await semanticDb('oauth_pending').insert({
+      await db('oauth_pending').insert({
         tenant_id: req.user!.tenantId,
         initiated_by_user_id: req.user!.sub,
         connector_type: type,
@@ -264,8 +265,8 @@ router.post(
         return;
       }
 
-      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
-      const row = await semanticDb('oauth_pending')
+      const db = reqDb(req);
+      const row = await db('oauth_pending')
         .where({
           state_token: stateToken,
           connector_type: type,
@@ -298,7 +299,7 @@ router.post(
       }
 
       const reencrypted = encryptCredentials(JSON.stringify(fullConfig));
-      await semanticDb('oauth_pending')
+      await db('oauth_pending')
         .where({ id: row.id })
         .update({ status: 'authorised', encrypted_config: reencrypted });
 
@@ -317,8 +318,10 @@ router.post(
   validate(probeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const { type } = req.params;
       const config = await resolveProbeConfig(
+        db,
         req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
         { tenantId: req.user!.tenantId, sub: req.user!.sub },
       );
@@ -360,8 +363,10 @@ router.post(
   validate(probeSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const { type } = req.params;
       const config = await resolveProbeConfig(
+        db,
         req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
         { tenantId: req.user!.tenantId, sub: req.user!.sub },
       );

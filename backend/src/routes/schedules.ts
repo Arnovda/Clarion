@@ -11,7 +11,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
+import { tenantQuery } from '../services/tenantQuery';
 import { registerSchedule, removeSchedule } from '../jobs/scheduler';
 import { getTransformationQueue, TransformationJobData } from '../jobs/queues';
 import { trackEvent } from '../utils/monitoring';
@@ -21,7 +22,8 @@ const router = Router();
 // GET /api/schedules/product/:productId — get schedule
 router.get('/product/:productId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const schedule = await semanticDb('transformation_schedules')
+    const db = reqDb(req);
+    const schedule = await db('transformation_schedules')
       .where({ product_id: req.params.productId })
       .first();
 
@@ -34,6 +36,7 @@ router.get('/product/:productId', requireAuth, async (req: Request, res: Respons
 // PUT /api/schedules/product/:productId — create or update schedule
 router.put('/product/:productId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.productId);
     const { cron_expression, timezone, enabled } = req.body as {
       cron_expression: string;
@@ -54,7 +57,7 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
     }
 
     // Verify product exists
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Product not found' });
       return;
@@ -64,13 +67,13 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
     const isEnabled = enabled !== false;
 
     // Upsert
-    const existing = await semanticDb('transformation_schedules')
+    const existing = await db('transformation_schedules')
       .where({ product_id: productId })
       .first();
 
     let scheduleId: number;
     if (existing) {
-      await semanticDb('transformation_schedules')
+      await db('transformation_schedules')
         .where({ id: existing.id })
         .update({
           cron_expression,
@@ -80,7 +83,7 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
         });
       scheduleId = existing.id;
     } else {
-      const [row] = await semanticDb('transformation_schedules')
+      const [row] = await db('transformation_schedules')
         .insert({
           product_id: productId,
           cron_expression,
@@ -109,7 +112,7 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
       enabled: String(isEnabled),
     });
 
-    const schedule = await semanticDb('transformation_schedules')
+    const schedule = await db('transformation_schedules')
       .where({ id: scheduleId })
       .first();
 
@@ -122,14 +125,15 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
 // DELETE /api/schedules/product/:productId — remove schedule
 router.delete('/product/:productId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.productId);
-    const existing = await semanticDb('transformation_schedules')
+    const existing = await db('transformation_schedules')
       .where({ product_id: productId })
       .first();
 
     if (existing) {
       await removeSchedule(existing.id);
-      await semanticDb('transformation_schedules').where({ id: existing.id }).delete();
+      await db('transformation_schedules').where({ id: existing.id }).delete();
     }
 
     res.json({ ok: true });
@@ -141,8 +145,9 @@ router.delete('/product/:productId', requireAuth, requireRole('admin'), async (r
 // GET /api/schedules/product/:productId/runs — run history
 router.get('/product/:productId/runs', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const limit = Math.min(Number(req.query.limit) || 20, 100);
-    const runs = await semanticDb('transformation_runs')
+    const runs = await db('transformation_runs')
       .where({ product_id: req.params.productId })
       .orderBy('started_at', 'desc')
       .limit(limit);
@@ -156,18 +161,21 @@ router.get('/product/:productId/runs', requireAuth, async (req: Request, res: Re
 // POST /api/schedules/product/:productId/run — trigger manual run
 router.post('/product/:productId/run', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.productId);
+    const tenantId = req.user!.tenantId;
+    const triggeredBy = req.user!.email;
 
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Product not found' });
       return;
     }
 
     // Record run
-    const [runRow] = await semanticDb('transformation_runs').insert({
+    const [runRow] = await db('transformation_runs').insert({
       product_id: productId,
-      triggered_by: req.user!.email,
+      triggered_by: triggeredBy,
       status: 'running',
     }).returning('id');
     const runId = typeof runRow === 'object' ? (runRow as { id: number }).id : runRow;
@@ -177,8 +185,8 @@ router.post('/product/:productId/run', requireAuth, requireRole('admin'), async 
     if (queue) {
       const job = await queue.add('manual-run', {
         productId,
-        tenantId: req.user!.tenantId,
-        triggeredBy: req.user!.email,
+        tenantId,
+        triggeredBy,
       } as TransformationJobData);
 
       res.json({ ok: true, data: { runId, jobId: job.id, queue: 'transformation' } });
@@ -186,24 +194,32 @@ router.post('/product/:productId/run', requireAuth, requireRole('admin'), async 
       // Inline execution (no Redis)
       res.json({ ok: true, data: { runId, inline: true } });
 
-      // Run in background (don't block response)
+      // Run in background (don't block response). The request's dbTrx
+      // is gone by now, so use tenantQuery to open a fresh trx with
+      // the right SET LOCAL applied.
       (async () => {
         try {
           const { runProductTransformation } = await import('../services/transformationRunner');
-          const tables = await semanticDb('product_tables').where({ product_id: productId });
-          const results = await runProductTransformation(product, tables, req.user?.tenantId);
+          const tables = await tenantQuery(tenantId, (trx) =>
+            trx('product_tables').where({ product_id: productId }),
+          );
+          const results = await runProductTransformation(product, tables, tenantId);
 
-          await semanticDb('transformation_runs').where({ id: runId }).update({
-            status: 'completed',
-            tables_transformed: results.length,
-            finished_at: new Date(),
-          });
+          await tenantQuery(tenantId, (trx) =>
+            trx('transformation_runs').where({ id: runId }).update({
+              status: 'completed',
+              tables_transformed: results.length,
+              finished_at: new Date(),
+            }),
+          );
         } catch (err) {
-          await semanticDb('transformation_runs').where({ id: runId }).update({
-            status: 'failed',
-            error_message: err instanceof Error ? err.message : 'Unknown error',
-            finished_at: new Date(),
-          });
+          await tenantQuery(tenantId, (trx) =>
+            trx('transformation_runs').where({ id: runId }).update({
+              status: 'failed',
+              error_message: err instanceof Error ? err.message : 'Unknown error',
+              finished_at: new Date(),
+            }),
+          );
         }
       })();
     }

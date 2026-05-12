@@ -1,17 +1,18 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 
 const router = Router();
 
 // GET /api/notifications?unread=true&limit=30
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
     const limit = Math.min(Number(req.query.limit) || 30, 100);
     const unreadOnly = req.query.unread === 'true';
 
-    let query = semanticDb('notifications')
+    let query = db('notifications')
       .where({ user_id: userId })
       .orderBy('created_at', 'desc')
       .limit(limit);
@@ -21,7 +22,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     const rows = await query;
 
     // Also get unread count
-    const countResult = await semanticDb('notifications')
+    const countResult = await db('notifications')
       .where({ user_id: userId, read: false })
       .count('id as count')
       .first();
@@ -34,8 +35,9 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 // PUT /api/notifications/read-all
 router.put('/read-all', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
-    await semanticDb('notifications')
+    await db('notifications')
       .where({ user_id: userId, read: false })
       .update({ read: true });
     res.json({ ok: true });
@@ -45,8 +47,9 @@ router.put('/read-all', requireAuth, async (req: Request, res: Response, next: N
 // PUT /api/notifications/:id/read
 router.put('/:id/read', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
-    await semanticDb('notifications')
+    await db('notifications')
       .where({ id: Number(req.params.id), user_id: userId })
       .update({ read: true });
     res.json({ ok: true });

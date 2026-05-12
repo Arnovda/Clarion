@@ -13,7 +13,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import * as graph from '../db/semanticGraph';
 import { toSlugWithId, parseIdFromSlug } from '../utils/slug';
 
@@ -27,11 +27,12 @@ function isCatalogId(v: string): v is CatalogId {
 // ---------------------------------------------------------------------------
 // GET /api/catalog — list catalogs
 // ---------------------------------------------------------------------------
-router.get('/', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const [connections, products] = await Promise.all([
-      semanticDb('connections').select('id'),
-      semanticDb('data_products').select('id'),
+      db('connections').select('id'),
+      db('data_products').select('id'),
     ]);
     res.json({
       ok: true,
@@ -48,13 +49,14 @@ router.get('/', requireAuth, async (_req: Request, res: Response, next: NextFunc
 // ---------------------------------------------------------------------------
 router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const catalog = req.params.catalog;
     if (!isCatalogId(catalog)) {
       return res.status(404).json({ ok: false, error: 'Unknown catalog' });
     }
 
     if (catalog === 'sources') {
-      const conns = await semanticDb('connections')
+      const conns = await db('connections')
         .select('id', 'name', 'type', 'created_at')
         .orderBy('name');
 
@@ -75,7 +77,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
     }
 
     // products
-    const products = await semanticDb('data_products')
+    const products = await db('data_products')
       .select('id', 'name', 'description', 'status', 'created_by', 'created_at', 'updated_at', 'connection_id')
       .orderBy('name');
 
@@ -89,7 +91,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
     // most-tables-contributed connection wins, fallback to data_products.connection_id.
     const productIds = (products as Array<{ id: number }>).map((p) => p.id);
     const sourceRows = productIds.length
-      ? await semanticDb('data_product_sources as dps')
+      ? await db('data_product_sources as dps')
           .join('source_tables as st', 'st.id', 'dps.source_table_id')
           .whereIn('dps.data_product_id', productIds)
           .select('dps.data_product_id as product_id', 'st.connection_id as connection_id')
@@ -105,7 +107,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
     for (const p of products as Array<{ connection_id: number | null }>) if (p.connection_id) connIds.add(p.connection_id);
     for (const r of sourceRows as { connection_id: number }[]) if (r.connection_id) connIds.add(r.connection_id);
     const connRows = connIds.size
-      ? await semanticDb('connections')
+      ? await db('connections')
           .whereIn('id', Array.from(connIds))
           .select('id', 'name', 'type', 'connector_type')
       : [];
@@ -156,6 +158,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
 // ---------------------------------------------------------------------------
 router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const catalog = req.params.catalog;
     if (!isCatalogId(catalog)) {
       return res.status(404).json({ ok: false, error: 'Unknown catalog' });
@@ -167,7 +170,7 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
     }
 
     if (catalog === 'sources') {
-      const conn = await semanticDb('connections').where({ id: schemaId }).first();
+      const conn = await db('connections').where({ id: schemaId }).first();
       if (!conn) return res.status(404).json({ ok: false, error: 'Connection not found' });
 
       const tables = await graph.getTablesByConnection(schemaId);
@@ -194,7 +197,7 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
     }
 
     // products
-    const product = await semanticDb('data_products').where({ id: schemaId }).first();
+    const product = await db('data_products').where({ id: schemaId }).first();
     if (!product) return res.status(404).json({ ok: false, error: 'Data product not found' });
 
     const tables = await graph.getProductTablesByProduct(schemaId);

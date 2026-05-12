@@ -12,7 +12,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { registerEmailSchedule, unregisterEmailSchedule } from '../jobs/emailScheduler';
 
 const router = Router();
@@ -23,8 +23,9 @@ const router = Router();
 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { dashboardId } = req.query;
-    let query = semanticDb('email_schedules')
+    let query = db('email_schedules')
       .select(
         'email_schedules.*',
         'dashboards.title as dashboard_title',
@@ -45,7 +46,8 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const row = await semanticDb('email_schedules').where({ id: req.params.id }).first();
+    const db = reqDb(req);
+    const row = await db('email_schedules').where({ id: req.params.id }).first();
     if (!row) { res.status(404).json({ ok: false, error: 'Schedule not found' }); return; }
     res.json({ ok: true, data: row });
   } catch (err) { next(err); }
@@ -57,6 +59,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
 router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { dashboard_id, name, recipients, cron_expression, enabled = true, ai_summary = true } = req.body;
 
     if (!dashboard_id || !name || !cron_expression) {
@@ -70,7 +73,7 @@ router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: 
 
     const tenantId = (req as Request & { tenantId?: number }).tenantId;
 
-    const [row] = await semanticDb('email_schedules')
+    const [row] = await db('email_schedules')
       .insert({
         tenant_id: tenantId,
         dashboard_id,
@@ -95,9 +98,10 @@ router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: 
 
 router.put('/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { name, recipients, cron_expression, enabled, ai_summary } = req.body;
 
-    const existing = await semanticDb('email_schedules').where({ id: req.params.id }).first();
+    const existing = await db('email_schedules').where({ id: req.params.id }).first();
     if (!existing) { res.status(404).json({ ok: false, error: 'Schedule not found' }); return; }
 
     const updates: Record<string, unknown> = { updated_at: new Date() };
@@ -107,7 +111,7 @@ router.put('/:id', requireAuth, requireRole('analyst'), async (req: Request, res
     if (enabled !== undefined) updates.enabled = enabled;
     if (ai_summary !== undefined) updates.ai_summary = ai_summary;
 
-    const [row] = await semanticDb('email_schedules')
+    const [row] = await db('email_schedules')
       .where({ id: req.params.id })
       .update(updates)
       .returning('*');
@@ -126,11 +130,12 @@ router.put('/:id', requireAuth, requireRole('analyst'), async (req: Request, res
 
 router.delete('/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await semanticDb('email_schedules').where({ id: req.params.id }).first();
+    const db = reqDb(req);
+    const existing = await db('email_schedules').where({ id: req.params.id }).first();
     if (!existing) { res.status(404).json({ ok: false, error: 'Schedule not found' }); return; }
 
     await unregisterEmailSchedule(Number(req.params.id));
-    await semanticDb('email_schedules').where({ id: req.params.id }).delete();
+    await db('email_schedules').where({ id: req.params.id }).delete();
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -142,7 +147,8 @@ router.delete('/:id', requireAuth, requireRole('analyst'), async (req: Request, 
 
 router.post('/:id/send-now', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const schedule = await semanticDb('email_schedules').where({ id: req.params.id }).first();
+    const db = reqDb(req);
+    const schedule = await db('email_schedules').where({ id: req.params.id }).first();
     if (!schedule) { res.status(404).json({ ok: false, error: 'Schedule not found' }); return; }
 
     // Enqueue with zero delay (or run inline if Redis not available)

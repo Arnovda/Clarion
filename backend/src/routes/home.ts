@@ -16,7 +16,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 
 const router = Router();
 
@@ -24,14 +24,14 @@ const FRESH_WINDOW_HOURS = 24; // "synced today" / "ran today"
 
 router.get('/summary', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
     const since = new Date(Date.now() - FRESH_WINDOW_HOURS * 3600_000);
     const weekAgo = new Date(Date.now() - 7 * 86400_000);
 
     // ── Sources ─────────────────────────────────────────────────────────
-    const sourceRows = await semanticDb('connections')
+    const sourceRows = await db('connections')
       .where('tenant_id', tenantId)
       .select<{
         id: number; name: string; type: string; connector_type: string | null;
@@ -70,19 +70,19 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     // data_products.tenant_id for parity with the rest of the file
     // (other queries in home.ts also filter explicitly even though RLS
     // would catch a missing filter).
-    const productRows = await semanticDb('data_products as dp')
+    const productRows = await db('data_products as dp')
       .where('dp.tenant_id', tenantId)
       .leftJoin('star_schemas as ss', 'dp.id', 'ss.data_product_id')
       .leftJoin('product_tables as pt', function () {
         this.on('ss.id', 'pt.star_schema_id')
-            .andOn('pt.transformation_status', semanticDb.raw('?', ['success']));
+            .andOn('pt.transformation_status', db.raw('?', ['success']));
       })
       .groupBy('dp.id', 'dp.name', 'dp.status')
       .select<{ id: number; name: string; status: string; last_refreshed_at: Date | string | null }[]>(
         'dp.id',
         'dp.name',
         'dp.status',
-        semanticDb.raw('MAX(pt.last_run_at) as last_refreshed_at'),
+        db.raw('MAX(pt.last_run_at) as last_refreshed_at'),
       );
     const productsTotal = productRows.length;
     const productsFresh = productRows.filter((p) => p.last_refreshed_at && new Date(p.last_refreshed_at) > since).length;
@@ -94,31 +94,31 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     const staleProducts = allProducts.filter((p) => p.isStale);
 
     // ── Definition completeness ────────────────────────────────────────
-    const [{ tot: tablesTotal }] = await semanticDb('source_tables').where({ is_active: true })
+    const [{ tot: tablesTotal }] = await db('source_tables').where({ is_active: true })
       .count<[{ tot: string | number }]>('* as tot');
-    const [{ ok: tablesDefined }] = await semanticDb('source_tables')
+    const [{ ok: tablesDefined }] = await db('source_tables')
       .where({ is_active: true, ai_draft: false })
       .count<[{ ok: string | number }]>('* as ok');
-    const [{ tot: columnsTotal }] = await semanticDb('source_columns')
+    const [{ tot: columnsTotal }] = await db('source_columns')
       .count<[{ tot: string | number }]>('* as tot');
-    const [{ ok: columnsDefined }] = await semanticDb('source_columns')
+    const [{ ok: columnsDefined }] = await db('source_columns')
       .where({ ai_draft: false })
       .whereNotNull('description')
       .count<[{ ok: string | number }]>('* as ok');
-    const [{ tot: relsTotal }] = await semanticDb('table_relationships')
+    const [{ tot: relsTotal }] = await db('table_relationships')
       .count<[{ tot: string | number }]>('* as tot');
-    const [{ ok: relsApproved }] = await semanticDb('table_relationships')
+    const [{ ok: relsApproved }] = await db('table_relationships')
       .where({ ai_draft: false })
       .count<[{ ok: string | number }]>('* as ok');
 
     // ── Pending review queue (AI drafts to confirm/flag) ───────────────
-    const [{ tot: pendingTables }] = await semanticDb('source_tables')
+    const [{ tot: pendingTables }] = await db('source_tables')
       .where({ is_active: true, ai_draft: true })
       .count<[{ tot: string | number }]>('* as tot');
-    const [{ tot: pendingColumns }] = await semanticDb('source_columns')
+    const [{ tot: pendingColumns }] = await db('source_columns')
       .where({ ai_draft: true })
       .count<[{ tot: string | number }]>('* as tot');
-    const [{ tot: pendingRels }] = await semanticDb('table_relationships')
+    const [{ tot: pendingRels }] = await db('table_relationships')
       .where({ ai_draft: true })
       .count<[{ tot: string | number }]>('* as tot');
 
@@ -140,7 +140,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     try {
       // Latest profile per (connection, table). Use a window function so
       // we don't double-count older runs of the same table.
-      const profileRows = await semanticDb.raw<{ rows: Array<{ overall_score: number | null }> }>(
+      const profileRows = await db.raw<{ rows: Array<{ overall_score: number | null }> }>(
         `SELECT overall_score FROM (
            SELECT overall_score,
                   ROW_NUMBER() OVER (PARTITION BY connection_id, table_name ORDER BY profiled_at DESC) AS rn
@@ -158,7 +158,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     } catch { /* dataset_profiles missing or empty */ }
     try {
       // Latest execution per rule. Same window-function pattern.
-      const ruleRows = await semanticDb.raw<{ rows: Array<{ pass_rate: number | null; pass_threshold: number | null }> }>(
+      const ruleRows = await db.raw<{ rows: Array<{ pass_rate: number | null; pass_threshold: number | null }> }>(
         `SELECT re.pass_rate, qr.pass_threshold FROM (
            SELECT rule_id, pass_rate,
                   ROW_NUMBER() OVER (PARTITION BY rule_id ORDER BY executed_at DESC) AS rn
@@ -186,7 +186,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     let pipelineFailures = 0;
     let activeRuns = 0;
     try {
-      const runs = await semanticDb('pipeline_runs')
+      const runs = await db('pipeline_runs')
         .where('tenant_id', tenantId)
         .where('queued_at', '>=', weekAgo)
         .select<{ status: string }[]>('status');
@@ -201,7 +201,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     // ── Last few dashboards (recency / starred first) ─────────────────
     let dashboards: Array<{ id: number; title: string; starred: boolean; updatedAt: string | null }> = [];
     try {
-      const rows = await semanticDb('dashboards')
+      const rows = await db('dashboards')
         .where('tenant_id', tenantId)
         .orderBy([{ column: 'starred', order: 'desc' }, { column: 'updated_at', order: 'desc' }])
         .limit(6)
@@ -217,7 +217,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     // ── Recent conversations (last 5) ──────────────────────────────────
     let recentQuestions: Array<{ id: number; title: string | null; lastMessageAt: string | null }> = [];
     try {
-      const rows = await semanticDb('conversations')
+      const rows = await db('conversations')
         .where('tenant_id', tenantId)
         .where('user_id', req.user!.sub)
         .orderBy('updated_at', 'desc')
@@ -238,7 +238,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
     // mismatch on the supplier import" which is the actual differentiator.
     let alerts: Array<{ id: number; severity: string; message: string; aiContext: string | null; kind: string; createdAt: string | null }> = [];
     try {
-      const rows = await semanticDb('quality_alerts')
+      const rows = await db('quality_alerts')
         .where('tenant_id', tenantId)
         .where('dismissed', false)
         .orderBy('created_at', 'desc')

@@ -15,7 +15,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { buildXlsxFromRows, escapeCsvField } from '../utils/xlsxBuilder';
 
@@ -25,11 +25,12 @@ router.use(requireAuth);
 // ─── LIST conversations ──────────────────────────────────────────────────────
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
     const starred = req.query.starred === 'true';
     const { page, limit, offset } = parsePagination(req.query, { limit: 30 });
 
-    let baseQuery = semanticDb('conversations').where({ user_id: userId });
+    let baseQuery = db('conversations').where({ user_id: userId });
     if (starred) baseQuery = baseQuery.where({ starred: true });
 
     const [{ count: total }] = await baseQuery.clone().count('* as count');
@@ -47,9 +48,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 // ─── CREATE conversation ─────────────────────────────────────────────────────
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { title, sourceKey } = req.body as { title?: string; sourceKey?: string };
 
-    const [conv] = await semanticDb('conversations')
+    const [conv] = await db('conversations')
       .insert({
         tenant_id: req.user!.tenantId,
         user_id: req.user!.sub,
@@ -65,13 +67,14 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 // ─── GET conversation with messages ──────────────────────────────────────────
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conv = await semanticDb('conversations')
+    const db = reqDb(req);
+    const conv = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .first();
 
     if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
 
-    const messages = await semanticDb('conversation_messages')
+    const messages = await db('conversation_messages')
       .where({ conversation_id: conv.id })
       .orderBy('created_at', 'asc')
       .select('*');
@@ -83,10 +86,11 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 // ─── UPDATE title ────────────────────────────────────────────────────────────
 router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { title } = req.body as { title: string };
     if (!title?.trim()) { res.status(400).json({ ok: false, error: 'Title is required' }); return; }
 
-    const count = await semanticDb('conversations')
+    const count = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .update({ title: title.trim(), updated_at: new Date().toISOString() });
 
@@ -98,7 +102,8 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
 // ─── DELETE conversation ─────────────────────────────────────────────────────
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const count = await semanticDb('conversations')
+    const db = reqDb(req);
+    const count = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .delete();
 
@@ -110,14 +115,15 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 // ─── TOGGLE star ─────────────────────────────────────────────────────────────
 router.patch('/:id/star', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conv = await semanticDb('conversations')
+    const db = reqDb(req);
+    const conv = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .first();
 
     if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
 
     const newVal = !conv.starred;
-    await semanticDb('conversations')
+    await db('conversations')
       .where({ id: conv.id })
       .update({ starred: newVal, updated_at: new Date().toISOString() });
 
@@ -128,10 +134,11 @@ router.patch('/:id/star', async (req: Request, res: Response, next: NextFunction
 // ─── APPEND message ──────────────────────────────────────────────────────────
 router.post('/:id/messages', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const conversationId = Number(req.params.id);
 
     // Verify ownership
-    const conv = await semanticDb('conversations')
+    const conv = await db('conversations')
       .where({ id: conversationId, user_id: req.user!.sub })
       .first();
     if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
@@ -164,7 +171,7 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
     // Cap stored rows to 200 to keep DB size manageable
     const cappedRows = msg.rows ? (msg.rows as unknown[]).slice(0, 200) : null;
 
-    const [saved] = await semanticDb('conversation_messages')
+    const [saved] = await db('conversation_messages')
       .insert({
         tenant_id: req.user!.tenantId,
         conversation_id: conversationId,
@@ -191,7 +198,7 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
     // Update conversation title from first user message + bump updated_at
     const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (msg.role === 'user') {
-      const msgCount = await semanticDb('conversation_messages')
+      const msgCount = await db('conversation_messages')
         .where({ conversation_id: conversationId, role: 'user' })
         .count('id as count')
         .first();
@@ -199,7 +206,7 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
         update.title = msg.content.slice(0, 80);
       }
     }
-    await semanticDb('conversations').where({ id: conversationId }).update(update);
+    await db('conversations').where({ id: conversationId }).update(update);
 
     res.json({ ok: true, data: saved });
   } catch (err) { next(err); }
@@ -208,6 +215,7 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
 // ─── SET feedback on a message ───────────────────────────────────────────────
 router.patch('/messages/:id/feedback', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const messageId = Number(req.params.id);
     const { feedback, comment } = req.body as { feedback: 'up' | 'down' | null; comment?: string };
 
@@ -217,7 +225,7 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
     }
 
     // Verify ownership via conversation join
-    const msg = await semanticDb('conversation_messages as m')
+    const msg = await db('conversation_messages as m')
       .join('conversations as c', 'c.id', 'm.conversation_id')
       .where({ 'm.id': messageId, 'c.user_id': req.user!.sub })
       .select('m.id')
@@ -225,7 +233,7 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
 
     if (!msg) { res.status(404).json({ ok: false, error: 'Message not found' }); return; }
 
-    await semanticDb('conversation_messages')
+    await db('conversation_messages')
       .where({ id: messageId })
       .update({
         feedback: feedback,
@@ -235,9 +243,9 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
 
     // If feedback is 'down', create a definition gap entry for improvement
     if (feedback === 'down') {
-      const fullMsg = await semanticDb('conversation_messages').where({ id: messageId }).first();
+      const fullMsg = await db('conversation_messages').where({ id: messageId }).first();
       if (fullMsg?.question) {
-        await semanticDb('definition_gaps')
+        await db('definition_gaps')
           .insert({
             tenant_id: req.user!.tenantId,
             gap_description: `User reported incorrect answer. Question: "${fullMsg.question}"${comment ? `. Comment: "${comment}"` : ''}`,
@@ -254,14 +262,15 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
 // ─── EXPORT CSV ──────────────────────────────────────────────────────────────
 router.get('/:id/export/csv', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conv = await semanticDb('conversations')
+    const db = reqDb(req);
+    const conv = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .first();
     if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
 
     // Find the last assistant message with rows
     const messageId = req.query.messageId ? Number(req.query.messageId) : null;
-    const msgQuery = semanticDb('conversation_messages')
+    const msgQuery = db('conversation_messages')
       .where({ conversation_id: conv.id, role: 'assistant' })
       .whereNotNull('rows');
     if (messageId) msgQuery.where({ id: messageId });
@@ -301,13 +310,14 @@ router.get('/:id/export/csv', async (req: Request, res: Response, next: NextFunc
 // ─── EXPORT XLSX ─────────────────────────────────────────────────────────────
 router.get('/:id/export/xlsx', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conv = await semanticDb('conversations')
+    const db = reqDb(req);
+    const conv = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
       .first();
     if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
 
     const messageId = req.query.messageId ? Number(req.query.messageId) : null;
-    const msgQuery = semanticDb('conversation_messages')
+    const msgQuery = db('conversation_messages')
       .where({ conversation_id: conv.id, role: 'assistant' })
       .whereNotNull('rows');
     if (messageId) msgQuery.where({ id: messageId });

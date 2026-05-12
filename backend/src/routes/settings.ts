@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole } from '../middleware/auth';
 
 const router = Router();
@@ -13,8 +13,9 @@ router.use(requireAuth);
 
 router.get('/approval', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    const tenant = await semanticDb('tenants')
+    const tenant = await db('tenants')
       .where({ id: tenantId })
       .select('auto_approve_ai_drafts', 'auto_approve_delay_days')
       .first();
@@ -40,6 +41,7 @@ router.get('/approval', async (req: Request, res: Response, next: NextFunction) 
 
 router.put('/approval', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
     const { autoApproveAiDrafts, autoApproveDelayDays } = req.body as {
       autoApproveAiDrafts?: boolean;
@@ -62,10 +64,10 @@ router.put('/approval', requireRole('admin'), async (req: Request, res: Response
       return;
     }
 
-    await semanticDb('tenants').where({ id: tenantId }).update(updates);
+    await db('tenants').where({ id: tenantId }).update(updates);
 
     // Return updated values
-    const tenant = await semanticDb('tenants')
+    const tenant = await db('tenants')
       .where({ id: tenantId })
       .select('auto_approve_ai_drafts', 'auto_approve_delay_days')
       .first();

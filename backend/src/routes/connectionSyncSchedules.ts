@@ -16,9 +16,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { CronExpressionParser } from 'cron-parser';
+import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import {
   registerConnectionSyncSchedule,
   removeConnectionSyncSchedule,
@@ -27,9 +28,12 @@ import {
 const router = Router();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
-async function getConnectionForTenant(connectionId: number, tenantId: number) {
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-  return semanticDb('connections')
+async function getConnectionForTenant(
+  db: Knex | Knex.Transaction,
+  connectionId: number,
+  tenantId: number,
+) {
+  return db('connections')
     .where({ id: connectionId, tenant_id: tenantId })
     .first();
 }
@@ -50,13 +54,14 @@ router.get(
   requireRole('admin', 'analyst'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const connectionId = Number(req.params.id);
-      const conn = await getConnectionForTenant(connectionId, req.user!.tenantId);
+      const conn = await getConnectionForTenant(db, connectionId, req.user!.tenantId);
       if (!conn) {
         res.status(404).json({ ok: false, error: 'Connection not found' });
         return;
       }
-      const sched = await semanticDb('connection_sync_schedules')
+      const sched = await db('connection_sync_schedules')
         .where({ connection_id: connectionId, tenant_id: req.user!.tenantId })
         .first();
       if (!sched) {
@@ -93,6 +98,7 @@ router.put(
   })),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const connectionId = Number(req.params.id);
       const { cronExpression, timezone, enabled } = req.body as {
         cronExpression: string;
@@ -100,7 +106,7 @@ router.put(
         enabled: boolean;
       };
 
-      const conn = await getConnectionForTenant(connectionId, req.user!.tenantId);
+      const conn = await getConnectionForTenant(db, connectionId, req.user!.tenantId);
       if (!conn) {
         res.status(404).json({ ok: false, error: 'Connection not found' });
         return;
@@ -117,13 +123,13 @@ router.put(
       }
 
       // Upsert (UNIQUE constraint on connection_id makes this atomic).
-      const existing = await semanticDb('connection_sync_schedules')
+      const existing = await db('connection_sync_schedules')
         .where({ connection_id: connectionId, tenant_id: req.user!.tenantId })
         .first();
 
       let row;
       if (existing) {
-        await semanticDb('connection_sync_schedules')
+        await db('connection_sync_schedules')
           .where({ id: existing.id, tenant_id: req.user!.tenantId })
           .update({
             cron_expression: cronExpression,
@@ -131,11 +137,11 @@ router.put(
             enabled,
             updated_at: new Date().toISOString(),
           });
-        row = await semanticDb('connection_sync_schedules')
+        row = await db('connection_sync_schedules')
           .where({ id: existing.id, tenant_id: req.user!.tenantId })
           .first();
       } else {
-        const [inserted] = await semanticDb('connection_sync_schedules')
+        const [inserted] = await db('connection_sync_schedules')
           .insert({
             tenant_id: req.user!.tenantId,
             connection_id: connectionId,
@@ -170,20 +176,21 @@ router.delete(
   requireRole('admin'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const connectionId = Number(req.params.id);
-      const conn = await getConnectionForTenant(connectionId, req.user!.tenantId);
+      const conn = await getConnectionForTenant(db, connectionId, req.user!.tenantId);
       if (!conn) {
         res.status(404).json({ ok: false, error: 'Connection not found' });
         return;
       }
-      const existing = await semanticDb('connection_sync_schedules')
+      const existing = await db('connection_sync_schedules')
         .where({ connection_id: connectionId, tenant_id: req.user!.tenantId })
         .first();
       if (!existing) {
         res.status(404).json({ ok: false, error: 'No schedule for this connection' });
         return;
       }
-      await semanticDb('connection_sync_schedules')
+      await db('connection_sync_schedules')
         .where({ id: existing.id, tenant_id: req.user!.tenantId })
         .del();
       await removeConnectionSyncSchedule(existing.id);

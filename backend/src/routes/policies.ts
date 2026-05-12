@@ -9,7 +9,6 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { semanticDb } from '../db/knex';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validateFilterExpression } from '../services/policyEngine';
 import { reqDb } from '../db/reqDb';
@@ -25,7 +24,8 @@ router.use(requireAuth);
 // ---------------------------------------------------------------------------
 router.get('/', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const policies = await semanticDb('data_policies')
+    const db = reqDb(req);
+    const policies = await db('data_policies')
       .where({ tenant_id: req.user!.tenantId })
       .leftJoin('users as u', 'data_policies.user_id', 'u.id')
       .leftJoin('users as cb', 'data_policies.created_by', 'cb.id')
@@ -46,7 +46,8 @@ router.get('/', requireRole('admin'), async (req: Request, res: Response, next: 
 // ---------------------------------------------------------------------------
 router.get('/mine', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const policies = await semanticDb('data_policies')
+    const db = reqDb(req);
+    const policies = await db('data_policies')
       .where({ tenant_id: req.user!.tenantId, is_active: true })
       .andWhere(function () {
         this.where({ user_id: req.user!.sub }).orWhere({ role: req.user!.role });
