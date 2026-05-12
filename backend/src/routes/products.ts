@@ -1,6 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
@@ -22,27 +21,28 @@ const router = Router();
 
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
-    const [{ count: total }] = await semanticDb('data_products').count('* as count');
+    const [{ count: total }] = await db('data_products').count('* as count');
     // Cards on /catalog need a few extra signals beyond raw row data:
     //   - star_schema_count (existing)
     //   - kpi_count          → "N metrics" stat on the card
     //   - last_refreshed_at  → MAX(product_tables.last_run_at), the freshness
     //     line on the card. Pulls from the catalog-source-of-truth column.
     //   - table_count        → for the "N tables" muted secondary stat.
-    const products = await semanticDb('data_products')
+    const products = await db('data_products')
       .select('data_products.*')
       .select(
-        semanticDb.raw('(SELECT COUNT(*) FROM star_schemas WHERE star_schemas.data_product_id = data_products.id) as star_schema_count'),
-        semanticDb.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
-        semanticDb.raw(`(
+        db.raw('(SELECT COUNT(*) FROM star_schemas WHERE star_schemas.data_product_id = data_products.id) as star_schema_count'),
+        db.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
+        db.raw(`(
           SELECT COUNT(*)
           FROM product_tables pt
           JOIN star_schemas ss ON pt.star_schema_id = ss.id
           WHERE ss.data_product_id = data_products.id
             AND pt.transformation_status = 'success'
         ) as table_count`),
-        semanticDb.raw(`(
+        db.raw(`(
           SELECT MAX(pt.last_run_at)
           FROM product_tables pt
           JOIN star_schemas ss ON pt.star_schema_id = ss.id
@@ -63,7 +63,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     // multiSource=true when the product touches >1 connection.
     const productIds = products.map((p: { id: number }) => p.id);
     const sourceRows = productIds.length
-      ? await semanticDb('data_product_sources as dps')
+      ? await db('data_product_sources as dps')
           .join('source_tables as st', 'st.id', 'dps.source_table_id')
           .whereIn('dps.data_product_id', productIds)
           .select('dps.data_product_id as product_id', 'st.connection_id as connection_id')
@@ -73,7 +73,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     for (const p of products as { connection_id: number | null }[]) if (p.connection_id) connectionIds.add(p.connection_id);
     for (const r of sourceRows as { connection_id: number }[]) if (r.connection_id) connectionIds.add(r.connection_id);
     const connRows = connectionIds.size
-      ? await semanticDb('connections')
+      ? await db('connections')
           .whereIn('id', Array.from(connectionIds))
           .select('id', 'name', 'type', 'connector_type')
       : [];
@@ -187,34 +187,34 @@ interface SourceBlockOut {
 
 router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     if (tenantId) {
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-    }
+      }
 
     // 1. Pull every data_product with the same primary-source enrichment
     //    used by GET /. Same rules: most-tables-contributed connection wins,
     //    falls back to data_products.connection_id, sourceDeleted when the
     //    connection has been removed.
-    const products = await semanticDb('data_products')
+    const products = await db('data_products')
       .select(
         'id', 'name', 'description', 'status', 'kind', 'connection_id',
       )
       .select(
-        semanticDb.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
-        semanticDb.raw(`(
+        db.raw('(SELECT COUNT(*) FROM product_kpis WHERE product_kpis.data_product_id = data_products.id) as kpi_count'),
+        db.raw(`(
           SELECT COUNT(*) FROM product_tables pt
           JOIN star_schemas ss ON pt.star_schema_id = ss.id
           WHERE ss.data_product_id = data_products.id
             AND pt.transformation_status = 'success'
         ) as table_count`),
-        semanticDb.raw(`(
+        db.raw(`(
           SELECT COUNT(*) FROM product_tables pt
           JOIN star_schemas ss ON pt.star_schema_id = ss.id
           WHERE ss.data_product_id = data_products.id
             AND pt.table_role = 'fact'
         ) as fact_count`),
-        semanticDb.raw(`(
+        db.raw(`(
           SELECT MAX(pt.last_run_at) FROM product_tables pt
           JOIN star_schemas ss ON pt.star_schema_id = ss.id
           WHERE ss.data_product_id = data_products.id
@@ -231,7 +231,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
     const productIds = products.map((p: { id: number }) => p.id);
 
     // 2. Resolve primary source per product (tally + fallback).
-    const sourceRows = await semanticDb('data_product_sources as dps')
+    const sourceRows = await db('data_product_sources as dps')
       .join('source_tables as st', 'st.id', 'dps.source_table_id')
       .whereIn('dps.data_product_id', productIds)
       .select('dps.data_product_id as product_id', 'st.connection_id as connection_id');
@@ -252,7 +252,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
       if (r.connection_id) connIds.add(r.connection_id);
     }
     const connRows = connIds.size
-      ? await semanticDb('connections')
+      ? await db('connections')
           .whereIn('id', Array.from(connIds))
           .select('id', 'name', 'type', 'connector_type')
       : [];
@@ -269,7 +269,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
       .map((p) => p.id);
 
     const referenceTables = referenceProductIds.length
-      ? await semanticDb('product_tables as pt')
+      ? await db('product_tables as pt')
           .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
           .whereIn('ss.data_product_id', referenceProductIds)
           .where('pt.transformation_status', 'success')
@@ -299,7 +299,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
 
     // (a) Same-star-schema relationship rows
     const usageRows = refTableIds.length
-      ? await semanticDb('product_relationships as pr')
+      ? await db('product_relationships as pr')
           .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
           .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
           .join('data_products as dp', 'dp.id', 'ss.data_product_id')
@@ -380,7 +380,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
       const sqlByConn = new Map<number, SqlRow[]>();
       for (const [connId, analyticsIds] of analyticsByConn.entries()) {
         if (analyticsIds.length === 0) continue;
-        const fkRows = await semanticDb('product_columns as pc')
+        const fkRows = await db('product_columns as pc')
           .join('product_tables as pt_from', 'pt_from.id', 'pc.product_table_id')
           .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
           .join('data_products as dp', 'dp.id', 'ss.data_product_id')
@@ -394,7 +394,7 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
           );
         fkByConn.set(connId, fkRows as FkRow[]);
 
-        const sqlRows = await semanticDb('product_tables as pt_from')
+        const sqlRows = await db('product_tables as pt_from')
           .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
           .join('data_products as dp', 'dp.id', 'ss.data_product_id')
           .whereIn('dp.id', analyticsIds)
@@ -599,6 +599,7 @@ function sqlReferencesAnyVariant(sql: string | null | undefined, variants: strin
 
 router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tableId = Number(req.params.tableId);
     if (!Number.isFinite(tableId)) {
       res.status(400).json({ ok: false, error: 'invalid tableId' });
@@ -607,14 +608,13 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
     const debug = req.query.debug === '1';
     const tenantId = req.user?.tenantId;
     if (tenantId) {
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-    }
+      }
 
     // Identify the dim we're being asked about + its source. We need the
     // source so the FK-name + SQL-scanning fallbacks stay scoped to the
     // same connection — otherwise EO.dim_account would claim to be "used
     // by" any wholesale_erp fact with a similarly-named FK column.
-    const dimRow = await semanticDb('product_tables as pt')
+    const dimRow = await db('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'dp.id', 'ss.data_product_id')
       .where('pt.id', tableId)
@@ -655,7 +655,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
 
     // Strategy 1: product_relationships within a star_schema. Rarely fires
     // for cross-product refs but cheap and authoritative when it does.
-    const relRows = await semanticDb('product_relationships as pr')
+    const relRows = await db('product_relationships as pr')
       .join('product_tables as pt_from', 'pt_from.id', 'pr.from_table_id')
       .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
       .join('data_products as dp', 'dp.id', 'ss.data_product_id')
@@ -695,7 +695,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
 
     // Same-source analytics products — needed by strategies 2 + 3.
     const sameSourceProductIds = dimRow.dim_connection_id != null
-      ? (await semanticDb('data_products')
+      ? (await db('data_products')
           .where('connection_id', dimRow.dim_connection_id)
           .andWhere('kind', 'analytics')
           .pluck<number[]>('id'))
@@ -707,7 +707,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
     if (variants.length > 0 && sameSourceProductIds.length > 0) {
       const variantSetLc = new Set(variants.map((v) => v.toLowerCase()));
       // Pull all candidate FK columns then match in JS (case-insensitive).
-      const fkCandidates = await semanticDb('product_columns as pc')
+      const fkCandidates = await db('product_columns as pc')
         .join('product_tables as pt_from', 'pt_from.id', 'pc.product_table_id')
         .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
         .join('data_products as dp', 'dp.id', 'ss.data_product_id')
@@ -768,7 +768,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
     // populated fk_target_table — and catches the dominant real-world
     // case the user reported.
     if (variants.length > 0 && sameSourceProductIds.length > 0) {
-      const factSqls = await semanticDb('product_tables as pt_from')
+      const factSqls = await db('product_tables as pt_from')
         .join('star_schemas as ss', 'pt_from.star_schema_id', 'ss.id')
         .join('data_products as dp', 'dp.id', 'ss.data_product_id')
         .whereIn('dp.id', sameSourceProductIds)
@@ -890,7 +890,8 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
 
 router.get('/dependency-graph', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const deps = await semanticDb('data_product_dependencies')
+    const db = reqDb(req);
+    const deps = await db('data_product_dependencies')
       .select('dependent_product_id', 'source_product_id');
     res.json({ ok: true, data: deps });
   } catch (err) { next(err); }
@@ -903,12 +904,13 @@ router.get('/dependency-graph', requireAuth, async (req: Request, res: Response,
 
 router.get('/by-source-table/:sourceTableId', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const sourceTableId = Number(req.params.sourceTableId);
     if (!Number.isFinite(sourceTableId)) {
       res.status(400).json({ ok: false, error: 'sourceTableId required' });
       return;
     }
-    const rows = await semanticDb('data_product_sources as dps')
+    const rows = await db('data_product_sources as dps')
       .join('data_products as dp', 'dp.id', 'dps.data_product_id')
       .where('dps.source_table_id', sourceTableId)
       .select('dp.id', 'dp.name', 'dp.status');
@@ -922,21 +924,22 @@ router.get('/by-source-table/:sourceTableId', requireAuth, async (req: Request, 
 
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    const db = reqDb(req);
+    const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
     // Star schemas
-    const schemas = await semanticDb('star_schemas')
+    const schemas = await db('star_schemas')
       .where({ data_product_id: product.id })
       .orderBy('id');
 
     // Tables
     const schemaIds = schemas.map((s: { id: number }) => s.id);
     const rawTables = schemaIds.length
-      ? await semanticDb('product_tables')
+      ? await db('product_tables')
           .whereIn('star_schema_id', schemaIds)
           .orderBy(['dag_order', 'table_name'])
       : [];
@@ -949,7 +952,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       .map((t: { source_product_table_id?: number | null }) => t.source_product_table_id)
       .filter((id): id is number => typeof id === 'number');
     const owners = ownerIds.length
-      ? await semanticDb('product_tables as pt')
+      ? await db('product_tables as pt')
           .leftJoin('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
           .leftJoin('data_products as dp', 'ss.data_product_id', 'dp.id')
           .whereIn('pt.id', ownerIds)
@@ -984,7 +987,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     // concerns the curator never authors or describes.
     const tableIds = tables.map((t: { id: number }) => t.id);
     const columns = tableIds.length
-      ? await semanticDb('product_columns')
+      ? await db('product_columns')
           .whereIn('product_table_id', tableIds)
           .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['sort_order', 'id'])
@@ -993,12 +996,12 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     // Lineage
     const columnIds = columns.map((c: { id: number }) => c.id);
     const lineage = columnIds.length
-      ? await semanticDb('column_lineage').whereIn('product_column_id', columnIds)
+      ? await db('column_lineage').whereIn('product_column_id', columnIds)
       : [];
 
     // Relationships
     const relationships = schemaIds.length
-      ? await semanticDb('product_relationships as pr')
+      ? await db('product_relationships as pr')
           .join('product_tables as ft', 'pr.from_table_id', 'ft.id')
           .join('product_tables as tt', 'pr.to_table_id', 'tt.id')
           .whereIn('pr.star_schema_id', schemaIds)
@@ -1012,7 +1015,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
     // Transformation quality checks
     const checks = tableIds.length
-      ? await semanticDb('transformation_checks').whereIn('product_table_id', tableIds)
+      ? await db('transformation_checks').whereIn('product_table_id', tableIds)
       : [];
 
     const checksByTable = new Map<number, typeof checks>();
@@ -1054,7 +1057,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     // Compute the same `source` block the list endpoint returns so the
     // detail panel can show <SourceBadge> consistently with /products and
     // the catalog tree.
-    const dpsRows = await semanticDb('data_product_sources as dps')
+    const dpsRows = await db('data_product_sources as dps')
       .join('source_tables as st', 'st.id', 'dps.source_table_id')
       .where('dps.data_product_id', product.id)
       .select('st.connection_id as connection_id');
@@ -1070,7 +1073,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
     const involvedIds = new Set<number>(contributors.map(([id]) => id));
     if (product.connection_id) involvedIds.add(product.connection_id);
     const connRows = involvedIds.size
-      ? await semanticDb('connections')
+      ? await db('connections')
           .whereIn('id', Array.from(involvedIds))
           .select('id', 'name', 'connector_type')
       : [];
@@ -1111,13 +1114,14 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
 router.put('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { name, description, status } = req.body as { name?: string; description?: string; status?: string };
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (status !== undefined) updates.status = status;
 
-    await semanticDb('data_products').where({ id: req.params.id }).update(updates);
+    await db('data_products').where({ id: req.params.id }).update(updates);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -1128,19 +1132,20 @@ router.put('/:id', requireAuth, requireRole('admin'), async (req: Request, res: 
 
 router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.id);
 
     // Collect table info before cascading delete removes it
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: productId }).select('id');
+    const schemas = await db('star_schemas').where({ data_product_id: productId }).select('id');
     const schemaIds = schemas.map((s: { id: number }) => s.id);
     const tables = schemaIds.length
-      ? await semanticDb('product_tables').whereIn('star_schema_id', schemaIds).select('table_name', 'delta_path')
+      ? await db('product_tables').whereIn('star_schema_id', schemaIds).select('table_name', 'delta_path')
       : [];
     const connId = product.connection_id;
 
@@ -1148,21 +1153,21 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     for (const t of tables) {
       const tn = t.table_name as string;
       // Delete quality rules (cascades to rule_executions + quality_failures)
-      await semanticDb('quality_rules').where({ connection_id: connId, table_name: tn }).delete();
+      await db('quality_rules').where({ connection_id: connId, table_name: tn }).delete();
       // Delete quality score history
-      await semanticDb('quality_score_history').where({ connection_id: connId, table_name: tn }).delete();
+      await db('quality_score_history').where({ connection_id: connId, table_name: tn }).delete();
       // Delete field profiles via dataset_profiles
-      const profiles = await semanticDb('dataset_profiles')
+      const profiles = await db('dataset_profiles')
         .where({ connection_id: connId, table_name: tn }).select('id');
       if (profiles.length) {
-        await semanticDb('field_profiles').whereIn('profile_id', profiles.map((p: { id: number }) => p.id)).delete();
-        await semanticDb('dataset_profiles').where({ connection_id: connId, table_name: tn }).delete();
+        await db('field_profiles').whereIn('profile_id', profiles.map((p: { id: number }) => p.id)).delete();
+        await db('dataset_profiles').where({ connection_id: connId, table_name: tn }).delete();
       }
     }
 
     // Clean up warehouse Parquet files
     const slug = toProductSlug(product.name as string);
-    const conn = await semanticDb('connections').where({ id: connId }).first();
+    const conn = await db('connections').where({ id: connId }).first();
     const warehousePath = conn?.warehouse_path ?? `./warehouse/conn_${connId}`;
     if (!isAzurePath(warehousePath)) {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1177,7 +1182,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     }
 
     // Delete product row (cascades to star_schemas → product_tables → product_columns)
-    await semanticDb('data_products').where({ id: productId }).delete();
+    await db('data_products').where({ id: productId }).delete();
 
     // Remove product graph from Neo4j
     deleteProductFromNeo4j(productId).catch(() => {});
@@ -1203,7 +1208,8 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 
 router.get('/:id/sources', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const sources = await semanticDb('data_product_sources')
+    const db = reqDb(req);
+    const sources = await db('data_product_sources')
       .where({ data_product_id: req.params.id })
       .orderBy('table_name');
     res.json({ ok: true, data: sources });
@@ -1226,21 +1232,22 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  const db = reqDb(req);
   try {
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       emit({ type: 'error', message: 'Data product not found' });
       res.end(); return;
     }
 
-    const sources = await semanticDb('data_product_sources').where({ data_product_id: product.id });
+    const sources = await db('data_product_sources').where({ data_product_id: product.id });
     if (sources.length === 0) {
       emit({ type: 'error', message: 'No source tables selected for this data product' });
       res.end(); return;
     }
 
     // Mark as designing
-    await semanticDb('data_products').where({ id: product.id }).update({
+    await db('data_products').where({ id: product.id }).update({
       status: 'designing', updated_at: new Date().toISOString(),
     });
 
@@ -1248,13 +1255,13 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 
     // Build source context
     const sourceTableNames = sources.map((s: { table_name: string }) => s.table_name);
-    const sourceTables = await semanticDb('source_tables')
+    const sourceTables = await db('source_tables')
       .where({ connection_id: product.connection_id, is_active: true })
       .whereIn('table_name', sourceTableNames);
 
     const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
     const sourceColumns = sourceTableIds.length
-      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+      ? await db('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
       : [];
 
     const sourceContext = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
@@ -1275,7 +1282,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     // write correct JOIN SQL referencing the right surrogate key columns.
     let sharedDimsContext = '';
     try {
-      const deps = await semanticDb('data_product_dependencies as dpd')
+      const deps = await db('data_product_dependencies as dpd')
         .join('data_products as dp', 'dpd.source_product_id', 'dp.id')
         .where('dpd.dependent_product_id', product.id)
         .select('dpd.source_product_id', 'dp.name as source_product_name');
@@ -1286,7 +1293,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
           // Owners (is_shared_dimension=false) live in the upstream product
           // and have transformation_sql. Stubs in downstream products are
           // is_shared_dimension=true with null SQL — we want the owners here.
-          const sharedTables = await semanticDb('product_tables as pt')
+          const sharedTables = await db('product_tables as pt')
             .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
             .where({ 'ss.data_product_id': dep.source_product_id, 'pt.is_shared_dimension': false })
             .where('pt.table_role', 'dimension')
@@ -1294,7 +1301,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
             .select('pt.id', 'pt.table_name', 'pt.display_name', 'pt.description');
 
           for (const tbl of sharedTables) {
-            const cols = await semanticDb('product_columns')
+            const cols = await db('product_columns')
               .where({ product_table_id: tbl.id })
               .orderBy('sort_order')
               .select('column_name', 'data_type', 'column_role', 'description');
@@ -1345,13 +1352,13 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     emit({ type: 'phase', text: 'Saving star schema design...' });
 
     // ── Save design to DB (same logic as non-streaming endpoint) ──────────
-    await semanticDb('star_schemas').where({ data_product_id: product.id }).delete();
+    await db('star_schemas').where({ data_product_id: product.id }).delete();
 
     const allSavedTables: { name: string; role: string; columnCount: number }[] = [];
 
     const schema = design.star_schema;
     {
-      const [schemaRow] = await semanticDb('star_schemas')
+      const [schemaRow] = await db('star_schemas')
         .insert({
           data_product_id: product.id,
           name: schema.name,
@@ -1364,7 +1371,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       const tableNameToId = new Map<string, number>();
 
       for (const table of schema.tables) {
-        const [tableRow] = await semanticDb('product_tables')
+        const [tableRow] = await db('product_tables')
           .insert({
             star_schema_id: schemaId,
             table_name: table.table_name,
@@ -1380,7 +1387,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
         tableNameToId.set(table.table_name, tableId);
 
         for (const col of table.columns) {
-          const [colRow] = await semanticDb('product_columns')
+          const [colRow] = await db('product_columns')
             .insert({
               product_table_id: tableId,
               column_name: col.column_name,
@@ -1403,7 +1410,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
             (l) => l.source_table_name && l.source_column_name,
           );
           if (validLineage.length) {
-            await semanticDb('column_lineage').insert(
+            await db('column_lineage').insert(
               validLineage.map((l) => ({
                 product_column_id: colId,
                 source_table_name: l.source_table_name,
@@ -1438,7 +1445,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
         const fromTableId = tableNameToId.get(rel.from_table_name);
         const toTableId = tableNameToId.get(rel.to_table_name);
         if (fromTableId && toTableId) {
-          await semanticDb('product_relationships').insert({
+          await db('product_relationships').insert({
             star_schema_id: schemaId,
             from_table_id: fromTableId,
             from_column_name: rel.from_column_name,
@@ -1453,7 +1460,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
       const dateRange = design.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
 
-      const [dimDateRow] = await semanticDb('product_tables')
+      const [dimDateRow] = await db('product_tables')
         .insert({
           star_schema_id: schemaId,
           table_name: 'dim_date',
@@ -1469,7 +1476,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       tableNameToId.set('dim_date', dimDateId);
 
       for (const col of DIM_DATE_COLUMNS) {
-        await semanticDb('product_columns')
+        await db('product_columns')
           .insert({
             product_table_id: dimDateId,
             column_name: col.column_name,
@@ -1504,7 +1511,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 
     // Save proposed KPIs
     if (design.proposed_kpis?.length) {
-      await semanticDb('product_kpis').insert(
+      await db('product_kpis').insert(
         design.proposed_kpis.map((k) => ({
           data_product_id: product.id,
           name: k.name,
@@ -1516,7 +1523,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       );
     }
 
-    await semanticDb('data_products').where({ id: product.id }).update({
+    await db('data_products').where({ id: product.id }).update({
       status: 'approved', updated_at: new Date().toISOString(),
     });
 
@@ -1531,7 +1538,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     res.end();
   } catch (err: unknown) {
     console.error('[products/design-stream] Error:', err);
-    await semanticDb('data_products').where({ id: req.params.id }).update({
+    await db('data_products').where({ id: req.params.id }).update({
       status: 'error', updated_at: new Date().toISOString(),
     }).catch(() => {});
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Design failed. Please try again.' });
@@ -1544,15 +1551,16 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
 // ---------------------------------------------------------------------------
 
 router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  const db = reqDb(req);
   try {
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
     // Get source tables
-    const sources = await semanticDb('data_product_sources')
+    const sources = await db('data_product_sources')
       .where({ data_product_id: product.id });
 
     if (sources.length === 0) {
@@ -1561,20 +1569,20 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     }
 
     // Mark as designing
-    await semanticDb('data_products').where({ id: product.id }).update({
+    await db('data_products').where({ id: product.id }).update({
       status: 'designing',
       updated_at: new Date().toISOString(),
     });
 
     // Build source context for AI
     const sourceTableNames = sources.map((s: { table_name: string }) => s.table_name);
-    const sourceTables = await semanticDb('source_tables')
+    const sourceTables = await db('source_tables')
       .where({ connection_id: product.connection_id, is_active: true })
       .whereIn('table_name', sourceTableNames);
 
     const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
     const sourceColumns = sourceTableIds.length
-      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+      ? await db('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
       : [];
 
     // Build context string
@@ -1600,12 +1608,12 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     );
 
     // Delete existing schemas for this product (re-design)
-    await semanticDb('star_schemas').where({ data_product_id: product.id }).delete();
+    await db('star_schemas').where({ data_product_id: product.id }).delete();
 
     // Save the design
     const schema = design.star_schema;
     {
-      const [schemaRow] = await semanticDb('star_schemas')
+      const [schemaRow] = await db('star_schemas')
         .insert({
           data_product_id: product.id,
           name: schema.name,
@@ -1620,7 +1628,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
       const tableNameToId = new Map<string, number>();
 
       for (const table of schema.tables) {
-        const [tableRow] = await semanticDb('product_tables')
+        const [tableRow] = await db('product_tables')
           .insert({
             star_schema_id: schemaId,
             table_name: table.table_name,
@@ -1637,7 +1645,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
         tableNameToId.set(table.table_name, tableId);
 
         for (const col of table.columns) {
-          const [colRow] = await semanticDb('product_columns')
+          const [colRow] = await db('product_columns')
             .insert({
               product_table_id: tableId,
               column_name: col.column_name,
@@ -1662,7 +1670,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
             (l) => l.source_table_name && l.source_column_name,
           );
           if (validLineage.length) {
-            await semanticDb('column_lineage').insert(
+            await db('column_lineage').insert(
               validLineage.map((l) => ({
                 product_column_id: colId,
                 source_table_name: l.source_table_name,
@@ -1679,7 +1687,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
         const fromTableId = tableNameToId.get(rel.from_table_name);
         const toTableId = tableNameToId.get(rel.to_table_name);
         if (fromTableId && toTableId) {
-          await semanticDb('product_relationships').insert({
+          await db('product_relationships').insert({
             star_schema_id: schemaId,
             from_table_id: fromTableId,
             from_column_name: rel.from_column_name,
@@ -1694,7 +1702,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
       const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
       const dateRange = design.dim_date_range ?? { start: '2020-01-01', end: '2027-12-31' };
 
-      const [dimDateRow] = await semanticDb('product_tables')
+      const [dimDateRow] = await db('product_tables')
         .insert({
           star_schema_id: schemaId,
           table_name: 'dim_date',
@@ -1710,7 +1718,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
       tableNameToId.set('dim_date', dimDateId);
 
       for (const col of DIM_DATE_COLUMNS) {
-        await semanticDb('product_columns')
+        await db('product_columns')
           .insert({
             product_table_id: dimDateId,
             column_name: col.column_name,
@@ -1728,7 +1736,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
 
     // Save proposed KPIs
     if (design.proposed_kpis?.length) {
-      await semanticDb('product_kpis').insert(
+      await db('product_kpis').insert(
         design.proposed_kpis.map((k) => ({
           data_product_id: product.id,
           name: k.name,
@@ -1741,7 +1749,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     }
 
     // Update product status
-    await semanticDb('data_products').where({ id: product.id }).update({
+    await db('data_products').where({ id: product.id }).update({
       status: 'approved',
       updated_at: new Date().toISOString(),
     });
@@ -1752,7 +1760,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     res.json({ ok: true, data: { status: 'approved', sqlGenerated: true } });
   } catch (err) {
     // Revert status on error
-    await semanticDb('data_products').where({ id: req.params.id }).update({
+    await db('data_products').where({ id: req.params.id }).update({
       status: 'error',
       updated_at: new Date().toISOString(),
     }).catch(() => {});
@@ -1766,17 +1774,18 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
 
 router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    const db = reqDb(req);
+    const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: product.id });
+    const schemas = await db('star_schemas').where({ data_product_id: product.id });
     const schemaIds = schemas.map((s: { id: number }) => s.id);
 
     const fetchTables = () => schemaIds.length
-      ? semanticDb('product_tables')
+      ? db('product_tables')
           .whereIn('star_schema_id', schemaIds)
           .whereNotNull('transformation_sql')
           .orderBy('dag_order', 'asc')
@@ -1800,7 +1809,8 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
 
 router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const table = await semanticDb('product_tables').where({ id: req.params.tableId }).first();
+    const db = reqDb(req);
+    const table = await db('product_tables').where({ id: req.params.tableId }).first();
     if (!table) {
       res.status(404).json({ ok: false, error: 'Table not found' });
       return;
@@ -1811,8 +1821,8 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
       return;
     }
 
-    const schema = await semanticDb('star_schemas').where({ id: table.star_schema_id }).first();
-    const product = await semanticDb('data_products').where({ id: schema.data_product_id }).first();
+    const schema = await db('star_schemas').where({ id: table.star_schema_id }).first();
+    const product = await db('data_products').where({ id: schema.data_product_id }).first();
 
     const { runProductTransformation } = await import('../services/transformationRunner');
 
@@ -1832,12 +1842,13 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 
 router.patch('/tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const allowed = ['description', 'display_name'];
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
-    await semanticDb('product_tables').where({ id: req.params.tableId }).update(updates);
+    await db('product_tables').where({ id: req.params.tableId }).update(updates);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -1848,8 +1859,9 @@ router.patch('/tables/:tableId', requireAuth, requireRole('admin'), async (req: 
 
 router.put('/tables/:tableId/sql', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { sql } = req.body as { sql: string };
-    await semanticDb('product_tables')
+    await db('product_tables')
       .where({ id: req.params.tableId })
       .update({
         transformation_sql: sql,
@@ -1866,7 +1878,8 @@ router.put('/tables/:tableId/sql', requireAuth, requireRole('admin'), async (req
 
 router.put('/tables/:tableId/approve', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    await semanticDb('product_tables')
+    const db = reqDb(req);
+    await db('product_tables')
       .where({ id: req.params.tableId })
       .update({
         transformation_status: 'approved',
@@ -1882,7 +1895,8 @@ router.put('/tables/:tableId/approve', requireAuth, requireRole('admin'), async 
 
 router.get('/tables/:tableId/checks', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const checks = await semanticDb('transformation_checks')
+    const db = reqDb(req);
+    const checks = await db('transformation_checks')
       .where({ product_table_id: req.params.tableId })
       .orderBy('check_type');
     res.json({ ok: true, data: checks });
@@ -1899,6 +1913,7 @@ router.get('/tables/:tableId/checks', requireAuth, async (req: Request, res: Res
 
 router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tableId = Number(req.params.tableId);
     if (!Number.isFinite(tableId)) {
       res.status(400).json({ ok: false, error: 'invalid tableId' });
@@ -1912,10 +1927,9 @@ router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request,
 
     const tenantId = req.user?.tenantId;
     if (tenantId) {
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-    }
+      }
 
-    const rows = await semanticDb('product_table_refresh_history')
+    const rows = await db('product_table_refresh_history')
       .where({ product_table_id: tableId })
       .orderBy('refresh_started_at', 'desc')
       .limit(limit)
@@ -1944,6 +1958,7 @@ router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request,
 
 router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const allowed = [
       'column_name', 'data_type', 'display_name', 'description',
       'column_role', 'fk_target_table', 'fk_target_column',
@@ -1954,7 +1969,7 @@ router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: 
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
 
-    await semanticDb('product_columns').where({ id: req.params.columnId }).update(updates);
+    await db('product_columns').where({ id: req.params.columnId }).update(updates);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -1965,6 +1980,7 @@ router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: 
 
 router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.id);
     const { instruction } = req.body as { instruction: string };
     if (!instruction?.trim()) {
@@ -1972,28 +1988,28 @@ router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next
       return;
     }
 
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
     }
 
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: productId });
+    const schemas = await db('star_schemas').where({ data_product_id: productId });
     const schemaIds = schemas.map((s: { id: number }) => s.id);
     const tables = schemaIds.length
-      ? await semanticDb('product_tables')
+      ? await db('product_tables')
           .whereIn('star_schema_id', schemaIds)
           .orderBy(['dag_order', 'table_name'])
       : [];
     const tableIds = tables.map((t: { id: number }) => t.id);
     const columns = tableIds.length
-      ? await semanticDb('product_columns')
+      ? await db('product_columns')
           .whereIn('product_table_id', tableIds)
           // Refine prompts must not see technical columns.
           .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
           .orderBy(['sort_order', 'id'])
       : [];
-    const kpis = await semanticDb('product_kpis')
+    const kpis = await db('product_kpis')
       .where({ data_product_id: productId })
       .orderBy('name');
 
@@ -2042,6 +2058,7 @@ router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next
 
 router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.id);
     const { changes } = req.body as { changes: RefineChange[] };
     if (!Array.isArray(changes)) {
@@ -2049,7 +2066,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
       return;
     }
 
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
@@ -2064,7 +2081,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
       try {
         switch (change.op) {
           case 'update_table_description': {
-            const n = await semanticDb('product_tables')
+            const n = await db('product_tables')
               .where({ id: change.table_id })
               .update({ description: change.new_value, updated_at: now });
             if (n > 0) applied++;
@@ -2072,7 +2089,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'update_column_description': {
-            const n = await semanticDb('product_columns')
+            const n = await db('product_columns')
               .where({ id: change.column_id })
               .update({ description: change.new_value, updated_at: now });
             if (n > 0) applied++;
@@ -2080,7 +2097,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'update_column_display_name': {
-            const n = await semanticDb('product_columns')
+            const n = await db('product_columns')
               .where({ id: change.column_id })
               .update({ display_name: change.new_value, updated_at: now });
             if (n > 0) applied++;
@@ -2088,7 +2105,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'update_kpi_description': {
-            const n = await semanticDb('product_kpis')
+            const n = await db('product_kpis')
               .where({ id: change.kpi_id, data_product_id: productId })
               .update({ description: change.new_value, updated_at: now });
             if (n > 0) applied++;
@@ -2096,7 +2113,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'update_kpi_formula': {
-            const n = await semanticDb('product_kpis')
+            const n = await db('product_kpis')
               .where({ id: change.kpi_id, data_product_id: productId })
               .update({ formula_sql: change.new_value, ai_draft: false, updated_at: now });
             if (n > 0) applied++;
@@ -2104,7 +2121,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'update_kpi_plain_text': {
-            const n = await semanticDb('product_kpis')
+            const n = await db('product_kpis')
               .where({ id: change.kpi_id, data_product_id: productId })
               .update({ formula_plain_text: change.new_value, updated_at: now });
             if (n > 0) applied++;
@@ -2112,7 +2129,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
             break;
           }
           case 'add_kpi': {
-            await semanticDb('product_kpis').insert({
+            await db('product_kpis').insert({
               data_product_id:    productId,
               name:               change.name,
               description:        change.description,
@@ -2154,6 +2171,7 @@ router.post('/:id/refine/apply', requireAuth, requireRole('admin'), async (req: 
 
 router.post('/:id/kpis/ai-draft', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.id);
     const { name, description } = req.body as { name: string; description?: string };
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -2242,6 +2260,7 @@ router.post('/:id/kpis/ai-draft', requireAuth, requireRole('admin', 'analyst'), 
 
 router.get('/:id/kpis', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const kpis = await tenantQuery(tenantId, (trx) =>
       trx('product_kpis').where({ data_product_id: req.params.id }).orderBy('name'),
@@ -2261,6 +2280,7 @@ router.get('/:id/kpis', requireAuth, async (req: Request, res: Response, next: N
 // ---------------------------------------------------------------------------
 router.get('/:id/starters', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const productId = Number(req.params.id);
     if (!tenantId || !Number.isFinite(productId)) {
@@ -2281,6 +2301,7 @@ router.get('/:id/starters', requireAuth, async (req: Request, res: Response, nex
 
 router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { name, description, formulaPlainText, formulaSql, ownerName } = req.body as {
       name: string; description?: string; formulaPlainText?: string;
       formulaSql?: string; ownerName?: string;
@@ -2315,6 +2336,7 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), async (re
 
 router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const allowed = ['name', 'description', 'formula_plain_text', 'formula_sql', 'owner_name', 'ai_draft'];
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const key of allowed) {
@@ -2335,6 +2357,7 @@ router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), async (
 
 router.delete('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     await tenantQuery(tenantId, (trx) =>
       trx('product_kpis').where({ id: req.params.kpiId }).delete(),
@@ -2349,12 +2372,13 @@ router.delete('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), asyn
 // ---------------------------------------------------------------------------
 router.patch('/tables/:tableId/load-mode', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { load_mode } = req.body as { load_mode: 'full' | 'incremental' };
     if (!['full', 'incremental'].includes(load_mode)) {
       res.status(400).json({ ok: false, error: 'load_mode must be "full" or "incremental"' });
       return;
     }
-    await semanticDb('product_tables')
+    await db('product_tables')
       .where({ id: req.params.tableId })
       .update({ load_mode });
     res.json({ ok: true });
@@ -2368,10 +2392,11 @@ router.patch('/tables/:tableId/load-mode', requireAuth, requireRole('admin'), as
 // ---------------------------------------------------------------------------
 router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const includeUpstream = String(req.query.include ?? '').toLowerCase() === 'upstream';
 
-    const product = await semanticDb('data_products').where({ id: req.params.id }).first();
+    const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
@@ -2396,13 +2421,13 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
     }> = [];
 
     for (const pid of runOrder) {
-      const p = await semanticDb('data_products').where({ id: pid }).first();
+      const p = await db('data_products').where({ id: pid }).first();
       if (!p) continue;
 
-      const schemas = await semanticDb('star_schemas').where({ data_product_id: pid });
+      const schemas = await db('star_schemas').where({ data_product_id: pid });
       const schemaIds = schemas.map((s: { id: number }) => s.id);
       const tables = schemaIds.length
-        ? await semanticDb('product_tables')
+        ? await db('product_tables')
             .whereIn('star_schema_id', schemaIds)
             .whereNotNull('transformation_sql')
             .orderBy('dag_order', 'asc')
@@ -2439,22 +2464,23 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
 
 router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
+    const db = reqDb(req);
     const { connectionId, description } = req.body as { connectionId: number; description: string };
     if (!connectionId) return res.status(400).json({ error: 'connectionId required' });
     if (!description || !description.trim()) return res.status(400).json({ error: 'description required' });
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) return res.status(404).json({ error: 'Connection not found' });
 
-    const sourceTables = await semanticDb('source_tables as st')
+    const sourceTables = await db('source_tables as st')
       .where({ 'st.connection_id': connectionId, 'st.is_active': true })
       .select('st.*');
 
     const tableContexts = await Promise.all(sourceTables.map(async (t: Record<string, unknown>) => {
-      const columns = await semanticDb('source_columns')
+      const columns = await db('source_columns')
         .where({ table_id: t.id })
         .select('id', 'column_name', 'data_type', 'description', 'is_dimension', 'is_measure');
-      const fkRels = await semanticDb('table_relationships as tr')
+      const fkRels = await db('table_relationships as tr')
         .join('source_tables as st2', 'tr.to_table_id', 'st2.id')
         .where({ 'tr.from_table_id': t.id })
         .select('tr.from_column_id', 'st2.table_name as to_table_name', 'tr.relationship_type');
@@ -2484,9 +2510,9 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
       };
     }));
 
-    const existingProducts = await semanticDb('data_products').where({ connection_id: connectionId });
+    const existingProducts = await db('data_products').where({ connection_id: connectionId });
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
-      const sharedTables = await semanticDb('product_tables as pt')
+      const sharedTables = await db('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
@@ -2538,6 +2564,7 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 // ---------------------------------------------------------------------------
 router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
+    const db = reqDb(req);
     const productId = Number(req.params.id);
     if (!Number.isFinite(productId)) {
       res.status(400).json({ ok: false, error: 'Invalid product id' });
@@ -2549,7 +2576,7 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req:
       return;
     }
 
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await db('data_products').where({ id: productId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
@@ -2600,6 +2627,7 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req:
 
 router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
+    const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
     if (!connectionId) {
       res.status(400).json({ ok: false, error: 'connectionId required' });
@@ -2612,7 +2640,7 @@ router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: 
       return;
     }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
@@ -2654,6 +2682,7 @@ router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: 
 
 router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
 
@@ -2690,6 +2719,7 @@ router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: 
 
 router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const { jobId } = req.params;
 
@@ -2851,22 +2881,23 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
   let keepaliveInterval: NodeJS.Timeout | null = null;
 
   try {
+    const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
     if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); res.end(); return; }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) { emit({ type: 'error', message: 'Connection not found' }); res.end(); return; }
 
     emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
 
     // Build source context WITHOUT example values to keep the prompt compact
-    const sourceTables = await semanticDb('source_tables as st')
+    const sourceTables = await db('source_tables as st')
       .where({ 'st.connection_id': connectionId, 'st.is_active': true })
       .select('st.*');
 
     const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
     const sourceColumns = sourceTableIds.length
-      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+      ? await db('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
       : [];
 
     const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
@@ -2955,6 +2986,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
 router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   const reqId = `bm-save-${Date.now().toString(36)}`;
   try {
+    const db = reqDb(req);
     const { connectionId, busMatrix } = req.body as {
       connectionId: number;
       busMatrix: import('../ai/prompts/busMatrixPrompt').BusMatrixOutput;
@@ -3008,7 +3040,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
     const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
 
     // Wrap in a transaction — all-or-nothing to avoid partial state on failure
-    const results = await semanticDb.transaction(async (trx) => {
+    const results = await db.transaction(async (trx) => {
 
     if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
 
@@ -3413,26 +3445,27 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
   const emit = (data: Record<string, unknown>) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
   try {
+    const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
     if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); res.end(); return; }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) { emit({ type: 'error', message: 'Connection not found' }); res.end(); return; }
 
     emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
 
     // Same data-gathering as /propose
-    const sourceTables = await semanticDb('source_tables as st')
+    const sourceTables = await db('source_tables as st')
       .where({ 'st.connection_id': connectionId, 'st.is_active': true })
       .select('st.*');
 
     emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables — asking Claude to plan the warehouse…` });
 
     const tableContexts = await Promise.all(sourceTables.map(async (t: Record<string, unknown>) => {
-      const columns = await semanticDb('source_columns')
+      const columns = await db('source_columns')
         .where({ table_id: t.id })
         .select('id', 'column_name', 'data_type', 'description', 'is_dimension', 'is_measure', 'example_values');
-      const fkRels = await semanticDb('table_relationships as tr')
+      const fkRels = await db('table_relationships as tr')
         .join('source_tables as st2', 'tr.to_table_id', 'st2.id')
         .where({ 'tr.from_table_id': t.id })
         .select('tr.from_column_id', 'st2.table_name as to_table_name', 'tr.relationship_type');
@@ -3462,9 +3495,9 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
       };
     }));
 
-    const existingProducts = await semanticDb('data_products').where({ connection_id: connectionId });
+    const existingProducts = await db('data_products').where({ connection_id: connectionId });
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
-      const sharedTables = await semanticDb('product_tables as pt')
+      const sharedTables = await db('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
@@ -3499,24 +3532,25 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
 
 router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
     if (!connectionId) { res.status(400).json({ ok: false, error: 'connectionId required' }); return; }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
 
     // Gather semantic context from Postgres + Neo4j
-    const sourceTables = await semanticDb('source_tables as st')
+    const sourceTables = await db('source_tables as st')
       .where({ 'st.connection_id': connectionId, 'st.is_active': true })
       .select('st.*');
 
     const tableContexts = await Promise.all(sourceTables.map(async (t: Record<string, unknown>) => {
-      const columns = await semanticDb('source_columns')
+      const columns = await db('source_columns')
         .where({ table_id: t.id })
         .select('id', 'column_name', 'data_type', 'description', 'is_dimension', 'is_measure', 'example_values');
 
       // Derive FK info from table_relationships (from_column_id → to source_tables)
-      const fkRels = await semanticDb('table_relationships as tr')
+      const fkRels = await db('table_relationships as tr')
         .join('source_tables as st2', 'tr.to_table_id', 'st2.id')
         .where({ 'tr.from_table_id': t.id })
         .select('tr.from_column_id', 'st2.table_name as to_table_name', 'tr.relationship_type');
@@ -3552,9 +3586,9 @@ router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, 
     }));
 
     // Existing products (so Claude doesn't recreate them)
-    const existingProducts = await semanticDb('data_products').where({ connection_id: connectionId });
+    const existingProducts = await db('data_products').where({ connection_id: connectionId });
     const existingWithDims = await Promise.all(existingProducts.map(async (p: Record<string, unknown>) => {
-      const sharedTables = await semanticDb('product_tables as pt')
+      const sharedTables = await db('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .where({ 'ss.data_product_id': p.id, 'pt.is_shared_dimension': false }).where('pt.table_role', 'dimension')
         .pluck('pt.table_name');
@@ -3579,6 +3613,7 @@ router.post('/propose', requireAuth, requireRole('admin'), async (req: Request, 
 
 router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, proposal } = req.body as {
       connectionId: number;
       proposal: import('../ai/prompts/dataProductProposalPrompt').DataProductProposal;
@@ -3597,7 +3632,7 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
 
     for (const dp of sorted) {
       // Create data_product row
-      const [productId] = await semanticDb('data_products').insert({
+      const [productId] = await db('data_products').insert({
         connection_id: connectionId,
         name: dp.name,
         description: dp.description,
@@ -3615,7 +3650,7 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
       for (const dep of dp.depends_on) {
         const sourceId = productIdByName.get(dep.source_product_name);
         if (sourceId) {
-          await semanticDb('data_product_dependencies').insert({
+          await db('data_product_dependencies').insert({
             dependent_product_id: pid,
             source_product_id: sourceId,
             tenant_id: tenantId,
@@ -3625,7 +3660,7 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
 
       // Create star schemas + tables
       for (const ss of dp.star_schemas) {
-        const [schemaId] = await semanticDb('star_schemas').insert({
+        const [schemaId] = await db('star_schemas').insert({
           data_product_id: pid,
           name: ss.name,
           description: ss.description,
@@ -3636,7 +3671,7 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
         const ssid = typeof schemaId === 'object' ? (schemaId as { id: number }).id : schemaId;
 
         for (const tbl of ss.tables) {
-          await semanticDb('product_tables').insert({
+          await db('product_tables').insert({
             star_schema_id: ssid,
             table_name: tbl.table_name,
             display_name: tbl.display_name,
@@ -3664,12 +3699,12 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
         }
       }
       if (allSourceTableNames.size > 0) {
-        const sourceTblRows = await semanticDb('source_tables')
+        const sourceTblRows = await db('source_tables')
           .where({ connection_id: connectionId })
           .whereIn('table_name', [...allSourceTableNames])
           .select('id', 'table_name');
         if (sourceTblRows.length > 0) {
-          await semanticDb('data_product_sources').insert(
+          await db('data_product_sources').insert(
             sourceTblRows.map((r: { id: number; table_name: string }) => ({
               data_product_id: pid,
               source_table_id: r.id,
@@ -3710,6 +3745,7 @@ router.post('/build-proposed', requireAuth, requireRole('admin'), async (req: Re
 
 router.get('/:id/refinements', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const { listRefinements } = await import('../services/refineService');
@@ -3720,6 +3756,7 @@ router.get('/:id/refinements', requireAuth, async (req: Request, res: Response, 
 
 router.post('/:id/refinements', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const { message, focusedTableId } = req.body as { message: string; focusedTableId?: number | null };
@@ -3743,6 +3780,7 @@ router.post('/:id/refinements', requireAuth, requireRole('admin', 'analyst'), as
 
 router.post('/refinements/:id/approve', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const userId = req.user?.sub as number | undefined;
@@ -3757,6 +3795,7 @@ router.post('/refinements/:id/approve', requireAuth, requireRole('admin', 'analy
 
 router.post('/refinements/:id/reject', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
     const userId = req.user?.sub as number | undefined;
