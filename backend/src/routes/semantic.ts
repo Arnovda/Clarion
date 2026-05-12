@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { generateSchemaDraft, suggestRelationships } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -43,6 +44,7 @@ router.use((req: Request, res: Response, next: NextFunction) => {
 // ---------------------------------------------------------------------------
 
 async function recordVersion(
+  db: Knex | Knex.Transaction,
   tenantId: number | undefined,
   entityType: string,
   entityId: number,
@@ -52,13 +54,13 @@ async function recordVersion(
   changeReason?: string,
 ): Promise<void> {
   // Get next version number
-  const prev = await semanticDb('definition_versions')
+  const prev = await db('definition_versions')
     .where({ entity_type: entityType, entity_id: entityId })
     .max('version as v')
     .first();
   const version = ((prev?.v as number) ?? 0) + 1;
 
-  await semanticDb('definition_versions').insert({
+  await db('definition_versions').insert({
     tenant_id: tenantId ?? null,
     entity_type: entityType,
     entity_id: entityId,
@@ -71,6 +73,7 @@ async function recordVersion(
 }
 
 async function auditLog(
+  db: Knex | Knex.Transaction,
   tenantId: number | undefined,
   userId: string | number,
   userName: string | undefined,
@@ -80,7 +83,7 @@ async function auditLog(
   entityName: string | null,
   details?: Record<string, unknown>,
 ): Promise<void> {
-  await semanticDb('audit_log').insert({
+  await db('audit_log').insert({
     tenant_id: tenantId ?? null,
     user_id: userId,
     user_name: userName ?? userId,
@@ -109,6 +112,7 @@ function computeChanges(oldObj: Record<string, unknown>, newObj: Record<string, 
 // GET /api/semantic/tables?connectionId=1
 router.get('/tables', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     const rows = await graph.getTablesByConnection(connectionId);
     res.json({ ok: true, data: rows });
@@ -118,13 +122,14 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
 // PATCH /api/semantic/tables/:id — confirm or edit a table definition
 router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
     // Capture old state for diff
     const oldRows = await graph.getTablesByConnection(0); // need by pgId
     const old = (await graph.getColumnsByTablePgId(0).catch(() => null), // fallback
-      await semanticDb('definition_versions')
+      await db('definition_versions')
         .where({ entity_type: 'table', entity_id: id })
         .orderBy('version', 'desc').first());
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
@@ -136,21 +141,20 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async 
     // a confirm in /review never lowered the "AI drafts pending" count.
     // Tenant-scoped to defend against cross-tenant id collisions even
     // though source_tables.id is globally unique.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     const tablePatch: Record<string, unknown> = { ai_draft: false };
     if (typeof body.display_name === 'string') tablePatch.display_name = body.display_name;
     if (typeof body.description === 'string') tablePatch.description = body.description;
     if (typeof body.approval_status === 'string') tablePatch.approval_status = body.approval_status;
     if (body.is_active !== undefined) tablePatch.is_active = !!body.is_active;
     if (Array.isArray(body.domains)) tablePatch.domains = JSON.stringify(body.domains);
-    await semanticDb('source_tables').where({ id }).update(tablePatch);
+    await db('source_tables').where({ id }).update(tablePatch);
 
     await invalidateSemanticCache();
 
     // Record version + audit
     const changes = computeChanges(oldSnapshot, body);
-    await recordVersion(req.user!.tenantId, 'table', id, { ...oldSnapshot, ...body }, changes, req.user!.sub, body.change_reason as string);
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'table', id, body.display_name as string ?? body.table_name as string, { fields: Object.keys(changes) });
+    await recordVersion(db, req.user!.tenantId, 'table', id, { ...oldSnapshot, ...body }, changes, req.user!.sub, body.change_reason as string);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'table', id, body.display_name as string ?? body.table_name as string, { fields: Object.keys(changes) });
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -159,9 +163,10 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async 
 // GET /api/semantic/domains?connectionId=1
 router.get('/domains', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     const [conn, tableDomains] = await Promise.all([
-      semanticDb('connections').where({ id: connectionId }).first(),
+      db('connections').where({ id: connectionId }).first(),
       graph.getTableDomains(connectionId),
     ]);
     const all = new Set<string>(tableDomains);
@@ -180,6 +185,7 @@ router.get('/domains', requireAuth, async (req: Request, res: Response, next: Ne
 // GET /api/semantic/columns?tableId=1
 router.get('/columns', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const rows = await graph.getColumnsByTablePgId(Number(req.query.tableId));
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -188,10 +194,11 @@ router.get('/columns', requireAuth, async (req: Request, res: Response, next: Ne
 // PATCH /api/semantic/columns/:id
 router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
-    const old = await semanticDb('definition_versions')
+    const old = await db('definition_versions')
       .where({ entity_type: 'column', entity_id: id })
       .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
@@ -200,20 +207,19 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async
     // Mirror to Postgres source_columns. See PATCH /tables/:id above for
     // the full rationale — Home health score + /review queue COUNT
     // queries hit Postgres directly and would otherwise miss confirms.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     const colPatch: Record<string, unknown> = { ai_draft: false };
     if (typeof body.display_name === 'string') colPatch.display_name = body.display_name;
     if (typeof body.description === 'string') colPatch.description = body.description;
     if (typeof body.approval_status === 'string') colPatch.approval_status = body.approval_status;
     if (body.is_dimension !== undefined) colPatch.is_dimension = !!body.is_dimension;
     if (body.is_measure !== undefined) colPatch.is_measure = !!body.is_measure;
-    await semanticDb('source_columns').where({ id }).update(colPatch);
+    await db('source_columns').where({ id }).update(colPatch);
 
     await invalidateSemanticCache();
 
     const changes = computeChanges(oldSnapshot, body);
-    await recordVersion(req.user!.tenantId, 'column', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'column', id, body.display_name as string ?? body.column_name as string, { fields: Object.keys(changes) });
+    await recordVersion(db, req.user!.tenantId, 'column', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'column', id, body.display_name as string ?? body.column_name as string, { fields: Object.keys(changes) });
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -226,6 +232,7 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async
 // GET /api/semantic/paths?connectionId=1&fromTableId=2&toTableId=3
 router.get('/paths', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     const fromTableId  = Number(req.query.fromTableId);
     const toTableId    = Number(req.query.toTableId);
@@ -257,6 +264,7 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
 // GET /api/semantic/relationships?connectionId=1
 router.get('/relationships', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const rows = await graph.getRelationshipsForConnection(Number(req.query.connectionId));
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -265,6 +273,7 @@ router.get('/relationships', requireAuth, async (req: Request, res: Response, ne
 // POST /api/semantic/relationships
 router.post('/relationships', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description } =
       req.body as Record<string, unknown>;
 
@@ -291,8 +300,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
     // approved / total" counts reflect the new row. Insert with explicit
     // id = Neo4j pgId so PATCH/DELETE by id stays consistent across stores.
     // See dual-write contract notes in CLAUDE.md.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
-    await semanticDb('table_relationships')
+    await db('table_relationships')
       .insert({
         id:                pgId,
         from_table_id:     Number(from_table_id),
@@ -307,7 +315,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
     // Keep table_relationships_id_seq ahead of any pgId we've inserted so
     // future SchemaProfiler runs (which let Postgres auto-assign id) don't
     // collide with Neo4j-assigned pgIds we've already mirrored.
-    await semanticDb.raw(
+    await db.raw(
       `SELECT setval('table_relationships_id_seq', GREATEST(?, (SELECT COALESCE(MAX(id), 1) FROM table_relationships)))`,
       [pgId],
     );
@@ -323,6 +331,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
 // so the role gate must match.
 router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { relationship_type, description, from_column_id, to_column_id } =
       req.body as Record<string, unknown>;
 
@@ -342,11 +351,10 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
     // Mirror to Postgres table_relationships so Home's "relationships
     // approved / total" count reflects the confirmation. Same dual-write
     // pattern as PATCH /tables/:id and PATCH /columns/:id above.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     const relPatch: Record<string, unknown> = { ai_draft: false };
     if (typeof relationship_type === 'string') relPatch.relationship_type = relationship_type;
     if (typeof description === 'string') relPatch.description = description;
-    await semanticDb('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
+    await db('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
 
     await invalidateSemanticCache();
     res.json({ ok: true });
@@ -360,13 +368,13 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
 // rejection is a hard delete rather than a soft flag).
 router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
     await graph.deleteRelationship(id);
     // Mirror delete to Postgres so Home's relationship counts decrement.
     // No-op if the row doesn't exist (e.g. legacy Neo4j-only rels created
     // before the dual-write was added).
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
-    await semanticDb('table_relationships').where({ id }).delete();
+    await db('table_relationships').where({ id }).delete();
     await invalidateSemanticCache();
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -394,6 +402,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
   };
 
   try {
+    const db = reqDb(req);
     emit({ phase: 'loading', message: 'Loading semantic layer data…' });
 
     // Gather all enriched semantic context from Neo4j (including quality stats + FK candidates)
@@ -468,10 +477,9 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
     // Mirror the wipe in Postgres — drop every AI-draft relationship rooted
     // at any table for this connection. Confirmed (ai_draft = false) rels
     // are preserved on both sides.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     const connectionTableIds = Array.from(tableIdMap.values());
     if (connectionTableIds.length > 0) {
-      await semanticDb('table_relationships')
+      await db('table_relationships')
         .where({ ai_draft: true })
         .where(function () {
           this.whereIn('from_table_id', connectionTableIds)
@@ -503,7 +511,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
         aiDraft:        true,
       });
       // Mirror each new draft into Postgres with explicit id = Neo4j pgId.
-      await semanticDb('table_relationships')
+      await db('table_relationships')
         .insert({
           id:                pgId,
           from_table_id:     fromTablePgId,
@@ -519,7 +527,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
       emit({ phase: 'storing', message: `Stored: ${rel.from_table}.${rel.via_column} → ${rel.to_table}.${rel.to_column}` });
     }
     // Keep the Postgres sequence ahead of every pgId we just inserted.
-    await semanticDb.raw(
+    await db.raw(
       `SELECT setval('table_relationships_id_seq', (SELECT COALESCE(MAX(id), 1) FROM table_relationships))`,
     );
 
@@ -544,6 +552,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 // GET /api/semantic/kpis?connectionId=1
 router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const rows = await graph.getKpisByConnection(Number(req.query.connectionId));
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -552,6 +561,7 @@ router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextF
 // POST /api/semantic/kpis
 router.post('/kpis', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connection_id, name, description, formula_plain_text, formula_sql, owner_name } =
       req.body as Record<string, unknown>;
     const pgId = await graph.nextPgId();
@@ -567,8 +577,8 @@ router.post('/kpis', requireAuth, requireRole('admin'), async (req: Request, res
     });
 
     const snapshot = { connection_id, name, description, formula_plain_text, formula_sql, owner_name };
-    await recordVersion(req.user!.tenantId, 'kpi', pgId, snapshot, null, req.user!.sub);
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'create', 'kpi', pgId, String(name ?? ''));
+    await recordVersion(db, req.user!.tenantId, 'kpi', pgId, snapshot, null, req.user!.sub);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'create', 'kpi', pgId, String(name ?? ''));
 
     res.status(201).json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
@@ -577,10 +587,11 @@ router.post('/kpis', requireAuth, requireRole('admin'), async (req: Request, res
 // PATCH /api/semantic/kpis/:id
 router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
-    const old = await semanticDb('definition_versions')
+    const old = await db('definition_versions')
       .where({ entity_type: 'kpi', entity_id: id })
       .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
@@ -589,8 +600,8 @@ router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request
     await invalidateSemanticCache();
 
     const changes = computeChanges(oldSnapshot, body);
-    await recordVersion(req.user!.tenantId, 'kpi', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'kpi', id, body.name as string, { fields: Object.keys(changes) });
+    await recordVersion(db, req.user!.tenantId, 'kpi', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'kpi', id, body.name as string, { fields: Object.keys(changes) });
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -627,9 +638,10 @@ function normalizeGlossaryRow(row: Record<string, unknown>) {
 }
 
 // GET /api/semantic/glossary
-router.get('/glossary', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/glossary', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rows = await semanticDb('business_glossary').orderBy('term', 'asc');
+    const db = reqDb(req);
+    const rows = await db('business_glossary').orderBy('term', 'asc');
     res.json({ ok: true, data: rows.map(normalizeGlossaryRow) });
   } catch (err) { next(err); }
 });
@@ -637,6 +649,7 @@ router.get('/glossary', requireAuth, async (_req: Request, res: Response, next: 
 // POST /api/semantic/glossary
 router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { term, meaning, examples, tags } = req.body as Record<string, unknown>;
     const trimmedTerm = String(term ?? '').trim();
     const trimmedMeaning = String(meaning ?? '').trim();
@@ -644,7 +657,7 @@ router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Reques
       res.status(400).json({ ok: false, error: 'term and meaning are required' });
       return;
     }
-    const [row] = await semanticDb('business_glossary')
+    const [row] = await db('business_glossary')
       .insert({
         tenant_id: req.user!.tenantId,
         term: trimmedTerm,
@@ -669,6 +682,7 @@ router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Reques
 // PATCH /api/semantic/glossary/:id
 router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
     const update: Record<string, unknown> = { updated_at: new Date() };
@@ -678,7 +692,7 @@ router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: R
     if (body.tags !== undefined)          update.tags = JSON.stringify(parseJsonArray(body.tags));
     if (typeof body.ai_draft === 'boolean') update.ai_draft = body.ai_draft;
 
-    const [row] = await semanticDb('business_glossary')
+    const [row] = await db('business_glossary')
       .where({ id })
       .update(update)
       .returning('*');
@@ -697,8 +711,9 @@ router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: R
 // DELETE /api/semantic/glossary/:id
 router.delete('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
-    const deleted = await semanticDb('business_glossary').where({ id }).delete();
+    const deleted = await db('business_glossary').where({ id }).delete();
     if (!deleted) { res.status(404).json({ ok: false, error: 'Glossary entry not found' }); return; }
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -711,6 +726,7 @@ router.delete('/glossary/:id', requireAuth, requireRole('analyst'), async (req: 
 
 router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, table, limit = '10' } = req.query as Record<string, string>;
     if (!connectionId || !table) {
       res.status(400).json({ ok: false, error: 'connectionId and table are required' });
@@ -727,7 +743,7 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
       return;
     }
 
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
@@ -757,6 +773,7 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
 // POST /api/semantic/revert
 router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { entityType, entityId, version } = req.body as {
       entityType: 'table' | 'column' | 'kpi';
       entityId: number;
@@ -774,7 +791,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
     }
 
     // Look up the target version
-    const targetVersion = await semanticDb('definition_versions')
+    const targetVersion = await db('definition_versions')
       .where({ entity_type: entityType, entity_id: entityId, version })
       .first();
 
@@ -788,7 +805,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       : targetVersion.snapshot;
 
     // Get the current state for diff
-    const currentVersion = await semanticDb('definition_versions')
+    const currentVersion = await db('definition_versions')
       .where({ entity_type: entityType, entity_id: entityId })
       .orderBy('version', 'desc')
       .first();
@@ -801,7 +818,6 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
     // source_columns / kpi_definitions) so Home health counts and /review
     // queue aggregates pick up reverts. See "Dual-write contract" in
     // CLAUDE.md for the full list of mirrored surfaces.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
     if (entityType === 'table') {
       const patch: Record<string, unknown> = {};
       if (snapshot.display_name !== undefined) patch.display_name = snapshot.display_name;
@@ -820,7 +836,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
         pgPatch.domains = Array.isArray(snapshot.domains) ? JSON.stringify(snapshot.domains) : snapshot.domains;
       }
       if (Object.keys(pgPatch).length > 0) {
-        await semanticDb('source_tables').where({ id: entityId }).update(pgPatch);
+        await db('source_tables').where({ id: entityId }).update(pgPatch);
       }
     } else if (entityType === 'column') {
       const patch: Record<string, unknown> = {};
@@ -837,7 +853,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.is_dimension !== undefined) pgPatch.is_dimension = !!snapshot.is_dimension;
       if (snapshot.is_measure !== undefined) pgPatch.is_measure = !!snapshot.is_measure;
       if (Object.keys(pgPatch).length > 0) {
-        await semanticDb('source_columns').where({ id: entityId }).update(pgPatch);
+        await db('source_columns').where({ id: entityId }).update(pgPatch);
       }
     } else if (entityType === 'kpi') {
       const patch: Record<string, unknown> = {};
@@ -857,7 +873,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
         if (snapshot.formula_plain_text !== undefined) pgPatch.formula_plain_text = snapshot.formula_plain_text;
         if (snapshot.formula_sql !== undefined) pgPatch.formula_sql = snapshot.formula_sql;
         if (Object.keys(pgPatch).length > 0) {
-          await semanticDb('kpi_definitions').where({ id: entityId }).update(pgPatch);
+          await db('kpi_definitions').where({ id: entityId }).update(pgPatch);
         }
       } catch { /* kpi_definitions table optional in Phase 7 */ }
     }
@@ -867,6 +883,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
     // Record a new version entry for the revert
     const changes = computeChanges(currentSnapshot, snapshot);
     await recordVersion(
+      db,
       req.user!.tenantId,
       entityType,
       entityId,
@@ -878,6 +895,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
 
     // Record audit log
     await auditLog(
+      db,
       req.user!.tenantId,
       req.user!.sub,
       req.user!.name as string,
@@ -899,13 +917,14 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
 // GET /api/semantic/history?entityType=table&entityId=5
 router.get('/history', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { entityType, entityId } = req.query as { entityType: string; entityId: string };
     if (!entityType || !entityId) {
       res.status(400).json({ ok: false, error: 'entityType and entityId required' });
       return;
     }
 
-    const rows = await semanticDb('definition_versions')
+    const rows = await db('definition_versions')
       .where({ entity_type: entityType, entity_id: Number(entityId) })
       .orderBy('version', 'desc')
       .limit(50);
@@ -917,6 +936,7 @@ router.get('/history', requireAuth, async (req: Request, res: Response, next: Ne
 // GET /api/semantic/diff?entityType=table&entityId=5&v1=1&v2=2
 router.get('/diff', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { entityType, entityId, v1, v2 } = req.query as Record<string, string>;
     if (!entityType || !entityId || !v1 || !v2) {
       res.status(400).json({ ok: false, error: 'entityType, entityId, v1, v2 required' });
@@ -924,10 +944,10 @@ router.get('/diff', requireAuth, async (req: Request, res: Response, next: NextF
     }
 
     const [snap1, snap2] = await Promise.all([
-      semanticDb('definition_versions')
+      db('definition_versions')
         .where({ entity_type: entityType, entity_id: Number(entityId), version: Number(v1) })
         .first(),
-      semanticDb('definition_versions')
+      db('definition_versions')
         .where({ entity_type: entityType, entity_id: Number(entityId), version: Number(v2) })
         .first(),
     ]);
@@ -952,11 +972,12 @@ router.get('/diff', requireAuth, async (req: Request, res: Response, next: NextF
 // GET /api/semantic/audit?connectionId=1&limit=50
 router.get('/audit', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const entityType = req.query.entityType as string | undefined;
     const entityId = req.query.entityId ? Number(req.query.entityId) : undefined;
 
-    let query = semanticDb('audit_log').orderBy('created_at', 'desc').limit(limit);
+    let query = db('audit_log').orderBy('created_at', 'desc').limit(limit);
     if (entityType) query = query.where({ entity_type: entityType });
     if (entityId) query = query.where({ entity_id: entityId });
 
@@ -972,6 +993,7 @@ router.get('/audit', requireAuth, async (req: Request, res: Response, next: Next
 // POST /api/semantic/approve — approve or reject a definition
 router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { entityType, entityId, action, reason } = req.body as {
       entityType: 'table' | 'column' | 'kpi';
       entityId: number;
@@ -1020,8 +1042,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
     // directly. table/column/kpi each have approval_status; product_*
     // entities live only in Neo4j today (no Postgres mirror needed).
     try {
-      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
-      const pgPatch: Record<string, unknown> = {
+        const pgPatch: Record<string, unknown> = {
         approval_status: updates.approval_status,
         approved_by: updates.approved_by ?? null,
         approved_at: updates.approved_at ?? null,
@@ -1031,11 +1052,11 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       // semantic as PATCH /tables/:id, /columns/:id confirm flow.
       if (action === 'approve') pgPatch.ai_draft = false;
       if (entityType === 'table') {
-        await semanticDb('source_tables').where({ id: entityId }).update(pgPatch);
+        await db('source_tables').where({ id: entityId }).update(pgPatch);
       } else if (entityType === 'column') {
-        await semanticDb('source_columns').where({ id: entityId }).update(pgPatch);
+        await db('source_columns').where({ id: entityId }).update(pgPatch);
       } else if (entityType === 'kpi') {
-        await semanticDb('kpi_definitions').where({ id: entityId }).update(pgPatch).catch(() => { /* table optional */ });
+        await db('kpi_definitions').where({ id: entityId }).update(pgPatch).catch(() => { /* table optional */ });
       }
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -1043,7 +1064,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
     }
 
     await invalidateSemanticCache();
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, action, entityType, entityId, null, { reason });
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, action, entityType, entityId, null, { reason });
 
     // Notify tenant about the approval/rejection
     if (req.user!.tenantId) {
@@ -1068,6 +1089,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
 // POST /api/semantic/import — bulk import/update definitions
 router.post('/import', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, definitions } = req.body as {
       connectionId: number;
       definitions: {
@@ -1091,7 +1113,6 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
     let skipped = 0;
 
     // Tenant-scope so the Postgres mirror writes pass RLS.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
 
     for (const def of definitions) {
       if (def.column_name) {
@@ -1113,11 +1134,11 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
           // Mirror to Postgres source_columns. Importing a CSV is a
           // confirm-style action — clear ai_draft so Home counts pick
           // it up. Tolerate any single-row mismatch.
-          await semanticDb('source_columns')
+          await db('source_columns')
             .where({ id: col.id })
             .update({ ...patch, ai_draft: false })
             .catch(() => { /* skip silently — Neo4j write already succeeded */ });
-          await recordVersion(req.user!.tenantId, 'column', col.id, patch, null, req.user!.sub, 'bulk import');
+          await recordVersion(db, req.user!.tenantId, 'column', col.id, patch, null, req.user!.sub, 'bulk import');
           updated++;
         }
       } else {
@@ -1139,17 +1160,17 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
           if (def.description !== undefined) pgPatch.description = def.description;
           if (def.domains !== undefined) pgPatch.domains = JSON.stringify(def.domains);
           // grain has no Postgres column today — Neo4j-only. Skip silently.
-          await semanticDb('source_tables')
+          await db('source_tables')
             .where({ id: table.id as number })
             .update(pgPatch)
             .catch(() => { /* skip silently — Neo4j write already succeeded */ });
-          await recordVersion(req.user!.tenantId, 'table', table.id as number, patch, null, req.user!.sub, 'bulk import');
+          await recordVersion(db, req.user!.tenantId, 'table', table.id as number, patch, null, req.user!.sub, 'bulk import');
           updated++;
         }
       }
     }
 
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'import', 'table', null, null, { updated, skipped, total: definitions.length });
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'import', 'table', null, null, { updated, skipped, total: definitions.length });
 
     res.json({ ok: true, data: { updated, skipped } });
   } catch (err) { next(err); }
@@ -1162,6 +1183,7 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
 // GET /api/semantic/dictionary?connectionId=1&format=html|json
 router.get('/dictionary', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     const format = (req.query.format as string) || 'json';
 
@@ -1176,7 +1198,7 @@ router.get('/dictionary', requireAuth, async (req: Request, res: Response, next:
     type KpiRow = { name: string; description: string; formula_plain_text: string; formula_sql: string };
 
     if (format === 'html') {
-      const conn = await semanticDb('connections').where({ id: connectionId }).first();
+      const conn = await db('connections').where({ id: connectionId }).first();
       const connName = conn?.name ?? `Connection #${connectionId}`;
 
       let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Data Dictionary — ${connName}</title>
@@ -1257,6 +1279,7 @@ router.get('/dictionary', requireAuth, async (req: Request, res: Response, next:
 // GET /api/semantic/export/csv?connectionId=1
 router.get('/export/csv', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     if (!connectionId) {
       res.status(400).json({ ok: false, error: 'connectionId required' });
@@ -1300,6 +1323,7 @@ router.get('/export/csv', requireAuth, async (req: Request, res: Response, next:
 // GET /api/semantic/export/xlsx?connectionId=1
 router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     if (!connectionId) {
       res.status(400).json({ ok: false, error: 'connectionId required' });
@@ -1376,18 +1400,19 @@ router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next
 // GET /api/semantic/product-tree — Hierarchical product tree for sidebar
 router.get('/product-tree', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { products } = await graph.getProductTree();
 
     // Enrich with product/schema names from Postgres
     const allProductIds = products.map((p) => p.dataProductId);
     const productRows = allProductIds.length
-      ? await semanticDb('data_products').whereIn('id', allProductIds).select('id', 'name', 'connection_id', 'status')
+      ? await db('data_products').whereIn('id', allProductIds).select('id', 'name', 'connection_id', 'status')
       : [];
     const productMap = new Map(productRows.map((p: { id: number; name: string; connection_id: number; status: string }) => [p.id, p]));
 
     // Get star schema names
     const schemaRows = allProductIds.length
-      ? await semanticDb('star_schemas').whereIn('data_product_id', allProductIds).select('id', 'data_product_id', 'name')
+      ? await db('star_schemas').whereIn('data_product_id', allProductIds).select('id', 'data_product_id', 'name')
       : [];
     const schemaMap = new Map(schemaRows.map((s: { id: number; data_product_id: number; name: string }) => [s.id, s]));
 
@@ -1424,6 +1449,7 @@ router.get('/product-tree', requireAuth, async (req: Request, res: Response, nex
 // GET /api/semantic/product-tables?dataProductId=X — Product tables from Neo4j
 router.get('/product-tables', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const dataProductId = Number(req.query.dataProductId);
     if (!dataProductId) {
       res.status(400).json({ ok: false, error: 'dataProductId required' });
@@ -1437,6 +1463,7 @@ router.get('/product-tables', requireAuth, async (req: Request, res: Response, n
 // GET /api/semantic/product-columns?tablePgId=X — Product columns from Neo4j
 router.get('/product-columns', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tablePgId = Number(req.query.tablePgId);
     if (!tablePgId) {
       res.status(400).json({ ok: false, error: 'tablePgId required' });
@@ -1450,6 +1477,7 @@ router.get('/product-columns', requireAuth, async (req: Request, res: Response, 
 // PATCH /api/semantic/product-tables/:id — Update product table definition
 router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const pgId = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
@@ -1461,7 +1489,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
     });
 
     await invalidateSemanticCache();
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -1470,6 +1498,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
 // PATCH /api/semantic/product-columns/:id — Update product column definition
 router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const pgId = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
@@ -1481,7 +1510,7 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
     });
 
     await invalidateSemanticCache();
-    await auditLog(req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);
+    await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);
 
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -1490,6 +1519,7 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
 // GET /api/semantic/product-preview?productTableId=123&limit=10
 router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { productTableId, limit = '10' } = req.query as Record<string, string>;
     if (!productTableId) {
       res.status(400).json({ ok: false, error: 'productTableId is required' });
@@ -1505,7 +1535,7 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
     // the row's own primary key.
     const pgIdNum = Number(productTableId);
     const { resolveProductTableById } = await import('../services/tableCatalog');
-    const idLookup = await semanticDb('product_tables')
+    const idLookup = await db('product_tables')
       .where({ neo4j_pg_id: pgIdNum })
       .select('id')
       .first();
@@ -1514,7 +1544,7 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
 
     if (!resolved) {
       // Distinguish between "row doesn't exist" vs "exists but not materialised".
-      const exists = await semanticDb('product_tables').where({ id: internalId }).first();
+      const exists = await db('product_tables').where({ id: internalId }).first();
       if (!exists) {
         res.status(404).json({ ok: false, error: 'Product table not found' });
       } else {
@@ -1574,17 +1604,18 @@ router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Re
 // Resolves by neo4j_pg_id first (frontend uses pgId), then falls back to native id.
 router.get('/product-tables/:id/sql', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const idNum = Number(req.params.id);
     if (!idNum) {
       res.status(400).json({ ok: false, error: 'id required' });
       return;
     }
 
-    let row = await semanticDb('product_tables')
+    let row = await db('product_tables')
       .where({ neo4j_pg_id: idNum })
       .first('id', 'table_name', 'transformation_sql', 'transformation_status', 'last_run_at', 'last_run_error');
     if (!row) {
-      row = await semanticDb('product_tables')
+      row = await db('product_tables')
         .where({ id: idNum })
         .first('id', 'table_name', 'transformation_sql', 'transformation_status', 'last_run_at', 'last_run_error');
     }
@@ -1612,10 +1643,11 @@ router.get('/product-tables/:id/sql', requireAuth, requireRole('admin'), async (
 
 router.get('/pending-approvals', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const items: Array<{ id: number; type: string; name: string; description: string; status: string; updated_at: string }> = [];
 
     // Tables with ai_draft=true or approval_status='pending'
-    const tables = await semanticDb('source_tables')
+    const tables = await db('source_tables')
       .where(function() {
         this.where('ai_draft', true).orWhere('approval_status', 'pending');
       })
@@ -1627,7 +1659,7 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
     }
 
     // Columns with ai_draft=true or approval_status='pending'
-    const columns = await semanticDb('source_columns as c')
+    const columns = await db('source_columns as c')
       .join('source_tables as t', 'c.table_id', 't.id')
       .where(function() {
         this.where('c.ai_draft', true).orWhere('c.approval_status', 'pending');
@@ -1645,7 +1677,7 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
     //   "orders.customer_id → customers.id  (many_to_one)"
     // and use the row id as a stable sort key (highest id = most recently
     // discovered, since the SchemaProfiler inserts them in batches).
-    const relationships = await semanticDb('table_relationships as r')
+    const relationships = await db('table_relationships as r')
       .leftJoin('source_tables as ft', 'r.from_table_id', 'ft.id')
       .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
       .leftJoin('source_tables as tt', 'r.to_table_id',   'tt.id')
@@ -1696,6 +1728,7 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
 
 router.get('/search', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const q = String(req.query.q ?? '').trim().toLowerCase();
     const limit = Math.min(Number(req.query.limit) || 10, 20);
     if (!q) { res.json({ ok: true, data: [] }); return; }
@@ -1703,7 +1736,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     const results: Array<{ type: string; id: number; name: string; parent?: string; connectionName?: string }> = [];
 
     // Search source tables
-    const tables = await semanticDb('source_tables as t')
+    const tables = await db('source_tables as t')
       .join('connections as c', 't.connection_id', 'c.id')
       .whereRaw('LOWER(t.table_name) LIKE ? OR LOWER(t.display_name) LIKE ?', [`%${q}%`, `%${q}%`])
       .select('t.id', 't.table_name', 't.display_name', 'c.name as connection_name')
@@ -1713,7 +1746,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     }
 
     // Search source columns
-    const columns = await semanticDb('source_columns as col')
+    const columns = await db('source_columns as col')
       .join('source_tables as t', 'col.table_id', 't.id')
       .whereRaw('LOWER(col.column_name) LIKE ? OR LOWER(col.display_name) LIKE ?', [`%${q}%`, `%${q}%`])
       .select('col.id', 'col.column_name', 'col.display_name', 't.display_name as table_display_name', 't.table_name')
@@ -1723,7 +1756,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     }
 
     // Search KPIs
-    const kpis = await semanticDb('kpi_definitions')
+    const kpis = await db('kpi_definitions')
       .whereRaw('LOWER(name) LIKE ? OR LOWER(description) LIKE ?', [`%${q}%`, `%${q}%`])
       .select('id', 'name')
       .limit(limit);
@@ -1732,7 +1765,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     }
 
     // Search dashboards
-    const dashboards = await semanticDb('dashboards')
+    const dashboards = await db('dashboards')
       .whereRaw('LOWER(name) LIKE ?', [`%${q}%`])
       .select('id', 'name')
       .limit(limit);
@@ -1741,7 +1774,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     }
 
     // Search data products
-    const products = await semanticDb('data_products')
+    const products = await db('data_products')
       .whereRaw('LOWER(name) LIKE ?', [`%${q}%`])
       .select('id', 'name')
       .limit(limit);
