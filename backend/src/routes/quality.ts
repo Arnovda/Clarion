@@ -16,8 +16,9 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
+import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
@@ -150,11 +151,12 @@ function parseRuleFields(r: QualityRuleRow): string[] {
  * failures, inserts execution + failures rows, and recomputes scores.
  */
 async function evaluateRulesCore(
+  db: Knex | Knex.Transaction,
   connId: number,
   tableName: string,
   dialect: RuleDialect,
 ): Promise<void> {
-  const rules: QualityRuleRow[] = await semanticDb('quality_rules')
+  const rules: QualityRuleRow[] = await db('quality_rules')
     .where({ connection_id: connId, table_name: tableName, is_active: true });
   if (!rules.length) return;
 
@@ -184,13 +186,13 @@ async function evaluateRulesCore(
         ? 'NOT_CONFIGURED'
         : (passRate! >= threshold ? 'PASS' : passRate! >= threshold - 0.1 ? 'WARNING' : 'FAIL');
 
-      const [eRow] = await semanticDb('rule_executions')
+      const [eRow] = await db('rule_executions')
         .insert({ rule_id: rule.id, pass_rate: passRate, total_records: total, passing_records: passing, failing_records: failing, status })
         .returning('id');
       const execId: number = typeof eRow === 'object' ? (eRow as { id: number }).id : eRow;
 
       for (const f of failures.slice(0, 200)) {
-        await semanticDb('quality_failures').insert({
+        await db('quality_failures').insert({
           rule_id: rule.id, execution_id: execId,
           record_id: f.record_id, field_name: f.field_name,
           actual_value: f.actual_value, expected_description: f.expected_description,
@@ -203,12 +205,12 @@ async function evaluateRulesCore(
     // row from this round of rule executions. Tenant-agnostic Postgres-only
     // logic — works the same for source and product tables since profiles are
     // keyed on (connection_id, table_name).
-    const latest = await semanticDb('dataset_profiles')
+    const latest = await db('dataset_profiles')
       .where({ connection_id: connId, table_name: tableName })
       .orderBy('profiled_at', 'desc').first();
 
     if (latest) {
-      const executions = await semanticDb('rule_executions as re')
+      const executions = await db('rule_executions as re')
         .join('quality_rules as qr', 're.rule_id', 'qr.id')
         .where({ 'qr.connection_id': connId, 'qr.table_name': tableName, 'qr.is_active': true })
         .select('re.pass_rate', 're.rule_id', 'qr.dimension')
@@ -237,12 +239,12 @@ async function evaluateRulesCore(
         ? available.reduce((a, b) => a + b, 0) / available.length
         : 0;
 
-      await semanticDb('dataset_profiles').where({ id: latest.id }).update({
+      await db('dataset_profiles').where({ id: latest.id }).update({
         validity_score: rulesPassRate,
         overall_score:  newOverall,
       });
 
-      await semanticDb('quality_score_history')
+      await db('quality_score_history')
         .where({ connection_id: connId, table_name: tableName, score_date: new Date().toISOString().split('T')[0] })
         .update({ validity_score: rulesPassRate, overall_score: newOverall });
     }
@@ -383,12 +385,13 @@ class DuckDBRuleDialect implements RuleDialect {
 // the platform standardised on DuckDB-on-parquet for all data access.
 
 async function evaluateRules(
+  db: Knex | Knex.Transaction,
   connId: number,
   tableName: string,
   connector: DuckDBExecutor,
 ): Promise<void> {
   const dialect = new DuckDBRuleDialect(connector, tableName);
-  await evaluateRulesCore(connId, tableName, dialect);
+  await evaluateRulesCore(db, connId, tableName, dialect);
 }
 
 // ─── quality alert generation ───────────────────────────────────────────────
@@ -396,9 +399,14 @@ async function evaluateRules(
 const ALERT_THRESHOLD = 0.75; // overall score below this triggers a critical alert
 const DROP_THRESHOLD  = 0.10; // score drop of >10% triggers a warning alert
 
-async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?: number): Promise<void> {
+async function checkAndCreateAlerts(
+  db: Knex | Knex.Transaction,
+  connId: number,
+  tableName: string,
+  tenantId?: number,
+): Promise<void> {
   // Get the two most recent profiles
-  const profiles = await semanticDb('dataset_profiles')
+  const profiles = await db('dataset_profiles')
     .where({ connection_id: connId, table_name: tableName })
     .orderBy('profiled_at', 'desc')
     .limit(2);
@@ -412,13 +420,13 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
 
   // Alert 1: Score below absolute threshold
   if (currentScore < ALERT_THRESHOLD) {
-    const existing = await semanticDb('quality_alerts')
+    const existing = await db('quality_alerts')
       .where({ connection_id: connId, table_name: tableName, alert_type: 'score_drop', dismissed: false })
       .where('current_score', '<', ALERT_THRESHOLD)
       .first();
     if (!existing) {
-      const [alertRow] = await semanticDb('quality_alerts').insert({
-        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+      const [alertRow] = await db('quality_alerts').insert({
+        tenant_id: db.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
         alert_type: 'score_drop',
@@ -430,15 +438,20 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
       }).returning('id');
       const alertId: number = typeof alertRow === 'object' ? (alertRow as { id: number }).id : alertRow;
 
-      // Fire-and-forget: enrich with Claude context
-      generateQualityAlertContext({
-        alertType: 'score_drop',
-        tableName,
-        currentScore,
-        previousScore: previous?.overall_score ?? undefined,
-      }).then((ctx) =>
-        semanticDb('quality_alerts').where({ id: alertId }).update({ ai_context: ctx }),
-      ).catch(() => {});
+      // Fire-and-forget: enrich with Claude context. Runs after the request
+      // returns, so req.dbTrx is gone — use tenantQuery for its own scope.
+      if (tenantId != null) {
+        generateQualityAlertContext({
+          alertType: 'score_drop',
+          tableName,
+          currentScore,
+          previousScore: previous?.overall_score ?? undefined,
+        }).then((ctx) =>
+          tenantQuery(tenantId, (trx) =>
+            trx('quality_alerts').where({ id: alertId }).update({ ai_context: ctx }),
+          ),
+        ).catch(() => {});
+      }
 
       if (tenantId) {
         notifyTenant(tenantId, 'quality_alert', `Quality alert: ${tableName}`, {
@@ -455,8 +468,8 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
     const drop = prevScore - currentScore;
     if (drop >= DROP_THRESHOLD) {
       const severity = drop >= 0.20 ? 'critical' : 'warning';
-      const [dropRow] = await semanticDb('quality_alerts').insert({
-        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+      const [dropRow] = await db('quality_alerts').insert({
+        tenant_id: db.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
         alert_type: 'score_drop',
@@ -468,15 +481,19 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
       }).returning('id');
       const dropAlertId: number = typeof dropRow === 'object' ? (dropRow as { id: number }).id : dropRow;
 
-      generateQualityAlertContext({
-        alertType: 'score_drop',
-        tableName,
-        currentScore,
-        previousScore: prevScore,
-        drop,
-      }).then((ctx) =>
-        semanticDb('quality_alerts').where({ id: dropAlertId }).update({ ai_context: ctx }),
-      ).catch(() => {});
+      if (tenantId != null) {
+        generateQualityAlertContext({
+          alertType: 'score_drop',
+          tableName,
+          currentScore,
+          previousScore: prevScore,
+          drop,
+        }).then((ctx) =>
+          tenantQuery(tenantId, (trx) =>
+            trx('quality_alerts').where({ id: dropAlertId }).update({ ai_context: ctx }),
+          ),
+        ).catch(() => {});
+      }
 
       if (tenantId && severity === 'critical') {
         notifyTenant(tenantId, 'quality_alert', `Quality dropped: ${tableName}`, {
@@ -488,7 +505,7 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
   }
 
   // Alert 3: Rule failures — check latest rule executions
-  const failedRules = await semanticDb('rule_executions as re')
+  const failedRules = await db('rule_executions as re')
     .join('quality_rules as qr', 're.rule_id', 'qr.id')
     .where({ 'qr.connection_id': connId, 'qr.table_name': tableName, 'qr.is_active': true })
     .where('re.status', 'FAIL')
@@ -502,15 +519,15 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
     seenAlertRules.add(fr.rule_id);
 
     // Only create if there isn't already an active alert for this rule
-    const existing = await semanticDb('quality_alerts')
+    const existing = await db('quality_alerts')
       .where({ connection_id: connId, table_name: tableName, alert_type: 'rule_fail', dismissed: false })
       .whereRaw(`details->>'rule_id' = ?`, [String(fr.rule_id)])
       .first();
     if (!existing) {
       // Load rule type for the Claude prompt
-      const ruleRow = await semanticDb('quality_rules').where({ id: fr.rule_id }).first();
-      const [ruleAlertRow] = await semanticDb('quality_alerts').insert({
-        tenant_id: semanticDb.raw("current_setting('app.current_tenant')::integer"),
+      const ruleRow = await db('quality_rules').where({ id: fr.rule_id }).first();
+      const [ruleAlertRow] = await db('quality_alerts').insert({
+        tenant_id: db.raw("current_setting('app.current_tenant')::integer"),
         connection_id: connId,
         table_name: tableName,
         alert_type: 'rule_fail',
@@ -521,15 +538,19 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
       }).returning('id');
       const ruleAlertId: number = typeof ruleAlertRow === 'object' ? (ruleAlertRow as { id: number }).id : ruleAlertRow;
 
-      generateQualityAlertContext({
-        alertType: 'rule_fail',
-        tableName,
-        currentScore: fr.pass_rate,
-        ruleName: fr.rule_name,
-        ruleType: ruleRow?.rule_type ?? undefined,
-      }).then((ctx) =>
-        semanticDb('quality_alerts').where({ id: ruleAlertId }).update({ ai_context: ctx }),
-      ).catch(() => {});
+      if (tenantId != null) {
+        generateQualityAlertContext({
+          alertType: 'rule_fail',
+          tableName,
+          currentScore: fr.pass_rate,
+          ruleName: fr.rule_name,
+          ruleType: ruleRow?.rule_type ?? undefined,
+        }).then((ctx) =>
+          tenantQuery(tenantId, (trx) =>
+            trx('quality_alerts').where({ id: ruleAlertId }).update({ ai_context: ctx }),
+          ),
+        ).catch(() => {});
+      }
     }
   }
 }
@@ -539,11 +560,12 @@ async function checkAndCreateAlerts(connId: number, tableName: string, tenantId?
 // GET /api/quality/tables?connectionId=
 router.get('/tables', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
 
     // 1. Source tables — left-joined to connections so the response
     // carries connection_name (used by QualityTab for source grouping).
-    const srcQuery = semanticDb('source_tables as st')
+    const srcQuery = db('source_tables as st')
       .leftJoin('connections as c', 'st.connection_id', 'c.id')
       .where({ 'st.is_active': true });
     if (connId) srcQuery.where({ 'st.connection_id': connId });
@@ -554,7 +576,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
 
     const sourceResult = await Promise.all(
       (srcTables as { id: number; connection_id: number; table_name: string; display_name: string; connection_name: string | null }[]).map(async (t) => {
-        const latest = await semanticDb('dataset_profiles')
+        const latest = await db('dataset_profiles')
           .where({ connection_id: t.connection_id, table_name: t.table_name })
           .orderBy('profiled_at', 'desc').first();
         return {
@@ -577,7 +599,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
     // BuildDashboard grouping pattern; also fixes the silent collision
     // where two products with the same name from different sources
     // merged into one bucket).
-    const ptQuery = semanticDb('product_tables as pt')
+    const ptQuery = db('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
       .leftJoin('connections as c', 'dp.connection_id', 'c.id')
@@ -597,7 +619,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
         dp_id: number; product_name: string; connection_id: number;
         connection_name: string | null;
       }[]).map(async (t) => {
-        const latest = await semanticDb('dataset_profiles')
+        const latest = await db('dataset_profiles')
           .where({ connection_id: t.connection_id, table_name: t.table_name })
           .orderBy('profiled_at', 'desc').first();
         return {
@@ -628,6 +650,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
 // read the actual materialised parquet (not the consumer's empty stub directory).
 router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const ptId = Number(req.params.productTableId);
     const tenantId = req.user?.tenantId;
 
@@ -642,11 +665,11 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
         if (!(e instanceof OwnerResolveError) || e.stage !== 'product_table') throw e;
         const hint = await graph.getProductTableByPgId(ptId);
         if (!hint || !hint.data_product_id || !hint.table_name) throw e;
-        const ss = await semanticDb('star_schemas')
+        const ss = await db('star_schemas')
           .where({ data_product_id: hint.data_product_id })
           .first();
         if (!ss) throw e;
-        const pt = await semanticDb('product_tables')
+        const pt = await db('product_tables')
           .where({ star_schema_id: ss.id, table_name: hint.table_name })
           .first();
         if (!pt) throw e;
@@ -758,6 +781,7 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
 // per-field stats and only runs the active rules.
 router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const ptId = Number(req.params.productTableId);
     const tenantId = req.user?.tenantId;
 
@@ -769,11 +793,11 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
         if (!(e instanceof OwnerResolveError) || e.stage !== 'product_table') throw e;
         const hint = await graph.getProductTableByPgId(ptId);
         if (!hint || !hint.data_product_id || !hint.table_name) throw e;
-        const ss = await semanticDb('star_schemas')
+        const ss = await db('star_schemas')
           .where({ data_product_id: hint.data_product_id })
           .first();
         if (!ss) throw e;
-        const pt = await semanticDb('product_tables')
+        const pt = await db('product_tables')
           .where({ star_schema_id: ss.id, table_name: hint.table_name })
           .first();
         if (!pt) throw e;
@@ -827,8 +851,8 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
     });
 
     try {
-      await evaluateRules(consumerConnId, pt.table_name, connector);
-      await checkAndCreateAlerts(consumerConnId, pt.table_name, tenantId);
+      await evaluateRules(db, consumerConnId, pt.table_name, connector);
+      await checkAndCreateAlerts(db, consumerConnId, pt.table_name, tenantId);
     } catch (err) {
       connector.disconnect();
       const msg = err instanceof Error ? err.message : String(err);
@@ -844,7 +868,7 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
 
     connector.disconnect();
 
-    const updated = await semanticDb('dataset_profiles')
+    const updated = await db('dataset_profiles')
       .where({ connection_id: consumerConnId, table_name: pt.table_name })
       .orderBy('profiled_at', 'desc').first();
     res.json({ ok: true, data: updated });
@@ -856,8 +880,9 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
 // GET /api/quality/:connId/:table/summary
 router.get('/:connId/:table/summary', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { connId, table } = req.params;
-    const profile = await semanticDb('dataset_profiles')
+    const profile = await db('dataset_profiles')
       .where({ connection_id: Number(connId), table_name: table })
       .orderBy('profiled_at', 'desc').first();
     if (!profile) { res.json({ ok: true, data: null }); return; }
@@ -868,12 +893,13 @@ router.get('/:connId/:table/summary', requireAuth, async (req, res, next) => {
 // GET /api/quality/:connId/:table/fields
 router.get('/:connId/:table/fields', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { connId, table } = req.params;
-    const profile = await semanticDb('dataset_profiles')
+    const profile = await db('dataset_profiles')
       .where({ connection_id: Number(connId), table_name: table })
       .orderBy('profiled_at', 'desc').first();
     if (!profile) { res.json({ ok: true, data: [] }); return; }
-    const fields = await semanticDb('field_profiles').where({ profile_id: profile.id });
+    const fields = await db('field_profiles').where({ profile_id: profile.id });
     res.json({ ok: true, data: fields });
   } catch (err) { next(err); }
 });
@@ -881,10 +907,11 @@ router.get('/:connId/:table/fields', requireAuth, async (req, res, next) => {
 // GET /api/quality/:connId/:table/history?days=90
 router.get('/:connId/:table/history', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { connId, table } = req.params;
     const days = Number(req.query.days ?? 90);
     const since = new Date(Date.now() - days * 86400 * 1000).toISOString().split('T')[0];
-    const rows = await semanticDb('quality_score_history')
+    const rows = await db('quality_score_history')
       .where({ connection_id: Number(connId), table_name: table })
       .where('score_date', '>=', since)
       .orderBy('score_date', 'asc');
@@ -899,6 +926,7 @@ router.get('/:connId/:table/history', requireAuth, async (req, res, next) => {
 // been synced (the catalog returns null otherwise).
 router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin', 'analyst'), async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = Number(req.params.connId);
     const table  = req.params.table;
     const tenantId = req.user?.tenantId;
@@ -913,13 +941,13 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin', 'analy
     }
 
     try {
-      await evaluateRules(connId, table, built.connector);
-      await checkAndCreateAlerts(connId, table, tenantId);
+      await evaluateRules(db, connId, table, built.connector);
+      await checkAndCreateAlerts(db, connId, table, tenantId);
     } finally {
       built.connector.disconnect();
     }
 
-    const updated = await semanticDb('dataset_profiles')
+    const updated = await db('dataset_profiles')
       .where({ connection_id: connId, table_name: table })
       .orderBy('profiled_at', 'desc').first();
     res.json({ ok: true, data: updated });
@@ -934,6 +962,7 @@ router.post('/:connId/:table/evaluate', requireAuth, requireRole('admin', 'analy
 // product layers.
 router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analyst'), async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = Number(req.params.connId);
     const table  = req.params.table;
     const tenantId = req.user?.tenantId;
@@ -948,7 +977,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
     }
 
     // Use user-configured BK column if one has been set for this table
-    const stRow = await semanticDb('source_tables')
+    const stRow = await db('source_tables')
       .where({ connection_id: connId, table_name: table })
       .select('business_key_column')
       .first() as { business_key_column: string | null } | undefined;
@@ -957,14 +986,14 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
     let result;
     try {
       result = await runQualityProfileWithConnector(connId, table, built.connector, undefined, bkOverride, tenantId);
-      await evaluateRules(connId, table, built.connector);
-      await checkAndCreateAlerts(connId, table, tenantId);
+      await evaluateRules(db, connId, table, built.connector);
+      await checkAndCreateAlerts(db, connId, table, tenantId);
     } finally {
       built.connector.disconnect();
     }
 
     // Return updated summary
-    const updated = await semanticDb('dataset_profiles').where({ id: result.profileId }).first();
+    const updated = await db('dataset_profiles').where({ id: result.profileId }).first();
 
     // Sync latest stats to Neo4j nodes (non-fatal if Neo4j is unavailable)
     try {
@@ -996,15 +1025,16 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
 // GET /api/quality/:connId/:table/settings  — business key + other table-level settings
 router.get('/:connId/:table/settings', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = Number(req.params.connId);
     const table  = decodeURIComponent(req.params.table);
 
-    const stRow = await semanticDb('source_tables')
+    const stRow = await db('source_tables')
       .where({ connection_id: connId, table_name: table })
       .select('business_key_column')
       .first() as { business_key_column: string | null } | undefined;
 
-    const latestProfile = await semanticDb('dataset_profiles')
+    const latestProfile = await db('dataset_profiles')
       .where({ connection_id: connId, table_name: table })
       .orderBy('profiled_at', 'desc')
       .select('business_key_column')
@@ -1020,11 +1050,12 @@ router.get('/:connId/:table/settings', requireAuth, async (req, res, next) => {
 // PATCH /api/quality/:connId/:table/settings  — set user business key override
 router.patch('/:connId/:table/settings', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = Number(req.params.connId);
     const table  = decodeURIComponent(req.params.table);
     const { business_key_column } = req.body as { business_key_column: string | null };
 
-    await semanticDb('source_tables')
+    await db('source_tables')
       .where({ connection_id: connId, table_name: table })
       .update({ business_key_column: business_key_column || null });
 
@@ -1035,19 +1066,20 @@ router.patch('/:connId/:table/settings', requireAuth, requireRole('admin'), asyn
 // GET /api/quality/:connId/:table/rules
 router.get('/:connId/:table/rules', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { connId, table } = req.params;
-    const rules = await semanticDb('quality_rules')
+    const rules = await db('quality_rules')
       .where({ connection_id: Number(connId), table_name: table })
       .orderBy('created_at', 'asc');
 
     // Attach latest execution per rule — flatten status/pass_rate to top level
     const result = await Promise.all(
       (rules as { id: number }[]).map(async (rule) => {
-        const latestExec = await semanticDb('rule_executions')
+        const latestExec = await db('rule_executions')
           .where({ rule_id: rule.id })
           .orderBy('executed_at', 'desc').first() as { pass_rate: number; status: string } | undefined;
         // Last 30 days sparkline — map executed_at → score_date to match frontend type
-        const sparklineRaw = await semanticDb('rule_executions')
+        const sparklineRaw = await db('rule_executions')
           .where({ rule_id: rule.id })
           .where('executed_at', '>=', new Date(Date.now() - 30 * 86400000).toISOString())
           .orderBy('executed_at', 'asc')
@@ -1072,10 +1104,11 @@ router.get('/:connId/:table/rules', requireAuth, async (req, res, next) => {
 // POST /api/quality/:connId/:table/rules  — create a rule
 router.post('/:connId/:table/rules', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const connId = Number(req.params.connId);
     const table  = req.params.table;
     const { rule_name, dimension, field_names, description, rule_type, rule_config, pass_threshold, owner_name } = req.body;
-    const [row] = await semanticDb('quality_rules')
+    const [row] = await db('quality_rules')
       .insert({
         connection_id:  connId,
         table_name:     table,
@@ -1095,6 +1128,7 @@ router.post('/:connId/:table/rules', requireAuth, requireRole('admin'), async (r
 // PATCH /api/quality/rules/:ruleId
 router.patch('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { rule_name, dimension, field_names, description, rule_type, rule_config, pass_threshold, owner_name, is_active } = req.body;
     const update: Record<string, unknown> = {};
     if (rule_name     !== undefined) update.rule_name     = rule_name;
@@ -1106,8 +1140,8 @@ router.patch('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, re
     if (pass_threshold!== undefined) update.pass_threshold= pass_threshold;
     if (owner_name    !== undefined) update.owner_name    = owner_name;
     if (is_active     !== undefined) update.is_active     = is_active;
-    await semanticDb('quality_rules').where({ id: req.params.ruleId }).update(update);
-    const updated = await semanticDb('quality_rules').where({ id: req.params.ruleId }).first();
+    await db('quality_rules').where({ id: req.params.ruleId }).update(update);
+    const updated = await db('quality_rules').where({ id: req.params.ruleId }).first();
     res.json({ ok: true, data: updated });
   } catch (err) { next(err); }
 });
@@ -1115,7 +1149,8 @@ router.patch('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, re
 // DELETE /api/quality/rules/:ruleId
 router.delete('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
-    await semanticDb('quality_rules').where({ id: req.params.ruleId }).delete();
+    const db = reqDb(req);
+    await db('quality_rules').where({ id: req.params.ruleId }).delete();
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -1123,6 +1158,7 @@ router.delete('/rules/:ruleId', requireAuth, requireRole('admin'), async (req, r
 // GET /api/quality/:connId/:table/failures?page=1&ruleId=&field=&status=
 router.get('/:connId/:table/failures', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { connId, table } = req.params;
     const page    = Math.max(1, Number(req.query.page ?? 1));
     const limit   = 25;
@@ -1132,7 +1168,7 @@ router.get('/:connId/:table/failures', requireAuth, async (req, res, next) => {
     const status  = req.query.status as string | undefined;
 
     // Get rule ids for this table
-    const ruleIds = (await semanticDb('quality_rules')
+    const ruleIds = (await db('quality_rules')
       .where({ connection_id: Number(connId), table_name: table })
       .select('id')) as { id: number }[];
     const ids = ruleIds.map((r) => r.id);
@@ -1142,12 +1178,12 @@ router.get('/:connId/:table/failures', requireAuth, async (req, res, next) => {
     // Only failures from the LATEST execution per rule
     const latestExecIds: number[] = [];
     for (const rid of (ruleId ? [ruleId] : ids)) {
-      const ex = await semanticDb('rule_executions').where({ rule_id: rid }).orderBy('executed_at', 'desc').first();
+      const ex = await db('rule_executions').where({ rule_id: rid }).orderBy('executed_at', 'desc').first();
       if (ex) latestExecIds.push((ex as { id: number }).id);
     }
     if (!latestExecIds.length) { res.json({ ok: true, data: [], total: 0, page, pages: 0 }); return; }
 
-    let q = semanticDb('quality_failures as qf')
+    let q = db('quality_failures as qf')
       .join('quality_rules as qr', 'qf.rule_id', 'qr.id')
       .whereIn('qf.execution_id', latestExecIds);
     if (field)  q = q.where('qf.field_name', field);
@@ -1168,8 +1204,9 @@ router.get('/:connId/:table/failures', requireAuth, async (req, res, next) => {
 // PATCH /api/quality/failures/:failId
 router.patch('/failures/:failId', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const { status } = req.body as { status: string };
-    await semanticDb('quality_failures').where({ id: req.params.failId }).update({ status });
+    await db('quality_failures').where({ id: req.params.failId }).update({ status });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -1190,9 +1227,10 @@ router.patch('/failures/:failId', requireAuth, async (req, res, next) => {
  */
 router.get('/rules/failing', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-    const rows = await semanticDb.raw<{ rows: Array<{
+    void tenantId;
+    const rows = await db.raw<{ rows: Array<{
       rule_id: number;
       rule_name: string;
       dimension: string;
@@ -1240,8 +1278,9 @@ router.get('/rules/failing', requireAuth, async (req, res, next) => {
 // GET /api/quality/alerts?dismissed=false
 router.get('/alerts', requireAuth, async (req, res, next) => {
   try {
+    const db = reqDb(req);
     const dismissed = req.query.dismissed === 'true';
-    const q = semanticDb('quality_alerts')
+    const q = db('quality_alerts')
       .where({ dismissed })
       .orderBy('created_at', 'desc')
       .limit(50);
@@ -1253,7 +1292,8 @@ router.get('/alerts', requireAuth, async (req, res, next) => {
 // PATCH /api/quality/alerts/:id/dismiss
 router.patch('/alerts/:id/dismiss', requireAuth, async (req, res, next) => {
   try {
-    await semanticDb('quality_alerts')
+    const db = reqDb(req);
+    await db('quality_alerts')
       .where({ id: req.params.id })
       .update({
         dismissed: true,
@@ -1267,7 +1307,8 @@ router.patch('/alerts/:id/dismiss', requireAuth, async (req, res, next) => {
 // POST /api/quality/alerts/dismiss-all
 router.post('/alerts/dismiss-all', requireAuth, async (req, res, next) => {
   try {
-    await semanticDb('quality_alerts')
+    const db = reqDb(req);
+    await db('quality_alerts')
       .where({ dismissed: false })
       .update({
         dismissed: true,
