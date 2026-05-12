@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
@@ -70,13 +70,14 @@ function decryptConfig(raw: string | Record<string, unknown>): Record<string, un
 // ---------------------------------------------------------------------------
 router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     if (!connectionId) {
       res.status(400).json({ ok: false, error: 'connectionId required' });
       return;
     }
 
-    const conn = await semanticDb('connections').where({ id: connectionId }).first();
+    const conn = await db('connections').where({ id: connectionId }).first();
     if (!conn) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
@@ -98,7 +99,7 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
     }
 
     // Also fetch any existing ingested_tables rows so we can show their status
-    const existing = await semanticDb('ingested_tables').where({ connection_id: connectionId });
+    const existing = await db('ingested_tables').where({ connection_id: connectionId });
     const statusMap = new Map(existing.map((r: { table_name: string; status: string; ingested_at: string | null }) =>
       [r.table_name, { status: r.status, ingested_at: r.ingested_at }]
     ));
@@ -133,13 +134,15 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
 // ---------------------------------------------------------------------------
 router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
+    const tenantId = req.user!.tenantId;
     const { connectionId, tables } = req.body as { connectionId: number; tables: string[] };
     if (!connectionId || !tables?.length) {
       res.status(400).json({ ok: false, error: 'connectionId and tables[] required' });
       return;
     }
 
-    const conn = await semanticDb('connections').where({ id: connectionId }).first();
+    const conn = await db('connections').where({ id: connectionId }).first();
     if (!conn) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
@@ -148,7 +151,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
     const config = decryptConfig(conn.config);
 
     // Mark connection as ingesting
-    await semanticDb('connections').where({ id: connectionId }).update({
+    await db('connections').where({ id: connectionId }).update({
       ingestion_status: 'running',
       ingestion_progress: 0,
       ingestion_error: null,
@@ -156,7 +159,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
 
     // Upsert ingested_tables rows as 'pending'
     for (const tableName of tables) {
-      await semanticDb('ingested_tables')
+      await db('ingested_tables')
         .insert({
           connection_id: connectionId,
           table_name: tableName,
@@ -167,13 +170,13 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
     }
 
     // Remove any ingested_tables that are NOT in the selected set
-    await semanticDb('ingested_tables')
+    await db('ingested_tables')
       .where({ connection_id: connectionId })
       .whereNotIn('table_name', tables)
       .delete();
 
     // Build table_specs with watermark info for incremental loads
-    const existingRows = await semanticDb('ingested_tables')
+    const existingRows = await db('ingested_tables')
       .where({ connection_id: connectionId })
       .whereIn('table_name', tables)
       .select('table_name', 'load_mode', 'watermark_column', 'watermark_value');
@@ -241,7 +244,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           if (r.new_watermark) {
             updateData.watermark_value = r.new_watermark;
           }
-          await semanticDb('ingested_tables')
+          await db('ingested_tables')
             .where({ connection_id: connectionId, table_name: r.table_name })
             .update(updateData);
 
@@ -260,7 +263,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         // Update connection
         const allDone = results.every((r: { status: string }) => r.status === 'done');
         const nowTs = new Date().toISOString();
-        await semanticDb('connections').where({ id: connectionId }).update({
+        await db('connections').where({ id: connectionId }).update({
           ingestion_status: allDone ? 'done' : 'error',
           ingestion_progress: 100,
           ingestion_error: allDone ? null : 'Some tables failed to ingest',
@@ -300,7 +303,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Ingestion failed';
-        await semanticDb('connections').where({ id: connectionId }).update({
+        await db('connections').where({ id: connectionId }).update({
           ingestion_status: 'error',
           ingestion_error: errMsg,
         });
@@ -341,14 +344,14 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           if (r.new_watermark) {
             updateData.watermark_value = r.new_watermark;
           }
-          await semanticDb('ingested_tables')
+          await db('ingested_tables')
             .where({ connection_id: connectionId, table_name: r.table_name })
             .update(updateData);
         }
 
         const allDone = results.every((r: { status: string }) => r.status === 'done');
         const syncNowTs = new Date().toISOString();
-        await semanticDb('connections').where({ id: connectionId }).update({
+        await db('connections').where({ id: connectionId }).update({
           ingestion_status: allDone ? 'done' : 'error',
           ingestion_progress: 100,
           last_ingested_at: syncNowTs,
@@ -380,7 +383,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         res.json({ ok: true, data: { results, warehouse_path: warehousePath } });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : 'Ingestion failed';
-        await semanticDb('connections').where({ id: connectionId }).update({
+        await db('connections').where({ id: connectionId }).update({
           ingestion_status: 'error',
           ingestion_error: errMsg,
         });
@@ -398,13 +401,14 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
 // ---------------------------------------------------------------------------
 router.get('/status', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     if (!connectionId) {
       res.status(400).json({ ok: false, error: 'connectionId required' });
       return;
     }
 
-    const conn = await semanticDb('connections')
+    const conn = await db('connections')
       .where({ id: connectionId })
       .select('id', 'ingestion_status', 'ingestion_progress', 'ingestion_error',
               'last_ingested_at', 'warehouse_path', 'query_engine')
@@ -415,7 +419,7 @@ router.get('/status', requireAuth, async (req: Request, res: Response, next: Nex
       return;
     }
 
-    const tables = await semanticDb('ingested_tables')
+    const tables = await db('ingested_tables')
       .where({ connection_id: connectionId })
       .orderBy('table_name');
 
@@ -438,6 +442,7 @@ router.get('/status', requireAuth, async (req: Request, res: Response, next: Nex
 // ---------------------------------------------------------------------------
 router.patch('/table-config', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, tableName, load_mode, watermark_column } = req.body as {
       connectionId: number;
       tableName: string;
@@ -459,7 +464,7 @@ router.patch('/table-config', requireAuth, requireRole('admin'), async (req: Req
       update.watermark_value = null;
     }
 
-    const count = await semanticDb('ingested_tables')
+    const count = await db('ingested_tables')
       .where({ connection_id: connectionId, table_name: tableName })
       .update(update);
 
@@ -468,7 +473,7 @@ router.patch('/table-config', requireAuth, requireRole('admin'), async (req: Req
       return;
     }
 
-    const row = await semanticDb('ingested_tables')
+    const row = await db('ingested_tables')
       .where({ connection_id: connectionId, table_name: tableName })
       .first();
 
@@ -485,6 +490,7 @@ router.patch('/table-config', requireAuth, requireRole('admin'), async (req: Req
 // ---------------------------------------------------------------------------
 router.post('/reset-watermark', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, tableName } = req.body as { connectionId: number; tableName: string };
 
     if (!connectionId || !tableName) {
@@ -492,7 +498,7 @@ router.post('/reset-watermark', requireAuth, requireRole('admin'), async (req: R
       return;
     }
 
-    await semanticDb('ingested_tables')
+    await db('ingested_tables')
       .where({ connection_id: connectionId, table_name: tableName })
       .update({ watermark_value: null });
 

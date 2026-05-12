@@ -12,7 +12,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { semanticDb } from '../db/knex';
+import { reqDb } from '../db/reqDb';
+import { tenantQuery } from '../services/tenantQuery';
 import { resolveUpstreamProductsTopo } from '../services/productOwnership';
 import { getTransformationQueue, TransformationJobData } from '../jobs/queues';
 
@@ -36,7 +37,8 @@ interface ScheduleRow {
 // ---------------------------------------------------------------------------
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const products = await semanticDb('data_products')
+    const db = reqDb(req);
+    const products = await db('data_products')
       .select<ProductRow[]>('id', 'name', 'status', 'connection_id')
       .orderBy('id');
     const productIds = products.map((p) => p.id);
@@ -47,14 +49,14 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     }
 
     // Schemas for these products
-    const schemas = await semanticDb('star_schemas')
+    const schemas = await db('star_schemas')
       .whereIn('data_product_id', productIds)
       .select<{ id: number; data_product_id: number }[]>('id', 'data_product_id');
     const schemaToProduct = new Map(schemas.map((s) => [s.id, s.data_product_id]));
     const schemaIds = schemas.map((s) => s.id);
 
     const tables = schemaIds.length
-      ? await semanticDb('product_tables')
+      ? await db('product_tables')
           .whereIn('star_schema_id', schemaIds)
           .select<TableRow[]>(
             'id', 'star_schema_id', 'table_name', 'display_name', 'table_role',
@@ -63,7 +65,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       : [];
 
     // Cross-product dependencies (edges between products)
-    const productEdges = await semanticDb('data_product_dependencies')
+    const productEdges = await db('data_product_dependencies')
       .whereIn('dependent_product_id', productIds)
       .select<{ dependent_product_id: number; source_product_id: number }[]>(
         'dependent_product_id', 'source_product_id',
@@ -71,7 +73,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 
     // Per-table relationships (edges between tables, within and across schemas)
     const tableEdges = schemaIds.length
-      ? await semanticDb('product_relationships')
+      ? await db('product_relationships')
           .whereIn('star_schema_id', schemaIds)
           .select<{ from_table_id: number; to_table_id: number; relationship_type: string }[]>(
             'from_table_id', 'to_table_id', 'relationship_type',
@@ -79,7 +81,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       : [];
 
     // Schedules
-    const schedules = await semanticDb('transformation_schedules')
+    const schedules = await db('transformation_schedules')
       .whereIn('product_id', productIds)
       .select<ScheduleRow[]>('product_id', 'cron_expression', 'timezone', 'enabled');
     const scheduleByProduct = new Map(schedules.map((s) => [s.product_id, s]));
@@ -184,6 +186,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 // ---------------------------------------------------------------------------
 router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
     const scope = req.body?.scope as
       | 'all'
@@ -197,18 +200,18 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
     }
 
     // 1. Resolve the explicit product set the caller wants run.
-    const allProducts = await semanticDb('data_products').select<ProductRow[]>('id', 'name', 'status', 'connection_id');
+    const allProducts = await db('data_products').select<ProductRow[]>('id', 'name', 'status', 'connection_id');
     let requestedIds: number[] = [];
     if (scope === 'all') {
       requestedIds = allProducts.map((p) => p.id);
     } else if (scope === 'stale') {
       // Re-use the GET endpoint logic: a product is stale if any upstream is newer.
       // For simplicity, just include products whose latest table run is older than any upstream's.
-      const schemas = await semanticDb('star_schemas')
+      const schemas = await db('star_schemas')
         .whereIn('data_product_id', allProducts.map((p) => p.id))
         .select<{ id: number; data_product_id: number }[]>('id', 'data_product_id');
       const schemaToProduct = new Map(schemas.map((s) => [s.id, s.data_product_id]));
-      const tableRuns = await semanticDb('product_tables')
+      const tableRuns = await db('product_tables')
         .whereIn('star_schema_id', schemas.map((s) => s.id))
         .select<{ star_schema_id: number; last_run_at: string | Date | null; transformation_status: string | null }[]>(
           'star_schema_id', 'last_run_at', 'transformation_status',
@@ -225,7 +228,7 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
           if (!cur || iso > cur) productLastRun.set(pid, iso);
         }
       }
-      const edges = await semanticDb('data_product_dependencies')
+      const edges = await db('data_product_dependencies')
         .select<{ dependent_product_id: number; source_product_id: number }[]>('dependent_product_id', 'source_product_id');
       for (const p of allProducts) {
         if (productHasError.has(p.id) || !productLastRun.has(p.id)) {
@@ -263,7 +266,7 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
 
     // 3. Topo-sort the union. Reuse Kahn's on the same edge set.
     const ids = Array.from(expanded);
-    const allEdges = await semanticDb('data_product_dependencies')
+    const allEdges = await db('data_product_dependencies')
       .whereIn('dependent_product_id', ids)
       .whereIn('source_product_id', ids)
       .select<{ dependent_product_id: number; source_product_id: number }[]>('dependent_product_id', 'source_product_id');
@@ -294,7 +297,7 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
     for (const productId of order) {
       const product = allProducts.find((p) => p.id === productId);
       if (!product) continue;
-      const [runRow] = await semanticDb('transformation_runs').insert({
+      const [runRow] = await db('transformation_runs').insert({
         tenant_id: tenantId,
         product_id: productId,
         triggered_by: req.user!.email,
@@ -311,27 +314,36 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
         enqueued.push({ productId, runId, jobId: job.id });
       } else {
         enqueued.push({ productId, runId, inline: true });
-        // Fire-and-forget inline run; sequential because we await each before moving on
-        // would block the response — orchestrator background task instead.
+        // Fire-and-forget inline run. req.dbTrx is committed by the time
+        // this resolves, so DB writes go through tenantQuery (its own
+        // SET-LOCAL trx) instead.
         (async () => {
           try {
             const { runProductTransformation } = await import('../services/transformationRunner');
-            const schemas = await semanticDb('star_schemas').where({ data_product_id: productId });
-            const tables = schemas.length
-              ? await semanticDb('product_tables').whereIn('star_schema_id', schemas.map((s) => s.id))
-              : [];
+            const { schemas, tables } = await tenantQuery(tenantId, async (trx) => {
+              const s = await trx('star_schemas').where({ data_product_id: productId });
+              const t = s.length
+                ? await trx('product_tables').whereIn('star_schema_id', s.map((row: { id: number }) => row.id))
+                : [];
+              return { schemas: s, tables: t };
+            });
+            void schemas;
             const results = await runProductTransformation(product, tables, tenantId);
-            await semanticDb('transformation_runs').where({ id: runId }).update({
-              status: 'completed',
-              tables_transformed: results.length,
-              finished_at: new Date(),
-            });
+            await tenantQuery(tenantId, (trx) =>
+              trx('transformation_runs').where({ id: runId }).update({
+                status: 'completed',
+                tables_transformed: results.length,
+                finished_at: new Date(),
+              }),
+            );
           } catch (err) {
-            await semanticDb('transformation_runs').where({ id: runId }).update({
-              status: 'failed',
-              error_message: err instanceof Error ? err.message : 'Unknown error',
-              finished_at: new Date(),
-            });
+            await tenantQuery(tenantId, (trx) =>
+              trx('transformation_runs').where({ id: runId }).update({
+                status: 'failed',
+                error_message: err instanceof Error ? err.message : 'Unknown error',
+                finished_at: new Date(),
+              }),
+            );
           }
         })();
       }
@@ -349,9 +361,10 @@ router.post('/run', requireAuth, requireRole('admin', 'analyst'), async (req: Re
 // ---------------------------------------------------------------------------
 router.post('/clear-stuck', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const STUCK_THRESHOLD_MIN = 5;
     const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MIN * 60 * 1000).toISOString();
-    const tables = await semanticDb('product_tables')
+    const tables = await db('product_tables')
       .where('transformation_status', 'running')
       .where((qb) => qb.whereNull('last_run_at').orWhere('last_run_at', '<', cutoff))
       .update({
@@ -359,7 +372,7 @@ router.post('/clear-stuck', requireAuth, requireRole('admin', 'analyst'), async 
         last_run_at: new Date().toISOString(),
         last_run_error: 'Run interrupted — cleared by user',
       });
-    const runs = await semanticDb('transformation_runs')
+    const runs = await db('transformation_runs')
       .where('status', 'running')
       .where((qb) => qb.whereNull('started_at').orWhere('started_at', '<', cutoff))
       .update({
@@ -392,13 +405,13 @@ router.get('/dag', requireAuth, async (req: Request, res: Response, next: NextFu
 // ---------------------------------------------------------------------------
 router.get('/list', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
     const { listBuiltinPipelines } = await import('../services/pipelineService');
     const builtin = await listBuiltinPipelines(tenantId);
 
-    const customRows = await semanticDb('pipelines')
+    const customRows = await db('pipelines')
       .where('tenant_id', tenantId)
       .orderBy('updated_at', 'desc')
       .select('id', 'name', 'description', 'kind', 'scope', 'triggers', 'enabled',
@@ -434,8 +447,8 @@ router.get('/list', requireAuth, async (req: Request, res: Response, next: NextF
 // ---------------------------------------------------------------------------
 router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
     const { name, description, scope, triggers, enabled } = req.body as {
       name: string; description?: string;
@@ -444,7 +457,7 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
     if (!name?.trim()) return res.status(400).json({ ok: false, error: 'name is required' });
     if (!scope) return res.status(400).json({ ok: false, error: 'scope is required' });
 
-    const [row] = await semanticDb('pipelines').insert({
+    const [row] = await db('pipelines').insert({
       tenant_id: tenantId,
       name: name.trim(),
       description: description ?? null,
@@ -482,8 +495,8 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
 // ---------------------------------------------------------------------------
 router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'invalid id' });
 
@@ -498,7 +511,7 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (re
     if (body.triggers !== undefined) patch.triggers = JSON.stringify(body.triggers);
     if (body.enabled !== undefined) patch.enabled = body.enabled;
 
-    const updated = await semanticDb('pipelines')
+    const updated = await db('pipelines')
       .where({ id, tenant_id: tenantId })
       .update(patch);
     if (!updated) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
@@ -508,7 +521,7 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (re
     // come from this PATCH, triggers from a previous one).
     if (body.triggers !== undefined || body.enabled !== undefined) {
       try {
-        const fresh = await semanticDb('pipelines')
+        const fresh = await db('pipelines')
           .where({ id, tenant_id: tenantId })
           .select('id', 'tenant_id', 'enabled', 'triggers')
           .first();
@@ -531,10 +544,10 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (re
 // ---------------------------------------------------------------------------
 router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     const id = Number(req.params.id);
-    const deleted = await semanticDb('pipelines').where({ id, tenant_id: tenantId }).delete();
+    const deleted = await db('pipelines').where({ id, tenant_id: tenantId }).delete();
     if (!deleted) return res.status(404).json({ ok: false, error: 'Pipeline not found' });
 
     // Drop any registered cron triggers so they don't keep firing for
@@ -562,8 +575,8 @@ router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async 
 // ---------------------------------------------------------------------------
 router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
     const { pipelineId, adhocScope } = req.body as {
       pipelineId?: string;
@@ -584,7 +597,7 @@ router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async
       pipelineName = found.name;
     } else if (typeof pipelineId === 'string' && pipelineId.startsWith('custom:')) {
       const id = Number(pipelineId.slice(7));
-      const row = await semanticDb('pipelines')
+      const row = await db('pipelines')
         .where({ id, tenant_id: tenantId })
         .first();
       if (!row) return res.status(404).json({ ok: false, error: 'Custom pipeline not found' });
@@ -606,7 +619,7 @@ router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async
     }
 
     // Create pipeline_runs row first so we have an id to thread through.
-    const [runRow] = await semanticDb('pipeline_runs').insert({
+    const [runRow] = await db('pipeline_runs').insert({
       tenant_id: tenantId,
       pipeline_id: savedPipelineId,
       status: 'queued',
@@ -617,7 +630,7 @@ router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async
     const { getBusMatrixQueue } = await import('../jobs/queues');
     const queue = getBusMatrixQueue();
     if (!queue) {
-      await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({
+      await db('pipeline_runs').where({ id: pipelineRunId }).update({
         status: 'failed', error_message: 'Job queue not available — Redis is not configured.',
       });
       return res.status(503).json({ ok: false, error: 'Job queue not available — Redis is not configured.' });
@@ -634,9 +647,9 @@ router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async
       pipelineName,
     });
 
-    await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) });
+    await db('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) });
     if (savedPipelineId) {
-      await semanticDb('pipelines').where({ id: savedPipelineId }).update({
+      await db('pipelines').where({ id: savedPipelineId }).update({
         last_run_at: new Date().toISOString(),
         last_status: 'queued',
       });
@@ -656,11 +669,11 @@ router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async
 // ---------------------------------------------------------------------------
 router.get('/runs', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     const limit = Math.min(Number(req.query.limit) || 25, 200);
     const pipelineId = req.query.pipelineId;
-    const q = semanticDb('pipeline_runs').where('tenant_id', tenantId);
+    const q = db('pipeline_runs').where('tenant_id', tenantId);
     if (pipelineId !== undefined) {
       const id = Number(pipelineId);
       if (Number.isFinite(id)) q.andWhere('pipeline_id', id);

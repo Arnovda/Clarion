@@ -167,6 +167,7 @@ async function executeSpecForValidation(
 
 router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, request, answers, productIds, dataLayer } = req.body as {
       connectionId: number;
       request: string;
@@ -196,7 +197,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       : await buildSemanticContext(connectionId);
 
     // Determine SQL dialect from the connection's query engine
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     const dialect: SqlDialect = productCtx ? 'duckdb' : (connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite');
 
     let spec = await generateDashboardSpec(fullRequest, semanticCtx.semanticContext, semanticCtx.relationshipContext, dialect);
@@ -628,9 +629,10 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 // GET /api/dashboards/templates/list — list available templates
 // ---------------------------------------------------------------------------
 
-router.get('/templates/list', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/templates/list', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const rows = await semanticDb('dashboard_templates')
+    const db = reqDb(req);
+    const rows = await db('dashboard_templates')
       .select('id', 'name', 'description', 'category', 'created_at')
       .orderBy('category')
       .orderBy('name');
@@ -647,7 +649,8 @@ router.get('/templates/list', requireAuth, async (_req: Request, res: Response, 
 
 router.get('/templates/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const row = await semanticDb('dashboard_templates')
+    const db = reqDb(req);
+    const row = await db('dashboard_templates')
       .where({ id: req.params.id })
       .first();
 
@@ -673,6 +676,7 @@ router.post('/templates', requireAuth, async (req: Request, res: Response, next:
       return;
     }
 
+    const db = reqDb(req);
     const { name, description, category, spec } = req.body as {
       name: string;
       description?: string;
@@ -680,7 +684,7 @@ router.post('/templates', requireAuth, async (req: Request, res: Response, next:
       spec: DashboardSpec;
     };
 
-    const [row] = await semanticDb('dashboard_templates')
+    const [row] = await db('dashboard_templates')
       .insert({
         name,
         description: description || null,
@@ -702,13 +706,14 @@ router.post('/templates', requireAuth, async (req: Request, res: Response, next:
 
 router.post('/from-template', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { templateId, connectionId, folder } = req.body as {
       templateId: number;
       connectionId: number;
       folder?: string;
     };
 
-    const template = await semanticDb('dashboard_templates')
+    const template = await db('dashboard_templates')
       .where({ id: templateId })
       .first();
 
@@ -719,7 +724,7 @@ router.post('/from-template', requireAuth, async (req: Request, res: Response, n
 
     const spec = typeof template.spec === 'string' ? JSON.parse(template.spec) : template.spec;
 
-    const [row] = await semanticDb('dashboards')
+    const [row] = await db('dashboards')
       .insert({
         user_id: req.user!.sub,
         connection_id: connectionId,
@@ -743,9 +748,10 @@ router.post('/from-template', requireAuth, async (req: Request, res: Response, n
 
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
     // RLS ensures tenant isolation; allow access if owned or shared
-    const row = await semanticDb('dashboards')
+    const row = await db('dashboards')
       .where({ id: req.params.id })
       .where(function () {
         this.where({ user_id: userId }).orWhere({ is_shared: true });
@@ -799,7 +805,8 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response, next: Nex
 
 router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const row = await semanticDb('dashboards')
+    const db = reqDb(req);
+    const row = await db('dashboards')
       .where({ id: req.params.id, user_id: req.user!.sub })
       .first();
 
@@ -809,7 +816,7 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
     }
 
     const newValue = !row.is_favorite;
-    await semanticDb('dashboards')
+    await db('dashboards')
       .where({ id: req.params.id })
       .update({ is_favorite: newValue });
 
@@ -825,8 +832,9 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
 
 router.patch('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
-    const row = await semanticDb('dashboards')
+    const row = await db('dashboards')
       .where({ id: req.params.id, user_id: userId })
       .first();
 
@@ -860,8 +868,8 @@ router.patch('/:id', requireAuth, async (req: Request, res: Response, next: Next
     }
 
     updates.updated_at = new Date().toISOString();
-    await semanticDb('dashboards').where({ id: req.params.id }).update(updates);
-    const updated = await semanticDb('dashboards').where({ id: req.params.id }).first();
+    await db('dashboards').where({ id: req.params.id }).update(updates);
+    const updated = await db('dashboards').where({ id: req.params.id }).first();
     res.json({ ok: true, data: updated });
   } catch (err) {
     next(err);
@@ -874,9 +882,10 @@ router.patch('/:id', requireAuth, async (req: Request, res: Response, next: Next
 
 router.post('/:id/duplicate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const userId = req.user!.sub;
     // Allow duplicating owned or shared dashboards
-    const source = await semanticDb('dashboards')
+    const source = await db('dashboards')
       .where({ id: req.params.id })
       .where(function () {
         this.where({ user_id: userId }).orWhere({ is_shared: true });
@@ -888,7 +897,7 @@ router.post('/:id/duplicate', requireAuth, async (req: Request, res: Response, n
       return;
     }
 
-    const [row] = await semanticDb('dashboards')
+    const [row] = await db('dashboards')
       .insert({
         user_id: userId,
         connection_id: source.connection_id,
@@ -932,12 +941,13 @@ function resolveFiltersFromQuery(sql: string, query: Record<string, unknown>): s
 // ---------------------------------------------------------------------------
 
 async function executeWidgetSql(
+  db: import('knex').Knex | import('knex').Knex.Transaction,
   dashboardId: number,
   widgetIndex: number,
   query: Record<string, unknown>,
   tenantId?: number,
 ): Promise<{ rows: Record<string, unknown>[]; widget: { title: string; id: string }; connectionId: number }> {
-  const row = await semanticDb('dashboards').where({ id: dashboardId }).first();
+  const row = await db('dashboards').where({ id: dashboardId }).first();
   if (!row) throw Object.assign(new Error('Dashboard not found'), { status: 404 });
 
   const spec: DashboardSpec = typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
@@ -977,6 +987,7 @@ async function executeWidgetSql(
 router.get('/:id/widget/:widgetIndex/export/csv', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { rows, widget } = await executeWidgetSql(
+      reqDb(req),
       Number(req.params.id),
       Number(req.params.widgetIndex),
       req.query as Record<string, unknown>,
@@ -1011,6 +1022,7 @@ router.get('/:id/widget/:widgetIndex/export/csv', requireAuth, async (req: Reque
 router.get('/:id/widget/:widgetIndex/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { rows, widget } = await executeWidgetSql(
+      reqDb(req),
       Number(req.params.id),
       Number(req.params.widgetIndex),
       req.query as Record<string, unknown>,
@@ -1044,8 +1056,9 @@ router.get('/:id/widget/:widgetIndex/export/xlsx', requireAuth, async (req: Requ
 
 router.get('/:id/export/xlsx', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const dashboardId = Number(req.params.id);
-    const row = await semanticDb('dashboards').where({ id: dashboardId }).first();
+    const row = await db('dashboards').where({ id: dashboardId }).first();
     if (!row) {
       res.status(404).json({ ok: false, error: 'Dashboard not found' });
       return;
@@ -1259,9 +1272,7 @@ router.post('/narrate', requireAuth, async (req: Request, res: Response, next: N
 // ---------------------------------------------------------------------------
 router.post('/widget-context', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-
+    const db = reqDb(req);
     const { title, sql, dataLayer } = req.body as {
       title: string;
       sql: string;
@@ -1299,7 +1310,7 @@ router.post('/widget-context', requireAuth, async (req: Request, res: Response, 
 
     if (tableNames.length > 0) {
       // Look up product tables (transformation_status='success' implies parquet exists)
-      const ptRows = await semanticDb('product_tables as pt')
+      const ptRows = await db('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .join('data_products as dp', 'ss.data_product_id', 'dp.id')
         .whereIn('pt.table_name', tableNames)
@@ -1313,7 +1324,7 @@ router.post('/widget-context', requireAuth, async (req: Request, res: Response, 
       }
 
       // Source tables — last_synced_at lives on the connection, not the table.
-      const stRows = await semanticDb('source_tables as st')
+      const stRows = await db('source_tables as st')
         .join('connections as c', 'st.connection_id', 'c.id')
         .whereIn('st.table_name', tableNames)
         .where({ 'st.is_active': true })

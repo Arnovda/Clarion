@@ -11,7 +11,6 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
-import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
@@ -124,6 +123,7 @@ router.post(
   validate(createSourceConnectionSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const { name, connectorType, config: inlineConfig, oauthStateToken, selectedEntities, domains } =
         req.body as {
           name: string;
@@ -147,11 +147,10 @@ router.post(
       }
 
       // Resolve the config: inline OR via oauth_pending lookup.
-      await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
       let config: Record<string, unknown>;
       let oauthRowId: number | null = null;
       if (oauthStateToken) {
-        const row = await semanticDb('oauth_pending')
+        const row = await db('oauth_pending')
           .where({
             state_token: oauthStateToken,
             connector_type: connectorType,
@@ -209,7 +208,7 @@ router.post(
       // Save the connection. `type='duckdb'` because the QUERY side will
       // read the warehouse Parquet files via DuckDB (matches the pattern
       // every other warehouse-backed connection uses).
-      const [row] = await semanticDb('connections')
+      const [row] = await db('connections')
         .insert({
           tenant_id: req.user!.tenantId,
           name,
@@ -232,7 +231,7 @@ router.post(
       // `connector_config_encrypted` takes over from here. Delete-after-use
       // means the stateToken can't be replayed even if it leaks.
       if (oauthRowId !== null) {
-        await semanticDb('oauth_pending').where({ id: oauthRowId }).del();
+        await db('oauth_pending').where({ id: oauthRowId }).del();
       }
 
       // No schema profiling here — there's no data yet. The first sync will
@@ -251,11 +250,11 @@ router.post(
 // GET /api/connections — list this tenant's connections
 router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     // Explicit tenant filter — Postgres RLS would catch this too in the
     // dual-role deployment, but the prod single-role deployment skips RLS,
     // so application-layer scoping is mandatory. Defence in depth either way.
-    await semanticDb.raw(`SET app.current_tenant = '${Number(req.user!.tenantId)}'`);
-    const rows = await semanticDb('connections')
+    const rows = await db('connections')
       .where('tenant_id', req.user!.tenantId)
       .select('*')
       .orderBy('created_at', 'desc');
@@ -324,9 +323,10 @@ router.get(
   requireRole('admin', 'analyst'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const id = Number(req.params.id);
       const limit = Math.min(Number(req.query.limit) || 20, 100);
-      const rows = await semanticDb('source_sync_runs')
+      const rows = await db('source_sync_runs')
         .where({ connection_id: id, tenant_id: req.user!.tenantId })
         .orderBy('id', 'desc')
         .limit(limit);
@@ -344,8 +344,9 @@ router.get(
   requireRole('admin', 'analyst'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      const db = reqDb(req);
       const syncRunId = Number(req.params.syncRunId);
-      const row = await semanticDb('source_sync_runs')
+      const row = await db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: req.user!.tenantId })
         .first();
       if (!row) {
@@ -438,15 +439,16 @@ export function profilingProgressPct(phase: string, tableIndex?: number, tableCo
 
 // POST /api/connections/:id/profile — re-run schema profiling with SSE progress
 router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  const db = reqDb(req);
   const connectionId = Number(req.params.id);
-  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  const connection = await db('connections').where({ id: connectionId }).first();
   if (!connection) {
     res.status(404).json({ ok: false, error: 'Connection not found' });
     return;
   }
 
   // Mark profiling as running in DB so other clients can see it
-  await semanticDb('connections').where({ id: connectionId }).update({
+  await db('connections').where({ id: connectionId }).update({
     profiling_status: 'running',
     profiling_phase: 'schema',
     profiling_message: 'Starting profiling…',
@@ -457,7 +459,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
   // Persist progress to DB on every phase change
   const persistProgress = async (p: { phase: string; message: string; tableIndex?: number; tableCount?: number }) => {
     try {
-      await semanticDb('connections').where({ id: connectionId }).update({
+      await db('connections').where({ id: connectionId }).update({
         profiling_phase: p.phase,
         profiling_message: p.message,
         profiling_progress: profilingProgressPct(p.phase, p.tableIndex, p.tableCount),
@@ -501,7 +503,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
 
       const doneMsg = `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`;
       emit({ phase: 'done', message: doneMsg, result });
-      await semanticDb('connections').where({ id: connectionId }).update({
+      await db('connections').where({ id: connectionId }).update({
         profiling_status: 'done', profiling_phase: 'done',
         profiling_message: doneMsg, profiling_progress: 100,
         last_profiled_at: new Date().toISOString(),
@@ -510,7 +512,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
       console.error(`[Profile] Connection ${connectionId} profiling failed:`, err);
       emit({ phase: 'error', message: errMsg });
-      await semanticDb('connections').where({ id: connectionId }).update({
+      await db('connections').where({ id: connectionId }).update({
         profiling_status: 'error', profiling_phase: 'error',
         profiling_message: errMsg, profiling_progress: 0,
       }).catch(() => {});
@@ -531,7 +533,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
 
       connectorOverride.disconnect();
 
-      await semanticDb('connections').where({ id: connectionId }).update({
+      await db('connections').where({ id: connectionId }).update({
         profiling_status: 'done', profiling_phase: 'done',
         profiling_message: `Done — ${result.tablesInserted} tables, ${result.columnsInserted} columns, ${result.relationshipsInserted} relationships`,
         profiling_progress: 100,
@@ -540,7 +542,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       res.json({ ok: true, data: result });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
-      await semanticDb('connections').where({ id: connectionId }).update({
+      await db('connections').where({ id: connectionId }).update({
         profiling_status: 'error', profiling_phase: 'error',
         profiling_message: errMsg, profiling_progress: 0,
       }).catch(() => {});
@@ -551,7 +553,8 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
 
 // GET /api/connections/:id/profile/status — poll profiling progress
 router.get('/:id/profile/status', requireAuth, async (req: Request, res: Response) => {
-  const row = await semanticDb('connections')
+  const db = reqDb(req);
+  const row = await db('connections')
     .where({ id: req.params.id })
     .select('profiling_status', 'profiling_phase', 'profiling_message', 'profiling_progress', 'profiling_started_at')
     .first();
@@ -575,14 +578,14 @@ router.get('/:id/profile/status', requireAuth, async (req: Request, res: Respons
  */
 router.get('/:id/schema-changes', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const tenantId = req.user!.tenantId;
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
     const connectionId = Number(req.params.id);
     if (!Number.isFinite(connectionId)) {
       return res.status(400).json({ ok: false, error: 'invalid connection id' });
     }
     const limit = Math.min(Number(req.query.limit) || 20, 100);
-    const rows = await semanticDb('schema_changes')
+    const rows = await db('schema_changes')
       .where({ connection_id: connectionId, tenant_id: tenantId })
       .orderBy('detected_at', 'desc')
       .limit(limit)
@@ -608,8 +611,9 @@ router.get('/:id/schema-changes', requireAuth, async (req: Request, res: Respons
 // source_columns rows. Preserves existing AI-generated descriptions.
 router.post('/:id/introspect', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const connectionId = Number(req.params.id);
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await db('connections').where({ id: connectionId }).first();
     if (!connection) {
       res.status(404).json({ ok: false, error: 'Connection not found' });
       return;
@@ -631,26 +635,26 @@ router.post('/:id/introspect', requireAuth, requireRole('admin'), async (req: Re
 
     for (const tbl of schema.tables) {
       // Find the matching source_table row
-      const sourceTable = await semanticDb('source_tables')
+      const sourceTable = await db('source_tables')
         .where({ connection_id: connectionId, table_name: tbl.tableName, is_active: true })
         .first();
       if (!sourceTable) continue;
 
       for (const col of tbl.columns) {
-        const existing = await semanticDb('source_columns')
+        const existing = await db('source_columns')
           .where({ table_id: sourceTable.id, column_name: col.name })
           .first();
 
         if (existing) {
           // Update data_type and example_values if they changed
-          await semanticDb('source_columns').where({ id: existing.id }).update({
+          await db('source_columns').where({ id: existing.id }).update({
             data_type: col.type,
             example_values: col.sampleValues ? JSON.stringify(col.sampleValues) : existing.example_values,
           });
           updatedCols++;
         } else {
           // New column discovered — insert with ai_draft flag
-          await semanticDb('source_columns').insert({
+          await db('source_columns').insert({
             table_id:       sourceTable.id,
             column_name:    col.name,
             data_type:      col.type,
@@ -671,20 +675,21 @@ router.post('/:id/introspect', requireAuth, requireRole('admin'), async (req: Re
 });
 
 // GET /api/connections/freshness — freshness info for all connections + data products
-router.get('/freshness', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/freshness', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     // Connection freshness
-    const connections = await semanticDb('connections')
+    const connections = await db('connections')
       .select('id', 'name', 'last_synced_at', 'last_profiled_at', 'last_ingested_at', 'created_at')
       .orderBy('name');
 
     // Latest transformation run per product (graceful — may not exist)
     let products: Record<string, unknown>[] = [];
     try {
-      products = await semanticDb('data_products as dp')
+      products = await db('data_products as dp')
         .leftJoin('transformation_schedules as ts', 'ts.product_id', 'dp.id')
         .leftJoin(
-          semanticDb('transformation_runs')
+          db('transformation_runs')
             .select('schedule_id')
             .max('finished_at as last_run_at')
             .where('status', 'success')
@@ -723,31 +728,32 @@ router.get('/freshness', requireAuth, async (_req: Request, res: Response, next:
 // DELETE /api/connections/:id — delete a connection and its semantic data
 router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const id = Number(req.params.id);
 
     // Fetch connection before deleting — need warehouse_path for cleanup
-    const conn = await semanticDb('connections').where({ id }).first();
+    const conn = await db('connections').where({ id }).first();
 
     // Get table IDs for this connection so we can cascade manually
-    const tables = await semanticDb('source_tables').where({ connection_id: id }).select('id');
+    const tables = await db('source_tables').where({ connection_id: id }).select('id');
     const tableIds = tables.map((t: { id: number }) => t.id);
 
     if (tableIds.length) {
       // Delete ALL relationships touching any of these tables (from or to)
-      await semanticDb('table_relationships')
+      await db('table_relationships')
         .where(function () {
           this.whereIn('from_table_id', tableIds).orWhereIn('to_table_id', tableIds);
         })
         .delete();
 
-      await semanticDb('source_columns').whereIn('table_id', tableIds).delete();
-      await semanticDb('source_tables').whereIn('id', tableIds).delete();
+      await db('source_columns').whereIn('table_id', tableIds).delete();
+      await db('source_tables').whereIn('id', tableIds).delete();
     }
 
-    await semanticDb('ingested_tables').where({ connection_id: id }).delete();
-    await semanticDb('kpi_definitions').where({ connection_id: id }).delete();
-    await semanticDb('dashboards').where({ connection_id: id }).delete();
-    const deleted = await semanticDb('connections').where({ id }).delete();
+    await db('ingested_tables').where({ connection_id: id }).delete();
+    await db('kpi_definitions').where({ connection_id: id }).delete();
+    await db('dashboards').where({ connection_id: id }).delete();
+    const deleted = await db('connections').where({ id }).delete();
 
     // Clean up Delta Lake warehouse files on disk
     if (conn) {
