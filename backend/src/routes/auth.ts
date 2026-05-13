@@ -82,19 +82,26 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
 
     const tenantId: number = typeof tenantRow === 'object' ? (tenantRow as { id: number }).id : (tenantRow as number);
 
-    // Create admin user
+    // RLS WITH CHECK on `users` requires tenant_id to match
+    // app.current_tenant. /register is unauthenticated so we haven't
+    // set it yet — set it now to the freshly-created tenant before
+    // INSERT. Done inside a transaction so SET LOCAL is scoped and
+    // doesn't leak to other pool consumers.
     const passwordHash = await hashPassword(password);
-
-    const [userRow] = await semanticDb('users')
-      .insert({
-        tenant_id: tenantId,
-        email: normalizedEmail,
-        password_hash: passwordHash,
-        display_name: displayName.trim(),
-        role: 'admin',
-        is_active: true,
-      })
-      .returning('id');
+    const userRow = await semanticDb.transaction(async (trx) => {
+      await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+      const [row] = await trx('users')
+        .insert({
+          tenant_id: tenantId,
+          email: normalizedEmail,
+          password_hash: passwordHash,
+          display_name: displayName.trim(),
+          role: 'admin',
+          is_active: true,
+        })
+        .returning('id');
+      return row;
+    });
 
     const userId: number = typeof userRow === 'object' ? (userRow as { id: number }).id : (userRow as number);
 
