@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -71,8 +71,9 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
   }
 });
 
-// GET /api/reports/query-log — admin only (via role check in frontend)
-router.get('/query-log', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+// GET /api/reports/query-log — admin + analyst per CLAUDE.md role matrix.
+// Frontend gating alone is not security; gate on the server.
+router.get('/query-log', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
@@ -86,7 +87,7 @@ router.get('/query-log', requireAuth, async (req: Request, res: Response, next: 
 });
 
 // GET /api/reports/gaps — definition gaps for admin review
-router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/gaps', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
@@ -102,8 +103,8 @@ router.get('/gaps', requireAuth, async (req: Request, res: Response, next: NextF
   } catch (err) { next(err); }
 });
 
-// PATCH /api/reports/gaps/:id/resolve
-router.patch('/gaps/:id/resolve', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+// PATCH /api/reports/gaps/:id/resolve — admin only.
+router.patch('/gaps/:id/resolve', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     await db('definition_gaps').where({ id: req.params.id }).update({ resolved: true });
