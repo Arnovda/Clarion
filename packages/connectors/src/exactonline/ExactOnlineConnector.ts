@@ -64,7 +64,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // we just received is fully valid for ~10 minutes.
     let accessToken: string;
     try {
-      accessToken = await getOrRefreshAccessToken(config, ctx.log);
+      accessToken = await getOrRefreshAccessToken(config, ctx.log, ctx.onCredentialRotated);
     } catch (e) {
       if (e instanceof AuthRefreshError) {
         return { ok: false, error: e.message };
@@ -138,8 +138,11 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     this.validateConfig(rawConfig);
     const config = asExactOnlineConfig(rawConfig);
 
-    // Get a fresh access token once for the whole probe sweep.
-    const accessToken = await getOrRefreshAccessToken(config, ctx.log);
+    // Get a fresh access token once for the whole probe sweep. Pass the
+    // rotation hook so a refresh during probing doesn't strand the
+    // newly-issued refresh_token — that's the scenario where the next
+    // sync would otherwise fail with EO's "Old refresh token used" 401.
+    const accessToken = await getOrRefreshAccessToken(config, ctx.log, ctx.onCredentialRotated);
 
     const baseUrl = config.baseUrl.replace(/\/$/, '');
     const division = encodeURIComponent(config.division);
@@ -504,13 +507,23 @@ function extractFirst(body: MeResponse): { UserName?: string; CurrentDivision?: 
  * Returns a usable access_token. Uses the cached one in `config` when it's
  * still fresh (>30s of life left); falls back to refreshing the refresh_token.
  *
- * Used by testConnection (single shot) and conceptually by sync (which has
- * its own version inline because it also needs to know whether it rotated
- * tokens, for `onCredentialRotated` purposes).
+ * Used by testConnection + probeEntities. Refreshing rotates the
+ * refresh_token at EO's end — see oauth.ts. If we don't propagate the
+ * NEW refresh_token back to durable storage, the next sync uses the
+ * stale one and EO returns "Old refresh token used" (HTTP 401). To
+ * close that loop, callers MUST pass an `onCredentialRotated` callback
+ * (via ProbeContext) that re-encrypts and persists. Without it, this
+ * function still works the first time (you get an access token) but
+ * silently corrupts the stored credential for the next caller.
+ *
+ * The sync path has its own inline copy of this logic because it needs
+ * to track `currentRefreshToken` across mid-sync 401 retries; this
+ * helper is for one-shot callers.
  */
 async function getOrRefreshAccessToken(
   config: ExactOnlineConfig,
   log: import('../types').Logger,
+  onCredentialRotated?: (newConfig: ConnectorConfig) => Promise<void>,
 ): Promise<string> {
   if (config.accessToken && config.accessTokenExpiresAt && config.accessTokenExpiresAt > Date.now() + 30_000) {
     log.debug('using cached access token (still fresh)');
@@ -523,6 +536,17 @@ async function getOrRefreshAccessToken(
     refreshToken: config.refreshToken,
     log,
   });
+  if (onCredentialRotated) {
+    const rotated: ExactOnlineConfig = {
+      ...config,
+      refreshToken: refreshed.newRefreshToken,
+      accessToken: refreshed.accessToken,
+      accessTokenExpiresAt: Date.now() + (refreshed.expiresIn * 1000),
+    };
+    await onCredentialRotated(rotated as unknown as ConnectorConfig);
+  } else {
+    log.warn('refresh_token rotated but no onCredentialRotated handler — next caller will see "Old refresh token used"');
+  }
   return refreshed.accessToken;
 }
 

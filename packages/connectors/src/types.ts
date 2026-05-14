@@ -378,6 +378,23 @@ export interface EntityAvailability {
 export interface ProbeContext {
   /** Pre-redacted logger. Anything credential-shaped is scrubbed. */
   readonly log: Logger;
+
+  /**
+   * Optional hook for OAuth-rotating connectors. When the probe path
+   * causes a refresh-token rotation (EO, Salesforce, …) the connector
+   * MUST call this with the full rotated config so the orchestrator
+   * can re-encrypt and persist it. Skipping this hook on token rotation
+   * causes the next sync to use a stale refresh token that the auth
+   * provider has already invalidated — the classic "Old refresh token
+   * used" 401.
+   *
+   * Async on purpose: the persist path is awaited so the next API call
+   * doesn't race a half-written DB row.
+   *
+   * Optional because: (a) most probes use cached access tokens and
+   * never rotate, and (b) non-OAuth connectors have no rotation.
+   */
+  readonly onCredentialRotated?: (newConfig: ConnectorConfig) => Promise<void>;
 }
 
 // ─── Sync options + context ───────────────────────────────────────────────

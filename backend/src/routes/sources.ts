@@ -90,6 +90,63 @@ async function resolveProbeConfig(
 }
 
 /**
+ * Build the `onCredentialRotated` callback that probe / test routes pass to
+ * the connector via `ProbeContext`.
+ *
+ * OAuth-rotating connectors (EO, Salesforce, …) mint a new refresh_token
+ * every time they refresh and invalidate the old one. If the wizard's
+ * probe/test step triggers a rotation, the NEW token MUST be written
+ * back to wherever the probe config came from — otherwise the next
+ * caller (typically the user clicking "Save & analyse", which reads the
+ * stored token and hands it to the worker) tries to refresh the stale
+ * token and EO returns "Old refresh token used" (HTTP 401). The sync
+ * worker then exits 1 and the user sees "Worker exited with code 1".
+ *
+ * Where we write back depends on where we read from:
+ *   • oauthStateToken path → re-encrypt + UPDATE oauth_pending
+ *   • inline config path   → log a loud warning (caller passed config
+ *                            inline, we have no durable storage to
+ *                            update — this is rare and only the original
+ *                            "test connection" UX, pre-OAuth, hits it).
+ *
+ * Returns `undefined` when no rotation hook is meaningful (inline config
+ * with no place to persist) so connectors fall back to the no-handler
+ * warning path.
+ */
+function buildRotationHook(
+  db: Knex | Knex.Transaction,
+  body: { config?: Record<string, unknown>; oauthStateToken?: string },
+  user: { tenantId: number; sub: number },
+  connectorType: string,
+): ((newConfig: Record<string, unknown>) => Promise<void>) | undefined {
+  if (body.oauthStateToken) {
+    const stateToken = body.oauthStateToken;
+    return async (newConfig) => {
+      try {
+        const reencrypted = encryptCredentials(JSON.stringify(newConfig));
+        await db('oauth_pending')
+          .where({
+            state_token: stateToken,
+            tenant_id: user.tenantId,
+            initiated_by_user_id: user.sub,
+          })
+          .update({ encrypted_config: reencrypted });
+        logger.info({ connectorType, tenantId: user.tenantId }, 'rotated probe credentials persisted to oauth_pending');
+      } catch (err) {
+        logger.error({ err, connectorType, tenantId: user.tenantId },
+          'CRITICAL: failed to persist rotated probe credentials — next call may see "Old refresh token used"');
+      }
+    };
+  }
+  // Inline config path — log a warning when rotation occurs, so we
+  // surface drift without crashing the request.
+  return async () => {
+    logger.warn({ connectorType, tenantId: user.tenantId },
+      'probe rotated refresh token but caller supplied inline config — no durable storage to update');
+  };
+}
+
+/**
  * Compute the redirect URI the OAuth provider should send the user back to.
  *
  * Order of preference:
@@ -327,12 +384,19 @@ router.post(
       );
 
       const connector = getConnector(type);
+      const onCredentialRotated = buildRotationHook(
+        db,
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+        type,
+      );
       const result = await connector.testConnection(config, {
         log: createAdapterLogger(logger.child({
           mod: 'connector-probe',
           connector: type,
           tenantId: req.user?.tenantId,
         })),
+        onCredentialRotated,
       });
       res.json({ ok: true, data: result });
     } catch (err) {
@@ -372,12 +436,19 @@ router.post(
       );
 
       const connector = getConnector(type);
+      const onCredentialRotated = buildRotationHook(
+        db,
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+        type,
+      );
       const entities = await connector.listEntities(config, {
         log: createAdapterLogger(logger.child({
           mod: 'connector-list-entities',
           connector: type,
           tenantId: req.user?.tenantId,
         })),
+        onCredentialRotated,
       });
       res.json({ ok: true, data: entities });
     } catch (err) {
@@ -434,18 +505,24 @@ router.post(
         connector: type,
         tenantId: req.user?.tenantId,
       }));
+      const onCredentialRotated = buildRotationHook(
+        db,
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+        type,
+      );
 
       // Merge listEntities (descriptor metadata: displayName, category,
       // description, supportsIncremental) with probeEntities (per-entity
       // availability). The wizard renders one row per entity using both —
       // descriptor for the label & grouping, probe state for the checkbox
       // enabled/disabled treatment.
-      const descriptors = await connector.listEntities(config, { log: probeLog });
+      const descriptors = await connector.listEntities(config, { log: probeLog, onCredentialRotated });
       const probeMap = new Map<string, Awaited<ReturnType<NonNullable<typeof connector.probeEntities>>>[number]>();
       let supportsProbe = false;
       if (connector.probeEntities) {
         supportsProbe = true;
-        const probed = await connector.probeEntities(config, { log: probeLog });
+        const probed = await connector.probeEntities(config, { log: probeLog, onCredentialRotated });
         for (const p of probed) probeMap.set(p.name, p);
       }
       const merged = descriptors.map((d) => {
