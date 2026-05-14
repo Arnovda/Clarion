@@ -47,6 +47,12 @@ interface Connection {
   selected_entities?: string[];
   last_synced_at?: string | null;
   last_sync_status?: string | null; // 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  // Profiling progress fields — used by SourceCard to recover state across
+  // tab switches / page reloads when profiling is still running.
+  profiling_status?: string | null;   // 'running' | 'done' | 'error' | null
+  profiling_phase?: string | null;
+  profiling_message?: string | null;
+  profiling_progress?: number | null;
 }
 
 interface Connector {
@@ -493,12 +499,20 @@ function ConnectionCard({
   // successful sync, but until now that ran silently. We poll the connection
   // row once the sync is done so the card can show "Analysing…" and switch
   // to "Ready" only when source_tables / source_columns are populated.
+  //
+  // Seed from the connection row so progress survives a tab switch / page
+  // reload — the backend has `profiling_status` + `profiling_message` +
+  // `profiling_progress` columns that the worker updates as it runs.
   const [profilingState, setProfilingState] = useState<{
     status: string | null;
     message: string | null;
     progress: number | null;
-  }>({ status: null, message: null, progress: null });
-  const [profilingPolling, setProfilingPolling] = useState(false);
+  }>({
+    status: conn.profiling_status ?? null,
+    message: conn.profiling_message ?? null,
+    progress: typeof conn.profiling_progress === 'number' ? conn.profiling_progress : null,
+  });
+  const [profilingPolling, setProfilingPolling] = useState(conn.profiling_status === 'running');
   // Sync history panel — collapsed by default; loaded lazily on expand.
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<SyncRunRow[] | null>(null);
@@ -512,6 +526,44 @@ function ConnectionCard({
   const [cronDraft, setCronDraft] = useState('0 6 * * *');           // 06:00 daily by default
   const [tzDraft, setTzDraft] = useState('Europe/Brussels');
   const [enabledDraft, setEnabledDraft] = useState(true);
+
+  // Recover the active syncRunId on mount when the card lands already in
+  // a `syncing` state. Without this, switching browser tabs (or any
+  // remount) loses the in-memory syncRunId set by handleSyncNow, the
+  // polling effect below short-circuits on `syncRunId === null`, and the
+  // user sees no progress until the page is reloaded. The latest row in
+  // source_sync_runs for this connection is authoritative — if it's still
+  // running/queued, pick it up; if it's already terminal, reconcile state.
+  useEffect(() => {
+    if (!syncing || syncRunId !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get(`/connections/${conn.id}/sync-runs?limit=1`);
+        const latest = (res.data?.data ?? [])[0];
+        if (!latest || cancelled) return;
+        if (latest.status === 'running' || latest.status === 'queued') {
+          setSyncRunId(latest.id);
+          setSyncStatus(latest.status);
+          if (latest.row_counts) {
+            setSyncRowCounts(typeof latest.row_counts === 'string' ? JSON.parse(latest.row_counts) : latest.row_counts);
+          }
+        } else {
+          // Terminal — reconcile so the card doesn't sit stuck on "Syncing…".
+          setSyncing(false);
+          setSyncStatus(latest.status);
+          if (latest.row_counts) {
+            setSyncRowCounts(typeof latest.row_counts === 'string' ? JSON.parse(latest.row_counts) : latest.row_counts);
+          }
+          if (latest.status === 'failed') setSyncError(latest.error_message ?? 'Sync failed');
+          if (latest.status === 'succeeded') setProfilingPolling(true);
+        }
+      } catch {
+        // ignore — user can refresh
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [syncing, syncRunId, conn.id]);
 
   // Live-poll the active sync run while it's running.
   useEffect(() => {

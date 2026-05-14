@@ -59,7 +59,7 @@ export async function runSchemaProfiler(
   const emit = onProgress ?? (() => {});
 
   // ── 1. Introspect source schema ────────────────────────────────────────
-  emit({ phase: 'schema', message: 'Reading database schema…' });
+  emit({ phase: 'schema', message: 'Step 1/7 — Reading database schema…' });
   let connector: BaseConnector;
   let shouldDisconnect = true;
   let connectorType: string | null = null;
@@ -129,13 +129,13 @@ export async function runSchemaProfiler(
   if (patternCount) fkParts.push(`${patternCount} by name`);
   if (overlapCount) fkParts.push(`${overlapCount} by data`);
   const fkSummary = fkParts.length ? ` — ${fkParts.join(', ')}` : '';
-  emit({ phase: 'schema', message: `Found ${schema.tables.length} tables${fkSummary}` });
+  emit({ phase: 'schema', message: `Step 1/7 — Found ${schema.tables.length} tables${fkSummary}` });
 
   // ── 1b. AI-assisted FK matching (legacy assist) ────────────────────────
   const unmatched = connector.getUnmatchedKeyColumns(schema.tables, classifications, [...knownFks, ...heuristicMinusKnown]);
   const allFkCandidates = [...knownFks, ...heuristicMinusKnown];
   if (unmatched.length > 0) {
-    emit({ phase: 'schema', message: `Asking Claude to match ${unmatched.length} unmatched key column(s)…` });
+    emit({ phase: 'schema', message: `Step 1/7 — Asking Claude to match ${unmatched.length} unmatched key column(s)…` });
     const dimTables = classifications
       .filter((c) => c.role === 'dimension' || c.role === 'unknown')
       .map((c) => {
@@ -174,7 +174,7 @@ export async function runSchemaProfiler(
         } catch { /* verification query failed — skip */ }
       }
       const aiAdded = allFkCandidates.length - knownFks.length - heuristicMinusKnown.length;
-      if (aiAdded > 0) emit({ phase: 'schema', message: `Claude found ${aiAdded} additional relationship(s)` });
+      if (aiAdded > 0) emit({ phase: 'schema', message: `Step 1/7 — Claude found ${aiAdded} additional relationship(s)` });
     } catch (err) {
       console.warn('[SchemaProfiler] AI FK matching failed (non-fatal):', err);
     }
@@ -184,7 +184,7 @@ export async function runSchemaProfiler(
   const qualityStats: TableQualityStat[] = [];
   for (let ti = 0; ti < schema.tables.length; ti++) {
     const table = schema.tables[ti];
-    emit({ phase: 'quality', message: `Profiling ${table.tableName}…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
+    emit({ phase: 'quality', message: `Step 2/7 — Profiling ${table.tableName} (${ti + 1}/${schema.tables.length}) — nulls, distincts, value distributions…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
     try {
       // Always use the connector-based profiler — every connection type
       // (SQLite for local dev, the source connectors for live data, DuckDB
@@ -215,14 +215,16 @@ export async function runSchemaProfiler(
   }
 
   // ── 3. AI Pass A — detect schema conventions ───────────────────────────
-  emit({ phase: 'ai_draft', message: 'Detecting source naming conventions…' });
+  emit({ phase: 'ai_draft', message: 'Step 3/7 — Detecting naming conventions (PascalCase / snake_case / camelCase)…' });
   const conventions = await detectSchemaConventions(connectorType, schema.tables);
   if (conventions) {
     console.log(`[SchemaProfiler] Conventions: ${conventions.naming_style} (confidence ${conventions.confidence})`);
+    emit({ phase: 'ai_draft', message: `Step 3/7 — Detected ${conventions.naming_style} naming (confidence ${Math.round(conventions.confidence * 100)}%)` });
   }
 
   // ── 4. AI Pass B — table descriptions + relationships ──────────────────
-  emit({ phase: 'ai_draft', message: 'Inferring relationships across the schema…' });
+  const totalCols = schema.tables.reduce((sum, t) => sum + t.columns.length, 0);
+  emit({ phase: 'ai_draft', message: `Step 4/7 — Asking Claude to map your data model (${schema.tables.length} tables, ${totalCols} columns) — this is one large call, ~30-60s…` });
   const fkLikes: FkCandidateLike[] = allFkCandidates.map((fk) => ({
     fromTable: fk.fromTable,
     fromColumn: fk.fromColumn,
@@ -239,6 +241,7 @@ export async function runSchemaProfiler(
       connectorType, conventions, schema.tables, qualityStats, fkLikes,
     );
     console.log(`[SchemaProfiler] Pass B: ${tableContext.tables.length} tables, ${tableContext.relationships.length} relationships`);
+    emit({ phase: 'ai_draft', message: `Step 4/7 — Claude described ${tableContext.tables.length} tables and suggested ${tableContext.relationships.length} relationship(s)` });
   } catch (err) {
     console.warn('[SchemaProfiler] generateTableContext failed (non-fatal):', err);
     tableContext = {
@@ -279,7 +282,7 @@ export async function runSchemaProfiler(
   // Drops anything where the data doesn't actually back the suggestion.
   // Skips relationships that came from a known/declared/value-overlap source
   // (those are already trusted). Only verifies the AI's net-new suggestions.
-  emit({ phase: 'ai_draft', message: 'Verifying AI-suggested relationships against the data…' });
+  emit({ phase: 'ai_draft', message: `Step 5/7 — Verifying AI-suggested relationships against the data (${tableContext.relationships.length} to check)…` });
   const trustedKeys = new Set(allFkCandidates.map((fk) => `${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`));
   const verifiedAiRels: typeof tableContext.relationships = [];
   let aiVerified = 0, aiDropped = 0;
@@ -335,19 +338,20 @@ export async function runSchemaProfiler(
   }
   tableContext.relationships = verifiedAiRels;
   if (aiVerified > 0 || aiDropped > 0) {
-    emit({ phase: 'ai_draft', message: `Verified ${aiVerified} AI-suggested relationship(s)${aiDropped ? `, dropped ${aiDropped}` : ''}` });
+    emit({ phase: 'ai_draft', message: `Step 5/7 — Verified ${aiVerified} AI-suggested relationship(s)${aiDropped ? `, dropped ${aiDropped}` : ''}` });
   }
 
   // ── 6. AI Pass C — column descriptions with table+rel context ──────────
-  emit({ phase: 'ai_draft', message: 'Claude is describing columns…' });
+  emit({ phase: 'ai_draft', message: `Step 6/7 — Claude is describing ${totalCols} columns across ${schema.tables.length} tables…` });
   let columnDescriptions;
   try {
     columnDescriptions = await generateColumnDescriptions(
       connectorType, tableContext, schema.tables, qualityStats,
       (tableNames, batchIndex, totalBatches) => {
-        emit({ phase: 'ai_draft', message: `Describing ${tableNames.join(', ')}…`, batchIndex, batchCount: totalBatches });
+        emit({ phase: 'ai_draft', message: `Step 6/7 — Describing ${tableNames.join(', ')} (batch ${batchIndex + 1}/${totalBatches})…`, batchIndex, batchCount: totalBatches });
       },
     );
+    emit({ phase: 'ai_draft', message: `Step 6/7 — Claude described ${columnDescriptions.columns.length} columns` });
   } catch (err) {
     console.warn('[SchemaProfiler] generateColumnDescriptions failed (non-fatal):', err);
     columnDescriptions = { columns: [] };
@@ -377,7 +381,7 @@ export async function runSchemaProfiler(
   const columnIdMap = new Map<string, number>();
   let pgRelsForNeo4j: Array<Record<string, unknown>> = [];
 
-  emit({ phase: 'storing', message: 'Saving definitions to database…' });
+  emit({ phase: 'storing', message: `Step 7/7 — Saving ${schema.tables.length} tables, ${totalCols} columns, ${tableContext.relationships.length} relationships to database…` });
   await semanticDb.transaction(async (trx) => {
     const existingTables = await trx('source_tables')
       .where({ connection_id: connectionId })
@@ -617,7 +621,7 @@ export async function runSchemaProfiler(
   });
 
   // ── Sync to Neo4j ──────────────────────────────────────────────────────
-  emit({ phase: 'neo4j', message: 'Syncing to knowledge graph…' });
+  emit({ phase: 'neo4j', message: `Step 7/7 — Syncing ${schema.tables.length} tables to the knowledge graph for AI context…` });
   try {
     const graphTables: graph.UpsertTableInput[] = schema.tables.map((t) => {
       const ctx = tableContextByName.get(t.tableName);
