@@ -273,13 +273,18 @@ function getMfaChallengeSecret(): string {
 
 router.get('/me', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await semanticDb('users').where({ id: req.user!.sub, is_active: true }).first();
+    // Use the request-scoped trx so the query runs inside SET LOCAL
+    // app.current_tenant, immune to the pool-race window. The user's
+    // own row is RLS-allowed within their tenant; no auth_lookup carve-out
+    // is needed because we have authenticated context here.
+    const db = reqDb(req);
+    const user = await db('users').where({ id: req.user!.sub, is_active: true }).first();
     if (!user) {
       res.status(401).json({ ok: false, error: 'User not found' });
       return;
     }
 
-    const tenant = await semanticDb('tenants').where({ id: user.tenant_id }).first();
+    const tenant = await db('tenants').where({ id: user.tenant_id }).first();
 
     res.json({
       ok: true,
@@ -648,7 +653,10 @@ router.post('/mfa/disable', requireAuth, async (req: Request, res: Response, nex
       res.status(400).json({ ok: false, error: 'password is required' });
       return;
     }
-    const user = await semanticDb('users').where({ id: req.user!.sub }).first();
+    // Run inside the request-scoped trx so SET LOCAL applies and the
+    // query isn't subject to the pool-race window. /mfa/disable is
+    // authenticated so we always have a tenant context.
+    const user = await reqDb(req)('users').where({ id: req.user!.sub }).first();
     if (!user) {
       res.status(404).json({ ok: false, error: 'User not found' });
       return;

@@ -1368,8 +1368,12 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
     }
 
     const newValue = !row.is_favorite;
+    // Defense-in-depth: the SELECT above already filtered by user_id
+    // (returns 404 if not the owner), but we keep the user_id filter
+    // on the UPDATE too so the intent is explicit and a future code
+    // change can't accidentally widen the scope.
     await db('dashboards')
-      .where({ id: req.params.id })
+      .where({ id: req.params.id, user_id: req.user!.sub })
       .update({ is_favorite: newValue });
 
     res.json({ ok: true, data: { is_favorite: newValue } });
