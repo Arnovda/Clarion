@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, Suspense } from 'react';
+import { useState, useEffect, Suspense, Fragment } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
@@ -738,22 +738,56 @@ function ConnectionCard({
     // The ProfilingBanner handles the SSE stream — no direct API call needed here
   }
 
+  // ── Derive a single status pill + a contextual "next step" hint from the
+  //    union of sync + profiling state. Status-first design: the card's
+  //    most prominent piece of metadata is "what state is this in?" — not
+  //    "what kind of connection?". The hint sits underneath and tells the
+  //    user what to do next without them needing to read every button.
+  const status: { label: string; tone: 'ok' | 'ai' | 'warn' | 'err' | 'idle' } = (() => {
+    if (syncError || profilingState.status === 'error') return { label: 'Needs attention', tone: 'err' };
+    if (syncing)                                          return { label: 'Syncing',         tone: 'ai'  };
+    if (profilingState.status === 'running')              return { label: 'Analysing',       tone: 'ai'  };
+    if (profilingState.status === 'done')                 return { label: 'Ready',           tone: 'ok'  };
+    if (isSourceConnector && conn.last_synced_at)         return { label: 'Ready',           tone: 'ok'  };
+    if (isSourceConnector)                                return { label: 'Not synced',      tone: 'idle' };
+    if (conn.last_ingested_at)                            return { label: 'Ready',           tone: 'ok'  };
+    return { label: 'Idle', tone: 'idle' };
+  })();
+  const statusToneClass = {
+    ok:   'bg-ok-soft text-ok',
+    ai:   'bg-ai-soft text-ai',
+    warn: 'bg-warn-soft text-warn',
+    err:  'bg-err-soft text-err',
+    idle: 'bg-softer text-muted-2',
+  }[status.tone];
+  const nextStep: string | null = (() => {
+    if (syncError)                              return 'Sync failed — review the error and try again.';
+    if (profilingState.status === 'error')      return 'Analysis failed — try Re-analyse to retry.';
+    if (syncing || profilingState.status === 'running') return null;
+    if (isSourceConnector && !conn.last_synced_at) return 'Click Sync now to pull data into Clarion.';
+    if (profilingState.status !== 'done' && isSourceConnector && conn.last_synced_at)
+      return 'Data is in. Click Re-analyse if Claude hasn\'t described the tables yet.';
+    return 'Open the catalog to review tables, columns and relationships.';
+  })();
+
   return (
     <div className="bg-raised border border-line rounded-lg p-5 flex items-start gap-4 hover:border-line-strong transition-colors">
       {connector ? (
         <ConnectorIcon connector={connector} size="lg" />
       ) : (
-        <div className="w-12 h-12 bg-softer border border-line rounded-md flex items-center justify-center text-muted font-medium shrink-0">?</div>
+        <div
+          className="w-12 h-12 rounded-md flex items-center justify-center text-white text-[18px] font-semibold shrink-0 bg-ocean"
+          title={conn.type}
+        >
+          {conn.name.charAt(0).toUpperCase()}
+        </div>
       )}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
           <span className="text-[14px] font-medium text-ink">{conn.name}</span>
-          <span className="px-2 py-0.5 rounded border border-line text-[10px] font-mono tracking-[0.08em] uppercase bg-ok-soft text-ok">Connected</span>
-          {conn.query_engine === 'duckdb' ? (
-            <span className="px-2 py-0.5 rounded border border-line text-[10px] font-mono tracking-[0.08em] uppercase bg-ai-soft text-ai">Delta Lake</span>
-          ) : (
-            <span className="px-2 py-0.5 rounded border border-line text-[10px] font-mono tracking-[0.08em] uppercase bg-softer text-muted">Source</span>
-          )}
+          <span className={`px-2 py-0.5 rounded border border-line text-[10px] font-mono tracking-[0.08em] uppercase ${statusToneClass}`}>
+            {status.label}
+          </span>
         </div>
         <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted-2 mb-1">{conn.type}</p>
         {config.filepath && (
@@ -810,11 +844,7 @@ function ConnectionCard({
               <p className="text-rose-700 font-mono break-words">✗ {syncError}</p>
             )}
             {syncRowCounts && Object.keys(syncRowCounts).length > 0 && (
-              <p className="text-muted mt-1 font-mono">
-                {Object.entries(syncRowCounts)
-                  .map(([k, v]) => `${k}: ${v.toLocaleString()}`)
-                  .join(' · ')}
-              </p>
+              <RowCountsList counts={syncRowCounts} />
             )}
             {/* Profiling / analysis phase */}
             {profilingState.status === 'running' && (
@@ -835,6 +865,13 @@ function ConnectionCard({
               </p>
             )}
           </div>
+        )}
+        {/* Contextual "what now?" hint — surfaces the recommended next action
+            so users don't have to scan every button to know what to click. */}
+        {nextStep && (
+          <p className="mt-2 text-[12px] text-ink-3 leading-relaxed">
+            <span className="text-muted-2 font-mono mr-1.5">→</span>{nextStep}
+          </p>
         )}
         {/* Schema-changes panel — only fetches when the user landed here
             from a notification (?connectionId on URL matches this card).
@@ -980,28 +1017,52 @@ function ConnectionCard({
           </div>
         )}
       </div>
-      <div className="flex flex-col gap-1 shrink-0">
-        <button
-          onClick={() => router.push(`/semantic?connectionId=${conn.id}`)}
-          className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
-        >
-          View definitions
-        </button>
-        {isSourceConnector && (
+      {/* Tiered actions:
+            1. Primary (filled ocean)   — the one thing they're most likely to want next.
+            2. Secondary (ghost)         — useful but not urgent: history, schedule, re-analyse, edit.
+            3. Destructive (muted err)   — separated by a thin divider so it doesn't sit
+                                           shoulder-to-shoulder with the constructive actions. */}
+      <div className="flex flex-col gap-1 shrink-0 w-[160px]">
+        {/* Tier 1 — primary CTA. Sync is the main action for source connectors;
+            direct-DB connections jump straight to viewing definitions. */}
+        {isSourceConnector ? (
           <button
             onClick={handleSyncNow}
             disabled={syncing}
-            className="px-3 py-1.5 text-[12px] font-medium bg-ocean-softer text-ocean border border-ocean-soft rounded-md hover:bg-ocean-softer/70 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
+        ) : (
+          <button
+            onClick={() => router.push(`/semantic?connectionId=${conn.id}`)}
+            className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
+          >
+            View in catalog
+          </button>
         )}
+        {/* For source connectors, viewing the catalog is the natural follow-up
+            once a sync is done — promote it to a secondary CTA so it's visible
+            but doesn't compete with Sync now. */}
+        {isSourceConnector && (
+          <button
+            onClick={() => router.push(`/semantic?connectionId=${conn.id}`)}
+            className="px-3 py-1.5 text-[12px] font-medium bg-ocean-softer text-ocean border border-ocean-soft rounded-md hover:bg-ocean-softer/70 transition-colors"
+          >
+            View in catalog
+          </button>
+        )}
+
+        {/* Tier 2 — operational secondaries. Grouped visually with a tighter
+            gap; muted styling so they read as "available but not the main
+            action". */}
+        <div className="h-px bg-line my-1" />
         {isSourceConnector && (
           <button
             onClick={toggleHistory}
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
           >
-            {historyOpen ? 'Hide history' : 'View history'}
+            {historyOpen ? 'Hide history' : 'Sync history'}
           </button>
         )}
         {isSourceConnector && (
@@ -1009,9 +1070,16 @@ function ConnectionCard({
             onClick={toggleSchedule}
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
           >
-            {scheduleOpen ? 'Hide schedule' : (schedule ? 'Schedule (on)' : 'Schedule')}
+            {scheduleOpen ? 'Hide schedule' : (schedule ? 'Schedule · on' : 'Schedule')}
           </button>
         )}
+        <button
+          onClick={handleReProfile}
+          disabled={reprofiling}
+          className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50"
+        >
+          {reprofiling ? 'Re-analysing…' : 'Re-analyse'}
+        </button>
         <button
           onClick={() => onEdit(conn)}
           className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
@@ -1023,25 +1091,64 @@ function ConnectionCard({
         {!isSourceConnector && (
           <button
             onClick={() => onReIngest(conn)}
-            className="px-3 py-1.5 text-[12px] bg-ai-soft text-ai border border-line rounded-md hover:bg-ai/15 transition-colors"
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
           >
             Re-ingest
           </button>
         )}
-        <button
-          onClick={handleReProfile}
-          disabled={reprofiling}
-          className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50"
-        >
-          {reprofiling ? 'Re-analysing…' : 'Re-analyse'}
-        </button>
+
+        {/* Tier 3 — destructive. Sits below a divider, smaller visual weight,
+            requires an explicit click. */}
+        <div className="h-px bg-line my-1" />
         <button
           onClick={handleDelete}
           disabled={deleting}
-          className="px-3 py-1.5 text-[12px] bg-err-soft text-err border border-line rounded-md hover:bg-err/15 transition-colors disabled:opacity-50"
+          className="px-3 py-1.5 text-[12px] text-err border border-line rounded-md bg-raised hover:bg-err-soft transition-colors disabled:opacity-50"
         >
           {deleting ? 'Removing…' : 'Remove'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RowCountsList — compact, sorted, collapsible table of row counts per
+// entity from the most recent sync. Replaces the inline `a: 1 · b: 2 · …`
+// line which became unreadable as soon as the entity list grew past a
+// handful. Shows the top 5 by row count by default; an expand toggle
+// reveals the rest.
+// ---------------------------------------------------------------------------
+
+function RowCountsList({ counts }: { counts: Record<string, number> }) {
+  const [expanded, setExpanded] = useState(false);
+  const sorted = Object.entries(counts).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const visible = expanded ? sorted : sorted.slice(0, 5);
+  const total = sorted.reduce((sum, [, n]) => sum + (n || 0), 0);
+  const hidden = sorted.length - visible.length;
+
+  return (
+    <div className="mt-1.5">
+      <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-[11.5px] font-mono">
+        {visible.map(([name, n]) => (
+          <Fragment key={name}>
+            <span className="text-muted-2 truncate" title={name}>{name}</span>
+            <span className="text-ink-3 tabular-nums">{n.toLocaleString()}</span>
+          </Fragment>
+        ))}
+      </div>
+      <div className="flex items-center gap-2 mt-1 text-[11px]">
+        <span className="text-muted-2 font-mono tabular-nums">
+          Total: {total.toLocaleString()} rows · {sorted.length} {sorted.length === 1 ? 'entity' : 'entities'}
+        </span>
+        {hidden > 0 && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="text-ocean hover:underline"
+          >
+            {expanded ? 'Show less' : `Show ${hidden} more`}
+          </button>
+        )}
       </div>
     </div>
   );
