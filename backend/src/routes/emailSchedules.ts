@@ -57,7 +57,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 // Create
 // ---------------------------------------------------------------------------
 
-router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { dashboard_id, name, recipients, cron_expression, enabled = true, ai_summary = true } = req.body;
@@ -71,7 +71,12 @@ router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: 
       return;
     }
 
-    const tenantId = (req as Request & { tenantId?: number }).tenantId;
+    // Pull from the authenticated JWT, NOT a hypothetical req.tenantId
+    // that was never populated. Previous code read
+    // `(req as ...).tenantId` which was always undefined → INSERT
+    // relied on the column default to fire `current_setting`, which
+    // works inside reqDb's trx but is fragile.
+    const tenantId = req.user!.tenantId;
 
     const [row] = await db('email_schedules')
       .insert({
@@ -96,7 +101,7 @@ router.post('/', requireAuth, requireRole('analyst'), async (req: Request, res: 
 // Update
 // ---------------------------------------------------------------------------
 
-router.put('/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { name, recipients, cron_expression, enabled, ai_summary } = req.body;
@@ -128,7 +133,7 @@ router.put('/:id', requireAuth, requireRole('analyst'), async (req: Request, res
 // Delete
 // ---------------------------------------------------------------------------
 
-router.delete('/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const existing = await db('email_schedules').where({ id: req.params.id }).first();
@@ -145,7 +150,7 @@ router.delete('/:id', requireAuth, requireRole('analyst'), async (req: Request, 
 // Manual trigger
 // ---------------------------------------------------------------------------
 
-router.post('/:id/send-now', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/send-now', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const schedule = await db('email_schedules').where({ id: req.params.id }).first();
