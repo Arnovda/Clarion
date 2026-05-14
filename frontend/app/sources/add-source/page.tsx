@@ -62,6 +62,13 @@ interface EntityDescriptor {
   description?: string;
   estimatedRowCount?: number;
   supportsIncremental: boolean;
+  // ─── Probe-before-pick fields ──────────────────────────────────────────
+  // Populated when the backend returned `supportsProbe: true`. The wizard
+  // uses these to render forbidden entries as disabled (with reason),
+  // hide 404s, and badge available entries with a row-sample hint.
+  state?: 'available' | 'forbidden' | 'not_found' | 'error';
+  rowCountSample?: number;
+  reason?: string;
 }
 
 interface TestResult {
@@ -308,14 +315,20 @@ function AddSourceWizard() {
     if (!pickedType) return;
     setLoadingEntities(true);
     try {
-      const res = await api.post(`/source-types/${pickedType.type}/list-entities`, probeBody());
+      // probe-entities returns the same shape as list-entities (one row
+      // per catalogued entity with displayName / category / description)
+      // PLUS per-entity availability flags (state / rowCountSample /
+      // reason). For connectors that don't implement probeEntities, the
+      // backend defaults every state to 'available' — current behaviour
+      // preserved, no special-casing needed on the frontend.
+      const res = await api.post(`/source-types/${pickedType.type}/probe-entities`, probeBody());
       setEntities(res.data?.data ?? []);
       setStep('pick-entities');
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })
         ?.response?.data?.error
         ?? (err as Error)?.message
-        ?? 'Failed to list entities';
+        ?? 'Failed to verify available entities';
       setTestResult({ ok: false, error: msg });
     } finally {
       setLoadingEntities(false);
@@ -804,18 +817,42 @@ function PickEntities(props: {
   onSave: () => void;
   saveError: string | null;
 }) {
+  // Probe-before-pick filtering:
+  //   - 'not_found' entries are HIDDEN entirely (path bug; not user-fixable)
+  //   - 'forbidden' entries are SHOWN but disabled (module not licensed)
+  //   - 'error' entries are SHOWN but disabled (transient — wizard retry later)
+  //   - 'available' is the normal selectable case
+  // We compute counts for the summary line so users see both pickable +
+  // un-pickable populations.
+  const visibleEntities = useMemo(
+    () => props.entities.filter((e) => (e.state ?? 'available') !== 'not_found'),
+    [props.entities],
+  );
+  const pickableEntities = useMemo(
+    () => visibleEntities.filter((e) => (e.state ?? 'available') === 'available'),
+    [visibleEntities],
+  );
+  const forbiddenCount = visibleEntities.length - pickableEntities.length;
+  const hiddenCount = props.entities.length - visibleEntities.length;
+
+  function isPickable(e: EntityDescriptor): boolean {
+    return (e.state ?? 'available') === 'available';
+  }
+
   // Group by category for browsability with large catalogs.
   const grouped = useMemo(() => {
     const m = new Map<string, EntityDescriptor[]>();
-    for (const e of props.entities) {
+    for (const e of visibleEntities) {
       const k = e.category ?? 'Other';
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(e);
     }
     return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [props.entities]);
+  }, [visibleEntities]);
 
   function toggle(name: string) {
+    const e = props.entities.find((x) => x.name === name);
+    if (e && !isPickable(e)) return;  // ignore clicks on disabled rows
     const next = new Set(props.selected);
     if (next.has(name)) next.delete(name);
     else next.add(name);
@@ -824,7 +861,8 @@ function PickEntities(props: {
 
   function selectAllInGroup(items: EntityDescriptor[]) {
     const next = new Set(props.selected);
-    for (const e of items) next.add(e.name);
+    // Only select the pickable ones — don't drag in forbidden entries.
+    for (const e of items) if (isPickable(e)) next.add(e.name);
     props.setSelected(next);
   }
 
@@ -844,7 +882,13 @@ function PickEntities(props: {
       <div className="flex items-center justify-between mb-4 text-[12px]">
         <span className="text-muted">
           <span className="text-ink font-medium">{props.selected.size}</span>
-          {' '}of {props.entities.length} selected
+          {' '}of {pickableEntities.length} selectable
+          {forbiddenCount > 0 && (
+            <span className="text-muted-2"> · {forbiddenCount} not available</span>
+          )}
+          {hiddenCount > 0 && (
+            <span className="text-muted-2"> · {hiddenCount} hidden</span>
+          )}
         </span>
         <button
           onClick={clearAll}
@@ -855,8 +899,18 @@ function PickEntities(props: {
         </button>
       </div>
 
+      {(forbiddenCount > 0 || hiddenCount > 0) && (
+        <div className="mb-4 px-3 py-2 rounded-md border border-line bg-softer text-[12px] text-muted">
+          We checked your connection. Items shown with a lock aren&apos;t accessible
+          {' '}from your Exact Online division — usually because the module isn&apos;t licensed.
+          {hiddenCount > 0 && ' A few entries were hidden entirely (path not available in your region).'}
+        </div>
+      )}
+
       <div className="space-y-5">
-        {grouped.map(([category, items]) => (
+        {grouped.map(([category, items]) => {
+          const pickableInGroup = items.filter(isPickable);
+          return (
           <div key={category}>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-[11px] font-mono uppercase tracking-[0.12em] text-muted">
@@ -864,41 +918,73 @@ function PickEntities(props: {
               </h3>
               <button
                 onClick={() => selectAllInGroup(items)}
-                className="text-[11px] text-muted hover:text-ocean"
+                disabled={pickableInGroup.length === 0}
+                className="text-[11px] text-muted hover:text-ocean disabled:opacity-40 disabled:hover:text-muted"
               >
                 Select all
               </button>
             </div>
             <div className="space-y-1">
-              {items.map((e) => (
+              {items.map((e) => {
+                const state = e.state ?? 'available';
+                const pickable = state === 'available';
+                const checked = props.selected.has(e.name);
+                return (
                 <label
                   key={e.name}
                   className={cn(
-                    'flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors',
-                    props.selected.has(e.name)
-                      ? 'border-ocean bg-ocean-softer/40'
-                      : 'border-line bg-raised hover:border-line-strong',
+                    'flex items-start gap-3 p-3 rounded-md border transition-colors',
+                    pickable
+                      ? cn(
+                          'cursor-pointer',
+                          checked
+                            ? 'border-ocean bg-ocean-softer/40'
+                            : 'border-line bg-raised hover:border-line-strong',
+                        )
+                      : 'cursor-not-allowed border-line bg-softer opacity-70',
                   )}
+                  title={!pickable ? (e.reason ?? 'Not available') : undefined}
                 >
                   <input
                     type="checkbox"
-                    checked={props.selected.has(e.name)}
+                    checked={checked}
+                    disabled={!pickable}
                     onChange={() => toggle(e.name)}
-                    className="mt-0.5 accent-ocean"
+                    className="mt-0.5 accent-ocean disabled:cursor-not-allowed"
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-medium text-ink">
-                      {e.displayName ?? e.name}
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className={cn('text-[13px] font-medium', pickable ? 'text-ink' : 'text-muted-2 line-through decoration-muted-2/40')}>
+                        {e.displayName ?? e.name}
+                      </p>
+                      {state === 'forbidden' && (
+                        <span className="text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-line bg-bg text-muted">
+                          Not licensed
+                        </span>
+                      )}
+                      {state === 'error' && (
+                        <span className="text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-amber-200 bg-amber-50 text-amber-800">
+                          Couldn&apos;t verify
+                        </span>
+                      )}
+                      {state === 'available' && e.rowCountSample === 0 && (
+                        <span className="text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-line bg-bg text-muted">
+                          No data yet
+                        </span>
+                      )}
+                    </div>
                     {e.description && (
                       <p className="text-[11.5px] text-muted-2 mt-0.5">{e.description}</p>
                     )}
+                    {!pickable && e.reason && (
+                      <p className="text-[11.5px] text-muted-2 mt-0.5 italic">{e.reason}</p>
+                    )}
                   </div>
                 </label>
-              ))}
+              );})}
             </div>
           </div>
-        ))}
+        );})}
       </div>
 
       {props.saveError && (
