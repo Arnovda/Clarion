@@ -22,6 +22,7 @@
 import crypto from 'crypto';
 import type { Request } from 'express';
 import { semanticDb } from '../db/knex';
+import { unauthQuery } from '../db/unauthQuery';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'refreshToken' });
@@ -78,15 +79,24 @@ export async function createRefreshToken(
   const expiresAt = new Date(Date.now() + DEFAULT_LIFETIME_DAYS * 86_400_000);
   const { ip, userAgent } = clientFingerprint(req);
 
-  // Set tenant context inline so the row's tenant_id default fires.
-  await semanticDb.raw(`SET app.current_tenant = '${Number(user.tenantId)}'`);
-  await semanticDb('refresh_tokens').insert({
-    tenant_id:         user.tenantId,
-    user_id:           user.userId,
-    token_hash:        tokenHash,
-    expires_at:        expiresAt.toISOString(),
-    issued_ip:         ip,
-    issued_user_agent: userAgent,
+  // Set tenant context inside a transaction with SET LOCAL so it's
+  // scoped to this INSERT and doesn't leak onto the pooled connection.
+  // The `auth_lookup` policy on `refresh_tokens` lets us SELECT without
+  // tenant context, but INSERT must satisfy WITH CHECK which requires
+  // tenant_id to match `app.current_tenant`. Without the explicit SET
+  // LOCAL, INSERTs into refresh_tokens running on a connection that
+  // some earlier authenticated request left with a different tenant
+  // would silently fail the WITH CHECK and throw.
+  await semanticDb.transaction(async (trx) => {
+    await trx.raw(`SET LOCAL app.current_tenant = '${Number(user.tenantId)}'`);
+    await trx('refresh_tokens').insert({
+      tenant_id:         user.tenantId,
+      user_id:           user.userId,
+      token_hash:        tokenHash,
+      expires_at:        expiresAt.toISOString(),
+      issued_ip:         ip,
+      issued_user_agent: userAgent,
+    });
   });
 
   return { raw, expiresAt };
@@ -110,34 +120,40 @@ export async function validateRefreshToken(
 
   const tokenHash = hashToken(raw);
 
-  // We don't have a tenant context yet — this is the entry point of
-  // a session-renewal. Use a transaction that bypasses the per-tenant
-  // RLS by querying via the privileged role. The lookup is on the
-  // unique `token_hash` so cross-tenant leakage of identity isn't a
-  // concern.
-  const row = await semanticDb('refresh_tokens')
-    .where({ token_hash: tokenHash })
-    .first();
+  // We don't have a tenant context yet — this is the entry point of a
+  // session-renewal. Run the lookup inside unauthQuery so the connection's
+  // tenant context is explicitly reset to empty, letting the auth_lookup
+  // RLS policy match. The pool would otherwise reuse a connection that
+  // some earlier authenticated request left with a stale
+  // `app.current_tenant`, and the lookup would silently return zero rows
+  // even for a valid token.
+  const row = await unauthQuery((trx) =>
+    trx('refresh_tokens')
+      .where({ token_hash: tokenHash })
+      .first(),
+  );
 
   if (!row) return null;
   if (row.revoked_at) return null;
   if (new Date(row.expires_at).getTime() < Date.now()) return null;
 
   // Look up the user — they may have been deactivated since issuance.
-  const user = await semanticDb('users')
-    .where({ id: row.user_id, is_active: true })
-    .first();
+  const user = await unauthQuery((trx) =>
+    trx('users').where({ id: row.user_id, is_active: true }).first(),
+  );
   if (!user) return null;
 
   // Last-used tracking — non-fatal if the update fails.
   try {
     const { ip } = clientFingerprint(req);
-    await semanticDb('refresh_tokens')
-      .where({ id: row.id })
-      .update({
-        last_used_at: new Date().toISOString(),
-        last_used_ip: ip,
-      });
+    await unauthQuery((trx) =>
+      trx('refresh_tokens')
+        .where({ id: row.id })
+        .update({
+          last_used_at: new Date().toISOString(),
+          last_used_ip: ip,
+        }),
+    );
   } catch (err) {
     log.warn({ err }, 'failed to update refresh_token last_used (non-fatal)');
   }
@@ -158,13 +174,18 @@ export async function validateRefreshToken(
 export async function revokeRefreshToken(raw: string, reason: string): Promise<void> {
   if (!raw) return;
   const tokenHash = hashToken(raw);
-  await semanticDb('refresh_tokens')
-    .where({ token_hash: tokenHash })
-    .whereNull('revoked_at')
-    .update({
-      revoked_at: new Date().toISOString(),
-      revoked_reason: reason,
-    });
+  // Wrapped in unauthQuery so the connection's tenant context is reset —
+  // logout can be invoked with or without an active session, and we need
+  // the UPDATE to find the row regardless of pool state.
+  await unauthQuery((trx) =>
+    trx('refresh_tokens')
+      .where({ token_hash: tokenHash })
+      .whereNull('revoked_at')
+      .update({
+        revoked_at: new Date().toISOString(),
+        revoked_reason: reason,
+      }),
+  );
 }
 
 /**

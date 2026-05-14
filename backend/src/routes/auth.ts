@@ -41,6 +41,7 @@ import {
 } from '../services/webauthnService';
 import { verifyPassword as verifyPasswordFn } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
+import { unauthQuery } from '../db/unauthQuery';
 
 const router = Router();
 
@@ -59,8 +60,14 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
 
     const normalizedEmail = email; // already normalized by Zod transform
 
-    // Check if email already exists
-    const existing = await semanticDb('users').where({ email: normalizedEmail }).first();
+    // Check if email already exists. Wrapped in unauthQuery so the
+    // SELECT runs with a clean tenant context — a pool connection that
+    // still carries an old `app.current_tenant` from a prior
+    // authenticated request would otherwise hide the existing user
+    // under RLS and we'd happily let a duplicate register go through.
+    const existing = await unauthQuery((trx) =>
+      trx('users').where({ email: normalizedEmail }).first(),
+    );
     if (existing) {
       res.status(409).json({ ok: false, error: 'An account with this email already exists' });
       return;
@@ -150,10 +157,18 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
 
     const normalizedEmail = email; // already normalized by Zod transform
 
-    // Find user (across all tenants — email is unique per tenant but we look up globally for login)
-    const user = await semanticDb('users')
-      .where({ email: normalizedEmail, is_active: true })
-      .first();
+    // Find user (across all tenants — email is unique per tenant but we look
+    // up globally for login). Runs under `unauthQuery` so the connection's
+    // tenant context is reset to empty for this transaction — without it,
+    // a stale `app.current_tenant` left on a pooled connection by a prior
+    // authenticated request would cause RLS to filter the user OUT and
+    // we'd return a spurious 401 even with the correct password. The
+    // session-level-SET pool-race fix; see backend/src/db/unauthQuery.ts.
+    const user = await unauthQuery((trx) =>
+      trx('users')
+        .where({ email: normalizedEmail, is_active: true })
+        .first(),
+    );
 
     if (!user) {
       res.status(401).json({ ok: false, error: 'Invalid email or password' });
@@ -167,8 +182,11 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       return;
     }
 
-    // Check tenant is active
-    const tenant = await semanticDb('tenants').where({ id: user.tenant_id }).first();
+    // Check tenant is active. `tenants` has no RLS so the read is safe
+    // outside the unauthQuery, but we keep it inside for symmetry.
+    const tenant = await unauthQuery((trx) =>
+      trx('tenants').where({ id: user.tenant_id }).first(),
+    );
     if (!tenant || tenant.status !== 'active') {
       res.status(403).json({ ok: false, error: 'Your organization has been suspended' });
       return;
@@ -385,7 +403,11 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     const { email } = req.body as { email: string };
 
     const normalizedEmail = email; // already normalized by Zod
-    const user = await semanticDb('users').where({ email: normalizedEmail, is_active: true }).first();
+    // Lookup + UPDATE both run inside unauthQuery — see login route for
+    // the rationale (pool-race on session-level app.current_tenant).
+    const user = await unauthQuery((trx) =>
+      trx('users').where({ email: normalizedEmail, is_active: true }).first(),
+    );
 
     // Always return success to prevent email enumeration
     if (!user) {
@@ -399,10 +421,12 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    await semanticDb('users').where({ id: user.id }).update({
-      password_reset_token: tokenHash,
-      password_reset_expires: expires.toISOString(),
-    });
+    await unauthQuery((trx) =>
+      trx('users').where({ id: user.id }).update({
+        password_reset_token: tokenHash,
+        password_reset_expires: expires.toISOString(),
+      }),
+    );
 
     // Send the reset email. emailService is a no-op when SMTP isn't
     // configured (dev), and we still log the URL so devs can paste it
@@ -464,14 +488,17 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     const normalizedEmail = email; // already normalized by Zod
     const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
 
-    const user = await semanticDb('users')
-      .where({
-        email: normalizedEmail,
-        password_reset_token: tokenHash,
-        is_active: true,
-      })
-      .where('password_reset_expires', '>', new Date().toISOString())
-      .first();
+    // Lookup + UPDATE both unauthQuery'd — see login route comment.
+    const user = await unauthQuery((trx) =>
+      trx('users')
+        .where({
+          email: normalizedEmail,
+          password_reset_token: tokenHash,
+          is_active: true,
+        })
+        .where('password_reset_expires', '>', new Date().toISOString())
+        .first(),
+    );
 
     if (!user) {
       res.status(400).json({ ok: false, error: 'Invalid or expired reset token' });
@@ -480,12 +507,14 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
 
     // Update password and clear reset token
     const passwordHash = await hashPassword(newPassword);
-    await semanticDb('users').where({ id: user.id }).update({
-      password_hash: passwordHash,
-      password_reset_token: null,
-      password_reset_expires: null,
-      updated_at: new Date().toISOString(),
-    });
+    await unauthQuery((trx) =>
+      trx('users').where({ id: user.id }).update({
+        password_hash: passwordHash,
+        password_reset_token: null,
+        password_reset_expires: null,
+        updated_at: new Date().toISOString(),
+      }),
+    );
 
     // Revoke every active refresh token for this user. A password
     // reset commonly follows a suspected compromise — the user should
@@ -551,9 +580,11 @@ router.post('/mfa/verify', async (req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    const user = await semanticDb('users')
-      .where({ id: challenge.sub, is_active: true })
-      .first();
+    // MFA-verify is unauthenticated (the user is mid-login). Same
+    // pool-race protection as the password login route.
+    const user = await unauthQuery((trx) =>
+      trx('users').where({ id: challenge.sub, is_active: true }).first(),
+    );
     if (!user) {
       res.status(401).json({ ok: false, error: 'User not found' });
       return;
@@ -827,7 +858,11 @@ router.post('/webauthn/login-verify', async (req: Request, res: Response, next: 
       return;
     }
 
-    const user = await semanticDb('users').where({ id: userId, is_active: true }).first();
+    // Lookup runs under unauthQuery — webauthn login-verify is unauthenticated
+    // and suffers the same pool-race risk as the password login route.
+    const user = await unauthQuery((trx) =>
+      trx('users').where({ id: userId, is_active: true }).first(),
+    );
     if (!user) {
       res.status(401).json({ ok: false, error: 'User not found' });
       return;
