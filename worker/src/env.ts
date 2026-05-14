@@ -52,6 +52,27 @@ const envSchema = z.object({
    * because stdout is captured directly.
    */
   WORKER_HEARTBEAT_URL: z.string().optional(),
+  /**
+   * Optional. Prior cursors for incrementally-synced entities, JSON-encoded
+   * (a map of entityName → { type, value }). Empty string OR absent means
+   * no prior cursors are known (initial sync). Connector decides which
+   * entities to apply the cursor to.
+   */
+  WORKER_CURSORS: z
+    .string()
+    .optional()
+    .transform((s, ctx) => {
+      if (!s) return {} as Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+      try {
+        return JSON.parse(s) as Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+      } catch (e) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `WORKER_CURSORS is not valid JSON: ${(e as Error).message}`,
+        });
+        return z.NEVER;
+      }
+    }),
 });
 
 export type WorkerEnv = z.infer<typeof envSchema>;

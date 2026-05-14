@@ -230,6 +230,28 @@ async function runSyncInBackground(args: {
 
     const config: ConnectorConfig = JSON.parse(decryptCredentials(conn.connector_config_encrypted));
     const entities: string[] = Array.isArray(conn.selected_entities) ? conn.selected_entities : [];
+
+    // ── Load prior cursors for incremental sync ─────────────────────────
+    // Per-entity rows from `entity_sync_cursors` for this connection.
+    // Defence in depth: explicit `tenant_id` filter alongside RLS.
+    // Failures here downgrade the sync to full (logged) — the entity_sync_cursors
+    // table being missing or unreadable must not block ingestion.
+    let priorCursors: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }> = {};
+    try {
+      const rows = await semanticDb('entity_sync_cursors')
+        .where({ tenant_id: tenantId, connection_id: connectionId })
+        .select('entity_name', 'cursor_type', 'cursor_value');
+      for (const r of rows as Array<{ entity_name: string; cursor_type: string; cursor_value: string }>) {
+        // Tight allow-list on cursor_type to match the CHECK constraint.
+        if (r.cursor_type === 'timestamp' || r.cursor_type === 'integer' || r.cursor_type === 'string') {
+          priorCursors[r.entity_name] = { type: r.cursor_type, value: r.cursor_value };
+        }
+      }
+      childLog.info({ cursorCount: Object.keys(priorCursors).length }, 'loaded prior cursors');
+    } catch (err) {
+      childLog.warn({ err }, 'failed to load prior cursors — defaulting to full sync');
+      priorCursors = {};
+    }
     // Two distinct paths matter here:
     //   • `localWarehousePath`: what the LocalProcessJobLauncher tells the
     //     worker to write to. Only used in local-dev mode; the Azure
@@ -248,6 +270,7 @@ async function runSyncInBackground(args: {
       connectionId: String(connectionId),
       syncRunId: String(syncRunId),
       warehousePath: localWarehousePath,
+      cursors: priorCursors,
     };
 
     childLog.info({ entities }, 'launching sync worker');
@@ -257,11 +280,19 @@ async function runSyncInBackground(args: {
     let lastFlushAt = 0;
     const FLUSH_EVERY_MS = 1500;
 
+    // Per-entity new cursors emitted by the connector. We persist these
+    // to `entity_sync_cursors` ONLY after the run is recorded as
+    // succeeded — per-entity granularity is enforced because the
+    // connector only puts a key in here for entities that completed
+    // without raising.
+    const cursorsOut: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }> = {};
+
     const handle: JobHandle = getLauncher().launch(jobSpec, (event) => {
       handleWorkerEvent({
         event,
         rowCounts,
         warnings,
+        cursorsOut,
         onLogLine: (line) => { logExcerpt = (logExcerpt + line + '\n').slice(-10_000); },
         onCredentialRotated: (newConfig) => {
           // Fire-and-forget re-encrypt; if it fails the next sync will fail
@@ -310,7 +341,7 @@ async function runSyncInBackground(args: {
     // backstop for "worker died silently" — covered by the launcher's
     // synthetic error event.
     if (exitCode === EXIT_OK) {
-      childLog.info({ rowCounts }, 'sync succeeded');
+      childLog.info({ rowCounts, newCursorCount: Object.keys(cursorsOut).length }, 'sync succeeded');
       // Defence in depth — every UPDATE includes tenant_id alongside the PK
       // so a misconfigured app.current_tenant can't accidentally cross
       // tenant boundaries even if RLS isn't enabled in the deployment.
@@ -323,6 +354,56 @@ async function runSyncInBackground(args: {
           warnings: JSON.stringify(warnings),
           log_excerpt: logExcerpt || null,
         });
+
+      // ── Persist per-entity cursors ──────────────────────────────────
+      // Upsert one row per entity that emitted a new cursor. Defensive:
+      //   • Never write a row whose new value < existing value (cursor
+      //     mustn't go backwards).
+      //   • Tenant + connection in both INSERT body and WHERE so RLS +
+      //     explicit filter both apply.
+      // Failure of cursor persistence does NOT mark the sync as failed —
+      // the data is already in the warehouse; worst case the next sync
+      // re-pulls some rows (idempotent via merge-by-key).
+      for (const [entityName, cursor] of Object.entries(cursorsOut)) {
+        try {
+          // Read current value first to enforce monotonicity in app logic
+          // (the DB can't easily express "new >= old" in a single
+          // INSERT ... ON CONFLICT).
+          const existing = await semanticDb('entity_sync_cursors')
+            .where({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName })
+            .first() as { cursor_value: string } | undefined;
+          if (existing && existing.cursor_value >= cursor.value) {
+            childLog.warn({ entityName, existing: existing.cursor_value, incoming: cursor.value },
+              'connector returned non-advancing cursor; skipping update');
+            continue;
+          }
+          await semanticDb('entity_sync_cursors')
+            .insert({
+              tenant_id:        tenantId,
+              connection_id:    connectionId,
+              entity_name:      entityName,
+              cursor_type:      cursor.type,
+              cursor_value:     cursor.value,
+              rows_synced_last: rowCounts[entityName] ?? 0,
+              last_sync_at:     semanticDb.fn.now(),
+              last_status:      'success',
+              last_error:       null,
+              updated_at:       semanticDb.fn.now(),
+            })
+            .onConflict(['tenant_id', 'connection_id', 'entity_name'])
+            .merge({
+              cursor_type:      cursor.type,
+              cursor_value:     cursor.value,
+              rows_synced_last: rowCounts[entityName] ?? 0,
+              last_sync_at:     semanticDb.fn.now(),
+              last_status:      'success',
+              last_error:       null,
+              updated_at:       semanticDb.fn.now(),
+            });
+        } catch (err) {
+          childLog.warn({ err, entityName }, 'failed to persist cursor — sync still counted as succeeded');
+        }
+      }
       await semanticDb('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({
@@ -406,11 +487,12 @@ function handleWorkerEvent(args: {
   event: WorkerEvent;
   rowCounts: Record<string, number>;
   warnings: string[];
+  cursorsOut: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
   onLogLine: (line: string) => void;
   onCredentialRotated: (newConfig: Record<string, unknown>) => void;
   onError: (msg: string) => void;
 }): void {
-  const { event, rowCounts, warnings, onLogLine, onCredentialRotated, onError } = args;
+  const { event, rowCounts, warnings, cursorsOut, onLogLine, onCredentialRotated, onError } = args;
   switch (event.type) {
     case 'started':
       onLogLine(`[started]`);
@@ -436,6 +518,7 @@ function handleWorkerEvent(args: {
       // progress events.
       Object.assign(rowCounts, event.rowCounts);
       warnings.push(...event.warnings);
+      if (event.cursors) Object.assign(cursorsOut, event.cursors);
       return;
     case 'error':
       onError(event.message);

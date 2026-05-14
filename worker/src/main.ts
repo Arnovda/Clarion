@@ -132,7 +132,7 @@ async function main(): Promise<void> {
   try {
     const result = await connector.sync(
       env.WORKER_CONNECTOR_CONFIG,
-      { entities: env.WORKER_ENTITIES },
+      { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS },
       ctx,
     );
     emit({
@@ -140,6 +140,7 @@ async function main(): Promise<void> {
       ts: new Date().toISOString(),
       rowCounts: result.rowCounts,
       warnings: result.warnings ?? [],
+      cursors: result.cursors,
     }, heartbeat);
     process.exit(EXIT_OK);
   } catch (e) {

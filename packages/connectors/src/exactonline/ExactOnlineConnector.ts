@@ -207,21 +207,46 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // aborts the whole sync. This is meaningfully better UX than
     // failing the entire sync when, say, one wide-table endpoint
     // rejects a filter — you still keep the work that succeeded.
+    //
+    // Incremental sync (May 2026): for entities declaring
+    // `incrementalCursor`, we read the prior cursor from
+    // `opts.cursors[entityName]`, append a `Modified gt datetime'X'`
+    // filter to the OData URL, and track the highest Modified value
+    // seen. The new cursor is returned in `result.cursors` only if
+    // the entity's sync completed without error — per-entity
+    // granularity prevents partial progress from advancing the cursor.
     const rowCounts: Record<string, number> = {};
+    const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
 
     for (const entity of resolved) {
       ctx.cancellationToken.throwIfCancelled();
       ctx.progress({
         message: `Syncing ${entity.displayName ?? entity.name}…`,
       });
-      ctx.log.info(`syncing ${entity.name}`, { apiPath: entity.apiPath });
+      const priorCursor = opts.cursors?.[entity.name];
+      ctx.log.info(`syncing ${entity.name}`, {
+        apiPath: entity.apiPath,
+        mode: entity.incrementalCursor ? (priorCursor ? 'incremental' : 'initial-full') : 'always-full',
+        priorCursor: priorCursor?.value,
+      });
 
       try {
-        const written = await this.syncOneEntity(http, config, entity, ctx);
-        rowCounts[entity.name] = written;
-
-        if (written === 0) {
+        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor);
+        rowCounts[entity.name] = rowsWritten;
+        if (rowsWritten === 0) {
           warnings.push(`Entity '${entity.name}' returned no rows.`);
+        }
+        // Only emit a new cursor when the entity is incremental-capable AND
+        // we saw at least one row. If no rows came back, keep the prior
+        // cursor unchanged (or absent on first run) — re-running the same
+        // filter next time is idempotent under the merge-by-key writer.
+        if (entity.incrementalCursor && maxCursorSeen) {
+          // Defensive: never move cursor BACKWARDS. EO shouldn't return
+          // rows whose Modified < prior cursor (we asked for >), but guard
+          // anyway against time-zone bugs or out-of-order pages.
+          if (!priorCursor || maxCursorSeen > priorCursor.value) {
+            cursors[entity.name] = { type: 'timestamp', value: maxCursorSeen };
+          }
         }
       } catch (err) {
         if (err instanceof CancellationError) throw err; // never swallow cancellation
@@ -229,10 +254,12 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         ctx.log.warn(`entity '${entity.name}' failed — continuing with remaining entities`, { error: msg });
         warnings.push(`Entity '${entity.name}' failed: ${msg}`);
         rowCounts[entity.name] = 0;
+        // Don't write a cursor for failed entities — the next sync
+        // re-pulls from the same point.
       }
     }
 
-    return { rowCounts, warnings };
+    return { rowCounts, warnings, cursors };
   }
 
   /** Sync a single entity. Streams pages → cleans → writes Parquet. */
@@ -241,11 +268,17 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     config: ExactOnlineConfig,
     entity: ExactOnlineEntity,
     ctx: SyncContext,
-  ): Promise<number> {
-    const initialUrl = this.buildInitialUrl(config, entity);
+    priorCursor: { type: string; value: string } | undefined,
+  ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
+    const initialUrl = this.buildInitialUrl(config, entity, priorCursor);
 
     let pagesFetched = 0;
     let rowsFetched = 0;
+    // Track the highest cursor value seen across all pages of this
+    // entity. For EO's `Modified` (ISO-8601 timestamp) ordering is
+    // lexicographic — string compare is correct.
+    let maxCursorSeen: string | undefined;
+    const cursorField = entity.incrementalCursor?.field;
 
     const rowIterable = BaseSourceConnector['paginate']<Record<string, unknown>>({
       initialCursor: initialUrl,
@@ -264,17 +297,40 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         });
         const page = parseODataPage(resp.body);
         const cleaned = page.rows.map((r) => BaseSourceConnector['cleanRecord'](r));
+        // Advance maxCursorSeen as pages stream in. Doing it here (not
+        // after the whole sync) makes the cursor robust to mid-sync
+        // crashes — though the orchestrator only persists when the
+        // entity completes, so the live tracking is for logging.
+        if (cursorField) {
+          for (const row of cleaned) {
+            const v = row[cursorField];
+            const s = typeof v === 'string' ? v : null;
+            if (s && (!maxCursorSeen || s > maxCursorSeen)) {
+              maxCursorSeen = s;
+            }
+          }
+        }
         return { rows: cleaned, nextCursor: page.nextLink };
       },
     });
 
-    const result = await ctx.warehouseWriter.writeTable(entity.name, rowIterable);
+    // Pass the entity's businessKey to the writer when incremental.
+    // Without a mergeKey the writer overwrites — which is wrong for
+    // incremental (we'd lose all rows not in this delta). With it, the
+    // writer reads existing rows, upserts the delta, writes back.
+    const writeOpts = entity.incrementalCursor && entity.businessKey
+      ? { mergeKey: entity.businessKey }
+      : undefined;
+
+    const result = await ctx.warehouseWriter.writeTable(entity.name, rowIterable, writeOpts);
     ctx.log.info(`${entity.name} sync complete`, {
       pages: pagesFetched,
       rows: rowsFetched,
       bytes: result.bytesWritten,
+      mode: writeOpts?.mergeKey ? `merge:${writeOpts.mergeKey}` : 'overwrite',
+      newCursor: maxCursorSeen,
     });
-    return result.rowsWritten;
+    return { rowsWritten: result.rowsWritten, maxCursorSeen };
   }
 
   /**
@@ -292,14 +348,38 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     );
   }
 
-  private buildInitialUrl(config: ExactOnlineConfig, entity: ExactOnlineEntity): string {
+  private buildInitialUrl(
+    config: ExactOnlineConfig,
+    entity: ExactOnlineEntity,
+    priorCursor: { type: string; value: string } | undefined,
+  ): string {
     const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
-    if (entity.defaultFilter) {
-      // OData uses URI components — encode the filter expression.
-      const encoded = encodeURIComponent(entity.defaultFilter);
-      return `${base}?$filter=${encoded}`;
+
+    // Build the $filter clause by AND-ing the (optional) defaultFilter
+    // with the (optional) incremental cursor filter. Either may be
+    // absent — when both are absent we issue no filter at all.
+    const filterParts: string[] = [];
+    if (entity.defaultFilter) filterParts.push(entity.defaultFilter);
+    if (entity.incrementalCursor && priorCursor && priorCursor.type === 'timestamp') {
+      // EO OData expects: `Modified gt datetime'YYYY-MM-DDTHH:MM:SS'`.
+      // The cursor's value is the literal ISO string (no quotes), we
+      // wrap it here when composing the filter.
+      filterParts.push(`${entity.incrementalCursor.field} gt datetime'${priorCursor.value}'`);
     }
-    return base;
+
+    const params: string[] = [];
+    if (filterParts.length > 0) {
+      params.push(`$filter=${encodeURIComponent(filterParts.join(' and '))}`);
+    }
+    // Order by the cursor field ascending so a mid-sync interruption
+    // leaves the cursor at the highest fully-processed value. EO
+    // accepts $orderby for entities with a Modified field — for
+    // entities without an incremental cursor we don't order.
+    if (entity.incrementalCursor) {
+      params.push(`$orderby=${encodeURIComponent(`${entity.incrementalCursor.field} asc`)}`);
+    }
+
+    return params.length === 0 ? base : `${base}?${params.join('&')}`;
   }
 }
 

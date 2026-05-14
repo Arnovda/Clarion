@@ -182,9 +182,13 @@ describe('ExactOnlineConnector — sync', () => {
   it('refreshes token, paginates an entity, persists rotation, writes Parquet', async () => {
     mockTokenRefresh({ newRefreshToken: 'rtok-FRESH' });
 
-    // Two-page response for Accounts.
+    // Two-page response for Accounts. The connector now declares Accounts
+    // as incrementally syncable, which means it appends
+    // `?$orderby=Modified asc` to the initial URL. We match query params
+    // loosely so nock accepts the new shape.
     nock(BASE_URL)
       .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query(true)
       .matchHeader('authorization', 'Bearer access-12345')
       .reply(200, {
         d: {
@@ -237,26 +241,38 @@ describe('ExactOnlineConnector — sync', () => {
     }
   });
 
-  it('appends $filter for entities that declare a defaultFilter', async () => {
+  it('appends $filter when an incremental cursor is provided', async () => {
     mockTokenRefresh();
+    // We pass a prior cursor for Accounts. The connector should append
+    // `$filter=Modified gt datetime'...'` to the request URL — that's the
+    // entire point of incremental sync.
     const filterMock = nock(BASE_URL)
-      .get(`/api/v1/${DIVISION}/financialtransaction/TransactionLines`)
-      .query((q) => typeof q.$filter === 'string' && q.$filter.includes("Date gt datetime"))
-      .reply(200, { d: { results: [{ ID: 't1', Amount: 100 }] } });
+      .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query((q) => typeof q.$filter === 'string' && q.$filter.includes("Modified gt datetime'2026-01-01T00:00:00'"))
+      .reply(200, { d: { results: [{ ID: 'a1', Modified: '2026-02-01T10:00:00' }] } });
 
     const root = await makeWarehouse();
     const ctx = makeCtx(root);
 
     const c = new ExactOnlineConnector();
-    const result = await c.sync(makeConfig(), { entities: ['TransactionLines'] }, ctx);
+    const result = await c.sync(
+      makeConfig(),
+      {
+        entities: ['Accounts'],
+        cursors: { Accounts: { type: 'timestamp', value: '2026-01-01T00:00:00' } },
+      },
+      ctx,
+    );
 
-    expect(result.rowCounts).toEqual({ TransactionLines: 1 });
+    expect(result.rowCounts).toEqual({ Accounts: 1 });
     expect(filterMock.isDone()).toBe(true);
+    // The connector also reports the new cursor it observed.
+    expect(result.cursors).toEqual({ Accounts: { type: 'timestamp', value: '2026-02-01T10:00:00' } });
   });
 
   it('warns on unknown entity names and skips them', async () => {
     mockTokenRefresh();
-    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).reply(200, { d: [] });
+    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).query(true).reply(200, { d: [] });
 
     const root = await makeWarehouse();
     const ctx = makeCtx(root);
@@ -276,7 +292,7 @@ describe('ExactOnlineConnector — sync', () => {
 
   it('aborts cleanly when cancellation is requested between pages', async () => {
     mockTokenRefresh();
-    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).reply(200, {
+    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).query(true).reply(200, {
       d: {
         results: [{ ID: 'a1' }],
         __next: `${BASE_URL}/api/v1/${DIVISION}/crm/Accounts?$skiptoken=2`,
@@ -313,6 +329,7 @@ describe('ExactOnlineConnector — sync', () => {
     // running.
     nock(BASE_URL)
       .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query(true)
       .times(6)
       .reply(500, { error: 'server fire' });
 
@@ -325,5 +342,51 @@ describe('ExactOnlineConnector — sync', () => {
     expect(result.warnings).toEqual(
       expect.arrayContaining([expect.stringMatching(/Entity 'Accounts' failed.*HTTP 500/)]),
     );
+    // Failed entity → no new cursor emitted, so next sync resumes from
+    // wherever the prior cursor was (or full sync on first try).
+    expect(result.cursors?.Accounts).toBeUndefined();
   }, 30_000);
+
+  it('tracks the highest Modified value across pages as the new cursor', async () => {
+    mockTokenRefresh();
+    // Two pages, three rows, with Modified out of order so we exercise
+    // the "max across all rows" logic, not "last row wins".
+    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).query(true).reply(200, {
+      d: {
+        results: [
+          { ID: 'a1', Modified: '2026-03-15T08:00:00' },
+          { ID: 'a2', Modified: '2026-05-01T14:30:00' }, // MAX
+        ],
+        __next: `${BASE_URL}/api/v1/${DIVISION}/crm/Accounts?$skiptoken=2`,
+      },
+    });
+    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).query({ $skiptoken: '2' }).reply(200, {
+      d: { results: [{ ID: 'a3', Modified: '2026-04-20T00:00:00' }] },
+    });
+
+    const root = await makeWarehouse();
+    const ctx = makeCtx(root);
+    const c = new ExactOnlineConnector();
+
+    const result = await c.sync(makeConfig(), { entities: ['Accounts'] }, ctx);
+    expect(result.rowCounts).toEqual({ Accounts: 3 });
+    expect(result.cursors).toEqual({
+      Accounts: { type: 'timestamp', value: '2026-05-01T14:30:00' },
+    });
+  });
+
+  it('non-incremental entities (e.g. AccountClassificationNames) emit no cursor', async () => {
+    mockTokenRefresh();
+    nock(BASE_URL)
+      .get(`/api/v1/${DIVISION}/crm/AccountClassificationNames`)
+      .reply(200, { d: { results: [{ ID: 'c1', Description: 'Segment A' }] } });
+
+    const root = await makeWarehouse();
+    const ctx = makeCtx(root);
+    const c = new ExactOnlineConnector();
+
+    const result = await c.sync(makeConfig(), { entities: ['AccountClassificationNames'] }, ctx);
+    expect(result.rowCounts).toEqual({ AccountClassificationNames: 1 });
+    expect(result.cursors).toEqual({}); // no cursor for non-incremental entities
+  });
 });

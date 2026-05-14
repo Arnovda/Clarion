@@ -42,6 +42,13 @@ export interface JobSpec {
   syncRunId: string;
   /** Target for warehouse writes. Local FS path for LocalProcess; SAS URL for Azure. */
   warehousePath: string;
+  /**
+   * Prior cursors per entity, loaded from `entity_sync_cursors` before
+   * launch. Forwarded to the worker via env JSON. The worker passes them
+   * verbatim into `SyncOptions.cursors`; the connector decides how to
+   * use them. Missing keys → entity does a full pull (initial sync).
+   */
+  cursors?: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
 }
 
 export interface JobHandle {
@@ -92,6 +99,9 @@ export class LocalProcessJobLauncher implements JobLauncher {
         WORKER_CONNECTION_ID: spec.connectionId,
         WORKER_SYNC_RUN_ID: spec.syncRunId,
         WORKER_WAREHOUSE_PATH: spec.warehousePath,
+        // Prior cursors as JSON. Absent / empty object on first sync.
+        // Worker parses and feeds into SyncOptions.cursors.
+        WORKER_CURSORS: spec.cursors ? JSON.stringify(spec.cursors) : '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Detach=false so killing the parent kills the child — important

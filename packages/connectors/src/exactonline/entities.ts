@@ -45,6 +45,22 @@ export interface ExactOnlineEntity extends EntityDescriptor {
   defaultFilter?: string;
 }
 
+/**
+ * Most ExactOnline OData entities carry a `Modified` field (Edm.DateTime)
+ * that monotonically tracks the last time a row was edited. This is the
+ * canonical cursor field for incremental sync: a query like
+ *   $filter=Modified gt datetime'2026-05-14T10:00:00'
+ * returns only rows changed since the last sync. Combined with the
+ * warehouse-writer's merge-by-key behaviour, this gives a correct
+ * upsert flow even when EO doesn't expose deletes.
+ *
+ * A handful of entities don't have Modified (e.g. AgingReceivablesList,
+ * read-only aggregates, classification *Names* dictionaries). For those
+ * we leave `incrementalCursor` undefined and the platform runs a full
+ * pull every sync — fine because they're small.
+ */
+const MODIFIED_CURSOR = { field: 'Modified', type: 'timestamp' } as const;
+
 // ─── NOTE ON API PATHS ───────────────────────────────────────────────────────
 // Every entry below has been cross-referenced against ExactOnline's REST API
 // reference at https://start.exactonline.nl/docs/HlpRestAPIResources.aspx.
@@ -65,7 +81,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Customers, suppliers, prospects — the master account list.',
     apiPath: '/crm/Accounts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Contacts',
@@ -73,7 +91,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Individual contact persons. Each contact belongs to an account.',
     apiPath: '/crm/Contacts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Addresses',
@@ -81,7 +101,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Postal addresses linked to accounts (billing, shipping, visit).',
     apiPath: '/crm/Addresses',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'AccountClassifications',
@@ -89,7 +111,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Customer / supplier segmentation values (e.g. tier, vertical).',
     apiPath: '/crm/AccountClassifications',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'AccountClassificationNames',
@@ -97,6 +121,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Labels for the up-to-8 classification slots configured per division.',
     apiPath: '/crm/AccountClassificationNames',
+    // Dictionary table — small, ambiguous per-row PK. Full sync each run.
     supportsIncremental: false,
   },
   {
@@ -105,7 +130,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Sales pipeline opportunities (active + won + lost).',
     apiPath: '/crm/Opportunities',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Quotations',
@@ -113,7 +140,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Sales quotations — pre-order pricing offers to customers.',
     apiPath: '/crm/Quotations',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'QuotationLines',
@@ -121,7 +150,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'CRM',
     description: 'Line items on quotations.',
     apiPath: '/crm/QuotationLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'BankAccounts',
@@ -130,7 +161,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Bank account definitions per customer/supplier (IBAN, BIC, etc.). Lives under /crm/ in the EO API.',
     apiPath: '/crm/BankAccounts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -142,7 +175,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Sales invoice headers — what was billed and to whom.',
     apiPath: '/salesinvoice/SalesInvoices',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SalesInvoiceLines',
@@ -150,7 +185,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Line items on sales invoices — what products / amounts.',
     apiPath: '/salesinvoice/SalesInvoiceLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SalesOrders',
@@ -158,7 +195,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Sales order headers — customer purchase orders captured.',
     apiPath: '/salesorder/SalesOrders',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SalesOrderLines',
@@ -166,7 +205,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Line items on sales orders.',
     apiPath: '/salesorder/SalesOrderLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SalesEntries',
@@ -175,7 +216,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Light-weight sales journal entries — used by accountants who book sales as a journal entry rather than as a full invoice.',
     apiPath: '/salesentry/SalesEntries',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SalesEntryLines',
@@ -183,7 +226,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Line items on sales journal entries.',
     apiPath: '/salesentry/SalesEntryLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -195,7 +240,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Orders placed with suppliers.',
     apiPath: '/purchaseorder/PurchaseOrders',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'PurchaseOrderLines',
@@ -203,7 +250,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Line items on purchase orders.',
     apiPath: '/purchaseorder/PurchaseOrderLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'PurchaseInvoices',
@@ -211,7 +260,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Supplier invoices booked into purchase ledger.',
     apiPath: '/purchase/PurchaseInvoices',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'PurchaseInvoiceLines',
@@ -219,7 +270,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Line items on supplier invoices.',
     apiPath: '/purchase/PurchaseInvoiceLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'PurchaseEntries',
@@ -228,7 +281,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Light-weight purchase journal entries — used by accountants who book costs as a journal entry rather than as a full invoice.',
     apiPath: '/purchaseentry/PurchaseEntries',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'PurchaseEntryLines',
@@ -236,7 +291,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Line items on purchase journal entries.',
     apiPath: '/purchaseentry/PurchaseEntryLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -248,7 +305,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Logistics',
     description: 'Article master data — what you sell or stock.',
     apiPath: '/logistics/Items',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'ItemGroups',
@@ -256,7 +315,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Logistics',
     description: 'Item categorisation — typically used for reporting groupings.',
     apiPath: '/logistics/ItemGroups',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Units',
@@ -264,7 +325,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Logistics',
     description: 'Quantity units used on items (piece, kg, hour, …).',
     apiPath: '/logistics/Units',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SupplierItems',
@@ -272,7 +335,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Logistics',
     description: 'Supplier-specific article codes and prices per item.',
     apiPath: '/logistics/SupplierItems',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -284,7 +349,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Inventory',
     description: 'Physical or logical stock locations.',
     apiPath: '/inventory/Warehouses',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'ItemWarehouses',
@@ -293,6 +360,8 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Current stock levels per item per warehouse — the snapshot table for "how many do we have right now."',
     apiPath: '/inventory/ItemWarehouses',
+    // Snapshot semantics — current stock per row. Full-sync each run to
+    // ensure we never serve stale levels from a partial incremental.
     supportsIncremental: false,
   },
   {
@@ -301,7 +370,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Inventory',
     description: 'Physical inventory counts and reconciliations.',
     apiPath: '/inventory/StockCounts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'StockCountLines',
@@ -309,7 +380,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Inventory',
     description: 'Per-item count detail for each stock count run.',
     apiPath: '/inventory/StockCountLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'WarehouseTransfers',
@@ -317,7 +390,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Inventory',
     description: 'Stock movement headers between warehouses.',
     apiPath: '/inventory/WarehouseTransfers',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'WarehouseTransferLines',
@@ -325,7 +400,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Inventory',
     description: 'Per-item detail on warehouse transfers.',
     apiPath: '/inventory/WarehouseTransferLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -337,7 +414,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Financial',
     description: 'Chart of accounts.',
     apiPath: '/financial/GLAccounts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Journals',
@@ -345,7 +424,10 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Financial',
     description: 'Journal definitions (sales, purchases, bank, memo, …).',
     apiPath: '/financial/Journals',
-    supportsIncremental: false,
+    // Journals use string `Code` as the natural PK rather than `ID`.
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'Code',
   },
   {
     name: 'GLClassifications',
@@ -353,7 +435,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Financial',
     description: 'Classification hierarchy of GL accounts for financial reporting.',
     apiPath: '/financial/GLClassifications',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'TransactionLines',
@@ -362,7 +446,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'GL ledger detail — every booked accounting line. The largest table in a typical ExactOnline division. First sync of a 10-year-old active division can run tens of millions of rows; subsequent re-syncs only see changes if the connector supports it (not today — runs are full-table).',
     apiPath: '/financialtransaction/TransactionLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'FinancialPeriods',
@@ -370,7 +456,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Financial',
     description: 'Open / closed accounting periods per fiscal year.',
     apiPath: '/financial/FinancialPeriods',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Documents',
@@ -379,7 +467,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Business documents (invoices, receipts, contracts) attached to accounts. High volume on active divisions but no built-in filter — full history ingested.',
     apiPath: '/documents/Documents',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -391,7 +481,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Master list of banks recognised by the division.',
     apiPath: '/cashflow/Banks',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'BankEntries',
@@ -399,7 +491,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Bank statement headers — one entry per statement / batch. Listed under /financialtransaction/ in the EO API.',
     apiPath: '/financialtransaction/BankEntries',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'BankEntryLines',
@@ -407,7 +501,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Individual lines on bank statements — each booked transaction.',
     apiPath: '/financialtransaction/BankEntryLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Payments',
@@ -415,7 +511,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Outgoing and incoming payments — useful for AR / AP analysis.',
     apiPath: '/cashflow/Payments',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Receivables',
@@ -423,7 +521,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Open receivable items — what customers still owe.',
     apiPath: '/cashflow/Receivables',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'ReceivablesList',
@@ -432,6 +532,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Aging view of open receivables — read-only, denormalised for reporting. Pairs with Receivables for cash-flow dashboards.',
     apiPath: '/read/financial/ReceivablesList',
+    // Read-only aggregate. No stable per-row Modified to filter on.
     supportsIncremental: false,
   },
   {
@@ -441,6 +542,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Aging view of open payables — what you owe suppliers. Read-only endpoint; there is no direct /cashflow/Payables collection in the EO API.',
     apiPath: '/read/financial/PayablesList',
+    // Read-only aggregate. Same rationale as ReceivablesList.
     supportsIncremental: false,
   },
   {
@@ -449,6 +551,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Bucketed aging of open receivables (0-30 / 31-60 / …).',
     apiPath: '/read/financial/AgingReceivablesList',
+    // Bucketed aggregate — recomputed every sync, no merge semantics.
     supportsIncremental: false,
   },
   {
@@ -457,6 +560,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Bucketed aging of open payables.',
     apiPath: '/read/financial/AgingPayablesList',
+    // Bucketed aggregate.
     supportsIncremental: false,
   },
   {
@@ -465,7 +569,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Cashflow',
     description: 'Standard payment terms (net 30, end-of-month, …).',
     apiPath: '/cashflow/PaymentConditions',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -480,7 +586,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Employee master data.',
     apiPath: '/payroll/Employees',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'Employments',
@@ -488,7 +596,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Employment contracts — each employee may have multiple over time.',
     apiPath: '/payroll/Employments',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'ActiveEmployments',
@@ -496,7 +606,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Currently-active employment contracts only.',
     apiPath: '/payroll/ActiveEmployments',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'EmploymentContracts',
@@ -504,7 +616,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Contract terms (FTE, contract type, start/end) per employment.',
     apiPath: '/payroll/EmploymentContracts',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'EmploymentSalaries',
@@ -512,7 +626,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Salary detail per employment.',
     apiPath: '/payroll/EmploymentSalaries',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'EmploymentOrganizations',
@@ -520,7 +636,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Org-unit assignment per employment.',
     apiPath: '/payroll/EmploymentOrganizations',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'LeaveRegistrations',
@@ -528,7 +646,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'HRM',
     description: 'Leave / vacation records per employee.',
     apiPath: '/hrm/LeaveRegistrations',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -540,7 +660,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Project',
     description: 'Project master data.',
     apiPath: '/project/Projects',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'TimeTransactions',
@@ -548,7 +670,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Project',
     description: 'Time bookings against projects — hours per employee per task.',
     apiPath: '/project/TimeTransactions',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'TimeCostTransactions',
@@ -556,7 +680,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Project',
     description: 'Combined time + cost transactions across projects.',
     apiPath: '/project/TimeCostTransactions',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -568,7 +694,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Subscription',
     description: 'Recurring billing subscriptions — what customers are subscribed to.',
     apiPath: '/subscription/Subscriptions',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SubscriptionLines',
@@ -576,7 +704,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Subscription',
     description: 'Line items on subscriptions — individual subscribed products.',
     apiPath: '/subscription/SubscriptionLines',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
   {
     name: 'SubscriptionTypes',
@@ -584,7 +714,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Subscription',
     description: 'Subscription plan templates.',
     apiPath: '/subscription/SubscriptionTypes',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 
   // ════════════════════════════════════════════════════════════════════════
@@ -596,7 +728,9 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'System',
     description: 'The administrations / legal entities visible to this OAuth app.',
     apiPath: '/system/Divisions',
-    supportsIncremental: false,
+    supportsIncremental: true,
+    incrementalCursor: MODIFIED_CURSOR,
+    businessKey: 'ID',
   },
 ];
 
