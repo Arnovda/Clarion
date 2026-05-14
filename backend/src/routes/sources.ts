@@ -400,4 +400,86 @@ router.post(
   },
 );
 
+// ─── POST /api/source-types/:type/probe-entities ──────────────────────────
+// Probe each catalogued entity against the connected source to determine
+// which the user/division can actually access. Drives the "probe-before-
+// pick" wizard step — instead of showing every catalogued entity as
+// selectable, the wizard renders forbidden ones as disabled (with reason),
+// 404s as hidden, and available ones with a row-count hint.
+//
+// Falls back to listEntities() shape (every entity = 'available') for
+// connectors that don't implement probeEntities — keeps the wizard
+// working uniformly.
+//
+// Same body shape as list-entities: accepts either inline `config` or an
+// `oauthStateToken` from a completed OAuth flow.
+router.post(
+  '/:type/probe-entities',
+  requireAuth,
+  requireRole('admin', 'analyst'),
+  validate(probeSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const { type } = req.params;
+      const config = await resolveProbeConfig(
+        db,
+        req.body as { config?: Record<string, unknown>; oauthStateToken?: string },
+        { tenantId: req.user!.tenantId, sub: req.user!.sub },
+      );
+
+      const connector = getConnector(type);
+      const probeLog = createAdapterLogger(logger.child({
+        mod: 'connector-probe-entities',
+        connector: type,
+        tenantId: req.user?.tenantId,
+      }));
+
+      // Merge listEntities (descriptor metadata: displayName, category,
+      // description, supportsIncremental) with probeEntities (per-entity
+      // availability). The wizard renders one row per entity using both —
+      // descriptor for the label & grouping, probe state for the checkbox
+      // enabled/disabled treatment.
+      const descriptors = await connector.listEntities(config, { log: probeLog });
+      const probeMap = new Map<string, Awaited<ReturnType<NonNullable<typeof connector.probeEntities>>>[number]>();
+      let supportsProbe = false;
+      if (connector.probeEntities) {
+        supportsProbe = true;
+        const probed = await connector.probeEntities(config, { log: probeLog });
+        for (const p of probed) probeMap.set(p.name, p);
+      }
+      const merged = descriptors.map((d) => {
+        const p = probeMap.get(d.name);
+        return {
+          ...d,
+          // When probe didn't run (no probeEntities method), every entity is
+          // considered available — preserves current UI behaviour. When probe
+          // ran but didn't return this entity (shouldn't happen but be safe),
+          // also default to available so we don't accidentally hide rows.
+          state: p?.state ?? 'available',
+          rowCountSample: p?.rowCountSample,
+          reason: p?.reason,
+        };
+      });
+      res.json({ ok: true, data: merged, supportsProbe });
+    } catch (err) {
+      if (err instanceof ConfigValidationError) {
+        res.status(400).json({ ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof Error) {
+        if (err.message.startsWith('Unknown connector type')) {
+          res.status(404).json({ ok: false, error: err.message });
+          return;
+        }
+        if (err.message.includes('stateToken') || err.message.includes('OAuth session')) {
+          res.status(400).json({ ok: false, error: err.message });
+          return;
+        }
+      }
+      next(err);
+    }
+  },
+);
+
 export default router;

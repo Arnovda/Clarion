@@ -390,3 +390,105 @@ describe('ExactOnlineConnector — sync', () => {
     expect(result.cursors).toEqual({}); // no cursor for non-incremental entities
   });
 });
+
+describe('ExactOnlineConnector — probeEntities', () => {
+  // probeEntities uses fetch() directly rather than nock-routable HttpClient,
+  // so we stub global fetch for these tests. Each entity gets exactly one
+  // call (the probe is bounded to one request per entity); the test sets
+  // up a per-URL response map and asserts the categorisation logic.
+
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function stubFetch(responses: Record<string, { status: number; body?: unknown; headers?: Record<string, string> }>) {
+    globalThis.fetch = (async (url: string | URL | Request): Promise<Response> => {
+      const s = typeof url === 'string' ? url : url.toString();
+      // Strip query string; we match on the path-only key for readability.
+      const noQuery = s.split('?')[0];
+      const matched = responses[noQuery];
+      if (!matched) {
+        return new Response(JSON.stringify({ error: 'no mock' }), { status: 599 });
+      }
+      const body = matched.body === undefined ? '' : (typeof matched.body === 'string' ? matched.body : JSON.stringify(matched.body));
+      return new Response(body, {
+        status: matched.status,
+        headers: { 'content-type': 'application/json', ...(matched.headers ?? {}) },
+      });
+    }) as typeof globalThis.fetch;
+  }
+
+  it('categorises 200 / 403 / 404 correctly', async () => {
+    mockTokenRefresh();
+    const root = `${BASE_URL}/api/v1/${DIVISION}`;
+    stubFetch({
+      [`${root}/crm/Accounts`]:                 { status: 200, body: { d: { results: [{ ID: 'a1' }] } } },
+      [`${root}/payroll/Employees`]:            { status: 403, body: { error: { message: 'Forbidden' } } },
+      [`${root}/logistics/SupplierItems`]:      { status: 404, body: { error: { message: 'Not found' } } },
+    });
+
+    const c = new ExactOnlineConnector();
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+
+    const accounts = results.find((r) => r.name === 'Accounts');
+    const employees = results.find((r) => r.name === 'Employees');
+    const supplierItems = results.find((r) => r.name === 'SupplierItems');
+
+    expect(accounts).toMatchObject({ name: 'Accounts', state: 'available', rowCountSample: 1, httpStatus: 200 });
+    expect(employees).toMatchObject({ name: 'Employees', state: 'forbidden', httpStatus: 403 });
+    expect(employees!.reason).toContain('Module not licensed');
+    expect(supplierItems).toMatchObject({ name: 'SupplierItems', state: 'not_found', httpStatus: 404 });
+  });
+
+  it('returns one result per catalogued entity', async () => {
+    mockTokenRefresh();
+    // Stub returns 200 by URL pattern so every probe matches.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ d: { results: [] } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    ) as typeof globalThis.fetch;
+
+    const c = new ExactOnlineConnector();
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+
+    // Should have one row per entity in the catalog (size enforced
+    // separately in listEntities tests; here we just check the cardinality).
+    expect(results.length).toBeGreaterThanOrEqual(40);
+    // Every entry has a name + state.
+    for (const r of results) {
+      expect(r.name).toBeTruthy();
+      expect(['available', 'forbidden', 'not_found', 'error']).toContain(r.state);
+    }
+    // Cardinality matches: one result per unique name.
+    expect(new Set(results.map((r) => r.name)).size).toBe(results.length);
+  });
+
+  it('treats 429 + retry-after as retry once, then error', async () => {
+    mockTokenRefresh();
+    const root = `${BASE_URL}/api/v1/${DIVISION}`;
+    let accountsCallCount = 0;
+    globalThis.fetch = (async (url: string | URL | Request): Promise<Response> => {
+      const s = typeof url === 'string' ? url : url.toString();
+      if (s.startsWith(`${root}/crm/Accounts`)) {
+        accountsCallCount++;
+        // First call returns 429, second call also returns 429 → final 'error'.
+        return new Response(JSON.stringify({ error: 'rate limit' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '1' },
+        });
+      }
+      return new Response(JSON.stringify({ d: { results: [] } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof globalThis.fetch;
+
+    const c = new ExactOnlineConnector();
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+
+    const accounts = results.find((r) => r.name === 'Accounts');
+    expect(accounts).toMatchObject({ name: 'Accounts', state: 'error', httpStatus: 429 });
+    expect(accountsCallCount).toBe(2);  // retried exactly once
+  }, 15_000);
+});

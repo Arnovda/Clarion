@@ -80,6 +80,28 @@ export interface SourceConnector {
   listEntities(config: ConnectorConfig, ctx: ProbeContext): Promise<EntityDescriptor[]>;
 
   /**
+   * Optional. Probe each catalogued entity against the source to determine
+   * which ones the connected user/division can actually access. Drives the
+   * "probe-before-pick" wizard step: instead of letting users select an
+   * entity that will silently fail during sync, the wizard hides forbidden
+   * ones and labels the available ones with row hints.
+   *
+   * Implementations should:
+   *   • Issue a CHEAP probe per entity (e.g. `$top=1`)
+   *   • Respect rate limits — concurrency-bounded fetching is OK
+   *   • Return a result for every catalogued entity (one of available /
+   *     forbidden / not_found / error) so the wizard has a complete picture
+   *   • Honour the cancellation token so a slow probe doesn't hold up a
+   *     user that hit Back
+   *
+   * Connectors that don't implement this method fall back to the current
+   * behaviour — the wizard renders every catalogued entity clickable and
+   * the user discovers permission issues at sync time. Adoption is per-
+   * connector and incremental.
+   */
+  probeEntities?(config: ConnectorConfig, ctx: ProbeContext): Promise<EntityAvailability[]>;
+
+  /**
    * Run a sync of the selected entities. Runs in the isolated worker.
    *
    * The connector:
@@ -296,6 +318,55 @@ export interface EntityDescriptor {
    * undefined) don't need this — the writer overwrites.
    */
   readonly businessKey?: string;
+}
+
+// ─── Probe results (probeEntities) ────────────────────────────────────────
+
+/**
+ * Outcome of probing one entity from the connector's catalog against the
+ * source system, using the connected user / division's credentials.
+ *
+ * The wizard maps these onto three UI states:
+ *
+ *   - `available`   : checkbox enabled. If `rowCountSample === 0`, the
+ *                     entity is reachable but contains no data yet —
+ *                     surface a muted hint so the user understands.
+ *   - `forbidden`   : checkbox disabled. The OAuth app / user does not
+ *                     have access — typically the module is not licensed
+ *                     for this division. `reason` carries the user-
+ *                     facing explanation.
+ *   - `not_found`   : entity hidden from the picker entirely. The path
+ *                     doesn't resolve at all — usually a regional API
+ *                     difference or a stale catalog entry (a connector
+ *                     bug, not a customer one).
+ *   - `error`       : transient failure (timeout, 5xx). Wizard shows a
+ *                     "couldn't verify" row with a retry control.
+ */
+export interface EntityAvailability {
+  /** Matches `EntityDescriptor.name`. */
+  name: string;
+
+  state: 'available' | 'forbidden' | 'not_found' | 'error';
+
+  /**
+   * Sample row count from the probe (typically the size of a `$top=1`
+   * response — so 0 or 1). Only meaningful when `state === 'available'`;
+   * a 0 here means the endpoint is reachable but empty.
+   */
+  rowCountSample?: number;
+
+  /**
+   * Short user-facing explanation when the entity isn't fully available.
+   * Examples:
+   *   - 'Module not licensed for this division.'
+   *   - 'Endpoint not available in this API region.'
+   *   - 'Verification timed out — try again.'
+   * Should never contain raw HTTP bodies, stack traces, or internal IDs.
+   */
+  reason?: string;
+
+  /** HTTP status the source returned. Useful for debugging; not shown in UI. */
+  httpStatus?: number;
 }
 
 // ─── Probe context (testConnection, listEntities) ─────────────────────────

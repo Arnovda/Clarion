@@ -23,6 +23,7 @@ import { HttpClient } from '../HttpClient';
 import {
   CancellationError,
   type ConnectorConfig,
+  type EntityAvailability,
   type EntityDescriptor,
   type ProbeContext,
   type SourceConnector,
@@ -31,7 +32,7 @@ import {
   type SyncResult,
   type TestResult,
 } from '../types';
-import { asEntityDescriptors, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
+import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import type { KnownRelationship } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
 import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
@@ -106,6 +107,74 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // returned descriptors does not change.
     this.validateConfig(rawConfig);
     return asEntityDescriptors();
+  }
+
+  // ─── probeEntities ─────────────────────────────────────────────────────
+  /**
+   * Probe each catalogued entity against the division using `$top=1`. Returns
+   * one EntityAvailability per entity in the catalog — the wizard renders
+   * forbidden entities as disabled, hidden 404s entirely, and shows row-
+   * count hints for the available ones.
+   *
+   * EO rate-limits aggressively (per-app quota + per-endpoint throttling),
+   * so probes run with bounded concurrency (3 in flight). When the API
+   * returns 429 with a Retry-After header, the probe sleeps for the
+   * suggested duration and retries once before giving up. Worst-case
+   * wall-clock for a 50-entity catalog: ~25-40 seconds.
+   *
+   * Categorisation rules:
+   *   200 → 'available'              (rowCountSample from $top=1)
+   *   403 → 'forbidden'              (module not licensed)
+   *   404 → 'not_found'              (path doesn't exist; hidden from UI)
+   *   401 → 'error'                  (auth issue — likely a stale access token, surface as transient)
+   *   429 → retry once, then 'error' (rate limited)
+   *   5xx / network → 'error'        (transient)
+   *
+   * The probe is BEST EFFORT — connector code that hits a hard failure
+   * (e.g. token refresh fails) throws as usual. Per-entity probe failures
+   * never throw; they become 'error' entries the wizard can show.
+   */
+  async probeEntities(rawConfig: ConnectorConfig, ctx: ProbeContext): Promise<EntityAvailability[]> {
+    this.validateConfig(rawConfig);
+    const config = asExactOnlineConfig(rawConfig);
+
+    // Get a fresh access token once for the whole probe sweep.
+    const accessToken = await getOrRefreshAccessToken(config, ctx.log);
+
+    const baseUrl = config.baseUrl.replace(/\/$/, '');
+    const division = encodeURIComponent(config.division);
+
+    // Concurrency limit — 3 in flight. EO's per-app rate limit + per-endpoint
+    // throttling means probing 50 entities all at once triggers cascading
+    // 429s that lengthen the probe overall. Three is empirically the sweet
+    // spot from the sync runs we saw in the field.
+    const CONCURRENCY = 3;
+    const queue = [...EXACT_ONLINE_ENTITIES];
+    const results: EntityAvailability[] = [];
+
+    const probeOne = async (entity: ExactOnlineEntity): Promise<EntityAvailability> => {
+      const url = `${baseUrl}/api/v1/${division}${entity.apiPath}?$top=1`;
+      return doProbe(url, accessToken, entity.name, ctx);
+    };
+
+    // Run the queue with bounded concurrency.
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < CONCURRENCY; i++) {
+      workers.push((async () => {
+        while (queue.length > 0) {
+          const entity = queue.shift();
+          if (!entity) return;
+          const result = await probeOne(entity);
+          results.push(result);
+        }
+      })());
+    }
+    await Promise.all(workers);
+
+    // Preserve catalog order on the way out — the wizard groups by category
+    // and assumes a stable order for rendering.
+    const byName = new Map(results.map((r) => [r.name, r]));
+    return EXACT_ONLINE_ENTITIES.map((e) => byName.get(e.name)!).filter(Boolean);
   }
 
   // ─── sync ──────────────────────────────────────────────────────────────
@@ -455,4 +524,92 @@ async function getOrRefreshAccessToken(
     log,
   });
   return refreshed.accessToken;
+}
+
+/**
+ * Probe one EO endpoint with `$top=1` and categorise the response into one
+ * of the four `EntityAvailability` states. Never throws — every failure
+ * mode maps to a state. Uses native fetch (Node 18+) to avoid pulling
+ * HttpClient's retry-on-5xx behaviour (we don't want retries during a
+ * probe — slow probes hurt the wizard).
+ *
+ * 429 handling: honour `Retry-After` once, then retry once. If the second
+ * attempt still 429s, surface as `error` (the connector can't recover
+ * from sustained rate-limit pressure during a wizard step).
+ */
+async function doProbe(
+  url: string,
+  accessToken: string,
+  entityName: string,
+  ctx: ProbeContext,
+  retryCount = 0,
+): Promise<EntityAvailability> {
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      // Tight timeout — probes that take >10s aren't useful for the wizard.
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (err) {
+    ctx.log.warn(`probe failed for ${entityName}`, { error: err instanceof Error ? err.message : String(err) });
+    return { name: entityName, state: 'error', reason: 'Verification timed out — try again.' };
+  }
+
+  if (resp.status === 429 && retryCount === 0) {
+    const retryAfter = parseInt(resp.headers.get('retry-after') ?? '2', 10);
+    const sleepMs = Math.min(Math.max(retryAfter, 1), 10) * 1000;
+    await new Promise((r) => setTimeout(r, sleepMs));
+    return doProbe(url, accessToken, entityName, ctx, 1);
+  }
+
+  if (resp.status === 200) {
+    let rowCountSample = 0;
+    try {
+      const json = await resp.json() as { d?: unknown };
+      const d = json.d;
+      if (Array.isArray(d)) rowCountSample = d.length;
+      else if (d && typeof d === 'object' && 'results' in d && Array.isArray((d as { results: unknown[] }).results)) {
+        rowCountSample = (d as { results: unknown[] }).results.length;
+      }
+    } catch {
+      // Body unparseable — entity is reachable but the response shape is
+      // unexpected. Treat as available with unknown row count.
+    }
+    return { name: entityName, state: 'available', rowCountSample, httpStatus: 200 };
+  }
+
+  if (resp.status === 403) {
+    return {
+      name: entityName,
+      state: 'forbidden',
+      reason: 'Module not licensed for this division.',
+      httpStatus: 403,
+    };
+  }
+
+  if (resp.status === 404) {
+    return {
+      name: entityName,
+      state: 'not_found',
+      httpStatus: 404,
+    };
+  }
+
+  // Everything else (401, 429-after-retry, 5xx, …) → transient error.
+  // Wizard can show a retry control for these.
+  return {
+    name: entityName,
+    state: 'error',
+    reason: resp.status === 401
+      ? 'Authorization rejected — re-authenticate and try again.'
+      : resp.status === 429
+        ? 'Rate-limited by Exact Online — try again in a minute.'
+        : `Verification failed (HTTP ${resp.status}).`,
+    httpStatus: resp.status,
+  };
 }
