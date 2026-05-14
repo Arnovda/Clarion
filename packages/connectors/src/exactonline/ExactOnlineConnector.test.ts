@@ -101,10 +101,46 @@ describe('ExactOnlineConnector — listEntities', () => {
   it('returns the curated catalog without making any HTTP calls', async () => {
     const c = new ExactOnlineConnector();
     const entities = await c.listEntities(makeConfig(), { log: createNoopLogger() });
-    expect(entities.length).toBeGreaterThanOrEqual(8);
+    // Catalog was expanded from 8 → ~45 entities; floor is 30 to catch
+    // accidental deletes without being brittle to additions.
+    expect(entities.length).toBeGreaterThanOrEqual(30);
     expect(entities.find((e) => e.name === 'Accounts')).toBeDefined();
     expect(entities.find((e) => e.name === 'TransactionLines')).toBeDefined();
     // No nock mocks set — any HTTP would error.
+  });
+
+  it('every entity has the fields the wizard needs', async () => {
+    const c = new ExactOnlineConnector();
+    const entities = await c.listEntities(makeConfig(), { log: createNoopLogger() });
+    for (const e of entities) {
+      expect(e.name).toMatch(/^[A-Z][A-Za-z0-9]+$/);  // PascalCase, no spaces
+      expect(e.displayName).toBeTruthy();
+      expect(e.description).toBeTruthy();
+      expect(e.category).toBeTruthy();
+      expect(typeof e.supportsIncremental).toBe('boolean');
+    }
+  });
+
+  it('exposes every documented category', async () => {
+    const c = new ExactOnlineConnector();
+    const entities = await c.listEntities(makeConfig(), { log: createNoopLogger() });
+    const categories = new Set(entities.map((e) => e.category));
+    // Every category the wizard groups by should be represented. Keeping
+    // the expected list explicit so accidentally dropping a whole
+    // category from the catalog fails this assertion.
+    for (const expected of [
+      'CRM', 'Sales', 'Purchase', 'Logistics', 'Inventory',
+      'Financial', 'Cashflow', 'HRM', 'Project', 'Subscription', 'System',
+    ]) {
+      expect(categories.has(expected)).toBe(true);
+    }
+  });
+
+  it('entity names are unique', async () => {
+    const c = new ExactOnlineConnector();
+    const entities = await c.listEntities(makeConfig(), { log: createNoopLogger() });
+    const names = entities.map((e) => e.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 });
 
