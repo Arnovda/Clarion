@@ -19,6 +19,14 @@
  * Postman with a valid bearer token; ExactOnline's docs at
  * https://start.exactonline.<tld>/docs/HlpRestAPIResources.aspx list every
  * endpoint with its category (= service path segment).
+ *
+ * No date filters by design. Earlier revisions had a 2025-01-01 cutoff on
+ * high-volume entities to keep the spike's first sync manageable. The
+ * product decision (May 2026) is to ingest ALL history — customers asking
+ * "what did we sell to X 4 years ago" should get an answer. The trade-off
+ * is that first sync of a long-lived ExactOnline division can be lengthy
+ * (TransactionLines on an active 10-year-old division can run tens of
+ * millions of rows). Acceptable for the value of complete history.
  */
 
 import type { EntityDescriptor, KnownRelationship } from '../types';
@@ -27,41 +35,24 @@ export interface ExactOnlineEntity extends EntityDescriptor {
   /** Path relative to `/api/v1/{division}`, with leading slash. */
   apiPath: string;
 
-  /** Optional OData filter applied unconditionally to keep volume tractable. */
+  /**
+   * Optional OData filter applied unconditionally. Currently UNUSED — the
+   * catalog ships no date-based default filters (product decision: ingest
+   * all history). Kept on the type for future per-entity overrides
+   * (e.g. `IsActive eq true` on master tables, or volume guards on
+   * specific entities only).
+   */
   defaultFilter?: string;
 }
 
-/**
- * Default date filters for high-volume entities. ExactOnline divisions
- * can carry decades of history; without a filter a single sync can pull
- * tens of millions of rows from `TransactionLines`, `Documents`, etc.
- * The 2025-01-01 cutoff keeps the initial sync tractable while still
- * covering the active fiscal year plus a comparable prior period.
- *
- * Users who genuinely need older history can override `defaultFilter`
- * per-connection in a follow-up — captured as a TODO on the connector
- * roadmap. For now the filter is uniform.
- */
-const DEFAULT_DATE_CUTOFF = `2025-01-01T00:00:00`;
-const TXN_LINES_DEFAULT_FILTER = `Date gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-const ORDER_DATE_FILTER        = `OrderDate gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-const INVOICE_DATE_FILTER      = `InvoiceDate gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-const ENTRY_DATE_FILTER        = `EntryDate gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-const QUOTATION_DATE_FILTER    = `QuotationDate gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-const DOCUMENT_DATE_FILTER     = `DocumentDate gt datetime'${DEFAULT_DATE_CUTOFF}'`;
-
 // ─── NOTE ON API PATHS ───────────────────────────────────────────────────────
 // Every entry below has been cross-referenced against ExactOnline's REST API
-// reference (https://start.exactonline.<tld>/docs/HlpRestAPIResources.aspx).
-// Paths can shift between API revisions — when adding new entries, verify
-// against the docs page for the target locale (paths are identical across
-// locales but availability sometimes differs).
+// reference at https://start.exactonline.nl/docs/HlpRestAPIResources.aspx.
+// Paths are stable across .nl/.be/.com/.de/.fr/.es/.co.uk/.us regions.
 //
-// Entries marked `// VERIFY` are best-guess based on the EO category-segment
-// convention but should be confirmed with a single Postman GET against the
-// target division before going to production. Most production data flows
-// will only enable a subset, so unverified entries cause no harm sitting in
-// the catalog until someone selects them.
+// Verified May 2026 against the live docs index. Any future entries should
+// be confirmed the same way — drop the URL in a browser, search for the
+// entity name, and use the exact category-segment shown.
 // ──────────────────────────────────────────────────────────────────────────
 
 export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
@@ -113,7 +104,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Opportunities',
     category: 'CRM',
     description: 'Sales pipeline opportunities (active + won + lost).',
-    apiPath: '/crm/Opportunities', // VERIFY
+    apiPath: '/crm/Opportunities',
     supportsIncremental: false,
   },
   {
@@ -121,8 +112,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Quotations',
     category: 'CRM',
     description: 'Sales quotations — pre-order pricing offers to customers.',
-    apiPath: '/crm/Quotations', // VERIFY (also seen at /sales/Quotations on older API revisions)
-    defaultFilter: QUOTATION_DATE_FILTER,
+    apiPath: '/crm/Quotations',
     supportsIncremental: false,
   },
   {
@@ -130,7 +120,16 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Quotation lines',
     category: 'CRM',
     description: 'Line items on quotations.',
-    apiPath: '/crm/QuotationLines', // VERIFY
+    apiPath: '/crm/QuotationLines',
+    supportsIncremental: false,
+  },
+  {
+    name: 'BankAccounts',
+    displayName: 'Bank accounts',
+    category: 'CRM',
+    description:
+      'Bank account definitions per customer/supplier (IBAN, BIC, etc.). Lives under /crm/ in the EO API.',
+    apiPath: '/crm/BankAccounts',
     supportsIncremental: false,
   },
 
@@ -143,7 +142,6 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Sales invoice headers — what was billed and to whom.',
     apiPath: '/salesinvoice/SalesInvoices',
-    defaultFilter: INVOICE_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -160,7 +158,6 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Sales',
     description: 'Sales order headers — customer purchase orders captured.',
     apiPath: '/salesorder/SalesOrders',
-    defaultFilter: ORDER_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -178,7 +175,6 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Light-weight sales journal entries — used by accountants who book sales as a journal entry rather than as a full invoice.',
     apiPath: '/salesentry/SalesEntries',
-    defaultFilter: ENTRY_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -199,7 +195,6 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     category: 'Purchase',
     description: 'Orders placed with suppliers.',
     apiPath: '/purchaseorder/PurchaseOrders',
-    defaultFilter: ORDER_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -215,8 +210,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Purchase invoices',
     category: 'Purchase',
     description: 'Supplier invoices booked into purchase ledger.',
-    apiPath: '/purchaseinvoice/PurchaseInvoices', // VERIFY (some revisions use /purchase/PurchaseInvoices)
-    defaultFilter: INVOICE_DATE_FILTER,
+    apiPath: '/purchase/PurchaseInvoices',
     supportsIncremental: false,
   },
   {
@@ -224,7 +218,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Purchase invoice lines',
     category: 'Purchase',
     description: 'Line items on supplier invoices.',
-    apiPath: '/purchaseinvoice/PurchaseInvoiceLines', // VERIFY
+    apiPath: '/purchase/PurchaseInvoiceLines',
     supportsIncremental: false,
   },
   {
@@ -234,7 +228,6 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     description:
       'Light-weight purchase journal entries — used by accountants who book costs as a journal entry rather than as a full invoice.',
     apiPath: '/purchaseentry/PurchaseEntries',
-    defaultFilter: ENTRY_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -247,7 +240,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
   },
 
   // ════════════════════════════════════════════════════════════════════════
-  // LOGISTICS — items, item groups, warehouses, units
+  // LOGISTICS — items, item groups, units
   // ════════════════════════════════════════════════════════════════════════
   {
     name: 'Items',
@@ -266,32 +259,40 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: false,
   },
   {
-    name: 'Warehouses',
-    displayName: 'Warehouses',
-    category: 'Logistics',
-    description: 'Physical or logical stock locations.',
-    apiPath: '/inventory/Warehouses', // VERIFY (sometimes seen at /logistics/Warehouses)
-    supportsIncremental: false,
-  },
-  {
-    name: 'UnitsOfMeasure',
+    name: 'Units',
     displayName: 'Units of measure',
     category: 'Logistics',
     description: 'Quantity units used on items (piece, kg, hour, …).',
     apiPath: '/logistics/Units',
     supportsIncremental: false,
   },
+  {
+    name: 'SupplierItems',
+    displayName: 'Supplier items',
+    category: 'Logistics',
+    description: 'Supplier-specific article codes and prices per item.',
+    apiPath: '/logistics/SupplierItems',
+    supportsIncremental: false,
+  },
 
   // ════════════════════════════════════════════════════════════════════════
-  // INVENTORY — stock transactions, stock counts
+  // INVENTORY — warehouses, stock counts, current stock levels, transfers
   // ════════════════════════════════════════════════════════════════════════
   {
-    name: 'StockTransactions',
-    displayName: 'Stock transactions',
+    name: 'Warehouses',
+    displayName: 'Warehouses',
     category: 'Inventory',
-    description: 'Stock movement ledger — every in/out per item per warehouse.',
-    apiPath: '/inventory/StockTransactions', // VERIFY
-    defaultFilter: TXN_LINES_DEFAULT_FILTER,
+    description: 'Physical or logical stock locations.',
+    apiPath: '/inventory/Warehouses',
+    supportsIncremental: false,
+  },
+  {
+    name: 'ItemWarehouses',
+    displayName: 'Item × warehouse stock',
+    category: 'Inventory',
+    description:
+      'Current stock levels per item per warehouse — the snapshot table for "how many do we have right now."',
+    apiPath: '/inventory/ItemWarehouses',
     supportsIncremental: false,
   },
   {
@@ -299,7 +300,31 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Stock counts',
     category: 'Inventory',
     description: 'Physical inventory counts and reconciliations.',
-    apiPath: '/inventory/StockCounts', // VERIFY
+    apiPath: '/inventory/StockCounts',
+    supportsIncremental: false,
+  },
+  {
+    name: 'StockCountLines',
+    displayName: 'Stock count lines',
+    category: 'Inventory',
+    description: 'Per-item count detail for each stock count run.',
+    apiPath: '/inventory/StockCountLines',
+    supportsIncremental: false,
+  },
+  {
+    name: 'WarehouseTransfers',
+    displayName: 'Warehouse transfers',
+    category: 'Inventory',
+    description: 'Stock movement headers between warehouses.',
+    apiPath: '/inventory/WarehouseTransfers',
+    supportsIncremental: false,
+  },
+  {
+    name: 'WarehouseTransferLines',
+    displayName: 'Warehouse transfer lines',
+    category: 'Inventory',
+    description: 'Per-item detail on warehouse transfers.',
+    apiPath: '/inventory/WarehouseTransferLines',
     supportsIncremental: false,
   },
 
@@ -335,19 +360,8 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Transaction lines',
     category: 'Financial',
     description:
-      'GL ledger detail. Defaulted to 2025-onwards to keep volume tractable — adjust the filter to pull deeper history when needed.',
+      'GL ledger detail — every booked accounting line. The largest table in a typical ExactOnline division. First sync of a 10-year-old active division can run tens of millions of rows; subsequent re-syncs only see changes if the connector supports it (not today — runs are full-table).',
     apiPath: '/financialtransaction/TransactionLines',
-    defaultFilter: TXN_LINES_DEFAULT_FILTER,
-    supportsIncremental: false,
-  },
-  {
-    name: 'Documents',
-    displayName: 'Documents',
-    category: 'Financial',
-    description:
-      'Business documents (invoices, receipts, contracts) attached to accounts. High volume on active divisions — date-filtered by default.',
-    apiPath: '/documents/Documents', // VERIFY
-    defaultFilter: DOCUMENT_DATE_FILTER,
     supportsIncremental: false,
   },
   {
@@ -355,28 +369,36 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Financial periods',
     category: 'Financial',
     description: 'Open / closed accounting periods per fiscal year.',
-    apiPath: '/financial/FinancialPeriods', // VERIFY
+    apiPath: '/financial/FinancialPeriods',
+    supportsIncremental: false,
+  },
+  {
+    name: 'Documents',
+    displayName: 'Documents',
+    category: 'Financial',
+    description:
+      'Business documents (invoices, receipts, contracts) attached to accounts. High volume on active divisions but no built-in filter — full history ingested.',
+    apiPath: '/documents/Documents',
     supportsIncremental: false,
   },
 
   // ════════════════════════════════════════════════════════════════════════
-  // CASHFLOW — banks, payments, receivables, payables
+  // CASHFLOW — bank entries, payments, receivables, payables, conditions
   // ════════════════════════════════════════════════════════════════════════
   {
-    name: 'BankAccounts',
-    displayName: 'Bank accounts',
+    name: 'Banks',
+    displayName: 'Banks',
     category: 'Cashflow',
-    description: 'Bank account definitions (IBAN, GL link).',
-    apiPath: '/cashflow/BankAccounts',
+    description: 'Master list of banks recognised by the division.',
+    apiPath: '/cashflow/Banks',
     supportsIncremental: false,
   },
   {
     name: 'BankEntries',
     displayName: 'Bank entries',
     category: 'Cashflow',
-    description: 'Bank statement headers — one entry per statement / batch.',
-    apiPath: '/cashflow/BankEntries', // VERIFY
-    defaultFilter: ENTRY_DATE_FILTER,
+    description: 'Bank statement headers — one entry per statement / batch. Listed under /financialtransaction/ in the EO API.',
+    apiPath: '/financialtransaction/BankEntries',
     supportsIncremental: false,
   },
   {
@@ -384,7 +406,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Bank entry lines',
     category: 'Cashflow',
     description: 'Individual lines on bank statements — each booked transaction.',
-    apiPath: '/cashflow/BankEntryLines', // VERIFY
+    apiPath: '/financialtransaction/BankEntryLines',
     supportsIncremental: false,
   },
   {
@@ -392,7 +414,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Payments',
     category: 'Cashflow',
     description: 'Outgoing and incoming payments — useful for AR / AP analysis.',
-    apiPath: '/cashflow/Payments', // VERIFY
+    apiPath: '/cashflow/Payments',
     supportsIncremental: false,
   },
   {
@@ -400,15 +422,41 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Receivables',
     category: 'Cashflow',
     description: 'Open receivable items — what customers still owe.',
-    apiPath: '/read/financial/Receivables', // VERIFY (read-only entity)
+    apiPath: '/cashflow/Receivables',
     supportsIncremental: false,
   },
   {
-    name: 'Payables',
-    displayName: 'Payables',
+    name: 'ReceivablesList',
+    displayName: 'Receivables list (aging)',
     category: 'Cashflow',
-    description: 'Open payable items — what you owe suppliers.',
-    apiPath: '/read/financial/Payables', // VERIFY (read-only entity)
+    description:
+      'Aging view of open receivables — read-only, denormalised for reporting. Pairs with Receivables for cash-flow dashboards.',
+    apiPath: '/read/financial/ReceivablesList',
+    supportsIncremental: false,
+  },
+  {
+    name: 'PayablesList',
+    displayName: 'Payables list (aging)',
+    category: 'Cashflow',
+    description:
+      'Aging view of open payables — what you owe suppliers. Read-only endpoint; there is no direct /cashflow/Payables collection in the EO API.',
+    apiPath: '/read/financial/PayablesList',
+    supportsIncremental: false,
+  },
+  {
+    name: 'AgingReceivablesList',
+    displayName: 'Aging — receivables',
+    category: 'Cashflow',
+    description: 'Bucketed aging of open receivables (0-30 / 31-60 / …).',
+    apiPath: '/read/financial/AgingReceivablesList',
+    supportsIncremental: false,
+  },
+  {
+    name: 'AgingPayablesList',
+    displayName: 'Aging — payables',
+    category: 'Cashflow',
+    description: 'Bucketed aging of open payables.',
+    apiPath: '/read/financial/AgingPayablesList',
     supportsIncremental: false,
   },
   {
@@ -421,14 +469,17 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
   },
 
   // ════════════════════════════════════════════════════════════════════════
-  // HRM — employees, employments
+  // HRM / PAYROLL — employees, employments, leave
+  //
+  // Note: Employees + employment contracts all live under /payroll/ in EO's
+  // API, not /hrm/. Leave registrations are under /hrm/.
   // ════════════════════════════════════════════════════════════════════════
   {
     name: 'Employees',
     displayName: 'Employees',
     category: 'HRM',
     description: 'Employee master data.',
-    apiPath: '/hrm/Employees',
+    apiPath: '/payroll/Employees',
     supportsIncremental: false,
   },
   {
@@ -436,7 +487,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Employments',
     category: 'HRM',
     description: 'Employment contracts — each employee may have multiple over time.',
-    apiPath: '/payroll/Employments', // VERIFY (sometimes under /hrm/)
+    apiPath: '/payroll/Employments',
     supportsIncremental: false,
   },
   {
@@ -444,15 +495,39 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Active employments',
     category: 'HRM',
     description: 'Currently-active employment contracts only.',
-    apiPath: '/payroll/ActiveEmployments', // VERIFY
+    apiPath: '/payroll/ActiveEmployments',
     supportsIncremental: false,
   },
   {
-    name: 'Leave',
-    displayName: 'Leave',
+    name: 'EmploymentContracts',
+    displayName: 'Employment contracts',
     category: 'HRM',
-    description: 'Leave / vacation records.',
-    apiPath: '/hrm/Leave', // VERIFY
+    description: 'Contract terms (FTE, contract type, start/end) per employment.',
+    apiPath: '/payroll/EmploymentContracts',
+    supportsIncremental: false,
+  },
+  {
+    name: 'EmploymentSalaries',
+    displayName: 'Employment salaries',
+    category: 'HRM',
+    description: 'Salary detail per employment.',
+    apiPath: '/payroll/EmploymentSalaries',
+    supportsIncremental: false,
+  },
+  {
+    name: 'EmploymentOrganizations',
+    displayName: 'Employment organizations',
+    category: 'HRM',
+    description: 'Org-unit assignment per employment.',
+    apiPath: '/payroll/EmploymentOrganizations',
+    supportsIncremental: false,
+  },
+  {
+    name: 'LeaveRegistrations',
+    displayName: 'Leave registrations',
+    category: 'HRM',
+    description: 'Leave / vacation records per employee.',
+    apiPath: '/hrm/LeaveRegistrations',
     supportsIncremental: false,
   },
 
@@ -472,8 +547,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Time transactions',
     category: 'Project',
     description: 'Time bookings against projects — hours per employee per task.',
-    apiPath: '/project/TimeTransactions', // VERIFY
-    defaultFilter: `Date gt datetime'${DEFAULT_DATE_CUTOFF}'`,
+    apiPath: '/project/TimeTransactions',
     supportsIncremental: false,
   },
   {
@@ -481,8 +555,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Time + cost transactions',
     category: 'Project',
     description: 'Combined time + cost transactions across projects.',
-    apiPath: '/project/TimeCostTransactions', // VERIFY
-    defaultFilter: `Date gt datetime'${DEFAULT_DATE_CUTOFF}'`,
+    apiPath: '/project/TimeCostTransactions',
     supportsIncremental: false,
   },
 
@@ -522,15 +595,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     displayName: 'Divisions',
     category: 'System',
     description: 'The administrations / legal entities visible to this OAuth app.',
-    apiPath: '/hrm/Divisions', // VERIFY (also seen at /system/Divisions)
-    supportsIncremental: false,
-  },
-  {
-    name: 'Users',
-    displayName: 'Users',
-    category: 'System',
-    description: 'ExactOnline portal users with access to this division.',
-    apiPath: '/users/Users', // VERIFY
+    apiPath: '/system/Divisions',
     supportsIncremental: false,
   },
 ];
@@ -539,7 +604,7 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
  * Documented relationships between ExactOnline entities.
  *
  * Sourced from ExactOnline's REST API reference + the schema produced by
- * tap-exact-online (TicketSwap, MIT). Limited to the 7 entities we ship today;
+ * tap-exact-online (TicketSwap, MIT). Limited to the entities we ship today;
  * more can be added without code changes once new entities go live.
  *
  * Casing matches the OData payloads exactly so the schema profiler's column
@@ -630,9 +695,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ── Item master → GL accounts ────────────────────────────────────────────
-  // EO defaults sales/purchase posting accounts on every item. The column
-  // names are present even when blank — Layer 2 heuristics can't see them
-  // without this hint.
   {
     fromTable: 'Items',      fromColumn: 'GLAccountSales',
     toTable:   'GLAccounts', toColumn:   'ID',
@@ -647,7 +709,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ── Account hierarchy ────────────────────────────────────────────────────
-  // Customers/suppliers can be parented to a holding company in EO.
   {
     fromTable: 'Accounts', fromColumn: 'Parent',
     toTable:   'Accounts', toColumn:   'ID',
@@ -656,15 +717,12 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ════════════════════════════════════════════════════════════════════════
-  // Relationships added with the catalog expansion.
-  //
-  // Naming convention: every FK references `<Table>.ID` unless otherwise
-  // noted (Journals use a string `Code` as PK, hence the join is on `Code`).
-  // Casing matches the OData payload so the schema profiler's column lookup
-  // (which compares against introspected Parquet headers) matches.
+  // Relationships for the expanded catalog (May 2026).
+  // Verified entity names match the apiPath above (Units, not UnitsOfMeasure;
+  // LeaveRegistrations, not Leave; etc.).
   // ════════════════════════════════════════════════════════════════════════
 
-  // ── CRM: contacts + addresses → accounts ────────────────────────────────
+  // ── CRM: contacts + addresses + classifications → accounts ──────────────
   {
     fromTable: 'Contacts',  fromColumn: 'Account',
     toTable:   'Accounts',  toColumn:   'ID',
@@ -683,8 +741,20 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     type: 'many_to_one',
     description: 'The account this classification value is set on.',
   },
+  {
+    fromTable: 'BankAccounts', fromColumn: 'Account',
+    toTable:   'Accounts',     toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The customer / supplier this bank account belongs to.',
+  },
+  {
+    fromTable: 'BankAccounts', fromColumn: 'GLAccount',
+    toTable:   'GLAccounts',   toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The GL account this bank account posts to.',
+  },
 
-  // ── CRM: opportunities → accounts ────────────────────────────────────────
+  // ── Opportunities → account ─────────────────────────────────────────────
   {
     fromTable: 'Opportunities', fromColumn: 'Account',
     toTable:   'Accounts',      toColumn:   'ID',
@@ -848,7 +918,7 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'GL account the purchase-entry line posts to.',
   },
 
-  // ── Items → item group + units of measure
+  // ── Items → item group + units + supplier items
   {
     fromTable: 'Items',      fromColumn: 'ItemGroup',
     toTable:   'ItemGroups', toColumn:   'ID',
@@ -856,24 +926,36 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The reporting / categorisation group this item belongs to.',
   },
   {
-    fromTable: 'Items',          fromColumn: 'Unit',
-    toTable:   'UnitsOfMeasure', toColumn:   'ID',
+    fromTable: 'Items', fromColumn: 'Unit',
+    toTable:   'Units', toColumn:   'ID',
     type: 'many_to_one',
     description: 'Primary unit of measure for this item.',
   },
-
-  // ── Inventory: stock transactions → item + warehouse
   {
-    fromTable: 'StockTransactions', fromColumn: 'Item',
-    toTable:   'Items',             toColumn:   'ID',
+    fromTable: 'SupplierItems', fromColumn: 'Item',
+    toTable:   'Items',         toColumn:   'ID',
     type: 'many_to_one',
-    description: 'The item this stock movement refers to.',
+    description: 'The item this supplier code refers to.',
   },
   {
-    fromTable: 'StockTransactions', fromColumn: 'Warehouse',
-    toTable:   'Warehouses',        toColumn:   'ID',
+    fromTable: 'SupplierItems', fromColumn: 'Supplier',
+    toTable:   'Accounts',      toColumn:   'ID',
     type: 'many_to_one',
-    description: 'The warehouse the stock movement happened in.',
+    description: 'The supplier whose code is being mapped.',
+  },
+
+  // ── Inventory: ItemWarehouses + stock counts + transfers
+  {
+    fromTable: 'ItemWarehouses', fromColumn: 'Item',
+    toTable:   'Items',          toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The item this stock-level row is for.',
+  },
+  {
+    fromTable: 'ItemWarehouses', fromColumn: 'Warehouse',
+    toTable:   'Warehouses',     toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The warehouse holding this stock.',
   },
   {
     fromTable: 'StockCounts', fromColumn: 'Warehouse',
@@ -881,20 +963,44 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     type: 'many_to_one',
     description: 'The warehouse this physical count covers.',
   },
+  {
+    fromTable: 'StockCountLines', fromColumn: 'StockCountID',
+    toTable:   'StockCounts',     toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'Each count line belongs to one stock-count header.',
+  },
+  {
+    fromTable: 'StockCountLines', fromColumn: 'Item',
+    toTable:   'Items',           toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The item being counted on this line.',
+  },
+  {
+    fromTable: 'WarehouseTransferLines', fromColumn: 'WarehouseTransferID',
+    toTable:   'WarehouseTransfers',     toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'Each transfer line belongs to one transfer header.',
+  },
+  {
+    fromTable: 'WarehouseTransferLines', fromColumn: 'Item',
+    toTable:   'Items',                  toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The item being moved on this transfer line.',
+  },
+  {
+    fromTable: 'WarehouseTransfers', fromColumn: 'WarehouseFrom',
+    toTable:   'Warehouses',         toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'Warehouse the stock is moving out of.',
+  },
+  {
+    fromTable: 'WarehouseTransfers', fromColumn: 'WarehouseTo',
+    toTable:   'Warehouses',         toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'Warehouse the stock is moving into.',
+  },
 
-  // ── Cashflow: bank accounts → accounts (customer/supplier) + GL
-  {
-    fromTable: 'BankAccounts', fromColumn: 'Account',
-    toTable:   'Accounts',     toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'For supplier / customer bank accounts: which account owns this bank.',
-  },
-  {
-    fromTable: 'BankAccounts', fromColumn: 'GLAccount',
-    toTable:   'GLAccounts',   toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'The GL account this bank account posts to.',
-  },
+  // ── Cashflow: bank entries / payments / receivables / payables
   {
     fromTable: 'BankEntries',  fromColumn: 'Journal',
     toTable:   'Journals',     toColumn:   'Code',
@@ -920,13 +1026,11 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The customer / supplier this booked bank line is matched against.',
   },
   {
-    fromTable: 'Payments',     fromColumn: 'Account',
-    toTable:   'Accounts',     toColumn:   'ID',
+    fromTable: 'Payments', fromColumn: 'Account',
+    toTable:   'Accounts', toColumn:   'ID',
     type: 'many_to_one',
     description: 'The customer / supplier the payment is with.',
   },
-
-  // ── Receivables / payables → accounts (read-only entities)
   {
     fromTable: 'Receivables', fromColumn: 'Account',
     toTable:   'Accounts',    toColumn:   'ID',
@@ -934,10 +1038,16 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The customer who owes this open amount.',
   },
   {
-    fromTable: 'Payables',    fromColumn: 'Account',
-    toTable:   'Accounts',    toColumn:   'ID',
+    fromTable: 'ReceivablesList', fromColumn: 'AccountId',
+    toTable:   'Accounts',        toColumn:   'ID',
     type: 'many_to_one',
-    description: 'The supplier this open amount is owed to.',
+    description: 'Customer who owes this open amount (aging view).',
+  },
+  {
+    fromTable: 'PayablesList',    fromColumn: 'AccountId',
+    toTable:   'Accounts',        toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'Supplier this open amount is owed to (aging view).',
   },
 
   // ── Financial: documents → account
@@ -948,7 +1058,7 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The customer / supplier this document is filed against.',
   },
 
-  // ── HR: employments → employee
+  // ── HR / Payroll
   {
     fromTable: 'Employments',       fromColumn: 'Employee',
     toTable:   'Employees',         toColumn:   'ID',
@@ -962,8 +1072,26 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The employee whose currently-active employment this is.',
   },
   {
-    fromTable: 'Leave',     fromColumn: 'Employee',
-    toTable:   'Employees', toColumn:   'ID',
+    fromTable: 'EmploymentContracts', fromColumn: 'Employment',
+    toTable:   'Employments',         toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The employment this contract terms record is for.',
+  },
+  {
+    fromTable: 'EmploymentSalaries', fromColumn: 'Employment',
+    toTable:   'Employments',        toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The employment this salary detail is for.',
+  },
+  {
+    fromTable: 'EmploymentOrganizations', fromColumn: 'Employee',
+    toTable:   'Employees',               toColumn:   'ID',
+    type: 'many_to_one',
+    description: 'The employee assigned to this organisation unit.',
+  },
+  {
+    fromTable: 'LeaveRegistrations', fromColumn: 'Employee',
+    toTable:   'Employees',          toColumn:   'ID',
     type: 'many_to_one',
     description: 'The employee taking leave.',
   },
@@ -1000,7 +1128,7 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The customer this project is for.',
   },
 
-  // ── Subscriptions: header → customer; lines → subscription + item
+  // ── Subscriptions: header → customer + plan; lines → subscription + item
   {
     fromTable: 'Subscriptions', fromColumn: 'OrderedBy',
     toTable:   'Accounts',      toColumn:   'ID',
@@ -1008,20 +1136,20 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'Customer who subscribed.',
   },
   {
-    fromTable: 'Subscriptions',    fromColumn: 'SubscriptionType',
-    toTable:   'SubscriptionTypes', toColumn:  'ID',
+    fromTable: 'Subscriptions',     fromColumn: 'SubscriptionType',
+    toTable:   'SubscriptionTypes', toColumn:   'ID',
     type: 'many_to_one',
     description: 'The plan template this subscription is based on.',
   },
   {
     fromTable: 'SubscriptionLines', fromColumn: 'EntryID',
-    toTable:   'Subscriptions',     toColumn:  'EntryID',
+    toTable:   'Subscriptions',     toColumn:   'EntryID',
     type: 'many_to_one',
     description: 'Each subscription line belongs to one subscription.',
   },
   {
     fromTable: 'SubscriptionLines', fromColumn: 'Item',
-    toTable:   'Items',             toColumn:  'ID',
+    toTable:   'Items',             toColumn:   'ID',
     type: 'many_to_one',
     description: 'The product / service being subscribed to.',
   },

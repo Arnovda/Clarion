@@ -101,9 +101,10 @@ describe('ExactOnlineConnector — listEntities', () => {
   it('returns the curated catalog without making any HTTP calls', async () => {
     const c = new ExactOnlineConnector();
     const entities = await c.listEntities(makeConfig(), { log: createNoopLogger() });
-    // Catalog was expanded from 8 → ~45 entities; floor is 30 to catch
-    // accidental deletes without being brittle to additions.
-    expect(entities.length).toBeGreaterThanOrEqual(30);
+    // Catalog was expanded from 8 → ~55 entities (verified May 2026
+    // against EO's REST API docs). Floor is 40 to catch accidental
+    // deletes without being brittle to additions.
+    expect(entities.length).toBeGreaterThanOrEqual(40);
     expect(entities.find((e) => e.name === 'Accounts')).toBeDefined();
     expect(entities.find((e) => e.name === 'TransactionLines')).toBeDefined();
     // No nock mocks set — any HTTP would error.

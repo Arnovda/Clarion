@@ -1,125 +1,218 @@
 # ExactOnline entity catalog
 
 Reference for the entities the Clarion connector exposes for ingestion.
-Users pick a subset of these during the connection wizard
+Users pick a subset during the connection wizard
 (`POST /api/source-types/exactonline/list-entities` returns the
-filtered catalog; the user's choice is persisted in
-`connections.selected_entities`).
+catalog; the user's choice is persisted in `connections.selected_entities`).
 
 The catalog is **curated**, not dynamic — every entry maps a stable
-name to a specific REST API path. Adding entries is a one-file change
-to `packages/connectors/src/exactonline/entities.ts`. Dynamic discovery
-from `$metadata` is a future enhancement; the curated catalog gives
-us coverage without the XML-parsing complexity.
+name to a specific REST API path. All paths verified May 2026 against
+ExactOnline's official REST API reference
+(<https://start.exactonline.nl/docs/HlpRestAPIResources.aspx>). Adding
+entries is a one-file change to
+`packages/connectors/src/exactonline/entities.ts`.
 
-## How to use this doc
+## Volume policy: full history, no date filter
 
-- **Choosing entities during a demo / pilot:** start with the
-  Tier-1 minimum below, add Tier-2 as the customer's domain calls
-  for it.
-- **Adding new entities:** drop a new entry in `entities.ts` following
-  the same shape; the wizard renders it automatically via
-  `listEntities()`. If the entity is high-volume (transactional, time-
-  series), add a `defaultFilter` clause (see the existing
-  `TXN_LINES_DEFAULT_FILTER` pattern).
-- **API path verification:** entries marked **`// VERIFY`** in the
-  source file are best-guess paths based on ExactOnline's category-
-  segment convention. Before going to production on any of those,
-  hit the URL once with Postman against a live division and a valid
-  bearer token. If the path is wrong, EO returns 404 with a clear
-  message; correct it in one place.
+Earlier revisions applied a 2025-01-01 cutoff on transactional entities
+to keep first-sync volumes tractable. **Product decision (May 2026): no
+date filter.** Customers asking "what did we sell to X in 2018?" should
+get an answer. The trade-offs:
 
-## Volume guidance
+- First sync of a 10-year-old active division can run **tens of millions
+  of rows on `TransactionLines`**. Expect long durations on the first sync
+  — minutes to a few hours depending on division size.
+- `Documents`, `BankEntryLines`, `SalesInvoiceLines`,
+  `PurchaseInvoiceLines`, `TimeTransactions` are also high-volume.
+- Storage cost scales linearly with rows ingested.
+- Re-syncs today are full-table (no incremental). The TODO to add
+  incremental sync is on the connector roadmap; until then, every sync
+  re-pulls the whole history.
 
-The `defaultFilter` column shows the OData filter applied automatically
-to keep first-sync volumes tractable. For a typical Belgian SMB the
-2025-01-01 cutoff captures the active fiscal year plus a comparable
-prior period — enough for trend analysis without pulling millions of
-historical rows. Customers needing deeper history can override the
-filter per-connection in a follow-up enhancement.
+If a customer wants to skip ancient history, the safest workaround today
+is to **not enable** the heaviest entities (`TransactionLines`,
+`Documents`) until the rest of the data is curated, then turn them on.
+A per-connection `defaultFilter` override is a future enhancement.
 
-## Catalog (Tier 1 — the SMB starter pack)
+## Catalog (verified May 2026, 55+ entities across 11 categories)
 
-These are the entities most SMB demos use day one. They give you full
-sales + purchase + financial + master-data coverage and are enough to
-build the first dashboards.
+### CRM (9)
+| Name | Path |
+|---|---|
+| Accounts | `/crm/Accounts` |
+| Contacts | `/crm/Contacts` |
+| Addresses | `/crm/Addresses` |
+| AccountClassifications | `/crm/AccountClassifications` |
+| AccountClassificationNames | `/crm/AccountClassificationNames` |
+| Opportunities | `/crm/Opportunities` |
+| Quotations | `/crm/Quotations` |
+| QuotationLines | `/crm/QuotationLines` |
+| BankAccounts | `/crm/BankAccounts` |
 
-| Name | Category | What it contains | Volume hint |
-|---|---|---|---|
-| `Accounts` | CRM | Customers, suppliers, prospects — the master account list | Low (hundreds to low thousands) |
-| `Contacts` | CRM | Individual contact persons linked to accounts | Low to medium |
-| `Items` | Logistics | Article master data | Low to medium |
-| `SalesInvoices` | Sales | Sales invoice headers | Medium, date-filtered |
-| `SalesInvoiceLines` | Sales | Line items on sales invoices | Medium-high, follows invoices |
-| `SalesOrders` | Sales | Sales order headers (before invoicing) | Medium, date-filtered |
-| `SalesOrderLines` | Sales | Line items on sales orders | Medium-high, follows orders |
-| `PurchaseInvoices` | Purchase | Supplier invoices | Medium, date-filtered |
-| `PurchaseInvoiceLines` | Purchase | Line items on supplier invoices | Medium-high |
-| `GLAccounts` | Financial | Chart of accounts | Low (hundreds) |
-| `Journals` | Financial | Journal definitions | Very low |
-| `GLClassifications` | Financial | Classification hierarchy of GL accounts | Low |
-| `TransactionLines` | Financial | GL ledger detail | **HIGH** — date-filtered to 2025+ |
-| `BankAccounts` | Cashflow | Bank account definitions | Very low |
-| `PaymentConditions` | Cashflow | Payment terms catalogue | Very low |
+### Sales (6)
+| Name | Path |
+|---|---|
+| SalesInvoices | `/salesinvoice/SalesInvoices` |
+| SalesInvoiceLines | `/salesinvoice/SalesInvoiceLines` |
+| SalesOrders | `/salesorder/SalesOrders` |
+| SalesOrderLines | `/salesorder/SalesOrderLines` |
+| SalesEntries | `/salesentry/SalesEntries` |
+| SalesEntryLines | `/salesentry/SalesEntryLines` |
 
-## Catalog (Tier 2 — domain-specific)
+### Purchase (6)
+| Name | Path |
+|---|---|
+| PurchaseOrders | `/purchaseorder/PurchaseOrders` |
+| PurchaseOrderLines | `/purchaseorder/PurchaseOrderLines` |
+| PurchaseInvoices | `/purchase/PurchaseInvoices` |
+| PurchaseInvoiceLines | `/purchase/PurchaseInvoiceLines` |
+| PurchaseEntries | `/purchaseentry/PurchaseEntries` |
+| PurchaseEntryLines | `/purchaseentry/PurchaseEntryLines` |
 
-Add these when the customer's domain calls for them.
+### Logistics (4)
+| Name | Path |
+|---|---|
+| Items | `/logistics/Items` |
+| ItemGroups | `/logistics/ItemGroups` |
+| Units | `/logistics/Units` |
+| SupplierItems | `/logistics/SupplierItems` |
 
-| Name | Category | When useful |
-|---|---|---|
-| `Addresses` | CRM | When shipping addresses matter (wholesale, logistics) |
-| `AccountClassifications` / `AccountClassificationNames` | CRM | When customers segment by tier / vertical / industry |
-| `Opportunities` | CRM | Sales pipeline reporting |
-| `Quotations` / `QuotationLines` | CRM | When pre-order quoting is part of the sales flow |
-| `SalesEntries` / `SalesEntryLines` | Sales | Accountancy firms — sales booked as journal entries instead of invoices |
-| `PurchaseOrders` / `PurchaseOrderLines` | Purchase | Procurement workflow reporting |
-| `PurchaseEntries` / `PurchaseEntryLines` | Purchase | Accountancy firms — costs booked as journal entries |
-| `ItemGroups` | Logistics | Reporting grouped by product category |
-| `Warehouses` / `UnitsOfMeasure` | Logistics | Multi-warehouse + multi-unit inventory |
-| `StockTransactions` / `StockCounts` | Inventory | Inventory analytics (high volume — date-filtered) |
-| `Documents` | Financial | Document tracking attached to accounts |
-| `FinancialPeriods` | Financial | Period-aware reporting |
-| `BankEntries` / `BankEntryLines` | Cashflow | Cash-flow / treasury analysis |
-| `Payments` | Cashflow | AR / AP analytics |
-| `Receivables` / `Payables` | Cashflow | Open-items aging |
-| `Employees` / `Employments` / `ActiveEmployments` | HRM | Payroll-adjacent analytics, headcount, contracts |
-| `Leave` | HRM | Absence reporting |
-| `Projects` / `TimeTransactions` / `TimeCostTransactions` | Project | Services firms with project-based billing |
-| `Subscriptions` / `SubscriptionLines` / `SubscriptionTypes` | Subscription | Recurring-revenue businesses |
-| `Divisions` / `Users` | System | Multi-administration reporting; user activity |
+### Inventory (6)
+| Name | Path |
+|---|---|
+| Warehouses | `/inventory/Warehouses` |
+| ItemWarehouses | `/inventory/ItemWarehouses` |
+| StockCounts | `/inventory/StockCounts` |
+| StockCountLines | `/inventory/StockCountLines` |
+| WarehouseTransfers | `/inventory/WarehouseTransfers` |
+| WarehouseTransferLines | `/inventory/WarehouseTransferLines` |
+
+### Financial (6)
+| Name | Path |
+|---|---|
+| GLAccounts | `/financial/GLAccounts` |
+| Journals | `/financial/Journals` |
+| GLClassifications | `/financial/GLClassifications` |
+| TransactionLines | `/financialtransaction/TransactionLines` |
+| FinancialPeriods | `/financial/FinancialPeriods` |
+| Documents | `/documents/Documents` |
+
+### Cashflow (9)
+| Name | Path |
+|---|---|
+| Banks | `/cashflow/Banks` |
+| BankEntries | `/financialtransaction/BankEntries` |
+| BankEntryLines | `/financialtransaction/BankEntryLines` |
+| Payments | `/cashflow/Payments` |
+| Receivables | `/cashflow/Receivables` |
+| ReceivablesList | `/read/financial/ReceivablesList` |
+| PayablesList | `/read/financial/PayablesList` |
+| AgingReceivablesList | `/read/financial/AgingReceivablesList` |
+| AgingPayablesList | `/read/financial/AgingPayablesList` |
+| PaymentConditions | `/cashflow/PaymentConditions` |
+
+### HRM / Payroll (7)
+Employees and contract data live under `/payroll/` in the EO API.
+Leave registrations live under `/hrm/`.
+
+| Name | Path |
+|---|---|
+| Employees | `/payroll/Employees` |
+| Employments | `/payroll/Employments` |
+| ActiveEmployments | `/payroll/ActiveEmployments` |
+| EmploymentContracts | `/payroll/EmploymentContracts` |
+| EmploymentSalaries | `/payroll/EmploymentSalaries` |
+| EmploymentOrganizations | `/payroll/EmploymentOrganizations` |
+| LeaveRegistrations | `/hrm/LeaveRegistrations` |
+
+### Project (3)
+| Name | Path |
+|---|---|
+| Projects | `/project/Projects` |
+| TimeTransactions | `/project/TimeTransactions` |
+| TimeCostTransactions | `/project/TimeCostTransactions` |
+
+### Subscription (3)
+| Name | Path |
+|---|---|
+| Subscriptions | `/subscription/Subscriptions` |
+| SubscriptionLines | `/subscription/SubscriptionLines` |
+| SubscriptionTypes | `/subscription/SubscriptionTypes` |
+
+### System (1)
+| Name | Path |
+|---|---|
+| Divisions | `/system/Divisions` |
+
+## What was removed and why
+
+Three entities from the previous revision were dropped because they don't
+exist as separate endpoints in ExactOnline's API:
+
+- **`StockTransactions`** — not a real endpoint. EO doesn't expose a
+  generic stock-transaction log over REST; movement reporting is built
+  from `WarehouseTransfers` + `WarehouseTransferLines` and from booked
+  ledger lines that touch stock GL accounts. Replaced with
+  `ItemWarehouses` (current stock per item per warehouse — far more
+  commonly wanted) and the warehouse-transfer pair.
+- **`Payables`** — no direct collection endpoint. Replaced with
+  `PayablesList` (`/read/financial/PayablesList`, read-only aging view)
+  and `AgingPayablesList`.
+- **`Users`** — no standalone Users endpoint, only role-management
+  resources. Removed.
+
+## Volume guidance for the demo
+
+For a typical Belgian SMB starter set covering full operations:
+
+- **Always pick:** Accounts, Items, GLAccounts, Journals — the master
+  tables that drive everything else
+- **For sales analytics:** SalesInvoices, SalesInvoiceLines, SalesOrders,
+  SalesOrderLines
+- **For purchase analytics:** PurchaseInvoices, PurchaseInvoiceLines
+- **For finance / accounting:** TransactionLines (HEAVY — be patient on
+  first sync), GLClassifications, FinancialPeriods
+- **For cash / treasury:** BankEntries, BankEntryLines, Payments,
+  Receivables, PayablesList
+- **For inventory:** ItemWarehouses, Warehouses, StockCounts (light)
+- **Optional, only if relevant:** the HR / payroll set, the project set,
+  the subscription set
 
 ## Known relationships
 
 Beyond entity selection, the connector ships a curated list of
-foreign-key relationships between entities
-(`EXACT_ONLINE_KNOWN_RELATIONSHIPS` in `entities.ts`). These are fed
-to the schema profiler so AI-generated table descriptions and
-dashboards know that, for example, `SalesInvoices.InvoiceTo` joins to
-`Accounts.ID`.
+foreign-key relationships
+(`EXACT_ONLINE_KNOWN_RELATIONSHIPS` in `entities.ts`). The schema profiler
+uses them to generate accurate table descriptions and to feed the
+AI-dashboard prompts.
 
-Adding a new entity? Add its relationships to the same array. The
-profiler filters this list against what the user actually selected, so
-relationships pointing at unsynced entities drop out cleanly.
+The expanded catalog declares ~55 relationships covering:
 
-Currently the catalog declares ~45 relationships covering header-to-
-line joins, account roles (invoice-to / ordered-by / deliver-to), GL
-posting paths, item-to-group joins, project / employee links, and
-subscription / item linkage. Demo against EpicData uses the existing
-~14 relationships from the original 7-entity catalog; the rest become
-active only as the corresponding entities are enabled.
+- Every header-to-line join (invoice / order / entry / quotation /
+  subscription / transfer / stock-count)
+- Account-role FKs on every transactional header (InvoiceTo / OrderedBy /
+  DeliverTo / Supplier / Customer)
+- GL posting paths from every line type back to GLAccounts
+- Item → group, item → unit of measure
+- Project → customer, time / cost → project + employee
+- Employment / contract / salary → employee
+- Stock movements → item + warehouse
+- Aging views → account (customer / supplier)
+
+The connector's `getKnownRelationships()` filters this list against the
+user's `selected_entities` so a relationship pointing at an unsynced
+entity is dropped before being sent to the profiler.
 
 ## Cross-tenant safety
 
-The expansion is data-only — the ingestion pipeline that already
-handles the original 7 entities handles these the same way:
+The expansion is data-only. The ingestion pipeline that handles the
+original 8 entities handles these the same way:
 
 - OAuth credentials are encrypted with AES-256-GCM at rest.
 - Sync runs in an **isolated container** with only this one tenant's
   credentials in env, egress restricted to ExactOnline domains, and
   write access only to its own warehouse path (`tenant_<N>/conn_<N>`).
-- Every database touch around the connection (state token lookup,
-  trigger sync, credential rotation persist) carries an explicit
+- Every database touch around the connection carries an explicit
   `tenant_id` filter as well as RLS enforcement.
 
 Nothing about the expanded entity list changes the security boundary —
