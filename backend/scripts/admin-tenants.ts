@@ -53,18 +53,27 @@ async function cmdList(client: Client): Promise<void> {
     created_at: string;
   }>(`SELECT id, name, slug, status, created_at FROM tenants ORDER BY id`);
 
-  // Per-tenant signal: user count, connection count, product count
+  // Per-tenant signal: user / connection / product / source-table counts.
+  // Filter explicitly on tenant_id rather than relying on SET app.current_tenant
+  // — the admin role has BYPASSRLS so RLS-as-filter doesn't apply here.
+  // GROUP BY in a single query is also a lot faster than N round-trips.
   const stats: Record<number, { users: number; conns: number; products: number; tables: number }> = {};
   for (const t of tenants.rows) {
-    await client.query(`SET app.current_tenant = '${t.id}'`);
-    const u = await client.query(`SELECT COUNT(*)::int n FROM users`);
-    const c = await client.query(`SELECT COUNT(*)::int n FROM connections`);
-    const p = await client.query(`SELECT COUNT(*)::int n FROM data_products`);
-    const st = await client.query(`SELECT COUNT(*)::int n FROM source_tables`);
-    stats[t.id] = {
-      users: u.rows[0].n, conns: c.rows[0].n,
-      products: p.rows[0].n, tables: st.rows[0].n,
-    };
+    stats[t.id] = { users: 0, conns: 0, products: 0, tables: 0 };
+  }
+  for (const [field, table] of [
+    ['users',    'users']         as const,
+    ['conns',    'connections']   as const,
+    ['products', 'data_products'] as const,
+    ['tables',   'source_tables'] as const,
+  ]) {
+    const r = await client.query<{ tenant_id: number; n: string }>(
+      `SELECT tenant_id, COUNT(*)::text AS n FROM ${table} GROUP BY tenant_id`,
+    );
+    for (const row of r.rows) {
+      const tid = Number(row.tenant_id);
+      if (stats[tid]) (stats[tid] as Record<string, number>)[field] = Number(row.n);
+    }
   }
 
   const fmtDate = (s: string) => {
