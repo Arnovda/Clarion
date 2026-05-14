@@ -117,4 +117,77 @@ describe('LocalFileWarehouseWriter', () => {
       await db.close();
     }
   });
+
+  it('merge mode upserts by key: delta wins on conflict, existing-only rows kept', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+
+    // First write — initial full sync.
+    await writer.writeTable('Items', fromArray([
+      { ID: 1, Name: 'Alpha',   Price: 10 },
+      { ID: 2, Name: 'Bravo',   Price: 20 },
+      { ID: 3, Name: 'Charlie', Price: 30 },
+    ]));
+
+    // Second write — incremental delta: row 2 updated (price changed),
+    // row 4 added. Row 1 + Row 3 are NOT in the delta and must survive.
+    const result = await writer.writeTable(
+      'Items',
+      fromArray([
+        { ID: 2, Name: 'Bravo',  Price: 25 },   // update
+        { ID: 4, Name: 'Delta',  Price: 40 },   // insert
+      ]),
+      { mergeKey: 'ID' },
+    );
+    expect(result.rowsWritten).toBe(2);
+
+    // Verify the merge: 4 distinct rows, with row 2's price = 25.
+    // DuckDB returns ints from Parquet as `bigint`; we cast to plain
+    // Numbers for ergonomic comparison.
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Items', 'data.parquet').replace(/'/g, "''");
+      const rows = await db.all(`SELECT * FROM read_parquet('${p}') ORDER BY ID`) as Array<{ ID: bigint; Name: string; Price: bigint }>;
+      const norm = rows.map((r) => ({ ID: Number(r.ID), Name: r.Name, Price: Number(r.Price) }));
+      expect(norm).toEqual([
+        { ID: 1, Name: 'Alpha',   Price: 10 },
+        { ID: 2, Name: 'Bravo',   Price: 25 },  // delta won
+        { ID: 3, Name: 'Charlie', Price: 30 },
+        { ID: 4, Name: 'Delta',   Price: 40 },
+      ]);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('merge mode on first write (no existing file) just writes the delta', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    const result = await writer.writeTable(
+      'NewTable',
+      fromArray([{ ID: 1, X: 'a' }, { ID: 2, X: 'b' }]),
+      { mergeKey: 'ID' },
+    );
+    expect(result.rowsWritten).toBe(2);
+
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'NewTable', 'data.parquet').replace(/'/g, "''");
+      const rows = await db.all(`SELECT * FROM read_parquet('${p}') ORDER BY ID`);
+      expect(rows).toHaveLength(2);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('merge mode rejects unsafe merge keys', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    await expect(
+      writer.writeTable('Items', fromArray([{ ID: 1 }]), { mergeKey: 'x; DROP TABLE' }),
+    ).rejects.toThrow(/unsafe mergeKey/i);
+    await expect(
+      writer.writeTable('Items', fromArray([{ ID: 1 }]), { mergeKey: '../escape' }),
+    ).rejects.toThrow(/unsafe mergeKey/i);
+  });
 });

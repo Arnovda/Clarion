@@ -28,7 +28,19 @@ export type WorkerEvent =
   | { type: 'progress'; ts: string; message: string; perEntity?: Record<string, { rowsFetched?: number; pagesFetched?: number }>; percent?: number }
   | { type: 'credential_rotated'; ts: string; newConfig: Record<string, unknown> }
   | { type: 'entity_complete'; ts: string; entity: string; rowsWritten: number; bytesWritten: number }
-  | { type: 'result'; ts: string; rowCounts: Record<string, number>; warnings: string[] }
+  | {
+      type: 'result';
+      ts: string;
+      rowCounts: Record<string, number>;
+      warnings: string[];
+      /**
+       * Per-entity new cursors produced by the connector (incremental sync).
+       * Orchestrator persists these to `entity_sync_cursors` AFTER the sync
+       * is recorded as succeeded. Missing keys mean the entity is not
+       * incrementally synced OR returned zero rows OR failed during sync.
+       */
+      cursors?: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+    }
   | { type: 'error'; ts: string; message: string; stack?: string }
   | { type: 'cancelled'; ts: string };
 

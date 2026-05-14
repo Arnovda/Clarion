@@ -211,6 +211,45 @@ export interface OAuthSpec {
 export type ConnectorConfig = Record<string, unknown>;
 
 // ─── Discovery ────────────────────────────────────────────────────────────
+/**
+ * Cursor specification for an incrementally-syncable entity. The connector
+ * declares this per-entity so the platform knows:
+ *
+ *   1. Whether the entity supports incremental sync at all
+ *      (entities without a stable "modified" field run full each time)
+ *   2. Which field carries the cursor value (e.g. 'Modified' on EO entities)
+ *   3. How to interpret the cursor value when reading it back from
+ *      `entity_sync_cursors.cursor_value` next run.
+ *
+ * The connector still owns FILTER CONSTRUCTION — the platform just stores
+ * and retrieves the opaque cursor value. This keeps each connector's
+ * source-specific quirks (OData syntax, REST query params, SQL clauses)
+ * out of the platform.
+ */
+export interface EntityCursorSpec {
+  /** Field on the entity that monotonically increases as rows change. */
+  readonly field: string;
+
+  /**
+   * Type of the cursor value. Matches the CHECK constraint on
+   * `entity_sync_cursors.cursor_type`. The connector decides which to use.
+   *
+   *   - `timestamp` : ISO 8601 string (`2026-05-14T10:00:00`)
+   *   - `integer`   : numeric ID, stored as text (`123456`)
+   *   - `string`    : opaque, e.g. an LSN or an OData skip token
+   */
+  readonly type: 'timestamp' | 'integer' | 'string';
+}
+
+/**
+ * Single cursor instance — what the platform persists per entity in
+ * `entity_sync_cursors` and hands back to the connector on the next sync.
+ */
+export interface EntityCursor {
+  readonly type: 'timestamp' | 'integer' | 'string';
+  readonly value: string;
+}
+
 export interface EntityDescriptor {
   /** Stable name used in `connections.selected_entities` and as the warehouse table name. */
   name: string;
@@ -227,8 +266,36 @@ export interface EntityDescriptor {
   /** Optional row-count hint to help users pick (avoid pulling 10M-row entities by accident). */
   estimatedRowCount?: number;
 
-  /** Whether this entity supports incremental sync via a cursor. Reserved for future use. */
+  /**
+   * Convenience boolean for the wizard's "incremental supported" UI hint.
+   * MUST equal `!!incrementalCursor` — the platform asserts this in tests
+   * to keep declarations consistent.
+   */
   supportsIncremental: boolean;
+
+  /**
+   * If present, the entity is incrementally syncable: subsequent syncs
+   * pull only rows where `field > <previousCursor>`. If absent, every
+   * sync is a full pull and no cursor is persisted for this entity.
+   *
+   * The connector is responsible for translating the cursor into the
+   * source-specific filter (e.g. EO's OData `$filter=Modified gt …`)
+   * and for tracking the new cursor value as rows stream past.
+   */
+  readonly incrementalCursor?: EntityCursorSpec;
+
+  /**
+   * Stable primary-key column on the entity. Required when the entity is
+   * incrementally syncable so the warehouse writer can merge new rows
+   * into existing data by key (delta wins on conflict).
+   *
+   * For EO entities this is almost always `ID`. Some have specific
+   * column names (e.g. `SalesInvoices.InvoiceID`, `Subscriptions.EntryID`).
+   *
+   * Connectors that emit FULL tables on every sync (incrementalCursor
+   * undefined) don't need this — the writer overwrites.
+   */
+  readonly businessKey?: string;
 }
 
 // ─── Probe context (testConnection, listEntities) ─────────────────────────
@@ -248,8 +315,24 @@ export interface SyncOptions {
   entities: string[];
 
   /**
-   * Per-entity cursor state from the previous sync. Reserved — the platform
-   * runs full overwrites today; incremental support comes later.
+   * Per-entity cursor state from the previous successful sync. Keyed by
+   * `EntityDescriptor.name`. Loaded by the orchestrator from
+   * `entity_sync_cursors` before the sync starts. Missing keys mean
+   * "first sync for this entity" — the connector should fall back to a
+   * full pull.
+   *
+   * Entities whose descriptor has no `incrementalCursor` MUST be absent
+   * from this map even if a row exists in the table (the platform skips
+   * the lookup for them).
+   *
+   * Legacy name `incrementalState` is kept until callers are migrated.
+   */
+  cursors?: Record<string, EntityCursor>;
+
+  /**
+   * @deprecated Use `cursors`. Kept for back-compat with any caller that
+   * was already passing this in. The connector framework picks
+   * `cursors` first when both are set.
    */
   incrementalState?: Record<string, unknown>;
 }
@@ -295,15 +378,60 @@ export interface SyncResult {
   warnings: string[];
 
   /**
-   * Per-entity cursor state to persist for the next sync. Reserved.
+   * Per-entity NEW cursor state, captured from the just-completed sync.
+   * Keyed by `EntityDescriptor.name`. Only entities that actually
+   * succeeded AND were incrementally synced should appear here.
+   *
+   * The orchestrator persists these to `entity_sync_cursors` ONLY for
+   * entities that did not raise an error during the sync — per-entity
+   * granularity is the whole point. An entity that failed leaves its
+   * cursor row untouched so the next run resumes from the same point.
+   *
+   * Cursors MUST NOT GO BACKWARDS. The orchestrator validates this
+   * defensively before updating the row.
+   */
+  cursors?: Record<string, EntityCursor>;
+
+  /**
+   * @deprecated Use `cursors`. Pre-incremental field name kept for
+   * back-compat.
    */
   nextIncrementalState?: Record<string, unknown>;
 }
 
 // ─── Warehouse writer (the only side-effect connectors are allowed) ───────
+export interface WriteTableOptions {
+  /**
+   * Business-key column on the rows. When provided, the writer MERGES the
+   * incoming rows into any existing Parquet for `tableName`:
+   *
+   *   - If a row's key matches an existing row → the new row replaces it
+   *   - If a row's key is new → it's appended
+   *   - Existing rows whose key does NOT appear in the new batch → kept
+   *
+   * This is the upsert semantic the incremental-sync framework relies on:
+   * connectors stream the delta, the writer merges with history. The same
+   * pattern the SCD1 product-tables sidecar uses, applied at the source
+   * ingestion layer.
+   *
+   * When absent, the writer OVERWRITES the entire table — the legacy
+   * full-sync behaviour. Connectors that don't support incremental for
+   * a given entity should omit this option so the writer falls back to
+   * overwrite.
+   */
+  mergeKey?: string;
+}
+
 export interface WarehouseWriter {
   /**
-   * Write a single Parquet file for `tableName`, overwriting if it exists.
+   * Write Parquet for `tableName`.
+   *
+   * Default (no `opts.mergeKey`): overwrites the existing file. This is
+   * the legacy full-sync path.
+   *
+   * Merge mode (`opts.mergeKey` set): reads existing rows, upserts the
+   * incoming rows by key, writes the merged result back. Existing rows
+   * whose key is absent from the new batch are KEPT (no delete detection).
    *
    * The writer is sandboxed — in production it holds a SAS token scoped to
    * `warehouse/conn_<id>/`. A connector that tries to write outside that
@@ -311,9 +439,16 @@ export interface WarehouseWriter {
    *
    * `rows` is an async iterable so connectors can stream pages from the
    * source without buffering the entire dataset. The writer batches
-   * internally for efficient Parquet output.
+   * internally for efficient Parquet output; in merge mode it collects
+   * the delta in memory, reads existing once, then writes the merged
+   * file. Connectors writing tens of millions of rows in a single
+   * incremental sync should chunk by date range to keep memory bounded.
    */
-  writeTable(tableName: string, rows: AsyncIterable<Record<string, unknown>>): Promise<TableWriteResult>;
+  writeTable(
+    tableName: string,
+    rows: AsyncIterable<Record<string, unknown>>,
+    opts?: WriteTableOptions,
+  ): Promise<TableWriteResult>;
 }
 
 export interface TableWriteResult {

@@ -39,7 +39,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { ContainerClient } from '@azure/storage-blob';
-import type { TableWriteResult, WarehouseWriter } from './types';
+import type { TableWriteResult, WarehouseWriter, WriteTableOptions } from './types';
 
 const BATCH_ROWS = 5_000;
 
@@ -69,15 +69,23 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
   async writeTable(
     tableName: string,
     rows: AsyncIterable<Record<string, unknown>>,
+    opts?: WriteTableOptions,
   ): Promise<TableWriteResult> {
     if (!isSafeTableName(tableName)) {
       throw new Error(`Unsafe table name: ${tableName}`);
     }
+    if (opts?.mergeKey && !isSafeColumnName(opts.mergeKey)) {
+      throw new Error(`Unsafe mergeKey: ${opts.mergeKey}`);
+    }
 
     const stagingNdjson = path.join(os.tmpdir(), `clarion-stage-${randomUUID()}.ndjson`);
     const stagingParquet = path.join(os.tmpdir(), `clarion-out-${randomUUID()}.parquet`);
+    const existingParquet = path.join(os.tmpdir(), `clarion-existing-${randomUUID()}.parquet`);
+    const blobPath = `${this.pathPrefix}${tableName}/data.parquet`;
+    const blockBlob = this.container.getBlockBlobClient(blobPath);
 
     let rowsWritten = 0;
+    let downloadedExisting = false;
     try {
       // ─── Stream rows to NDJSON ────────────────────────────────────────
       const fh = await fs.open(stagingNdjson, 'w');
@@ -96,16 +104,35 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
         await fh.close();
       }
 
-      // ─── DuckDB → local Parquet ──────────────────────────────────────
-      if (rowsWritten === 0) {
+      // ─── Merge or overwrite? ─────────────────────────────────────────
+      // If a mergeKey is supplied AND the blob exists, download it
+      // locally and run the same merge SQL the local writer uses. Then
+      // re-upload. This keeps the merge logic in one place (DuckDB) and
+      // bounds the trust surface (only @azure/storage-blob talks to
+      // Azure; DuckDB only sees local files).
+      let useMerge = false;
+      if (opts?.mergeKey) {
+        if (await blobExists(blockBlob)) {
+          await blockBlob.downloadToFile(existingParquet);
+          downloadedExisting = true;
+          useMerge = true;
+        }
+      }
+
+      if (rowsWritten === 0 && !useMerge) {
         await writeEmptyParquet(stagingParquet);
+      } else if (useMerge) {
+        await mergeNdjsonIntoExistingParquet(
+          stagingNdjson,
+          existingParquet,
+          stagingParquet,
+          opts!.mergeKey!,
+        );
       } else {
         await convertNdjsonToParquet(stagingNdjson, stagingParquet);
       }
 
       // ─── Upload to Blob ──────────────────────────────────────────────
-      const blobPath = `${this.pathPrefix}${tableName}/data.parquet`;
-      const blockBlob = this.container.getBlockBlobClient(blobPath);
       const stat = await fs.stat(stagingParquet);
       await blockBlob.uploadFile(stagingParquet);
 
@@ -118,8 +145,13 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
       // Best-effort cleanup; never throw from the cleanup path.
       await fs.unlink(stagingNdjson).catch(() => undefined);
       await fs.unlink(stagingParquet).catch(() => undefined);
+      if (downloadedExisting) await fs.unlink(existingParquet).catch(() => undefined);
     }
   }
+}
+
+async function blobExists(blockBlob: { exists(): Promise<boolean> }): Promise<boolean> {
+  try { return await blockBlob.exists(); } catch { return false; }
 }
 
 // ─── DuckDB helpers (mirror LocalFileWarehouseWriter) ─────────────────────
@@ -152,9 +184,64 @@ async function writeEmptyParquet(parquetPath: string): Promise<void> {
   }
 }
 
+/**
+ * Merge an NDJSON delta into an existing Parquet, writing to `outPath`.
+ * Same shape as the local writer's merge — see ParquetWriter.ts for the
+ * detailed comment. Lives here too because the BlobSasWarehouseWriter
+ * runs in the sandboxed sync-worker container, which has no shared
+ * library imports with the main backend (egress + library isolation).
+ */
+async function mergeNdjsonIntoExistingParquet(
+  ndjsonPath: string,
+  existingParquetPath: string,
+  outPath: string,
+  mergeKey: string,
+): Promise<void> {
+  // The Blob writer's `existingParquetPath` is already a tmpdir-local
+  // file (the downloadToFile result), so no further staging copy is
+  // needed — the file Azure SDK created is exclusively ours.
+  const db = await Database.create(':memory:');
+  try {
+    const escNd = ndjsonPath.replace(/'/g, "''");
+    const escEx = existingParquetPath.replace(/'/g, "''");
+    const escOut = outPath.replace(/'/g, "''");
+    const escKey = mergeKey.replace(/"/g, '""');
+    await db.all(`
+      COPY (
+        WITH delta AS (
+          SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+        ),
+        existing AS (
+          SELECT * FROM read_parquet('${escEx}')
+        ),
+        merged AS (
+          SELECT *, 0 AS _origin FROM existing
+          UNION ALL BY NAME
+          SELECT *, 1 AS _origin FROM delta
+        ),
+        ranked AS (
+          SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY "${escKey}"
+            ORDER BY _origin DESC
+          ) AS _rn
+          FROM merged
+        )
+        SELECT * EXCLUDE (_origin, _rn) FROM ranked WHERE _rn = 1
+      )
+      TO '${escOut}' (FORMAT 'parquet', COMPRESSION 'snappy')
+    `);
+  } finally {
+    await db.close();
+  }
+}
+
 // ─── Validation ──────────────────────────────────────────────────────────
 function isSafeTableName(name: string): boolean {
   return /^[A-Za-z0-9_\-]+$/.test(name) && name.length <= 128 && !name.startsWith('-');
+}
+
+function isSafeColumnName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name.length <= 128;
 }
 
 function isSafePathPrefix(prefix: string): boolean {

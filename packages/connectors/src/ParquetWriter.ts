@@ -34,7 +34,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { randomUUID } from 'crypto';
-import type { TableWriteResult, WarehouseWriter } from './types';
+import type { TableWriteResult, WarehouseWriter, WriteTableOptions } from './types';
 
 const BATCH_ROWS = 5_000;
 
@@ -53,9 +53,13 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
   async writeTable(
     tableName: string,
     rows: AsyncIterable<Record<string, unknown>>,
+    opts?: WriteTableOptions,
   ): Promise<TableWriteResult> {
     if (!isSafeTableName(tableName)) {
       throw new Error(`Unsafe table name: ${tableName}`);
+    }
+    if (opts?.mergeKey && !isSafeColumnName(opts.mergeKey)) {
+      throw new Error(`Unsafe mergeKey: ${opts.mergeKey}`);
     }
 
     const outDir = path.join(this.warehouseRoot, tableName);
@@ -86,12 +90,28 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
       await fh.close();
     }
 
-    if (rowsWritten === 0) {
-      // Empty entity — write an empty Parquet so downstream profilers don't
-      // crash on missing files. Use a dummy schema with one nullable column.
+    // Merge mode: if a mergeKey is provided AND an existing Parquet
+    // exists for this table, build the new file as
+    //   existing UPSERT delta on mergeKey
+    // i.e. existing rows stay unless overwritten by a delta row with the
+    // same key. New keys in the delta are appended. Existing rows whose
+    // key is absent from the delta are KEPT (no delete detection — that
+    // is an explicit non-goal of incremental sync v1).
+    const existingPath = await fileExists(outFile) ? outFile : null;
+    const useMerge = !!opts?.mergeKey && existingPath !== null;
+
+    if (rowsWritten === 0 && !useMerge) {
+      // Empty entity, no existing file to preserve — write an empty
+      // Parquet so downstream profilers don't crash on missing files.
       await writeEmptyParquet(outFile);
       await fs.unlink(stagingPath).catch(() => undefined);
+    } else if (useMerge) {
+      // Merge existing + delta on mergeKey. DuckDB does the heavy lifting
+      // in SQL — no per-row JavaScript memory cost.
+      await mergeNdjsonIntoExistingParquet(stagingPath, existingPath!, outFile, opts!.mergeKey!);
+      await fs.unlink(stagingPath).catch(() => undefined);
     } else {
+      // Standard overwrite path.
       await convertNdjsonToParquet(stagingPath, outFile);
       await fs.unlink(stagingPath).catch(() => undefined);
     }
@@ -130,6 +150,94 @@ async function convertNdjsonToParquet(ndjsonPath: string, parquetPath: string): 
   }
 }
 
+/**
+ * Merge an NDJSON delta into an existing Parquet file, writing the
+ * result back to `outPath`. Upserts on `mergeKey`: when a key exists in
+ * both, the DELTA wins (the row from NDJSON replaces the existing row).
+ * Keys present only in existing are kept; keys present only in delta
+ * are appended.
+ *
+ * Implementation strategy:
+ *   1. Read existing Parquet via DuckDB
+ *   2. UNION delta NDJSON via read_json — DuckDB widens types reasonably
+ *   3. ROW_NUMBER() partitioned by mergeKey ordered to put delta last,
+ *      keep the last row per key (so delta overwrites existing)
+ *   4. COPY to a tmpdir-staged Parquet, then move into place.
+ *
+ * Staging in os.tmpdir (NOT next to outPath) is intentional — on Windows
+ * DuckDB holds a directory-level lock on the existing-Parquet's folder
+ * even after `db.close()`, which prevents an in-place rename. Staging
+ * far away then doing a final move sidesteps the issue completely.
+ */
+async function mergeNdjsonIntoExistingParquet(
+  ndjsonPath: string,
+  existingParquetPath: string,
+  outPath: string,
+  mergeKey: string,
+): Promise<void> {
+  // Copy the existing parquet to tmpdir first so DuckDB's read lock sits
+  // on the copy, not on outPath. Without this, on Windows the lock
+  // lingers past db.close() and the subsequent rename into outPath fails
+  // with EPERM. Linux/Mac don't need this; cheap insurance everywhere.
+  const existingCopy = path.join(os.tmpdir(), `clarion-existing-${randomUUID()}.parquet`);
+  await fs.copyFile(existingParquetPath, existingCopy);
+
+  // Stage the merged output in os.tmpdir too — see same Windows note.
+  const tmpOut = path.join(os.tmpdir(), `clarion-merge-${randomUUID()}.parquet`);
+  const db = await Database.create(':memory:');
+  try {
+    const escNd = ndjsonPath.replace(/'/g, "''");
+    const escEx = existingCopy.replace(/'/g, "''");
+    const escOut = tmpOut.replace(/'/g, "''");
+    const escKey = mergeKey.replace(/"/g, '""');
+
+    // The CTE pattern below:
+    //   - `merged`        : existing rows tagged origin=0, delta rows origin=1
+    //   - ROW_NUMBER PARTITION BY <key> ORDER BY origin DESC
+    //                       (delta wins because higher origin)
+    //   - Keep rn=1 from each partition
+    //
+    // DuckDB resolves the schema by aligning the two SELECTs. If existing
+    // has columns the delta doesn't (or vice versa), the missing values
+    // become NULL — same behaviour as pandas concat. This handles
+    // schema evolution gracefully across syncs.
+    await db.all(`
+      COPY (
+        WITH delta AS (
+          SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+        ),
+        existing AS (
+          SELECT * FROM read_parquet('${escEx}')
+        ),
+        merged AS (
+          SELECT *, 0 AS _origin FROM existing
+          UNION ALL BY NAME
+          SELECT *, 1 AS _origin FROM delta
+        ),
+        ranked AS (
+          SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY "${escKey}"
+            ORDER BY _origin DESC
+          ) AS _rn
+          FROM merged
+        )
+        SELECT * EXCLUDE (_origin, _rn) FROM ranked WHERE _rn = 1
+      )
+      TO '${escOut}' (FORMAT 'parquet', COMPRESSION 'snappy')
+    `);
+  } finally {
+    await db.close();
+    await fs.unlink(existingCopy).catch(() => undefined);
+  }
+  // Replace the existing parquet with the merged result. Delete-then-
+  // rename rather than overwrite-rename — Windows EPERM otherwise.
+  // Worst case if the rename below fails: the table is briefly absent.
+  // The next sync re-pulls everything (full sync from no cursor) and
+  // rewrites it. Correct, just slower.
+  await fs.unlink(outPath).catch(() => undefined);
+  await fs.rename(tmpOut, outPath);
+}
+
 async function writeEmptyParquet(parquetPath: string): Promise<void> {
   const db = await Database.create(':memory:');
   try {
@@ -151,6 +259,19 @@ async function writeEmptyParquet(parquetPath: string): Promise<void> {
  */
 function isSafeTableName(name: string): boolean {
   return /^[A-Za-z0-9_\-]+$/.test(name) && name.length <= 128 && !name.startsWith('-');
+}
+
+/**
+ * Allow-list for column identifiers we inject into SQL. The merge query
+ * builds `PARTITION BY "<mergeKey>"` so we need a tight bound on what's
+ * accepted. Connectors should always pass canonical column names here.
+ */
+function isSafeColumnName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name.length <= 128;
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try { await fs.stat(p); return true; } catch { return false; }
 }
 
 /**
