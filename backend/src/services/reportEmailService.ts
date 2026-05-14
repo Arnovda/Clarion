@@ -16,6 +16,21 @@ import { generateReportNarrative } from '../ai/AIService';
 import { logger } from '../utils/logger';
 import type { KpiResult } from '../ai/prompts/answerFormatterPrompt';
 
+// HTML-escape any string that gets interpolated into the email body.
+// Source data (widget rows, AI summary, user-supplied dashboard titles
+// and column aliases) is untrusted from an email-rendering standpoint
+// — even though most email clients sandbox HTML, we don't want to ship
+// a vector that lets a tenant's data poison an email rendered by their
+// own users. Cheap, defensive, never wrong.
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ---------------------------------------------------------------------------
 // Filter placeholder resolution (mirrors dashboards route helper)
 // ---------------------------------------------------------------------------
@@ -42,12 +57,12 @@ function buildTable(rows: Record<string, unknown>[]): string {
   if (!rows.length) return '<p style="color:#6b7280;font-size:13px">No data</p>';
 
   const cols = Object.keys(rows[0]);
-  const headerCells = cols.map((c) => `<th style="padding:6px 12px;text-align:left;background:#f3f4f6;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;color:#374151">${c}</th>`).join('');
+  const headerCells = cols.map((c) => `<th style="padding:6px 12px;text-align:left;background:#f3f4f6;border-bottom:1px solid #e5e7eb;font-size:12px;font-weight:600;color:#374151">${escapeHtml(c)}</th>`).join('');
   const bodyRows = rows.slice(0, 20).map((row) => {
     const cells = cols.map((c) => {
       const v = row[c];
       const formatted = v == null ? '' : typeof v === 'number' ? v.toLocaleString() : String(v);
-      return `<td style="padding:5px 12px;font-size:12px;color:#374151;border-bottom:1px solid #f3f4f6">${formatted}</td>`;
+      return `<td style="padding:5px 12px;font-size:12px;color:#374151;border-bottom:1px solid #f3f4f6">${escapeHtml(formatted)}</td>`;
     }).join('');
     return `<tr>${cells}</tr>`;
   }).join('');
@@ -70,14 +85,14 @@ function buildHtmlEmail(
 ): string {
   const widgetSections = widgets.map(({ title, rows, error }) => {
     const body = error
-      ? `<p style="color:#ef4444;font-size:13px">${error}</p>`
+      ? `<p style="color:#ef4444;font-size:13px">${escapeHtml(error)}</p>`
       : rows
         ? buildTable(rows)
         : '<p style="color:#6b7280;font-size:13px">No data</p>';
 
     return `
       <div style="margin-bottom:24px">
-        <h3 style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;text-transform:uppercase;letter-spacing:0.05em">${title}</h3>
+        <h3 style="margin:0 0 8px;font-size:13px;font-weight:600;color:#111827;text-transform:uppercase;letter-spacing:0.05em">${escapeHtml(title)}</h3>
         ${body}
       </div>`;
   }).join('');
@@ -85,7 +100,7 @@ function buildHtmlEmail(
   const summarySection = summary ? `
     <div style="background:#eff6ff;border-left:3px solid #3b82f6;padding:16px 20px;margin-bottom:28px;border-radius:0 6px 6px 0">
       <p style="margin:0 0 4px;font-size:11px;font-weight:600;color:#3b82f6;text-transform:uppercase;letter-spacing:0.08em">AI Summary</p>
-      <p style="margin:0;font-size:14px;color:#1e40af;line-height:1.6">${summary}</p>
+      <p style="margin:0;font-size:14px;color:#1e40af;line-height:1.6">${escapeHtml(summary)}</p>
     </div>` : '';
 
   const now = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -98,7 +113,7 @@ function buildHtmlEmail(
     <!-- Header -->
     <div style="background:#111827;padding:24px 32px">
       <p style="margin:0 0 4px;font-size:10px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em">Clarion Report · ${now}</p>
-      <h1 style="margin:0;font-size:22px;font-weight:700;color:#ffffff">${dashboardTitle}</h1>
+      <h1 style="margin:0;font-size:22px;font-weight:700;color:#ffffff">${escapeHtml(dashboardTitle)}</h1>
     </div>
     <!-- Body -->
     <div style="padding:28px 32px">
