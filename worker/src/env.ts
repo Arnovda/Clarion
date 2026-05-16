@@ -17,10 +17,17 @@ import { z } from 'zod';
 
 const envSchema = z.object({
   WORKER_CONNECTOR_TYPE: z.string().min(1),
+  /**
+   * Plaintext connector config JSON. Used by the LOCAL launcher (child
+   * process in dev). In Azure / production, this is empty and the worker
+   * uses `WORKER_CONFIG_BLOB_URL` instead — see worker/main.ts. Exactly
+   * one of the two must be present; main.ts errors if both are missing.
+   */
   WORKER_CONNECTOR_CONFIG: z
     .string()
-    .min(1)
+    .optional()
     .transform((s, ctx) => {
+      if (!s) return undefined;
       try {
         return JSON.parse(s) as Record<string, unknown>;
       } catch (e) {
@@ -31,6 +38,14 @@ const envSchema = z.object({
         return z.NEVER;
       }
     }),
+  /**
+   * SAS URL pointing at a private blob containing the connector config
+   * as JSON. Used by the AZURE launcher in place of WORKER_CONNECTOR_CONFIG
+   * so plaintext credentials never sit in env-var metadata that Azure
+   * retains for ~30 days. The worker fetches + parses on startup, then
+   * the orchestrator deletes the blob.
+   */
+  WORKER_CONFIG_BLOB_URL: z.string().url().optional(),
   WORKER_ENTITIES: z
     .string()
     .min(1)

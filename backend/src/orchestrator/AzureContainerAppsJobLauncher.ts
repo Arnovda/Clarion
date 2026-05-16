@@ -44,6 +44,7 @@ import { AppendBlobClient } from '@azure/storage-blob';
 import { isWorkerEvent, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, type WorkerEvent } from '@databridge/connectors';
 import { logger as rootLogger } from '../utils/logger';
 import type { JobHandle, JobLauncher, JobSpec } from './JobLauncher';
+import { stageConfig, unstageConfig } from './BlobConfigStager';
 
 const log = rootLogger.child({ mod: 'azure-job-launcher' });
 
@@ -116,6 +117,7 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
     let executionName: string | null = null;
     let pollerStopped = false;
     const seenLines = { count: 0 }; // mutable cursor into the heartbeat blob
+    let configCleanup: { account: string; container: string; blobName: string } | null = null;
 
     const done: Promise<{ exitCode: number }> = (async () => {
       try {
@@ -141,10 +143,21 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
           ttlMinutes: 90,
         });
 
+        // ─── Stage the connector config to a private blob ─────────────
+        // Replaces the previous `WORKER_CONNECTOR_CONFIG` env var that
+        // sat in plaintext in the Container Apps Job execution metadata
+        // for ~30 days. See BlobConfigStager.ts for the rationale.
+        const staged = await stageConfig(spec.connectorConfig, spec.syncRunId);
+        configCleanup = staged.cleanupHandle;
+
         // ─── Build env-var overrides for the job execution ────────────
+        // NOTE the absence of `WORKER_CONNECTOR_CONFIG` — the worker fetches
+        // it from the staged blob via `WORKER_CONFIG_BLOB_URL`. None of
+        // these env vars contain credentials; the SAS URL is a 15-min
+        // read capability scoped to one specific blob.
         const envOverrides: EnvironmentVar[] = [
           { name: 'WORKER_CONNECTOR_TYPE',   value: spec.connectorType },
-          { name: 'WORKER_CONNECTOR_CONFIG', value: JSON.stringify(spec.connectorConfig) },
+          { name: 'WORKER_CONFIG_BLOB_URL',  value: staged.blobUrl },
           { name: 'WORKER_ENTITIES',         value: spec.entities.join(',') },
           { name: 'WORKER_TENANT_ID',        value: spec.tenantId },
           { name: 'WORKER_CONNECTION_ID',    value: spec.connectionId },
@@ -155,6 +168,12 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
           // Heartbeat: the SAS URL points directly at the append-blob.
           { name: 'WORKER_HEARTBEAT_URL', value: heartbeatSas },
         ];
+        // Forward incremental-sync cursors when present. JSON in env is
+        // fine here: cursors are watermark values (timestamps / ints),
+        // not credentials.
+        if (spec.cursors && Object.keys(spec.cursors).length > 0) {
+          envOverrides.push({ name: 'WORKER_CURSORS', value: JSON.stringify(spec.cursors) });
+        }
 
         // ─── Start the Job execution ──────────────────────────────────
         // The override must include image + resources — Container Apps
@@ -216,6 +235,14 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
         const message = err instanceof Error ? err.message : String(err);
         onEvent({ type: 'error', ts: new Date().toISOString(), message: `Launcher failure: ${message}` });
         return { exitCode: EXIT_ERROR };
+      } finally {
+        // Always clean up the staged config blob — success, failure,
+        // and cancellation all reach here. Best-effort; a leftover
+        // blob is mopped up by the storage-account lifecycle policy
+        // (7-day delete on the heartbeat container).
+        if (configCleanup) {
+          void unstageConfig(configCleanup).catch(() => undefined);
+        }
       }
     })();
 

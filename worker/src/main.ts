@@ -49,6 +49,18 @@ import { parseEnv } from './env';
 async function main(): Promise<void> {
   const env = parseEnv();
 
+  // ─── Resolve connector config ──────────────────────────────────────────
+  // Two delivery paths:
+  //   • Local launcher → WORKER_CONNECTOR_CONFIG (JSON in env var). Fine
+  //     for dev where the worker is a child of the backend on the same
+  //     host and there's no log-retention exposure path.
+  //   • Azure launcher → WORKER_CONFIG_BLOB_URL (read SAS to a private
+  //     blob containing the JSON). The credential never appears in the
+  //     Container Apps Job execution env, which Azure retains for ~30 days.
+  //
+  // Exactly one of the two must be present.
+  const connectorConfig = await resolveConnectorConfig(env);
+
   // ─── Heartbeat blob (Azure mode) ───────────────────────────────────────
   // When WORKER_HEARTBEAT_URL is set, every emitted event is mirrored into
   // an append-blob the orchestrator polls. This is how live progress
@@ -131,7 +143,7 @@ async function main(): Promise<void> {
 
   try {
     const result = await connector.sync(
-      env.WORKER_CONNECTOR_CONFIG,
+      connectorConfig,
       { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS },
       ctx,
     );
@@ -169,6 +181,37 @@ function emit(e: WorkerEvent, heartbeat: AppendBlobClient | null): void {
     // behind blob round trips; events are append-blob-atomic per call.
     heartbeat.appendBlock(line, line.length).catch(() => {/* swallowed */});
   }
+}
+
+/**
+ * Pull the connector config from whichever delivery path the launcher
+ * chose. Fetches over plain HTTPS using the SAS URL — no Azure SDK
+ * dependency, no managed-identity setup needed on the worker container.
+ * The SAS is a self-contained capability bound to the blob and expires
+ * in 15 min, so a 5-second fetch is well within bounds.
+ */
+async function resolveConnectorConfig(env: ReturnType<typeof parseEnv>): Promise<Record<string, unknown>> {
+  if (env.WORKER_CONFIG_BLOB_URL) {
+    const resp = await fetch(env.WORKER_CONFIG_BLOB_URL);
+    if (!resp.ok) {
+      throw new Error(
+        `Failed to fetch staged config blob (HTTP ${resp.status}). ` +
+        `Either the SAS expired (15-min TTL) or the orchestrator unstaged the blob prematurely.`,
+      );
+    }
+    const text = await resp.text();
+    try {
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch (e) {
+      throw new Error(`Staged config blob is not valid JSON: ${(e as Error).message}`);
+    }
+  }
+  if (env.WORKER_CONNECTOR_CONFIG) {
+    return env.WORKER_CONNECTOR_CONFIG;
+  }
+  throw new Error(
+    'Missing connector config — set either WORKER_CONFIG_BLOB_URL (Azure) or WORKER_CONNECTOR_CONFIG (local).',
+  );
 }
 
 function makeWarehouseWriter(warehousePath: string): WarehouseWriter {
