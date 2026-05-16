@@ -36,6 +36,7 @@ import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATION
 import type { KnownRelationship } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
 import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
+import { fetchODataMetadata, lookupEntitySchema, type ODataMetadata } from './metadata';
 
 export class ExactOnlineConnector extends BaseSourceConnector implements SourceConnector {
   readonly type = 'exactonline';
@@ -289,6 +290,28 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       },
     });
 
+    // ── Fetch OData $metadata once for the whole sync ──────────────────
+    // Used as the schema fallback when a `requiresSelect` entity is
+    // empty in the user's division — without metadata, an empty entity
+    // produces a useless `_placeholder`-column parquet that the catalog
+    // can't show meaningfully. With metadata, the empty parquet carries
+    // the real column shape so business users can see "this table
+    // exists, here are the columns it would have if we tracked it."
+    //
+    // Best-effort: any failure (network, parse, permission) is logged
+    // and the sync proceeds without the fallback. We never want
+    // metadata trouble to fail the whole sync — the data writes don't
+    // depend on it.
+    let metadata: ODataMetadata | null = null;
+    try {
+      metadata = await fetchODataMetadata(http, config, ctx.log);
+      ctx.log.info(`OData $metadata loaded`, { entitySets: metadata.entities.size });
+    } catch (err) {
+      ctx.log.warn('failed to fetch OData $metadata — empty entities will get placeholder schemas', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     // ── Sync each selected entity ──────────────────────────────────────
     // Per-entity isolation: an error on one entity is recorded as a
     // warning and the loop continues with the rest. Only cancellation
@@ -319,7 +342,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       });
 
       try {
-        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor);
+        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata);
         rowCounts[entity.name] = rowsWritten;
         if (rowsWritten === 0) {
           warnings.push(`Entity '${entity.name}' returned no rows.`);
@@ -357,6 +380,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     entity: ExactOnlineEntity,
     ctx: SyncContext,
     priorCursor: { type: string; value: string } | undefined,
+    metadata: ODataMetadata | null,
   ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
     // For entities EO refuses to list without $select, discover the
     // schema first via $top=1 and use the observed field set as
@@ -368,10 +392,27 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     if (entity.requiresSelect) {
       selectFields = await this.discoverSelectFields(http, config, entity, ctx);
       if (!selectFields || selectFields.length === 0) {
-        // Empty entity (no first row to introspect) — fast-exit with
-        // zero rows. The next sync re-tries; once any row exists the
-        // discovery will see it.
-        ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — nothing to sync this run`);
+        // Empty entity. Rather than skipping it (catalog shows nothing),
+        // write an empty Parquet using the OData $metadata schema so
+        // analysts can see what the table WOULD contain. Falls back to
+        // a single-_placeholder parquet when metadata isn't available
+        // (network failure during the upfront $metadata fetch).
+        ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — writing empty parquet with $metadata schema`);
+        const schema = metadata ? lookupEntitySchema(metadata, entity.apiPath) : undefined;
+        const emptySchema = schema ? schema.map((p) => ({
+          name: p.name,
+          sqlType: edmTypeToDuckDb(p.edmType),
+        })) : undefined;
+        const result = await ctx.warehouseWriter.writeTable(
+          entity.name,
+          emptyAsyncIterable(),
+          emptySchema ? { emptySchema } : undefined,
+        );
+        ctx.log.info(`${entity.name} empty-parquet written`, {
+          columns: emptySchema?.length ?? 1,
+          source: emptySchema ? '$metadata' : 'placeholder',
+          bytes: result.bytesWritten,
+        });
         return { rowsWritten: 0 };
       }
     }
@@ -537,6 +578,48 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Zero-row async iterable for the empty-Parquet write path. The
+ * WarehouseWriter consumes an AsyncIterable<Row>; for a known-empty
+ * entity we hand it an empty iterable + an `emptySchema` so the writer
+ * materialises a parquet with the right shape and no rows.
+ */
+async function* emptyAsyncIterable(): AsyncIterable<Record<string, unknown>> {
+  // Yields nothing on purpose.
+}
+
+/**
+ * Map EO's CSDL Edm.* type names to DuckDB-compatible SQL types. Only
+ * the types we actually expect to see on EO entity properties are
+ * mapped — anything unknown falls back to VARCHAR (safe, lossy but
+ * non-fatal). The writer further validates against an allow-list, so
+ * unmapped or malformed types never make it into SQL.
+ *
+ * Reference: OData v3 Primitive Types
+ *   https://www.odata.org/documentation/odata-version-3-0/abnf/#primitiveTypeNames
+ */
+function edmTypeToDuckDb(edm: string): string {
+  switch (edm) {
+    case 'Edm.Boolean': return 'BOOLEAN';
+    case 'Edm.Byte':
+    case 'Edm.SByte':
+    case 'Edm.Int16': return 'SMALLINT';
+    case 'Edm.Int32': return 'INTEGER';
+    case 'Edm.Int64': return 'BIGINT';
+    case 'Edm.Single': return 'REAL';
+    case 'Edm.Double': return 'DOUBLE';
+    case 'Edm.Decimal': return 'DECIMAL(18,4)'; // EO's typical precision; safe default
+    case 'Edm.DateTime':
+    case 'Edm.DateTimeOffset': return 'TIMESTAMP';
+    case 'Edm.Date': return 'DATE';
+    case 'Edm.Guid': return 'UUID';
+    case 'Edm.Binary': return 'BLOB';
+    case 'Edm.String':
+    default: return 'VARCHAR';
+  }
+}
+
 interface ODataResponse {
   d: unknown;
 }

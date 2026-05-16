@@ -101,9 +101,19 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
     const useMerge = !!opts?.mergeKey && existingPath !== null;
 
     if (rowsWritten === 0 && !useMerge) {
-      // Empty entity, no existing file to preserve — write an empty
-      // Parquet so downstream profilers don't crash on missing files.
-      await writeEmptyParquet(outFile);
+      // Empty entity, no existing file to preserve. When the connector
+      // supplied an explicit schema (typically because it knows the
+      // entity's column shape via an out-of-band mechanism like OData
+      // $metadata), we write a parquet WITH that schema so the catalog
+      // can show the columns. Otherwise fall back to the legacy
+      // single-_placeholder shape — keeps downstream profilers from
+      // crashing on missing files but isn't useful for understanding
+      // what an empty table would contain.
+      if (opts?.emptySchema && opts.emptySchema.length > 0) {
+        await writeEmptyParquetWithSchema(outFile, opts.emptySchema);
+      } else {
+        await writeEmptyParquet(outFile);
+      }
       await fs.unlink(stagingPath).catch(() => undefined);
     } else if (useMerge) {
       // Merge existing + delta on mergeKey. DuckDB does the heavy lifting
@@ -268,6 +278,47 @@ async function writeEmptyParquet(parquetPath: string): Promise<void> {
   } finally {
     await db.close();
   }
+}
+
+/**
+ * Write an empty Parquet with the caller-supplied schema. Each column is
+ * created with the requested SQL type via `NULL::<type>`, and the
+ * `WHERE FALSE` keeps the result rowless — so the file is an empty
+ * table with the right schema, ready for the catalog to introspect.
+ *
+ * Column names + types are validated against an ASCII allow-list before
+ * being interpolated into SQL. Anything outside the allow-list falls
+ * back to VARCHAR + a safe column alias — defence-in-depth even though
+ * the metadata fetcher already controls the input.
+ */
+async function writeEmptyParquetWithSchema(
+  parquetPath: string,
+  schema: ReadonlyArray<{ name: string; sqlType: string }>,
+): Promise<void> {
+  const db = await Database.create(':memory:');
+  try {
+    const esc = parquetPath.replace(/'/g, "''");
+    const projections = schema.map((col, i) => {
+      const safeName = isSafeColumnName(col.name) ? col.name : `col_${i}`;
+      const safeType = isSafeSqlType(col.sqlType) ? col.sqlType : 'VARCHAR';
+      // Double-quote the column name so PascalCase + reserved-word
+      // columns work. SQL type stays bare (it's allow-listed above).
+      return `NULL::${safeType} AS "${safeName.replace(/"/g, '""')}"`;
+    }).join(', ');
+    await db.all(`
+      COPY (SELECT ${projections} WHERE FALSE)
+      TO '${esc}' (FORMAT 'parquet', COMPRESSION 'snappy')
+    `);
+  } finally {
+    await db.close();
+  }
+}
+
+function isSafeSqlType(t: string): boolean {
+  // DuckDB primitive type names we expect to receive from the connector
+  // (mapped from OData EDM types). Anything outside this list falls
+  // back to VARCHAR rather than getting interpolated.
+  return /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/.test(t);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

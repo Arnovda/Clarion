@@ -120,7 +120,16 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
       }
 
       if (rowsWritten === 0 && !useMerge) {
-        await writeEmptyParquet(stagingParquet);
+        // Empty entity. If the connector handed us an explicit schema
+        // (e.g. from OData $metadata on a zero-row table), materialise
+        // the parquet WITH those columns so the catalog can show the
+        // table's shape. Otherwise fall back to the legacy
+        // single-_placeholder schema.
+        if (opts?.emptySchema && opts.emptySchema.length > 0) {
+          await writeEmptyParquetWithSchema(stagingParquet, opts.emptySchema);
+        } else {
+          await writeEmptyParquet(stagingParquet);
+        }
       } else if (useMerge) {
         await mergeNdjsonIntoExistingParquet(
           stagingNdjson,
@@ -177,6 +186,31 @@ async function writeEmptyParquet(parquetPath: string): Promise<void> {
     const esc = parquetPath.replace(/'/g, "''");
     await db.all(`
       COPY (SELECT NULL::VARCHAR AS _placeholder WHERE FALSE)
+      TO '${esc}' (FORMAT 'parquet', COMPRESSION 'snappy')
+    `);
+  } finally {
+    await db.close();
+  }
+}
+
+/**
+ * Empty parquet with a connector-supplied schema. Same shape as the
+ * ParquetWriter mirror — see that file for the validation rationale.
+ */
+async function writeEmptyParquetWithSchema(
+  parquetPath: string,
+  schema: ReadonlyArray<{ name: string; sqlType: string }>,
+): Promise<void> {
+  const db = await Database.create(':memory:');
+  try {
+    const esc = parquetPath.replace(/'/g, "''");
+    const projections = schema.map((col, i) => {
+      const safeName = /^[A-Za-z_][A-Za-z0-9_]*$/.test(col.name) && col.name.length <= 128 ? col.name : `col_${i}`;
+      const safeType = /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/.test(col.sqlType) ? col.sqlType : 'VARCHAR';
+      return `NULL::${safeType} AS "${safeName.replace(/"/g, '""')}"`;
+    }).join(', ');
+    await db.all(`
+      COPY (SELECT ${projections} WHERE FALSE)
       TO '${esc}' (FORMAT 'parquet', COMPRESSION 'snappy')
     `);
   } finally {

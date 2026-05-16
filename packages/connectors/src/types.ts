@@ -508,6 +508,24 @@ export interface WriteTableOptions {
    * overwrite.
    */
   mergeKey?: string;
+
+  /**
+   * Schema for an entity the writer will end up materialising as an EMPTY
+   * Parquet file. Used by connectors that know the column shape via an
+   * out-of-band mechanism (OData $metadata, GraphQL introspection, …)
+   * when the entity has zero rows in the source — without this hint the
+   * empty-Parquet path produces a single `_placeholder` column, which
+   * isn't useful for catalog browsing or downstream type inference.
+   *
+   * Each entry is one column: a name (PascalCase as it appears in the
+   * source) and a DuckDB-compatible SQL type. Connectors translate from
+   * source-specific types (e.g. EO's `Edm.String`, `Edm.Int32`,
+   * `Edm.DateTime`) to DuckDB types before passing this option.
+   *
+   * Ignored when rows actually arrive — the inferred schema from the
+   * rows always wins. Only consulted on the empty-write branch.
+   */
+  emptySchema?: ReadonlyArray<{ name: string; sqlType: string }>;
 }
 
 export interface WarehouseWriter {
