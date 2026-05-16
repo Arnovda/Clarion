@@ -206,6 +206,21 @@ async function mergeNdjsonIntoExistingParquet(
     const escEx = existingParquetPath.replace(/'/g, "''");
     const escOut = outPath.replace(/'/g, "''");
     const escKey = mergeKey.replace(/"/g, '""');
+
+    // Mirror of ParquetWriter's NULL-key guard. PARTITION BY treats each
+    // NULL as a distinct partition, so a merge with NULL business keys
+    // silently produces one duplicate per sync. Fail loudly instead.
+    const nullCheck = await db.all(
+      `SELECT COUNT(*) AS n FROM read_json('${escNd}', format='newline_delimited', auto_detect=true) WHERE "${escKey}" IS NULL`,
+    ) as Array<{ n: number | bigint }>;
+    const nullCount = Number(nullCheck[0]?.n ?? 0);
+    if (nullCount > 0) {
+      throw new Error(
+        `Merge refused: ${nullCount} delta row(s) have NULL in business-key column '${mergeKey}'. ` +
+        `Merging with NULL keys would silently produce duplicates on every sync.`,
+      );
+    }
+
     await db.all(`
       COPY (
         WITH delta AS (

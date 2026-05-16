@@ -191,6 +191,25 @@ async function mergeNdjsonIntoExistingParquet(
     const escOut = tmpOut.replace(/'/g, "''");
     const escKey = mergeKey.replace(/"/g, '""');
 
+    // Guard: merge-by-key with NULL values in the key column silently
+    // produces duplicates. PARTITION BY treats every NULL as its own
+    // partition, so two delta rows with NULL keys both survive the
+    // ROW_NUMBER filter, and the next sync's existing+delta pair will
+    // do the same — accumulating one duplicate per sync. Better to
+    // fail loudly here than to silently corrupt the table.
+    const nullCheck = await db.all(
+      `SELECT COUNT(*) AS n FROM read_json('${escNd}', format='newline_delimited', auto_detect=true) WHERE "${escKey}" IS NULL`,
+    ) as Array<{ n: number | bigint }>;
+    const nullCount = Number(nullCheck[0]?.n ?? 0);
+    if (nullCount > 0) {
+      throw new Error(
+        `Merge refused: ${nullCount} delta row(s) have NULL in business-key column '${mergeKey}'. ` +
+        `Merging with NULL keys would silently produce duplicates on every sync. ` +
+        `Either fix the source so the key is always populated, or remove businessKey from the entity ` +
+        `descriptor to opt into full-table overwrite semantics.`,
+      );
+    }
+
     // The CTE pattern below:
     //   - `merged`        : existing rows tagged origin=0, delta rows origin=1
     //   - ROW_NUMBER PARTITION BY <key> ORDER BY origin DESC

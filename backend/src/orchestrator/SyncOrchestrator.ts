@@ -134,6 +134,51 @@ function requireEnv(name: string): string {
   return v;
 }
 
+// ─── Cursor validation + comparison ───────────────────────────────────────
+// Hand-rolled, not Zod, because these run per-entity per-sync and we want
+// zero allocation overhead. Both functions are pure + total — they never
+// throw, never log; callers decide what to do with a falsy return.
+
+/**
+ * Validate a cursor value's surface shape against its declared type.
+ * Rejects values that would otherwise surface as opaque EO 400s on the
+ * next sync (e.g. a non-ISO string fed back into a `datetime'…'` filter).
+ */
+function isValidCursorValue(type: string, value: string): boolean {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 64) return false;
+  if (type === 'timestamp') {
+    // ISO 8601 prefix; tolerant of fractional seconds + zone designators.
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/.test(value);
+  }
+  if (type === 'integer') {
+    return /^-?\d+$/.test(value);
+  }
+  // 'string' — accept anything non-empty within length bounds.
+  return type === 'string';
+}
+
+/**
+ * Returns true when `incoming > existing` per the cursor's declared type.
+ * Cursors of different types are NEVER comparable — the platform refuses
+ * to advance across a type change, so a connector that switches its
+ * cursor scheme can't silently regress its watermark.
+ */
+function cursorAdvances(type: string, existing: string, incoming: string): boolean {
+  if (type === 'integer') {
+    const a = Number(existing); const b = Number(incoming);
+    return Number.isFinite(a) && Number.isFinite(b) && b > a;
+  }
+  if (type === 'timestamp') {
+    const a = Date.parse(existing); const b = Date.parse(incoming);
+    if (Number.isNaN(a) || Number.isNaN(b)) return false;
+    return b > a;
+  }
+  // 'string' — lexicographic. Documented assumption: caller picks a
+  // collation that makes lex comparison meaningful (e.g. zero-padded
+  // numeric strings, ISO-8601 dates).
+  return incoming > existing;
+}
+
 // ─── triggerSync ─────────────────────────────────────────────────────────
 export interface TriggerSyncResult {
   syncRunId: number;
@@ -357,24 +402,43 @@ async function runSyncInBackground(args: {
 
       // ── Persist per-entity cursors ──────────────────────────────────
       // Upsert one row per entity that emitted a new cursor. Defensive:
-      //   • Never write a row whose new value < existing value (cursor
-      //     mustn't go backwards).
+      //   • Validate the cursor value shape per cursor_type before write —
+      //     a malformed timestamp passed back as a $filter on the next
+      //     sync would surface as an opaque EO 400.
+      //   • Refuse to write a cursor that goes backwards. A non-advancing
+      //     cursor signals a connector bug (returned a stale value) or
+      //     data corruption upstream (EO eventual-consistency edge case).
+      //     Either way, silently keeping the old cursor is the safe choice
+      //     so the next sync re-reads from the trusted high-water mark.
       //   • Tenant + connection in both INSERT body and WHERE so RLS +
       //     explicit filter both apply.
-      // Failure of cursor persistence does NOT mark the sync as failed —
+      // Cursor-persistence failures DO NOT mark the sync as failed —
       // the data is already in the warehouse; worst case the next sync
       // re-pulls some rows (idempotent via merge-by-key).
       for (const [entityName, cursor] of Object.entries(cursorsOut)) {
         try {
+          if (!isValidCursorValue(cursor.type, cursor.value)) {
+            childLog.error({ entityName, cursorType: cursor.type, cursorValue: cursor.value },
+              'connector returned malformed cursor value — refusing to persist (next sync re-reads from prior cursor)');
+            continue;
+          }
           // Read current value first to enforce monotonicity in app logic
           // (the DB can't easily express "new >= old" in a single
           // INSERT ... ON CONFLICT).
           const existing = await semanticDb('entity_sync_cursors')
             .where({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName })
-            .first() as { cursor_value: string } | undefined;
-          if (existing && existing.cursor_value >= cursor.value) {
-            childLog.warn({ entityName, existing: existing.cursor_value, incoming: cursor.value },
-              'connector returned non-advancing cursor; skipping update');
+            .first() as { cursor_value: string; cursor_type: string } | undefined;
+          if (existing && !cursorAdvances(cursor.type, existing.cursor_value, cursor.value)) {
+            // Backwards / non-advancing. Loud log so this surfaces in
+            // alerting — the data is fine (we just don't advance) but
+            // it's evidence of a real bug somewhere.
+            childLog.error({
+              entityName,
+              existingType: existing.cursor_type,
+              existing: existing.cursor_value,
+              incomingType: cursor.type,
+              incoming: cursor.value,
+            }, 'CRITICAL: connector returned non-advancing cursor; refusing to update (possible connector bug)');
             continue;
           }
           await semanticDb('entity_sync_cursors')
@@ -418,9 +482,17 @@ async function runSyncInBackground(args: {
 
       // Fire-and-forget profiling. Sync is already counted as succeeded —
       // a profiler failure is its own concern, not a sync failure.
-      void runProfilerInBackground({ connectionId, tenantId }).catch((e) => {
-        childLog.error({ err: e }, 'schema profiling failed (sync still counted as succeeded)');
-      });
+      // Skip when zero rows were written across every entity — profiling
+      // an empty warehouse just churns AI tokens and surfaces a "all
+      // tables removed" schema-drift notification that's just noise.
+      const totalRows = Object.values(rowCounts).reduce((sum, n) => sum + (n || 0), 0);
+      if (totalRows > 0) {
+        void runProfilerInBackground({ connectionId, tenantId }).catch((e) => {
+          childLog.error({ err: e }, 'schema profiling failed (sync still counted as succeeded)');
+        });
+      } else {
+        childLog.info({ connectionId }, 'sync wrote zero rows across all entities — skipping schema profiling');
+      }
 
       // Fire any pipelines configured with `on_source_sync_succeeded`
       // for this connection. Fire-and-forget by design: a missing

@@ -235,11 +235,18 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         accessToken: refreshed.accessToken,
         accessTokenExpiresAt: Date.now() + (refreshed.expiresIn * 1000),
       };
-      if (ctx.onCredentialRotated) {
-        await ctx.onCredentialRotated(newConfig as unknown as ConnectorConfig);
-      } else {
-        ctx.log.warn('tokens rotated but no onCredentialRotated handler');
+      if (!ctx.onCredentialRotated) {
+        // The SyncContext is constructed by the orchestrator (worker/main.ts
+        // for Container Apps mode, the local launcher for dev). Both wire
+        // onCredentialRotated unconditionally. If it's missing, something
+        // is structurally wrong — fail loudly rather than silently lose
+        // the rotated refresh_token.
+        throw new AuthRefreshError(
+          'EO refresh_token rotated but SyncContext.onCredentialRotated is undefined. ' +
+          'The new refresh_token must be persisted before any data work — refusing to continue.',
+        );
       }
+      await ctx.onCredentialRotated(newConfig as unknown as ConnectorConfig);
     }
 
     // ── HttpClient with the access token ───────────────────────────────
@@ -261,14 +268,18 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
           log: ctx.log,
         });
         currentRefreshToken = r.newRefreshToken;
-        if (ctx.onCredentialRotated) {
-          await ctx.onCredentialRotated({
-            ...config,
-            refreshToken: r.newRefreshToken,
-            accessToken: r.accessToken,
-            accessTokenExpiresAt: Date.now() + (r.expiresIn * 1000),
-          } as unknown as ConnectorConfig);
+        if (!ctx.onCredentialRotated) {
+          throw new AuthRefreshError(
+            'EO refresh_token rotated mid-sync but SyncContext.onCredentialRotated ' +
+            'is undefined. Refusing to keep using the new token without persisting it.',
+          );
         }
+        await ctx.onCredentialRotated({
+          ...config,
+          refreshToken: r.newRefreshToken,
+          accessToken: r.accessToken,
+          accessTokenExpiresAt: Date.now() + (r.expiresIn * 1000),
+        } as unknown as ConnectorConfig);
         return `Bearer ${r.accessToken}`;
       },
     });
@@ -450,6 +461,13 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     if (entity.incrementalCursor) {
       params.push(`$orderby=${encodeURIComponent(`${entity.incrementalCursor.field} asc`)}`);
     }
+    // $select — required by a handful of "wide" EO endpoints that
+    // refuse a bare listing with HTTP 400 "Please add a $select or a
+    // $top=1 statement". For entities without requiredSelect we omit
+    // $select and EO returns the full default projection.
+    if (entity.requiredSelect && entity.requiredSelect.length > 0) {
+      params.push(`$select=${encodeURIComponent(entity.requiredSelect.join(','))}`);
+    }
 
     return params.length === 0 ? base : `${base}?${params.join('&')}`;
   }
@@ -536,17 +554,28 @@ async function getOrRefreshAccessToken(
     refreshToken: config.refreshToken,
     log,
   });
-  if (onCredentialRotated) {
-    const rotated: ExactOnlineConfig = {
-      ...config,
-      refreshToken: refreshed.newRefreshToken,
-      accessToken: refreshed.accessToken,
-      accessTokenExpiresAt: Date.now() + (refreshed.expiresIn * 1000),
-    };
-    await onCredentialRotated(rotated as unknown as ConnectorConfig);
-  } else {
-    log.warn('refresh_token rotated but no onCredentialRotated handler — next caller will see "Old refresh token used"');
+  if (!onCredentialRotated) {
+    // Fail fast instead of silently corrupting durable state. The
+    // previous behaviour (just log a warning) is what produced the
+    // "Old refresh token used" sync failure that took two debugging
+    // rounds to track down: probeEntities refreshed in the wizard,
+    // the new refresh_token was dropped on the floor, the user clicked
+    // Sync now ten minutes later and the worker saw EO reject the
+    // stored (now-invalid) refresh_token. Better to refuse the call
+    // here so the bug surfaces in development, not in production.
+    throw new AuthRefreshError(
+      'refresh_token rotation required but no onCredentialRotated handler was wired ' +
+      'by the caller. Refusing to refresh — persisting the new token requires a callback ' +
+      'that writes it back to durable storage (oauth_pending or connections row).',
+    );
   }
+  const rotated: ExactOnlineConfig = {
+    ...config,
+    refreshToken: refreshed.newRefreshToken,
+    accessToken: refreshed.accessToken,
+    accessTokenExpiresAt: Date.now() + (refreshed.expiresIn * 1000),
+  };
+  await onCredentialRotated(rotated as unknown as ConnectorConfig);
   return refreshed.accessToken;
 }
 

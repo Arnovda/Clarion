@@ -43,6 +43,30 @@ export interface ExactOnlineEntity extends EntityDescriptor {
    * specific entities only).
    */
   defaultFilter?: string;
+
+  /**
+   * EO endpoints that reject a bare listing request with HTTP 400
+   * "Please add a $select or a $top=1 statement to the query string."
+   * These are typically wide tables (50+ columns) where EO refuses to
+   * stream the full schema unless the client declares the columns it
+   * actually wants. Without this declaration the entity sync fails as
+   * a warning and writes ZERO rows — the user gets an empty table in
+   * the warehouse with no obvious explanation.
+   *
+   * When set, the connector appends
+   *   $select=Field1,Field2,…
+   * to the listing URL. Lists are field NAMES as documented at
+   * https://start.exactonline.nl/docs/HlpRestAPIResources.aspx — same
+   * casing as the OData payload (PascalCase). Order doesn't matter to
+   * EO; we list logically grouped (identity → references → measures →
+   * audit) for human review.
+   *
+   * Field lists are curated — they pick the fields useful for analytics,
+   * not every field EO exposes. Adding a field later is safe (existing
+   * rows get NULL in the new column on next sync); removing one breaks
+   * downstream SQL. Be deliberate when editing.
+   */
+  requiredSelect?: readonly string[];
 }
 
 /**
@@ -142,7 +166,17 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     apiPath: '/crm/Quotations',
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
-    businessKey: 'ID',
+    businessKey: 'QuotationID',
+    requiredSelect: [
+      'QuotationID', 'QuotationNumber', 'VersionNumber', 'Status', 'StatusDescription',
+      'OrderedBy', 'OrderedByName', 'OrderedByContactPerson', 'OrderedByContactPersonFullName',
+      'InvoiceTo', 'InvoiceToName', 'DeliverTo', 'DeliverToName',
+      'Currency', 'AmountFC', 'AmountFCExclVat', 'AmountDC', 'AmountDiscountFC', 'AmountDiscountExclVatFC',
+      'QuotationDate', 'CloseDate', 'DeliveryDate', 'OpportunityID',
+      'Description', 'Remarks', 'YourRef', 'PaymentCondition', 'PaymentConditionDescription',
+      'PaymentReference', 'Project', 'ProjectDescription', 'SalesChannel',
+      'Division', 'Created', 'CreatorFullName', 'Modified', 'ModifierFullName',
+    ],
   },
   {
     name: 'QuotationLines',
@@ -153,6 +187,14 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'QuotationID', 'LineNumber',
+      'Item', 'ItemCode', 'ItemDescription', 'Description',
+      'Quantity', 'UnitCode', 'UnitDescription', 'UnitPrice', 'NetPrice', 'CostPriceFC',
+      'Amount', 'AmountDC', 'Discount', 'VATCode', 'VATCodeDescription', 'VATAmount', 'VATPercentage',
+      'CostCenter', 'CostUnit', 'Project', 'ProjectDescription', 'DeliveryDate',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'BankAccounts',
@@ -449,6 +491,21 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EntryID', 'EntryNumber', 'LineNumber',
+      'Date', 'FinancialPeriod', 'FinancialYear',
+      'JournalCode', 'JournalDescription', 'Type',
+      'GLAccount', 'GLAccountCode', 'GLAccountDescription',
+      'Account', 'AccountCode', 'AccountName',
+      'Description', 'YourRef', 'OurRef', 'PaymentReference',
+      'AmountFC', 'AmountDC', 'AmountVATBaseFC', 'AmountVATFC', 'Currency',
+      'VATCode', 'VATCodeDescription', 'VATPercentage', 'VATType',
+      'CostCenter', 'CostCenterDescription', 'CostUnit', 'CostUnitDescription',
+      'Project', 'ProjectDescription', 'TrackingNumber', 'TrackingNumberDescription',
+      'OffsetID', 'Status', 'DueDate', 'InvoiceNumber',
+      'Quantity', 'Asset', 'AssetCode', 'AssetDescription',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'FinancialPeriods',
@@ -493,7 +550,14 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     apiPath: '/financialtransaction/BankEntries',
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
-    businessKey: 'ID',
+    businessKey: 'EntryID',
+    requiredSelect: [
+      'EntryID', 'EntryNumber', 'BatchNumber',
+      'Status', 'EntryDate', 'FinancialPeriod', 'FinancialYear',
+      'Journal', 'JournalDescription', 'Description', 'Reference',
+      'AmountFC', 'AmountDC', 'Currency',
+      'Division', 'Created', 'CreatorFullName', 'Modified', 'ModifierFullName',
+    ],
   },
   {
     name: 'BankEntryLines',
@@ -504,6 +568,18 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EntryID', 'LineNumber',
+      'GLAccount', 'GLAccountCode', 'GLAccountDescription',
+      'Account', 'AccountCode', 'AccountName',
+      'Date', 'Description', 'YourRef', 'OurRef',
+      'AmountFC', 'AmountDC', 'Currency',
+      'VATCode', 'VATCodeDescription', 'VATAmountFC', 'VATAmountDC', 'VATPercentage',
+      'CostCenter', 'CostCenterDescription', 'CostUnit', 'CostUnitDescription',
+      'Project', 'ProjectDescription',
+      'Notes', 'OffsetID',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'Payments',
@@ -514,6 +590,18 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EntryID', 'EntryNumber', 'PaymentReference', 'YourRef',
+      'Status', 'StatusDescription',
+      'Account', 'AccountCode', 'AccountName', 'AccountBankAccountID',
+      'PaymentDays', 'DueDate', 'InvoiceDate', 'InvoiceNumber',
+      'AmountDC', 'AmountFC', 'Currency',
+      'DiscountAmountFC', 'DiscountDueDate',
+      'PaymentMethod', 'PaymentCondition', 'PaymentConditionDescription',
+      'BankAccount', 'BankAccountIBAN',
+      'Description', 'OurRef',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'Receivables',
@@ -524,6 +612,17 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EntryID', 'EntryNumber', 'YourRef',
+      'Status', 'StatusDescription',
+      'Account', 'AccountCode', 'AccountName',
+      'InvoiceDate', 'InvoiceNumber', 'DueDate', 'PaymentDays',
+      'AmountDC', 'AmountFC', 'AmountInTransitDC', 'AmountInTransitFC', 'Currency',
+      'DiscountAmount', 'DiscountDueDate',
+      'PaymentMethod', 'PaymentCondition', 'PaymentConditionDescription',
+      'PaymentReference', 'Description',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'ReceivablesList',
@@ -589,6 +688,16 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'Code', 'FullName', 'FirstName', 'LastName', 'Initials', 'MiddleName',
+      'Gender', 'BirthDate', 'BirthCountry', 'BirthName', 'BirthNamePrefix',
+      'IsActive', 'IsAnonymised',
+      'Email', 'Phone', 'PhoneExtension', 'Mobile',
+      'AddressLine1', 'AddressLine2', 'AddressLine3', 'Postcode', 'City', 'State', 'Country',
+      'Nationality', 'BSN',
+      'CustomerID', 'CustomerName',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'Employments',
@@ -599,6 +708,14 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'EmployeeFullName', 'EmploymentNumber',
+      'StartDate', 'EndDate', 'EndContractDate',
+      'EmployeeHID', 'EmployeeHIDDescription', 'Status',
+      'CalculatedDateOfDying', 'DateOfDying', 'DateOfDeath',
+      'Reason', 'ReasonDescription',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'ActiveEmployments',
@@ -609,6 +726,11 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'EmployeeFullName', 'EmploymentNumber',
+      'StartDate', 'EndDate',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'EmploymentContracts',
@@ -619,6 +741,20 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'EmployeeFullName', 'Employment', 'EmploymentNumber',
+      'StartDate', 'EndDate',
+      'ContractType', 'EmploymentType', 'EmploymentTypeDescription',
+      'PartTimeFactor', 'WeekHours', 'HoursPerWeek',
+      'JobTitle', 'JobLevel', 'JobGroup',
+      'Function', 'FunctionDescription',
+      'Department', 'DepartmentDescription',
+      'CostCenter', 'CostCenterDescription', 'CostUnit', 'CostUnitDescription',
+      'WorkSchedule', 'WorkScheduleDescription',
+      'NumberOfDaysPerWeek', 'Probation', 'ProbationEndDate',
+      'NoticePeriod', 'NoticePeriodEmployee',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'EmploymentSalaries',
@@ -629,6 +765,15 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'EmployeeFullName', 'Employment', 'EmploymentNumber',
+      'StartDate', 'EndDate',
+      'SalaryType', 'SalaryTypeDescription',
+      'Amount', 'Wage', 'WageCode',
+      'TaxableWage', 'TaxableWageRetroactive',
+      'PaymentUnit',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'EmploymentOrganizations',
@@ -639,6 +784,14 @@ export const EXACT_ONLINE_ENTITIES: readonly ExactOnlineEntity[] = [
     supportsIncremental: true,
     incrementalCursor: MODIFIED_CURSOR,
     businessKey: 'ID',
+    requiredSelect: [
+      'ID', 'EmployeeID', 'EmployeeFullName', 'Employment', 'EmploymentNumber',
+      'StartDate', 'EndDate',
+      'CostCenter', 'CostCenterDescription',
+      'CostUnit', 'CostUnitDescription',
+      'Department', 'DepartmentDescription',
+      'Division', 'Created', 'Modified',
+    ],
   },
   {
     name: 'LeaveRegistrations',

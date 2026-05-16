@@ -128,13 +128,41 @@ export abstract class BaseSourceConnector implements SourceConnector {
     cancellationToken?: CancellationToken;
     /** Optional per-page hook (for progress emission). */
     onPage?: (pageNumber: number, rowsInPage: number, totalSoFar: number) => void;
+    /**
+     * Safety cap on total pages. EO has been observed returning the same
+     * `__next` link twice under eventual-consistency edge cases; without
+     * a cap the loop would never terminate. 200k pages * 60 rows/page =
+     * 12M rows, well above the largest real EO division. Override with
+     * `maxPages` if a future connector legitimately needs more.
+     */
+    maxPages?: number;
   }): AsyncIterable<T> {
     let cursor: string | null = args.initialCursor;
     let pageNum = 0;
     let total = 0;
+    const seenCursors = new Set<string>();
+    const maxPages = args.maxPages ?? 200_000;
 
     while (cursor !== null) {
       args.cancellationToken?.throwIfCancelled();
+      if (pageNum >= maxPages) {
+        throw new Error(
+          `Pagination safety cap reached: ${maxPages} pages fetched without seeing a null cursor. ` +
+          `Either the API is stuck in a loop or maxPages needs raising. Aborting to prevent runaway sync.`,
+        );
+      }
+      // Cycle detection — if the same cursor URL comes back twice, the
+      // upstream API has bugged out (mid-sync rollback, transient cursor
+      // invalidation). Breaking the loop is far better than the
+      // alternative: silently re-ingesting the same rows forever.
+      if (seenCursors.has(cursor)) {
+        throw new Error(
+          `Pagination cycle detected: the API returned a previously-seen cursor (page ${pageNum + 1}). ` +
+          `Aborting to prevent infinite ingestion. This is upstream API instability, not a connector bug.`,
+        );
+      }
+      seenCursors.add(cursor);
+
       pageNum += 1;
       const { rows, nextCursor } = await args.nextPage(cursor);
       total += rows.length;

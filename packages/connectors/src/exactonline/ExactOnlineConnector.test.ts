@@ -66,7 +66,7 @@ describe('ExactOnlineConnector — testConnection', () => {
       });
 
     const c = new ExactOnlineConnector();
-    const result = await c.testConnection(makeConfig(), { log: createNoopLogger() });
+    const result = await c.testConnection(makeConfig(), { log: createNoopLogger(), onCredentialRotated: async () => {} });
 
     expect(result.ok).toBe(true);
     expect(result.details?.user).toBe('arno@example.com');
@@ -94,6 +94,20 @@ describe('ExactOnlineConnector — testConnection', () => {
       }),
     ).rejects.toThrow(/Config validation failed/);
     // No nock mocks set — if any HTTP fired, nock would error out.
+  });
+
+  it('refuses to refresh tokens if no onCredentialRotated handler is wired', async () => {
+    // Regression: prior behaviour silently dropped the rotated refresh_token
+    // when the caller didn't provide a persistence callback. The next sync
+    // then tried the now-invalidated stored token and EO 401'd with
+    // "Old refresh token used". This guard makes the failure surface
+    // immediately in development instead.
+    mockTokenRefresh(); // would issue a new refresh_token if we let it
+    const c = new ExactOnlineConnector();
+    const result = await c.testConnection(makeConfig(), { log: createNoopLogger() });
+    // testConnection catches AuthRefreshError + returns ok:false rather than throwing.
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/onCredentialRotated/);
   });
 });
 
@@ -433,7 +447,7 @@ describe('ExactOnlineConnector — probeEntities', () => {
     });
 
     const c = new ExactOnlineConnector();
-    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger(), onCredentialRotated: async () => {} });
 
     const accounts = results.find((r) => r.name === 'Accounts');
     const employees = results.find((r) => r.name === 'Employees');
@@ -453,7 +467,7 @@ describe('ExactOnlineConnector — probeEntities', () => {
     ) as typeof globalThis.fetch;
 
     const c = new ExactOnlineConnector();
-    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger(), onCredentialRotated: async () => {} });
 
     // Should have one row per entity in the catalog (size enforced
     // separately in listEntities tests; here we just check the cardinality).
@@ -485,7 +499,7 @@ describe('ExactOnlineConnector — probeEntities', () => {
     }) as typeof globalThis.fetch;
 
     const c = new ExactOnlineConnector();
-    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger() });
+    const results = await c.probeEntities(makeConfig(), { log: createNoopLogger(), onCredentialRotated: async () => {} });
 
     const accounts = results.find((r) => r.name === 'Accounts');
     expect(accounts).toMatchObject({ name: 'Accounts', state: 'error', httpStatus: 429 });
