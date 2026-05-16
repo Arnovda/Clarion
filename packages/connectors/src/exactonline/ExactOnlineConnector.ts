@@ -256,7 +256,12 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       log: ctx.log,
       // Inside a sync, retries on 429 / 5xx are valuable — we want to ride
       // out transient failures rather than abort and re-do everything.
-      maxRetries: 5,
+      // Bumped to 10 (from 5) because EO's heaviest endpoints
+      // (SalesInvoices, TransactionLines on large divisions) hit the
+      // per-minute throttle frequently. With the exponential backoff +
+      // cap at 30s, 10 attempts buys ~2.5 min of retry per page —
+      // enough to ride out a 1-minute EO throttle window.
+      maxRetries: 10,
       // If the access token expires mid-sync (long-running entities,
       // 10-min token lifetime), refresh it once.
       onUnauthorised: async () => {
@@ -353,7 +358,25 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     ctx: SyncContext,
     priorCursor: { type: string; value: string } | undefined,
   ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
-    const initialUrl = this.buildInitialUrl(config, entity, priorCursor);
+    // For entities EO refuses to list without $select, discover the
+    // schema first via $top=1 and use the observed field set as
+    // $select on the actual listing. This is the only approach that
+    // survives EO's data-model drift — every previous attempt to
+    // hand-curate field lists got rejected with "Type X does not have
+    // a property named Y" the moment EO renamed or removed a column.
+    let selectFields: readonly string[] | undefined;
+    if (entity.requiresSelect) {
+      selectFields = await this.discoverSelectFields(http, config, entity, ctx);
+      if (!selectFields || selectFields.length === 0) {
+        // Empty entity (no first row to introspect) — fast-exit with
+        // zero rows. The next sync re-tries; once any row exists the
+        // discovery will see it.
+        ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — nothing to sync this run`);
+        return { rowsWritten: 0 };
+      }
+    }
+
+    const initialUrl = this.buildInitialUrl(config, entity, priorCursor, selectFields);
 
     let pagesFetched = 0;
     let rowsFetched = 0;
@@ -431,10 +454,48 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     );
   }
 
+  /**
+   * Fetch one row from the entity, observe its field names, return them
+   * for use as `$select`. The mechanism EO documents itself: when an
+   * entity rejects a bare listing with "Please add a $select or a
+   * $top=1 statement", `?$top=1` always works — and the response
+   * carries every projectable column on EO's side. We just read the
+   * keys.
+   *
+   * Excludes the OData envelope keys (`__metadata`) and any deferred
+   * navigation properties (`__deferred`). Returns undefined if no row
+   * exists at all (caller treats as "empty entity, skip").
+   */
+  private async discoverSelectFields(
+    http: HttpClient,
+    config: ExactOnlineConfig,
+    entity: ExactOnlineEntity,
+    ctx: SyncContext,
+  ): Promise<readonly string[] | undefined> {
+    const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
+    const url = `${base}?$top=1`;
+    const resp = await http.request<ODataResponse>({ url });
+    const page = parseODataPage(resp.body);
+    const first = page.rows[0];
+    if (!first) return undefined;
+    const fields: string[] = [];
+    for (const [k, v] of Object.entries(first)) {
+      if (k === '__metadata') continue;
+      // Skip deferred navigation references — they're lazy-load links,
+      // not data. Including them in $select makes EO complain ("not a
+      // projectable property") on most entities.
+      if (v && typeof v === 'object' && !Array.isArray(v) && '__deferred' in v) continue;
+      fields.push(k);
+    }
+    ctx.log.info(`discovered ${fields.length} fields for ${entity.name}`, { sample: fields.slice(0, 5) });
+    return fields;
+  }
+
   private buildInitialUrl(
     config: ExactOnlineConfig,
     entity: ExactOnlineEntity,
     priorCursor: { type: string; value: string } | undefined,
+    selectFields: readonly string[] | undefined,
   ): string {
     const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
 
@@ -457,16 +518,18 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // Order by the cursor field ascending so a mid-sync interruption
     // leaves the cursor at the highest fully-processed value. EO
     // accepts $orderby for entities with a Modified field — for
-    // entities without an incremental cursor we don't order.
+    // entities without an incremental cursor we don't order (some
+    // line-table endpoints reject `$orderby=Modified` because the type
+    // simply has no Modified property).
     if (entity.incrementalCursor) {
       params.push(`$orderby=${encodeURIComponent(`${entity.incrementalCursor.field} asc`)}`);
     }
-    // $select — required by a handful of "wide" EO endpoints that
-    // refuse a bare listing with HTTP 400 "Please add a $select or a
-    // $top=1 statement". For entities without requiredSelect we omit
-    // $select and EO returns the full default projection.
-    if (entity.requiredSelect && entity.requiredSelect.length > 0) {
-      params.push(`$select=${encodeURIComponent(entity.requiredSelect.join(','))}`);
+    // $select — required by EO's "wide" endpoints (BankEntries,
+    // TransactionLines, payroll, …) which return HTTP 400 otherwise.
+    // The field list is discovered dynamically via `$top=1` upstream
+    // of this call — see `discoverSelectFields`. We never hand-curate.
+    if (selectFields && selectFields.length > 0) {
+      params.push(`$select=${encodeURIComponent(selectFields.join(','))}`);
     }
 
     return params.length === 0 ? base : `${base}?${params.join('&')}`;

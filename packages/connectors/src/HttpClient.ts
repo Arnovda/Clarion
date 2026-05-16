@@ -234,8 +234,15 @@ export class HttpClient {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 function backoffMs(attempt: number): number {
-  // Exponential with jitter: 500, 1000, 2000, 4000, 8000 ± 25%
-  const base = Math.min(8000, 500 * 2 ** attempt);
+  // Exponential with jitter: 500, 1000, 2000, 4000, 8000, 16000, 30000, …
+  // (capped at 30s). Connectors like EO need long backoffs on 429 to
+  // ride out the API's per-minute throttle windows.
+  //
+  // Cap is overridable via env to keep tests fast — production code never
+  // sets this; only the connector test suite + local debugging do.
+  const capEnv = Number(process.env.HTTP_CLIENT_BACKOFF_CAP_MS);
+  const cap = Number.isFinite(capEnv) && capEnv > 0 ? capEnv : 30_000;
+  const base = Math.min(cap, 500 * 2 ** attempt);
   return Math.floor(base * (0.75 + Math.random() * 0.5));
 }
 

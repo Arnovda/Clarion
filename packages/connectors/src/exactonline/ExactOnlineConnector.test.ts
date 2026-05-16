@@ -48,11 +48,17 @@ function mockTokenRefresh(opts: { newRefreshToken?: string } = {}) {
 
 beforeEach(() => {
   nock.disableNetConnect();
+  // Keep retry-related tests fast. The HttpClient honours an env-var
+  // backoff cap when set; this collapses the production 30s cap to
+  // 10ms so a 10-retry budget runs in well under a second of wall
+  // clock instead of 2.5 minutes.
+  process.env.HTTP_CLIENT_BACKOFF_CAP_MS = '10';
 });
 
 afterEach(() => {
   nock.cleanAll();
   nock.enableNetConnect();
+  delete process.env.HTTP_CLIENT_BACKOFF_CAP_MS;
 });
 
 describe('ExactOnlineConnector — testConnection', () => {
@@ -337,14 +343,14 @@ describe('ExactOnlineConnector — sync', () => {
 
   it('records HTTP 5xx as a per-entity warning and continues', async () => {
     mockTokenRefresh();
-    // Six 500s — exceeds default maxRetries=5. Per-entity error tolerance
-    // means this entity gets warned + skipped, but sync() resolves
-    // successfully so other entities (none here, but in real usage) keep
-    // running.
+    // Persist 500s for every retry — connector's maxRetries=10, so we
+    // need at least 11 attempts to exhaust the budget. .persist() means
+    // nock matches indefinitely; whichever attempt count the connector
+    // settles on, we don't have to keep this in sync.
     nock(BASE_URL)
+      .persist()
       .get(`/api/v1/${DIVISION}/crm/Accounts`)
       .query(true)
-      .times(6)
       .reply(500, { error: 'server fire' });
 
     const root = await makeWarehouse();
