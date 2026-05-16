@@ -1484,6 +1484,14 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   const [finished, setFinished] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState('');
+  // Set true when the SSE stream is cut mid-profile but the server-side
+  // profile is still running (status != done|error). Azure Container Apps
+  // drops long-lived HTTP connections at ~4 minutes; a heavy profile
+  // can take 10+ min. Without this flag, the banner used to flip to a
+  // red "Profiling failed" state at the 4-min mark and the user had to
+  // refresh manually. With it, we silently switch to DB polling so live
+  // progress continues until the profile completes or errors for real.
+  const [pollingFallback, setPollingFallback] = useState(false);
 
   useEffect(() => {
     if (!startStream || !connId) return;
@@ -1538,9 +1546,15 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
             } catch { /* skip unparseable */ }
           }
         }
-        // Stream ended without explicit done/error — the connection was
-        // likely lost (container restart, network timeout). Poll DB status
-        // to find out what actually happened instead of assuming success.
+        // Stream ended without explicit done/error — almost always means
+        // Azure Container Apps' Envoy proxy cut the long-lived SSE
+        // connection at its ~4 min timeout. The server-side profile is
+        // still running. Probe the DB to decide what to do:
+        //   • status='done'   → mark finished
+        //   • status='error'  → real failure, surface it
+        //   • else (running)  → flip on `pollingFallback`, which un-gates
+        //     the polling effect below. Live progress keeps flowing,
+        //     just from DB polls instead of the dead stream.
         if (!finished && !error) {
           try {
             const statusRes = await fetch(
@@ -1556,16 +1570,22 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
             } else if (d?.profiling_status === 'error') {
               setError(d.profiling_message ?? 'Profiling failed');
             } else {
-              // Still running — connection dropped, switch to polling mode
-              setError('Connection to server lost — refresh to check progress');
+              // Server-side profile is still running. Don't show an error
+              // — flip to polling mode and keep the live banner intact.
+              setPollingFallback(true);
             }
           } catch {
-            setError('Connection to server lost');
+            // Status probe itself failed (network blip, auth refresh).
+            // Be optimistic: assume the profile is still running and try
+            // polling. The polling effect will catch up if it can.
+            setPollingFallback(true);
           }
         }
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
-          setError('Connection to server lost');
+          // Same logic as the stream-ended branch — server-side might
+          // still be running, prefer polling over a red error banner.
+          setPollingFallback(true);
         }
       }
     })();
@@ -1574,10 +1594,12 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startStream, connId]);
 
-  // Poll for profiling status when banner is shown without a live stream
-  // (e.g. user navigated away and came back while profiling was running)
+  // Poll for profiling status when:
+  //   • The banner was opened cold (no live stream — `startStream` is
+  //     false because the user landed on the page mid-profile), OR
+  //   • The SSE stream dropped and we flipped `pollingFallback` on.
   useEffect(() => {
-    if (startStream || !connId) return; // SSE is active, no need to poll
+    if ((startStream && !pollingFallback) || !connId) return;
     let cancelled = false;
 
     const poll = async () => {
@@ -1609,7 +1631,7 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
     poll();
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startStream, connId]);
+  }, [startStream, connId, pollingFallback]);
 
   if (error) {
     return (
@@ -1656,6 +1678,19 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
       <div className="flex items-center gap-2 mb-4">
         <span className="orb-draft" />
         <p className="text-[13px] text-ink">Analysing <span className="font-medium text-ocean">{name}</span></p>
+        {pollingFallback && (
+          // Subtle hint. The user previously saw a red "Connection to
+          // server lost" banner here, which made it look like profiling
+          // had failed when it was still running. This badge replaces
+          // that experience with an accurate (and calmer) "we lost the
+          // stream but are polling the DB" message.
+          <span
+            className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 border border-line bg-softer px-1.5 py-0.5 rounded"
+            title="Live stream dropped after ~4 min (Azure platform limit); polling the database every 2s instead. Progress is real."
+          >
+            polling
+          </span>
+        )}
         <span className="ml-auto text-[10px] font-mono tracking-[0.08em] uppercase text-muted tabular-nums">{progress}%</span>
       </div>
 
