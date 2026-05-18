@@ -52,6 +52,94 @@ function inferIsTechnical(col: {
 }
 
 /**
+ * When the bus-matrix AI call hits max_tokens, the JSON-repair pass closes
+ * unclosed brackets but the fields that come AFTER conformed_dimensions +
+ * fact_tables in the schema (data_products, relationships, proposed_kpis,
+ * dim_date_range) never landed in the stream. Rather than throw away the
+ * dims/facts the user just waited 5-10 minutes to design, synthesize the
+ * missing scaffolding from what we have so the build can proceed.
+ *
+ * The synthesized data_products grouping is deliberately minimal —
+ * "Foundation" (all dims) + "Analytics" (all facts). The user can split
+ * these into business-meaningful products in the UI after the build.
+ *
+ * Returns true if any recovery was applied (so the orchestrator can warn).
+ */
+export function recoverIncompleteBusMatrix(busMatrix: BusMatrixOutput): {
+  recovered: boolean;
+  notes: string[];
+} {
+  const notes: string[] = [];
+  const hasDims = Array.isArray(busMatrix.conformed_dimensions) && busMatrix.conformed_dimensions.length > 0;
+  const hasFacts = Array.isArray(busMatrix.fact_tables) && busMatrix.fact_tables.length > 0;
+  if (!hasDims || !hasFacts) return { recovered: false, notes };
+
+  let recovered = false;
+
+  if (!Array.isArray(busMatrix.data_products) || busMatrix.data_products.length === 0) {
+    busMatrix.data_products = [
+      {
+        name: 'Foundation',
+        description: 'Reference data — conformed dimensions (auto-grouped after AI output was truncated; rename in the UI).',
+        build_order: 1,
+        fact_tables: [],
+        owned_dimensions: busMatrix.conformed_dimensions.map((d) => d.table_name),
+      },
+      {
+        name: 'Analytics',
+        description: 'Business facts and metrics (auto-grouped after AI output was truncated; split into business products in the UI).',
+        build_order: 2,
+        fact_tables: busMatrix.fact_tables.map((f) => f.table_name),
+        owned_dimensions: [],
+      },
+    ];
+    notes.push('data_products synthesized as Foundation + Analytics (rename/split in UI)');
+    recovered = true;
+  }
+
+  if (!Array.isArray(busMatrix.relationships)) {
+    const rels: BusMatrixOutput['relationships'] = [];
+    for (const fact of busMatrix.fact_tables) {
+      for (const dimName of fact.dimensions_used ?? []) {
+        if (dimName === 'dim_date') continue;
+        const dim = busMatrix.conformed_dimensions.find((d) => d.table_name === dimName);
+        if (!dim) continue;
+        const dimSk = dim.columns?.find((c) => c.column_role === 'surrogate_key');
+        if (!dimSk) continue;
+        const factFk =
+          fact.columns?.find((c) => c.fk_target_table === dimName) ??
+          fact.columns?.find((c) => c.column_name === dimSk.column_name);
+        if (!factFk) continue;
+        rels.push({
+          from_table_name: fact.table_name,
+          from_column_name: factFk.column_name,
+          to_table_name: dim.table_name,
+          to_column_name: dimSk.column_name,
+          relationship_type: 'fact_to_dim',
+        });
+      }
+    }
+    busMatrix.relationships = rels;
+    notes.push(`relationships synthesized (${rels.length} fact→dim links derived from fact columns)`);
+    recovered = true;
+  }
+
+  if (!Array.isArray(busMatrix.proposed_kpis)) {
+    busMatrix.proposed_kpis = [];
+    notes.push('proposed_kpis defaulted to empty (add KPIs in the product page)');
+    recovered = true;
+  }
+
+  if (!busMatrix.dim_date_range || !busMatrix.dim_date_range.start || !busMatrix.dim_date_range.end) {
+    busMatrix.dim_date_range = { start: '2020-01-01', end: '2027-12-31' };
+    notes.push('dim_date_range defaulted to 2020-01-01 → 2027-12-31');
+    recovered = true;
+  }
+
+  return { recovered, notes };
+}
+
+/**
  * Validate the AI-output shape. Returns an array of human-readable errors;
  * empty array means the spec is good enough to attempt persistence.
  */

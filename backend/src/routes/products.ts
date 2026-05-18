@@ -3042,10 +3042,15 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       return;
     }
 
-    // Pre-flight: validate the bus matrix shape so we fail fast with a readable
-    // message instead of a cryptic DB constraint error. Any of these being wrong
-    // means the AI output was truncated/malformed and the auto-repair produced
-    // incomplete data.
+    // Pre-flight: recover from AI truncation (synthesize missing data_products
+    // / relationships when the JSON-repair pass landed valid JSON but stripped
+    // the trailing fields), THEN validate shape. Without recovery the user
+    // loses 5-10 min of dim/fact design work on a truncation.
+    const { recoverIncompleteBusMatrix } = await import('../services/busMatrixBuilder');
+    const recovery = recoverIncompleteBusMatrix(busMatrix);
+    if (recovery.recovered) {
+      console.log(`[${reqId}] bus matrix truncation recovered: ${recovery.notes.join('; ')}`);
+    }
     const validationErrors: string[] = [];
     if (!Array.isArray(busMatrix.conformed_dimensions)) validationErrors.push('conformed_dimensions missing or not an array');
     if (!Array.isArray(busMatrix.fact_tables)) validationErrors.push('fact_tables missing or not an array');

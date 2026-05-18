@@ -20,7 +20,7 @@
 
 import { semanticDb } from '../db/knex';
 import { generateBusMatrixStreaming } from '../ai/AIService';
-import { buildBusMatrix, validateBusMatrix, BuiltProduct } from './busMatrixBuilder';
+import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, BuiltProduct } from './busMatrixBuilder';
 import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
 
 export type OrchestratorEventType =
@@ -146,6 +146,13 @@ export async function runBusMatrixWorkflow(
   await checkCancelled(opts);
 
   // ── Phase C: validate ────────────────────────────────────────────────
+  // Recovery first — if the AI output was truncated and JSON-repair stripped
+  // data_products / relationships / etc., synthesize sensible defaults so the
+  // user doesn't lose the 5-10 min of dim/fact design they already paid for.
+  const recovery = recoverIncompleteBusMatrix(busMatrix);
+  if (recovery.recovered) {
+    emit({ type: 'log', text: `AI output was truncated — recovered with: ${recovery.notes.join('; ')}` });
+  }
   const validationErrors = validateBusMatrix(busMatrix);
   if (validationErrors.length > 0) {
     throw new Error(`Bus matrix validation failed: ${validationErrors.slice(0, 5).join('; ')}`);
