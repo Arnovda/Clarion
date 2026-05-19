@@ -19,6 +19,7 @@
  */
 
 import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { generateBusMatrixStreaming } from '../ai/AIService';
 import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, BuiltProduct } from './busMatrixBuilder';
 import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
@@ -179,10 +180,14 @@ export async function runBusMatrixWorkflow(
     const { generateProductIcon } = await import('../ai/AIService');
     await Promise.all(products.map(async (p) => {
       try {
-        const row = await semanticDb('data_products').where({ id: p.id }).first();
+        const row = await tenantQuery(tenantId, (trx) =>
+          trx('data_products').where({ id: p.id }).first()
+        );
         const svg = await generateProductIcon(p.name, row?.description as string | undefined);
         if (svg) {
-          await semanticDb('data_products').where({ id: p.id }).update({ icon_svg: svg });
+          await tenantQuery(tenantId, (trx) =>
+            trx('data_products').where({ id: p.id }).update({ icon_svg: svg })
+          );
           emit({ type: 'log', text: `  Icon ready for "${p.name}"` });
         }
       } catch (iconErr) {
@@ -208,15 +213,37 @@ export async function runBusMatrixWorkflow(
     emit({ type: 'log', text: `  Running "${p.name}"…` });
 
     try {
-      const product = await semanticDb('data_products').where({ id: p.id }).first();
-      const schemas = await semanticDb('star_schemas').where({ data_product_id: p.id });
+      // Read every row through tenantQuery — the orchestrator runs in a
+      // BullMQ worker (no per-request middleware), and knex's connection
+      // pool can route subsequent queries to a different connection than
+      // the one that received the initial `SET app.current_tenant`. When
+      // that happens, RLS hides every row and `.first()` returns
+      // undefined → the transformation runner crashes reading
+      // `product.connection_id`. tenantQuery wraps each query in a short
+      // transaction with `SET LOCAL app.current_tenant` so RLS sees the
+      // right tenant regardless of pool dynamics.
+      const product = await tenantQuery(tenantId, (trx) =>
+        trx('data_products').where({ id: p.id }).first()
+      );
+      const schemas = await tenantQuery(tenantId, (trx) =>
+        trx('star_schemas').where({ data_product_id: p.id })
+      );
       const schemaIds = schemas.map((s: { id: number }) => s.id);
       const tables = schemaIds.length
-        ? await semanticDb('product_tables')
-            .whereIn('star_schema_id', schemaIds)
-            .whereNotNull('transformation_sql')
-            .orderBy('dag_order', 'asc')
+        ? await tenantQuery(tenantId, (trx) =>
+            trx('product_tables')
+              .whereIn('star_schema_id', schemaIds)
+              .whereNotNull('transformation_sql')
+              .orderBy('dag_order', 'asc')
+          )
         : [];
+
+      if (!product) {
+        // Defensive: even with tenantQuery, surface the missing-row case
+        // as a clear error instead of a JS TypeError. Should not happen
+        // after the RLS fix; here as a load-bearing assertion.
+        throw new Error(`Product ${p.id} ("${p.name}") was inserted in Phase D but cannot be read in Phase E — RLS or transaction visibility issue.`);
+      }
 
       const results = await runProductTransformation(product, tables, tenantId);
 
@@ -428,7 +455,11 @@ export async function runPipelineWorkflow(
     const { runProductTransformation } = await import('./transformationRunner');
     for (const pid of ordered) {
       await checkPipelineCancelled(opts);
-      const product = await semanticDb('data_products').where({ id: pid }).first();
+      // Same RLS guard as Phase E in runBusMatrixWorkflow — tenantQuery
+      // wrappers required for worker-context reads.
+      const product = await tenantQuery(tenantId, (trx) =>
+        trx('data_products').where({ id: pid }).first()
+      );
       if (!product) {
         productResults.push({ productId: pid, productName: `#${pid}`, allOk: false, failedTables: 0, totalTables: 0 });
         continue;
@@ -436,13 +467,17 @@ export async function runPipelineWorkflow(
       const dispName = displayNameById.get(pid) ?? product.name;
       emit({ type: 'log', text: `  Running "${dispName}"…` });
 
-      const schemas = await semanticDb('star_schemas').where({ data_product_id: pid });
+      const schemas = await tenantQuery(tenantId, (trx) =>
+        trx('star_schemas').where({ data_product_id: pid })
+      );
       const schemaIds = schemas.map((s: { id: number }) => s.id);
       const tables = schemaIds.length
-        ? await semanticDb('product_tables')
-            .whereIn('star_schema_id', schemaIds)
-            .whereNotNull('transformation_sql')
-            .orderBy('dag_order', 'asc')
+        ? await tenantQuery(tenantId, (trx) =>
+            trx('product_tables')
+              .whereIn('star_schema_id', schemaIds)
+              .whereNotNull('transformation_sql')
+              .orderBy('dag_order', 'asc')
+          )
         : [];
 
       try {
@@ -584,9 +619,12 @@ export async function runProductRefreshWorkflow(
 ): Promise<RunProductRefreshWorkflowResult> {
   const { productId, tenantId, emit, syncSource } = opts;
 
-  if (tenantId) await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-
-  const product = await semanticDb('data_products').where({ id: productId }).first();
+  // SET app.current_tenant on a single pooled connection is unreliable —
+  // knex may route subsequent queries to a different connection where
+  // RLS will hide every row. Use tenantQuery for each read instead.
+  const product = await tenantQuery(tenantId, (trx) =>
+    trx('data_products').where({ id: productId }).first()
+  );
   if (!product) throw new Error(`Product ${productId} not found`);
 
   emit({ type: 'log', text: `Refreshing "${product.name}"…` });
@@ -640,13 +678,17 @@ export async function runProductRefreshWorkflow(
   emit({ type: 'phase', text: 'Running transformations…' });
   emit({ type: 'log', text: `  Running "${product.name}"…` });
 
-  const schemas = await semanticDb('star_schemas').where({ data_product_id: productId });
+  const schemas = await tenantQuery(tenantId, (trx) =>
+    trx('star_schemas').where({ data_product_id: productId })
+  );
   const schemaIds = schemas.map((s: { id: number }) => s.id);
   const tables = schemaIds.length
-    ? await semanticDb('product_tables')
-        .whereIn('star_schema_id', schemaIds)
-        .whereNotNull('transformation_sql')
-        .orderBy('dag_order', 'asc')
+    ? await tenantQuery(tenantId, (trx) =>
+        trx('product_tables')
+          .whereIn('star_schema_id', schemaIds)
+          .whereNotNull('transformation_sql')
+          .orderBy('dag_order', 'asc')
+      )
     : [];
 
   const { runProductTransformation } = await import('./transformationRunner');
