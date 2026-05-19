@@ -1116,8 +1116,13 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The reporting / categorisation group this item belongs to.',
   },
   {
+    // Units is code-keyed in ExactOnline (like Journals — see line ~472).
+    // Items.Unit contains the unit code as text ('stuk', 'kg', 'st', …),
+    // NOT a numeric/GUID ID. Joining to Units.ID would force DuckDB to
+    // coerce 'stuk' to a number at materialisation time and crash with
+    // a Conversion Error. The natural key is Code.
     fromTable: 'Items', fromColumn: 'Unit',
-    toTable:   'Units', toColumn:   'ID',
+    toTable:   'Units', toColumn:   'Code',
     type: 'many_to_one',
     description: 'Primary unit of measure for this item.',
   },
