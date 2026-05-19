@@ -231,11 +231,23 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
     }
 
     for (const dp of sortedProducts) {
+      // Catalog split: a product with no fact tables is reference-shaped —
+      // it only contains entities to slice by (Customer, Item, Date, …),
+      // never anything to measure. The /catalog endpoint reads this `kind`
+      // column to route the product to the right column (reference) vs
+      // left column (analytics) and to unfold reference products into
+      // individual entity cards. Without this flag every bus-matrix product
+      // defaults to 'analytics' and dim-only products like "Reference"
+      // end up in the analytics column with 0 metrics / 0 facts — exactly
+      // the regression migration 20260510000054 was meant to prevent.
+      const productKind = dp.fact_tables.length === 0 ? 'reference' : 'analytics';
+
       const [productRow] = await trx('data_products').insert({
         connection_id: connectionId,
         name: dp.name,
         description: dp.description,
         status: 'draft',
+        kind: productKind,
         created_by: userEmail || 'ai',
         tenant_id: tenantId,
         created_at: new Date().toISOString(),
