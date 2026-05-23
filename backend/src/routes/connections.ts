@@ -9,6 +9,7 @@ import {
 import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
+import { tenantScopedWrite } from '../db/tenantScopedWrite';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import {
   deleteWarehousePaths,
@@ -518,10 +519,22 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
       console.error(`[Profile] Connection ${connectionId} profiling failed:`, err);
       emit({ phase: 'error', message: errMsg });
-      await db('connections').where({ id: connectionId }).update({
-        profiling_status: 'error', profiling_phase: 'error',
-        profiling_message: errMsg, profiling_progress: 0,
-      }).catch(() => {});
+      // Use a fresh tenantScopedWrite for the "mark errored" update —
+      // the request trx may already be poisoned by the upstream failure,
+      // and a `.catch(() => {})` on a poisoned-trx update silently
+      // no-ops, leaving the connection stuck in 'profiling'.
+      if (req.user?.tenantId) {
+        try {
+          await tenantScopedWrite(req.user.tenantId, (trx) =>
+            trx('connections').where({ id: connectionId }).update({
+              profiling_status: 'error', profiling_phase: 'error',
+              profiling_message: errMsg, profiling_progress: 0,
+            }),
+          );
+        } catch (markErr) {
+          console.error('[Profile] failed to mark profiling errored', markErr);
+        }
+      }
     }
     res.end();
   } else {
@@ -548,10 +561,20 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       res.json({ ok: true, data: result });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
-      await db('connections').where({ id: connectionId }).update({
-        profiling_status: 'error', profiling_phase: 'error',
-        profiling_message: errMsg, profiling_progress: 0,
-      }).catch(() => {});
+      // Same trx-poison rationale as the SSE branch above — fresh trx
+      // for the diagnostic write.
+      if (req.user?.tenantId) {
+        try {
+          await tenantScopedWrite(req.user.tenantId, (trx) =>
+            trx('connections').where({ id: connectionId }).update({
+              profiling_status: 'error', profiling_phase: 'error',
+              profiling_message: errMsg, profiling_progress: 0,
+            }),
+          );
+        } catch (markErr) {
+          console.error('[Profile] failed to mark profiling errored', markErr);
+        }
+      }
       res.status(500).json({ ok: false, error: errMsg });
     }
   }

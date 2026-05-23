@@ -16,6 +16,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
+import { safeQuery } from '../db/safeQuery';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { buildXlsxFromRows, escapeCsvField } from '../utils/xlsxBuilder';
 
@@ -241,17 +242,20 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
         feedback_at: feedback ? new Date().toISOString() : null,
       });
 
-    // If feedback is 'down', create a definition gap entry for improvement
+    // If feedback is 'down', create a definition gap entry for improvement.
+    // Wrapped in safeQuery so a failure here (e.g. a schema/constraint
+    // change on definition_gaps) doesn't poison the request trx and
+    // crash the feedback write itself. SAVEPOINT-safe.
     if (feedback === 'down') {
       const fullMsg = await db('conversation_messages').where({ id: messageId }).first();
       if (fullMsg?.question) {
-        await db('definition_gaps')
-          .insert({
+        await safeQuery(db, (trx) =>
+          trx('definition_gaps').insert({
             tenant_id: req.user!.tenantId,
             gap_description: `User reported incorrect answer. Question: "${fullMsg.question}"${comment ? `. Comment: "${comment}"` : ''}`,
             resolved: false,
-          })
-          .catch(() => {}); // non-fatal
+          }),
+        undefined);
       }
     }
 

@@ -9,6 +9,7 @@ import { listProductTables } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
+import { tenantScopedWrite } from '../db/tenantScopedWrite';
 import type {
   ProductSummary,
   RefineChange,
@@ -1227,8 +1228,10 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     // Delete product row (cascades to star_schemas → product_tables → product_columns)
     await db('data_products').where({ id: productId }).delete();
 
-    // Remove product graph from Neo4j
-    deleteProductFromNeo4j(productId).catch(() => {});
+    // Remove product graph from Neo4j — fire-and-forget, non-db.
+    // Neo4j is a separate store with its own driver/connection pool;
+    // a failure here cannot poison the Postgres request transaction.
+    deleteProductFromNeo4j(productId).catch(() => {}); // fire-and-forget
 
     await recordAudit(req, {
       action:     'product.delete',
@@ -1584,9 +1587,25 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     res.end();
   } catch (err: unknown) {
     console.error('[products/design-stream] Error:', err);
-    await db('data_products').where({ id: req.params.id }).update({
-      status: 'error', updated_at: new Date().toISOString(),
-    }).catch(() => {});
+    // Mark the product as errored in a FRESH transaction. The request
+    // trx (`db`) may already be poisoned by whatever blew up upstream
+    // (Postgres rejects every statement in a failed trx with 25P02);
+    // writing to it would silently no-op. tenantScopedWrite opens its
+    // own short trx with the user's tenant context set, so this
+    // diagnostic update lands even when the request trx is in
+    // failed state.
+    const productId = Number(req.params.id);
+    if (req.user?.tenantId && Number.isFinite(productId)) {
+      try {
+        await tenantScopedWrite(req.user.tenantId, (trx) =>
+          trx('data_products').where({ id: productId }).update({
+            status: 'error', updated_at: new Date().toISOString(),
+          }),
+        );
+      } catch (markErr) {
+        console.error('[products/design-stream] failed to mark errored', markErr);
+      }
+    }
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Design failed. Please try again.' });
     res.end();
   }
@@ -1805,11 +1824,23 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
 
     res.json({ ok: true, data: { status: 'approved', sqlGenerated: true } });
   } catch (err) {
-    // Revert status on error
-    await db('data_products').where({ id: req.params.id }).update({
-      status: 'error',
-      updated_at: new Date().toISOString(),
-    }).catch(() => {});
+    // Revert status on error. Same trx-poison rationale as the
+    // /design-stream handler above — use a fresh tenantScopedWrite
+    // so the "mark as error" update isn't lost when req.dbTrx has
+    // already been poisoned upstream.
+    const productId = Number(req.params.id);
+    if (req.user?.tenantId && Number.isFinite(productId)) {
+      try {
+        await tenantScopedWrite(req.user.tenantId, (trx) =>
+          trx('data_products').where({ id: productId }).update({
+            status: 'error',
+            updated_at: new Date().toISOString(),
+          }),
+        );
+      } catch (markErr) {
+        console.error('[products] failed to mark errored', markErr);
+      }
+    }
     next(err);
   }
 });

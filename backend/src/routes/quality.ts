@@ -450,7 +450,7 @@ async function checkAndCreateAlerts(
           tenantQuery(tenantId, (trx) =>
             trx('quality_alerts').where({ id: alertId }).update({ ai_context: ctx }),
           ),
-        ).catch(() => {});
+        ).catch(() => {}); // SAVEPOINT-safe: tenantQuery opens its own trx
       }
 
       if (tenantId) {
@@ -492,7 +492,7 @@ async function checkAndCreateAlerts(
           tenantQuery(tenantId, (trx) =>
             trx('quality_alerts').where({ id: dropAlertId }).update({ ai_context: ctx }),
           ),
-        ).catch(() => {});
+        ).catch(() => {}); // SAVEPOINT-safe: tenantQuery opens its own trx
       }
 
       if (tenantId && severity === 'critical') {
@@ -549,7 +549,7 @@ async function checkAndCreateAlerts(
           tenantQuery(tenantId, (trx) =>
             trx('quality_alerts').where({ id: ruleAlertId }).update({ ai_context: ctx }),
           ),
-        ).catch(() => {});
+        ).catch(() => {}); // SAVEPOINT-safe: tenantQuery opens its own trx
       }
     }
   }

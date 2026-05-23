@@ -1,0 +1,32 @@
+name: Lint
+
+# Lightweight, fast lint gate that always runs on PRs + main pushes.
+# Independent of the (currently disabled) vitest suite. Catches the
+# specific class of bug that ate the May 23 2026 /query DISTINCT-ON
+# cascade: a defensive `.catch(() => …)` chained to a Knex query
+# inside the shared request transaction. See
+# backend/scripts/lint-shared-trx-catch.ts for the full rationale.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  shared-trx-catch:
+    name: shared-trx-catch lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # tsx is invoked via npx, which downloads it on demand. No
+      # `npm ci` needed — the lint script has zero runtime deps
+      # beyond Node's built-in fs/path.
+      - name: shared-trx-catch
+        run: npx --yes tsx@4.22 backend/scripts/lint-shared-trx-catch.ts

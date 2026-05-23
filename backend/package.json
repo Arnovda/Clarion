@@ -13,7 +13,8 @@
     "seed:postgres": "ts-node src/seed-postgres.ts",
     "neo4j:migrate": "ts-node src/db/migrateSemanticToNeo4j.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint:shared-trx-catch": "tsx scripts/lint-shared-trx-catch.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
