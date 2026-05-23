@@ -432,7 +432,15 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     // configured (dev), and we still log the URL so devs can paste it
     // into their browser. Wrapped in try/catch — a delivery failure
     // shouldn't leak the existence of the account or 500 the request.
+    // Resolve the absolute base URL for the reset link. ORDER MATTERS:
+    // if any of these is missing or returns an empty string, the link in
+    // the email is relative ("/reset-password?...") and email clients are
+    // free to rewrite the host (Telenet's webmail in particular wraps
+    // relative URLs in mail.telenet.be → 404s). Always emit an absolute
+    // URL — defaulting to '' in prod was the bug that locked the user
+    // out after the very first forgot-password attempt in prod.
     const baseUrl = process.env.FRONTEND_URL
+      ?? process.env.FRONTEND_BASE_URL          // ← Terraform sets this name on the backend Container App
       ?? process.env.PUBLIC_APP_URL
       ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
     const resetUrl = `${baseUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`;
