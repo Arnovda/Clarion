@@ -100,8 +100,12 @@ async function sendViaAcs(opts: EmailOptions, from: string, client: EmailClient)
   try {
     const poller = await client.beginSend(message);
     const state = poller.getOperationState();
+    // SDK's OperationState exposes `status` but not the operation id —
+    // the id only lands on the EmailSendResult after pollUntilDone, which
+    // we deliberately don't await. If we ever need traceable ids, switch
+    // to Event Grid receipts instead of polling.
     logger.info(
-      { to: opts.to, subject: opts.subject, opId: state.id, status: state.status, provider: 'acs' },
+      { to: opts.to, subject: opts.subject, status: state.status, provider: 'acs' },
       '[email] queued via ACS',
     );
   } catch (err) {
