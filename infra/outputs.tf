@@ -53,3 +53,14 @@ output "frontend_url" {
 output "dns_nameservers" {
   value = var.custom_domain != "" ? azurerm_dns_zone.main[0].name_servers : []
 }
+
+# ─── Azure Communication Services Email ───────────────────────────────────────
+output "acs_endpoint" {
+  value       = "https://${azurerm_communication_service.main.name}.communication.azure.com"
+  description = "Communication Service data-plane URL. Backend reads as ACS_ENDPOINT and authenticates via Managed Identity."
+}
+
+output "acs_sender_address" {
+  value       = "donotreply@${azurerm_email_communication_service_domain.azuremanaged.from_sender_domain}"
+  description = "Azure-managed sender address used for password reset + scheduled report emails. Replace with a CustomerManaged domain for branded sender."
+}

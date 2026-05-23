@@ -23,6 +23,10 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.100"
     }
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 1.13"
+    }
     random = {
       source  = "hashicorp/random"
       version = "~> 3.6"
@@ -45,6 +49,12 @@ provider "azurerm" {
     }
   }
 }
+
+# AzAPI bridges the gap when azurerm doesn't yet have a native resource
+# for an Azure API surface. Used here to PATCH the Communication Service
+# with the linkedDomains property — there's no native azurerm resource
+# for the email-domain ↔ communication-service association in 3.x.
+provider "azapi" {}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data sources
@@ -686,6 +696,22 @@ resource "azurerm_container_app" "backend" {
         name  = "FRONTEND_BASE_URL"
         value = "https://${var.project_name}-${var.environment}-frontend.${azurerm_container_app_environment.main.default_domain}"
       }
+      # ── Azure Communication Services Email ─────────────────────────────
+      # The backend's emailService reads these. ACS_ENDPOINT is the only
+      # required var — the SDK authenticates via DefaultAzureCredential
+      # (system-assigned MSI → role granted by backend_acs_sender above).
+      # No connection string, no Key Vault secret for email.
+      env {
+        name  = "ACS_ENDPOINT"
+        value = "https://${azurerm_communication_service.main.name}.communication.azure.com"
+      }
+      # Sender address — Azure-managed domain creates a subdomain like
+      # <random>.azurecomm.net. For day-one this works without DNS setup;
+      # swap to a CustomerManaged domain later for branded sender.
+      env {
+        name  = "ACS_SENDER_ADDRESS"
+        value = "donotreply@${azurerm_email_communication_service_domain.azuremanaged.from_sender_domain}"
+      }
     }
   }
 
@@ -755,6 +781,98 @@ resource "azurerm_container_app_job" "sync_worker" {
       # orchestrator's Mgmt API call. Setting them here would shadow that.
     }
   }
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Azure Communication Services — transactional email
+# ─────────────────────────────────────────────────────────────────────────────
+# Powers the in-app forgot-password flow + scheduled dashboard report
+# emails. ACS Email replaces the previous "configure SMTP somehow" plan
+# — SMTP from Container Apps is brittle because Azure blocks port 25
+# outbound, and 587/465 routing is environment-specific. ACS Email is a
+# single HTTPS POST to the data plane with built-in retry/queueing.
+#
+# Three resources are required:
+#   1. Email Communication Service — the domain manager
+#   2. Email Communication Service Domain — actual sender domain
+#   3. Communication Service — the send-API endpoint backend code calls
+#
+# Plus an explicit linkage between (3) and (2) — there's no native
+# azurerm resource for this in 3.x yet, so we PATCH via azapi.
+#
+# Authentication is via the backend Container App's system-assigned
+# Managed Identity (see azurerm_role_assignment.backend_acs_sender
+# below) — no connection string, no API key, no Key Vault secret.
+# Backend code uses DefaultAzureCredential which picks up the MSI
+# automatically.
+
+# 1. Email service (domain manager). data_location is fixed at create
+#    time and CANNOT be changed later — pinning to Europe keeps email
+#    metadata in-region with the rest of the stack (matters for any EU
+#    SMB customer's GDPR review).
+resource "azurerm_email_communication_service" "main" {
+  name                = "${var.project_name}-${var.environment}-email"
+  resource_group_name = azurerm_resource_group.main.name
+  data_location       = "Europe"
+  tags                = var.tags
+}
+
+# 2. Azure-managed sender domain. The literal name "AzureManagedDomain"
+#    is required by Azure for the managed (no-DNS-setup) flavour. Domain
+#    looks like <random>.azurecomm.net and is created in seconds. For
+#    production polish + better deliverability, add a second
+#    azurerm_email_communication_service_domain with
+#    domain_management = "CustomerManaged" and verify ownership via
+#    DKIM/SPF DNS records.
+resource "azurerm_email_communication_service_domain" "azuremanaged" {
+  name              = "AzureManagedDomain"
+  email_service_id  = azurerm_email_communication_service.main.id
+  domain_management = "AzureManaged"
+  tags              = var.tags
+}
+
+# 3. Communication Service — the actual data-plane endpoint. Backend
+#    code constructs `https://<name>.communication.azure.com` from the
+#    name attribute (passed as ACS_ENDPOINT env var below).
+resource "azurerm_communication_service" "main" {
+  name                = "${var.project_name}-${var.environment}-comm"
+  resource_group_name = azurerm_resource_group.main.name
+  data_location       = "Europe"
+  tags                = var.tags
+}
+
+# Link the email domain to the Communication Service. Required for the
+# SDK to accept the sender address — without this, beginSend rejects
+# with "Sender domain not allowed". This is the only piece azurerm 3.x
+# doesn't have a native resource for; if a future azurerm release adds
+# one (likely named `azurerm_communication_service_email_domain_association`
+# or similar), swap this out.
+resource "azapi_update_resource" "comm_service_email_link" {
+  type        = "Microsoft.Communication/CommunicationServices@2023-04-01"
+  resource_id = azurerm_communication_service.main.id
+  body = jsonencode({
+    properties = {
+      linkedDomains = [azurerm_email_communication_service_domain.azuremanaged.id]
+    }
+  })
+  depends_on = [
+    azurerm_communication_service.main,
+    azurerm_email_communication_service_domain.azuremanaged,
+  ]
+}
+
+# Backend Managed Identity → Contributor on the Communication Service.
+# Contributor includes Microsoft.Communication/CommunicationServices/
+# sendEmail/action which is what beginSend needs. It's broader than
+# ideal (also allows read/write on the resource itself); for tighter
+# least-privilege, a custom role with only sendEmail/action could be
+# defined — skipping for now to keep TF surface small. The scope is
+# narrowed to just this single Communication Service resource, not the
+# resource group.
+resource "azurerm_role_assignment" "backend_acs_sender" {
+  scope                = azurerm_communication_service.main.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_container_app.backend.identity[0].principal_id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
