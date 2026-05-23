@@ -500,24 +500,46 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     };
     type QualityRule = { rule_name: string; rule_type: string; dimension: string; rule_config: Record<string, unknown> | null; last_status: string | null; last_pass_rate: number | null };
 
-    // Latest profile per table (one row per table — highest id = most recent)
+    // Latest profile per table (one row per table — highest id = most recent).
+    //
+    // Postgres requires that `DISTINCT ON (cols...)` matches the leftmost
+    // ORDER BY columns. Previously this had `DISTINCT ON (table_name)` +
+    // `ORDER BY id DESC` — Postgres raised "SELECT DISTINCT ON expressions
+    // must match initial ORDER BY expressions" on every call. The
+    // `.catch(() => [])` swallowed the JS error so the surface symptom
+    // was hidden, BUT the request transaction (req.dbTrx) was left in
+    // failed state — every subsequent query in the same request crashed
+    // with 25P02 "current transaction is aborted." The reported user
+    // symptom was "Something went wrong" on a `SELECT * FROM "connections"`
+    // line later in the same handler. Fix: order by `table_name` first
+    // (satisfies DISTINCT ON), then `id DESC` (picks the latest per table).
+    //
+    // The `.catch(() => [])` is also gone: never swallow DB errors inside
+    // a shared transaction — the JS catch can't undo Postgres' transaction
+    // state, so the next query in the same request fails with the
+    // misleading 25P02. If we ever need true "skip on error" semantics
+    // here, wrap the query in a SAVEPOINT so a failure can be rolled back
+    // without poisoning the outer trx.
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
       ? await db('dataset_profiles')
           .where({ connection_id: connectionId })
           .whereIn('table_name', tableNames)
+          .orderBy('table_name')
           .orderBy('id', 'desc')
-          // Keep only the latest per table_name
           .select(db.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
-          .catch(() => []) // gracefully skip if profiling hasn't run
       : [];
 
     const profileIds = latestProfiles.map((p) => p.id);
 
     const fieldProfiles: (FieldProfile & { profile_id: number })[] = profileIds.length
-      ? await db('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      ? await db('field_profiles').whereIn('profile_id', profileIds)
       : [];
 
-    // Active quality rules with their most recent execution result
+    // Active quality rules with their most recent execution result.
+    // Same trx-poison hazard as the DISTINCT ON queries above — dropping
+    // the `.catch(() => [])`. If this query ever errors at runtime, we
+    // want to see the real Postgres error, not a misleading 25P02 on the
+    // next query in the same request.
     const qualityRules: QualityRule[] = tableNames.length
       ? await db('quality_rules as qr')
           .leftJoin(
@@ -531,7 +553,6 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
             'qr.table_name', 'qr.rule_name', 'qr.rule_type', 'qr.dimension',
             'qr.rule_config', 're.status as last_status', 're.pass_rate as last_pass_rate',
           )
-          .catch(() => [])
       : [];
 
     // Build compact quality hints — one section per table
@@ -1297,17 +1318,19 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     }
 
     // ── 2b. Quality hints ────────────────────────────────────────────────────
+    // Same DISTINCT-ON-vs-ORDER-BY fix as the main POST handler above;
+    // see the long comment there for the trx-poison rationale.
     const latestProfiles: { id: number; table_name: string; row_count: number | null; overall_score: number | null }[] = tableNames.length
       ? await db('dataset_profiles')
           .where({ connection_id: connectionId })
           .whereIn('table_name', tableNames)
+          .orderBy('table_name')
           .orderBy('id', 'desc')
           .select(db.raw('DISTINCT ON (table_name) id, table_name, row_count, overall_score'))
-          .catch(() => [])
       : [];
     const profileIds = latestProfiles.map((p) => p.id);
     const fieldProfiles: ({ profile_id: number; field_name: string; null_pct: number; distinct_count: number; min_value: string | null; max_value: string | null; mean_value: number | null; top_values: { value: unknown; pct: number }[] | null })[] = profileIds.length
-      ? await db('field_profiles').whereIn('profile_id', profileIds).catch(() => [])
+      ? await db('field_profiles').whereIn('profile_id', profileIds)
       : [];
 
     const qualityHints = latestProfiles.map((prof) => {
