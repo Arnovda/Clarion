@@ -31,7 +31,12 @@ function ResetPasswordForm() {
 
     setLoading(true);
     try {
-      await api.post('/auth/reset-password', { email, token, newPassword });
+      // Backend's Zod schema (middleware/schemas.ts:resetPasswordSchema)
+      // requires the field be named `password`, not `newPassword`. Sending
+      // the wrong key fails validation with 400 in <2ms before the route
+      // handler runs, and the frontend rendered that as "Invalid or expired
+      // reset link" — misleading but technically the API rejected the body.
+      await api.post('/auth/reset-password', { email, token, password: newPassword });
       setSuccess(true);
     } catch {
       setError('Invalid or expired reset link. Please request a new one.');
