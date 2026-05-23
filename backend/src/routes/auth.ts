@@ -42,6 +42,7 @@ import {
 import { verifyPassword as verifyPasswordFn } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { unauthQuery } from '../db/unauthQuery';
+import { tenantScopedWrite } from '../db/tenantScopedWrite';
 
 const router = Router();
 
@@ -385,11 +386,12 @@ router.post('/logout', async (req: Request, res: Response, next: NextFunction) =
 router.post('/logout-all', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.user?.sub;
-    if (!userId) {
+    const tenantId = req.user?.tenantId;
+    if (!userId || !tenantId) {
       res.status(401).json({ ok: false, error: 'No user' });
       return;
     }
-    const revoked = await revokeAllForUser(userId, 'logout_all');
+    const revoked = await revokeAllForUser(userId, tenantId, 'logout_all');
     res.json({ ok: true, data: { revoked } });
   } catch (err) { next(err); }
 });
@@ -403,8 +405,12 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     const { email } = req.body as { email: string };
 
     const normalizedEmail = email; // already normalized by Zod
-    // Lookup + UPDATE both run inside unauthQuery — see login route for
-    // the rationale (pool-race on session-level app.current_tenant).
+    // SELECT runs inside unauthQuery — see login route for the rationale
+    // (pool-race on session-level app.current_tenant). The follow-up
+    // UPDATE switches to tenantScopedWrite using the user's tenant_id:
+    // the `auth_lookup` RLS policy on `users` is FOR SELECT only, so a
+    // write under empty current_tenant context silently affects 0 rows.
+    // See backend/src/db/tenantScopedWrite.ts.
     const user = await unauthQuery((trx) =>
       trx('users').where({ email: normalizedEmail, is_active: true }).first(),
     );
@@ -421,7 +427,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-    await unauthQuery((trx) =>
+    await tenantScopedWrite(user.tenant_id, (trx) =>
       trx('users').where({ id: user.id }).update({
         password_reset_token: tokenHash,
         password_reset_expires: expires.toISOString(),
@@ -450,13 +456,13 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
         to: normalizedEmail,
         subject: 'Reset your Clarion password',
         text:
-          `Hi ${user.name ?? 'there'},\n\n` +
+          `Hi ${user.display_name ?? 'there'},\n\n` +
           `We received a request to reset your Clarion password.\n\n` +
           `Click the link below to set a new one (valid for 1 hour):\n${resetUrl}\n\n` +
           `If you didn't request this, you can safely ignore this email — your password won't change.\n\n` +
           `— Clarion`,
         html:
-          `<p>Hi ${user.name ?? 'there'},</p>` +
+          `<p>Hi ${user.display_name ?? 'there'},</p>` +
           `<p>We received a request to reset your Clarion password.</p>` +
           `<p><a href="${resetUrl}" style="background:#0d4a6f;color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none;display:inline-block">Set a new password</a></p>` +
           `<p style="color:#666;font-size:12px">Or paste this link in your browser (valid for 1 hour):<br>${resetUrl}</p>` +
@@ -513,9 +519,11 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
       return;
     }
 
-    // Update password and clear reset token
+    // Update password and clear reset token. tenantScopedWrite is
+    // mandatory here: the same RLS-blocks-unauth-UPDATE issue that
+    // affects forgot-password applies — see tenantScopedWrite.ts.
     const passwordHash = await hashPassword(newPassword);
-    await unauthQuery((trx) =>
+    await tenantScopedWrite(user.tenant_id, (trx) =>
       trx('users').where({ id: user.id }).update({
         password_hash: passwordHash,
         password_reset_token: null,
@@ -528,7 +536,7 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     // reset commonly follows a suspected compromise — the user should
     // be logged out of every device. Best-effort; non-fatal.
     try {
-      await revokeAllForUser(user.id, 'password_reset');
+      await revokeAllForUser(user.id, user.tenant_id, 'password_reset');
     } catch (err) {
       console.warn('[auth/reset-password] revokeAllForUser failed', err);
     }

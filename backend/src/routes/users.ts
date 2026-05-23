@@ -164,7 +164,7 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
     // effort — non-fatal if it fails.
     if (before?.role && user?.role && before.role !== user.role) {
       try {
-        await revokeAllForUser(userId, 'role_change');
+        await revokeAllForUser(userId, req.user!.tenantId, 'role_change');
       } catch (err) {
         console.warn('[users.patch] revokeAllForUser failed', err);
       }
@@ -210,7 +210,7 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
     // revoking their tokens, a soft-deleted user could keep using
     // the platform until their access token naturally expired.
     try {
-      await revokeAllForUser(userId, 'user_deactivated');
+      await revokeAllForUser(userId, req.user!.tenantId, 'user_deactivated');
     } catch (err) {
       console.warn('[users.deactivate] revokeAllForUser failed', err);
     }
@@ -303,7 +303,7 @@ router.post('/:id/reset-mfa', requireRole('admin'), async (req: Request, res: Re
     // their 2FA reset shouldn't be silently logged in elsewhere with
     // their old session.
     try {
-      await revokeAllForUser(userId, 'mfa_reset_by_admin');
+      await revokeAllForUser(userId, req.user!.tenantId, 'mfa_reset_by_admin');
     } catch (err) {
       console.warn('[users/reset-mfa] revokeAllForUser failed', err);
     }
@@ -468,7 +468,7 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
     // everywhere. The user's current session is also invalidated;
     // frontend should redirect to login after a successful change.
     try {
-      await revokeAllForUser(req.user!.sub, 'password_change');
+      await revokeAllForUser(req.user!.sub, req.user!.tenantId, 'password_change');
     } catch (err) {
       console.warn('[users/profile/password] revokeAllForUser failed', err);
     }

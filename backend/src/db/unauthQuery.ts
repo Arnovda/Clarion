@@ -18,9 +18,17 @@
  * it's an explicit "HIGH (theoretical, low-prob in practice)" finding
  * in the security audit from 2026-05-14. Until the workers refactor
  * removes the session-level SET pattern entirely, every unauthenticated
- * route MUST use `unauthQuery` for queries that rely on the
+ * route MUST use `unauthQuery` for SELECTs that rely on the
  * `auth_lookup` carve-out — login, register's pre-existing-email check,
- * forgot/reset-password, WebAuthn login verify, refresh-token validation.
+ * the lookup half of forgot/reset-password, WebAuthn login verify,
+ * refresh-token validation.
+ *
+ * ⚠ SELECT ONLY. The `auth_lookup` RLS policy is FOR SELECT — writes
+ * under empty tenant context fall through to `tenant_isolation`, whose
+ * USING clause is `tenant_id = NULL` (never TRUE), so the write
+ * silently affects 0 rows with no error. Use `tenantScopedWrite`
+ * (sibling file) for the subsequent UPDATE/INSERT/DELETE once the
+ * SELECT has identified the user and you have their `tenant_id`.
  *
  * The implementation is the mirror of `reqDb` for authenticated routes:
  *   • Opens a short Knex transaction that holds one pool connection

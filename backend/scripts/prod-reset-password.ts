@@ -71,8 +71,13 @@ async function main(): Promise<void> {
     // 1. Locate the user. We don't filter on is_active here — operators
     //    sometimes need to recover a deactivated account. Surface the
     //    flag in the output so they see it.
-    const found = await client.query<{ id: number; email: string; name: string | null; tenant_id: number; is_active: boolean }>(
-      `SELECT id, email, name, tenant_id, is_active FROM users WHERE LOWER(email) = LOWER($1)`,
+    // NB: column is `display_name`, not `name` — an earlier version of
+    // this script referenced `name` and would crash with "column "name"
+    // does not exist" the moment anyone tried to actually run it. Caught
+    // when triaging why in-app forgot-password was failing and this was
+    // looked at as the emergency hatch.
+    const found = await client.query<{ id: number; email: string; display_name: string | null; tenant_id: number; is_active: boolean }>(
+      `SELECT id, email, display_name, tenant_id, is_active FROM users WHERE LOWER(email) = LOWER($1)`,
       [email],
     );
     if (found.rows.length === 0) {
@@ -82,7 +87,7 @@ async function main(): Promise<void> {
       throw new Error(`Multiple users with email "${email}" — refusing to reset. Investigate manually.`);
     }
     const user = found.rows[0];
-    log(`Found user #${user.id} (${user.email}, name="${user.name ?? ''}", tenant=${user.tenant_id}, is_active=${user.is_active})`);
+    log(`Found user #${user.id} (${user.email}, name="${user.display_name ?? ''}", tenant=${user.tenant_id}, is_active=${user.is_active})`);
 
     // 2. Hash + write.
     log('Hashing new password (bcrypt, SALT_ROUNDS=12)…');

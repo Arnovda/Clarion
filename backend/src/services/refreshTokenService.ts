@@ -11,7 +11,7 @@
  *   - createRefreshToken(user)        → { raw, expiresAt }
  *   - validateRefreshToken(raw)       → user payload, or null if expired/revoked/missing
  *   - revokeRefreshToken(raw, reason) → marks revoked_at
- *   - revokeAllForUser(userId, reason)→ admin "force logout" / password-change cascade
+ *   - revokeAllForUser(userId, tenantId, reason) → admin "force logout" / password-change cascade
  *   - cleanupExpiredAndRevoked()      → maintenance, called from cron
  *
  * The raw token is returned ONCE on create and never persisted. Only
@@ -23,6 +23,7 @@ import crypto from 'crypto';
 import type { Request } from 'express';
 import { semanticDb } from '../db/knex';
 import { unauthQuery } from '../db/unauthQuery';
+import { tenantScopedWrite } from '../db/tenantScopedWrite';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'refreshToken' });
@@ -143,10 +144,13 @@ export async function validateRefreshToken(
   );
   if (!user) return null;
 
-  // Last-used tracking — non-fatal if the update fails.
+  // Last-used tracking — non-fatal if the update fails. tenantScopedWrite
+  // is required because auth_lookup on refresh_tokens is SELECT-only and
+  // tenant_isolation needs a real tenant in app.current_tenant to permit
+  // the UPDATE. We have the tenant_id from the earlier SELECT on `row`.
   try {
     const { ip } = clientFingerprint(req);
-    await unauthQuery((trx) =>
+    await tenantScopedWrite(row.tenant_id, (trx) =>
       trx('refresh_tokens')
         .where({ id: row.id })
         .update({
@@ -170,16 +174,30 @@ export async function validateRefreshToken(
 /**
  * Revoke a specific refresh token (e.g. on logout). Idempotent — already
  * revoked tokens stay revoked with their original reason / timestamp.
+ *
+ * Two-phase: first SELECT under unauthQuery (auth_lookup permits
+ * SELECT-with-no-tenant-context) to learn the row's tenant_id, then
+ * UPDATE under tenantScopedWrite so the write satisfies tenant_isolation.
+ * Before this split, the UPDATE silently affected 0 rows because RLS
+ * filtered it out under empty current_tenant — logout never actually
+ * revoked anything.
  */
 export async function revokeRefreshToken(raw: string, reason: string): Promise<void> {
   if (!raw) return;
   const tokenHash = hashToken(raw);
-  // Wrapped in unauthQuery so the connection's tenant context is reset —
-  // logout can be invoked with or without an active session, and we need
-  // the UPDATE to find the row regardless of pool state.
-  await unauthQuery((trx) =>
+
+  const row = await unauthQuery((trx) =>
     trx('refresh_tokens')
+      .select('id', 'tenant_id', 'revoked_at')
       .where({ token_hash: tokenHash })
+      .first(),
+  );
+  // Idempotent: unknown token or already-revoked → no-op.
+  if (!row || row.revoked_at) return;
+
+  await tenantScopedWrite(row.tenant_id, (trx) =>
+    trx('refresh_tokens')
+      .where({ id: row.id })
       .whereNull('revoked_at')
       .update({
         revoked_at: new Date().toISOString(),
@@ -194,16 +212,29 @@ export async function revokeRefreshToken(raw: string, reason: string): Promise<v
  *   - admin "force logout" action
  *   - role downgrade (so a former admin's session reflects new role
  *     within at most one access-token lifetime)
+ *
+ * `tenantId` is required so the UPDATE satisfies RLS tenant_isolation.
+ * The earlier version used `semanticDb(...)` without any tenant context,
+ * which silently affected 0 rows for callers without an active session
+ * (the password-reset path in particular) — sessions were never revoked.
+ * Callers from authenticated routes already have `req.user.tenantId`;
+ * callers from unauthenticated routes (forgot/reset-password) have it
+ * from the user row they just SELECTed.
  */
-export async function revokeAllForUser(userId: number, reason: string): Promise<number> {
-  const updated = await semanticDb('refresh_tokens')
-    .where({ user_id: userId })
-    .whereNull('revoked_at')
-    .update({
-      revoked_at: new Date().toISOString(),
-      revoked_reason: reason,
-    });
-  return updated;
+export async function revokeAllForUser(
+  userId: number,
+  tenantId: number,
+  reason: string,
+): Promise<number> {
+  return tenantScopedWrite(tenantId, (trx) =>
+    trx('refresh_tokens')
+      .where({ user_id: userId })
+      .whereNull('revoked_at')
+      .update({
+        revoked_at: new Date().toISOString(),
+        revoked_reason: reason,
+      }),
+  );
 }
 
 /**
