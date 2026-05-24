@@ -89,6 +89,9 @@ export default function DashboardsPage() {
   const [refineInput, setRefineInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  // Which error-bubble IDs are currently showing their technical
+  // detail. Empty set = all errors collapsed to the friendly message.
+  const [expandedErrorIds, setExpandedErrorIds] = useState<Set<string>>(new Set());
   const [availableDomains,  setAvailableDomains]  = useState<string[]>([]);
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
@@ -834,8 +837,21 @@ export default function DashboardsPage() {
         executeAllWidgets(newSpec, defaults, null, connectionId);
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated -- "${newSpec.title}"`, type: 'refine' }]);
       }
-    } catch {
-      setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_e', role: 'assistant', text: 'Something went wrong. Please try again.', type: intent }]);
+    } catch (err: unknown) {
+      // Surface whatever detail the backend was willing to ship.
+      // errorHandler.ts gates real error text to admins; non-admins
+      // get the generic "Something went wrong." message in both
+      // fields. The chat bubble below renders a "View error"
+      // expander when errorDetail is present.
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      const backendError = e.response?.data?.error ?? e.message ?? 'Unknown error';
+      setChatMessages((prev) => [...prev, {
+        id: Date.now().toString() + '_e',
+        role: 'assistant',
+        text: 'Something went wrong. Please try again.',
+        type: intent,
+        errorDetail: backendError,
+      }]);
     } finally {
       setChatLoading(false);
     }
@@ -2034,14 +2050,39 @@ export default function DashboardsPage() {
                           </p>
                         ) : (
                           <div className={`max-w-[85%] px-4 py-2.5 rounded-lg border text-[13px] ${
-                            msg.type === 'refine'
-                              ? 'bg-ok-soft border-line text-ink-2'
-                              : 'bg-softer border-line text-ink'
+                            msg.errorDetail
+                              ? 'bg-warn-soft border-warn/40 text-ink-2'
+                              : msg.type === 'refine'
+                                ? 'bg-ok-soft border-line text-ink-2'
+                                : 'bg-softer border-line text-ink'
                           }`}>
-                            {msg.type === 'refine' && (
+                            {msg.errorDetail ? (
+                              <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-warn">Error</span>
+                            ) : msg.type === 'refine' && (
                               <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-ok">Dashboard updated</span>
                             )}
                             <MarkdownAnswer text={msg.text} />
+                            {msg.errorDetail && (
+                              <div className="mt-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedErrorIds((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(msg.id)) next.delete(msg.id);
+                                    else next.add(msg.id);
+                                    return next;
+                                  })}
+                                  className="text-[10px] font-mono tracking-[0.06em] uppercase text-warn hover:text-warn/80 underline underline-offset-2 cursor-pointer"
+                                >
+                                  {expandedErrorIds.has(msg.id) ? 'Hide details' : 'View error'}
+                                </button>
+                                {expandedErrorIds.has(msg.id) && (
+                                  <pre className="mt-2 text-[11px] font-mono text-ink-2 bg-raised border border-line rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap break-words">
+                                    {msg.errorDetail}
+                                  </pre>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

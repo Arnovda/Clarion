@@ -105,6 +105,12 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   type: 'query' | 'refine';
+  /** Set on error messages. When present, the chat bubble renders a
+   *  "View error" expander showing the technical detail returned by
+   *  the backend. The backend only ships real error text to admins
+   *  (see errorHandler.ts), so for viewer/analyst roles this will
+   *  typically be the same generic "Something went wrong" string. */
+  errorDetail?: string;
 }
 
 // ─── Shared Widget Component Props ────────────────────────────────────────────
