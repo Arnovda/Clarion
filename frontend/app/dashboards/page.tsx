@@ -92,6 +92,13 @@ export default function DashboardsPage() {
   // Which error-bubble IDs are currently showing their technical
   // detail. Empty set = all errors collapsed to the friendly message.
   const [expandedErrorIds, setExpandedErrorIds] = useState<Set<string>>(new Set());
+  // Mode for the chat input. Default is 'refine' because the user is
+  // ON an open dashboard, so the most likely intent is to edit it.
+  // The previous regex-based intent detection was unreliable and led
+  // to user-facing surprises ("Can you add a filter?" routed to
+  // /query which has no dashboard context). Explicit toggle removes
+  // the ambiguity.
+  const [chatMode, setChatMode] = useState<'refine' | 'query'>('refine');
   const [availableDomains,  setAvailableDomains]  = useState<string[]>([]);
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
@@ -782,44 +789,10 @@ export default function DashboardsPage() {
     debouncedExecuteAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
   }
 
-  // ── Intent detection -- routes to query or refine ─────────────────────────
-  //
-  // The chat box sits below an OPEN dashboard, so input is genuinely
-  // ambiguous. Two heuristics, in order:
-  //
-  //   1. Strong refine signals — phrases that explicitly reference the
-  //      dashboard or its widgets ("to this dashboard", "add a filter",
-  //      "verwijder de grafiek"). These always route to refine, even
-  //      if the input also starts with a question word like "Can you".
-  //      This catches the very common pattern "Can you add X to this
-  //      dashboard?" which the previous heuristic misrouted to /query
-  //      where there is no spec context to act on.
-  //
-  //   2. Question prefix — input that starts with what/why/how/etc.
-  //      and DOESN'T mention the dashboard is treated as a data
-  //      question for Ask AI.
-  //
-  //   3. Default — refine. The user is on a dashboard editing surface;
-  //      ambiguous input is more often "make this look different" than
-  //      "answer a new question."
-  function detectIntent(input: string): 'query' | 'refine' {
-    const lower = input.toLowerCase().trim();
-
-    // Strong refine signals (English + Dutch). Match anywhere in the
-    // input, since they're usually mid-sentence.
-    const refineSignals = /(this dashboard|the dashboard|dit dashboard|het dashboard|aan het dashboard|aan dit dashboard|add (a |an |another )?(filter|widget|chart|column|metric|kpi)|remove (the |this )?(filter|widget|chart|column)|voeg een?\s+(filter|widget|grafiek|kpi)|verwijder de?\s+(filter|widget|grafiek)|change the (chart|widget|filter|title)|verander de\s+(grafiek|widget|filter|titel)|make (this|the dashboard))/;
-    if (refineSignals.test(lower)) return 'refine';
-
-    // Question prefix → Ask AI. Match start of string.
-    const queryPattern = /^(what|why|how|who|when|which|where|is |are |was |were |can |could |would |should |do |did |show me|tell me|give me|list |find |how many|how much|which |compare|wat|waarom|hoe|wie|wanneer|welke|toon |geef |hoeveel)/;
-    if (queryPattern.test(lower)) return 'query';
-
-    // Default on a dashboard surface: assume refine. Users who want to
-    // ask a data question typically phrase it as a question and hit
-    // the query pattern; everything else (imperatives, statements,
-    // edits) is almost always refine.
-    return 'refine';
-  }
+  // (Removed: regex-based detectIntent. Natural language is too ambiguous
+  // for a token-pattern check to reliably distinguish a data question
+  // from a dashboard edit. The chatMode toggle below the input makes the
+  // user's intent explicit. See ChatModeToggle below.)
 
   // ── Smart chat submit -- asks data questions OR refines the dashboard ─────
 
@@ -828,7 +801,10 @@ export default function DashboardsPage() {
     const input = refineInput.trim();
     setRefineInput('');
 
-    const intent = detectIntent(input);
+    // Intent is set by the explicit pill toggle above the input, not
+    // inferred from the text. See chatMode state declaration for the
+    // rationale.
+    const intent = chatMode;
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: input, type: intent };
     setChatMessages((prev) => [...prev, userMsg]);
     setChatLoading(true);
@@ -2130,6 +2106,38 @@ export default function DashboardsPage() {
                     <div ref={chatEndRef} />
                   </div>
                 )}
+                {/* Mode toggle: explicit pill that decides whether the
+                    submit goes to /api/dashboards/refine-spec (edits
+                    the open dashboard) or /api/query (answers a data
+                    question with no dashboard context). Replaces the
+                    earlier regex-based detectIntent which produced
+                    user-facing surprises. */}
+                <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setChatMode('refine')}
+                    className={`px-2.5 py-0.5 text-[10px] font-mono tracking-[0.08em] uppercase rounded-full border transition-colors ${
+                      chatMode === 'refine'
+                        ? 'bg-ocean-softer border-ocean-soft text-ocean'
+                        : 'bg-transparent border-line text-muted hover:text-ink-2 hover:border-line-strong'
+                    }`}
+                    aria-pressed={chatMode === 'refine'}
+                  >
+                    Edit dashboard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setChatMode('query')}
+                    className={`px-2.5 py-0.5 text-[10px] font-mono tracking-[0.08em] uppercase rounded-full border transition-colors ${
+                      chatMode === 'query'
+                        ? 'bg-ocean-softer border-ocean-soft text-ocean'
+                        : 'bg-transparent border-line text-muted hover:text-ink-2 hover:border-line-strong'
+                    }`}
+                    aria-pressed={chatMode === 'query'}
+                  >
+                    Ask AI
+                  </button>
+                </div>
                 {/* Input row */}
                 <div className="px-6 py-3 flex gap-2">
                   <input
@@ -2137,7 +2145,9 @@ export default function DashboardsPage() {
                     value={refineInput}
                     onChange={(e) => setRefineInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
-                    placeholder="Ask about the data or say how to improve this dashboard…"
+                    placeholder={chatMode === 'refine'
+                      ? 'Say how to improve this dashboard…'
+                      : 'Ask a question about the data…'}
                     disabled={chatLoading}
                     className="flex-1 px-3 py-2 text-[13px] rounded-md border border-line bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 transition-colors"
                   />
