@@ -1038,11 +1038,20 @@ export async function generateSql(
   kpiFormulas: string,
   dialect: SqlDialect = 'sqlite',
   conversationHistory?: Array<{ role: string; content: string }>,
+  // Pre-formatted, compact text block describing the dashboard the
+  // user is currently looking at. Sent ONLY when Ask AI is invoked
+  // from the dashboards page; null/empty for the generic /query
+  // surface. Goes in the USER prompt (which can't be cached anyway),
+  // so the system-prompt cache hit rate is unaffected. Typical size
+  // 100-300 tokens — negligible incremental cost per call.
+  dashboardContext?: string,
 ): Promise<NlToSqlOutput> {
   const glossary = await loadGlossaryBlock();
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
+
+  const userMsg = buildNlToSqlUser(question, dashboardContext);
 
   // If conversation history is provided, use multi-turn messages for follow-up context
   if (conversationHistory && conversationHistory.length > 0) {
@@ -1051,7 +1060,7 @@ export async function generateSql(
         role: m.role as 'user' | 'assistant',
         content: m.content,
       })),
-      { role: 'user', content: buildNlToSqlUser(question) },
+      { role: 'user', content: userMsg },
     ];
     const raw = await callClaudeMultiTurn(systemPrompt, messages, { temperature: 0 });
     return defaultSubScores(parseJson<Record<string, unknown>>(raw));
@@ -1061,7 +1070,7 @@ export async function generateSql(
   // + relationship context + KPI formulas — identical across back-to-back
   // questions from the same tenant. Cache hit rate here is very high.
   // temperature 0: deterministic SQL — same question yields same SQL.
-  const raw = await callClaude(systemPrompt, buildNlToSqlUser(question), { cacheSystem: true, temperature: 0 });
+  const raw = await callClaude(systemPrompt, userMsg, { cacheSystem: true, temperature: 0 });
   return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 

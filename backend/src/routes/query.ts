@@ -230,9 +230,14 @@ async function upsertDefinitionGap(
 router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, dashboardContext } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
+      /** Pre-formatted compact text describing the dashboard the user
+       *  is currently viewing. Sent only when Ask AI is invoked from
+       *  /dashboards. The frontend keeps this small (~100-300 tokens)
+       *  to bound the per-call cost. */
+      dashboardContext?: string;
     };
 
     if (!question?.trim()) {
@@ -286,6 +291,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         nlResult = await generateSql(
           question, productCtx.semanticContext, productCtx.relationshipContext, productCtx.kpiFormulas, dialect,
           conversationHistory,
+          dashboardContext,
         );
         if (useCache) {
           await putCachedSql(tenantId, productCacheKey, question, nlResult);
@@ -787,7 +793,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     if (!nlResult) {
       nlResult = isCrossSourceQuery
         ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory)
-        : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory);
+        : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory, dashboardContext);
       if (useSrcCache) {
         await putCachedSql(tenantId, srcCacheKey, question, nlResult);
       }

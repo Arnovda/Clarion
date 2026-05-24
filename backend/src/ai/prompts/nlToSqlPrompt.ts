@@ -242,7 +242,26 @@ For genuinely ambiguous questions where stating an assumption is not enough:
   ]
 }`;
 
-export function buildNlToSqlUser(question: string): string {
+/**
+ * Optional dashboardContext is a pre-formatted, compact text block
+ * built by the frontend that summarises the dashboard the user is
+ * currently viewing (title, active filters, per-widget value or
+ * top data points). Format is kept tight on purpose: the AI only
+ * needs to know what the user can see, not the underlying SQL or
+ * the full result set. Typical block is 100-200 tokens.
+ *
+ * When present, the AI can answer questions like "why is revenue
+ * for 2024-01 so high?" by referencing the visible chart instead
+ * of replying that it has no context.
+ */
+export function buildNlToSqlUser(question: string, dashboardContext?: string): string {
+  if (dashboardContext && dashboardContext.trim()) {
+    return (
+      `The user is currently viewing this dashboard. Use the visible numbers as grounding when relevant; you may also generate a fresh SQL query to drill deeper.\n\n` +
+      `${dashboardContext}\n\n` +
+      `Question: "${question}"`
+    );
+  }
   return `Question: "${question}"`;
 }
 

@@ -29,6 +29,7 @@ import type {
 // ─── Extracted utilities ─────────────────────────────────────────────────────
 import { buildDefaultFilters, relTime } from './utils/format';
 import { containerVariants, slideUp, shimmerClass } from './utils/motion';
+import { buildDashboardContext } from './utils/dashboardContext';
 
 // ─── Extracted components ────────────────────────────────────────────────────
 import { WidgetCard } from './components/WidgetCard';
@@ -823,7 +824,18 @@ export default function DashboardsPage() {
             fullQuestion = `Previous question: "${lastQ.text}"\nPrevious answer summary: "${lastA.text.slice(0, 300)}"\n\nFollow-up question: ${input}`;
           }
         }
-        const res = await api.post('/query', { connectionId: connectionId, question: fullQuestion });
+        // Send a compact summary of the dashboard the user is looking
+        // at so the AI can ground its answer in the visible numbers
+        // instead of replying that it has no context. Built locally
+        // from spec + filterValues + widgetData; null when nothing has
+        // loaded yet (we don't send empty context). See utils/dashboardContext.ts
+        // for the format and token-cost discipline.
+        const dashboardContext = buildDashboardContext(currentSpec, filterValues, widgetData);
+        const res = await api.post('/query', {
+          connectionId: connectionId,
+          question: fullQuestion,
+          ...(dashboardContext ? { dashboardContext } : {}),
+        });
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
