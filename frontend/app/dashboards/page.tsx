@@ -381,6 +381,25 @@ export default function DashboardsPage() {
 
         // Parse SSE — events are separated by blank lines, each starting
         // with "data: ". We accumulate partial chunks until we see "\n\n".
+        //
+        // Update strategy depends on context:
+        //
+        //   • Initial load (no cached data yet): apply each widget as
+        //     its event arrives. Progressive render gives the user
+        //     immediate "something is happening" feedback while the
+        //     longest widget is still computing.
+        //
+        //   • Filter/drill/refresh (cached data visible): BUFFER the
+        //     events and flush them all at once after the stream ends.
+        //     The dashboard already has data on screen; updating
+        //     widgets one-by-one creates a top-left-to-bottom-right
+        //     "cascade" effect that feels disjointed. Refreshing them
+        //     all in one render swap looks like a cohesive update.
+        //
+        // `widgetCacheRef` is always populated per-event so subsequent
+        // operations (drill modal, insights summary, etc) can read the
+        // latest data regardless of mode.
+        const pendingUpdates: Record<string, WidgetData> = {};
         const processEvent = (raw: string) => {
           const line = raw.split('\n').find((l) => l.startsWith('data: '));
           if (!line) return;
@@ -393,7 +412,12 @@ export default function DashboardsPage() {
               : { rows: evt.rows ?? [], loading: false };
             finalResults[evt.id] = evt.error ? { error: evt.error } : { rows: evt.rows ?? [] };
             widgetCacheRef.current[evt.id] = data;
-            setWidgetData((prev) => ({ ...prev, [evt.id!]: data }));
+            if (hasCachedData) {
+              // Buffer; flush after the stream ends.
+              pendingUpdates[evt.id] = data;
+            } else {
+              setWidgetData((prev) => ({ ...prev, [evt.id!]: data }));
+            }
           }
         };
 
@@ -408,6 +432,13 @@ export default function DashboardsPage() {
             buf = buf.slice(sep + 2);
             if (eventStr.trim()) processEvent(eventStr);
           }
+        }
+
+        // Stream ended. For the buffered path (filter/drill refresh),
+        // apply all collected widget updates in a single React state
+        // change so they appear simultaneously.
+        if (hasCachedData && Object.keys(pendingUpdates).length > 0) {
+          setWidgetData((prev) => ({ ...prev, ...pendingUpdates }));
         }
 
         // Fire insights once on first load (not on filter/drill changes).
