@@ -11,6 +11,7 @@ import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import { useToast } from '@/components/ui/Toast';
+import { useDebouncedCallback } from '@/lib/hooks/useDebounce';
 
 // ─── Extracted types ─────────────────────────────────────────────────────────
 import type {
@@ -724,6 +725,22 @@ export default function DashboardsPage() {
 
   // ── Handle filter change ──────────────────────────────────────────────────
 
+  // Debounce the server-side re-execution so a date picker spinner or
+  // a typed date doesn't fire one /batch-execute per intermediate value.
+  // 500ms is a balance: snappy enough for a single click on a SELECT
+  // filter (which is also served from the optimistic cache below, so
+  // effectively instant), long enough to coalesce 12 spinner clicks
+  // when stepping a date range from January to December. The
+  // optimistic UI update (revalidating pulse) is NOT debounced — the
+  // user sees that something is about to happen the moment they change
+  // the filter, even if the actual fetch waits a moment.
+  const debouncedExecuteAllWidgets = useDebouncedCallback(
+    (spec: DashboardSpec, filters: Record<string, string>, xf: DrillState | null, connId: number) => {
+      executeAllWidgets(spec, filters, xf, connId);
+    },
+    500,
+  );
+
   function handleFilterChange(key: string, value: string) {
     const newFilters = { ...filterValues, [key]: value };
     setFilterValues(newFilters);
@@ -759,7 +776,7 @@ export default function DashboardsPage() {
       });
     }
 
-    executeAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
+    debouncedExecuteAllWidgets(currentSpec, newFilters, crossFilter, connectionId);
   }
 
   // ── Intent detection -- routes to query or refine ─────────────────────────
