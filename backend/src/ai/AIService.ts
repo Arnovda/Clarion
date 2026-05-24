@@ -1302,8 +1302,17 @@ export async function refineDashboardSpec(
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
+    // maxTokens: 16000 — same as generateDashboardSpec. A refine call
+    // rewrites the ENTIRE spec (with widget SQL, filters, layout). For
+    // a dashboard of ~10 widgets the output JSON exceeds 4096 tokens,
+    // which would otherwise be silently truncated and crash parseJson
+    // downstream — the user sees a generic 500 with no idea that the
+    // model just ran out of room. Found via App Insights on 2026-05-24
+    // when "add a filter for customers" on an 11-widget dashboard
+    // failed after 42s of Claude reasoning.
+    //
     // temperature 0: deterministic spec edits.
-    { cacheSystem: true, temperature: 0 },
+    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
   return parseJson<DashboardSpec>(raw);
 }
