@@ -249,7 +249,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
     //    'source' is honoured for users who want to query raw source data.
     const productCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId);
+      : await buildProductSemanticContext(connectionId, undefined, db);
     const tenantId = req.user!.tenantId;
     const productWarehouse = productCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -1135,7 +1135,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     emit({ type: 'phase', text: 'Loading context…' });
     const thinkProductCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productId ? [productId] : undefined);
+      : await buildProductSemanticContext(connectionId, productId ? [productId] : undefined, db);
     const thinkTenantId = req.user!.tenantId;
     const thinkProductWarehouse = thinkProductCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -1609,7 +1609,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     //    follow-up turns.
     const repairProductCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId);
+      : await buildProductSemanticContext(connectionId, undefined, db);
     const repairTenantId = req.user!.tenantId;
     const repairProductWarehouse = repairProductCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -2007,7 +2007,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
     }
 
     // 1. Build semantic context (same as the main query path)
-    const productCtx = await buildProductSemanticContext(connectionId);
+    const productCtx = await buildProductSemanticContext(connectionId, undefined, db);
     const tenantId = req.user!.tenantId;
     const productWarehouse = productCtx
       ? await semanticDb.transaction(async (trx) => {

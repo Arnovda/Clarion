@@ -102,13 +102,30 @@ export async function hasProductLayer(connectionId: number): Promise<boolean> {
 /**
  * Build semantic context from the product layer for a connection.
  * Returns formatted strings ready to inject into AI prompts.
+ *
+ * `trx`: optional. When provided (typically `reqDb(req)` from an
+ * authenticated request), all internal queries run on that connection
+ * and inherit its tenant context. When omitted, queries run on
+ * `semanticDb` directly — which, under the non-bypass `databridge_app`
+ * role, will return zero rows for `data_products` and the function will
+ * incorrectly return null, causing the AI to fall back to source-layer
+ * naming and generating SQL against tables that the product-layer
+ * connector hasn't registered. This is exactly how the May 24 2026
+ * dashboard-generation failure surfaced (every widget "SalesInvoices
+ * does not exist" because the AI got source context but the connector
+ * served product tables). Always pass the request trx in authenticated
+ * routes; the optional shape is only kept for any legacy unauthenticated
+ * caller.
  */
 export async function buildProductSemanticContext(
   connectionId: number,
   filterProductIds?: number[],
+  trx?: Knex | Knex.Transaction,
 ): Promise<ProductSemanticContext | null> {
+  const db = trx ?? semanticDb;
+
   // Find data products for this connection
-  let query = semanticDb('data_products')
+  let query = db('data_products')
     .where({ connection_id: connectionId })
     .whereIn('status', ['approved', 'success']);
 
@@ -124,14 +141,14 @@ export async function buildProductSemanticContext(
   const productIds = products.map((p: { id: number }) => p.id);
 
   // Get all star schemas
-  const schemas = await semanticDb('star_schemas')
+  const schemas = await db('star_schemas')
     .whereIn('data_product_id', productIds);
 
   const schemaIds = schemas.map((s: { id: number }) => s.id);
   if (schemaIds.length === 0) return null;
 
   // Get all product tables with star schema info
-  let tables: ProductTableRow[] = await semanticDb('product_tables')
+  let tables: ProductTableRow[] = await db('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
     .whereIn('star_schemas.id', schemaIds)
     .where('product_tables.transformation_status', 'success')
@@ -150,17 +167,17 @@ export async function buildProductSemanticContext(
   // but referenced by fact tables in another. Without this, the AI sees fact tables
   // but no dimensions to join to and hallucinates column names.
   const existingTableNames = new Set(tables.map((t) => t.table_name));
-  const allProductIds = (await semanticDb('data_products')
+  const allProductIds = (await db('data_products')
     .where({ connection_id: connectionId })
     .whereIn('status', ['approved', 'success'])
     .select('id')).map((p: { id: number }) => p.id);
 
   if (allProductIds.length > productIds.length) {
-    const allSchemaIds = (await semanticDb('star_schemas')
+    const allSchemaIds = (await db('star_schemas')
       .whereIn('data_product_id', allProductIds)
       .select('id')).map((s: { id: number }) => s.id);
 
-    const sharedDims: ProductTableRow[] = await semanticDb('product_tables')
+    const sharedDims: ProductTableRow[] = await db('product_tables')
       .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
       .whereIn('star_schemas.id', allSchemaIds)
       .where('product_tables.transformation_status', 'success')
@@ -199,13 +216,13 @@ export async function buildProductSemanticContext(
   // (`_row_hash`, future `_valid_from` / `_valid_to` / `_is_current`).
   // These start with an underscore by convention and the AI never needs
   // to reference them — they're SCD machinery, not data.
-  const columns: ProductColumnRow[] = await semanticDb('product_columns')
+  const columns: ProductColumnRow[] = await db('product_columns')
     .whereIn('product_table_id', tableIds)
     .andWhereRaw(`column_name NOT LIKE '\\_%' ESCAPE '\\'`)
     .orderBy(['sort_order', 'id']);
 
   // Get relationships
-  const relationships: ProductRelRow[] = await semanticDb('product_relationships as pr')
+  const relationships: ProductRelRow[] = await db('product_relationships as pr')
     .join('product_tables as ft', 'pr.from_table_id', 'ft.id')
     .join('product_tables as tt', 'pr.to_table_id', 'tt.id')
     .whereIn('pr.star_schema_id', schemaIds)
@@ -218,7 +235,7 @@ export async function buildProductSemanticContext(
     );
 
   // Get KPIs
-  const kpis: ProductKpiRow[] = await semanticDb('product_kpis')
+  const kpis: ProductKpiRow[] = await db('product_kpis')
     .whereIn('data_product_id', productIds);
 
   // --- Format semantic context ---

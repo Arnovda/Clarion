@@ -192,7 +192,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     // 'source' opt-in for users who want raw source-layer dashboards.
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds);
+      : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -253,7 +253,7 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
 
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds);
+      : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
@@ -290,7 +290,7 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
 
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds);
+      : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
