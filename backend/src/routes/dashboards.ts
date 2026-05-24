@@ -241,6 +241,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 
 router.post('/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, request, productIds, dataLayer } = req.body as {
       connectionId: number; request: string; productIds?: number[];
       dataLayer?: 'product' | 'source';
@@ -271,6 +272,7 @@ router.post('/refine', requireAuth, async (req: Request, res: Response, next: Ne
 
 router.post('/refine-spec', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const db = reqDb(req);
     const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
       connectionId: number;
       refinement: string;
