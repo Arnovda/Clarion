@@ -783,11 +783,42 @@ export default function DashboardsPage() {
   }
 
   // ── Intent detection -- routes to query or refine ─────────────────────────
-
+  //
+  // The chat box sits below an OPEN dashboard, so input is genuinely
+  // ambiguous. Two heuristics, in order:
+  //
+  //   1. Strong refine signals — phrases that explicitly reference the
+  //      dashboard or its widgets ("to this dashboard", "add a filter",
+  //      "verwijder de grafiek"). These always route to refine, even
+  //      if the input also starts with a question word like "Can you".
+  //      This catches the very common pattern "Can you add X to this
+  //      dashboard?" which the previous heuristic misrouted to /query
+  //      where there is no spec context to act on.
+  //
+  //   2. Question prefix — input that starts with what/why/how/etc.
+  //      and DOESN'T mention the dashboard is treated as a data
+  //      question for Ask AI.
+  //
+  //   3. Default — refine. The user is on a dashboard editing surface;
+  //      ambiguous input is more often "make this look different" than
+  //      "answer a new question."
   function detectIntent(input: string): 'query' | 'refine' {
     const lower = input.toLowerCase().trim();
-    const queryPattern = /^(what|why|how|who|when|which|where|is |are |was |were |can |could |would |should |do |did |show me|tell me|give me|list |find |how many|how much|which |compare)/;
-    return queryPattern.test(lower) ? 'query' : 'refine';
+
+    // Strong refine signals (English + Dutch). Match anywhere in the
+    // input, since they're usually mid-sentence.
+    const refineSignals = /(this dashboard|the dashboard|dit dashboard|het dashboard|aan het dashboard|aan dit dashboard|add (a |an |another )?(filter|widget|chart|column|metric|kpi)|remove (the |this )?(filter|widget|chart|column)|voeg een?\s+(filter|widget|grafiek|kpi)|verwijder de?\s+(filter|widget|grafiek)|change the (chart|widget|filter|title)|verander de\s+(grafiek|widget|filter|titel)|make (this|the dashboard))/;
+    if (refineSignals.test(lower)) return 'refine';
+
+    // Question prefix → Ask AI. Match start of string.
+    const queryPattern = /^(what|why|how|who|when|which|where|is |are |was |were |can |could |would |should |do |did |show me|tell me|give me|list |find |how many|how much|which |compare|wat|waarom|hoe|wie|wanneer|welke|toon |geef |hoeveel)/;
+    if (queryPattern.test(lower)) return 'query';
+
+    // Default on a dashboard surface: assume refine. Users who want to
+    // ask a data question typically phrase it as a question and hit
+    // the query pattern; everything else (imperatives, statements,
+    // edits) is almost always refine.
+    return 'refine';
   }
 
   // ── Smart chat submit -- asks data questions OR refines the dashboard ─────
