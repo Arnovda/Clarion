@@ -647,7 +647,7 @@ router.get('/glossary', requireAuth, async (req: Request, res: Response, next: N
 });
 
 // POST /api/semantic/glossary
-router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { term, meaning, examples, tags } = req.body as Record<string, unknown>;
@@ -680,7 +680,7 @@ router.post('/glossary', requireAuth, requireRole('analyst'), async (req: Reques
 });
 
 // PATCH /api/semantic/glossary/:id
-router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
@@ -709,7 +709,7 @@ router.patch('/glossary/:id', requireAuth, requireRole('analyst'), async (req: R
 });
 
 // DELETE /api/semantic/glossary/:id
-router.delete('/glossary/:id', requireAuth, requireRole('analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
