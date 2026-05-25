@@ -394,14 +394,16 @@ The user describes a change they want. Apply ONLY what they asked for — preser
 Return the complete updated DashboardSpec as JSON only — no prose, no markdown fences.
 
 Rules:
-- Keep all widgets and filters the user did NOT ask to change
+- NEVER remove a widget unless the user EXPLICITLY asks to remove or delete it. "Change", "adjust", "modify", or "update" a widget means KEEP it and alter its properties — never drop it.
+- Keep all widgets and filters the user did NOT mention
+- If the user asks to change a chart type or layout (e.g. "grouped instead of stacked", "line instead of bar"), update the widget's type and/or SQL — do NOT replace or remove the widget
+- For grouped vs stacked bar charts: use type "bar" for both. To switch between grouped and stacked, adjust the SQL to return separate columns per series (grouped) or a single stacked structure
 - Apply the same SQL, layout, filter placeholder, and chart type rules as when generating from scratch
 - If the user asks to "add" something, append the new widget in the correct position (KPI cards first, data_table last)
-- If the user asks to "remove" something, drop that widget entirely
-- If the user asks to "change" a chart type, swap the type and adjust SQL column names if needed
 - If the user asks to "focus on" a different metric, replace the most relevant existing widget
 - Always keep the total widget count between 4 and 9
-- Update the dashboard title if the change meaningfully shifts the dashboard's purpose`;
+- Update the dashboard title only if the change meaningfully shifts the dashboard's purpose
+- CRITICAL: count the widgets in the input and count the widgets in your output. They must be equal unless the user asked to add or remove widgets.`;
 
 export function buildRefineSpecUser(
   refinement: string,
