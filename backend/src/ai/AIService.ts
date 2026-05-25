@@ -1317,23 +1317,36 @@ export async function refineDashboardSpec(
   );
   const refined = parseJson<DashboardSpec>(raw);
 
+  logger.info(
+    { before: currentSpec.widgets.length, after: refined.widgets.length, refinement: refinement.slice(0, 120) },
+    'refineDashboardSpec: widget count before=%d after=%d',
+    currentSpec.widgets.length,
+    refined.widgets.length,
+  );
+
   // Safety net: restore any widgets the model silently dropped.
-  // The refine prompt says "never remove unless explicitly asked", but models
-  // sometimes drop widgets when the spec is large. We detect removals by
-  // comparing widget IDs and copy back any missing ones. Widgets the model
-  // DID return (even if modified) are kept as-is.
-  const removeLike = /\b(remove|delete|drop|get rid of|hide)\b/i;
+  // Match by ID first, then fall back to title similarity for cases where
+  // the model regenerates a widget with a new ID but same purpose.
+  const removeLike = /\b(remove|delete|drop|get rid of|hide|verwijder|weg)\b/i;
   if (!removeLike.test(refinement)) {
     const refinedIds = new Set(refined.widgets.map((w) => w.id));
-    const missing = currentSpec.widgets.filter((w) => !refinedIds.has(w.id));
+    const refinedTitles = new Set(refined.widgets.map((w) => w.title.toLowerCase().trim()));
+
+    const missing = currentSpec.widgets.filter((w) =>
+      !refinedIds.has(w.id) && !refinedTitles.has(w.title.toLowerCase().trim()),
+    );
+
     if (missing.length > 0) {
       logger.info(
-        { missing: missing.map((w) => w.id), refinement: refinement.slice(0, 100) },
+        {
+          missingIds: missing.map((w) => w.id),
+          missingTitles: missing.map((w) => w.title),
+          refinedIds: [...refinedIds],
+          refinedTitles: [...refinedTitles],
+        },
         'refineDashboardSpec: restoring %d widget(s) the model dropped',
         missing.length,
       );
-      // Insert missing widgets back in their original position relative to
-      // the widgets that survived. Build a position map from the original.
       const originalOrder = new Map(currentSpec.widgets.map((w, i) => [w.id, i]));
       const merged = [...refined.widgets, ...missing];
       merged.sort((a, b) => (originalOrder.get(a.id) ?? 999) - (originalOrder.get(b.id) ?? 999));
