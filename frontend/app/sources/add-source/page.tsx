@@ -787,7 +787,7 @@ function SchemaField(props: {
               onChange(raw);
             }
           }}
-          autoComplete={isSensitive ? 'off' : undefined}
+          autoComplete="off"
           spellCheck={false}
           placeholder={prop.default !== undefined ? String(prop.default) : ''}
           className="w-full px-3 py-2 text-[13px] border border-line rounded-md bg-bg focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 font-mono"
