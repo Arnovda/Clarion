@@ -1426,26 +1426,34 @@ function SlidePanel({
               <p>4. The schema is profiled and Claude generates definitions for your review.</p>
             </div>
           )}
-          {isEdit && (
+          {isEdit && connector.formFields.length > 0 && (
             <div className="bg-warn-soft border border-line rounded-md p-4 text-[12px] text-ink-2 space-y-1 leading-relaxed">
               <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-warn mb-1">Changing connection details?</p>
               <p>Test the connection first, then save. If you point to a different database, use Re-analyse to regenerate definitions.</p>
+            </div>
+          )}
+          {isEdit && connector.formFields.length === 0 && (
+            <div className="bg-softer border border-line rounded-md p-4 text-[12px] text-ink-2 space-y-1 leading-relaxed">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Source connector</p>
+              <p>You can update the display name and data domains. To change which entities are synced or update credentials, use the connection wizard.</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-line flex gap-2">
-          <button
-            onClick={handleTest}
-            disabled={!allFilled || testStatus === 'testing'}
-            className="px-4 py-2 text-[13px] bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-40 transition-colors text-ink-2"
-          >
-            {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
-          </button>
+          {connector.formFields.length > 0 && (
+            <button
+              onClick={handleTest}
+              disabled={!allFilled || testStatus === 'testing'}
+              className="px-4 py-2 text-[13px] bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-40 transition-colors text-ink-2"
+            >
+              {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
+            </button>
+          )}
           <button
             onClick={handleSave}
-            disabled={testStatus !== 'ok' || saving}
+            disabled={(connector.formFields.length > 0 && testStatus !== 'ok') || saving}
             className="flex-1 px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-40 transition-colors"
           >
             {saving
@@ -1909,6 +1917,24 @@ function SourcesPageInner() {
   }, []);
 
   function openEdit(conn: Connection) {
+    // Source-connector connections (e.g. Exact Online) have conn.type='duckdb'
+    // which doesn't match any CONNECTORS entry. Build a synthetic Connector
+    // for the edit panel — name + domains only, no credential fields.
+    if (conn.connector_type) {
+      const reg = registryConnectors.find((c) => c.id === conn.connector_type);
+      const synth: Connector = {
+        id: conn.connector_type,
+        name: reg?.name ?? conn.connector_type,
+        description: reg?.description ?? 'Source connector',
+        available: true,
+        color: reg?.color ?? 'bg-teal-500',
+        iconLetter: reg?.iconLetter ?? conn.connector_type.charAt(0).toUpperCase(),
+        formFields: [],
+      };
+      setEditingConn(conn);
+      setPanelConnector(synth);
+      return;
+    }
     const connector = connectorForType(conn.type);
     if (!connector) return;
     setEditingConn(conn);
