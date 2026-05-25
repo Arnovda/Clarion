@@ -1313,19 +1313,35 @@ export async function refineDashboardSpec(
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
-    // maxTokens: 16000 — same as generateDashboardSpec. A refine call
-    // rewrites the ENTIRE spec (with widget SQL, filters, layout). For
-    // a dashboard of ~10 widgets the output JSON exceeds 4096 tokens,
-    // which would otherwise be silently truncated and crash parseJson
-    // downstream — the user sees a generic 500 with no idea that the
-    // model just ran out of room. Found via App Insights on 2026-05-24
-    // when "add a filter for customers" on an 11-widget dashboard
-    // failed after 42s of Claude reasoning.
-    //
-    // temperature 0: deterministic spec edits.
     { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
-  return parseJson<DashboardSpec>(raw);
+  const refined = parseJson<DashboardSpec>(raw);
+
+  // Safety net: restore any widgets the model silently dropped.
+  // The refine prompt says "never remove unless explicitly asked", but models
+  // sometimes drop widgets when the spec is large. We detect removals by
+  // comparing widget IDs and copy back any missing ones. Widgets the model
+  // DID return (even if modified) are kept as-is.
+  const removeLike = /\b(remove|delete|drop|get rid of|hide)\b/i;
+  if (!removeLike.test(refinement)) {
+    const refinedIds = new Set(refined.widgets.map((w) => w.id));
+    const missing = currentSpec.widgets.filter((w) => !refinedIds.has(w.id));
+    if (missing.length > 0) {
+      logger.info(
+        { missing: missing.map((w) => w.id), refinement: refinement.slice(0, 100) },
+        'refineDashboardSpec: restoring %d widget(s) the model dropped',
+        missing.length,
+      );
+      // Insert missing widgets back in their original position relative to
+      // the widgets that survived. Build a position map from the original.
+      const originalOrder = new Map(currentSpec.widgets.map((w, i) => [w.id, i]));
+      const merged = [...refined.widgets, ...missing];
+      merged.sort((a, b) => (originalOrder.get(a.id) ?? 999) - (originalOrder.get(b.id) ?? 999));
+      refined.widgets = merged;
+    }
+  }
+
+  return refined;
 }
 
 // ---------------------------------------------------------------------------
