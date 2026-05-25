@@ -2,10 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  Sparkles, X, ArrowUp, AlertTriangle, Layers, Database, Loader2,
-  MessageSquare, Wrench, Check, Plus, FileText,
+  Sparkles, X, ArrowUp, AlertTriangle, Database, Loader2,
+  Wrench, Check, Plus, FileText, Target,
 } from 'lucide-react';
-import { getToken } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import type { Connection, DataProduct } from './types';
@@ -15,9 +14,9 @@ interface AskAIPanelProps {
   onClose: () => void;
   /** When set, the panel is scoped to this product. */
   product?: DataProduct | null;
-  /** All connections — used for the general (cross-product) mode picker. */
+  /** All connections — used to resolve a default connection. */
   connections: Connection[];
-  /** All products — used to label the scope chip and pick a default connection in general mode. */
+  /** All products — used for cross-product refine. */
   products: DataProduct[];
   /** Called after a refinement is successfully applied so the parent can refetch. */
   onRefineApplied?: (productId: number) => void;
@@ -26,8 +25,6 @@ interface AskAIPanelProps {
   /** When true, hide the close button (useful for embedded mode where there's nothing to close). */
   hideClose?: boolean;
 }
-
-type Mode = 'ask' | 'refine';
 
 // Mirror of backend RefineChange + RefineProposal
 type RefineChange =
@@ -41,6 +38,8 @@ type RefineChange =
   | { op: 'note'; message: string };
 
 interface RefineProposal {
+  target_product_id?: number;
+  target_product_name?: string;
   summary: string;
   changes: RefineChange[];
   reasoning: string;
@@ -50,36 +49,24 @@ interface PanelMessage {
   id: number;
   role: 'user' | 'assistant';
   text: string;
-  // ask-mode result
-  sql?: string;
-  rows?: Record<string, unknown>[];
-  tablesUsed?: string[];
-  confidence?: number;
-  blocked?: boolean;
   error?: boolean;
   // refine-mode result
   proposal?: RefineProposal;
+  targetProductId?: number;
+  targetProductName?: string;
   applied?: { applied: number; skipped: number; notes: string[] };
 }
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:3001';
-
 const SUGGESTIONS_PER_PRODUCT = [
-  'Top 5 rows of the largest fact table',
-  'Total revenue this year vs last year',
-  'Show monthly trend for the main measure',
-];
-
-const SUGGESTIONS_GENERAL = [
-  'Which product covers customer revenue?',
-  'List all measures across products',
-  'Compare row counts across all fact tables',
-];
-
-const REFINE_SUGGESTIONS = [
   'Make the table descriptions clearer for non-technical users',
   'Add a KPI for gross margin (revenue minus cost)',
   'Rename the customer key column to something friendlier',
+];
+
+const SUGGESTIONS_GENERAL = [
+  'I want to filter bank transactions by bank account',
+  'Add a KPI for total revenue per customer',
+  'Make all column descriptions more business-friendly',
 ];
 
 export default function AskAIPanel({
@@ -92,12 +79,10 @@ export default function AskAIPanel({
   embedded = false,
   hideClose = false,
 }: AskAIPanelProps) {
-  const [mode, setMode] = useState<Mode>('ask');
   const [messages, setMessages] = useState<PanelMessage[]>([]);
   const [input, setInput] = useState('');
   const [thinking, setThinking] = useState(false);
   const [thinkingPhase, setThinkingPhase] = useState('');
-  const [thinkingText, setThinkingText] = useState('');
   const nextId = useRef(1);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -107,8 +92,6 @@ export default function AskAIPanel({
     setMessages([]);
     setInput('');
     setThinkingPhase('');
-    setThinkingText('');
-    if (!product) setMode('ask'); // refine requires a product scope
   }, [product?.id]);
 
   // Auto-scroll on new content
@@ -117,14 +100,14 @@ export default function AskAIPanel({
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     });
-  }, [messages, thinkingText, thinkingPhase, open]);
+  }, [messages, thinkingPhase, open]);
 
-  // Focus input on open / mode switch
+  // Focus input on open
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 220);
-  }, [open, mode]);
+  }, [open]);
 
-  // Esc to close (overlay mode only — no need to escape an embedded panel)
+  // Esc to close (overlay mode only)
   useEffect(() => {
     if (!open || embedded) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -132,124 +115,33 @@ export default function AskAIPanel({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose, embedded]);
 
-  const resolvedConnectionId = (() => {
-    if (product) return product.connection_id;
-    const connWithProducts = connections.find((c) => products.some((p) => p.connection_id === c.id));
-    return connWithProducts?.id ?? connections[0]?.id;
-  })();
-
   const scopeLabel = product
     ? product.name
     : products.length > 0
       ? `${products.length} product${products.length === 1 ? '' : 's'}`
       : 'no products yet';
 
-  const suggestions = mode === 'refine'
-    ? REFINE_SUGGESTIONS
-    : product ? SUGGESTIONS_PER_PRODUCT : SUGGESTIONS_GENERAL;
-
-  async function sendAsk(q: string) {
-    setThinking(true);
-    setThinkingPhase('Thinking…');
-    setThinkingText('');
-
-    try {
-      const token = getToken();
-      const response = await fetch(`${BACKEND_URL}/api/query/think`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          connectionId: resolvedConnectionId,
-          question:     q,
-          dataLayer:    'product' as const,
-          ...(product?.id ? { productId: product.id } : {}),
-        }),
-      });
-
-      if (!response.ok || !response.body) {
-        const friendly = response.status === 401
-          ? 'Your session expired. Please sign in again.'
-          : response.status >= 500
-            ? 'The server hit an error. Please try again.'
-            : `Could not run your question (HTTP ${response.status}).`;
-        setMessages((prev) => [...prev, { id: nextId.current++, role: 'assistant', text: friendly, error: true }]);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
-        const lines = buffer.split('\n');
-        buffer = done ? '' : (lines.pop() ?? '');
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let event: Record<string, unknown>;
-          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; } catch { continue; }
-
-          const type = event.type as string;
-          if (type === 'phase') {
-            setThinkingPhase(event.text as string);
-          } else if (type === 'thinking') {
-            setThinkingText((prev) => prev + (event.text as string));
-          } else if (type === 'done') {
-            const d = event.data as {
-              answer: string; confidence: number; blocked?: boolean; sql?: string;
-              tablesUsed?: string[]; rows?: Record<string, unknown>[];
-            };
-            setMessages((prev) => [...prev, {
-              id: nextId.current++,
-              role: 'assistant',
-              text: d.answer,
-              sql: d.sql,
-              tablesUsed: d.tablesUsed,
-              rows: d.rows,
-              confidence: d.confidence,
-              blocked: d.blocked,
-            }]);
-          } else if (type === 'error') {
-            setMessages((prev) => [...prev, {
-              id: nextId.current++, role: 'assistant',
-              text: (event.message as string) || 'Something went wrong.',
-              error: true,
-            }]);
-          }
-        }
-        if (done) break;
-      }
-    } catch {
-      setMessages((prev) => [...prev, {
-        id: nextId.current++, role: 'assistant',
-        text: 'Something went wrong. Please try again.', error: true,
-      }]);
-    } finally {
-      setThinking(false);
-      setThinkingPhase('');
-      setThinkingText('');
-    }
-  }
+  const suggestions = product ? SUGGESTIONS_PER_PRODUCT : SUGGESTIONS_GENERAL;
 
   async function sendRefine(q: string) {
-    if (!product) return;
     setThinking(true);
-    setThinkingPhase('Reading the product…');
-    setThinkingText('');
+    setThinkingPhase(product ? 'Reading the product…' : 'Analysing all products…');
 
     try {
-      // gentle phase hints while the request is in flight
-      const phaseTimer = setTimeout(() => setThinkingPhase('Drafting changes…'), 600);
-
-      const { data } = await api.post<{ ok: boolean; data: RefineProposal; error?: string }>(
-        `/api/products/${product.id}/refine`,
-        { instruction: q },
+      const phaseTimer = setTimeout(
+        () => setThinkingPhase(product ? 'Drafting changes…' : 'Identifying the right product…'),
+        600,
       );
+
+      let data: { ok: boolean; data: RefineProposal; error?: string };
+
+      if (product) {
+        const resp = await api.post<typeof data>(`/api/products/${product.id}/refine`, { instruction: q });
+        data = resp.data;
+      } else {
+        const resp = await api.post<typeof data>('/api/products/refine', { instruction: q });
+        data = resp.data;
+      }
 
       clearTimeout(phaseTimer);
 
@@ -271,6 +163,8 @@ export default function AskAIPanel({
         role: 'assistant',
         text: summary,
         proposal,
+        targetProductId: proposal.target_product_id,
+        targetProductName: proposal.target_product_name,
       }]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
@@ -281,19 +175,18 @@ export default function AskAIPanel({
     } finally {
       setThinking(false);
       setThinkingPhase('');
-      setThinkingText('');
     }
   }
 
   async function applyProposal(messageId: number, proposal: RefineProposal) {
-    if (!product) return;
-    // optimistic — mark message as applying
+    const targetId = product?.id ?? proposal.target_product_id;
+    if (!targetId) return;
     try {
       const { data } = await api.post<{
         ok: boolean;
         data?: { applied: number; skipped: { change: RefineChange; reason: string }[]; notes: string[] };
         error?: string;
-      }>(`/api/products/${product.id}/refine/apply`, { changes: proposal.changes });
+      }>(`/api/products/${targetId}/refine/apply`, { changes: proposal.changes });
 
       if (!data.ok || !data.data) {
         setMessages((prev) => [...prev, {
@@ -304,14 +197,13 @@ export default function AskAIPanel({
       }
 
       const result = data.data;
-      // Mark the message as applied
       setMessages((prev) => prev.map((m) =>
         m.id === messageId
           ? { ...m, applied: { applied: result.applied, skipped: result.skipped.length, notes: result.notes } }
           : m
       ));
 
-      onRefineApplied?.(product.id);
+      onRefineApplied?.(targetId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong.';
       setMessages((prev) => [...prev, {
@@ -324,15 +216,13 @@ export default function AskAIPanel({
   async function send(rawQuestion?: string) {
     const q = (rawQuestion ?? input).trim();
     if (!q || thinking) return;
-    if (!resolvedConnectionId) return;
-    if (mode === 'refine' && !product) return;
+    if (products.length === 0) return;
 
     const userMsg: PanelMessage = { id: nextId.current++, role: 'user', text: q };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
 
-    if (mode === 'refine') await sendRefine(q);
-    else await sendAsk(q);
+    await sendRefine(q);
 
     setTimeout(() => inputRef.current?.focus(), 50);
   }
@@ -346,10 +236,10 @@ export default function AskAIPanel({
 
   if (!open) return null;
 
-  const refineDisabled = !product;
-  const placeholder = mode === 'refine'
-    ? `What should change in ${product?.name ?? 'this product'}?`
-    : product ? `Ask about ${product.name}…` : 'Ask across all products…';
+  const placeholder = product
+    ? `What should change in ${product.name}?`
+    : 'Describe what you want to improve or change…';
+  const disabled = thinking || products.length === 0;
 
   return (
     <>
@@ -363,7 +253,7 @@ export default function AskAIPanel({
 
       <aside
         role={embedded ? undefined : 'dialog'}
-        aria-label="Ask AI"
+        aria-label="Refine products"
         className={cn(
           'flex flex-col bg-raised',
           embedded
@@ -379,11 +269,11 @@ export default function AskAIPanel({
               'bg-ocean-softer text-ocean',
               thinking && 'ai-halo'
             )}>
-              <Sparkles className={cn('w-3.5 h-3.5', thinking && 'ai-sparkle')} strokeWidth={1.75} />
+              <Wrench className={cn('w-3.5 h-3.5', thinking && 'ai-sparkle')} strokeWidth={1.75} />
             </div>
             <div className="min-w-0">
               <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted leading-none mb-0.5">
-                {product ? 'AI for' : 'AI across'}
+                {product ? 'Refine' : 'Refine across'}
               </p>
               <h2
                 className="font-display text-[15px] text-ink leading-tight tracking-[-0.01em] truncate"
@@ -404,42 +294,12 @@ export default function AskAIPanel({
           )}
         </header>
 
-        {/* Mode toggle */}
+        {/* Description strip */}
         <div className="px-5 pt-3 pb-2 border-b border-line shrink-0 bg-raised">
-          <div className="inline-flex bg-softer rounded-md p-0.5 text-[12px]">
-            <button
-              type="button"
-              onClick={() => { setMode('ask'); setMessages([]); }}
-              className={cn(
-                'flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-medium transition-colors',
-                mode === 'ask' ? 'bg-raised text-ink shadow-1' : 'text-muted hover:text-ink-2'
-              )}
-            >
-              <MessageSquare className="w-3 h-3" strokeWidth={1.75} />
-              Ask
-            </button>
-            <button
-              type="button"
-              disabled={refineDisabled}
-              onClick={() => { if (!refineDisabled) { setMode('refine'); setMessages([]); } }}
-              title={refineDisabled ? 'Open a product to refine it' : undefined}
-              className={cn(
-                'flex items-center gap-1.5 px-2.5 py-1 rounded-sm font-medium transition-colors',
-                refineDisabled
-                  ? 'text-muted-2 cursor-not-allowed'
-                  : mode === 'refine' ? 'bg-raised text-ink shadow-1' : 'text-muted hover:text-ink-2'
-              )}
-            >
-              <Wrench className="w-3 h-3" strokeWidth={1.75} />
-              Refine
-            </button>
-          </div>
-          <p className="text-[11px] text-muted mt-1.5 leading-snug">
-            {mode === 'refine'
-              ? 'Tell me what to fix or improve. I\u2019ll propose safe metadata edits you can review and apply.'
-              : product
-                ? 'Ask any question about this product\u2019s data.'
-                : 'Ask across every product. I\u2019ll pick the right one.'}
+          <p className="text-[11px] text-muted leading-snug">
+            {product
+              ? 'Tell me what to fix or improve. I’ll propose changes you can review and apply.'
+              : 'Describe what you need — I’ll figure out which product to change and propose edits you can review.'}
           </p>
         </div>
 
@@ -451,7 +311,6 @@ export default function AskAIPanel({
               suggestions={suggestions}
               onPick={(s) => send(s)}
               productMode={!!product}
-              mode={mode}
             />
           )}
 
@@ -460,11 +319,12 @@ export default function AskAIPanel({
               key={m.id}
               msg={m}
               onApply={(p) => applyProposal(m.id, p)}
+              isCrossProduct={!product}
             />
           ))}
 
           {thinking && (
-            <ThinkingRow phase={thinkingPhase} text={thinkingText} mode={mode} />
+            <ThinkingRow phase={thinkingPhase} />
           )}
         </div>
 
@@ -481,17 +341,17 @@ export default function AskAIPanel({
               onKeyDown={onKeyDown}
               rows={1}
               placeholder={placeholder}
-              disabled={thinking || !resolvedConnectionId || (mode === 'refine' && !product)}
+              disabled={disabled}
               className="flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-muted-2 focus:outline-none resize-none leading-relaxed max-h-32 min-h-[20px]"
             />
             <button
               type="button"
               onClick={() => send()}
-              disabled={!input.trim() || thinking || !resolvedConnectionId || (mode === 'refine' && !product)}
+              disabled={!input.trim() || disabled}
               aria-label="Send"
               className={cn(
                 'w-7 h-7 rounded-md flex items-center justify-center shrink-0 transition-all',
-                input.trim() && !thinking && resolvedConnectionId && !(mode === 'refine' && !product)
+                input.trim() && !disabled
                   ? 'bg-ocean text-white hover:bg-ocean-hover'
                   : 'bg-softer text-muted-2'
               )}
@@ -499,10 +359,10 @@ export default function AskAIPanel({
               {thinking ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <ArrowUp className="w-3.5 h-3.5" strokeWidth={2} />}
             </button>
           </div>
-          {!resolvedConnectionId && (
+          {products.length === 0 && (
             <p className="text-[11px] text-muted mt-1.5 flex items-center gap-1.5">
               <AlertTriangle className="w-3 h-3" strokeWidth={1.75} />
-              Connect a source first to ask questions.
+              Build a data product first to start refining.
             </p>
           )}
         </footer>
@@ -518,13 +378,11 @@ function EmptyState({
   suggestions,
   onPick,
   productMode,
-  mode,
 }: {
   hasProducts: boolean;
   suggestions: string[];
   onPick: (s: string) => void;
   productMode: boolean;
-  mode: Mode;
 }) {
   if (!hasProducts) {
     return (
@@ -532,7 +390,7 @@ function EmptyState({
         <Database className="w-7 h-7 mx-auto text-muted-2 mb-3" strokeWidth={1.5} />
         <p className="text-[13px] text-ink-2">No data products yet.</p>
         <p className="text-[12px] text-muted mt-1 leading-relaxed">
-          Build one with &ldquo;Prepare my data&rdquo; to ask AI about it here.
+          Build one with &ldquo;Prepare my data&rdquo; to start refining.
         </p>
       </div>
     );
@@ -540,14 +398,9 @@ function EmptyState({
   return (
     <div className="py-2">
       <div className="flex items-center gap-2 mb-3">
-        {mode === 'refine'
-          ? <Wrench className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
-          : <Layers className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
-        }
+        <Wrench className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
         <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">
-          {mode === 'refine'
-            ? 'Refining this product'
-            : productMode ? 'Scoped to this product' : 'Across all products'}
+          {productMode ? 'Refine this product' : 'Refine your products'}
         </p>
       </div>
       <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted-2 mb-2">Try</p>
@@ -566,7 +419,7 @@ function EmptyState({
   );
 }
 
-function MessageRow({ msg, onApply }: { msg: PanelMessage; onApply: (p: RefineProposal) => void }) {
+function MessageRow({ msg, onApply, isCrossProduct }: { msg: PanelMessage; onApply: (p: RefineProposal) => void; isCrossProduct: boolean }) {
   if (msg.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -581,23 +434,24 @@ function MessageRow({ msg, onApply }: { msg: PanelMessage; onApply: (p: RefinePr
       <div className="flex items-center gap-1.5">
         <Sparkles className="w-3 h-3 text-ocean" strokeWidth={1.75} />
         <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">AI</span>
-        {typeof msg.confidence === 'number' && !msg.blocked && !msg.error && !msg.proposal && (
-          <span className="text-[10px] font-mono text-muted-2 tabular-nums ml-1">
-            {Math.round(msg.confidence * 100)}% confidence
-          </span>
-        )}
       </div>
+
+      {/* Cross-product target indicator */}
+      {isCrossProduct && msg.targetProductName && (
+        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-ocean-softer/40 border border-ocean/20">
+          <Target className="w-3 h-3 text-ocean" strokeWidth={1.75} />
+          <span className="text-[11px] font-medium text-ocean">{msg.targetProductName}</span>
+        </div>
+      )}
+
       <div className={cn(
         'rounded-md px-3.5 py-2.5 text-[13.5px] leading-relaxed',
         msg.error
           ? 'bg-err-soft text-err border border-err/30'
-          : msg.blocked
-            ? 'bg-warn-soft text-ink border border-warn/30'
-            : 'bg-softer text-ink border border-line'
+          : 'bg-softer text-ink border border-line'
       )}>
         {msg.text}
       </div>
-      {msg.rows && msg.rows.length > 0 && <PreviewRows rows={msg.rows} />}
       {msg.proposal && (
         <ProposalCard
           proposal={msg.proposal}
@@ -639,7 +493,7 @@ function ProposalCard({
           <Check className="w-3.5 h-3.5 text-ok" strokeWidth={2} />
           <p className="text-[12px] font-medium text-ok">
             Applied {applied.applied} change{applied.applied === 1 ? '' : 's'}
-            {applied.skipped > 0 && ` \u00b7 ${applied.skipped} skipped`}
+            {applied.skipped > 0 && ` · ${applied.skipped} skipped`}
           </p>
         </div>
         {applied.notes.length > 0 && (
@@ -658,7 +512,7 @@ function ProposalCard({
         <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Proposed changes</p>
         <span className="text-[10px] font-mono text-muted-2 ml-auto tabular-nums">
           {editable.length} edit{editable.length === 1 ? '' : 's'}
-          {notes.length > 0 && ` \u00b7 ${notes.length} manual`}
+          {notes.length > 0 && ` · ${notes.length} manual`}
         </span>
       </div>
       <div className="divide-y divide-line">
@@ -765,59 +619,12 @@ function DiffRow({
   );
 }
 
-function PreviewRows({ rows }: { rows: Record<string, unknown>[] }) {
-  const cols = Object.keys(rows[0] ?? {});
-  if (cols.length === 0) return null;
-  const shown = rows.slice(0, 6);
-  return (
-    <div className="border border-line rounded-md overflow-hidden text-[11.5px]">
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="bg-softer">
-            <tr>
-              {cols.map((c) => (
-                <th key={c} className="text-left px-2.5 py-1.5 font-mono text-muted text-[10px] tracking-[0.06em] uppercase font-medium">
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r, i) => (
-              <tr key={i} className="border-t border-line">
-                {cols.map((c) => (
-                  <td key={c} className="px-2.5 py-1.5 text-ink-2 tabular-nums">
-                    {fmt(r[c])}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {rows.length > shown.length && (
-        <div className="px-2.5 py-1 bg-softer text-[10px] font-mono text-muted text-center">
-          {rows.length - shown.length} more row{rows.length - shown.length === 1 ? '' : 's'}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function fmt(v: unknown): string {
-  if (v === null || v === undefined) return '\u2014';
-  if (typeof v === 'number') return v.toLocaleString('en-GB');
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  return String(v);
-}
-
-function ThinkingRow({ phase, text, mode }: { phase: string; text: string; mode: Mode }) {
-  const label = mode === 'refine' ? 'AI is drafting changes' : 'AI is thinking';
+function ThinkingRow({ phase }: { phase: string }) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1.5">
         <Sparkles className="w-3 h-3 text-ocean ai-sparkle" strokeWidth={1.75} />
-        <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-ocean">{label}</span>
+        <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-ocean">AI is drafting changes</span>
         <span className="inline-flex gap-0.5 ml-0.5">
           <span className="w-1 h-1 rounded-full bg-ocean ai-typing-dot" style={{ animationDelay: '0s' }} />
           <span className="w-1 h-1 rounded-full bg-ocean ai-typing-dot" style={{ animationDelay: '0.15s' }} />
@@ -826,12 +633,7 @@ function ThinkingRow({ phase, text, mode }: { phase: string; text: string; mode:
       </div>
       <div className="rounded-md px-3.5 py-2.5 text-[13px] leading-relaxed bg-softer border border-line text-ink-2 ai-sheen">
         {phase && <p className="text-[11px] font-mono text-ocean mb-1">{phase}</p>}
-        {text
-          ? <p className="whitespace-pre-wrap">{text}</p>
-          : <p className="text-muted italic">
-              {mode === 'refine' ? 'Reviewing your product\u2019s tables, columns, and KPIs\u2026' : 'Loading context and reasoning\u2026'}
-            </p>
-        }
+        <p className="text-muted italic">Reviewing your product tables, columns, and KPIs…</p>
       </div>
     </div>
   );

@@ -71,7 +71,9 @@ import {
 } from './prompts/starSchemaPrompt';
 import {
   REFINE_PRODUCT_SYSTEM,
+  REFINE_CROSS_PRODUCT_SYSTEM,
   buildRefineProductUser,
+  buildRefineCrossProductUser,
   RefineProposal,
   ProductSummary,
 } from './prompts/refineProductPrompt';
@@ -1971,6 +1973,39 @@ export async function refineProduct(
 
   const obj = parsed as Partial<RefineProposal>;
   return {
+    summary:   typeof obj.summary === 'string' ? obj.summary : '',
+    changes:   Array.isArray(obj.changes) ? (obj.changes as RefineProposal['changes']) : [],
+    reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : '',
+  };
+}
+
+export async function refineProductCross(
+  products: ProductSummary[],
+  instruction: string,
+): Promise<RefineProposal> {
+  const raw = await callClaude(
+    REFINE_CROSS_PRODUCT_SYSTEM,
+    buildRefineCrossProductUser(products, instruction),
+    { model: MODEL_HAIKU, maxTokens: 2000, callLabel: 'refine_product_cross', temperature: 0 },
+  );
+
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    logger.warn({ err, raw: cleaned.slice(0, 400) }, 'refineProductCross: failed to parse JSON');
+    return {
+      summary: 'I could not understand that request well enough to propose changes.',
+      changes: [],
+      reasoning: 'The model returned non-JSON output.',
+    };
+  }
+
+  const obj = parsed as Partial<RefineProposal>;
+  return {
+    target_product_id:   typeof obj.target_product_id === 'number' ? obj.target_product_id : undefined,
+    target_product_name: typeof obj.target_product_name === 'string' ? obj.target_product_name : undefined,
     summary:   typeof obj.summary === 'string' ? obj.summary : '',
     changes:   Array.isArray(obj.changes) ? (obj.changes as RefineProposal['changes']) : [],
     reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : '',

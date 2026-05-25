@@ -3,7 +3,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
-import { refineProduct } from '../ai/AIService';
+import { refineProduct, refineProductCross } from '../ai/AIService';
 import { deleteWarehousePaths, productBasePath, productBasePathV2, warehouseLayoutVersion, productSlug as toProductSlug } from '../services/warehouse';
 import { listProductTables } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
@@ -2052,6 +2052,107 @@ router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: 
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/products/refine — Cross-product refine (AI picks the target product)
+// ---------------------------------------------------------------------------
+
+router.post('/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { instruction } = req.body as { instruction: string };
+    if (!instruction?.trim()) {
+      res.status(400).json({ ok: false, error: 'instruction is required' });
+      return;
+    }
+
+    const allProducts = await db('data_products').orderBy('name');
+    if (allProducts.length === 0) {
+      res.status(400).json({ ok: false, error: 'No data products exist yet.' });
+      return;
+    }
+
+    const productIds = allProducts.map((p: { id: number }) => p.id);
+    const allSchemas = await db('star_schemas').whereIn('data_product_id', productIds);
+    const schemasByProduct = new Map<number, number[]>();
+    for (const s of allSchemas) {
+      const arr = schemasByProduct.get(s.data_product_id) ?? [];
+      arr.push(s.id);
+      schemasByProduct.set(s.data_product_id, arr);
+    }
+
+    const allSchemaIds = allSchemas.map((s: { id: number }) => s.id);
+    const allTables = allSchemaIds.length
+      ? await db('product_tables')
+          .whereIn('star_schema_id', allSchemaIds)
+          .orderBy(['dag_order', 'table_name'])
+      : [];
+    const tablesBySchema = new Map<number, typeof allTables>();
+    for (const t of allTables) {
+      const arr = tablesBySchema.get(t.star_schema_id) ?? [];
+      arr.push(t);
+      tablesBySchema.set(t.star_schema_id, arr);
+    }
+
+    const allTableIds = allTables.map((t: { id: number }) => t.id);
+    const allColumns = allTableIds.length
+      ? await db('product_columns')
+          .whereIn('product_table_id', allTableIds)
+          .andWhere((qb: any) => qb.where('is_technical', false).orWhereNull('is_technical'))
+          .orderBy(['sort_order', 'id'])
+      : [];
+    const colsByTable = new Map<number, typeof allColumns>();
+    for (const c of allColumns) {
+      const arr = colsByTable.get(c.product_table_id) ?? [];
+      arr.push(c);
+      colsByTable.set(c.product_table_id, arr);
+    }
+
+    const allKpis = await db('product_kpis').whereIn('data_product_id', productIds).orderBy('name');
+    const kpisByProduct = new Map<number, typeof allKpis>();
+    for (const k of allKpis) {
+      const arr = kpisByProduct.get(k.data_product_id) ?? [];
+      arr.push(k);
+      kpisByProduct.set(k.data_product_id, arr);
+    }
+
+    const summaries: ProductSummary[] = allProducts.map((product: any) => {
+      const schemaIds = schemasByProduct.get(product.id) ?? [];
+      const tables = schemaIds.flatMap((sid: number) => tablesBySchema.get(sid) ?? []);
+      const kpis = kpisByProduct.get(product.id) ?? [];
+
+      return {
+        id:          product.id,
+        name:        product.name,
+        description: product.description ?? null,
+        tables: tables.map((t: any) => ({
+          id:          t.id,
+          table_name:  t.table_name,
+          table_role:  t.table_role ?? null,
+          description: t.description ?? null,
+          columns: (colsByTable.get(t.id) ?? []).map((c: any) => ({
+            id:           c.id,
+            column_name:  c.column_name,
+            display_name: c.display_name ?? null,
+            description:  c.description ?? null,
+            data_type:    c.data_type ?? null,
+            column_role:  c.column_role ?? null,
+          })),
+        })),
+        kpis: kpis.map((k: any) => ({
+          id:                  k.id,
+          name:                k.name,
+          description:         k.description ?? null,
+          formula_plain_text:  k.formula_plain_text ?? null,
+          formula_sql:         k.formula_sql ?? null,
+        })),
+      };
+    });
+
+    const proposal = await refineProductCross(summaries, instruction.trim());
+    res.json({ ok: true, data: proposal });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/:id/refine — Propose metadata changes from NL instruction
 // ---------------------------------------------------------------------------
 
@@ -2104,6 +2205,7 @@ router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next
       tables: tables.map((t: any) => ({
         id:          t.id,
         table_name:  t.table_name,
+        table_role:  t.table_role ?? null,
         description: t.description ?? null,
         columns: (colsByTable.get(t.id) ?? []).map((c: any) => ({
           id:           c.id,
@@ -2111,6 +2213,7 @@ router.post('/:id/refine', requireAuth, async (req: Request, res: Response, next
           display_name: c.display_name ?? null,
           description:  c.description ?? null,
           data_type:    c.data_type ?? null,
+          column_role:  c.column_role ?? null,
         })),
       })),
       kpis: kpis.map((k: any) => ({

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Database, X, ChevronRight, Sparkles, Plus, RefreshCw, ChevronDown } from 'lucide-react';
+import { Database, X, ChevronRight, Plus, RefreshCw, ChevronDown, Wrench } from 'lucide-react';
 import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
@@ -470,10 +470,10 @@ function ProductsPageInner() {
             <button
               onClick={() => { setAskProductId(null); setAskOpen(true); }}
               className="group px-3 py-2 text-[13px] font-medium rounded-md border border-line text-ink-2 hover:border-ocean hover:text-ocean hover:bg-ocean-softer/40 transition-colors flex items-center gap-1.5"
-              aria-label="Ask AI across all products"
+              aria-label="Refine products with AI"
             >
-              <Sparkles className="w-3.5 h-3.5 text-ocean group-hover:ai-sparkle" strokeWidth={1.75} />
-              Ask AI
+              <Wrench className="w-3.5 h-3.5 text-ocean group-hover:ai-sparkle" strokeWidth={1.75} />
+              Refine
             </button>
           )}
           {connections.length > 1 && (
