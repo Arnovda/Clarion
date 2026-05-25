@@ -423,6 +423,74 @@ router.patch('/:id', requireAuth, requireRole('admin'), validate(updateConnectio
   }
 });
 
+// GET /api/connections/:id/source-config — return decrypted source-connector config for editing
+router.get('/:id/source-config', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const row = await db('connections').where({ id: req.params.id }).first();
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+    if (!row.connector_type || !row.connector_config_encrypted) {
+      res.status(400).json({ ok: false, error: 'Not a source-connector connection' });
+      return;
+    }
+    const decrypted = JSON.parse(decryptCredentials(row.connector_config_encrypted));
+    const redacted = { ...decrypted };
+    for (const key of Object.keys(redacted)) {
+      if (/(secret|password|token|apikey|api_key)/i.test(key)) {
+        if (redacted[key]) redacted[key] = '••••••••';
+      }
+    }
+    res.json({ ok: true, data: redacted });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PATCH /api/connections/:id/source-config — update source-connector config
+router.patch('/:id/source-config', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { config } = req.body as { config: Record<string, unknown> };
+    if (!config || typeof config !== 'object') {
+      res.status(400).json({ ok: false, error: 'config object is required' });
+      return;
+    }
+    const row = await db('connections').where({ id: req.params.id }).first();
+    if (!row) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+    if (!row.connector_type || !row.connector_config_encrypted) {
+      res.status(400).json({ ok: false, error: 'Not a source-connector connection' });
+      return;
+    }
+    const existing = JSON.parse(decryptCredentials(row.connector_config_encrypted));
+    const merged = { ...existing };
+    for (const [key, value] of Object.entries(config)) {
+      if (value === '••••••••') continue;
+      merged[key] = value;
+    }
+    const encrypted = encryptCredentials(JSON.stringify(merged));
+    await db('connections').where({ id: req.params.id }).update({
+      connector_config_encrypted: encrypted,
+    });
+
+    await recordAudit(req, {
+      action:     'connection.update_source_config',
+      entityType: 'connection',
+      entityId:   Number(req.params.id),
+      context:    { connector_type: row.connector_type },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Helper: compute profiling progress percentage from phase
 const PROFILING_PHASES = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'] as const;
 export function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {

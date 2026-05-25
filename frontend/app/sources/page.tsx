@@ -1286,11 +1286,19 @@ function SlidePanel({
     try {
       const normalizedCfg = normalizeConfig(fields);
       if (isEdit) {
+        const isSourceConnector = !!editConnection!.connector_type;
+        // Update name + domains via the standard PATCH
         await api.patch(`/connections/${editConnection!.id}`, {
           name: name.trim(),
-          config: normalizedCfg,
+          ...(!isSourceConnector ? { config: normalizedCfg } : {}),
           domains,
         });
+        // For source connectors, also update the connector config if fields were changed
+        if (isSourceConnector && connector.formFields.length > 0) {
+          await api.patch(`/connections/${editConnection!.id}/source-config`, {
+            config: normalizedCfg,
+          });
+        }
         onUpdated({ ...editConnection!, name: name.trim(), config: fields, domains });
       } else {
         const res = await api.post('/connections', {
@@ -1432,17 +1440,17 @@ function SlidePanel({
               <p>Test the connection first, then save. If you point to a different database, use Re-analyse to regenerate definitions.</p>
             </div>
           )}
-          {isEdit && connector.formFields.length === 0 && (
-            <div className="bg-softer border border-line rounded-md p-4 text-[12px] text-ink-2 space-y-1 leading-relaxed">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Source connector</p>
-              <p>You can update the display name and data domains. To change which entities are synced or update credentials, use the connection wizard.</p>
+          {isEdit && !!editConnection?.connector_type && (
+            <div className="bg-warn-soft border border-line rounded-md p-4 text-[12px] text-ink-2 space-y-1 leading-relaxed">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-warn mb-1">Source connector</p>
+              <p>You can update the name, data domains, and connection details. Sensitive fields (secrets, tokens) are shown as masked — leave them unchanged unless you need to rotate credentials. Changes take effect on the next sync.</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-line flex gap-2">
-          {connector.formFields.length > 0 && (
+          {connector.formFields.length > 0 && !editConnection?.connector_type && (
             <button
               onClick={handleTest}
               disabled={!allFilled || testStatus === 'testing'}
@@ -1453,7 +1461,7 @@ function SlidePanel({
           )}
           <button
             onClick={handleSave}
-            disabled={(connector.formFields.length > 0 && testStatus !== 'ok') || saving}
+            disabled={(connector.formFields.length > 0 && !editConnection?.connector_type && testStatus !== 'ok') || saving}
             className="flex-1 px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-40 transition-colors"
           >
             {saving
@@ -1916,23 +1924,65 @@ function SourcesPageInner() {
       .catch(() => setRegistryConnectors([]));
   }, []);
 
-  function openEdit(conn: Connection) {
-    // Source-connector connections (e.g. Exact Online) have conn.type='duckdb'
-    // which doesn't match any CONNECTORS entry. Build a synthetic Connector
-    // for the edit panel — name + domains only, no credential fields.
+  async function openEdit(conn: Connection) {
     if (conn.connector_type) {
       const reg = registryConnectors.find((c) => c.id === conn.connector_type);
-      const synth: Connector = {
-        id: conn.connector_type,
-        name: reg?.name ?? conn.connector_type,
-        description: reg?.description ?? 'Source connector',
-        available: true,
-        color: reg?.color ?? 'bg-teal-500',
-        iconLetter: reg?.iconLetter ?? conn.connector_type.charAt(0).toUpperCase(),
-        formFields: [],
-      };
-      setEditingConn(conn);
-      setPanelConnector(synth);
+      // Fetch the config schema from source-types and current config from the backend
+      try {
+        const [typesRes, configRes] = await Promise.all([
+          api.get('/source-types'),
+          api.get(`/connections/${conn.id}/source-config`),
+        ]);
+        const typeMeta = (typesRes.data?.data ?? []).find(
+          (t: { type: string }) => t.type === conn.connector_type,
+        );
+        const currentConfig = configRes.data?.data ?? {};
+        const schema = typeMeta?.configSchema;
+        // Build formFields from the JSON Schema, filtering to preAuthFields
+        // (the fields shown before OAuth — the ones the user can meaningfully edit)
+        const preAuth: string[] = typeMeta?.oauth?.preAuthFields ?? [];
+        const editableKeys = preAuth.length > 0
+          ? preAuth
+          : schema ? Object.keys(schema.properties ?? {}) : [];
+        const formFields: FormField[] = editableKeys
+          .filter((key: string) => schema?.properties?.[key])
+          .map((key: string) => {
+            const prop = schema.properties[key];
+            const isSensitive = /(secret|password|token|apikey|api_key)/i.test(key);
+            return {
+              key,
+              label: prop.title ?? key,
+              placeholder: prop.default !== undefined ? String(prop.default) : '',
+              type: (isSensitive ? 'password' : prop.type === 'integer' || prop.type === 'number' ? 'number' : 'text') as FormField['type'],
+              hint: prop.description,
+            };
+          });
+        const synth: Connector = {
+          id: conn.connector_type,
+          name: reg?.name ?? conn.connector_type,
+          description: reg?.description ?? 'Source connector',
+          available: true,
+          color: reg?.color ?? 'bg-teal-500',
+          iconLetter: reg?.iconLetter ?? conn.connector_type.charAt(0).toUpperCase(),
+          formFields,
+        };
+        // Inject the current config into the connection object so SlidePanel picks it up
+        setEditingConn({ ...conn, config: currentConfig });
+        setPanelConnector(synth);
+      } catch {
+        // Fallback: open with name+domains only
+        const synth: Connector = {
+          id: conn.connector_type,
+          name: reg?.name ?? conn.connector_type,
+          description: reg?.description ?? 'Source connector',
+          available: true,
+          color: reg?.color ?? 'bg-teal-500',
+          iconLetter: reg?.iconLetter ?? conn.connector_type.charAt(0).toUpperCase(),
+          formFields: [],
+        };
+        setEditingConn(conn);
+        setPanelConnector(synth);
+      }
       return;
     }
     const connector = connectorForType(conn.type);
