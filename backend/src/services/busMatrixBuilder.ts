@@ -317,6 +317,17 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         const tableId = typeof tableRow === 'object' ? (tableRow as { id: number }).id : (tableRow as number);
         tableNameToId.set(dim.table_name, tableId);
 
+        // Create notebook cell for this dimension
+        if (dim.transformation_sql) {
+          await trx('product_table_cells').insert({
+            product_table_id: tableId,
+            cell_type: 'sql',
+            source: dim.transformation_sql,
+            position: 0,
+            is_deploy_cell: true,
+          });
+        }
+
         for (const col of dim.columns) {
           const [colRow] = await trx('product_columns').insert({
             product_table_id: tableId,
@@ -371,6 +382,17 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         }).returning('id');
         const tableId = typeof tableRow === 'object' ? (tableRow as { id: number }).id : (tableRow as number);
         tableNameToId.set(fact.table_name, tableId);
+
+        // Create notebook cell for this fact table
+        if (fact.transformation_sql) {
+          await trx('product_table_cells').insert({
+            product_table_id: tableId,
+            cell_type: 'sql',
+            source: fact.transformation_sql,
+            position: 0,
+            is_deploy_cell: true,
+          });
+        }
 
         for (const col of fact.columns) {
           const [colRow] = await trx('product_columns').insert({
@@ -470,6 +492,17 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
       }).returning('id');
       const dimDateId = typeof dimDateRow === 'object' ? (dimDateRow as { id: number }).id : (dimDateRow as number);
       tableNameToId.set('dim_date', dimDateId);
+
+      // Create notebook cell for dim_date (only if this product materializes it)
+      if (isFirstBuilder) {
+        await trx('product_table_cells').insert({
+          product_table_id: dimDateId,
+          cell_type: 'sql',
+          source: DIM_DATE_SQL(dateRange.start, dateRange.end),
+          position: 0,
+          is_deploy_cell: true,
+        });
+      }
 
       for (const col of DIM_DATE_COLUMNS) {
         await trx('product_columns').insert({

@@ -489,17 +489,42 @@ function ProductsPageInner() {
             </select>
           )}
           {connections.length > 0 && (
-            <button
-              onClick={() => {
-                const connId = connections.length === 1 ? connections[0].id : buildConnId;
-                if (connId) handleAutoBuild(connId);
-              }}
-              disabled={building || (connections.length > 1 && !buildConnId)}
-              className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors flex items-center gap-2"
-            >
-              {building && <Spinner />}
-              {building ? 'Building…' : 'Prepare my data'}
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  const connId = connections.length === 1 ? connections[0].id : buildConnId;
+                  if (connId) handleAutoBuild(connId);
+                }}
+                disabled={building || (connections.length > 1 && !buildConnId)}
+                className="px-4 py-2 bg-ocean text-white text-[13px] font-medium rounded-l-md hover:bg-ocean-hover disabled:opacity-50 transition-colors flex items-center gap-2"
+              >
+                {building && <Spinner />}
+                {building ? 'Building…' : 'Prepare my data'}
+              </button>
+              <button
+                onClick={async () => {
+                  const connId = connections.length === 1 ? connections[0].id : buildConnId;
+                  if (!connId) return;
+                  try {
+                    const name = prompt('Product name:');
+                    if (!name?.trim()) return;
+                    const res = await api.post('/products', {
+                      name: name.trim(),
+                      connectionId: connId,
+                      sourceTables: [],
+                    });
+                    const id = res.data.data?.productId ?? res.data.data?.id;
+                    if (id) router.push(`/products/${id}`);
+                    else loadProducts();
+                  } catch { /* ignore */ }
+                }}
+                disabled={connections.length > 1 && !buildConnId}
+                className="px-2.5 py-2 bg-ocean text-white text-[13px] font-medium rounded-r-md hover:bg-ocean-hover disabled:opacity-50 transition-colors border-l border-ocean-hover/40"
+                title="Create empty product (manual)"
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={2} />
+              </button>
+            </div>
           )}
         </div>
       </div>
