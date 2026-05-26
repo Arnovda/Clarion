@@ -209,6 +209,9 @@ function DashboardBody() {
           {/* AI routing toggle */}
           <RoutingPanel />
 
+          {/* Per-category model selector */}
+          <CategoryModelPanel />
+
           {/* Trend chart */}
           <section className="bg-raised border border-line rounded-md p-5 mb-8">
             <header className="mb-4 flex items-baseline justify-between">
@@ -413,6 +416,160 @@ function RoutingPanel() {
           })}
         </div>
       )}
+    </section>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Per-category model selector
+// ───────────────────────────────────────────────────────────────────────────
+
+interface CategoryConfig {
+  category: string;
+  label: string;
+  description: string;
+  defaultModel: string;
+  override: { provider: string; model_id: string } | null;
+}
+
+interface AvailableModel {
+  provider: string;
+  model_id: string;
+  label: string;
+}
+
+function CategoryModelPanel() {
+  const [categories, setCategories] = useState<CategoryConfig[]>([]);
+  const [availableModels, setAvailableModels] = useState<AvailableModel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [savedCat, setSavedCat] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [catRes, routingRes] = await Promise.all([
+        api.get('/admin/ai-routing/categories'),
+        api.get('/admin/ai-routing'),
+      ]);
+      setCategories(catRes.data.data.categories ?? []);
+      setAvailableModels(routingRes.data.data.availableModels ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load model config.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleChange = async (category: string, provider: string, modelId: string) => {
+    setSaving(category);
+    setSavedCat(null);
+    setError(null);
+    try {
+      if (provider === 'default') {
+        await api.delete(`/admin/ai-routing/categories/${category}`);
+      } else {
+        await api.put(`/admin/ai-routing/categories/${category}`, {
+          provider,
+          model_id: modelId,
+        });
+      }
+      await load();
+      setSavedCat(category);
+      setTimeout(() => setSavedCat(null), 2200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save model config.');
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const modelOptions = useMemo(() => {
+    const opts: Array<{ value: string; label: string; provider: string; modelId: string }> = [
+      { value: 'default', label: 'Use global setting', provider: 'default', modelId: '' },
+    ];
+    for (const m of availableModels) {
+      opts.push({ value: `${m.provider}:${m.model_id}`, label: m.label, provider: m.provider, modelId: m.model_id });
+    }
+    return opts;
+  }, [availableModels]);
+
+  if (loading) {
+    return (
+      <section className="bg-raised border border-line rounded-md p-5 mb-8">
+        <div className="flex items-center gap-2 text-muted text-[13px]">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading model configuration…
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-raised border border-line rounded-md p-5 mb-8">
+      <header className="mb-4">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5 text-ocean" strokeWidth={1.75} />
+          <h2 className="font-display text-[16px] font-medium text-ink">Model per AI category</h2>
+        </div>
+        <p className="text-[12px] text-muted mt-0.5">
+          Override the model for each type of AI call. Unset categories use the global routing mode above.
+        </p>
+      </header>
+
+      {error && (
+        <div className="mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-[12px] text-red-800">
+          {error}
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {categories.map((cat) => {
+          const currentValue = cat.override
+            ? `${cat.override.provider}:${cat.override.model_id}`
+            : 'default';
+          const isSaving = saving === cat.category;
+          const isSaved = savedCat === cat.category;
+
+          return (
+            <div
+              key={cat.category}
+              className="flex items-center gap-4 px-4 py-3 border border-line rounded-md bg-bg hover:bg-softer transition-colors"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-[13.5px] font-medium text-ink">{cat.label}</span>
+                  {isSaved && (
+                    <span className="inline-flex items-center gap-1 text-[10.5px] text-emerald-700">
+                      <Check className="w-3 h-3" strokeWidth={2} /> Saved
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11.5px] text-muted mt-0.5 leading-snug">{cat.description}</p>
+                <p className="text-[10.5px] font-mono text-muted-2 mt-0.5">
+                  Default: {cat.defaultModel}
+                </p>
+              </div>
+              <div className="flex-shrink-0 w-56">
+                <select
+                  value={currentValue}
+                  disabled={isSaving}
+                  onChange={(e) => {
+                    const selected = modelOptions.find(o => o.value === e.target.value);
+                    if (selected) handleChange(cat.category, selected.provider, selected.modelId);
+                  }}
+                  className="w-full bg-raised border border-line rounded-md px-2.5 py-1.5 text-[12.5px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors disabled:opacity-50"
+                >
+                  {modelOptions.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }

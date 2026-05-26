@@ -174,7 +174,7 @@ import {
 } from '../services/aiBudget';
 import { logAiCall } from '../services/aiCallLogger';
 import { getGlossaryPromptBlock } from '../services/glossaryContext';
-import { pickBackend, callAzureBackend, type AiCallKind } from '../services/ai/router';
+import { pickBackend, callAzureBackend, callAzureOpenAIBackend, resolveModel, callLabelToCategory, type AiCallKind } from '../services/ai/router';
 
 /**
  * Load the tenant-wide business glossary block for inclusion in AI prompts.
@@ -297,13 +297,48 @@ export async function callClaude(
   // Per-tenant budget gate (throws AiBudgetExceededError if capped).
   const tenantId = await enforceAiBudget(callLabel);
 
-  // ── AI backend router (Phase B.1) ──────────────────────────────────────
-  // Tenant-level Claude/Hybrid/Azure toggle. If the tenant has opted
-  // into Azure for this call's `kind`, route to Foundry. On ANY Azure
-  // failure (network, 5xx, malformed response) we silently fall back
-  // to the Claude path below — never let a misconfigured Foundry break
-  // the user-facing AI.
+  // ── AI backend router ──────────────────────────────────────────────────
+  // Two-layer routing:
+  //   1. Per-category override (ai_model_config table) — finest control
+  //   2. Global tenant mode (claude/hybrid/azure) — coarse toggle
+  // Any Azure failure falls back to Claude silently.
   const callKind: AiCallKind = opts.kind ?? 'schema';
+
+  // Layer 1: per-category model override
+  const resolved = await resolveModel({
+    callLabel: callLabel!,
+    kind: callKind,
+    tenantId: tenantId ?? undefined,
+  });
+  if (resolved && resolved.provider !== 'anthropic') {
+    const azureStart = Date.now();
+    try {
+      const routerOpts = { kind: callKind, tenantId: tenantId ?? undefined, systemPrompt, userPrompt, maxTokens, temperature: opts.temperature };
+      const result = resolved.provider === 'azure-openai'
+        ? await callAzureOpenAIBackend({ ...routerOpts, model: resolved.modelId })
+        : await callAzureBackend(routerOpts);
+      const durationMs = Date.now() - azureStart;
+      const backendLabel = `${resolved.provider}:${resolved.modelId}`;
+      const props = { callLabel, model: backendLabel, attempt: '1' };
+      trackMetric('ai_call_duration_ms', durationMs, props);
+      trackMetric('ai_input_tokens',     result.inputTokens,  props);
+      trackMetric('ai_output_tokens',    result.outputTokens, props);
+      trackMetric('ai_total_tokens',     result.inputTokens + result.outputTokens, props);
+      logger.info({ callLabel, backend: resolved.provider, model: resolved.modelId, durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via per-category override');
+      if (tenantId) recordTenantAiUsage(tenantId, result.inputTokens, result.outputTokens).catch(() => { /* noop */ });
+      logAiCall({ callLabel: callLabel!, model: backendLabel, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs });
+      return result.text;
+    } catch (err) {
+      logger.warn({ callLabel, provider: resolved.provider, model: resolved.modelId, err: err instanceof Error ? err.message : String(err) }, 'per-category azure backend failed; falling back to Claude');
+    }
+  }
+  // If resolved says anthropic with a different model, override the model for the Claude call below
+  let effectiveModel = model;
+  if (resolved && resolved.provider === 'anthropic') {
+    effectiveModel = resolved.modelId;
+  }
+
+  // Layer 2: global tenant mode (legacy coarse toggle)
   const backend = await pickBackend({ kind: callKind, tenantId: tenantId ?? undefined });
   if (backend === 'azure') {
     const azureStart = Date.now();
@@ -324,19 +359,9 @@ export async function callClaude(
       trackMetric('ai_total_tokens',     result.inputTokens + result.outputTokens, props);
       logger.info({ callLabel, backend: 'azure', durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via Azure');
       if (tenantId) recordTenantAiUsage(tenantId, result.inputTokens, result.outputTokens).catch(() => { /* noop */ });
-      logAiCall({
-        callLabel: callLabel!,
-        model: 'azure-foundry',
-        inputTokens:  result.inputTokens,
-        outputTokens: result.outputTokens,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        durationMs,
-      });
+      logAiCall({ callLabel: callLabel!, model: 'azure-foundry', inputTokens: result.inputTokens, outputTokens: result.outputTokens, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs });
       return result.text;
     } catch (err) {
-      // Fall through to the Claude path below. The router already
-      // logged the failure with context.
       logger.warn({ callLabel, err: err instanceof Error ? err.message : String(err) }, 'azure backend failed; falling back to Claude');
     }
   }
@@ -345,7 +370,7 @@ export async function callClaude(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const message = await getClient().messages.create({
-        model,
+        model: effectiveModel,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: userPrompt }],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

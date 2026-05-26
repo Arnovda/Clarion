@@ -1,31 +1,18 @@
 /**
- * Azure AI Foundry chat-completions adapter.
+ * Azure AI adapters — two backends, one interface.
  *
- * Mirrors the surface of `callClaude` (in AIService.ts) so the router
- * can drop Foundry in as a backend without callers caring which model
- * answered. Uses the OpenAI-compatible chat-completions schema that
- * Foundry serverless deployments expose by default — same JSON shape
- * GPT / Llama-on-Azure / Phi all accept.
+ * 1. **Azure AI Foundry** (serverless deployments):
+ *    Single model per endpoint. Llama, Phi, Mistral, DeepSeek, etc.
+ *    Env: AZURE_AI_ENDPOINT, AZURE_AI_API_KEY, AZURE_AI_DEPLOYMENT
  *
- * Environment variables (set on the backend Container App):
+ * 2. **Azure OpenAI Service** (managed OpenAI models):
+ *    Multiple deployments per resource. GPT-4o, GPT-4o-mini, GPT-4.1, etc.
+ *    Env: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_API_VERSION
  *
- *   AZURE_AI_ENDPOINT      — full endpoint URL up to /chat/completions
- *                            of the deployed model. e.g.:
- *                              https://my-foundry.eastus.models.ai.azure.com/v1/chat/completions
- *                              https://my-foundry.eastus.inference.ai.azure.com/v1/chat/completions
- *                            (Foundry shows you the exact URL on the
- *                             deployment's "Endpoint" tab.)
- *   AZURE_AI_API_KEY       — API key from the same tab.
- *   AZURE_AI_DEPLOYMENT    — model name to send in the request body.
- *                            For serverless deployments this is the
- *                            deployed model id (e.g. "Meta-Llama-3.3-70B-Instruct").
+ * Both use the OpenAI-compatible chat-completions JSON shape. The
+ * difference is in the endpoint URL format and auth header.
  *
- * If any of those are missing, `isAzureConfigured()` returns false and
- * the router silently routes back to Claude — the toggle UI surfaces
- * this so admins know why "Azure Full" isn't taking effect.
- *
- * Failures fall back to Claude (router decision, not this adapter's
- * concern). We just throw; the router catches.
+ * Failures throw — the router catches and falls back to Claude.
  */
 
 import { logger } from '../../utils/logger';
@@ -39,13 +26,18 @@ export interface AzureChatOptions {
   temperature?: number;
 }
 
+export interface AzureOpenAIChatOptions extends AzureChatOptions {
+  deploymentName: string;
+}
+
 export interface AzureChatResult {
   text: string;
   inputTokens: number;
   outputTokens: number;
 }
 
-/** True when the env is configured with everything the adapter needs. */
+// ─── Azure AI Foundry ─────────────────────────────────────────────────────
+
 export function isAzureConfigured(): boolean {
   return !!(
     process.env.AZURE_AI_ENDPOINT &&
@@ -54,24 +46,51 @@ export function isAzureConfigured(): boolean {
   );
 }
 
-/**
- * Issue one chat-completion call to Foundry. Returns the assistant
- * text and the token counts (for budget tracking + telemetry parity
- * with the Claude path).
- *
- * Throws on:
- *   - missing config (caller should have checked isAzureConfigured)
- *   - non-2xx HTTP response (with body for diagnosis)
- *   - malformed response payload
- */
 export async function callAzureChat(opts: AzureChatOptions): Promise<AzureChatResult> {
   const endpoint = process.env.AZURE_AI_ENDPOINT;
   const apiKey   = process.env.AZURE_AI_API_KEY;
   const model    = process.env.AZURE_AI_DEPLOYMENT;
   if (!endpoint || !apiKey || !model) {
-    throw new Error('Azure AI not configured (AZURE_AI_ENDPOINT, AZURE_AI_API_KEY, AZURE_AI_DEPLOYMENT)');
+    throw new Error('Azure AI Foundry not configured (AZURE_AI_ENDPOINT, AZURE_AI_API_KEY, AZURE_AI_DEPLOYMENT)');
   }
 
+  return doOpenAICompatibleCall(endpoint, apiKey, model, opts);
+}
+
+// ─── Azure OpenAI Service ─────────────────────────────────────────────────
+
+export function isAzureOpenAIConfigured(): boolean {
+  return !!(
+    process.env.AZURE_OPENAI_ENDPOINT &&
+    process.env.AZURE_OPENAI_API_KEY
+  );
+}
+
+export function getAzureOpenAIDeployments(): string[] {
+  const raw = process.env.AZURE_OPENAI_DEPLOYMENTS ?? '';
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+export async function callAzureOpenAIChat(opts: AzureOpenAIChatOptions): Promise<AzureChatResult> {
+  const baseEndpoint = process.env.AZURE_OPENAI_ENDPOINT?.replace(/\/$/, '');
+  const apiKey       = process.env.AZURE_OPENAI_API_KEY;
+  const apiVersion   = process.env.AZURE_OPENAI_API_VERSION ?? '2024-12-01-preview';
+  if (!baseEndpoint || !apiKey) {
+    throw new Error('Azure OpenAI not configured (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY)');
+  }
+
+  const endpoint = `${baseEndpoint}/openai/deployments/${encodeURIComponent(opts.deploymentName)}/chat/completions?api-version=${apiVersion}`;
+  return doOpenAICompatibleCall(endpoint, apiKey, opts.deploymentName, opts);
+}
+
+// ─── Shared OpenAI-compatible call ────────────────────────────────────────
+
+async function doOpenAICompatibleCall(
+  endpoint: string,
+  apiKey: string,
+  model: string,
+  opts: AzureChatOptions,
+): Promise<AzureChatResult> {
   const body = {
     model,
     messages: [
@@ -89,9 +108,6 @@ export async function callAzureChat(opts: AzureChatOptions): Promise<AzureChatRe
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
-        // Foundry serverless accepts both `Authorization: Bearer …` and
-        // `api-key: …`. We send api-key; switch if your deployment
-        // rejects (verify on the endpoint page).
         'api-key':       apiKey,
         'Authorization': `Bearer ${apiKey}`,
       },
@@ -99,19 +115,16 @@ export async function callAzureChat(opts: AzureChatOptions): Promise<AzureChatRe
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg, durationMs: Date.now() - start }, 'azure call network error');
+    log.warn({ err: msg, model, durationMs: Date.now() - start }, 'azure call network error');
     throw new Error(`Azure AI network error: ${msg}`);
   }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    log.warn({ status: res.status, body: text.slice(0, 400), durationMs: Date.now() - start }, 'azure call failed');
+    log.warn({ status: res.status, model, body: text.slice(0, 400), durationMs: Date.now() - start }, 'azure call failed');
     throw new Error(`Azure AI ${res.status}: ${text.slice(0, 200)}`);
   }
 
-  // Expected shape (OpenAI-compatible):
-  //   { choices: [{ message: { content: "..." } }],
-  //     usage: { prompt_tokens, completion_tokens, total_tokens } }
   type AzureResp = {
     choices?: Array<{ message?: { content?: string } }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -121,6 +134,8 @@ export async function callAzureChat(opts: AzureChatOptions): Promise<AzureChatRe
   if (typeof text !== 'string') {
     throw new Error('Azure AI: unexpected response shape (no choices[0].message.content)');
   }
+
+  log.debug({ model, durationMs: Date.now() - start, inputTokens: json.usage?.prompt_tokens, outputTokens: json.usage?.completion_tokens }, 'azure call OK');
 
   return {
     text,

@@ -1,40 +1,135 @@
 /**
- * AI backend router — picks Claude or Azure AI Foundry per call based
- * on the tenant's mode and the call's `kind`.
+ * AI backend router — picks provider + model per call based on the
+ * tenant's global mode AND per-category overrides.
  *
- * Kinds:
- *   - 'row'    : prompt includes customer row data (insights, narration,
- *                explain widget, format answer, schema sample values,
- *                investigation step summaries, etc.). Goes to Azure
- *                under 'hybrid' or 'azure' mode so customer data never
- *                leaves the Azure tenancy.
- *   - 'schema' : prompt is schema/metadata only — table names, column
- *                names, descriptions, KPI formulas, etc. NL→SQL,
- *                dashboard spec generation, transformation design.
- *                Stays on Claude under 'claude' or 'hybrid' mode;
- *                moves to Azure under 'azure' mode.
+ * Two layers of configuration:
  *
- * Routing matrix:
+ *   1. **Global mode** (tenants.ai_routing_mode):
+ *      claude / hybrid / azure — the coarse toggle. Determines the
+ *      default backend for all calls.
  *
- *               |  row     |  schema
- *   ------------|----------|---------
- *   claude      |  Claude  |  Claude
- *   hybrid      |  Azure   |  Claude
- *   azure       |  Azure   |  Azure
+ *   2. **Per-category overrides** (ai_model_config table):
+ *      Fine-grained control. Each of the ~8 call categories can be
+ *      independently assigned to a specific provider + model. When an
+ *      override exists, it wins over the global mode.
  *
- * Safety net: if Azure is selected but not configured (env vars
- * missing) OR an Azure call fails for any reason, we fall back to
- * Claude. Logged so misconfigurations surface in monitoring, but the
- * user-facing AI never goes silent.
+ * Categories map internal call labels to user-visible groups:
+ *   schema_profiling, nl_to_sql, query_support, dashboards,
+ *   products, investigation, formatting, suggestions
+ *
+ * Safety net: if Azure is selected but not configured, or an Azure
+ * call fails, we fall back to Claude. The user-facing AI never goes
+ * silent.
  */
 
-import { isAzureConfigured, callAzureChat } from './azureClient';
+import { isAzureConfigured, isAzureOpenAIConfigured, callAzureChat, callAzureOpenAIChat } from './azureClient';
 import { getTenantAiMode, type AiRoutingMode } from './tenantAiMode';
+import { getCallCategoryConfig, type ModelOverride } from './callCategoryConfig';
 import { logger } from '../../utils/logger';
 
 const log = logger.child({ component: 'ai-router' });
 
 export type AiCallKind = 'row' | 'schema';
+
+/** The 8 call categories visible in the admin UI. */
+export type CallCategory =
+  | 'schema_profiling'
+  | 'nl_to_sql'
+  | 'query_support'
+  | 'dashboards'
+  | 'products'
+  | 'investigation'
+  | 'formatting'
+  | 'suggestions';
+
+export const ALL_CALL_CATEGORIES: CallCategory[] = [
+  'schema_profiling',
+  'nl_to_sql',
+  'query_support',
+  'dashboards',
+  'products',
+  'investigation',
+  'formatting',
+  'suggestions',
+];
+
+export const CALL_CATEGORY_META: Record<CallCategory, {
+  label: string;
+  description: string;
+  defaultModel: string;
+  callLabels: string[];
+}> = {
+  schema_profiling: {
+    label: 'Schema profiling',
+    description: 'AI learns your source data — table/column descriptions, FK detection, naming conventions',
+    defaultModel: 'claude-sonnet-4-6',
+    callLabels: ['schema_conventions', 'table_context', 'column_descriptions', 'suggest_relationships', 'suggest_fk_matches', 'schema_draft'],
+  },
+  nl_to_sql: {
+    label: 'Ask AI (NL→SQL)',
+    description: 'Natural language questions converted to SQL queries',
+    defaultModel: 'claude-sonnet-4-6',
+    callLabels: ['nl_to_sql', 'generate_sql_streaming', 'cross_source_sql', 'multi_turn', 'forecast_query'],
+  },
+  query_support: {
+    label: 'Query support',
+    description: 'Result validation, answer formatting, SQL explanation',
+    defaultModel: 'claude-haiku-4-5-20251001',
+    callLabels: ['validate_result', 'format_answer', 'explain_sql_plain'],
+  },
+  dashboards: {
+    label: 'Dashboards',
+    description: 'Dashboard generation, refinement, validation, narration, insights',
+    defaultModel: 'claude-sonnet-4-6',
+    callLabels: [
+      'dashboard_spec', 'dashboard_refine', 'dashboard_refinement',
+      'dashboard_validate', 'widget_semantic_check', 'narrate_dashboard',
+      'dashboard_insights', 'explain_widget',
+    ],
+  },
+  products: {
+    label: 'Data products',
+    description: 'Star schema design, bus matrix, transformation SQL, product refinement',
+    defaultModel: 'claude-sonnet-4-6',
+    callLabels: [
+      'star_schema', 'star_schema_streaming', 'bus_matrix_streaming',
+      'edit_column_expression', 'refine_chat', 'refine_product',
+      'refine_product_cross', 'transformation_from_scratch', 'transformation_repair',
+    ],
+  },
+  investigation: {
+    label: 'Investigation',
+    description: 'Diagnostic query planning, step summarization, conclusion synthesis',
+    defaultModel: 'claude-sonnet-4-6',
+    callLabels: [
+      'investigate_plan_next', 'investigate_summarise', 'investigate_conclude',
+      'investigate_plan', 'investigate_synthesize',
+    ],
+  },
+  formatting: {
+    label: 'Formatting & summaries',
+    description: 'Report narratives, quality alert context, morning briefs',
+    defaultModel: 'claude-haiku-4-5-20251001',
+    callLabels: ['report_narrative', 'quality_alert_context', 'morning_brief'],
+  },
+  suggestions: {
+    label: 'Suggestions & misc',
+    description: 'KPI drafting, pulse entries, query starters, product icons',
+    defaultModel: 'claude-haiku-4-5-20251001',
+    callLabels: ['kpi_draft', 'pulse_suggest', 'query_starters', 'product_icon'],
+  },
+};
+
+const LABEL_TO_CATEGORY = new Map<string, CallCategory>();
+for (const [cat, meta] of Object.entries(CALL_CATEGORY_META)) {
+  for (const label of meta.callLabels) {
+    LABEL_TO_CATEGORY.set(label, cat as CallCategory);
+  }
+}
+
+export function callLabelToCategory(callLabel: string): CallCategory | undefined {
+  return LABEL_TO_CATEGORY.get(callLabel);
+}
 
 export interface RouterOptions {
   kind: AiCallKind;
@@ -49,15 +144,58 @@ export interface RouterResult {
   text: string;
   inputTokens: number;
   outputTokens: number;
-  /** Which backend actually answered. Useful for telemetry + the
-   *  admin UI's "running on …" indicator. */
-  backend: 'claude' | 'azure';
+  backend: 'claude' | 'azure-openai' | 'azure-foundry';
+}
+
+export type ResolvedModel = {
+  provider: 'anthropic' | 'azure-openai' | 'azure-foundry';
+  modelId: string;
+} | null;
+
+/**
+ * Resolve which provider + model to use for a specific call.
+ *
+ * Priority:
+ *   1. Per-category override in ai_model_config → use that exact provider + model
+ *   2. Global tenant mode (claude/hybrid/azure) → derive provider from kind
+ *   3. Default → Claude with the model the caller specified
+ */
+export async function resolveModel(opts: {
+  callLabel: string;
+  kind: AiCallKind;
+  tenantId: number | undefined;
+}): Promise<ResolvedModel> {
+  const category = callLabelToCategory(opts.callLabel);
+
+  if (category && opts.tenantId) {
+    const override = await getCallCategoryConfig(opts.tenantId, category);
+    if (override) {
+      if (override.provider === 'anthropic') {
+        return { provider: 'anthropic', modelId: override.model_id };
+      }
+      if (override.provider === 'azure-openai') {
+        if (!isAzureOpenAIConfigured()) {
+          log.warn({ tenantId: opts.tenantId, category }, 'per-category override points to azure-openai but env not configured — falling back');
+          return null;
+        }
+        return { provider: 'azure-openai', modelId: override.model_id };
+      }
+      if (override.provider === 'azure-foundry') {
+        if (!isAzureConfigured()) {
+          log.warn({ tenantId: opts.tenantId, category }, 'per-category override points to azure-foundry but env not configured — falling back');
+          return null;
+        }
+        return { provider: 'azure-foundry', modelId: override.model_id };
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
- * Decide which backend should answer a call. Returns 'azure' only
+ * Legacy: decide backend from global mode + kind. Returns 'azure' only
  * when the tenant has explicitly opted in AND Azure is configured.
- * Otherwise returns 'claude' — the safe default.
  */
 export async function pickBackend(opts: { kind: AiCallKind; tenantId: number | undefined }): Promise<'claude' | 'azure'> {
   const mode: AiRoutingMode = await getTenantAiMode(opts.tenantId);
@@ -66,27 +204,12 @@ export async function pickBackend(opts: { kind: AiCallKind; tenantId: number | u
     (mode === 'hybrid' && opts.kind === 'row');
   if (!wantsAzure) return 'claude';
   if (!isAzureConfigured()) {
-    // Tenant wants Azure but env isn't configured. Log loudly so the
-    // operator notices, then fall back to Claude.
     log.warn({ tenantId: opts.tenantId, mode, kind: opts.kind }, 'tenant opted into Azure but AZURE_AI_* env vars missing — falling back to Claude');
     return 'claude';
   }
   return 'azure';
 }
 
-/**
- * Run a single chat completion against whichever backend the tenant's
- * mode dictates. The Claude path is intentionally NOT inlined here —
- * the existing `callClaude` helper in AIService.ts already does
- * budget enforcement, retry-on-overload, and prompt caching. This
- * router's job is just to decide AND to provide the Azure path.
- *
- * For the Azure branch: any error (network, 5xx, malformed response)
- * is logged + caught; the router re-throws a sentinel so the caller
- * (AIService.callClaude wrapper) can fall back to the Claude path.
- * That fallback keeps the dashboard alive even when a freshly-pointed
- * Foundry endpoint is misconfigured.
- */
 export async function callAzureBackend(opts: RouterOptions): Promise<RouterResult> {
   try {
     const res = await callAzureChat({
@@ -95,10 +218,27 @@ export async function callAzureBackend(opts: RouterOptions): Promise<RouterResul
       maxTokens:    opts.maxTokens,
       temperature:  opts.temperature,
     });
-    return { ...res, backend: 'azure' };
+    return { ...res, backend: 'azure-foundry' };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg, kind: opts.kind, tenantId: opts.tenantId }, 'azure backend failed');
+    log.warn({ err: msg, kind: opts.kind, tenantId: opts.tenantId }, 'azure foundry backend failed');
+    throw err;
+  }
+}
+
+export async function callAzureOpenAIBackend(opts: RouterOptions & { model: string }): Promise<RouterResult> {
+  try {
+    const res = await callAzureOpenAIChat({
+      systemPrompt: opts.systemPrompt,
+      userPrompt:   opts.userPrompt,
+      maxTokens:    opts.maxTokens,
+      temperature:  opts.temperature,
+      deploymentName: opts.model,
+    });
+    return { ...res, backend: 'azure-openai' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg, kind: opts.kind, tenantId: opts.tenantId, model: opts.model }, 'azure openai backend failed');
     throw err;
   }
 }
