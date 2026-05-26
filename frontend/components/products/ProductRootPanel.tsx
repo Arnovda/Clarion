@@ -41,6 +41,7 @@ const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: fal
 const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
 const RefineChat = dynamic(() => import('@/components/products/RefineChat'), { ssr: false });
 const RefreshHistoryChart = dynamic(() => import('@/components/products/RefreshHistoryChart'), { ssr: false });
+const TableNotebook = dynamic(() => import('@/components/products/TableNotebook'), { ssr: false });
 
 type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
 
@@ -84,6 +85,7 @@ export default function ProductRootPanel({
   const curator = canCurate(role);
   const admin = isAdminRole(role);
   const [tab, setTab] = useState<DetailTab>('overview');
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [detail, setDetail] = useState<FullDataProduct | null>(null);
   const [kpis, setKpis] = useState<ProductKpi[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -386,41 +388,109 @@ export default function ProductRootPanel({
       <div className="flex-1 min-h-0 flex overflow-hidden">
         {/* Left: tabbed content */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-          <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
-            {/* Schema diagram + SQL are curator surfaces. Viewers see
-                Overview / Tables / Data flow / KPIs / Quality only —
-                already plenty of business context without the FK arrows
-                and DuckDB transformation SQL. Admins/analysts keep
-                the full set. */}
-            <nav className="flex gap-0">
-              <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
-              <TabBtn active={tab === 'tables'} onClick={() => setTab('tables')} icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
-              {curator && (
-                <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
-              )}
-              <TabBtn active={tab === 'lineage'} onClick={() => setTab('lineage')} icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
-              <TabBtn active={tab === 'kpis'} onClick={() => setTab('kpis')} icon={<Gauge className="w-3.5 h-3.5" />}>KPIs</TabBtn>
-              <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')} icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
-              {curator && (
-                <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
-              )}
-            </nav>
-          </div>
-          <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
-            {tab === 'overview' && <OverviewSection detail={detail} kpis={kpis} tables={tables} />}
-            {tab === 'tables' && (
-              <TablesSection
-                tables={tables}
-                expandedTableId={expandedTableId}
-                onToggle={(id) => setExpandedTableId(expandedTableId === id ? null : id)}
-              />
-            )}
-            {tab === 'schema' && <SchemaSection detail={detail} />}
-            {tab === 'lineage' && <LineageSection detail={detail} />}
-            {tab === 'kpis' && <KpiManager productId={productId} kpis={kpis} onChanged={loadKpis} />}
-            {tab === 'quality' && <QualityTab productNameFilter={detail.name} />}
-            {tab === 'sql' && <SqlSection tables={tables} />}
-          </div>
+          {/* Table tabs — horizontal scrollable pills for each table in the product */}
+          {tables.length > 0 && curator && (
+            <div className="border-b border-line bg-raised px-6 shrink-0">
+              <div className="flex items-center gap-1 overflow-x-auto py-2 -mb-px">
+                {tables.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => { setSelectedTableId(t.id); setTab('overview'); }}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium rounded-md whitespace-nowrap transition-colors shrink-0',
+                      selectedTableId === t.id
+                        ? 'bg-ocean text-white'
+                        : 'text-muted hover:text-ink hover:bg-softer border border-transparent hover:border-line',
+                    )}
+                  >
+                    <RoleBadge role={t.table_role} />
+                    {t.display_name ?? t.table_name}
+                    {t.is_reference && <span className="text-[9px] opacity-70">🔗</span>}
+                    {t.row_count !== null && t.row_count > 0 && (
+                      <span className={cn('text-[10px] tabular-nums', selectedTableId === t.id ? 'text-white/70' : 'text-muted-2')}>
+                        {t.row_count.toLocaleString('en-GB')}
+                      </span>
+                    )}
+                    <StatusDot status={t.transformation_status} />
+                  </button>
+                ))}
+                <button
+                  onClick={() => setSelectedTableId(null)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium rounded-md whitespace-nowrap transition-colors shrink-0',
+                    selectedTableId === null
+                      ? 'bg-ocean/10 text-ocean border border-ocean/20'
+                      : 'text-muted hover:text-ink hover:bg-softer border border-transparent hover:border-line',
+                  )}
+                >
+                  Product
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Selected table: show notebook */}
+          {selectedTableId !== null && curator ? (
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+              {(() => {
+                const t = tables.find((t) => t.id === selectedTableId);
+                if (!t) return <p className="text-[13px] text-muted italic">Table not found.</p>;
+                return (
+                  <div>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div>
+                        <h2 className="font-display text-[17px] text-ink tracking-[-0.01em]">{t.display_name ?? t.table_name}</h2>
+                        {t.description && <p className="text-[12.5px] text-muted mt-0.5">{t.description}</p>}
+                      </div>
+                      <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-2">
+                        {t.row_count !== null && <span>{t.row_count.toLocaleString('en-GB')} rows</span>}
+                        {t.last_run_at && (
+                          <span>Last run: {new Date(t.last_run_at).toLocaleDateString('en-GB')}</span>
+                        )}
+                      </div>
+                    </div>
+                    <TableNotebook
+                      productTableId={t.id}
+                      tableName={t.table_name}
+                      readOnly={!!t.is_reference}
+                      onDeployed={loadDetail}
+                    />
+                  </div>
+                );
+              })()}
+            </div>
+          ) : (
+            /* Product-level tabs */
+            <>
+              <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
+                <nav className="flex gap-0">
+                  <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
+                  <TabBtn active={tab === 'tables'} onClick={() => setTab('tables')} icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
+                  {curator && (
+                    <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+                  )}
+                  <TabBtn active={tab === 'lineage'} onClick={() => setTab('lineage')} icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
+                  <TabBtn active={tab === 'kpis'} onClick={() => setTab('kpis')} icon={<Gauge className="w-3.5 h-3.5" />}>KPIs</TabBtn>
+                  <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')} icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
+                </nav>
+              </div>
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+                {tab === 'overview' && <OverviewSection detail={detail} kpis={kpis} tables={tables} />}
+                {tab === 'tables' && (
+                  <TablesSection
+                    tables={tables}
+                    expandedTableId={expandedTableId}
+                    onToggle={(id) => setExpandedTableId(expandedTableId === id ? null : id)}
+                    onOpenNotebook={(id) => setSelectedTableId(id)}
+                  />
+                )}
+                {tab === 'schema' && <SchemaSection detail={detail} />}
+                {tab === 'lineage' && <LineageSection detail={detail} />}
+                {tab === 'kpis' && <KpiManager productId={productId} kpis={kpis} onChanged={loadKpis} />}
+                {tab === 'quality' && <QualityTab productNameFilter={detail.name} />}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Right: AI chat sidebar (collapsible) */}
@@ -587,11 +657,12 @@ function Stat({ label, value }: { label: string; value: number }) {
 }
 
 function TablesSection({
-  tables, expandedTableId, onToggle,
+  tables, expandedTableId, onToggle, onOpenNotebook,
 }: {
   tables: (ProductTable & { columns: ProductColumn[] })[];
   expandedTableId: number | null;
   onToggle: (id: number) => void;
+  onOpenNotebook?: (id: number) => void;
 }) {
   if (tables.length === 0) {
     return <p className="text-[13px] text-muted italic">No tables designed yet.</p>;
@@ -629,8 +700,15 @@ function TablesSection({
             </button>
             {open && (
               <div className="px-4 pb-4 bg-softer/30 space-y-4">
-                {/* Full change-evolution chart — only meaningful once a refresh
-                    has run; the chart itself surfaces an empty state otherwise. */}
+                {onOpenNotebook && (
+                  <button
+                    onClick={() => onOpenNotebook(t.id)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11.5px] font-medium text-ocean border border-ocean/20 rounded-md hover:bg-ocean-softer/40 transition-colors"
+                  >
+                    <CodeIcon className="w-3 h-3" strokeWidth={2} />
+                    Open notebook
+                  </button>
+                )}
                 <div className="bg-raised border border-line rounded-md overflow-hidden">
                   <div className="px-3 py-2 border-b border-line bg-softer/40">
                     <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">
