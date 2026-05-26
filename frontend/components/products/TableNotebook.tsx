@@ -8,6 +8,7 @@ import {
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useToast } from '@/components/ui/Toast';
+import { format as formatSql } from 'sql-formatter';
 import CellOutput from './CellOutput';
 import type { CellOutputData } from './CellOutput';
 
@@ -264,7 +265,7 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
                     <div className="border-t border-line pt-2">
                       <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted mb-1">Generated SQL</p>
                       <pre className="text-[12px] font-mono text-ink-2 bg-softer/40 rounded px-2.5 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                        {cell.generated_sql}
+                        {prettySql(cell.generated_sql)}
                       </pre>
                     </div>
                   )}
@@ -286,7 +287,7 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
                     className="text-[12px] font-mono text-ink-2 leading-relaxed whitespace-pre-wrap cursor-pointer hover:bg-softer/30 rounded px-1 py-0.5 min-h-[24px]"
                     onClick={() => !readOnly && startEdit(cell)}
                   >
-                    {cell.source || <span className="text-muted italic font-sans">Click to write SQL…</span>}
+                    {cell.source ? prettySql(cell.source) : <span className="text-muted italic font-sans">Click to write SQL…</span>}
                   </pre>
                 )
               )}
@@ -437,4 +438,12 @@ function DataDiffStrip({ productTableId }: { productTableId: number }) {
       {diff.deleted_count > 0 && <span className="text-err">{diff.deleted_count.toLocaleString('en-GB')} deleted</span>}
     </div>
   );
+}
+
+function prettySql(sql: string): string {
+  try {
+    return formatSql(sql, { language: 'sql', tabWidth: 2, keywordCase: 'upper' });
+  } catch {
+    return sql;
+  }
 }
