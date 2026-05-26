@@ -491,6 +491,58 @@ router.patch('/:id/source-config', requireAuth, requireRole('admin'), async (req
   }
 });
 
+// POST /api/connections/:id/oauth-reconnect — re-authenticate an OAuth connection
+// Takes an oauthStateToken from a completed OAuth flow and updates the stored config
+// with the fresh tokens, preserving non-auth fields (division, selected_entities, etc.).
+router.post('/:id/oauth-reconnect', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { oauthStateToken } = req.body as { oauthStateToken: string };
+    if (!oauthStateToken) {
+      res.status(400).json({ ok: false, error: 'oauthStateToken is required' });
+      return;
+    }
+    const conn = await db('connections').where({ id: req.params.id }).first();
+    if (!conn) {
+      res.status(404).json({ ok: false, error: 'Connection not found' });
+      return;
+    }
+    if (!conn.connector_type || !conn.connector_config_encrypted) {
+      res.status(400).json({ ok: false, error: 'Not a source-connector connection' });
+      return;
+    }
+    const oauthRow = await db('oauth_pending')
+      .where({
+        state_token: oauthStateToken,
+        tenant_id: req.user!.tenantId,
+        initiated_by_user_id: req.user!.sub,
+        status: 'authorised',
+      })
+      .first();
+    if (!oauthRow) {
+      res.status(400).json({ ok: false, error: 'Invalid or expired OAuth session' });
+      return;
+    }
+    const freshConfig = JSON.parse(decryptCredentials(oauthRow.encrypted_config));
+    const encrypted = encryptCredentials(JSON.stringify(freshConfig));
+    await db('connections').where({ id: req.params.id }).update({
+      connector_config_encrypted: encrypted,
+    });
+    await db('oauth_pending').where({ id: oauthRow.id }).del();
+
+    await recordAudit(req, {
+      action:     'connection.oauth_reconnect',
+      entityType: 'connection',
+      entityId:   Number(req.params.id),
+      context:    { connector_type: conn.connector_type },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Helper: compute profiling progress percentage from phase
 const PROFILING_PHASES = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'] as const;
 export function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {

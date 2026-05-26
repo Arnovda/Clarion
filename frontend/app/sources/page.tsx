@@ -1196,12 +1196,16 @@ function SlidePanel({
   onClose,
   onConnected,
   onUpdated,
+  isOAuth,
+  connectorType,
 }: {
   connector: Connector;
   editConnection?: Connection;        // present → edit mode
   onClose: () => void;
   onConnected: (id: number, name: string) => void;
   onUpdated: (conn: Connection) => void;
+  isOAuth?: boolean;
+  connectorType?: string;
 }) {
   const isEdit = !!editConnection;
 
@@ -1225,6 +1229,93 @@ function SlidePanel({
   const [testMsg, setTestMsg] = useState(isEdit ? 'Connection previously verified' : '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [reconnecting, setReconnecting] = useState(false);
+
+  async function handleOAuthReconnect() {
+    if (!isOAuth || !connectorType || !editConnection) return;
+    setReconnecting(true);
+    setError('');
+    try {
+      const initRes = await api.post(
+        `/source-types/${connectorType}/oauth-init`,
+        { config: Object.fromEntries(Object.entries(fields).filter(([, v]) => v && v !== '••••••••').map(([k, v]) => [k, v])) },
+      );
+      const data = initRes.data?.data as { authUrl: string; stateToken: string } | undefined;
+      if (!data?.authUrl || !data?.stateToken) {
+        throw new Error('oauth-init returned an unexpected response');
+      }
+      const w = 600, h = 720;
+      const left = (window.screen.width  - w) / 2 + (window.screenLeft ?? 0);
+      const top  = (window.screen.height - h) / 2 + (window.screenTop  ?? 0);
+      const popup = window.open(
+        data.authUrl,
+        'clarion-oauth',
+        `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no`,
+      );
+      if (!popup) {
+        throw new Error('Popup blocked — please allow popups for this site and try again');
+      }
+      const result = await new Promise<{ ok: true; code: string; state: string } | { ok: false; error: string }>((resolve, reject) => {
+        let resolved = false;
+        const accept = (m: { kind?: string; ok?: boolean; code?: string; state?: string; error?: string } | undefined) => {
+          if (!m || m.kind !== 'clarion:oauth') return false;
+          if (resolved) return true;
+          resolved = true;
+          channel.close();
+          window.removeEventListener('message', onMessage);
+          clearInterval(closedCheck);
+          if (m.ok && m.code && m.state) resolve({ ok: true, code: m.code, state: m.state });
+          else resolve({ ok: false, error: m.error ?? 'OAuth failed' });
+          return true;
+        };
+        const channel = new BroadcastChannel('clarion-oauth');
+        channel.onmessage = (ev) => { accept(ev.data); };
+        const onMessage = (ev: MessageEvent) => {
+          if (ev.origin !== window.location.origin) return;
+          accept(ev.data);
+        };
+        window.addEventListener('message', onMessage);
+        let closedSince: number | null = null;
+        const closedCheck = setInterval(() => {
+          if (resolved) return;
+          if (popup.closed) {
+            if (closedSince === null) closedSince = Date.now();
+            else if (Date.now() - closedSince > 1500) {
+              if (resolved) return;
+              resolved = true;
+              channel.close();
+              window.removeEventListener('message', onMessage);
+              clearInterval(closedCheck);
+              reject(new Error('Popup closed before authorization completed'));
+            }
+          } else {
+            closedSince = null;
+          }
+        }, 300);
+      });
+      if (!result.ok) throw new Error(result.error ?? 'OAuth authorization failed');
+      if (result.state !== data.stateToken) throw new Error('OAuth state mismatch');
+
+      await api.post(`/source-types/${connectorType}/oauth-finish`, {
+        stateToken: data.stateToken,
+        code: result.code,
+      });
+      await api.post(`/connections/${editConnection.id}/oauth-reconnect`, {
+        oauthStateToken: data.stateToken,
+      });
+
+      setTestStatus('ok');
+      setTestMsg('Re-authenticated successfully — fresh tokens stored');
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } }; message?: string })
+        ?.response?.data?.error
+        ?? (err as Error)?.message
+        ?? 'Re-authentication failed';
+      setError(msg);
+    } finally {
+      setReconnecting(false);
+    }
+  }
 
   function addDomain(value: string) {
     const tag = value.trim().toLowerCase();
@@ -1444,30 +1535,42 @@ function SlidePanel({
             <div className="bg-warn-soft border border-line rounded-md p-4 text-[12px] text-ink-2 space-y-1 leading-relaxed">
               <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-warn mb-1">Source connector</p>
               <p>You can update the name, data domains, and connection details. Sensitive fields (secrets, tokens) are shown as masked — leave them unchanged unless you need to rotate credentials. Changes take effect on the next sync.</p>
+              {isOAuth && <p>If syncs are failing due to expired tokens, use the <strong>Re-authenticate</strong> button below to get fresh credentials.</p>}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-line flex gap-2">
-          {connector.formFields.length > 0 && !editConnection?.connector_type && (
+        <div className="px-6 py-4 border-t border-line flex flex-col gap-2">
+          {isEdit && isOAuth && (
             <button
-              onClick={handleTest}
-              disabled={!allFilled || testStatus === 'testing'}
-              className="px-4 py-2 text-[13px] bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-40 transition-colors text-ink-2"
+              onClick={handleOAuthReconnect}
+              disabled={reconnecting}
+              className="w-full px-4 py-2 text-[13px] font-medium bg-warn-soft text-warn border border-warn/30 rounded-md hover:bg-warn/15 disabled:opacity-40 transition-colors"
             >
-              {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
+              {reconnecting ? 'Authenticating…' : `Re-authenticate with ${connector.name}`}
             </button>
           )}
-          <button
-            onClick={handleSave}
-            disabled={(connector.formFields.length > 0 && !editConnection?.connector_type && testStatus !== 'ok') || saving}
-            className="flex-1 px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-40 transition-colors"
-          >
-            {saving
-              ? (isEdit ? 'Saving…' : 'Saving & analysing…')
-              : (isEdit ? 'Save changes' : 'Save & analyse')}
-          </button>
+          <div className="flex gap-2">
+            {connector.formFields.length > 0 && !editConnection?.connector_type && (
+              <button
+                onClick={handleTest}
+                disabled={!allFilled || testStatus === 'testing'}
+                className="px-4 py-2 text-[13px] bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-40 transition-colors text-ink-2"
+              >
+                {testStatus === 'testing' ? 'Testing…' : 'Test connection'}
+              </button>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={(connector.formFields.length > 0 && !editConnection?.connector_type && testStatus !== 'ok') || saving}
+              className="flex-1 px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-40 transition-colors"
+            >
+              {saving
+                ? (isEdit ? 'Saving…' : 'Saving & analysing…')
+                : (isEdit ? 'Save changes' : 'Save & analyse')}
+            </button>
+          </div>
         </div>
       </div>
     </>
@@ -1879,6 +1982,7 @@ function SourcesPageInner() {
   const [loading, setLoading] = useState(true);
   const [panelConnector, setPanelConnector] = useState<Connector | null>(null);
   const [editingConn, setEditingConn] = useState<Connection | null>(null);
+  const [editingIsOAuth, setEditingIsOAuth] = useState(false);
   const [profiling, setProfiling] = useState<{ id: number; name: string; startStream?: boolean } | null>(null);
   const [ingesting, setIngesting] = useState<{ id: number; name: string } | null>(null);
   // Registry-driven connectors (ExactOnline today; NetSuite/QuickBooks/etc. later).
@@ -1968,6 +2072,7 @@ function SourcesPageInner() {
         };
         // Inject the current config into the connection object so SlidePanel picks it up
         setEditingConn({ ...conn, config: currentConfig });
+        setEditingIsOAuth(!!typeMeta?.oauth);
         setPanelConnector(synth);
       } catch {
         // Fallback: open with name+domains only
@@ -1981,6 +2086,7 @@ function SourcesPageInner() {
           formFields: [],
         };
         setEditingConn(conn);
+        setEditingIsOAuth(false);
         setPanelConnector(synth);
       }
       return;
@@ -1988,12 +2094,14 @@ function SourcesPageInner() {
     const connector = connectorForType(conn.type);
     if (!connector) return;
     setEditingConn(conn);
+    setEditingIsOAuth(false);
     setPanelConnector(connector);
   }
 
   function closePanel() {
     setPanelConnector(null);
     setEditingConn(null);
+    setEditingIsOAuth(false);
   }
 
   function handleConnected(id: number, name: string) {
@@ -2199,6 +2307,8 @@ function SourcesPageInner() {
           onClose={closePanel}
           onConnected={handleConnected}
           onUpdated={handleUpdated}
+          isOAuth={editingIsOAuth}
+          connectorType={editingConn?.connector_type ?? undefined}
         />
       )}
     </AppShell>
