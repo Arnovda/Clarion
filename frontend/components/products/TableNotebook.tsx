@@ -156,9 +156,11 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
 
   return (
     <div className="space-y-3">
-      {/* Deploy button */}
+      {/* Deploy button + data diff */}
       {!readOnly && hasSqlCells && (
-        <div className="flex items-center justify-end">
+        <div className="flex items-center gap-3">
+          <DataDiffStrip productTableId={productTableId} />
+          <div className="flex-1" />
           <button
             onClick={deploy}
             disabled={deploying}
@@ -402,6 +404,37 @@ function EditArea({
           {onRun ? 'Shift+Enter to save & run' : 'Shift+Enter to save'} · Esc to cancel
         </span>
       </div>
+    </div>
+  );
+}
+
+function DataDiffStrip({ productTableId }: { productTableId: number }) {
+  const [diff, setDiff] = useState<{
+    unchanged_count: number; updated_count: number; inserted_count: number; deleted_count: number;
+    created_at: string;
+  } | null>(null);
+
+  useEffect(() => {
+    api.get(`/products/tables/${productTableId}/refresh-history?limit=1`)
+      .then((res) => {
+        const rows = res.data.data ?? [];
+        if (rows.length > 0 && rows[0].status === 'success') setDiff(rows[0]);
+      })
+      .catch(() => {});
+  }, [productTableId]);
+
+  if (!diff) return null;
+
+  const total = diff.unchanged_count + diff.updated_count + diff.inserted_count + diff.deleted_count;
+  if (total === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-mono text-muted-2">
+      <span className="text-muted">Last deploy:</span>
+      {diff.unchanged_count > 0 && <span>{diff.unchanged_count.toLocaleString('en-GB')} unchanged</span>}
+      {diff.updated_count > 0 && <span className="text-ocean">{diff.updated_count.toLocaleString('en-GB')} updated</span>}
+      {diff.inserted_count > 0 && <span className="text-ok">{diff.inserted_count.toLocaleString('en-GB')} new</span>}
+      {diff.deleted_count > 0 && <span className="text-err">{diff.deleted_count.toLocaleString('en-GB')} deleted</span>}
     </div>
   );
 }

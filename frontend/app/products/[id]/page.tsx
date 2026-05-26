@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
 import ProductRootPanel from '@/components/products/ProductRootPanel';
@@ -28,6 +28,8 @@ import ProductRootPanel from '@/components/products/ProductRootPanel';
 export default function ProductDetailPage({ params }: { params: { id: string } }) {
   const productId = Number(params.id);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialTable = searchParams.get('table');
   const [valid] = useState(() => Number.isFinite(productId) && productId > 0);
   const handleDeleted = useCallback(() => {
     router.push('/products');
@@ -63,6 +65,7 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
           onDeleted={handleDeleted}
           showBackButton={false}
           embedAskAI={false}
+          initialTableName={initialTable ?? undefined}
         />
       </div>
     </RequireRole>

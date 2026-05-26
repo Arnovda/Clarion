@@ -443,14 +443,16 @@ function TableRow({
               </div>
             </div>
           )}
-          {/* Sample-data preview — loads on demand (no AI cost, just a
-              SELECT * LIMIT 10 against the materialised parquet). Click
-              "Preview data" to peek at actual rows; users can verify the
-              shape of the data without going to /query. */}
           <div>
             <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Sample data</div>
             <PreviewTable url={`/semantic/product-preview?productTableId=${table.id}&limit=10`} />
           </div>
+          <a
+            href={`/products/${productId}?table=${encodeURIComponent(table.table_name)}`}
+            className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:underline"
+          >
+            Edit in notebook →
+          </a>
         </div>
       )}
     </div>

@@ -14,7 +14,7 @@ import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
   ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, ChevronDown,
-  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck, Plus,
+  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck, Plus, Rocket,
   CheckCircle2, AlertCircle, X, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
@@ -62,6 +62,8 @@ interface Props {
   embedAskAI?: boolean;
   /** Show the breadcrumb-style back button above the title. */
   showBackButton?: boolean;
+  /** Auto-select this table tab on mount (from deep link ?table=dim_customer). */
+  initialTableName?: string;
 }
 
 function getAllTables(p: FullDataProduct): (ProductTable & { columns: ProductColumn[] })[] {
@@ -80,6 +82,7 @@ export default function ProductRootPanel({
   onBack,
   embedAskAI = true,
   showBackButton = true,
+  initialTableName,
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
@@ -102,6 +105,7 @@ export default function ProductRootPanel({
   const [addingTable, setAddingTable] = useState(false);
   const [newTableName, setNewTableName] = useState('');
   const [newTableRole, setNewTableRole] = useState('custom');
+  const [deployingAll, setDeployingAll] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -161,6 +165,14 @@ export default function ProductRootPanel({
     loadKpis();
     loadAux();
   }, [productId, loadDetail, loadKpis, loadAux]);
+
+  // Auto-select table tab from deep link (?table=dim_customer)
+  useEffect(() => {
+    if (!initialTableName || !detail) return;
+    const tables = getAllTables(detail);
+    const match = tables.find((t) => t.table_name === initialTableName);
+    if (match) setSelectedTableId(match.id);
+  }, [initialTableName, detail]);
 
   async function handleRebuild(opts: { includeUpstream?: boolean } = {}) {
     if (!detail || running) return;
@@ -240,6 +252,28 @@ export default function ProductRootPanel({
     }
   }
 
+  async function handleDeployAll() {
+    if (!detail || deployingAll) return;
+    setDeployingAll(true);
+    try {
+      const res = await api.post(`/products/${detail.id}/deploy-all`);
+      const data = res.data.data;
+      const ok = (data?.results ?? []).filter((r: { status: string }) => r.status === 'success').length;
+      const fail = (data?.results ?? []).filter((r: { status: string }) => r.status === 'error').length;
+      if (fail > 0) {
+        toast.warn(`Deployed: ${ok} ok, ${fail} failed`);
+      } else {
+        toast.success(`All ${ok} tables deployed successfully`);
+      }
+      loadDetail();
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Deploy failed';
+      toast.error(msg);
+    } finally {
+      setDeployingAll(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -306,6 +340,17 @@ export default function ProductRootPanel({
             {/* Action buttons (Rebuild / Refine / Delete) are curator
                 surfaces \u2014 viewers don't get them. Backend enforces the
                 role check too; gating here keeps the UI honest. */}
+            {curator && (
+              <button
+                onClick={handleDeployAll}
+                disabled={deployingAll || running || tables.length === 0}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-ocean border border-ocean/30 rounded-md hover:bg-ocean/5 disabled:opacity-50 transition-colors"
+                title="Write all cell SQL to tables and materialize"
+              >
+                {deployingAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" strokeWidth={2} />}
+                {deployingAll ? 'Deploying…' : 'Deploy all'}
+              </button>
+            )}
             {curator && (
             <div className="relative inline-flex">
               <button
@@ -518,11 +563,17 @@ export default function ProductRootPanel({
                         </div>
                         {t.description && <p className="text-[12.5px] text-muted mt-0.5">{t.description}</p>}
                       </div>
-                      <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-2">
+                      <div className="ml-auto flex items-center gap-3 text-[11px] text-muted-2">
                         {t.row_count !== null && <span>{t.row_count.toLocaleString('en-GB')} rows</span>}
                         {t.last_run_at && (
                           <span>Last run: {new Date(t.last_run_at).toLocaleDateString('en-GB')}</span>
                         )}
+                        <a
+                          href={`/catalog?productId=${productId}`}
+                          className="text-ocean hover:underline text-[10px]"
+                        >
+                          View in catalog
+                        </a>
                       </div>
                     </div>
                     {t.is_reference && t.owner_product_id ? (

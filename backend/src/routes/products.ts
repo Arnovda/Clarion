@@ -4411,4 +4411,68 @@ router.post('/tables/:tableId/deploy', requireAuth, requireRole('admin'), async 
   } catch (err) { next(err); }
 });
 
+// ---------------------------------------------------------------------------
+// POST /api/products/:id/deploy-all — deploy all table cells + run transformations
+// ---------------------------------------------------------------------------
+
+router.post('/:id/deploy-all', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const productId = Number(req.params.id);
+    const product = await db('data_products').where({ id: productId }).first();
+    if (!product) { res.status(404).json({ ok: false, error: 'Product not found' }); return; }
+
+    const schemas = await db('star_schemas').where({ data_product_id: productId });
+    const schemaIds = schemas.map((s: { id: number }) => s.id);
+    const tables = schemaIds.length
+      ? await db('product_tables')
+          .whereIn('star_schema_id', schemaIds)
+          .orderBy('dag_order', 'asc')
+      : [];
+
+    // Write cell SQL to transformation_sql for each table
+    let updated = 0;
+    for (const table of tables) {
+      let deployCell = await db('product_table_cells')
+        .where({ product_table_id: table.id, is_deploy_cell: true })
+        .first();
+      if (!deployCell) {
+        deployCell = await db('product_table_cells')
+          .where({ product_table_id: table.id })
+          .whereIn('cell_type', ['sql', 'nl'])
+          .orderBy('position', 'desc')
+          .first();
+      }
+      if (!deployCell) continue;
+
+      const sql = deployCell.cell_type === 'nl' ? deployCell.generated_sql : deployCell.source;
+      if (!sql?.trim()) continue;
+
+      await db('product_tables').where({ id: table.id }).update({
+        transformation_sql: sql.trim(),
+        transformation_status: 'draft',
+        updated_at: new Date().toISOString(),
+      });
+      updated++;
+    }
+
+    if (updated === 0) {
+      res.status(400).json({ ok: false, error: 'No tables with SQL cells to deploy' });
+      return;
+    }
+
+    // Run all transformations
+    const { runProductTransformation } = await import('../services/transformationRunner');
+    const freshTables = await db('product_tables')
+      .whereIn('star_schema_id', schemaIds)
+      .whereNotNull('transformation_sql')
+      .orderBy('dag_order', 'asc');
+    const results = await runProductTransformation(product, freshTables, req.user?.tenantId);
+
+    syncProductToNeo4j(product.id).catch(() => {});
+
+    res.json({ ok: true, data: { updated, results } });
+  } catch (err) { next(err); }
+});
+
 export default router;
