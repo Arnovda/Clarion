@@ -4237,18 +4237,36 @@ router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', '
 
     res.json({ ok: true, data: { rows, columns, rowCount: rawRows.length, durationMs } });
   } catch (err) {
-    // Save error state on the cell
     const pgDb = reqDb(req);
     const msg = err instanceof Error ? err.message : 'Unknown error';
+    // Try to get an AI fix suggestion
+    let suggestedFix: string | undefined;
+    try {
+      const cell = await pgDb('product_table_cells').where({ id: Number(req.params.cellId) }).first();
+      if (cell) {
+        const failingSql = cell.cell_type === 'nl' ? cell.generated_sql : cell.source;
+        if (failingSql?.trim()) {
+          const { callClaude } = await import('../ai/AIService');
+          const fixPrompt = `The following DuckDB SQL failed with this error:\n\nSQL:\n${failingSql}\n\nError:\n${msg}\n\nReturn ONLY the corrected SQL. No markdown, no commentary.`;
+          const fixed = await callClaude(
+            'You fix broken DuckDB SQL. Return only the corrected SELECT statement.',
+            fixPrompt,
+            { maxTokens: 2000, callLabel: 'cell_error_fix', temperature: 0 },
+          );
+          suggestedFix = fixed.trim().replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+        }
+      }
+    } catch { /* ignore AI error — the fix is best-effort */ }
+
     try {
       await pgDb('product_table_cells').where({ id: Number(req.params.cellId) }).update({
         last_status: 'error',
-        last_output: JSON.stringify({ error: msg }),
+        last_output: JSON.stringify({ error: msg, suggestedFix }),
         last_run_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
     } catch { /* ignore meta-error */ }
-    res.status(400).json({ ok: false, error: msg });
+    res.status(400).json({ ok: false, error: msg, suggestedFix });
   } finally {
     if (duckDb) try { await duckDb.close(); } catch { /* ignore */ }
   }

@@ -92,9 +92,11 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
         c.id === cellId ? { ...c, last_output: data, last_status: 'success', last_run_at: new Date().toISOString() } : c
       ));
     } catch (err) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Execution failed';
+      const errData = (err as { response?: { data?: { error?: string; suggestedFix?: string } } })?.response?.data;
+      const msg = errData?.error ?? 'Execution failed';
+      const suggestedFix = errData?.suggestedFix;
       setCells((prev) => prev.map((c) =>
-        c.id === cellId ? { ...c, last_output: { error: msg }, last_status: 'error', last_run_at: new Date().toISOString() } : c
+        c.id === cellId ? { ...c, last_output: { error: msg, suggestedFix }, last_status: 'error', last_run_at: new Date().toISOString() } : c
       ));
     } finally {
       setRunningCellId(null);
@@ -291,7 +293,18 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
             {/* Cell output */}
             {cell.last_output && (
               <div className="px-3 pb-3">
-                <CellOutput data={cell.last_output} status={cell.last_status} />
+                <CellOutput
+                  data={cell.last_output}
+                  status={cell.last_status}
+                  onApplyFix={!readOnly ? (fixSql) => {
+                    setCells((prev) => prev.map((c) =>
+                      c.id === cell.id ? { ...c, source: fixSql } : c
+                    ));
+                    api.patch(`/products/tables/cells/${cell.id}`, { source: fixSql })
+                      .then(() => executeCell(cell.id))
+                      .catch(() => {});
+                  } : undefined}
+                />
               </div>
             )}
           </div>
