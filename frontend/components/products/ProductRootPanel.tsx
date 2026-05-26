@@ -14,7 +14,7 @@ import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
   ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, ChevronDown,
-  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck,
+  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck, Plus,
   CheckCircle2, AlertCircle, X, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
@@ -99,6 +99,9 @@ export default function ProductRootPanel({
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const [refineOpen, setRefineOpen] = useState(false);
+  const [addingTable, setAddingTable] = useState(false);
+  const [newTableName, setNewTableName] = useState('');
+  const [newTableRole, setNewTableRole] = useState('custom');
   const toast = useToast();
 
   useEffect(() => {
@@ -215,6 +218,25 @@ export default function ProductRootPanel({
     } catch (err) {
       const ax = err as { response?: { data?: { error?: string } }; message?: string };
       toast.error('Delete failed', { description: ax?.response?.data?.error ?? ax?.message ?? 'Unknown error' });
+    }
+  }
+
+  async function handleAddTable() {
+    if (!detail || !newTableName.trim()) return;
+    try {
+      const res = await api.post(`/products/${detail.id}/tables`, {
+        tableName: newTableName.trim(),
+        tableRole: newTableRole,
+      });
+      setAddingTable(false);
+      setNewTableName('');
+      setNewTableRole('custom');
+      await loadDetail();
+      setSelectedTableId(res.data.data?.id ?? null);
+      toast.success(`Table "${newTableName.trim()}" added`);
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to add table';
+      toast.error(msg);
     }
   }
 
@@ -414,6 +436,16 @@ export default function ProductRootPanel({
                     <StatusDot status={t.transformation_status} />
                   </button>
                 ))}
+                {/* Add table button */}
+                <button
+                  onClick={() => setAddingTable(true)}
+                  className="inline-flex items-center justify-center w-7 h-7 text-muted hover:text-ocean hover:bg-ocean-softer/40 rounded-md transition-colors shrink-0 border border-dashed border-line hover:border-ocean/30"
+                  title="Add table"
+                >
+                  <Plus className="w-3.5 h-3.5" strokeWidth={2} />
+                </button>
+                {/* Product-level view */}
+                <div className="w-px h-5 bg-line shrink-0 mx-1" />
                 <button
                   onClick={() => setSelectedTableId(null)}
                   className={cn(
@@ -426,6 +458,42 @@ export default function ProductRootPanel({
                   Product
                 </button>
               </div>
+              {/* Inline add-table form */}
+              {addingTable && (
+                <div className="flex items-center gap-2 pb-2 pt-1">
+                  <input
+                    type="text"
+                    value={newTableName}
+                    onChange={(e) => setNewTableName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddTable(); if (e.key === 'Escape') setAddingTable(false); }}
+                    placeholder="table_name"
+                    autoFocus
+                    className="px-2.5 py-1.5 text-[12px] font-mono border border-line rounded-md bg-bg focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 w-48"
+                  />
+                  <select
+                    value={newTableRole}
+                    onChange={(e) => setNewTableRole(e.target.value)}
+                    className="px-2 py-1.5 text-[12px] border border-line rounded-md bg-bg focus:outline-none focus:border-ocean"
+                  >
+                    <option value="custom">Custom</option>
+                    <option value="dimension">Dimension</option>
+                    <option value="fact">Fact</option>
+                  </select>
+                  <button
+                    onClick={handleAddTable}
+                    disabled={!newTableName.trim()}
+                    className="px-2.5 py-1.5 text-[11px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
+                  >
+                    Add
+                  </button>
+                  <button
+                    onClick={() => { setAddingTable(false); setNewTableName(''); }}
+                    className="px-2.5 py-1.5 text-[11px] font-medium text-muted hover:text-ink transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -439,7 +507,15 @@ export default function ProductRootPanel({
                   <div>
                     <div className="flex items-center gap-3 mb-4">
                       <div>
-                        <h2 className="font-display text-[17px] text-ink tracking-[-0.01em]">{t.display_name ?? t.table_name}</h2>
+                        <div className="flex items-center gap-2">
+                          <h2 className="font-display text-[17px] text-ink tracking-[-0.01em]">{t.display_name ?? t.table_name}</h2>
+                          <RoleBadge role={t.table_role} />
+                          {t.is_reference && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-mono tracking-[0.1em] uppercase text-ocean bg-ocean-softer px-1.5 py-0.5 rounded">
+                              🔗 shared
+                            </span>
+                          )}
+                        </div>
                         {t.description && <p className="text-[12.5px] text-muted mt-0.5">{t.description}</p>}
                       </div>
                       <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-2">
@@ -449,12 +525,24 @@ export default function ProductRootPanel({
                         )}
                       </div>
                     </div>
-                    <TableNotebook
-                      productTableId={t.id}
-                      tableName={t.table_name}
-                      readOnly={!!t.is_reference}
-                      onDeployed={loadDetail}
-                    />
+                    {t.is_reference && t.owner_product_id ? (
+                      <div className="rounded-md border border-ocean/20 bg-ocean-softer/30 px-4 py-3 text-[13px] text-ink-2">
+                        <p>This table is managed by <strong>{t.owner_product_name ?? 'another product'}</strong>. Changes here are read-only.</p>
+                        <a
+                          href={`/products/${t.owner_product_id}?table=${t.table_name}`}
+                          className="inline-flex items-center gap-1 text-ocean font-medium mt-1.5 hover:underline text-[12px]"
+                        >
+                          Edit in source notebook →
+                        </a>
+                      </div>
+                    ) : (
+                      <TableNotebook
+                        productTableId={t.id}
+                        tableName={t.table_name}
+                        readOnly={false}
+                        onDeployed={loadDetail}
+                      />
+                    )}
                   </div>
                 );
               })()}

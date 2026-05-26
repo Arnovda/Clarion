@@ -1932,6 +1932,70 @@ router.patch('/tables/:tableId', requireAuth, requireRole('admin'), async (req: 
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/products/:id/tables — Add a new table to a product
+// ---------------------------------------------------------------------------
+
+router.post('/:id/tables', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const productId = Number(req.params.id);
+    const product = await db('data_products').where({ id: productId }).first();
+    if (!product) { res.status(404).json({ ok: false, error: 'Product not found' }); return; }
+
+    const { tableName, tableRole, description } = req.body as {
+      tableName?: string; tableRole?: string; description?: string;
+    };
+    if (!tableName?.trim()) {
+      res.status(400).json({ ok: false, error: 'tableName is required' });
+      return;
+    }
+
+    // Find the product's star_schema (auto-create if missing)
+    let schema = await db('star_schemas').where({ data_product_id: productId }).first();
+    if (!schema) {
+      [schema] = await db('star_schemas').insert({
+        data_product_id: productId,
+        name: `${product.name} Schema`,
+      }).returning('*');
+    }
+
+    // Determine dag_order: dimensions before facts
+    const role = tableRole || 'custom';
+    const dagOrder = (role === 'fact') ? 1 : 0;
+
+    // Check for duplicate table name within this product
+    const existing = await db('product_tables')
+      .where({ star_schema_id: schema.id, table_name: tableName.trim() })
+      .first();
+    if (existing) {
+      res.status(400).json({ ok: false, error: `Table "${tableName}" already exists in this product` });
+      return;
+    }
+
+    const [table] = await db('product_tables').insert({
+      star_schema_id: schema.id,
+      table_name: tableName.trim(),
+      table_role: role,
+      description: description?.trim() || null,
+      dag_order: dagOrder,
+      transformation_status: 'draft',
+      ai_draft: false,
+    }).returning('*');
+
+    // Create one empty SQL cell
+    const [cell] = await db('product_table_cells').insert({
+      product_table_id: table.id,
+      cell_type: 'sql',
+      source: '',
+      position: 0,
+      is_deploy_cell: true,
+    }).returning('*');
+
+    res.json({ ok: true, data: { ...table, cells: [cell] } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // PUT /api/products/tables/:tableId/sql — Update transformation SQL
 // ---------------------------------------------------------------------------
 
