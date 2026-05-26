@@ -273,7 +273,7 @@ interface CallClaudeOptions {
   kind?: AiCallKind;
 }
 
-async function callClaude(
+export async function callClaude(
   systemPrompt: string,
   userPrompt: string,
   optsOrMaxTokens: CallClaudeOptions | number = {},

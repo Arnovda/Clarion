@@ -4,8 +4,9 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
 import { refineProduct, refineProductCross } from '../ai/AIService';
-import { deleteWarehousePaths, productBasePath, productBasePathV2, warehouseLayoutVersion, productSlug as toProductSlug } from '../services/warehouse';
-import { listProductTables } from '../services/tableCatalog';
+import { deleteWarehousePaths, productBasePath, productBasePathV2, warehouseLayoutVersion, productSlug as toProductSlug, isAzurePath, setupDuckDBForWarehouse, createScanView } from '../services/warehouse';
+import { listProductTables, listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
+import { Database } from 'duckdb-async';
 import { tenantQuery } from '../services/tenantQuery';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
@@ -3990,6 +3991,341 @@ router.post('/refinements/:id/reject', requireAuth, requireRole('admin', 'analys
     const { rejectRefinement } = await import('../services/refineService');
     const row = await rejectRefinement(tenantId, Number(req.params.id), userId, userName);
     res.json({ ok: true, data: row });
+  } catch (err) { next(err); }
+});
+
+// ===========================================================================
+// PRODUCT TABLE CELLS — notebook cells per product table (Phase 1)
+// ===========================================================================
+
+// GET /api/products/tables/:tableId/cells — list cells for a table
+router.get('/tables/:tableId/cells', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tableId = Number(req.params.tableId);
+    const table = await db('product_tables').where({ id: tableId }).first();
+    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const cells = await db('product_table_cells')
+      .where({ product_table_id: tableId })
+      .orderBy('position', 'asc');
+    res.json({ ok: true, data: cells });
+  } catch (err) { next(err); }
+});
+
+// POST /api/products/tables/:tableId/cells — add a cell
+router.post('/tables/:tableId/cells', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tableId = Number(req.params.tableId);
+    const table = await db('product_tables').where({ id: tableId }).first();
+    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const { cellType = 'sql', source = '', position } = req.body as {
+      cellType?: string; source?: string; position?: number;
+    };
+    if (!['sql', 'markdown', 'nl'].includes(cellType)) {
+      res.status(400).json({ ok: false, error: 'cellType must be sql, markdown, or nl' });
+      return;
+    }
+    // Auto-position: append after last cell if not specified
+    let pos = position;
+    if (pos === undefined || pos === null) {
+      const last = await db('product_table_cells')
+        .where({ product_table_id: tableId })
+        .max('position as max')
+        .first();
+      pos = ((last?.max as number) ?? -1) + 1;
+    }
+    const [cell] = await db('product_table_cells').insert({
+      product_table_id: tableId,
+      cell_type: cellType,
+      source,
+      position: pos,
+      is_deploy_cell: false,
+    }).returning('*');
+    res.json({ ok: true, data: cell });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/products/tables/cells/:cellId — update a cell
+router.patch('/tables/cells/:cellId', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const cellId = Number(req.params.cellId);
+    const allowed = ['source', 'cell_type', 'position', 'generated_sql', 'is_deploy_cell'];
+    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    const n = await db('product_table_cells').where({ id: cellId }).update(updates);
+    if (!n) { res.status(404).json({ ok: false, error: 'Cell not found' }); return; }
+    const cell = await db('product_table_cells').where({ id: cellId }).first();
+    res.json({ ok: true, data: cell });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/products/tables/cells/:cellId — delete a cell
+router.delete('/tables/cells/:cellId', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const n = await db('product_table_cells').where({ id: Number(req.params.cellId) }).del();
+    if (!n) { res.status(404).json({ ok: false, error: 'Cell not found' }); return; }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/products/tables/cells/:cellId/execute — run a cell and return preview
+router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  let duckDb: Database | null = null;
+  try {
+    const pgDb = reqDb(req);
+    const cellId = Number(req.params.cellId);
+    const cell = await pgDb('product_table_cells').where({ id: cellId }).first();
+    if (!cell) { res.status(404).json({ ok: false, error: 'Cell not found' }); return; }
+    if (cell.cell_type === 'markdown') {
+      res.status(400).json({ ok: false, error: 'Cannot execute a markdown cell' });
+      return;
+    }
+
+    const sqlToRun = cell.cell_type === 'nl' ? cell.generated_sql : cell.source;
+    if (!sqlToRun?.trim()) {
+      res.status(400).json({ ok: false, error: 'No SQL to execute' });
+      return;
+    }
+
+    // Resolve connection_id from the product table's lineage
+    const table = await pgDb('product_tables').where({ id: cell.product_table_id }).first();
+    const schema = await pgDb('star_schemas').where({ id: table.star_schema_id }).first();
+    const product = await pgDb('data_products').where({ id: schema.data_product_id }).first();
+    const connectionId = product.connection_id;
+    const connection = await pgDb('connections').where({ id: connectionId }).first();
+    if (!connection) { res.status(400).json({ ok: false, error: 'Connection not found' }); return; }
+
+    // Build DuckDB session with source + product tables
+    const productDeltaPaths = await pgDb('product_tables')
+      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+      .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+      .where('data_products.connection_id', connectionId)
+      .whereNotNull('product_tables.delta_path')
+      .pluck<string[]>('product_tables.delta_path');
+    const needAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
+
+    duckDb = await Database.create(':memory:');
+    await setupDuckDBForWarehouse(duckDb, needAzure);
+
+    // Register source tables
+    const sources = await listSourceTables(undefined, connectionId);
+    for (const t of sources) {
+      try { await createScanView(duckDb, t.tableName, t.uri, { schema: connection.name }); } catch { /* skip */ }
+    }
+
+    // Register product tables
+    const productTables = await listProductTablesByConnection(undefined, connectionId);
+    for (const t of productTables) {
+      try { await createScanView(duckDb, t.tableName, t.uri, { schema: t.productName }); } catch { /* skip */ }
+    }
+
+    // Set search path so unqualified refs work
+    const schemas = new Set<string>();
+    schemas.add(connection.name);
+    for (const t of productTables) schemas.add(t.productName);
+    if (schemas.size > 0) {
+      const schemaList = [...schemas].map((s) => s.replace(/'/g, "''")).join(',');
+      try { await duckDb.exec(`SET search_path = '${schemaList}';`); } catch { /* ignore */ }
+    }
+
+    // Register preceding cells' outputs as views (cell chaining)
+    const precedingCells = await pgDb('product_table_cells')
+      .where({ product_table_id: cell.product_table_id })
+      .andWhere('position', '<', cell.position)
+      .whereIn('cell_type', ['sql', 'nl'])
+      .orderBy('position', 'asc');
+
+    for (const prev of precedingCells) {
+      const prevSql = prev.cell_type === 'nl' ? prev.generated_sql : prev.source;
+      if (prevSql?.trim()) {
+        try {
+          await duckDb.exec(`CREATE OR REPLACE VIEW _cell_${prev.id} AS ${prevSql}`);
+        } catch { /* skip failed predecessor */ }
+      }
+    }
+
+    // Execute the cell
+    const start = Date.now();
+    const rawRows = await duckDb.all(sqlToRun.trim()) as Record<string, unknown>[];
+    const durationMs = Date.now() - start;
+
+    const rows = rawRows.slice(0, 500).map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) {
+        out[k] = typeof v === 'bigint' ? Number(v) : v;
+      }
+      return out;
+    });
+    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+    // Cache output on the cell
+    await pgDb('product_table_cells').where({ id: cellId }).update({
+      last_output: JSON.stringify({ rows: rows.slice(0, 100), columns }),
+      last_status: 'success',
+      last_run_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    res.json({ ok: true, data: { rows, columns, rowCount: rawRows.length, durationMs } });
+  } catch (err) {
+    // Save error state on the cell
+    const pgDb = reqDb(req);
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    try {
+      await pgDb('product_table_cells').where({ id: Number(req.params.cellId) }).update({
+        last_status: 'error',
+        last_output: JSON.stringify({ error: msg }),
+        last_run_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch { /* ignore meta-error */ }
+    res.status(400).json({ ok: false, error: msg });
+  } finally {
+    if (duckDb) try { await duckDb.close(); } catch { /* ignore */ }
+  }
+});
+
+// POST /api/products/tables/:tableId/cells/reorder — bulk reorder cells
+router.post('/tables/:tableId/cells/reorder', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { order } = req.body as { order: number[] };
+    if (!Array.isArray(order)) {
+      res.status(400).json({ ok: false, error: 'order[] is required' });
+      return;
+    }
+    const now = new Date().toISOString();
+    for (let i = 0; i < order.length; i++) {
+      await db('product_table_cells')
+        .where({ id: order[i], product_table_id: Number(req.params.tableId) })
+        .update({ position: i, updated_at: now });
+    }
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// POST /api/products/tables/cells/:cellId/generate — NL → SQL generation
+router.post('/tables/cells/:cellId/generate', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pgDb = reqDb(req);
+    const cellId = Number(req.params.cellId);
+    const cell = await pgDb('product_table_cells').where({ id: cellId }).first();
+    if (!cell) { res.status(404).json({ ok: false, error: 'Cell not found' }); return; }
+    if (cell.cell_type !== 'nl') {
+      res.status(400).json({ ok: false, error: 'generate is only for NL cells' });
+      return;
+    }
+    if (!cell.source?.trim()) {
+      res.status(400).json({ ok: false, error: 'NL prompt is empty' });
+      return;
+    }
+
+    // Build schema context
+    const table = await pgDb('product_tables').where({ id: cell.product_table_id }).first();
+    const schema = await pgDb('star_schemas').where({ id: table.star_schema_id }).first();
+    const product = await pgDb('data_products').where({ id: schema.data_product_id }).first();
+    const connectionId = product.connection_id;
+    const connection = await pgDb('connections').where({ id: connectionId }).first();
+
+    // Get source + product table schemas for context
+    const sourceTables = await listSourceTables(undefined, connectionId);
+    const productTablesList = await listProductTablesByConnection(undefined, connectionId);
+
+    const schemaLines: string[] = [];
+    for (const t of sourceTables) {
+      schemaLines.push(`Source table "${connection.name}"."${t.tableName}"`);
+    }
+    for (const t of productTablesList) {
+      schemaLines.push(`Product table "${t.productName}"."${t.tableName}"`);
+    }
+
+    // Get column info for the current product's tables
+    const allTables = await pgDb('product_tables')
+      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+      .where('star_schemas.data_product_id', product.id)
+      .select('product_tables.*');
+    for (const pt of allTables) {
+      const cols = await pgDb('product_columns')
+        .where({ product_table_id: pt.id })
+        .andWhere((qb: any) => qb.where('is_technical', false).orWhereNull('is_technical'))
+        .orderBy('sort_order');
+      if (cols.length > 0) {
+        schemaLines.push(`\n${pt.table_name} columns: ${cols.map((c: any) => `${c.column_name} (${c.data_type ?? 'unknown'})`).join(', ')}`);
+      }
+    }
+
+    const { callClaude } = await import('../ai/AIService');
+    const systemPrompt = `You are a DuckDB SQL expert writing transformation SQL for a data product. Generate a single SELECT statement that can be used as a CREATE TABLE AS. Use the available source and product tables. Return ONLY the SQL — no markdown, no commentary.`;
+    const userPrompt = `Available tables:\n${schemaLines.join('\n')}\n\nUser request: "${cell.source}"\n\nGenerate the DuckDB SELECT statement.`;
+
+    const generatedSql = await callClaude(systemPrompt, userPrompt, {
+      maxTokens: 2000, callLabel: 'cell_nl_generate', temperature: 0,
+    });
+
+    const cleanSql = generatedSql.trim().replace(/^```(?:sql)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
+
+    await pgDb('product_table_cells').where({ id: cellId }).update({
+      generated_sql: cleanSql,
+      updated_at: new Date().toISOString(),
+    });
+
+    res.json({ ok: true, data: { generatedSql: cleanSql } });
+  } catch (err) { next(err); }
+});
+
+// POST /api/products/tables/:tableId/deploy — deploy: write cell SQL to transformation_sql + run
+router.post('/tables/:tableId/deploy', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tableId = Number(req.params.tableId);
+    const table = await db('product_tables').where({ id: tableId }).first();
+    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+
+    // Find the deploy cell (or fall back to the last SQL/NL cell)
+    let deployCell = await db('product_table_cells')
+      .where({ product_table_id: tableId, is_deploy_cell: true })
+      .first();
+    if (!deployCell) {
+      deployCell = await db('product_table_cells')
+        .where({ product_table_id: tableId })
+        .whereIn('cell_type', ['sql', 'nl'])
+        .orderBy('position', 'desc')
+        .first();
+    }
+    if (!deployCell) {
+      res.status(400).json({ ok: false, error: 'No SQL cell to deploy' });
+      return;
+    }
+
+    const sql = deployCell.cell_type === 'nl' ? deployCell.generated_sql : deployCell.source;
+    if (!sql?.trim()) {
+      res.status(400).json({ ok: false, error: 'Deploy cell has no SQL' });
+      return;
+    }
+
+    // Write SQL to product_tables.transformation_sql
+    await db('product_tables').where({ id: tableId }).update({
+      transformation_sql: sql.trim(),
+      transformation_status: 'draft',
+      updated_at: new Date().toISOString(),
+    });
+
+    // Run the transformation
+    const schema = await db('star_schemas').where({ id: table.star_schema_id }).first();
+    const product = await db('data_products').where({ id: schema.data_product_id }).first();
+
+    const { runProductTransformation } = await import('../services/transformationRunner');
+    const refreshedTable = await db('product_tables').where({ id: tableId }).first();
+    const result = (await runProductTransformation(product, [refreshedTable], req.user?.tenantId))[0] ?? null;
+
+    syncProductToNeo4j(product.id).catch(() => {});
+
+    res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });
 
