@@ -42,6 +42,7 @@ export interface DashboardProduct {
   name: string;
   description: string | null;
   status: string;
+  kind: 'analytics' | 'reference';
   derivedStatus: DerivedStatus;
   lastRefreshedAt: string | null;
   tableCount: number;
@@ -257,6 +258,10 @@ function ProductsList({
   onRefresh?: (id: number, name: string) => void;
   onDesignNew?: () => void;
 }) {
+  // We group by kind (analytics/reference), not source — so surface the
+  // source per-row only when the tenant actually has more than one, to
+  // avoid repeating the same source name on every row.
+  const multiSource = new Set(products.map((p) => p.source.id ?? p.source.name ?? '∅')).size > 1;
   return (
     <section className="bg-raised border border-line rounded-lg overflow-hidden">
       <header className="px-5 py-3 border-b border-line flex items-center gap-2">
@@ -293,48 +298,62 @@ function ProductsList({
           )}
         </div>
       ) : (
-        <ProductsBySource
-          products={products}
-          onOpen={onOpen}
-          onRefresh={onRefresh}
-        />
+        <div>
+          <ProductGroup
+            title="Analytics"
+            subtitle="what you can analyse"
+            products={products.filter((p) => p.kind !== 'reference')}
+            onOpen={onOpen}
+            onRefresh={onRefresh}
+            showSource={multiSource}
+          />
+          <ProductGroup
+            title="Reference"
+            subtitle="shared dimensions you analyse by"
+            products={products.filter((p) => p.kind === 'reference')}
+            onOpen={onOpen}
+            onRefresh={onRefresh}
+            showSource={multiSource}
+          />
+        </div>
       )}
     </section>
   );
 }
 
 /**
- * Groups products by their primary source (connection). When the tenant
- * has only one source, the grouping headers are suppressed — no point
- * adding visual chrome for a single bucket. Mirrors the same source-first
- * grouping pattern used in /catalog and the QualityTab so all three
- * Build surfaces feel consistent.
+ * One labelled section of the product list — "Analytics" or "Reference".
+ * Mirrors the /catalog mental model (facts you analyse vs. dimensions you
+ * analyse by) so the two surfaces speak the same language, but stays
+ * operational: compact rows with status + freshness + inline refresh, not
+ * the catalog's browse cards. Renders nothing when the group is empty so
+ * a tenant with no reference products never sees a dangling header.
  */
-function ProductsBySource({
-  products, onOpen, onRefresh,
+function ProductGroup({
+  title, subtitle, products, onOpen, onRefresh, showSource,
 }: {
+  title: string;
+  subtitle: string;
   products: DashboardProduct[];
   onOpen: (id: number) => void;
   onRefresh?: (id: number, name: string) => void;
+  showSource?: boolean;
 }) {
-  // Group by source name. `Unassigned` sinks to the bottom — a product
-  // without a resolvable source means a deleted connection, an admin
-  // task to fix, not the lead story.
-  const groups = new Map<string, DashboardProduct[]>();
-  for (const p of products) {
-    const key = p.source.name ?? '__unassigned';
-    const arr = groups.get(key) ?? [];
-    arr.push(p);
-    groups.set(key, arr);
-  }
-  const ordered = Array.from(groups.entries()).sort(([a], [b]) => {
-    if (a === '__unassigned') return 1;
-    if (b === '__unassigned') return -1;
-    return a.localeCompare(b);
-  });
-  // Single-source case → render as a flat list, no headers.
-  if (ordered.length <= 1) {
-    return (
+  if (products.length === 0) return null;
+  return (
+    <div className="border-t border-line first:border-t-0">
+      <div className="px-5 py-2 bg-softer border-b border-line flex items-baseline gap-2">
+        <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean">
+          {title}
+        </span>
+        <span className="text-muted-2/50 text-[10.5px]">—</span>
+        <span className="text-[10.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
+          {subtitle}
+        </span>
+        <span className="ml-auto text-[10.5px] font-mono tabular-nums text-muted-2">
+          {products.length}
+        </span>
+      </div>
       <div className="divide-y divide-line">
         {products.map((p) => (
           <ProductRow
@@ -342,45 +361,21 @@ function ProductsBySource({
             product={p}
             onOpen={() => onOpen(p.id)}
             onRefresh={onRefresh ? () => onRefresh(p.id, p.name) : undefined}
+            showSource={showSource}
           />
         ))}
       </div>
-    );
-  }
-  return (
-    <div>
-      {ordered.map(([key, items], i) => (
-        <div key={key} className={i > 0 ? 'border-t border-line' : undefined}>
-          <div className="px-5 py-2 bg-softer border-b border-line flex items-baseline gap-2">
-            <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean">
-              {key === '__unassigned' ? 'Unassigned' : key}
-            </span>
-            <span className="text-[10.5px] font-mono tabular-nums text-muted-2">
-              {items.length}
-            </span>
-          </div>
-          <div className="divide-y divide-line">
-            {items.map((p: DashboardProduct) => (
-              <ProductRow
-                key={p.id}
-                product={p}
-                onOpen={() => onOpen(p.id)}
-                onRefresh={onRefresh ? () => onRefresh(p.id, p.name) : undefined}
-              />
-            ))}
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
 
 function ProductRow({
-  product, onOpen, onRefresh,
+  product, onOpen, onRefresh, showSource,
 }: {
   product: DashboardProduct;
   onOpen: () => void;
   onRefresh?: () => void;
+  showSource?: boolean;
 }) {
   return (
     <div className="group flex items-center gap-4 px-5 py-3 hover:bg-soft transition-colors">
@@ -394,9 +389,21 @@ function ProductRow({
           {product.name}
         </div>
         <div className="text-[11px] text-muted-2 truncate">
-          {product.tableCount} {product.tableCount === 1 ? 'table' : 'tables'}
-          <span className="mx-1.5 text-muted-2/40">·</span>
-          {product.kpiCount} {product.kpiCount === 1 ? 'metric' : 'metrics'}
+          {product.kind === 'reference' ? (
+            <>{product.tableCount} {product.tableCount === 1 ? 'dimension' : 'dimensions'}</>
+          ) : (
+            <>
+              {product.tableCount} {product.tableCount === 1 ? 'table' : 'tables'}
+              <span className="mx-1.5 text-muted-2/40">·</span>
+              {product.kpiCount} {product.kpiCount === 1 ? 'metric' : 'metrics'}
+            </>
+          )}
+          {showSource && product.source.name && (
+            <>
+              <span className="mx-1.5 text-muted-2/40">·</span>
+              {product.source.name}
+            </>
+          )}
         </div>
       </button>
       <div className="text-[11px] font-mono text-muted-2 tabular-nums hidden sm:block">

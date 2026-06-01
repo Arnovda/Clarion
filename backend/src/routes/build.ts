@@ -39,6 +39,9 @@ interface DashboardProduct {
   name: string;
   description: string | null;
   status: string;                                 // raw data_products.status
+  /** 'analytics' (fact-bearing) or 'reference' (shared dimensions). Drives
+   *  the analytics/reference split in the Build list, mirroring /catalog. */
+  kind: 'analytics' | 'reference';
   derivedStatus: 'ok' | 'stale' | 'error' | 'designing';
   lastRefreshedAt: string | null;
   tableCount: number;
@@ -104,13 +107,14 @@ router.get('/dashboard', requireAuth, requireRole('admin', 'analyst'), async (re
           name: string;
           description: string | null;
           status: string;
+          kind: string | null;
           connection_id: number | null;
           last_refreshed_at: Date | string | null;
           table_count: string | number;
           failed_table_count: string | number;
           success_table_count: string | number;
         }>>(
-          'dp.id', 'dp.name', 'dp.description', 'dp.status', 'dp.connection_id',
+          'dp.id', 'dp.name', 'dp.description', 'dp.status', 'dp.kind', 'dp.connection_id',
           trx.raw(`MAX(pt.last_run_at) FILTER (WHERE pt.transformation_status = 'success') as last_refreshed_at`),
           trx.raw(`COUNT(pt.id) as table_count`),
           trx.raw(`COUNT(pt.id) FILTER (WHERE pt.transformation_status = 'error') as failed_table_count`),
@@ -170,6 +174,7 @@ router.get('/dashboard', requireAuth, requireRole('admin', 'analyst'), async (re
           name: String(p.name),
           description: p.description ?? null,
           status: String(p.status),
+          kind: p.kind === 'reference' ? 'reference' : 'analytics',
           derivedStatus,
           lastRefreshedAt,
           tableCount: Number(p.table_count ?? 0),
