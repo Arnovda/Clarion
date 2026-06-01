@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Play, Plus, Trash2, Loader2, GripVertical, Sparkles,
-  Code as CodeIcon, FileText, MessageSquareText, Rocket,
+  Code as CodeIcon, FileText, MessageSquareText, Rocket, Network, AlertTriangle,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -29,17 +29,63 @@ interface Props {
   productTableId: number;
   tableName: string;
   readOnly?: boolean;
+  /**
+   * True when this table is a stub for a dimension whose canonical
+   * definition lives in another product. The backend transparently
+   * redirects cell read/write to the owner — this flag exists only so
+   * the UI can gate user-initiated writes with a "this affects N
+   * products" consent modal. Conformity is preserved either way.
+   */
+  isShared?: boolean;
+  ownerProductName?: string | null;
   onDeployed?: () => void;
 }
 
-export default function TableNotebook({ productTableId, tableName, readOnly = false, onDeployed }: Props) {
+/** A pending write the user has staged but not yet confirmed via the
+ *  shared-dim consent modal. We carry the same shape as a deferred async
+ *  call so the modal's confirm handler doesn't need a switch statement. */
+type PendingWrite = { run: () => Promise<void>; label: string } | null;
+
+interface UsedByProduct { productId: number; productName: string; kind?: string }
+
+export default function TableNotebook({
+  productTableId, tableName, readOnly = false,
+  isShared = false, ownerProductName = null,
+  onDeployed,
+}: Props) {
   const [cells, setCells] = useState<Cell[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningCellId, setRunningCellId] = useState<number | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [editingCellId, setEditingCellId] = useState<number | null>(null);
   const [editBuffer, setEditBuffer] = useState('');
+  // Consent gate — populated when a write is staged on a shared dim;
+  // cleared after the user confirms or cancels. usedBy is loaded once
+  // (the impact list rarely changes within a session).
+  const [pendingWrite, setPendingWrite] = useState<PendingWrite>(null);
+  const [usedBy, setUsedBy] = useState<UsedByProduct[] | null>(null);
   const toast = useToast();
+
+  /** Either run the action straight away (non-shared) or stage it for the
+   *  consent modal (shared). One choke-point covers add / save / delete /
+   *  deploy so we can never accidentally skip the gate. */
+  const guard = useCallback((label: string, run: () => Promise<void>) => {
+    if (!isShared) { void run(); return; }
+    setPendingWrite({ label, run });
+  }, [isShared]);
+
+  // Lazy-load the impact list the first time we need it.
+  useEffect(() => {
+    if (!isShared || usedBy !== null) return;
+    api.get(`/products/tables/${productTableId}/used-by`)
+      .then((r) => {
+        const arr = Array.isArray(r.data?.data) ? r.data.data : [];
+        setUsedBy(arr.map((u: { productId: number; productName: string; kind?: string }) => ({
+          productId: u.productId, productName: u.productName, kind: u.kind,
+        })));
+      })
+      .catch(() => setUsedBy([]));
+  }, [isShared, productTableId, usedBy]);
 
   const loadCells = useCallback(async () => {
     try {
@@ -54,34 +100,41 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
     loadCells();
   }, [loadCells]);
 
-  async function addCell(cellType: 'sql' | 'markdown' | 'nl') {
-    try {
-      const res = await api.post(`/products/tables/${productTableId}/cells`, { cellType });
-      setCells((prev) => [...prev, res.data.data]);
-      setEditingCellId(res.data.data.id);
-      setEditBuffer('');
-    } catch {
-      toast.error('Failed to add cell');
-    }
+  function addCell(cellType: 'sql' | 'markdown' | 'nl') {
+    guard(`Add ${cellType.toUpperCase()} cell`, async () => {
+      try {
+        const res = await api.post(`/products/tables/${productTableId}/cells`, { cellType });
+        setCells((prev) => [...prev, res.data.data]);
+        setEditingCellId(res.data.data.id);
+        setEditBuffer('');
+      } catch {
+        toast.error('Failed to add cell');
+      }
+    });
   }
 
-  async function saveCell(cellId: number) {
-    try {
-      await api.patch(`/products/tables/cells/${cellId}`, { source: editBuffer });
-      setCells((prev) => prev.map((c) => c.id === cellId ? { ...c, source: editBuffer } : c));
-      setEditingCellId(null);
-    } catch {
-      toast.error('Failed to save cell');
-    }
+  function saveCell(cellId: number) {
+    const buf = editBuffer;
+    guard('Save cell', async () => {
+      try {
+        await api.patch(`/products/tables/cells/${cellId}`, { source: buf });
+        setCells((prev) => prev.map((c) => c.id === cellId ? { ...c, source: buf } : c));
+        setEditingCellId(null);
+      } catch {
+        toast.error('Failed to save cell');
+      }
+    });
   }
 
-  async function deleteCell(cellId: number) {
-    try {
-      await api.delete(`/products/tables/cells/${cellId}`);
-      setCells((prev) => prev.filter((c) => c.id !== cellId));
-    } catch {
-      toast.error('Failed to delete cell');
-    }
+  function deleteCell(cellId: number) {
+    guard('Delete cell', async () => {
+      try {
+        await api.delete(`/products/tables/cells/${cellId}`);
+        setCells((prev) => prev.filter((c) => c.id !== cellId));
+      } catch {
+        toast.error('Failed to delete cell');
+      }
+    });
   }
 
   async function executeCell(cellId: number) {
@@ -120,19 +173,21 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
     }
   }
 
-  async function deploy() {
-    setDeploying(true);
-    try {
-      await api.post(`/products/tables/${productTableId}/deploy`);
-      toast.success(`${tableName} deployed`);
-      onDeployed?.();
-      loadCells();
-    } catch (err) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Deploy failed';
-      toast.error(msg);
-    } finally {
-      setDeploying(false);
-    }
+  function deploy() {
+    guard('Deploy table', async () => {
+      setDeploying(true);
+      try {
+        await api.post(`/products/tables/${productTableId}/deploy`);
+        toast.success(`${tableName} deployed`);
+        onDeployed?.();
+        loadCells();
+      } catch (err) {
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Deploy failed';
+        toast.error(msg);
+      } finally {
+        setDeploying(false);
+      }
+    });
   }
 
   function startEdit(cell: Cell) {
@@ -278,7 +333,7 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
                     onChange={setEditBuffer}
                     onSave={() => saveCell(cell.id)}
                     onCancel={cancelEdit}
-                    onRun={() => { saveCell(cell.id).then(() => executeCell(cell.id)); }}
+                    onRun={() => { saveCell(cell.id); executeCell(cell.id); }}
                     placeholder="SELECT …"
                     mono
                   />
@@ -331,6 +386,105 @@ export default function TableNotebook({ productTableId, tableName, readOnly = fa
           </button>
         </div>
       )}
+
+      {/* Shared-dimension consent gate. Renders only while a write is
+          staged (pendingWrite !== null). Lists every product that
+          consumes this dim — the user sees exactly what their change
+          affects before it lands. Conformity is the point: one
+          canonical definition for everyone, and you do it knowingly. */}
+      {pendingWrite && (
+        <SharedDimConsentModal
+          tableName={tableName}
+          ownerProductName={ownerProductName}
+          actionLabel={pendingWrite.label}
+          usedBy={usedBy}
+          onCancel={() => setPendingWrite(null)}
+          onConfirm={async () => {
+            const w = pendingWrite;
+            setPendingWrite(null);
+            if (w) await w.run();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function SharedDimConsentModal({
+  tableName, ownerProductName, actionLabel, usedBy, onCancel, onConfirm,
+}: {
+  tableName: string;
+  ownerProductName: string | null;
+  actionLabel: string;
+  usedBy: UsedByProduct[] | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  // Dedupe by productId; "self" (the owner) shouldn't be in the list.
+  const others = (usedBy ?? []).filter(
+    (u, i, arr) => arr.findIndex((x) => x.productId === u.productId) === i,
+  );
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onCancel} aria-hidden />
+      <div className="relative bg-raised border border-line rounded-lg shadow-xl w-full max-w-md p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-4 h-4 text-amber-700" strokeWidth={1.75} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="font-display text-[16px] text-ink">Edit shared dimension?</h2>
+            <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
+              <strong>{tableName}</strong> is the canonical version of this dimension
+              {ownerProductName ? <> (managed by <em>{ownerProductName}</em>)</> : null}.
+              {' '}{actionLabel.toLowerCase()} updates the single shared definition every product reads.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 border border-line rounded-md bg-bg">
+          <div className="px-3 py-2 border-b border-line text-[10.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
+            This change will affect
+          </div>
+          {usedBy === null ? (
+            <div className="px-3 py-3 text-[12px] text-muted flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking which products use this…
+            </div>
+          ) : others.length === 0 ? (
+            <div className="px-3 py-3 text-[12px] text-muted-2 italic">
+              No other products currently use this dimension. You’re effectively editing in place.
+            </div>
+          ) : (
+            <ul className="divide-y divide-line">
+              {others.map((u) => (
+                <li key={u.productId} className="px-3 py-2 text-[12.5px] text-ink-2 flex items-center gap-2">
+                  <Network className="w-3 h-3 text-ocean shrink-0" strokeWidth={1.75} />
+                  <span className="truncate">{u.productName}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <p className="text-[11px] text-muted mt-3">
+          Each affected product needs a refresh to materialise the change. You can run them from the Build page.
+        </p>
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 text-[13px] font-medium text-ink-2 border border-line rounded-md hover:bg-soft transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
+          >
+            {actionLabel} for everyone
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

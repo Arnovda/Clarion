@@ -4145,17 +4145,73 @@ router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analy
 // PRODUCT TABLE CELLS — notebook cells per product table (Phase 1)
 // ===========================================================================
 
+// ───────────────────────────────────────────────────────────────────────────
+// Shared-dimension redirection
+// ───────────────────────────────────────────────────────────────────────────
+// A product can pull in a shared dimension owned by another product. In
+// product_tables we model this as a STUB row in the consumer's star schema
+// with source_product_table_id pointing at the owner's real row. The owner
+// holds the SQL, the cells, the warehouse path — everything authoritative.
+//
+// Without redirection, GET /tables/<stub>/cells returns an empty list and
+// the UI shows "No cells yet" even though the dimension is fully defined
+// in its owner. The fix below auto-resolves a stub to its owner before any
+// cell read/write, so the consumer's notebook transparently edits the
+// shared definition.
+//
+// Conformity is preserved because there's still ONE source of truth (the
+// owner). The consent gate that warns "this affects N products" lives in
+// the UI, not here — this helper is just the redirection.
+
+interface OwnerInfo {
+  ownerTableId: number;        // the id callers should actually use
+  isShared: boolean;           // true when we redirected (the caller asked about a stub)
+  ownerProductId?: number;
+  ownerProductName?: string;
+}
+
+async function resolveOwner(
+  db: ReturnType<typeof reqDb>,
+  tableId: number,
+): Promise<OwnerInfo | null> {
+  const t = await db('product_tables')
+    .where({ id: tableId })
+    .select('id', 'source_product_table_id')
+    .first() as { id: number; source_product_table_id: number | null } | undefined;
+  if (!t) return null;
+  if (!t.source_product_table_id) return { ownerTableId: tableId, isShared: false };
+  const owner = await db('product_tables as pt')
+    .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .where('pt.id', t.source_product_table_id)
+    .select('pt.id as id', 'dp.id as product_id', 'dp.name as product_name')
+    .first() as { id: number; product_id: number; product_name: string } | undefined;
+  if (!owner) return { ownerTableId: tableId, isShared: false };
+  return {
+    ownerTableId: owner.id,
+    isShared: true,
+    ownerProductId: owner.product_id,
+    ownerProductName: owner.product_name,
+  };
+}
+
 // GET /api/products/tables/:tableId/cells — list cells for a table
 router.get('/tables/:tableId/cells', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const tableId = Number(req.params.tableId);
-    const table = await db('product_tables').where({ id: tableId }).first();
-    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const owner = await resolveOwner(db, tableId);
+    if (!owner) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
     const cells = await db('product_table_cells')
-      .where({ product_table_id: tableId })
+      .where({ product_table_id: owner.ownerTableId })
       .orderBy('position', 'asc');
-    res.json({ ok: true, data: cells });
+    res.json({
+      ok: true,
+      data: cells,
+      meta: owner.isShared
+        ? { shared: true, ownerTableId: owner.ownerTableId, ownerProductId: owner.ownerProductId, ownerProductName: owner.ownerProductName }
+        : { shared: false },
+    });
   } catch (err) { next(err); }
 });
 
@@ -4164,8 +4220,8 @@ router.post('/tables/:tableId/cells', requireAuth, requireRole('admin', 'analyst
   try {
     const db = reqDb(req);
     const tableId = Number(req.params.tableId);
-    const table = await db('product_tables').where({ id: tableId }).first();
-    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const owner = await resolveOwner(db, tableId);
+    if (!owner) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
     const { cellType = 'sql', source = '', position } = req.body as {
       cellType?: string; source?: string; position?: number;
     };
@@ -4173,17 +4229,16 @@ router.post('/tables/:tableId/cells', requireAuth, requireRole('admin', 'analyst
       res.status(400).json({ ok: false, error: 'cellType must be sql, markdown, or nl' });
       return;
     }
-    // Auto-position: append after last cell if not specified
     let pos = position;
     if (pos === undefined || pos === null) {
       const last = await db('product_table_cells')
-        .where({ product_table_id: tableId })
+        .where({ product_table_id: owner.ownerTableId })
         .max('position as max')
         .first();
       pos = ((last?.max as number) ?? -1) + 1;
     }
     const [cell] = await db('product_table_cells').insert({
-      product_table_id: tableId,
+      product_table_id: owner.ownerTableId,
       cell_type: cellType,
       source,
       position: pos,

@@ -611,24 +611,29 @@ export default function ProductRootPanel({
                         </div>
                       </div>
                     )}
-                    {t.is_reference && t.owner_product_id ? (
-                      <div className="rounded-md border border-ocean/20 bg-ocean-softer/30 px-4 py-3 text-[13px] text-ink-2">
-                        <p>This table is managed by <strong>{t.owner_product_name ?? 'another product'}</strong>. Changes here are read-only.</p>
-                        <a
-                          href={`/products/${t.owner_product_id}?table=${t.table_name}`}
-                          className="inline-flex items-center gap-1 text-ocean font-medium mt-1.5 hover:underline text-[12px]"
-                        >
-                          Edit in source notebook →
-                        </a>
+                    {t.is_reference && t.owner_product_id && (
+                      <div className="rounded-md border border-ocean/20 bg-ocean-softer/30 px-4 py-2.5 mb-4 flex items-center gap-2.5 text-[12.5px] text-ink-2">
+                        <Network className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={1.75} />
+                        <span className="min-w-0">
+                          <strong>Shared dimension</strong> · canonical definition lives in{' '}
+                          <a
+                            href={`/products/${t.owner_product_id}?table=${t.table_name}`}
+                            className="text-ocean hover:underline"
+                          >
+                            {t.owner_product_name ?? 'another product'}
+                          </a>
+                          {'. Edits apply to every product that uses it.'}
+                        </span>
                       </div>
-                    ) : (
-                      <TableNotebook
-                        productTableId={t.id}
-                        tableName={t.table_name}
-                        readOnly={false}
-                        onDeployed={loadDetail}
-                      />
                     )}
+                    <TableNotebook
+                      productTableId={t.id}
+                      tableName={t.table_name}
+                      readOnly={false}
+                      isShared={Boolean(t.is_reference && t.owner_product_id)}
+                      ownerProductName={t.owner_product_name ?? null}
+                      onDeployed={loadDetail}
+                    />
                   </div>
                 );
               })()}
