@@ -109,18 +109,18 @@ const getMeta = (t: string) =>
 // ---------------------------------------------------------------------------
 function ColRoleBadge({ role }: { role: string | null }) {
   if (!role) return null;
-  const m: Record<string, { bg: string; text: string; label: string }> = {
-    surrogate_key:         { bg: OBS.warnSoft,    text: OBS.warn,  label: 'SK' },
-    natural_key:           { bg: OBS.oceanSofter, text: OBS.ocean, label: 'NK' },
-    foreign_key:           { bg: OBS.aiSoft,      text: OBS.ai,    label: 'FK' },
-    degenerate_dimension:  { bg: OBS.errSoft,     text: OBS.err,   label: 'DD' },
-    measure:               { bg: OBS.okSoft,      text: OBS.ok,    label: 'M' },
-    attribute:             { bg: OBS.softer,      text: OBS.muted, label: 'attr' },
+  const m: Record<string, { bg: string; text: string; label: string; hint: string }> = {
+    surrogate_key:         { bg: OBS.warnSoft,    text: OBS.warn,  label: 'SK',   hint: 'Surrogate key — the table’s own internal ID, generated here.' },
+    natural_key:           { bg: OBS.oceanSofter, text: OBS.ocean, label: 'NK',   hint: 'Natural key — the real-world ID from the source (e.g. invoice number).' },
+    foreign_key:           { bg: OBS.aiSoft,      text: OBS.ai,    label: 'FK',   hint: 'Foreign key — points at a row in a lookup table.' },
+    degenerate_dimension:  { bg: OBS.errSoft,     text: OBS.err,   label: 'DD',   hint: 'Degenerate dimension — an ID kept on the measure table with no lookup of its own.' },
+    measure:               { bg: OBS.okSoft,      text: OBS.ok,    label: 'M',    hint: 'Measure — a number you can sum or average.' },
+    attribute:             { bg: OBS.softer,      text: OBS.muted, label: 'attr', hint: 'Attribute — descriptive text you filter or group by.' },
   };
   const s = m[role];
   if (!s) return null;
   return (
-    <span style={{
+    <span title={s.hint} style={{
       fontSize: 8, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
       background: s.bg, color: s.text, flexShrink: 0, lineHeight: '14px',
       border: `1px solid ${OBS.line}`,
@@ -660,7 +660,11 @@ export default function StarSchemaFlow({ schema }: { schema: StarSchemaData }) {
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
       <div className="px-6 pt-5 pb-2">
         <h3 className="text-lg font-bold text-slate-800">{schema.name}</h3>
-        {schema.grain && <p className="text-sm text-slate-500">Grain: {schema.grain}</p>}
+        {schema.grain && (
+          <p className="text-sm text-slate-500">
+            <span title="Grain — what one row of the measures table represents (e.g. one order line, one day per product).">Grain:</span> {schema.grain}
+          </p>
+        )}
         <p className="text-xs text-slate-400 mt-1">
           {schema.tables.length} tables · {schema.relationships.length} relationships · Click a table to highlight connections · Drag to reposition
         </p>

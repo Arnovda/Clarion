@@ -13,7 +13,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
-  ArrowLeft, Database, Play, Trash2, Loader2, ChevronRight, ChevronDown,
+  ArrowLeft, Database, RefreshCw, Trash2, Loader2, ChevronRight, ChevronDown,
   Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck, Plus, Rocket,
   CheckCircle2, AlertCircle, X, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
@@ -21,6 +21,7 @@ import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/cn';
+import { formatRelative } from '@/lib/dates';
 import { useRole, canCurate, isAdminRole } from '@/lib/role';
 import type {
   Connection,
@@ -74,6 +75,22 @@ function getAllTables(p: FullDataProduct): (ProductTable & { columns: ProductCol
 
 function totalRows(p: FullDataProduct): number {
   return getAllTables(p).reduce((sum, t) => sum + (t.row_count ?? 0), 0);
+}
+
+/**
+ * The most recent successful materialisation across all tables — the
+ * product's "last refreshed" timestamp. Returned as an ISO string, or
+ * null when nothing has run yet. Derived from per-table `last_run_at`
+ * rather than a dedicated product column so it always reflects reality.
+ */
+function lastRefreshedAt(p: FullDataProduct): string | null {
+  let latest: number | null = null;
+  for (const t of getAllTables(p)) {
+    if (!t.last_run_at) continue;
+    const ts = new Date(t.last_run_at).getTime();
+    if (Number.isFinite(ts) && (latest === null || ts > latest)) latest = ts;
+  }
+  return latest === null ? null : new Date(latest).toISOString();
 }
 
 export default function ProductRootPanel({
@@ -301,6 +318,7 @@ export default function ProductRootPanel({
   const tables = getAllTables(detail);
   const name = cleanTopicName(detail.name);
   const hasReferences = tables.some((t) => t.is_reference);
+  const refreshedIso = lastRefreshedAt(detail);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -331,7 +349,10 @@ export default function ProductRootPanel({
               <p className="text-[13.5px] text-ink-2 mt-1 leading-relaxed">{detail.description}</p>
             )}
             <p className="text-[11px] text-muted mt-1">
-              {tables.length} table{tables.length === 1 ? '' : 's'}
+              <span className={refreshedIso ? 'text-ink-2' : 'text-warn'}>
+                {refreshedIso ? `Updated ${formatRelative(refreshedIso)}` : 'Not yet refreshed'}
+              </span>
+              {` \u00b7 ${tables.length} table${tables.length === 1 ? '' : 's'}`}
               {totalRows(detail) > 0 ? ` \u00b7 ${totalRows(detail).toLocaleString('en-GB')} rows` : ''}
               {kpis.length > 0 ? ` \u00b7 ${kpis.length} KPI${kpis.length === 1 ? '' : 's'}` : ''}
             </p>
@@ -361,8 +382,8 @@ export default function ProductRootPanel({
                   hasReferences ? 'rounded-l-md border-r border-ocean-hover/40' : 'rounded-md',
                 )}
               >
-                {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" strokeWidth={2} />}
-                {running ? 'Running\u2026' : 'Rebuild'}
+                {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" strokeWidth={2} />}
+                {running ? 'Running\u2026' : 'Refresh'}
               </button>
               {hasReferences && (
                 <>
@@ -370,7 +391,7 @@ export default function ProductRootPanel({
                     onClick={() => setRebuildMenuOpen((v) => !v)}
                     disabled={running}
                     className="inline-flex items-center justify-center px-1.5 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-r-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-                    title="More rebuild options"
+                    title="More refresh options"
                     aria-haspopup="menu"
                     aria-expanded={rebuildMenuOpen}
                   >
@@ -388,15 +409,15 @@ export default function ProductRootPanel({
                           onClick={() => { setRebuildMenuOpen(false); handleRebuild(); }}
                           className="w-full text-left px-3 py-2 text-[12px] hover:bg-soft transition-colors"
                         >
-                          <div className="font-medium text-ink">Rebuild this product</div>
-                          <div className="text-[11px] text-muted mt-0.5">Only tables owned by this product.</div>
+                          <div className="font-medium text-ink">Refresh this product</div>
+                          <div className="text-[11px] text-muted mt-0.5">Re-runs only the tables this product owns. Fastest.</div>
                         </button>
                         <button
                           onClick={() => { setRebuildMenuOpen(false); handleRebuild({ includeUpstream: true }); }}
                           className="w-full text-left px-3 py-2 text-[12px] hover:bg-soft transition-colors border-t border-line"
                         >
-                          <div className="font-medium text-ink">Rebuild + upstream dependencies</div>
-                          <div className="text-[11px] text-muted mt-0.5">Refreshes shared dims in their owner products first, then this one.</div>
+                          <div className="font-medium text-ink">Refresh + upstream dependencies</div>
+                          <div className="text-[11px] text-muted mt-0.5">Refreshes shared lookup tables in their owner products first, then this one. Use when source data changed.</div>
                         </button>
                       </div>
                     </>
@@ -478,7 +499,12 @@ export default function ProductRootPanel({
                         {t.row_count.toLocaleString('en-GB')}
                       </span>
                     )}
-                    <StatusDot status={t.transformation_status} />
+                    <StatusDot
+                      status={t.transformation_status}
+                      title={t.transformation_status === 'error' && t.last_run_error
+                        ? `Failed: ${t.last_run_error}`
+                        : t.transformation_status}
+                    />
                   </button>
                 ))}
                 {/* Add table button */}
@@ -576,6 +602,15 @@ export default function ProductRootPanel({
                         </a>
                       </div>
                     </div>
+                    {t.transformation_status === 'error' && t.last_run_error && (
+                      <div className="rounded-md border border-err/20 bg-err-soft px-4 py-3 mb-4 flex items-start gap-2.5">
+                        <AlertCircle className="w-4 h-4 text-err mt-0.5 shrink-0" strokeWidth={2} />
+                        <div className="min-w-0">
+                          <p className="text-[12.5px] font-medium text-err">Last refresh failed</p>
+                          <p className="text-[12px] text-ink-2 mt-0.5 font-mono break-words whitespace-pre-wrap">{t.last_run_error}</p>
+                        </div>
+                      </div>
+                    )}
                     {t.is_reference && t.owner_product_id ? (
                       <div className="rounded-md border border-ocean/20 bg-ocean-softer/30 px-4 py-3 text-[13px] text-ink-2">
                         <p>This table is managed by <strong>{t.owner_product_name ?? 'another product'}</strong>. Changes here are read-only.</p>

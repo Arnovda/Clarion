@@ -62,6 +62,11 @@ function ProductsPageInner() {
   // Accordion state (used inside slide-over)
   const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
 
+  // New empty-product modal (replaces the old browser prompt()).
+  const [newProductOpen, setNewProductOpen] = useState(false);
+  const [newProductName, setNewProductName] = useState('');
+  const [creatingProduct, setCreatingProduct] = useState(false);
+
   // Build terminal state
   const [building, setBuilding] = useState(false);
   const [buildLog, setBuildLog] = useState<string[]>([]);
@@ -313,6 +318,25 @@ function ProductsPageInner() {
     }
   }, [addBuildLog, attachToJob]);
 
+  const handleCreateProduct = useCallback(async () => {
+    const connId = connections.length === 1 ? connections[0].id : buildConnId;
+    const name = newProductName.trim();
+    if (!connId || !name) return;
+    setCreatingProduct(true);
+    try {
+      const res = await api.post('/products', { name, connectionId: connId, sourceTables: [] });
+      const id = res.data.data?.productId ?? res.data.data?.id;
+      setNewProductOpen(false);
+      setNewProductName('');
+      if (id) router.push(`/products/${id}`);
+      else loadProducts();
+    } catch {
+      /* surfaced by the global error handler; keep the modal open to retry */
+    } finally {
+      setCreatingProduct(false);
+    }
+  }, [connections, buildConnId, newProductName, router, loadProducts]);
+
   const handleAutoBuild = useCallback(async (connectionId: number) => {
     setBuilding(true);
     setBuildDone(false);
@@ -464,6 +488,9 @@ function ProductsPageInner() {
         <div>
           <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Products</p>
           <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">Organized data</h1>
+          <p className="text-[12px] text-muted mt-0.5 max-w-xl">
+            A data product turns raw source tables into clean, business-ready tables your team can ask questions about and build dashboards on.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {products.length > 0 && (
@@ -502,25 +529,15 @@ function ProductsPageInner() {
                 {building ? 'Building…' : 'Prepare my data'}
               </button>
               <button
-                onClick={async () => {
+                onClick={() => {
                   const connId = connections.length === 1 ? connections[0].id : buildConnId;
                   if (!connId) return;
-                  try {
-                    const name = prompt('Product name:');
-                    if (!name?.trim()) return;
-                    const res = await api.post('/products', {
-                      name: name.trim(),
-                      connectionId: connId,
-                      sourceTables: [],
-                    });
-                    const id = res.data.data?.productId ?? res.data.data?.id;
-                    if (id) router.push(`/products/${id}`);
-                    else loadProducts();
-                  } catch { /* ignore */ }
+                  setNewProductName('');
+                  setNewProductOpen(true);
                 }}
                 disabled={connections.length > 1 && !buildConnId}
                 className="px-2.5 py-2 bg-ocean text-white text-[13px] font-medium rounded-r-md hover:bg-ocean-hover disabled:opacity-50 transition-colors border-l border-ocean-hover/40"
-                title="Create empty product (manual)"
+                title="Start an empty product and design it yourself"
               >
                 <Plus className="w-3.5 h-3.5" strokeWidth={2} />
               </button>
@@ -665,6 +682,53 @@ function ProductsPageInner() {
         products={products}
         onRefineApplied={() => { loadProducts(); }}
       />
+
+      {/* ── New empty product modal ──────────────────────────────────── */}
+      {newProductOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+            onClick={() => !creatingProduct && setNewProductOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="relative bg-raised border border-line rounded-lg shadow-xl w-full max-w-md p-5">
+            <h2 className="font-display text-[17px] text-ink">Name your data product</h2>
+            <p className="text-[12px] text-muted mt-1 mb-4">
+              You’ll design its tables yourself on the next screen. Prefer Clarion to draft it for you?
+              Use <span className="font-medium text-ink-2">Prepare my data</span> instead.
+            </p>
+            <input
+              autoFocus
+              type="text"
+              value={newProductName}
+              onChange={(e) => setNewProductName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newProductName.trim() && !creatingProduct) handleCreateProduct();
+                if (e.key === 'Escape' && !creatingProduct) setNewProductOpen(false);
+              }}
+              placeholder="e.g. Sales analytics"
+              className="w-full bg-bg border border-line rounded-md px-3 py-2 text-[13.5px] text-ink focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setNewProductOpen(false)}
+                disabled={creatingProduct}
+                className="px-3 py-2 text-[13px] font-medium text-ink-2 border border-line rounded-md hover:bg-soft disabled:opacity-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateProduct}
+                disabled={!newProductName.trim() || creatingProduct}
+                className="px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                {creatingProduct && <Spinner className="w-3 h-3" />}
+                {creatingProduct ? 'Creating…' : 'Create product'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
