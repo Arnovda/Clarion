@@ -282,6 +282,61 @@ export async function listRefinements(
 }
 
 // ---------------------------------------------------------------------------
+// Preview — resolve a pending proposal into runnable SQL so the UI can show
+// sample rows of the change BEFORE the user approves. Only column-shaped
+// intents (add/modify column) carry a `new_transformation_sql` that produces
+// a table; KPIs are query-time formulas and aren't previewable as rows.
+// The actual DuckDB execution happens in the route (where the warehouse
+// session helpers live) — this just resolves the plan under tenant scope.
+// ---------------------------------------------------------------------------
+
+export interface RefinementPreviewPlan {
+  previewable: boolean;
+  /** Why preview isn't available (KPI / clarification / unsupported). */
+  reason?: string;
+  connectionId?: number;
+  /** Full transformation SQL that will produce the table after approval. */
+  sql?: string;
+  /** The column the proposal adds or changes — the UI highlights it. */
+  targetColumn?: string;
+}
+
+export async function getRefinementPreviewPlan(
+  tenantId: number,
+  refinementId: number,
+): Promise<RefinementPreviewPlan> {
+  const row = await tenantQuery(tenantId, (trx) =>
+    trx('product_customizations').where({ id: refinementId }).first(),
+  );
+  if (!row) throw new Error('Refinement not found');
+
+  const proposal = parseProposal(row.proposal);
+  if (!proposal) throw new Error('Proposal payload is malformed');
+
+  if (proposal.intent !== 'add_column' && proposal.intent !== 'modify_column') {
+    return {
+      previewable: false,
+      reason: proposal.intent === 'add_kpi'
+        ? 'KPIs are calculated when a question or dashboard runs — open a dashboard to see this metric.'
+        : 'There is nothing to preview for this message.',
+    };
+  }
+
+  const product = await tenantQuery(tenantId, (trx) =>
+    trx('data_products').where({ id: Number(row.data_product_id) }).first(),
+  );
+  if (!product) return { previewable: false, reason: 'Product not found' };
+
+  return {
+    previewable: true,
+    connectionId: Number(product.connection_id),
+    sql: proposal.new_transformation_sql,
+    targetColumn: proposal.column_name,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // Create — runs the AI, persists the proposal as pending
 // ---------------------------------------------------------------------------
 

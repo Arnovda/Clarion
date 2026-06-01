@@ -19,7 +19,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   X, Send, Loader2, MessageSquarePlus, Sparkles,
   Check, Trash2, AlertCircle, HelpCircle, Ban, ChevronDown, ChevronUp,
-  RefreshCw,
+  RefreshCw, Eye, TableProperties,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -279,6 +279,17 @@ function EmptyState() {
         <Example>&ldquo;Define a KPI: gross margin = sum(price - cost)&rdquo;</Example>
         <Example>&ldquo;Change customer_segment to lowercase&rdquo;</Example>
       </div>
+      <div className="mt-5 max-w-[360px] mx-auto text-left text-[11px] leading-relaxed">
+        <p className="text-ink-2">
+          <span className="text-emerald-600 font-medium">Can do:</span>{' '}
+          add a column, change a column, define a KPI.
+        </p>
+        <p className="text-muted mt-0.5">
+          <span className="font-medium">Not yet:</span>{' '}
+          adding or removing tables, or changing a table’s grain — use{' '}
+          <em>Prepare my data</em> to redesign for those.
+        </p>
+      </div>
     </div>
   );
 }
@@ -434,6 +445,9 @@ function ProposalCard({
           {proposal.intent === 'add_column' && <AddColumnDiff p={proposal} />}
           {proposal.intent === 'modify_column' && <ModifyColumnDiff p={proposal} />}
           {proposal.intent === 'add_kpi' && <AddKpiDiff p={proposal} />}
+          {(proposal.intent === 'add_column' || proposal.intent === 'modify_column') && (
+            <RefinementPreview refinementId={item.id} targetColumn={proposal.column_name} />
+          )}
         </div>
       )}
 
@@ -513,6 +527,158 @@ const STATUS_COLORS: Record<string, string> = {
   rejected: 'text-muted',
   failed: 'text-red-600',
 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// Sample-data preview — runs the proposed transformation against live data
+// on demand and shows the first rows, highlighting the new/changed column.
+// "Approve with evidence" instead of "approve on faith." A SQL error here
+// catches a bad proposal before it's committed.
+// ───────────────────────────────────────────────────────────────────────────
+
+function fmtCell(v: unknown): string {
+  if (v === null || v === undefined) return '∅';
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString('en-GB') : v.toLocaleString('en-GB', { maximumFractionDigits: 4 });
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  const s = String(v);
+  return s.length > 40 ? s.slice(0, 40) + '…' : s;
+}
+
+function RefinementPreview({ refinementId, targetColumn }: { refinementId: number; targetColumn: string }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [columns, setColumns] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [notPreviewable, setNotPreviewable] = useState<string | null>(null);
+
+  const run = useCallback(async () => {
+    setState('loading');
+    setError(null);
+    setNotPreviewable(null);
+    try {
+      const res = await api.post(`/products/refinements/${refinementId}/preview`);
+      const d = res.data.data as {
+        previewable: boolean; reason?: string;
+        rows?: Record<string, unknown>[]; columns?: string[];
+      };
+      if (!d.previewable) {
+        setNotPreviewable(d.reason ?? 'Not previewable');
+        setState('done');
+        return;
+      }
+      setRows(d.rows ?? []);
+      setColumns(d.columns ?? []);
+      setState('done');
+    } catch (err) {
+      setError((err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Preview failed');
+      setState('error');
+    }
+  }, [refinementId]);
+
+  if (state === 'idle') {
+    return (
+      <button
+        onClick={run}
+        className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:text-ocean-dark mt-0.5"
+      >
+        <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />
+        Preview sample data
+      </button>
+    );
+  }
+
+  if (state === 'loading') {
+    return (
+      <div className="flex items-center gap-2 text-[11.5px] text-muted mt-1">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Running against live data…
+      </div>
+    );
+  }
+
+  if (state === 'error') {
+    return (
+      <div className="border border-red-200 bg-red-50 rounded-md px-2.5 py-2 mt-1">
+        <div className="flex items-start gap-1.5 text-[11.5px] text-red-900">
+          <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+          <div className="min-w-0">
+            <div className="font-medium">This proposal doesn’t run yet</div>
+            <div className="font-mono text-[11px] mt-0.5 break-words whitespace-pre-wrap">{error}</div>
+            <button onClick={run} className="text-[11px] text-red-700 underline mt-1">Try again</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // state === 'done'
+  if (notPreviewable) {
+    return <p className="text-[11px] text-muted-2 italic mt-1">{notPreviewable}</p>;
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="text-[11.5px] text-muted mt-1 flex items-center gap-1.5">
+        <TableProperties className="w-3.5 h-3.5" strokeWidth={1.75} />
+        Runs cleanly, but returns no rows yet.
+        <button onClick={run} className="text-ocean underline">Refresh</button>
+      </div>
+    );
+  }
+
+  // Show the target column first, then up to 4 context columns, so the
+  // change is front-and-centre without a wide horizontal scroll.
+  const ordered = [
+    ...columns.filter((c) => c === targetColumn),
+    ...columns.filter((c) => c !== targetColumn),
+  ].slice(0, 5);
+
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2">
+          Live preview · first {rows.length} rows
+        </span>
+        <button onClick={run} className="text-[10.5px] text-ocean hover:underline inline-flex items-center gap-1">
+          <RefreshCw className="w-2.5 h-2.5" strokeWidth={2} /> Rerun
+        </button>
+      </div>
+      <div className="border border-line rounded-md overflow-x-auto">
+        <table className="w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="bg-softer">
+              {ordered.map((c) => (
+                <th
+                  key={c}
+                  className={`text-left px-2 py-1 font-medium whitespace-nowrap border-b border-line ${
+                    c === targetColumn ? 'text-ocean bg-ocean/5' : 'text-muted'
+                  }`}
+                >
+                  {c === targetColumn && <span className="mr-0.5">▸</span>}
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-b border-line/60 last:border-0">
+                {ordered.map((c) => (
+                  <td
+                    key={c}
+                    className={`px-2 py-1 whitespace-nowrap font-mono tabular-nums ${
+                      c === targetColumn ? 'text-ink bg-ocean/5 font-medium' : 'text-ink-2'
+                    } ${r[c] === null || r[c] === undefined ? 'text-muted-2' : ''}`}
+                  >
+                    {fmtCell(r[c])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Per-intent diff renderers

@@ -18,6 +18,52 @@ import type {
 
 const router = Router();
 
+/**
+ * Build an in-memory DuckDB session with every table reachable from a
+ * connection registered as a view: the connection's own source tables
+ * (under `<connection.name>` schema) and every product table built from
+ * that connection (under `<productName>` schema), with the search_path
+ * set so unqualified refs resolve. Shared by the notebook cell-execute
+ * endpoint and the refinement preview endpoint so the two stay in lockstep.
+ *
+ * Caller owns the returned Database and MUST close it.
+ */
+async function buildConnectionWarehouseSession(
+  pgDb: ReturnType<typeof reqDb>,
+  connectionId: number,
+): Promise<Database> {
+  const connection = await pgDb('connections').where({ id: connectionId }).first();
+  if (!connection) throw new Error('Connection not found');
+
+  const productDeltaPaths = await pgDb('product_tables')
+    .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+    .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+    .where('data_products.connection_id', connectionId)
+    .whereNotNull('product_tables.delta_path')
+    .pluck<string[]>('product_tables.delta_path');
+  const needAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
+
+  const db = await Database.create(':memory:');
+  await setupDuckDBForWarehouse(db, needAzure);
+
+  const sources = await listSourceTables(undefined, connectionId);
+  for (const t of sources) {
+    try { await createScanView(db, t.tableName, t.uri, { schema: connection.name }); } catch { /* skip */ }
+  }
+  const productTables = await listProductTablesByConnection(undefined, connectionId);
+  for (const t of productTables) {
+    try { await createScanView(db, t.tableName, t.uri, { schema: t.productName }); } catch { /* skip */ }
+  }
+
+  const schemas = new Set<string>([connection.name]);
+  for (const t of productTables) schemas.add(t.productName);
+  const schemaList = [...schemas].map((s) => s.replace(/'/g, "''")).join(',');
+  if (schemaList) {
+    try { await db.exec(`SET search_path = '${schemaList}';`); } catch { /* ignore */ }
+  }
+  return db;
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/products — List all data products
 // ---------------------------------------------------------------------------
@@ -4058,6 +4104,43 @@ router.post('/refinements/:id/reject', requireAuth, requireRole('admin', 'analys
   } catch (err) { next(err); }
 });
 
+// POST /api/products/refinements/:id/preview — run the proposed transformation
+// against live data and return sample rows so the user can SEE the change
+// before approving. A SQL error here is the point: it surfaces a bad AI
+// proposal pre-commit instead of after a failed refresh.
+router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
+  let duckDb: Database | null = null;
+  try {
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+
+    const { getRefinementPreviewPlan } = await import('../services/refineService');
+    const plan = await getRefinementPreviewPlan(tenantId, Number(req.params.id));
+    if (!plan.previewable || !plan.sql || !plan.connectionId) {
+      res.json({ ok: true, data: { previewable: false, reason: plan.reason ?? 'Not previewable' } });
+      return;
+    }
+
+    duckDb = await buildConnectionWarehouseSession(reqDb(req), plan.connectionId);
+    const inner = plan.sql.trim().replace(/;\s*$/, '');
+    const rawRows = await duckDb.all(`SELECT * FROM (\n${inner}\n) AS _preview LIMIT 12`) as Record<string, unknown>[];
+    const rows = rawRows.map((row) => {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(row)) out[k] = typeof v === 'bigint' ? Number(v) : v;
+      return out;
+    });
+    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    res.json({
+      ok: true,
+      data: { previewable: true, rows, columns, targetColumn: plan.targetColumn ?? null, rowCount: rows.length },
+    });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'Preview failed' });
+  } finally {
+    if (duckDb) try { await duckDb.close(); } catch { /* ignore */ }
+  }
+});
+
 // ===========================================================================
 // PRODUCT TABLE CELLS — notebook cells per product table (Phase 1)
 // ===========================================================================
@@ -4164,38 +4247,8 @@ router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', '
     const connection = await pgDb('connections').where({ id: connectionId }).first();
     if (!connection) { res.status(400).json({ ok: false, error: 'Connection not found' }); return; }
 
-    // Build DuckDB session with source + product tables
-    const productDeltaPaths = await pgDb('product_tables')
-      .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
-      .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
-      .where('data_products.connection_id', connectionId)
-      .whereNotNull('product_tables.delta_path')
-      .pluck<string[]>('product_tables.delta_path');
-    const needAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
-
-    duckDb = await Database.create(':memory:');
-    await setupDuckDBForWarehouse(duckDb, needAzure);
-
-    // Register source tables
-    const sources = await listSourceTables(undefined, connectionId);
-    for (const t of sources) {
-      try { await createScanView(duckDb, t.tableName, t.uri, { schema: connection.name }); } catch { /* skip */ }
-    }
-
-    // Register product tables
-    const productTables = await listProductTablesByConnection(undefined, connectionId);
-    for (const t of productTables) {
-      try { await createScanView(duckDb, t.tableName, t.uri, { schema: t.productName }); } catch { /* skip */ }
-    }
-
-    // Set search path so unqualified refs work
-    const schemas = new Set<string>();
-    schemas.add(connection.name);
-    for (const t of productTables) schemas.add(t.productName);
-    if (schemas.size > 0) {
-      const schemaList = [...schemas].map((s) => s.replace(/'/g, "''")).join(',');
-      try { await duckDb.exec(`SET search_path = '${schemaList}';`); } catch { /* ignore */ }
-    }
+    // Build DuckDB session with source + product tables registered.
+    duckDb = await buildConnectionWarehouseSession(pgDb, connectionId);
 
     // Register preceding cells' outputs as views (cell chaining)
     const precedingCells = await pgDb('product_table_cells')
