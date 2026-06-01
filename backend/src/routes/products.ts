@@ -4472,7 +4472,11 @@ router.post('/tables/cells/:cellId/generate', requireAuth, requireRole('admin', 
 router.post('/tables/:tableId/deploy', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const tableId = Number(req.params.tableId);
+    const requestedId = Number(req.params.tableId);
+    // Shared dims: cells + canonical SQL live on the owner, so deploy there.
+    const ownerInfo = await resolveOwner(db, requestedId);
+    if (!ownerInfo) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const tableId = ownerInfo.ownerTableId;
     const table = await db('product_tables').where({ id: tableId }).first();
     if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
 

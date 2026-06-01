@@ -42,9 +42,10 @@ interface Props {
 }
 
 /** A pending write the user has staged but not yet confirmed via the
- *  shared-dim consent modal. We carry the same shape as a deferred async
- *  call so the modal's confirm handler doesn't need a switch statement. */
-type PendingWrite = { run: () => Promise<void>; label: string } | null;
+ *  shared-dim consent modal. `materializes` is true for actions that
+ *  rebuild the dimension (deploy) — those get a second "refresh the
+ *  affected products?" step so the change propagates everywhere. */
+type PendingWrite = { run: () => Promise<void>; label: string; materializes: boolean } | null;
 
 interface UsedByProduct { productId: number; productName: string; kind?: string }
 
@@ -69,10 +70,22 @@ export default function TableNotebook({
   /** Either run the action straight away (non-shared) or stage it for the
    *  consent modal (shared). One choke-point covers add / save / delete /
    *  deploy so we can never accidentally skip the gate. */
-  const guard = useCallback((label: string, run: () => Promise<void>) => {
+  const guard = useCallback((label: string, run: () => Promise<void>, materializes = false) => {
     if (!isShared) { void run(); return; }
-    setPendingWrite({ label, run });
+    setPendingWrite({ label, run, materializes });
   }, [isShared]);
+
+  /** Queue a refresh for each affected product so a shared-dim change
+   *  propagates without a trip to the Build page. Best-effort, parallel —
+   *  the jobs run server-side and surface on Build. */
+  const refreshAffected = useCallback(async (products: UsedByProduct[]) => {
+    const results = await Promise.allSettled(
+      products.map((p) => api.post(`/products/${p.productId}/refresh-start`, { syncSource: false })),
+    );
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    if (ok > 0) toast.success(`Queued ${ok} refresh${ok === 1 ? '' : 'es'}`, { description: 'Track progress on the Build page.' });
+    else toast.error('Could not queue refreshes', { description: 'A refresh may already be running, or you lack permission.' });
+  }, [toast]);
 
   // Lazy-load the impact list the first time we need it.
   useEffect(() => {
@@ -176,6 +189,7 @@ export default function TableNotebook({
   function deploy() {
     guard('Deploy table', async () => {
       setDeploying(true);
+      // (materializes=true below → consent modal offers a refresh step)
       try {
         await api.post(`/products/tables/${productTableId}/deploy`);
         toast.success(`${tableName} deployed`);
@@ -187,7 +201,7 @@ export default function TableNotebook({
       } finally {
         setDeploying(false);
       }
-    });
+    }, true);
   }
 
   function startEdit(cell: Cell) {
@@ -397,13 +411,11 @@ export default function TableNotebook({
           tableName={tableName}
           ownerProductName={ownerProductName}
           actionLabel={pendingWrite.label}
+          materializes={pendingWrite.materializes}
           usedBy={usedBy}
-          onCancel={() => setPendingWrite(null)}
-          onConfirm={async () => {
-            const w = pendingWrite;
-            setPendingWrite(null);
-            if (w) await w.run();
-          }}
+          onClose={() => setPendingWrite(null)}
+          onRun={async () => { await pendingWrite.run(); }}
+          onRefreshAffected={refreshAffected}
         />
       )}
     </div>
@@ -411,79 +423,145 @@ export default function TableNotebook({
 }
 
 function SharedDimConsentModal({
-  tableName, ownerProductName, actionLabel, usedBy, onCancel, onConfirm,
+  tableName, ownerProductName, actionLabel, materializes, usedBy,
+  onClose, onRun, onRefreshAffected,
 }: {
   tableName: string;
   ownerProductName: string | null;
   actionLabel: string;
+  materializes: boolean;
   usedBy: UsedByProduct[] | null;
-  onCancel: () => void;
-  onConfirm: () => void;
+  onClose: () => void;
+  onRun: () => Promise<void>;
+  onRefreshAffected: (products: UsedByProduct[]) => Promise<void>;
 }) {
-  // Dedupe by productId; "self" (the owner) shouldn't be in the list.
-  const others = (usedBy ?? []).filter(
+  const [phase, setPhase] = useState<'confirm' | 'refresh'>('confirm');
+  const [busy, setBusy] = useState(false);
+
+  // Dedupe by productId — the impact + refresh list.
+  const affected = (usedBy ?? []).filter(
     (u, i, arr) => arr.findIndex((x) => x.productId === u.productId) === i,
   );
+
+  async function confirm() {
+    setBusy(true);
+    try { await onRun(); } finally { setBusy(false); }
+    // Only a materialising action (deploy) warrants the refresh step, and
+    // only when something actually consumes this dim.
+    if (materializes && affected.length > 0) setPhase('refresh');
+    else onClose();
+  }
+
+  async function refreshAll() {
+    setBusy(true);
+    try { await onRefreshAffected(affected); } finally { setBusy(false); onClose(); }
+  }
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={onCancel} aria-hidden />
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" onClick={() => !busy && onClose()} aria-hidden />
       <div className="relative bg-raised border border-line rounded-lg shadow-xl w-full max-w-md p-5">
-        <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
-            <AlertTriangle className="w-4 h-4 text-amber-700" strokeWidth={1.75} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="font-display text-[16px] text-ink">Edit shared dimension?</h2>
-            <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
-              <strong>{tableName}</strong> is the canonical version of this dimension
-              {ownerProductName ? <> (managed by <em>{ownerProductName}</em>)</> : null}.
-              {' '}{actionLabel.toLowerCase()} updates the single shared definition every product reads.
-            </p>
-          </div>
-        </div>
+        {phase === 'confirm' ? (
+          <>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4 text-amber-700" strokeWidth={1.75} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-display text-[16px] text-ink">Edit shared dimension?</h2>
+                <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
+                  <strong>{tableName}</strong> is the canonical version of this dimension
+                  {ownerProductName ? <> (managed by <em>{ownerProductName}</em>)</> : null}.
+                  {' '}{actionLabel.toLowerCase()} updates the single shared definition every product reads.
+                </p>
+              </div>
+            </div>
 
-        <div className="mt-4 border border-line rounded-md bg-bg">
-          <div className="px-3 py-2 border-b border-line text-[10.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
-            This change will affect
-          </div>
-          {usedBy === null ? (
-            <div className="px-3 py-3 text-[12px] text-muted flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking which products use this…
+            <div className="mt-4 border border-line rounded-md bg-bg">
+              <div className="px-3 py-2 border-b border-line text-[10.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
+                This change will affect
+              </div>
+              {usedBy === null ? (
+                <div className="px-3 py-3 text-[12px] text-muted flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking which products use this…
+                </div>
+              ) : affected.length === 0 ? (
+                <div className="px-3 py-3 text-[12px] text-muted-2 italic">
+                  No other products currently use this dimension. You’re effectively editing in place.
+                </div>
+              ) : (
+                <ul className="divide-y divide-line">
+                  {affected.map((u) => (
+                    <li key={u.productId} className="px-3 py-2 text-[12.5px] text-ink-2 flex items-center gap-2">
+                      <Network className="w-3 h-3 text-ocean shrink-0" strokeWidth={1.75} />
+                      <span className="truncate">{u.productName}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-          ) : others.length === 0 ? (
-            <div className="px-3 py-3 text-[12px] text-muted-2 italic">
-              No other products currently use this dimension. You’re effectively editing in place.
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="px-3 py-2 text-[13px] font-medium text-ink-2 border border-line rounded-md hover:bg-soft disabled:opacity-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirm}
+                disabled={busy}
+                className="px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+              >
+                {busy && <Loader2 className="w-3 h-3 animate-spin" />}
+                {actionLabel} for everyone
+              </button>
             </div>
-          ) : (
-            <ul className="divide-y divide-line">
-              {others.map((u) => (
+          </>
+        ) : (
+          <>
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-full bg-ocean-softer border border-ocean/30 flex items-center justify-center shrink-0">
+                <Rocket className="w-4 h-4 text-ocean" strokeWidth={1.75} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-display text-[16px] text-ink">Deployed. Apply everywhere?</h2>
+                <p className="text-[12.5px] text-muted mt-1 leading-relaxed">
+                  <strong>{tableName}</strong> was rebuilt. Refresh the {affected.length} product{affected.length === 1 ? '' : 's'} that
+                  use it so the change shows up in their dashboards and answers.
+                </p>
+              </div>
+            </div>
+
+            <ul className="mt-4 border border-line rounded-md bg-bg divide-y divide-line">
+              {affected.map((u) => (
                 <li key={u.productId} className="px-3 py-2 text-[12.5px] text-ink-2 flex items-center gap-2">
                   <Network className="w-3 h-3 text-ocean shrink-0" strokeWidth={1.75} />
                   <span className="truncate">{u.productName}</span>
                 </li>
               ))}
             </ul>
-          )}
-        </div>
 
-        <p className="text-[11px] text-muted mt-3">
-          Each affected product needs a refresh to materialise the change. You can run them from the Build page.
-        </p>
-
-        <div className="flex justify-end gap-2 mt-4">
-          <button
-            onClick={onCancel}
-            className="px-3 py-2 text-[13px] font-medium text-ink-2 border border-line rounded-md hover:bg-soft transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
-          >
-            {actionLabel} for everyone
-          </button>
-        </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="px-3 py-2 text-[13px] font-medium text-ink-2 border border-line rounded-md hover:bg-soft disabled:opacity-50 transition-colors"
+              >
+                Not now
+              </button>
+              <button
+                onClick={refreshAll}
+                disabled={busy}
+                className="px-4 py-2 text-[13px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors inline-flex items-center gap-1.5"
+              >
+                {busy && <Loader2 className="w-3 h-3 animate-spin" />}
+                Refresh {affected.length} product{affected.length === 1 ? '' : 's'}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

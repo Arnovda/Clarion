@@ -40,6 +40,10 @@ export interface RefineChatProductContext {
       /** From column_lineage — which source col fed this product col. */
       sourceLineage: Array<{ sourceTable: string; sourceColumn: string }>;
     }>;
+    /** Set when this entry is a shared dimension owned by another product.
+     *  tableId/columns already point at the owner (so proposals target the
+     *  canonical rows); this records the blast radius for the UI. */
+    sharedFrom?: { ownerProductName: string; affectedProducts: Array<{ id: number; name: string }> };
   }>;
   /** Source-layer schemas the product can pull from. Includes this
    *  product's own connection plus every dependency product's connection.
@@ -84,6 +88,19 @@ export type ProposalPayload =
   | AskClarificationPayload
   | UnsupportedPayload;
 
+/**
+ * When a proposal targets a shared dimension (one product edits a
+ * dimension owned by another), this records the blast radius so the UI
+ * can warn "approving changes it for everyone" and offer to refresh the
+ * affected products. Populated server-side after the AI responds; the
+ * model never sees or sets it.
+ */
+export interface SharedDimImpact {
+  ownerProductName: string;
+  /** Every product that uses this dimension (owner + dependents). */
+  affectedProducts: Array<{ id: number; name: string }>;
+}
+
 export interface AddColumnPayload {
   intent: 'add_column';
   product_table_id: number;
@@ -98,6 +115,8 @@ export interface AddColumnPayload {
   /** FULL replacement transformation_sql for the table — the runner just
    *  writes this on approve, no SQL splicing. */
   new_transformation_sql: string;
+  /** Present only when product_table_id is a shared dimension. */
+  shared?: SharedDimImpact;
 }
 
 export interface ModifyColumnPayload {
@@ -113,6 +132,8 @@ export interface ModifyColumnPayload {
   transformation_expression: string | null;
   /** FULL replacement transformation_sql for the table. */
   new_transformation_sql: string;
+  /** Present only when product_table_id is a shared dimension. */
+  shared?: SharedDimImpact;
 }
 
 export interface AddKpiPayload {

@@ -19,7 +19,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   X, Send, Loader2, MessageSquarePlus, Sparkles,
   Check, Trash2, AlertCircle, HelpCircle, Ban, ChevronDown, ChevronUp,
-  RefreshCw, Eye, TableProperties,
+  RefreshCw, Eye, TableProperties, Network,
 } from 'lucide-react';
 import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
@@ -74,15 +74,21 @@ interface Refinement {
   updated_at: string;
 }
 
+interface SharedImpact {
+  ownerProductName: string;
+  affectedProducts: Array<{ id: number; name: string }>;
+}
+
 type ProposalPayload =
   | { intent: 'add_column'; product_table_id: number; table_name: string;
       column_name: string; data_type: string; column_role: string | null;
       description: string | null; transformation_expression: string;
-      new_transformation_sql: string; }
+      new_transformation_sql: string; shared?: SharedImpact; }
   | { intent: 'modify_column'; product_table_id: number; product_column_id: number;
       table_name: string; column_name: string; data_type: string | null;
       column_role: string | null; description: string | null;
-      transformation_expression: string | null; new_transformation_sql: string; }
+      transformation_expression: string | null; new_transformation_sql: string;
+      shared?: SharedImpact; }
   | { intent: 'add_kpi'; name: string; description: string | null;
       formula_plain_text: string; formula_sql: string; }
   | { intent: 'ask_clarification'; question: string; }
@@ -172,6 +178,17 @@ export default function RefineChat({
     }
   }, [load, toast]);
 
+  /** Queue a refresh for every product affected by a shared-dim change so
+   *  it propagates without a trip to Build. Best-effort + parallel. */
+  const refreshAffected = useCallback(async (products: Array<{ id: number; name: string }>) => {
+    const results = await Promise.allSettled(
+      products.map((p) => api.post(`/products/${p.id}/refresh-start`, { syncSource: false })),
+    );
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    if (ok > 0) toast.success(`Queued ${ok} refresh${ok === 1 ? '' : 'es'}`, { description: 'Track progress on the Build page.' });
+    else toast.error('Could not queue refreshes', { description: 'A refresh may already be running, or you lack permission.' });
+  }, [toast]);
+
   if (!open) return null;
 
   return (
@@ -223,6 +240,7 @@ export default function RefineChat({
               item={r}
               onApprove={() => approve(r.id)}
               onReject={() => reject(r.id)}
+              onRefreshAffected={refreshAffected}
             />
           ))
         )}
@@ -307,11 +325,12 @@ function Example({ children }: { children: React.ReactNode }) {
 // ───────────────────────────────────────────────────────────────────────────
 
 function RefinementBubble({
-  item, onApprove, onReject,
+  item, onApprove, onReject, onRefreshAffected,
 }: {
   item: Refinement;
   onApprove: () => void;
   onReject: () => void;
+  onRefreshAffected: (products: Array<{ id: number; name: string }>) => Promise<void>;
 }) {
   const [showDetails, setShowDetails] = useState(item.status === 'pending');
   const proposal = item.proposal;
@@ -350,6 +369,7 @@ function RefinementBubble({
             onToggleDetails={() => setShowDetails((v) => !v)}
             onApprove={onApprove}
             onReject={onReject}
+            onRefreshAffected={onRefreshAffected}
           />
         </div>
       </div>
@@ -362,7 +382,7 @@ function RefinementBubble({
 // ───────────────────────────────────────────────────────────────────────────
 
 function ProposalCard({
-  item, proposal, showDetails, onToggleDetails, onApprove, onReject,
+  item, proposal, showDetails, onToggleDetails, onApprove, onReject, onRefreshAffected,
 }: {
   item: Refinement;
   proposal: ProposalPayload;
@@ -370,7 +390,14 @@ function ProposalCard({
   onToggleDetails: () => void;
   onApprove: () => void;
   onReject: () => void;
+  onRefreshAffected: (products: Array<{ id: number; name: string }>) => Promise<void>;
 }) {
+  // Shared-dimension impact, present only on add/modify-column proposals
+  // that target a dimension owned by (and used across) other products.
+  const shared = (proposal.intent === 'add_column' || proposal.intent === 'modify_column')
+    ? proposal.shared
+    : undefined;
+
   // Non-applyable intents render compact, no buttons.
   if (proposal.intent === 'ask_clarification') {
     return (
@@ -467,29 +494,60 @@ function ProposalCard({
           column with values. KPIs don't need this because they're
           formulas evaluated at query time. */}
       {item.status === 'applied'
-       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column') && (
+       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column')
+       && (shared ? (
+        <div className="px-3 py-2.5 border-t border-amber-200 bg-amber-50 text-[11.5px] text-amber-900">
+          <div className="flex items-start gap-1.5 mb-2">
+            <RefreshCw className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+            <span>
+              Applied to the shared <strong>{proposal.table_name}</strong> dimension.
+              Refresh the {shared.affectedProducts.length} product{shared.affectedProducts.length === 1 ? '' : 's'} that use it to apply the change.
+            </span>
+          </div>
+          <button
+            onClick={() => onRefreshAffected(shared.affectedProducts)}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-medium bg-ocean text-on-ocean rounded hover:bg-ocean-dark transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" strokeWidth={2} />
+            Refresh {shared.affectedProducts.length} product{shared.affectedProducts.length === 1 ? '' : 's'}
+          </button>
+        </div>
+      ) : (
         <div className="px-3 py-2 border-t border-amber-200 bg-amber-50 text-[11.5px] text-amber-900">
           <div className="flex items-start gap-1.5">
             <RefreshCw className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
             <span>
               Metadata updated. <strong>Refresh the table</strong> to materialise this
-              change in your data — click <em>Rebuild</em> in the product header.
+              change in your data — click <em>Refresh</em> in the product header.
             </span>
           </div>
         </div>
-      )}
+      ))}
 
       {/* Pending hint — same flag but pre-approve so the user knows what
           they're committing to before they click Approve. */}
       {isPending
-       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column') && (
+       && (proposal.intent === 'add_column' || proposal.intent === 'modify_column')
+       && (shared ? (
+        <div className="px-3 py-2 border-t border-amber-200 bg-amber-50 text-[11px] text-amber-900">
+          <div className="flex items-start gap-1.5">
+            <Network className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
+            <span>
+              <strong>Shared dimension.</strong> This changes the canonical{' '}
+              <em>{proposal.table_name}</em> definition for all {shared.affectedProducts.length}{' '}
+              product{shared.affectedProducts.length === 1 ? '' : 's'} that use it:{' '}
+              {shared.affectedProducts.map((p) => p.name).join(', ')}.
+            </span>
+          </div>
+        </div>
+      ) : (
         <div className="px-3 py-1.5 border-t border-line bg-softer text-[11px] text-muted">
           <div className="flex items-start gap-1.5">
             <RefreshCw className="w-3 h-3 mt-0.5 flex-shrink-0" strokeWidth={1.75} />
             <span>Approving updates the SQL; a refresh is required before the new column appears in dashboards / Ask AI.</span>
           </div>
         </div>
-      )}
+      ))}
 
       {/* Actions */}
       {isPending && (
@@ -506,7 +564,7 @@ function ProposalCard({
             className="inline-flex items-center gap-1 px-3 py-1 text-[12px] font-medium bg-ocean text-on-ocean rounded hover:bg-ocean-dark"
           >
             <Check className="w-3 h-3" strokeWidth={2.25} />
-            Approve
+            {shared ? `Approve for all ${shared.affectedProducts.length}` : 'Approve'}
           </button>
         </div>
       )}

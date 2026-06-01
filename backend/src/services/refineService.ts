@@ -66,7 +66,7 @@ export async function buildRefineContext(
     const tables = await trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .where('ss.data_product_id', productId)
-      .select('pt.id', 'pt.table_name', 'pt.table_role', 'pt.transformation_sql')
+      .select('pt.id', 'pt.table_name', 'pt.table_role', 'pt.transformation_sql', 'pt.source_product_table_id')
       .orderBy(['pt.dag_order', 'pt.table_name']);
 
     const tableIds = tables.map((t) => Number(t.id));
@@ -130,27 +130,115 @@ export async function buildRefineContext(
       .limit(10)
       .select('intent', 'summary', 'status');
 
+    // ── Shared-dimension resolution ──────────────────────────────────────
+    // A table with source_product_table_id is a STUB for a dimension owned
+    // by another product — it has no authoritative SQL/columns of its own.
+    // To let the AI reason (and write) against the canonical definition, we
+    // present the OWNER's id, columns and SQL in place of the stub, and
+    // record the blast radius so the UI can warn "affects N products".
+    // Products with no shared dims hit none of this (ownerByStub is empty).
+    const ownerByStub = new Map<number, number>();
+    for (const t of tables) {
+      const owner = (t as { source_product_table_id?: number | null }).source_product_table_id;
+      if (owner) ownerByStub.set(Number(t.id), Number(owner));
+    }
+    const ownerIds = Array.from(new Set(ownerByStub.values()));
+
+    const ownerMetaById = new Map<number, { tableName: string; tableRole: string; transformationSql: string | null; ownerProductName: string }>();
+    const ownerColsByTable = new Map<number, typeof columns>();
+    const affectedByOwner = new Map<number, Array<{ id: number; name: string }>>();
+
+    if (ownerIds.length > 0) {
+      const ownerTables = await trx('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+        .whereIn('pt.id', ownerIds)
+        .select('pt.id', 'pt.table_name', 'pt.table_role', 'pt.transformation_sql', 'dp.id as owner_product_id', 'dp.name as owner_product_name');
+      for (const o of ownerTables) {
+        ownerMetaById.set(Number(o.id), {
+          tableName: String(o.table_name),
+          tableRole: String(o.table_role),
+          transformationSql: o.transformation_sql ? String(o.transformation_sql) : null,
+          ownerProductName: String(o.owner_product_name),
+        });
+      }
+
+      const ownerCols = await trx('product_columns')
+        .whereIn('product_table_id', ownerIds)
+        .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
+        .orderBy(['product_table_id', 'sort_order'])
+        .select('id', 'product_table_id', 'column_name', 'data_type', 'column_role', 'description', 'transformation_expression');
+      for (const c of ownerCols) {
+        const list = ownerColsByTable.get(Number(c.product_table_id)) ?? [];
+        list.push(c);
+        ownerColsByTable.set(Number(c.product_table_id), list);
+      }
+      // Owner column lineage — merge into the same map keyed by column id.
+      const ownerColIds = ownerCols.map((c) => Number(c.id));
+      const ownerLineage = ownerColIds.length
+        ? await trx('column_lineage').whereIn('product_column_id', ownerColIds)
+            .select('product_column_id', 'source_table_name', 'source_column_name')
+        : [];
+      for (const l of ownerLineage) {
+        const list = lineageByCol.get(Number(l.product_column_id)) ?? [];
+        list.push({ sourceTable: String(l.source_table_name), sourceColumn: String(l.source_column_name) });
+        lineageByCol.set(Number(l.product_column_id), list);
+      }
+
+      // Dependents: every product that pulls in one of these owner tables.
+      const deps = await trx('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+        .whereIn('pt.source_product_table_id', ownerIds)
+        .select('pt.source_product_table_id as owner_id', 'dp.id as product_id', 'dp.name as product_name');
+      for (const ownerId of ownerIds) {
+        const seen = new Map<number, string>();
+        // Lead the impact list with the owning product (the source of truth)…
+        const ownerTableRow = ownerTables.find((o) => Number(o.id) === ownerId);
+        if (ownerTableRow) seen.set(Number(ownerTableRow.owner_product_id), String(ownerTableRow.owner_product_name));
+        // …then every product that consumes it.
+        for (const d of deps) {
+          if (Number(d.owner_id) !== ownerId) continue;
+          seen.set(Number(d.product_id), String(d.product_name));
+        }
+        affectedByOwner.set(ownerId, Array.from(seen, ([id, name]) => ({ id, name })));
+      }
+    }
+
+    const effectiveFocusedTableId = focusedTableId != null
+      ? (ownerByStub.get(focusedTableId) ?? focusedTableId)
+      : null;
+
     return {
       productName: String(product.name),
       productDescription: product.description ? String(product.description) : null,
-      tables: tables.map((t) => ({
-        tableId: Number(t.id),
-        tableName: String(t.table_name),
-        tableRole: String(t.table_role),
-        transformationSql: t.transformation_sql ? String(t.transformation_sql) : null,
-        columns: (colsByTable.get(Number(t.id)) ?? []).map((c) => ({
-          columnId: Number(c.id),
-          columnName: String(c.column_name),
-          dataType: String(c.data_type),
-          columnRole: c.column_role ? String(c.column_role) : null,
-          description: c.description ? String(c.description) : null,
-          transformationExpression: c.transformation_expression ? String(c.transformation_expression) : null,
-          sourceLineage: lineageByCol.get(Number(c.id)) ?? [],
-        })),
-      })),
+      tables: tables.map((t) => {
+        const ownerId = ownerByStub.get(Number(t.id));
+        const effId = ownerId ?? Number(t.id);
+        const ownerMeta = ownerId != null ? ownerMetaById.get(ownerId) : null;
+        const cols = ownerId != null ? (ownerColsByTable.get(ownerId) ?? []) : (colsByTable.get(Number(t.id)) ?? []);
+        return {
+          tableId: effId,
+          tableName: ownerMeta ? ownerMeta.tableName : String(t.table_name),
+          tableRole: ownerMeta ? ownerMeta.tableRole : String(t.table_role),
+          transformationSql: ownerMeta ? ownerMeta.transformationSql : (t.transformation_sql ? String(t.transformation_sql) : null),
+          columns: cols.map((c) => ({
+            columnId: Number(c.id),
+            columnName: String(c.column_name),
+            dataType: String(c.data_type),
+            columnRole: c.column_role ? String(c.column_role) : null,
+            description: c.description ? String(c.description) : null,
+            transformationExpression: c.transformation_expression ? String(c.transformation_expression) : null,
+            sourceLineage: lineageByCol.get(Number(c.id)) ?? [],
+          })),
+          ...(ownerId != null && ownerMeta
+            ? { sharedFrom: { ownerProductName: ownerMeta.ownerProductName, affectedProducts: affectedByOwner.get(ownerId) ?? [] } }
+            : {}),
+        };
+      }),
       sourceConnections,
       existingKpiNames: kpiNames,
-      focusedTableId,
+      focusedTableId: effectiveFocusedTableId,
       recentCustomizations: recent.map((r) => ({
         intent: String(r.intent),
         summary: r.summary ? String(r.summary) : '',
@@ -354,6 +442,21 @@ export async function createRefinement(
   // Run the AI. Lazy-import to avoid a circular dep at module load.
   const { proposeRefinement } = await import('../ai/AIService');
   const result = await proposeRefinement(context, userMessage);
+
+  // If the proposal targets a shared dimension, stamp the blast radius
+  // onto the proposal so the UI can warn + offer refresh propagation. The
+  // context already resolved stubs to owner ids, so product_table_id here
+  // is the canonical (owner) table and apply writes to the right place.
+  if (result.proposal.intent === 'add_column' || result.proposal.intent === 'modify_column') {
+    const targetId = result.proposal.product_table_id;
+    const ctxTable = context.tables.find((t) => t.tableId === targetId);
+    if (ctxTable?.sharedFrom) {
+      result.proposal.shared = {
+        ownerProductName: ctxTable.sharedFrom.ownerProductName,
+        affectedProducts: ctxTable.sharedFrom.affectedProducts,
+      };
+    }
+  }
 
   const id = await tenantQuery(tenantId, async (trx) => {
     const [row] = await trx('product_customizations')
