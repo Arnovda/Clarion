@@ -152,6 +152,7 @@ export default function EntityDetailPanel({
         focusColumnId={selection.columnId ?? null}
         connections={connections}
         onSaved={onSaved}
+        onClose={onClose}
       />
     );
   }
@@ -162,6 +163,7 @@ export default function EntityDetailPanel({
         tableId={selection.tableId}
         focusColumnId={selection.columnId ?? null}
         onSaved={onSaved}
+        onClose={onClose}
       />
     );
   }
@@ -192,13 +194,14 @@ export default function EntityDetailPanel({
 // ── Loaders ────────────────────────────────────────────────────────────────
 
 function SourceTableLoader({
-  tableId, connectionId, focusColumnId, connections, onSaved,
+  tableId, connectionId, focusColumnId, connections, onSaved, onClose,
 }: {
   tableId: number;
   connectionId: number;
   focusColumnId: number | null;
   connections: Connection[];
   onSaved?: () => void;
+  onClose?: () => void;
 }) {
   const [table, setTable] = useState<SourceTable | null>(null);
   const [cols, setCols] = useState<SourceColumn[]>([]);
@@ -237,16 +240,18 @@ function SourceTableLoader({
       focusColumnId={focusColumnId}
       connectionDomains={domains}
       onSaved={() => { load(); onSaved?.(); }}
+      onClose={onClose}
     />
   );
 }
 
 function ProductTableLoader({
-  tableId, focusColumnId, onSaved,
+  tableId, focusColumnId, onSaved, onClose,
 }: {
   tableId: number;
   focusColumnId: number | null;
   onSaved?: () => void;
+  onClose?: () => void;
 }) {
   const [tree, setTree] = useState<ProductTreeItem[]>([]);
   const [cols, setCols] = useState<SemanticProductColumn[]>([]);
@@ -280,6 +285,7 @@ function ProductTableLoader({
       columns={cols}
       focusColumnId={focusColumnId}
       onSaved={() => { load(); onSaved?.(); }}
+      onClose={onClose}
     />
   );
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { format as formatSql } from 'sql-formatter';
-import { ArrowRight, GitBranch } from 'lucide-react';
+import { ArrowRight, GitBranch, X } from 'lucide-react';
 import api from '@/lib/api';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -19,6 +19,10 @@ interface Props {
   columns: ProductColumn[];
   focusColumnId: number | null;
   onSaved: () => void;
+  /** Dismiss the panel. Wired from the parent (e.g. /catalog) so cards
+   *  views can close the right inset; left unset when the panel is the
+   *  whole pane (Structure mode), where there's nothing to close to. */
+  onClose?: () => void;
 }
 
 const roleColor = (role: string | null): string => {
@@ -76,7 +80,7 @@ interface RelRow {
 // ---------------------------------------------------------------------------
 
 export default function ProductTableDetailPanel({
-  tableId, productTree, columns, focusColumnId, onSaved,
+  tableId, productTree, columns, focusColumnId, onSaved, onClose,
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
@@ -311,15 +315,27 @@ export default function ProductTableDetailPanel({
           </div>
 
           {/* Approval badge is governance — curator-only. */}
-          {curator && (
-            <ApprovalBadge
-              entityType="product_table"
-              entityId={tbl.id}
-              status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-              aiDraft={!!tbl.ai_draft}
-              onChanged={onSaved}
-            />
-          )}
+          <div className="flex items-start gap-2 flex-shrink-0">
+            {curator && (
+              <ApprovalBadge
+                entityType="product_table"
+                entityId={tbl.id}
+                status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+                aiDraft={!!tbl.ai_draft}
+                onChanged={onSaved}
+              />
+            )}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
+                title="Close"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" strokeWidth={1.75} />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tab strip */}

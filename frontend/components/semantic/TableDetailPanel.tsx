@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Sparkles, Check, Flag, ArrowRight, GitBranch } from 'lucide-react';
+import { Sparkles, Check, Flag, ArrowRight, GitBranch, X } from 'lucide-react';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -19,6 +19,9 @@ interface Props {
   focusColumnId: number | null;
   connectionDomains?: string[];
   onSaved: () => void;
+  /** Dismiss the panel. Wired by /catalog so the right inset can be
+   *  closed; left unset when the panel is the whole pane (Structure mode). */
+  onClose?: () => void;
 }
 
 interface UsedInProduct {
@@ -44,7 +47,7 @@ const columnCompleteness = (col: SourceColumn) =>
     !col.ai_draft,
   );
 
-export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved }: Props) {
+export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved, onClose }: Props) {
   const role = useRole();
   const curator = canCurate(role);
   const [tbl, setTbl]               = useState<SourceTable>(table);
@@ -193,16 +196,28 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
             </div>
           </div>
           {/* Approval badge is a governance signal — admin/analyst only. */}
-          {curator && (
-            <ApprovalBadge
-              entityType="table"
-              entityId={tbl.id}
-              status={tbl.approval_status}
-              aiDraft={tbl.ai_draft}
-              rejectionReason={tbl.rejection_reason}
-              onChanged={onSaved}
-            />
-          )}
+          <div className="flex items-start gap-2 flex-shrink-0">
+            {curator && (
+              <ApprovalBadge
+                entityType="table"
+                entityId={tbl.id}
+                status={tbl.approval_status}
+                aiDraft={tbl.ai_draft}
+                rejectionReason={tbl.rejection_reason}
+                onChanged={onSaved}
+              />
+            )}
+            {onClose && (
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
+                title="Close"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" strokeWidth={1.75} />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tab strip */}
