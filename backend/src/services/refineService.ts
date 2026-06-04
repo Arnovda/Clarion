@@ -447,7 +447,9 @@ export async function createRefinement(
   // onto the proposal so the UI can warn + offer refresh propagation. The
   // context already resolved stubs to owner ids, so product_table_id here
   // is the canonical (owner) table and apply writes to the right place.
-  if (result.proposal.intent === 'add_column' || result.proposal.intent === 'modify_column') {
+  // (proposeRefinement guarantees a defined proposal object, but guard
+  // anyway — a malformed proposal must never crash the send.)
+  if (result.proposal && (result.proposal.intent === 'add_column' || result.proposal.intent === 'modify_column')) {
     const targetId = result.proposal.product_table_id;
     const ctxTable = context.tables.find((t) => t.tableId === targetId);
     if (ctxTable?.sharedFrom) {
@@ -619,6 +621,11 @@ async function applyAddColumn(tenantId: number, p: AddColumnPayload): Promise<vo
       // refresh writes a new parquet.
       updated_at: new Date().toISOString(),
     });
+
+    // 4. Mirror the change into the notebook's deploy cell so the two
+    //    editors stay in lockstep — otherwise the notebook shows stale
+    //    cells and the next Deploy overwrites this change.
+    await syncDeployCell(trx, p.product_table_id, p.new_transformation_sql);
   });
 }
 
@@ -641,7 +648,50 @@ async function applyModifyColumn(tenantId: number, p: ModifyColumnPayload): Prom
       transformation_sql: p.new_transformation_sql,
       updated_at: new Date().toISOString(),
     });
+
+    // Keep the notebook's deploy cell in sync (see applyAddColumn).
+    await syncDeployCell(trx, p.product_table_id, p.new_transformation_sql);
   });
+}
+
+/**
+ * Write `newSql` onto the cell a later Deploy would read for this table —
+ * the `is_deploy_cell`, else the last SQL/NL cell — so a refine change is
+ * visible in the notebook and re-applied (not clobbered) on the next
+ * Deploy. Creates a deploy cell when the table has none (refine-first
+ * tables), which also turns the notebook's "No cells yet" into the
+ * applied SQL. Runs inside the caller's transaction.
+ */
+async function syncDeployCell(
+  trx: import('knex').Knex,
+  productTableId: number,
+  newSql: string,
+): Promise<void> {
+  let cell = await trx('product_table_cells')
+    .where({ product_table_id: productTableId, is_deploy_cell: true })
+    .first();
+  if (!cell) {
+    cell = await trx('product_table_cells')
+      .where({ product_table_id: productTableId })
+      .whereIn('cell_type', ['sql', 'nl'])
+      .orderBy('position', 'desc')
+      .first();
+  }
+  if (cell) {
+    // NL cells deploy from generated_sql; SQL cells from source.
+    const patch = cell.cell_type === 'nl'
+      ? { generated_sql: newSql, updated_at: new Date().toISOString() }
+      : { source: newSql, updated_at: new Date().toISOString() };
+    await trx('product_table_cells').where({ id: cell.id }).update(patch);
+  } else {
+    await trx('product_table_cells').insert({
+      product_table_id: productTableId,
+      cell_type: 'sql',
+      source: newSql,
+      position: 0,
+      is_deploy_cell: true,
+    });
+  }
 }
 
 async function applyAddKpi(

@@ -1995,12 +1995,35 @@ export async function proposeRefinement(
     };
   }
 
+  // The model occasionally returns the proposal flat (intent + fields at the
+  // top level) instead of nested under `proposal`. Tolerate both: prefer the
+  // nested object, else treat the whole object as the proposal. If neither is
+  // a usable object, fail soft to `unsupported` — never hand a malformed /
+  // undefined proposal downstream (it would crash createRefinement / the
+  // insert). This keeps a non-Claude backend or an off-spec response from
+  // 500-ing the whole Refine send.
+  let proposal: ProposalPayload | undefined;
+  if (obj.proposal && typeof obj.proposal === 'object') {
+    proposal = obj.proposal as ProposalPayload;
+  } else if (intent) {
+    proposal = parsed as ProposalPayload; // flat shape — the object IS the proposal
+  }
+  if (!proposal || typeof proposal !== 'object' || typeof (proposal as { intent?: unknown }).intent !== 'string') {
+    return {
+      intent: 'unsupported',
+      confidence: 'low',
+      reasoning: 'Model output did not contain a usable proposal object.',
+      summary: 'I could not produce a structured proposal for that — try rewording.',
+      proposal: { intent: 'unsupported', reason: 'malformed proposal payload', suggested_action: null },
+    };
+  }
+
   return {
     intent: intent as RefineChatResult['intent'],
     confidence: (obj.confidence === 'high' || obj.confidence === 'low') ? obj.confidence : 'medium',
     reasoning: typeof obj.reasoning === 'string' ? obj.reasoning : '',
     summary: typeof obj.summary === 'string' ? obj.summary : '',
-    proposal: obj.proposal as ProposalPayload,
+    proposal,
   };
 }
 
