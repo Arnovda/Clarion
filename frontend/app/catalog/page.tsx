@@ -587,17 +587,30 @@ function StructureBody(props: {
   onSaved: () => void;
   onProductDeleted: () => void;
 }) {
+  // Local to Structure mode — kept separate from the Cards search above so
+  // typing here doesn't disturb the cards view or vice-versa.
+  const [structureSearch, setStructureSearch] = useState('');
   return (
     <div className="flex flex-1 min-h-0">
-      <div className="flex-shrink-0 border-r border-line" style={{ width: 280 }}>
-        <CatalogBrowser
-          key={`browser-${props.refreshKey}`}
-          selected={props.tableSel}
-          selectedSchema={props.schemaSel}
-          onSelectTable={props.onSelectTable}
-          onSelectSchema={props.onSelectSchema}
-          hide={props.hideCatalog}
-        />
+      <div className="flex-shrink-0 border-r border-line flex flex-col" style={{ width: 280 }}>
+        <div className="px-3 py-2 border-b border-line bg-soft">
+          <StructureSearchInput
+            value={structureSearch}
+            onChange={setStructureSearch}
+            onClear={() => setStructureSearch('')}
+          />
+        </div>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <CatalogBrowser
+            key={`browser-${props.refreshKey}`}
+            selected={props.tableSel}
+            selectedSchema={props.schemaSel}
+            onSelectTable={(sel) => { setStructureSearch(''); props.onSelectTable(sel); }}
+            onSelectSchema={props.onSelectSchema}
+            hide={props.hideCatalog}
+            searchValue={structureSearch}
+          />
+        </div>
       </div>
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <EntityDetailPanel
@@ -614,6 +627,41 @@ function StructureBody(props: {
 // ───────────────────────────────────────────────────────────────────────────
 // Atoms
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compact search input that sits above the Structure-mode tree. Stays
+ * out of the way visually (mono eyebrow + thin border, no big chrome)
+ * and clears on Esc so the user never has to grab the mouse to bail.
+ */
+function StructureSearchInput({
+  value, onChange, onClear,
+}: { value: string; onChange: (s: string) => void; onClear: () => void }) {
+  return (
+    <div className="relative">
+      <Search
+        className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-2 pointer-events-none"
+        strokeWidth={1.75}
+      />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Escape') onClear(); }}
+        placeholder="Search tables or columns…"
+        className="w-full pl-8 pr-7 py-1.5 text-[12px] bg-raised border border-line rounded text-ink-2 placeholder:text-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+      />
+      {value && (
+        <button
+          onClick={onClear}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-soft text-muted-2 hover:text-ink"
+          aria-label="Clear search"
+        >
+          <X className="w-3 h-3" strokeWidth={1.75} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 function ViewModeToggle({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
   return (

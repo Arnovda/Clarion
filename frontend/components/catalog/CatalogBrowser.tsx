@@ -25,7 +25,9 @@ import {
   type SchemaEntry,
   type TableEntry,
   type ColumnEntry,
+  type CatalogSearchHit,
 } from '@/lib/catalog';
+import { useDebounce } from '@/lib/hooks/useDebounce';
 
 export interface CatalogSelection {
   catalog: CatalogId;
@@ -55,6 +57,12 @@ interface Props {
   hide?: CatalogId;
   /** Optional: show row counts in the table list (default true). */
   showRowCounts?: boolean;
+  /**
+   * When set to a non-empty string the tree is replaced by a flat fuzzy
+   * search across every table + column in scope. Clicking a hit selects
+   * the table (and the parent's detail panel handles the column focus).
+   */
+  searchValue?: string;
 }
 
 // ── Visual helpers ──────────────────────────────────────────────────────────
@@ -119,7 +127,7 @@ function sourceBucketLabel(key: string, sample: SchemaEntry | undefined): string
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true }: Props) {
+export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true, searchValue }: Props) {
   const [catalogs, setCatalogs] = useState<CatalogEntry[]>([]);
   const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
@@ -242,6 +250,38 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
     return Object.values(tablesBySchema).reduce((sum, arr) => sum + arr.length, 0);
   }, [tablesBySchema]);
 
+  // ── Search mode ──────────────────────────────────────────────────────────
+  // Debounce so we don't hit the API on every keystroke. The empty / sub-2
+  // case short-circuits to the normal tree (kept in lockstep with the
+  // backend, which also returns []). Race-safe via cancelled token.
+  const debouncedSearch = useDebounce((searchValue ?? '').trim(), 250);
+  const isSearching = debouncedSearch.length >= 2;
+  const [searchHits, setSearchHits] = useState<CatalogSearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSearching) {
+      setSearchHits([]);
+      setSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    setSearchError(null);
+    catalogApi.search(debouncedSearch)
+      .then((rows) => { if (!cancelled) setSearchHits(rows); })
+      .catch((e) => { if (!cancelled) setSearchError(e?.message ?? 'Search failed'); })
+      .finally(() => { if (!cancelled) setSearchLoading(false); });
+    return () => { cancelled = true; };
+  }, [debouncedSearch, isSearching, hide]);
+
+  // Honour the `hide` prop in the result list too.
+  const visibleHits = useMemo(
+    () => searchHits.filter((h) => h.catalog !== hide),
+    [searchHits, hide],
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0 bg-soft text-ink-2">
       {/* Header */}
@@ -259,7 +299,17 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
       )}
 
       <div className="flex-1 overflow-y-auto min-h-0 py-1">
-        {catalogs.map((cat) => {
+        {isSearching && (
+          <SearchResults
+            query={debouncedSearch}
+            hits={visibleHits}
+            loading={searchLoading}
+            error={searchError}
+            selected={selected ?? null}
+            onSelectTable={onSelectTable}
+          />
+        )}
+        {!isSearching && catalogs.map((cat) => {
           const catOpen = openCatalogs.has(cat.id);
           const schemas = schemasByCatalog[cat.id] ?? [];
           const catLoading = loadingSchemas.has(cat.id);
@@ -545,5 +595,190 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
         })}
       </div>
     </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Flat search result list — rendered in place of the tree while the user
+// has a query active. Hits are grouped by table so a single table that has
+// both a name match and several column matches doesn't appear N times.
+// Clicking the table row, or any of its column matches, selects the table
+// via the parent's onSelectTable (which also clears the search).
+// ───────────────────────────────────────────────────────────────────────────
+
+function SearchResults({
+  query, hits, loading, error, selected, onSelectTable,
+}: {
+  query: string;
+  hits: CatalogSearchHit[];
+  loading: boolean;
+  error: string | null;
+  selected: CatalogSelection | null;
+  onSelectTable?: (sel: CatalogSelection) => void;
+}) {
+  // Group hits by (catalog, schemaSlug, tableId). Preserve the order of
+  // first appearance so the backend's relevance ranking carries through.
+  type Group = {
+    catalog: CatalogId;
+    schemaSlug: string;
+    schemaLabel: string;
+    tableId: string;
+    tableLabel: string;
+    tableName: string;
+    role: string | null;
+    tableMatched: boolean;
+    columns: Array<{ name: string; label: string }>;
+  };
+  const groups: Group[] = [];
+  const byKey = new Map<string, Group>();
+  for (const h of hits) {
+    const key = `${h.catalog}/${h.schemaSlug}/${h.tableId}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = {
+        catalog: h.catalog,
+        schemaSlug: h.schemaSlug,
+        schemaLabel: h.schemaLabel,
+        tableId: h.tableId,
+        tableLabel: h.tableLabel,
+        tableName: h.tableName,
+        role: h.role,
+        tableMatched: false,
+        columns: [],
+      };
+      byKey.set(key, g);
+      groups.push(g);
+    }
+    if (h.kind === 'table') g.tableMatched = true;
+    else if (h.columnName) g.columns.push({ name: h.columnName, label: h.columnLabel ?? h.columnName });
+  }
+
+  if (error) {
+    return (
+      <div className="mx-4 mt-2 px-2.5 py-1.5 text-[11px] text-danger bg-danger-soft border border-danger/20 rounded">
+        {error}
+      </div>
+    );
+  }
+  if (loading && groups.length === 0) {
+    return (
+      <div className="px-4 py-3 flex items-center gap-2 text-[11px] text-muted-2">
+        <Loader2 className="w-3 h-3 animate-spin" /> Searching…
+      </div>
+    );
+  }
+  if (groups.length === 0) {
+    return (
+      <div className="px-4 py-3 text-[12px] text-muted-2 italic">
+        No tables or columns match &ldquo;{query}&rdquo;.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="px-4 py-1.5 text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2">
+        {groups.length} {groups.length === 1 ? 'match' : 'matches'}
+      </div>
+      {groups.map((g) => {
+        const isSelected = selected?.catalog === g.catalog
+          && selected?.schemaSlug === g.schemaSlug
+          && selected?.tableId === g.tableId;
+        const abbrev = roleAbbrev(g.role);
+        return (
+          <div key={`${g.catalog}/${g.schemaSlug}/${g.tableId}`}>
+            {/* Table row */}
+            <button
+              onClick={() => onSelectTable?.({
+                catalog: g.catalog,
+                schemaSlug: g.schemaSlug,
+                schemaLabel: g.schemaLabel,
+                tableId: g.tableId,
+                tableLabel: g.tableLabel,
+                tableName: g.tableName,
+                role: g.role,
+              })}
+              className={cn(
+                'w-full flex items-center gap-2 px-4 py-1.5 text-left transition-colors border-l-2',
+                isSelected
+                  ? 'bg-ocean-softer border-ocean'
+                  : 'hover:bg-softer border-transparent',
+              )}
+            >
+              <TableIcon
+                className={cn('w-3.5 h-3.5 shrink-0', isSelected ? 'text-ocean' : 'text-muted-2')}
+                strokeWidth={1.5}
+              />
+              <span className="min-w-0 flex-1">
+                <span className={cn(
+                  'block text-[12px] truncate',
+                  isSelected ? 'text-ink font-medium' : 'text-ink-2',
+                )}>
+                  <HighlightMatch text={g.tableLabel} query={query} />
+                </span>
+                <span className="block text-[10px] font-mono text-muted-2 truncate">
+                  {g.schemaLabel}
+                </span>
+              </span>
+              {abbrev && (
+                <span className={cn(
+                  'text-[9px] font-mono uppercase tracking-[0.06em] px-1 py-0.5 rounded shrink-0',
+                  roleClass(g.role),
+                )}>
+                  {abbrev}
+                </span>
+              )}
+            </button>
+
+            {/* Column matches under this table — clicking selects the parent
+                table; the right-pane detail panel handles column focus via
+                its own focusColumnId mechanism. Keeping the click target on
+                the table row keeps the surface predictable. */}
+            {g.columns.length > 0 && (
+              <div className="pl-10 pr-3 pb-1">
+                {g.columns.slice(0, 5).map((c) => (
+                  <button
+                    key={c.name}
+                    onClick={() => onSelectTable?.({
+                      catalog: g.catalog,
+                      schemaSlug: g.schemaSlug,
+                      schemaLabel: g.schemaLabel,
+                      tableId: g.tableId,
+                      tableLabel: g.tableLabel,
+                      tableName: g.tableName,
+                      role: g.role,
+                    })}
+                    className="block w-full text-left py-0.5 text-[11px] text-muted-2 hover:text-ocean transition-colors truncate"
+                  >
+                    <span className="font-mono">→</span> <HighlightMatch text={c.label} query={query} />
+                  </button>
+                ))}
+                {g.columns.length > 5 && (
+                  <span className="block text-[10px] text-muted-2 italic py-0.5">
+                    +{g.columns.length - 5} more
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Wrap occurrences of `query` (case-insensitive) in the ocean colour. */
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  const idx = lower.indexOf(q);
+  if (idx === -1) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <span className="text-ocean font-semibold">{text.slice(idx, idx + query.length)}</span>
+      {text.slice(idx + query.length)}
+    </>
   );
 }

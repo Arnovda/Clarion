@@ -45,6 +45,163 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/catalog/search?q=... — flat fuzzy search across both catalogs.
+// Returns up to ~60 table/column matches with everything the tree needs to
+// navigate to them (catalog id, schema slug + label, table id + label).
+// Column matches carry an optional `columnName` so the UI can show the
+// match in context ("dim_customer.first_name"). Empty q → empty result.
+//
+// RLS is enforced by reqDb — every read goes through the user's tenant
+// session, so cross-tenant leakage is structurally impossible.
+//
+// Implemented as four small queries (source tables, source columns,
+// product tables, product columns) rather than one giant union; the join
+// to schemas + connections happens client-side here in JS to keep the SQL
+// simple and ANSI-portable.
+// ---------------------------------------------------------------------------
+router.get('/search', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const raw = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (raw.length < 2) {
+      res.json({ ok: true, data: [] });
+      return;
+    }
+    const LIMIT = 60;
+    const pattern = `%${raw.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+
+    // 1. Source tables — match table_name OR display_name (limit per type so
+    //    a flood of column hits can't crowd table hits out of the result).
+    const sourceTables = await db('source_tables as st')
+      .join('connections as c', 'st.connection_id', 'c.id')
+      .where((qb) => qb.where('st.table_name', 'ilike', pattern).orWhere('st.display_name', 'ilike', pattern))
+      .select(
+        'st.id', 'st.table_name', 'st.display_name', 'st.connection_id',
+        'c.name as connection_name',
+      )
+      .limit(LIMIT);
+
+    // 2. Source columns — match column_name OR display_name. Join the table
+    //    so we know how to address it (schema slug + tableId).
+    const sourceColumns = await db('source_columns as sc')
+      .join('source_tables as st', 'sc.table_id', 'st.id')
+      .join('connections as c', 'st.connection_id', 'c.id')
+      .where((qb) => qb.where('sc.column_name', 'ilike', pattern).orWhere('sc.display_name', 'ilike', pattern))
+      .select(
+        'sc.column_name', 'sc.display_name as column_display',
+        'st.id as table_id', 'st.table_name', 'st.display_name as table_display',
+        'st.connection_id', 'c.name as connection_name',
+      )
+      .limit(LIMIT);
+
+    // 3. Product tables — join up to data_products for schema slug + label.
+    const productTables = await db('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where((qb) => qb.where('pt.table_name', 'ilike', pattern).orWhere('pt.display_name', 'ilike', pattern))
+      .select(
+        'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role',
+        'dp.id as product_id', 'dp.name as product_name',
+      )
+      .limit(LIMIT);
+
+    // 4. Product columns (skip technical row-hash / SCD2 metadata).
+    const productColumns = await db('product_columns as pc')
+      .join('product_tables as pt', 'pc.product_table_id', 'pt.id')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where((qb) => qb.where('pc.column_name', 'ilike', pattern).orWhere('pc.display_name', 'ilike', pattern))
+      .andWhere((qb) => qb.where('pc.is_technical', false).orWhereNull('pc.is_technical'))
+      .select(
+        'pc.column_name', 'pc.display_name as column_display',
+        'pt.id as table_id', 'pt.table_name', 'pt.display_name as table_display', 'pt.table_role',
+        'dp.id as product_id', 'dp.name as product_name',
+      )
+      .limit(LIMIT);
+
+    interface Hit {
+      kind: 'table' | 'column';
+      catalog: 'sources' | 'products';
+      schemaSlug: string;
+      schemaLabel: string;
+      tableId: string;
+      tableLabel: string;
+      tableName: string;
+      role: string | null;
+      columnName?: string;
+      columnLabel?: string;
+    }
+
+    const hits: Hit[] = [
+      ...sourceTables.map((r): Hit => ({
+        kind: 'table',
+        catalog: 'sources',
+        schemaSlug: toSlugWithId(String(r.connection_name), Number(r.connection_id)),
+        schemaLabel: String(r.connection_name),
+        tableId: String(r.id),
+        tableLabel: String(r.display_name ?? r.table_name),
+        tableName: String(r.table_name),
+        role: 'source',
+      })),
+      ...sourceColumns.map((r): Hit => ({
+        kind: 'column',
+        catalog: 'sources',
+        schemaSlug: toSlugWithId(String(r.connection_name), Number(r.connection_id)),
+        schemaLabel: String(r.connection_name),
+        tableId: String(r.table_id),
+        tableLabel: String(r.table_display ?? r.table_name),
+        tableName: String(r.table_name),
+        role: 'source',
+        columnName: String(r.column_name),
+        columnLabel: r.column_display ? String(r.column_display) : String(r.column_name),
+      })),
+      ...productTables.map((r): Hit => ({
+        kind: 'table',
+        catalog: 'products',
+        schemaSlug: toSlugWithId(String(r.product_name), Number(r.product_id)),
+        schemaLabel: String(r.product_name),
+        tableId: String(r.id),
+        tableLabel: String(r.display_name ?? r.table_name),
+        tableName: String(r.table_name),
+        role: r.table_role ? String(r.table_role) : null,
+      })),
+      ...productColumns.map((r): Hit => ({
+        kind: 'column',
+        catalog: 'products',
+        schemaSlug: toSlugWithId(String(r.product_name), Number(r.product_id)),
+        schemaLabel: String(r.product_name),
+        tableId: String(r.table_id),
+        tableLabel: String(r.table_display ?? r.table_name),
+        tableName: String(r.table_name),
+        role: r.table_role ? String(r.table_role) : null,
+        columnName: String(r.column_name),
+        columnLabel: r.column_display ? String(r.column_display) : String(r.column_name),
+      })),
+    ];
+
+    // Rank: exact (case-insensitive) name match wins; then prefix; then
+    // substring. Tables before columns within each rank — when both match,
+    // the user almost always means the table.
+    const q = raw.toLowerCase();
+    const tier = (h: Hit): number => {
+      const name = (h.kind === 'column' ? (h.columnName ?? '') : h.tableName).toLowerCase();
+      const label = (h.kind === 'column' ? (h.columnLabel ?? '') : h.tableLabel).toLowerCase();
+      if (name === q || label === q) return 0;
+      if (name.startsWith(q) || label.startsWith(q)) return 1;
+      return 2;
+    };
+    hits.sort((a, b) => {
+      const t = tier(a) - tier(b);
+      if (t !== 0) return t;
+      if (a.kind !== b.kind) return a.kind === 'table' ? -1 : 1;
+      return 0;
+    });
+
+    res.json({ ok: true, data: hits.slice(0, LIMIT) });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/catalog/:catalog — list schemas in a catalog
 // ---------------------------------------------------------------------------
 router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: NextFunction) => {

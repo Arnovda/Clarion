@@ -100,6 +100,24 @@ export function parseIdFromSlug(slug: string): number | null {
   return Number.isFinite(id) ? id : null;
 }
 
+/**
+ * One flat hit returned by the catalog search endpoint — enough to
+ * navigate to the table or column directly via `onSelectTable`.
+ * Column hits carry `columnName` so the UI can show context.
+ */
+export interface CatalogSearchHit {
+  kind: 'table' | 'column';
+  catalog: CatalogId;
+  schemaSlug: string;
+  schemaLabel: string;
+  tableId: string;
+  tableLabel: string;
+  tableName: string;
+  role: string | null;
+  columnName?: string;
+  columnLabel?: string;
+}
+
 export const catalogApi = {
   catalogs: () =>
     unwrap<CatalogEntry[]>(api.get('/catalog')),
@@ -114,4 +132,7 @@ export const catalogApi = {
     unwrap<ColumnEntry[]>(
       api.get(`/catalog/${catalog}/${encodeURIComponent(schemaSlug)}/${encodeURIComponent(tableId)}`),
     ),
+
+  search: (q: string) =>
+    unwrap<CatalogSearchHit[]>(api.get(`/catalog/search?q=${encodeURIComponent(q)}`)),
 };
