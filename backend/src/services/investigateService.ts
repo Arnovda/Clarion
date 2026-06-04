@@ -52,6 +52,8 @@ export interface Investigation {
   status: InvestigationStatus;
   conclusion: string | null;
   conclusion_confidence: 'high' | 'medium' | 'low' | null;
+  /** AI-written next questions, set on conclude. Empty for older rows. */
+  conclusion_followups: string[];
   failure_reason: string | null;
   created_at: string;
   completed_at: string | null;
@@ -272,6 +274,7 @@ async function runAgentLoop(
       status: 'concluded',
       conclusion: conclusion.conclusion,
       conclusion_confidence: conclusion.confidence,
+      conclusion_followups: JSON.stringify(conclusion.followUps ?? []),
       completed_at: new Date().toISOString(),
     }),
   );
@@ -412,11 +415,23 @@ function mapInvestigation(inv: Record<string, unknown>, stepRows: Array<Record<s
     status: String(inv.status) as InvestigationStatus,
     conclusion: inv.conclusion ? String(inv.conclusion) : null,
     conclusion_confidence: (inv.conclusion_confidence as Investigation['conclusion_confidence']) ?? null,
+    conclusion_followups: parseFollowUps(inv.conclusion_followups),
     failure_reason: inv.failure_reason ? String(inv.failure_reason) : null,
     created_at: String(inv.created_at),
     completed_at: inv.completed_at ? String(inv.completed_at) : null,
     steps: stepRows.map((s) => mapStep(s)),
   };
+}
+
+/** jsonb may arrive as a parsed array or a string depending on the driver. */
+function parseFollowUps(raw: unknown): string[] {
+  if (!raw) return [];
+  let arr: unknown = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch { return []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((q): q is string => typeof q === 'string' && q.trim().length > 0).map((q) => q.trim());
 }
 
 function mapStep(s: Record<string, unknown>): InvestigationStep {

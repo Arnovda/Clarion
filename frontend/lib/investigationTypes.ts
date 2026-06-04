@@ -24,6 +24,9 @@ export interface Investigation {
   status: 'running' | 'concluded' | 'failed' | 'cancelled';
   conclusion: string | null;
   conclusion_confidence: 'high' | 'medium' | 'low' | null;
+  /** AI-written next questions, set on conclude. May be absent on older
+   *  rows / clients — callers should fall back to a heuristic. */
+  conclusion_followups?: string[];
   failure_reason: string | null;
   steps: InvestigationStep[];
 }

@@ -801,7 +801,13 @@ export default function MessageBubble({
                 Follow-up questions
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {buildFollowUps(inv.question).map((fu) => (
+                {/* Prefer the AI's context-aware follow-ups (written from the
+                    trail); fall back to the heuristic only for older
+                    investigations concluded before that shipped. */}
+                {((inv.full?.conclusion_followups?.length
+                    ? inv.full.conclusion_followups
+                    : buildFollowUps()
+                  )).map((fu) => (
                   <button
                     key={fu}
                     onClick={() => onSend(fu)}
@@ -1340,15 +1346,17 @@ function cleanForWhy(q: string): string {
 }
 
 /**
- * Build a small set of follow-up question chips shown below an
- * investigation conclusion. Heuristic-only; routes back through the
- * standard ask flow via `onSend()`.
+ * Fallback follow-up chips for investigations concluded before the AI
+ * started writing its own (see conclusion_followups). Deliberately
+ * standalone — "this" refers to the conclusion just shown — so they're
+ * always grammatical, unlike the old version which interpolated the raw
+ * question into "Show me <X> broken down by month" and produced nonsense
+ * for diagnostic asks like "why don't you show any data?".
  */
-function buildFollowUps(question: string): string[] {
-  const q = cleanForWhy(question);
+function buildFollowUps(): string[] {
   return [
-    `Show me ${q} broken down by month`,
-    `Which segments contributed most to ${q.toLowerCase()}?`,
-    `How does ${q.toLowerCase()} compare to last year?`,
+    'Break this down by month',
+    'Which segments contributed most?',
+    'How does this compare to last year?',
   ];
 }

@@ -67,6 +67,8 @@ export interface InvestigateConclusionInput {
 export interface InvestigateConclusion {
   conclusion: string;
   confidence: 'high' | 'medium' | 'low';
+  /** 2-3 context-aware next questions, written by the AI from the trail. */
+  followUps: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +196,8 @@ export const AGENT_CONCLUDE_SYSTEM = `You write the conclusion of an investigati
 
 {
   "conclusion": "<3-5 sentences in business voice. Lead with the most important finding. Quantify where the data supports it. End with a one-sentence implication.>",
-  "confidence": "high" | "medium" | "low"
+  "confidence": "high" | "medium" | "low",
+  "follow_ups": ["<question 1>", "<question 2>", "<question 3>"]
 }
 
 Rules:
@@ -204,7 +207,18 @@ Rules:
 - If steps gave conflicting signals, say so honestly. Confidence = low.
 - If only one step ran (or several errored), say "limited evidence" and
   set confidence = low.
-- Don't recommend an action — that's a different feature. Just explain the why.`;
+- Don't recommend an action — that's a different feature. Just explain the why.
+
+Follow-ups:
+- Exactly 2-3 complete, standalone questions the user would naturally ask
+  NEXT, given THIS conclusion. Write the full question — never a template.
+- Make them specific to the finding. If the conclusion is about a stalled
+  data load, good follow-ups are "When did the last successful load run?"
+  or "Which tables are missing data?" — NOT "show revenue by month".
+- If the conclusion is about a metric/trend, follow-ups can drill in
+  ("Which segments drove the drop?", "How does this compare to last year?").
+- Every follow-up must be answerable by querying the same data product.
+  Keep each under ~12 words. No greetings, no "would you like to…".`;
 
 export function buildAgentConcludeUser(input: InvestigateConclusionInput): string {
   const lines = input.steps.map((s) =>

@@ -1883,13 +1883,20 @@ export async function investigateConclude(
   );
   const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/m, '').trim();
   try {
-    const obj = JSON.parse(cleaned) as Partial<InvestigateConclusion>;
+    const obj = JSON.parse(cleaned) as Partial<InvestigateConclusion> & { follow_ups?: unknown };
+    const followUps = Array.isArray(obj.follow_ups)
+      ? obj.follow_ups
+          .filter((q): q is string => typeof q === 'string' && q.trim().length > 0)
+          .map((q) => q.trim())
+          .slice(0, 3)
+      : [];
     return {
       conclusion: typeof obj.conclusion === 'string' ? obj.conclusion : '',
       confidence: obj.confidence === 'high' || obj.confidence === 'low' ? obj.confidence : 'medium',
+      followUps,
     };
   } catch {
-    return { conclusion: 'Unable to synthesise a conclusion from the trail.', confidence: 'low' };
+    return { conclusion: 'Unable to synthesise a conclusion from the trail.', confidence: 'low', followUps: [] };
   }
 }
 
