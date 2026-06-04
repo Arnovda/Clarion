@@ -29,7 +29,7 @@ import ReactFlow, {
   useNodesState, useEdgesState,
   NodeProps, Handle, Position,
   ReactFlowProvider,
-  type Node,
+  type Node, type ReactFlowInstance,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import dagre from 'dagre';
@@ -416,6 +416,12 @@ function PipelinesInner() {
   // ── ReactFlow nodes/edges ──
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState([]);
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState([]);
+  // Captured from the main canvas's onInit so we can re-fit imperatively.
+  // The static `fitView` prop only frames the graph on first mount — which
+  // happens BEFORE the DAG loads (and again after the editor overlay closes),
+  // leaving the viewport stale and the canvas looking empty. We re-fit
+  // whenever the node set / selected pipeline / tab changes.
+  const mainRfRef = React.useRef<ReactFlowInstance | null>(null);
 
   useEffect(() => {
     if (!dag) return;
@@ -480,6 +486,22 @@ function PipelinesInner() {
       }),
     );
   }, [dag, scopeHint, liveNodes, setRfNodes, setRfEdges]);
+
+  // Re-frame the canvas when the graph STRUCTURE changes — the DAG loads, a
+  // different pipeline is selected, or we return to the Canvas tab. Keyed on
+  // those (not rfNodes) so live-status updates during a run don't make the
+  // viewport jump. The timeout lets ReactFlow measure freshly-set custom
+  // nodes before fitView frames them; we only fit once nodes exist.
+  useEffect(() => {
+    if (pipelineTab !== 'canvas') return;
+    const id = window.setTimeout(() => {
+      const inst = mainRfRef.current;
+      if (inst && inst.getNodes().length > 0) {
+        try { inst.fitView({ padding: 0.2, duration: 200 }); } catch { /* noop */ }
+      }
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [dag, selectedId, pipelineTab]);
 
   // ── Run a pipeline ──
   const runPipeline = useCallback(async (pipelineId: string, pipelineName: string) => {
@@ -558,6 +580,7 @@ function PipelinesInner() {
                       edges={rfEdges}
                       onNodesChange={onNodesChange}
                       onEdgesChange={onEdgesChange}
+                      onInit={(inst) => { mainRfRef.current = inst; }}
                       nodeTypes={nodeTypes}
                       fitView
                       fitViewOptions={{ padding: 0.2 }}
@@ -613,16 +636,21 @@ function PipelinesInner() {
         </div>
       </div>
 
-      {/* Custom pipeline editor (modal) */}
+      {/* Custom pipeline editor (modal). Its own ReactFlowProvider so the
+          editor's canvas has an isolated store — otherwise it shares the
+          page provider with the main canvas and the two flows clobber each
+          other's viewport (the main canvas goes blank on close). */}
       {showCustomEditor && dag && (
-        <CustomPipelineEditor
-          dag={dag}
-          existing={showCustomEditor.mode === 'edit'
-            ? (pipelines.find((p) => p.kind === 'custom' && (p as CustomPipeline).id === showCustomEditor.id) as CustomPipeline | undefined)
-            : undefined}
-          onClose={() => setShowCustomEditor(null)}
-          onSaved={async () => { setShowCustomEditor(null); await reload(); }}
-        />
+        <ReactFlowProvider>
+          <CustomPipelineEditor
+            dag={dag}
+            existing={showCustomEditor.mode === 'edit'
+              ? (pipelines.find((p) => p.kind === 'custom' && (p as CustomPipeline).id === showCustomEditor.id) as CustomPipeline | undefined)
+              : undefined}
+            onClose={() => setShowCustomEditor(null)}
+            onSaved={async () => { setShowCustomEditor(null); await reload(); }}
+          />
+        </ReactFlowProvider>
       )}
 
     </div>
