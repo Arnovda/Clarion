@@ -1,10 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import {
-  BarChart, Bar, Line, PieChart, Pie, Cell,
-  ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Area,
+  Tooltip, ResponsiveContainer,
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   Treemap,
 } from 'recharts';
@@ -14,361 +13,29 @@ import { formatValue, inferColumnFormat } from '../utils/format';
 import { PremiumTooltip } from './PremiumTooltip';
 import { ChartSkeleton, WidgetSkeleton, WidgetError, EmptyWidget } from './WidgetSkeletons';
 
-// ─── Shared axis formatter ──────────────────────────────────────────────────
-
-function yAxisFormatter(maxVal: number) {
-  return (v: number) =>
-    maxVal > 10000
-      ? `\u20AC${(v / 1000).toFixed(0)}k`
-      : maxVal > 1000
-        ? `\u20AC${(v / 1000).toFixed(1)}k`
-        : String(v);
-}
-
-/** Shared axis tick styling — muted ink-3 label in Observatory. */
-const TICK = { fontSize: 11, fill: PALETTE.axisLabel };
+// Vega is ~250 kB — load it lazily, client-only (it needs the DOM), so the
+// heavy viz engine is code-split out of the initial dashboards bundle and
+// shows a skeleton while it streams in.
+const VegaChart = dynamic(() => import('./VegaChart'), {
+  ssr: false,
+  loading: () => <ChartSkeleton />,
+});
 
 // ─── BarChartWidget (horizontal bars) ────────────────────────────────────────
 
-export function BarChartWidget({
-  spec, data, onCrossFilter, isCrossFilterActive, drillLabel, crossFilterValue, onContextMenu,
-}: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
+// ─── Vega-Lite-rendered chart widgets ────────────────────────────────────────
+// The six core chart types now render through one themed Vega-Lite engine
+// (<VegaChart>) for a consistent, polished look across every dashboard.
+// They keep their original exported names + props so the page dispatcher is
+// untouched. Radar / treemap / top-list / tables stay on their bespoke
+// renderers below (Vega-Lite isn't the right tool for those).
 
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const height = Math.max(180, Math.min(chartData.length * 36 + 48, 320));
-  const yFmt = (v: number) => (maxVal > 1000 ? `\u20AC${(v / 1000).toFixed(1)}k` : String(v));
-
-  return (
-    <div>
-      {isCrossFilterActive && drillLabel && (
-        <div className="mb-3 flex items-center gap-2">
-          <button onClick={() => onCrossFilter?.(null)} className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors">
-            ← Clear
-          </button>
-          <p className="text-[11px] text-muted">{drillLabel}</p>
-        </div>
-      )}
-      <ResponsiveContainer width="100%" height={height}>
-        <BarChart data={chartData} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke={PALETTE.grid} />
-          <XAxis type="number" tickFormatter={yFmt} tick={TICK} axisLine={false} tickLine={false} />
-          <YAxis type="category" dataKey="label" width={110} tick={TICK} axisLine={false} tickLine={false} />
-          <Tooltip content={<PremiumTooltip format={spec.format} />} />
-          <Bar
-            dataKey="value"
-            radius={[0, 4, 4, 0]}
-            cursor={onCrossFilter || onContextMenu ? 'pointer' : undefined}
-            onClick={onCrossFilter ? (entry) => onCrossFilter(String((entry as unknown as Record<string, unknown>).label)) : undefined}
-            onContextMenu={onContextMenu ? ((entry: unknown, _i: number, e: React.MouseEvent) => {
-              e.preventDefault();
-              const label = String((entry as Record<string, unknown>).label ?? '');
-              if (label) onContextMenu(e, label);
-            }) as unknown as (data: unknown) => void : undefined}
-          >
-            {chartData.map((row, i) => {
-              // Phase 3 visual feedback: when this widget is the source
-              // of the active cross-filter, the clicked bar stays bright;
-              // all others fade so the user immediately sees what's
-              // driving the rest of the dashboard.
-              const dimmed = crossFilterValue !== undefined && row.label !== crossFilterValue;
-              return (
-                <Cell
-                  key={i}
-                  fill={SERIES_COLORS[i % SERIES_COLORS.length]}
-                  opacity={dimmed ? 0.25 : 1}
-                />
-              );
-            })}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-      {onCrossFilter && !isCrossFilterActive && (
-        <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 mt-2 text-center">
-          Click a bar to cross-filter{onContextMenu ? ' · right-click for more' : ''}
-        </p>
-      )}
-    </div>
-  );
-}
-
-// ─── VerticalBarChartWidget ──────────────────────────────────────────────────
-
-export function VerticalBarChartWidget({
-  spec, data, onCrossFilter, crossFilterValue, onContextMenu,
-}: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-    target: r.target !== undefined ? Number(r.target) : undefined,
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = yAxisFormatter(maxVal);
-  const hasTarget = chartData.some((r) => r.target !== undefined);
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart
-        data={chartData}
-        margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
-        barCategoryGap="30%"
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter || onContextMenu ? 'pointer' : undefined }}
-      >
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={PALETTE.grid} />
-        <XAxis dataKey="label" tick={TICK} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={TICK} axisLine={false} tickLine={false} />
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Bar
-          dataKey="value"
-          fill={SERIES_COLORS[0]}
-          radius={[4, 4, 0, 0]}
-          onContextMenu={onContextMenu ? ((entry: unknown, _i: number, e: React.MouseEvent) => {
-            e.preventDefault();
-            const label = String((entry as Record<string, unknown>).label ?? '');
-            if (label) onContextMenu(e, label);
-          }) as unknown as (data: unknown) => void : undefined}
-        >
-          {chartData.map((row, i) => {
-            const dimmed = crossFilterValue !== undefined && row.label !== crossFilterValue;
-            return (
-              <Cell
-                key={i}
-                fill={SERIES_COLORS[0]}
-                opacity={dimmed ? 0.25 : 1}
-              />
-            );
-          })}
-        </Bar>
-        {hasTarget && (
-          <Line type="monotone" dataKey="target" stroke={PALETTE.axisLabel} strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
-        )}
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── LineChartWidget ─────────────────────────────────────────────────────────
-
-export function LineChartWidget({
-  spec, data, onCrossFilter,
-}: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = yAxisFormatter(maxVal);
-  const gradientId = `line-area-${spec.id}`;
-  const lineColor = getSeriesColor(0);
-
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <ComposedChart
-        data={chartData}
-        margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={lineColor} stopOpacity={0.18} />
-            <stop offset="100%" stopColor={lineColor} stopOpacity={0.01} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
-        <XAxis dataKey="label" tick={TICK} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={TICK} axisLine={false} tickLine={false} />
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Area
-          type="monotone"
-          dataKey="value"
-          fill={`url(#${gradientId})`}
-          stroke="none"
-        />
-        <Line
-          type="monotone"
-          dataKey="value"
-          stroke={lineColor}
-          strokeWidth={2}
-          dot={{ r: 3, fill: lineColor, strokeWidth: 0 }}
-          activeDot={{ r: 5, strokeWidth: 0 }}
-        />
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── StackedBarChartWidget ───────────────────────────────────────────────────
-
-export function StackedBarChartWidget({
-  spec, data, onCrossFilter,
-}: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  // Pivot tidy format (label, series, value) -> { label, [series]: value }
-  const labels = Array.from(new Set(data.rows.map((r) => String(r.label ?? ''))));
-  const seriesNames = Array.from(new Set(data.rows.map((r) => String(r.series ?? ''))));
-  const pivoted = labels.map((label) => {
-    const row: Record<string, unknown> = { label };
-    for (const s of seriesNames) {
-      const match = data.rows.find(
-        (r) => String(r.label) === label && String(r.series) === s,
-      );
-      row[s] = match ? Number(match.value ?? 0) : 0;
-    }
-    return row;
-  });
-
-  const maxVal = pivoted.reduce((acc, row) => {
-    const total = seriesNames.reduce((s, k) => s + Number(row[k] ?? 0), 0);
-    return Math.max(acc, total);
-  }, 0);
-  const yFmt = yAxisFormatter(maxVal);
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <BarChart
-        data={pivoted}
-        margin={{ left: 8, right: 16, top: 4, bottom: 4 }}
-        barCategoryGap="30%"
-        onClick={onCrossFilter ? (d) => { if (d?.activeLabel) onCrossFilter(String(d.activeLabel)); } : undefined}
-        style={{ cursor: onCrossFilter ? 'pointer' : undefined }}
-      >
-        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={PALETTE.grid} />
-        <XAxis dataKey="label" tick={TICK} axisLine={false} tickLine={false} />
-        <YAxis tickFormatter={yFmt} tick={TICK} axisLine={false} tickLine={false} />
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8, color: PALETTE.axisLabel }} />
-        {seriesNames.map((s, i) => (
-          <Bar
-            key={s}
-            dataKey={s}
-            stackId="a"
-            fill={SERIES_COLORS[i % SERIES_COLORS.length]}
-            radius={i === seriesNames.length - 1 ? [4, 4, 0, 0] : [0, 0, 0, 0]}
-          />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── PieChartWidget (donut) ──────────────────────────────────────────────────
-
-export function PieChartWidget({
-  spec, data, onCrossFilter,
-}: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r) => ({
-    name: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-  }));
-  const total = chartData.reduce((s, d) => s + d.value, 0);
-
-  return (
-    <ResponsiveContainer width="100%" height={240}>
-      <PieChart>
-        <Pie
-          data={chartData}
-          dataKey="value"
-          nameKey="name"
-          cx="50%"
-          cy="45%"
-          innerRadius={55}
-          outerRadius={80}
-          label={({ name, percent }: { name?: string; percent?: number }) =>
-            `${name ?? ''} (${((percent ?? 0) * 100).toFixed(0)}%)`
-          }
-          labelLine={false}
-          cursor={onCrossFilter ? 'pointer' : undefined}
-          onClick={
-            onCrossFilter
-              ? (entry) => onCrossFilter(String(entry.name))
-              : undefined
-          }
-        >
-          {chartData.map((_, i) => (
-            <Cell key={i} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
-          ))}
-        </Pie>
-        {/* Center total label */}
-        <text
-          x="50%"
-          y="45%"
-          textAnchor="middle"
-          dominantBaseline="middle"
-          fill={PALETTE.series[0].solid}
-          fontSize={14}
-          fontWeight={600}
-        >
-          {formatValue(total, spec.format)}
-        </text>
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8, color: PALETTE.axisLabel }} />
-      </PieChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── ComboChartWidget (bar + line overlay) ───────────────────────────────────
-
-export function ComboChartWidget({ spec, data }: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r) => ({
-    label: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-    line: r.line !== undefined ? Number(r.line) : undefined,
-  }));
-  const maxVal = Math.max(...chartData.map((r) => r.value), 1);
-  const yFmt = yAxisFormatter(maxVal);
-  const gradientId = `combo-${spec.id}`;
-  const overlayColor = getSeriesColor(3); // plum
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <ComposedChart data={chartData} margin={{ left: 4, right: 24, top: 4, bottom: 20 }}>
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={SERIES_COLORS[0]} stopOpacity={0.9} />
-            <stop offset="100%" stopColor={SERIES_COLORS[0]} stopOpacity={0.6} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke={PALETTE.grid} />
-        <XAxis dataKey="label" tick={{ fontSize: 10, fill: PALETTE.axisLabel }} axisLine={false} tickLine={false} angle={-30} textAnchor="end" />
-        <YAxis yAxisId="left" tickFormatter={yFmt} tick={{ fontSize: 10, fill: PALETTE.axisLabel }} axisLine={false} tickLine={false} />
-        <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10, fill: overlayColor }} axisLine={false} tickLine={false} />
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-        <Bar yAxisId="left" dataKey="value" fill={`url(#${gradientId})`} radius={[4, 4, 0, 0]} name="Value" />
-        {chartData.some((r) => r.line !== undefined) && (
-          <Line yAxisId="right" type="monotone" dataKey="line" stroke={overlayColor} strokeWidth={2} dot={{ fill: overlayColor, r: 3 }} name="Rate" />
-        )}
-      </ComposedChart>
-    </ResponsiveContainer>
-  );
-}
+export function BarChartWidget(props: WidgetExecutionProps)         { return <VegaChart {...props} />; }
+export function VerticalBarChartWidget(props: WidgetExecutionProps) { return <VegaChart {...props} />; }
+export function LineChartWidget(props: WidgetExecutionProps)        { return <VegaChart {...props} />; }
+export function StackedBarChartWidget(props: WidgetExecutionProps)  { return <VegaChart {...props} />; }
+export function PieChartWidget(props: WidgetExecutionProps)         { return <VegaChart {...props} />; }
+export function ComboChartWidget(props: WidgetExecutionProps)       { return <VegaChart {...props} />; }
 
 // ─── TopListWidget ───────────────────────────────────────────────────────────
 
