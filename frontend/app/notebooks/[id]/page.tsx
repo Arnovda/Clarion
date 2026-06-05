@@ -657,13 +657,27 @@ function CellOutput({ output, cellType }: { output: CellOutput; cellType: string
   }
 
   // SQL output — table
-  if (cellType === 'sql' && output.rows && output.columns) {
+  if (cellType === 'sql' && output.rows) {
+    // Zero-row results would otherwise render an empty <table> with no
+    // headers — visually indistinguishable from "nothing happened". Show
+    // an explicit, friendly empty state instead.
+    if (output.rows.length === 0) {
+      return (
+        <div className="border-t border-outline-variant/10 px-4 py-3 flex items-center gap-2 text-[12px] text-on-surface-variant">
+          <span className="text-emerald-600">✓</span>
+          Query ran successfully — no rows matched
+          {output.durationMs !== undefined && (
+            <span className="text-on-surface-variant/50 font-mono">· {output.durationMs}ms</span>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="border-t border-outline-variant/10 overflow-auto max-h-[400px]">
         <table className="w-full text-[12px]">
           <thead className="sticky top-0 bg-surface-container-low">
             <tr>
-              {output.columns.map((col) => (
+              {(output.columns ?? []).map((col) => (
                 <th key={col} className="px-3 py-2 text-left text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider border-b border-outline-variant/15">
                   {col}
                 </th>
@@ -673,7 +687,7 @@ function CellOutput({ output, cellType }: { output: CellOutput; cellType: string
           <tbody>
             {output.rows.slice(0, 100).map((row, ri) => (
               <tr key={ri} className="hover:bg-surface-container-low/50 transition-colors">
-                {output.columns!.map((col) => (
+                {(output.columns ?? []).map((col) => (
                   <td key={col} className="px-3 py-1.5 text-on-surface font-mono border-b border-outline-variant/5 truncate max-w-[300px]">
                     {row[col] === null ? <span className="text-on-surface-variant/40 italic">null</span> : String(row[col])}
                   </td>

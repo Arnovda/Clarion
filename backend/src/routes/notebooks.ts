@@ -208,9 +208,16 @@ router.post('/generate', async (req: Request, res: Response, next: NextFunction)
       const schemaIds = schemas.map((s: { id: number }) => s.id);
       if (schemaIds.length === 0) continue;
 
+      // Only tables that are ACTUALLY queryable in the DuckDB session —
+      // i.e. materialised to a delta_path. A table can be status='success'
+      // yet have a null delta_path (shared-dim stub, or a build that never
+      // persisted a path); buildNamespacedDuckDB skips those, so the AI
+      // must not see them or it generates SQL against tables that resolve
+      // to "table does not exist". Matches listProductTablesByConnection.
       const tables = await pgDb('product_tables')
         .whereIn('star_schema_id', schemaIds)
         .where('transformation_status', 'success')
+        .whereNotNull('delta_path')
         .select('id', 'table_name', 'display_name', 'description', 'table_role')
         .orderBy(['table_role', 'table_name']);
 
@@ -382,9 +389,13 @@ router.get('/schema/:connectionId', async (req: Request, res: Response, next: Ne
 
       if (schemaIds.length === 0) continue;
 
+      // Match the query session: only materialised tables (delta_path set)
+      // are registered + queryable, so the schema explorer must not list
+      // unmaterialised ones (would 404 in DuckDB when the user queries them).
       const tables = await pgDb('product_tables')
         .whereIn('star_schema_id', schemaIds)
         .where('transformation_status', 'success')
+        .whereNotNull('delta_path')
         .select('id', 'table_name', 'display_name', 'description', 'table_role')
         .orderBy(['table_role', 'table_name']);
 
