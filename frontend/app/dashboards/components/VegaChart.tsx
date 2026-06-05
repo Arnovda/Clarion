@@ -47,7 +47,9 @@ function ensureTooltipStyle() {
 const EMBED_OPTIONS = {
   actions: false as const,
   renderer: 'canvas' as const,
-  mode: 'vega-lite' as const,
+  // Omit `mode` so vega-embed auto-detects vega-lite vs full vega from the
+  // spec's $schema — lets us use full Vega for treemap / radar (which
+  // Vega-Lite can't express) and keep Vega-Lite for everything else.
   tooltip: { theme: 'light' as const, offsetX: 8, offsetY: 8 },
 };
 

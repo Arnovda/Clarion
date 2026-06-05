@@ -2,15 +2,8 @@
 
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-import {
-  Tooltip, ResponsiveContainer,
-  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
-  Treemap,
-} from 'recharts';
 import type { WidgetExecutionProps } from '../types';
-import { SERIES_COLORS, PALETTE, getSeriesColor } from '../utils/chart-theme';
 import { formatValue, inferColumnFormat } from '../utils/format';
-import { PremiumTooltip } from './PremiumTooltip';
 import { ChartSkeleton, WidgetSkeleton, WidgetError, EmptyWidget } from './WidgetSkeletons';
 
 // Vega is ~250 kB — load it lazily, client-only (it needs the DOM), so the
@@ -21,14 +14,13 @@ const VegaChart = dynamic(() => import('./VegaChart'), {
   loading: () => <ChartSkeleton />,
 });
 
-// ─── BarChartWidget (horizontal bars) ────────────────────────────────────────
-
-// ─── Vega-Lite-rendered chart widgets ────────────────────────────────────────
-// The six core chart types now render through one themed Vega-Lite engine
-// (<VegaChart>) for a consistent, polished look across every dashboard.
-// They keep their original exported names + props so the page dispatcher is
-// untouched. Radar / treemap / top-list / tables stay on their bespoke
-// renderers below (Vega-Lite isn't the right tool for those).
+// ─── Vega-rendered chart widgets ─────────────────────────────────────────────
+// Every chart type now flows through one themed Vega engine for a uniform,
+// polished look. The widgets keep their original exported names + props so
+// the page dispatcher is untouched. Bar/line/stacked/pie/combo/top-list
+// render as Vega-Lite; treemap + radar use full Vega (Vega-Lite has no
+// treemap transform or polar coordinates). Tables and KPI cards aren't
+// charts — they stay as typographic React components below.
 
 export function BarChartWidget(props: WidgetExecutionProps)         { return <VegaChart {...props} />; }
 export function VerticalBarChartWidget(props: WidgetExecutionProps) { return <VegaChart {...props} />; }
@@ -36,61 +28,9 @@ export function LineChartWidget(props: WidgetExecutionProps)        { return <Ve
 export function StackedBarChartWidget(props: WidgetExecutionProps)  { return <VegaChart {...props} />; }
 export function PieChartWidget(props: WidgetExecutionProps)         { return <VegaChart {...props} />; }
 export function ComboChartWidget(props: WidgetExecutionProps)       { return <VegaChart {...props} />; }
-
-// ─── TopListWidget ───────────────────────────────────────────────────────────
-
-export function TopListWidget({
-  spec, data, onCrossFilter,
-}: WidgetExecutionProps) {
-  if (data.loading) return <WidgetSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const rows = data.rows.slice(0, 10);
-  const maxVal = Math.max(...rows.map((r) => Number(r.value ?? 0)), 1);
-
-  return (
-    <div className="space-y-1">
-      {rows.map((row, i) => {
-        const numVal = Number(row.value ?? 0);
-        const pct = (numVal / maxVal) * 100;
-        const barColor = getSeriesColor(i);
-        return (
-          <div
-            key={i}
-            onClick={onCrossFilter ? () => onCrossFilter(String(row.label ?? '')) : undefined}
-            className={`relative flex items-center justify-between px-3 py-2 rounded-md overflow-hidden transition-colors ${
-              onCrossFilter ? 'cursor-pointer hover:bg-softer' : ''
-            }`}
-          >
-            {/* Subtle progress bar background */}
-            <div
-              className="absolute inset-y-0 left-0 rounded-md"
-              style={{
-                width: `${pct}%`,
-                background: `${barColor}1a`,
-              }}
-            />
-            <div className="relative flex items-center gap-2.5 min-w-0">
-              <span
-                className="text-[10px] font-mono font-medium w-5 text-right tabular-nums shrink-0"
-                style={{ color: barColor }}
-              >
-                {String(i + 1).padStart(2, '0')}
-              </span>
-              <span className="text-[13px] text-ink-2 truncate">
-                {String(row.label ?? '\u2014')}
-              </span>
-            </div>
-            <span className="relative text-[13px] font-medium text-ink shrink-0 ml-2 tabular-nums">
-              {formatValue(row.value, spec.format)}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+export function TopListWidget(props: WidgetExecutionProps)          { return <VegaChart {...props} />; }
+export function TreemapWidget(props: WidgetExecutionProps)          { return <VegaChart {...props} />; }
+export function RadarChartWidget(props: WidgetExecutionProps)       { return <VegaChart {...props} />; }
 
 // ─── Safe formula evaluator ──────────────────────────────────────────────────
 
@@ -261,104 +201,6 @@ export function DataTableWidget({
   );
 }
 
-// ─── RadarChartWidget ────────────────────────────────────────────────────────
-
-export function RadarChartWidget({ spec, data }: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r) => ({
-    subject: String(r.label ?? ''),
-    value: Number(r.value ?? 0),
-    fullMark: Math.max(...data.rows.map((x) => Number(x.value ?? 0))) * 1.2,
-  }));
-
-  const radarColor = getSeriesColor(3); // plum
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <RadarChart data={chartData} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
-        <PolarGrid stroke={PALETTE.grid} />
-        <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: PALETTE.axisLabel }} />
-        <PolarRadiusAxis tick={false} axisLine={false} />
-        <Radar
-          name={spec.title}
-          dataKey="value"
-          stroke={radarColor}
-          fill={radarColor}
-          fillOpacity={0.2}
-          strokeWidth={2}
-        />
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-      </RadarChart>
-    </ResponsiveContainer>
-  );
-}
-
-// ─── TreemapWidget ───────────────────────────────────────────────────────────
-
-function CustomTreemapContent(props: {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  name?: string;
-  fill?: string;
-  size?: number;
-  format?: string;
-}) {
-  const {
-    x = 0,
-    y = 0,
-    width = 0,
-    height = 0,
-    name = '',
-    fill = PALETTE.series[0].solid,
-    size = 0,
-    format,
-  } = props;
-  if (width < 30 || height < 20) return null;
-  return (
-    <g>
-      <rect
-        x={x + 1}
-        y={y + 1}
-        width={width - 2}
-        height={height - 2}
-        fill={fill}
-        fillOpacity={0.85}
-        rx={4}
-      />
-      {width > 60 && height > 30 && (
-        <>
-          <text
-            x={x + 10}
-            y={y + 20}
-            fill="white"
-            fontSize={11}
-            fontWeight={500}
-            style={{ pointerEvents: 'none' }}
-          >
-            {name.length > 14 ? name.slice(0, 13) + '\u2026' : name}
-          </text>
-          {height > 44 && (
-            <text
-              x={x + 10}
-              y={y + 34}
-              fill="rgba(255,255,255,0.8)"
-              fontSize={9}
-              style={{ pointerEvents: 'none' }}
-            >
-              {formatValue(size, format)}
-            </text>
-          )}
-        </>
-      )}
-    </g>
-  );
-}
-
 // ─── PivotTableWidget ────────────────────────────────────────────────────────
 // SQL must return: row_label, col_label, value
 // e.g. SELECT month AS row_label, category AS col_label, SUM(amount) AS value ...
@@ -455,30 +297,5 @@ export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
         </tfoot>
       </table>
     </div>
-  );
-}
-
-export function TreemapWidget({ spec, data }: WidgetExecutionProps) {
-  if (data.loading) return <ChartSkeleton />;
-  if (data.error) return <WidgetError msg={data.error} />;
-  if (!data.rows.length) return <EmptyWidget />;
-
-  const chartData = data.rows.map((r, i) => ({
-    name: String(r.label ?? ''),
-    size: Number(r.value ?? 0),
-    fill: SERIES_COLORS[i % SERIES_COLORS.length],
-  }));
-
-  return (
-    <ResponsiveContainer width="100%" height={200}>
-      <Treemap
-        data={chartData}
-        dataKey="size"
-        aspectRatio={4 / 3}
-        content={<CustomTreemapContent format={spec.format} />}
-      >
-        <Tooltip content={<PremiumTooltip format={spec.format} />} />
-      </Treemap>
-    </ResponsiveContainer>
   );
 }
