@@ -59,6 +59,10 @@ export default function VegaChart({
 }: WidgetExecutionProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
+  // A render failure must never be silent (the old "axes but no marks" bug).
+  // vega-embed's onError surfaces it; we show a clear state instead of a
+  // blank chart, and log it so it's diagnosable.
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   // Keep the latest callbacks in refs so the Vega view's event listeners
   // (attached once per embed) never call a stale closure.
@@ -80,6 +84,7 @@ export default function VegaChart({
   }, []);
 
   const vlSpec = useMemo(() => {
+    setRenderError(null);
     if (!data.rows.length) return null;
     const built = buildVegaSpec(spec, data.rows, { highlightValue: crossFilterValue });
     if (!built) return null;
@@ -89,6 +94,13 @@ export default function VegaChart({
     return built;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec, data.rows, crossFilterValue, width]);
+
+  const onError = useCallback((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error('[VegaChart] render failed:', msg, spec?.type);
+    setRenderError(msg);
+  }, [spec?.type]);
 
   const onEmbed = useCallback((result: Result) => {
     const view = result.view as View;
@@ -112,6 +124,7 @@ export default function VegaChart({
 
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
+  if (renderError) return <WidgetError msg={`Couldn't render this chart: ${renderError}`} />;
   if (!data.rows.length || !vlSpec) return <EmptyWidget />;
 
   return (
@@ -138,6 +151,7 @@ export default function VegaChart({
             spec={vlSpec as any}
             options={EMBED_OPTIONS}
             onEmbed={onEmbed}
+            onError={onError}
           />
         )}
       </div>

@@ -10,7 +10,7 @@
 //   combo         : { label, value, line }       (bar = value, line = line)
 
 import type { TopLevelSpec } from 'vega-lite';
-import { CLARION_VEGA_CONFIG, axisLabelExpr, tooltipFormat, VEGA_COLORS } from './vegaTheme';
+import { CLARION_VEGA_CONFIG, valueAxisFormat, tooltipFormat, VEGA_COLORS } from './vegaTheme';
 import type { WidgetSpec } from '../types';
 
 type Row = Record<string, unknown>;
@@ -25,6 +25,35 @@ export interface BuildOpts {
 
 const str = (v: unknown) => (v == null ? '' : String(v));
 const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+const looksNumeric = (v: unknown) =>
+  v != null && v !== '' && !Number.isNaN(Number(v));
+
+/**
+ * Robustly resolve which columns to use as label / value, tolerating AI
+ * alias drift. Prefers the declared contract (`label` / `value`); otherwise
+ * infers: the first mostly-numeric column is the value, the first other
+ * column is the label. This is the difference between a chart that renders
+ * and one that silently shows empty axes when the SQL aliased its columns
+ * as, say, `month` + `revenue` instead of `label` + `value`.
+ */
+function resolveLV(rows: Row[]): { labelKey: string; valueKey: string } {
+  const cols = Object.keys(rows[0] ?? {});
+  if (cols.includes('label') && cols.includes('value')) {
+    return { labelKey: 'label', valueKey: 'value' };
+  }
+  const numericCols = cols.filter((c) => rows.some((r) => looksNumeric(r[c]))
+    && rows.every((r) => r[c] == null || looksNumeric(r[c])));
+  const valueKey = (cols.includes('value') ? 'value' : numericCols[0]) ?? cols[cols.length - 1] ?? 'value';
+  const labelKey = (cols.includes('label') ? 'label' : cols.find((c) => c !== valueKey)) ?? cols[0] ?? 'label';
+  return { labelKey, valueKey };
+}
+
+/** Map raw rows to the canonical { label, value } the simple builders expect. */
+function toLV(rows: Row[]): Array<{ label: string; value: number }> {
+  const { labelKey, valueKey } = resolveLV(rows);
+  return rows.map((r) => ({ label: str(r[labelKey]), value: num(r[valueKey]) }));
+}
 
 /** Which widget types this builder can render. Others fall back to legacy. */
 export const VEGA_SUPPORTED = new Set<WidgetSpec['type']>([
@@ -65,17 +94,20 @@ export function buildVegaSpec(
 
 // ── Shared encodings ─────────────────────────────────────────────────────────
 
+// No `autosize: fit` — it can shrink the plot area to nothing when axis
+// labels are long, leaving a chart with axes but no marks. The default
+// ('pad') always reserves the full width/height for the data rectangle.
+// Width is set to the measured pixel width by <VegaChart>.
 const base = (rows: Row[]): Partial<TopLevelSpec> => ({
   $schema: 'https://vega.github.io/schema/vega-lite/v6.json',
   config: CLARION_VEGA_CONFIG,
   data: { values: rows },
   width: 'container',
-  autosize: { type: 'fit', contains: 'padding', resize: true },
 });
 
 const valueAxis = (fmt?: string) => ({
   title: null,
-  labelExpr: axisLabelExpr(fmt),
+  format: valueAxisFormat(fmt),
 });
 
 const valueTooltip = (fmt?: string, title = 'Value') => ({
@@ -94,7 +126,7 @@ function highlightOpacity(field: string, highlightValue?: string) {
 // ── Horizontal bar (ranked) ──────────────────────────────────────────────────
 
 function horizontalBar(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
-  const data = rows.map((r) => ({ label: str(r.label), value: num(r.value) }));
+  const data = toLV(rows);
   const h = Math.max(160, Math.min(data.length * 34 + 24, 360));
   return {
     ...base(data),
@@ -117,7 +149,7 @@ function horizontalBar(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLeve
 // ── Vertical bar (totals / time) ─────────────────────────────────────────────
 
 function verticalBar(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
-  const data = rows.map((r) => ({ label: str(r.label), value: num(r.value) }));
+  const data = toLV(rows);
   return {
     ...base(data),
     height: 260,
@@ -204,7 +236,7 @@ function lineChart(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpe
 // ── Donut (modern pie) ───────────────────────────────────────────────────────
 
 function donut(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
-  const data = rows.map((r) => ({ label: str(r.label), value: num(r.value) }));
+  const data = toLV(rows);
   return {
     ...base(data),
     height: 240,
@@ -252,7 +284,7 @@ function combo(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
         encoding: {
           x,
           y: { field: 'line', type: 'quantitative' as const,
-               axis: { title: null, labelExpr: axisLabelExpr('number'), grid: false } },
+               axis: { title: null, format: valueAxisFormat('number'), grid: false } },
           color: { value: VEGA_COLORS[5] },
           tooltip: [
             { field: 'line', type: 'quantitative' as const, title: 'Rate', format: ',.2f' },

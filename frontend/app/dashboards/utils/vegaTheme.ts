@@ -113,15 +113,19 @@ export const CLARION_VEGA_CONFIG: Config = {
   scale: { bandPaddingInner: 0.28, pointPadding: 0.5 },
 } as Config;
 
-// d3-format-ish helpers expressed in the Vega expression language. Used for
-// axis labels (compact) and tooltips (full). Mirrors utils/format.ts so a
-// chart axis and the KPI card next to it speak the same number language.
+// Number formatting. We use NATIVE Vega-Lite axis `format` (d3-format) rather
+// than a `labelExpr` expression: an expression that throws at runtime (e.g. on
+// an unexpected tick value) aborts the whole canvas render and leaves a chart
+// with axes but no marks. A plain format string can't throw. Axis ticks are
+// compact (1.2k / 3.4M); the currency symbol + full precision live in tooltips.
 
-/** Compact axis labels: €1.2k / 1.2M / 23% / 1,234. */
-export function axisLabelExpr(format?: string): string {
-  if (format === 'currency') return "'€' + format(datum.value, '~s')";
-  if (format === 'percentage') return "format(datum.value, '.3~s') + '%'";
-  return "format(datum.value, '~s')";
+/** Compact d3-format for value-axis ticks. Safe — never throws. Kept
+ *  parameterised so currency vs percentage axes can diverge later without
+ *  touching call sites. */
+export function valueAxisFormat(format?: string): string {
+  // 1.2k, 3.4M, 950 — unit-agnostic. Percentages are already 0–100 so '~s'
+  // reads naturally ("12", "1.2k"); currency symbol lives in tooltips.
+  return format === 'percentage' ? '~s' : '~s';
 }
 
 /** Full tooltip values: €1,234.50 / 23.45% / 1,234. */
