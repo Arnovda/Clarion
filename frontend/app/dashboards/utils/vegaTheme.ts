@@ -114,24 +114,21 @@ export const CLARION_VEGA_CONFIG: Config = {
 } as Config;
 
 // Number formatting. We use NATIVE Vega-Lite axis `format` (d3-format) rather
-// than a `labelExpr` expression: an expression that throws at runtime (e.g. on
-// an unexpected tick value) aborts the whole canvas render and leaves a chart
-// with axes but no marks. A plain format string can't throw. Axis ticks are
-// compact (1.2k / 3.4M); the currency symbol + full precision live in tooltips.
+// than a `labelExpr` expression, and ONLY valid d3-format specifiers — an
+// invalid spec (e.g. a hand-built '€,.2f') throws at render time and blanks
+// the chart. The euro symbol comes from the per-view formatLocale set in
+// VegaChart (currency: ['€','']), so the d3 `$` currency type renders as €.
 
-/** Compact d3-format for value-axis ticks. Safe — never throws. Kept
- *  parameterised so currency vs percentage axes can diverge later without
- *  touching call sites. */
+/** Compact d3-format for value-axis ticks (3 sig figs, trailing zeros
+ *  trimmed): €1,23k / 1,2M / 950. Safe — valid d3-format, never throws. */
 export function valueAxisFormat(format?: string): string {
-  // 1.2k, 3.4M, 950 — unit-agnostic. Percentages are already 0–100 so '~s'
-  // reads naturally ("12", "1.2k"); currency symbol lives in tooltips.
-  return format === 'percentage' ? '~s' : '~s';
+  return format === 'currency' ? '$.3~s' : '.3~s';
 }
 
-/** Full tooltip values: €1,234.50 / 23.45% / 1,234. */
+/** Full tooltip values. Valid d3-format only; € via the formatLocale.
+ *  currency → €1.234,50 · percentage/number → 1.234,50 */
 export function tooltipFormat(format?: string): { format: string; formatType?: string } {
-  if (format === 'currency') return { format: '€,.2f' };
-  if (format === 'percentage') return { format: ',.2f' };
+  if (format === 'currency') return { format: '$,.2f' };
   return { format: ',.2f' };
 }
 

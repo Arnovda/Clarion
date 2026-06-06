@@ -51,6 +51,11 @@ const EMBED_OPTIONS = {
   // spec's $schema — lets us use full Vega for treemap / radar (which
   // Vega-Lite can't express) and keep Vega-Lite for everything else.
   tooltip: { theme: 'light' as const, offsetX: 8, offsetY: 8 },
+  // nl-BE number locale with € currency, applied per-view. This is what lets
+  // spec format strings use the VALID d3 `$` currency type (e.g. '$,.2f' →
+  // "€1.234,50") instead of an invalid hand-built '€,.2f' that THROWS at
+  // render time and blanks the whole chart. Matches the app's nl-BE formatting.
+  formatLocale: { decimal: ',', thousands: '.', grouping: [3], currency: ['€', ''] },
 };
 
 export default function VegaChart({
