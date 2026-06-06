@@ -74,6 +74,30 @@ function humanize(key: string): string {
 }
 
 /**
+ * Deterministic column-contract guard (Layer 2). The prompt asks the AI for a
+ * specific shape per widget type, but AI output drifts. Rather than trust it
+ * and draw a blank chart, we check the executed rows against the contract and
+ * DOWNGRADE to a type that will render — no AI round-trip, no blank:
+ *   • scatter needs ≥2 numeric measures        → else bar_chart (ranked)
+ *   • small_multiples needs a facet/group col   → else line_chart
+ *   • bullet degrades to a bar inside its own builder (target optional)
+ * Everything else passes through unchanged.
+ */
+function coerceType(type: WidgetSpec['type'], rows: Row[]): WidgetSpec['type'] {
+  const cols = Object.keys(rows[0] ?? {});
+  const isNumCol = (c: string) =>
+    rows.some((r) => looksNumeric(r[c])) && rows.every((r) => r[c] == null || looksNumeric(r[c]));
+  if (type === 'scatter_chart') {
+    return cols.filter(isNumCol).length >= 2 ? type : 'bar_chart';
+  }
+  if (type === 'small_multiples') {
+    const hasFacet = ['facet', 'series', 'group'].some((c) => cols.includes(c));
+    return hasFacet ? type : 'line_chart';
+  }
+  return type;
+}
+
+/**
  * Main entry. Returns a complete Vega-Lite OR full-Vega spec (vega-embed
  * detects which from the $schema). Treemap + radar are full Vega because
  * Vega-Lite has no `treemap` transform and no polar coordinates; every
@@ -89,7 +113,10 @@ export function buildVegaSpec(
 ): any {
   if (!rows || rows.length === 0) return null;
   const fmt = widget.format;
-  switch (widget.type) {
+  // Layer 2: downgrade to a renderable type if the rows don't meet the
+  // widget's column contract (AI drift) — never produce a blank chart.
+  const type = coerceType(widget.type, rows);
+  switch (type) {
     case 'bar_chart':          return horizontalBar(rows, fmt, opts);
     case 'vertical_bar_chart': return verticalBar(rows, fmt, opts);
     case 'stacked_bar_chart':  return stackedBar(rows, fmt, opts);
@@ -363,13 +390,23 @@ function topList(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec 
 
 function bullet(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
   const hasTarget = rows.some((r) => r.target !== undefined && r.target !== null);
-  const data = rows.map((r) => ({
-    label: str(r.label),
-    value: num(r.value),
-    ...(hasTarget ? { target: num(r.target) } : {}),
-  }));
+  // Pre-sort by actual DESC so the bars rank top-to-bottom. Doing it here (not
+  // via a y `sort: '-x'`) keeps the y-encoding identical across every layer —
+  // a cross-layer `sort: '-x'` can't resolve when layers encode different x
+  // fields (value vs target) and Vega silently falls back, which is exactly
+  // the kind of ambiguity that blanks a layered chart.
+  const data = rows
+    .map((r) => ({
+      label: str(r.label),
+      value: num(r.value),
+      ...(hasTarget ? { target: num(r.target) } : {}),
+    }))
+    .sort((a, b) => b.value - a.value);
   const h = Math.max(150, Math.min(data.length * 40 + 24, 380));
 
+  // Identical y-encoding shared by every layer (defined inline per layer, the
+  // pattern the working combo / line+target builders use).
+  const y = { field: 'label', type: 'nominal' as const, sort: null, title: null, axis: { labelLimit: 160 } };
   const actualTooltip = [
     { field: 'label', type: 'nominal' as const, title: ' ' },
     { field: 'value', type: 'quantitative' as const, title: 'Actual', ...tooltipFormat(fmt) },
@@ -378,37 +415,43 @@ function bullet(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
       : []),
   ];
 
-  const actualLayer = {
-    mark: {
-      type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_COLORS[0], tooltip: true,
-      ...(hasTarget ? { height: 10 } : {}),
-    },
-    encoding: {
-      x: { field: 'value', type: 'quantitative' as const, ...(hasTarget ? {} : { axis: valueAxis(fmt) }) },
-      opacity: highlightOpacity('label', opts.highlightValue),
-      tooltip: actualTooltip,
-    },
-  };
+  // No target column → degrade to a plain ranked bar (never a blank chart).
+  if (!hasTarget) {
+    return {
+      ...base(data),
+      height: h,
+      mark: { type: 'bar', cornerRadiusEnd: 3, color: VEGA_COLORS[0], tooltip: true },
+      encoding: {
+        y,
+        x: { field: 'value', type: 'quantitative', axis: valueAxis(fmt) },
+        opacity: highlightOpacity('label', opts.highlightValue),
+        tooltip: actualTooltip,
+      },
+    } as TopLevelSpec;
+  }
 
   return {
     ...base(data),
     height: h,
-    encoding: {
-      y: { field: 'label', type: 'nominal', sort: '-x', title: null, axis: { labelLimit: 160 } },
-    },
-    layer: hasTarget
-      ? [
-          {
-            mark: { type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_TRACK },
-            encoding: { x: { field: 'target', type: 'quantitative' as const, axis: valueAxis(fmt) } },
-          },
-          actualLayer,
-          {
-            mark: { type: 'tick' as const, color: VEGA_TICK, thickness: 2, size: 24 },
-            encoding: { x: { field: 'target', type: 'quantitative' as const } },
-          },
-        ]
-      : [actualLayer],
+    layer: [
+      {
+        mark: { type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_TRACK },
+        encoding: { y, x: { field: 'target', type: 'quantitative' as const, axis: valueAxis(fmt) } },
+      },
+      {
+        mark: { type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_COLORS[0], height: 10, tooltip: true },
+        encoding: {
+          y,
+          x: { field: 'value', type: 'quantitative' as const },
+          opacity: highlightOpacity('label', opts.highlightValue),
+          tooltip: actualTooltip,
+        },
+      },
+      {
+        mark: { type: 'tick' as const, color: VEGA_TICK, thickness: 2, size: 24 },
+        encoding: { y, x: { field: 'target', type: 'quantitative' as const } },
+      },
+    ],
   } as TopLevelSpec;
 }
 

@@ -46,7 +46,13 @@ function ensureTooltipStyle() {
 
 const EMBED_OPTIONS = {
   actions: false as const,
-  renderer: 'canvas' as const,
+  // SVG, not canvas. The canvas renderer silently draws nothing for some
+  // layered / faceted / symbol specs (bullet, small-multiples, scatter) —
+  // no error, just a blank chart. SVG renders every spec shape reliably
+  // (verified headless), is crisper, and is plenty fast for the small,
+  // pre-aggregated datasets dashboards deal in (the old Recharts engine was
+  // SVG too). One renderer for every widget type, no blank ghosts.
+  renderer: 'svg' as const,
   // Omit `mode` so vega-embed auto-detects vega-lite vs full vega from the
   // spec's $schema — lets us use full Vega for treemap / radar (which
   // Vega-Lite can't express) and keep Vega-Lite for everything else.
@@ -58,6 +64,32 @@ const EMBED_OPTIONS = {
   formatLocale: { decimal: ',', thousands: '.', grouping: [3], currency: ['€', ''] },
 };
 
+/**
+ * Count the actual DATA marks a rendered view drew (bars, points, areas …),
+ * excluding axes / legends / titles. In Vega's scenegraph every node a unit
+ * spec produces carries role === 'mark'; chrome carries 'axis' / 'legend' /
+ * 'title' etc. A successful embed that drew ZERO data marks is the silent
+ * "axes but no marks" failure — we surface it as an empty state rather than
+ * a blank canvas. Returns -1 when the scenegraph can't be read (don't judge).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function countDataMarks(view: View): number {
+  let n = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const walk = (node: any): void => {
+    if (!node) return;
+    if (node.role === 'mark' && Array.isArray(node.items)) n += node.items.length;
+    if (Array.isArray(node.items)) node.items.forEach(walk);
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    walk((view as any).scenegraph().root);
+  } catch {
+    return -1;
+  }
+  return n;
+}
+
 export default function VegaChart({
   spec, data, onCrossFilter, isCrossFilterActive, drillLabel,
   crossFilterValue, onContextMenu,
@@ -68,6 +100,10 @@ export default function VegaChart({
   // vega-embed's onError surfaces it; we show a clear state instead of a
   // blank chart, and log it so it's diagnosable.
   const [renderError, setRenderError] = useState<string | null>(null);
+  // Belt-and-braces: even when the embed "succeeds", verify it drew marks.
+  // If a spec renders zero data marks (the silent blank-chart failure), we
+  // swap to an empty state. Reset whenever the spec changes (see effect below).
+  const [noMarks, setNoMarks] = useState(false);
 
   // Keep the latest callbacks in refs so the Vega view's event listeners
   // (attached once per embed) never call a stale closure.
@@ -116,6 +152,10 @@ export default function VegaChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec, data.rows, crossFilterValue, width]);
 
+  // New spec → assume it'll render until onEmbed proves otherwise. Without
+  // this reset a once-blank chart would stay "empty" after the data changes.
+  useEffect(() => { setNoMarks(false); }, [vlSpec]);
+
   const onError = useCallback((err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
@@ -125,6 +165,13 @@ export default function VegaChart({
 
   const onEmbed = useCallback((result: Result) => {
     const view = result.view as View;
+    // Verify the embed actually drew data marks; surface a blank as empty.
+    const marks = countDataMarks(view);
+    if (marks === 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[VegaChart] embed drew 0 data marks for', spec?.type);
+      setNoMarks(true);
+    }
     // Cross-filter on left click of a mark with a `label` datum.
     view.addEventListener('click', (_event, item) => {
       const datum = (item as { datum?: Record<string, unknown> })?.datum;
@@ -141,12 +188,14 @@ export default function VegaChart({
           'series' in datum ? String(datum.series) : undefined);
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
   if (renderError) return <WidgetError msg={`Couldn't render this chart: ${renderError}`} />;
   if (!data.rows.length || !vlSpec) return <EmptyWidget />;
+  if (noMarks) return <EmptyWidget />;
 
   return (
     <div>

@@ -76,6 +76,24 @@ export function DataTableWidget({
     typeof v === 'number' || (typeof v === 'string' && v !== '' && !isNaN(Number(v)));
   const firstTextKey = baseKeys.find((k) => !isNumeric(data.rows[0][k]));
 
+  // Outlier guard: a single cell orders of magnitude above its column's
+  // median almost always means a JOIN fan-out (a SUM over duplicated rows)
+  // or a bad source value — e.g. €1.7 trillion on one invoice line. We don't
+  // alter the data; we flag the cell so the number isn't read as real.
+  const OUTLIER_MULT = 1000;
+  const colMedian: Record<string, number> = {};
+  for (const k of baseKeys) {
+    const nums = data.rows.map((r) => Math.abs(Number(r[k]))).filter((n) => Number.isFinite(n));
+    if (nums.length >= 5) {
+      const s = nums.sort((a, b) => a - b);
+      const mid = Math.floor(s.length / 2);
+      const med = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+      if (med > 0) colMedian[k] = med;
+    }
+  }
+  const isOutlier = (k: string, v: unknown) =>
+    colMedian[k] != null && Number.isFinite(Number(v)) && Math.abs(Number(v)) > colMedian[k] * OUTLIER_MULT;
+
   function addFormula() {
     const name = formulaName.trim();
     const expr = formulaExpr.trim();
@@ -184,13 +202,16 @@ export function DataTableWidget({
                     : isNumeric(rawVal) || calcDef
                       ? formatValue(rawVal, colFormat)
                       : String(rawVal);
+                const outlier = !calcDef && isOutlier(k, rawVal);
                 return (
                   <td
                     key={k}
-                    className={`px-3 py-2 text-ink-2 whitespace-nowrap ${
+                    title={outlier ? 'Unusually large for this column — likely a join fan-out or a bad source value, not a real total.' : undefined}
+                    className={`px-3 py-2 whitespace-nowrap ${
                       (isNumeric(rawVal) || calcDef) && colFormat !== 'id' ? 'text-right font-mono tabular-nums' : ''
-                    } ${calcDef ? 'text-ocean' : ''}`}
+                    } ${calcDef ? 'text-ocean' : outlier ? 'text-warn font-medium' : 'text-ink-2'}`}
                   >
+                    {outlier && <span className="mr-1" aria-hidden>⚠</span>}
                     {display}
                   </td>
                 );

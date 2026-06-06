@@ -31,7 +31,44 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-06-06 (Analyst-cockpit chart vocabulary: bullet + bubble-scatter + small-multiples)
+**Last updated:** 2026-06-06 (Dashboard render robustness: SVG renderer + 3-layer blank-chart guards)
+
+**Dashboard render robustness — blank-chart guards (2026-06-06):** The new
+bullet/scatter/small-multiples widgets rendered blank in production (empty cards
+with the cross-filter hint, NO console error) even though their SQL returned the
+correct columns. Root cause: the Vega **canvas** renderer silently draws nothing
+for some layered/faceted/symbol spec shapes. Headless proof: every spec renders
+real data marks under the SVG renderer (bullet 9, scatter 3, small-multiples 8).
+Fix is layered so this whole failure class can't recur:
+- **VegaChart renderer canvas → svg** (`EMBED_OPTIONS.renderer`). SVG renders
+  every spec shape reliably, is crisper, and is fast enough for the small
+  pre-aggregated datasets dashboards use (Recharts was SVG too). The real fix.
+- **Layer 1 — post-render mark detection** (`countDataMarks` in `VegaChart.tsx`):
+  after embed, walks the scenegraph counting `role === 'mark'` items (excludes
+  axes/legend/title); 0 marks → swap to `<EmptyWidget>` (`noMarks` state, reset
+  on spec change). Safety net for ANY future blank, any chart type.
+- **Layer 2 — deterministic column-contract coercion** (`coerceType` in
+  `vegaSpecBuilder.ts`, called at top of `buildVegaSpec`): scatter w/ <2 numeric
+  measures → `bar_chart`; small_multiples w/o a `facet`/`series`/`group` column
+  → `line_chart`. Guards AI alias drift without an AI round-trip — never a blank.
+- **Bullet spec hardened**: y-encoding now inline-per-layer + data pre-sorted by
+  value DESC (was a shared top-level `encoding` with `sort:'-x'`, which can't
+  resolve across layers that encode different x fields and triggered a Vega
+  sort-conflict warning). Degrades to a ranked bar when no `target` column.
+- **Layer 3 — data-table outlier flag** (`ChartWidgets.tsx` DataTableWidget):
+  per-column median; a cell >1000× its column median (JOIN fan-out / bad source
+  value, e.g. €1.7-trillion on one invoice line) renders in `--warn` with a ⚠
+  and a hover note. Data is never altered, only flagged.
+- **Validated:** `next build` exit 0; 6/6 builder cases (incl. both coercion
+  fallbacks) render >0 data marks headless through the real vega-lite compiler.
+
+**Analyst-cockpit chart vocabulary (2026-06-06):** Added three new
+Vega-rendered widget types so AI-generated dashboards read as an analyst
+cockpit (actual-vs-target, two-measure relationships, trend-across-groups)
+rather than a wall of bars. Builds on the single-engine Vega-Lite renderer
+shipped earlier (`90d6970`/`f9fe7b7`). All additive — existing widget types
+untouched; zero bundle weight added (Vega is dynamically imported, `/dashboards`
+First Load JS stays 193 kB).
 
 **Analyst-cockpit chart vocabulary (2026-06-06):** Added three new
 Vega-rendered widget types so AI-generated dashboards read as an analyst
