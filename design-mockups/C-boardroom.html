@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Clarion — Design C · Boardroom</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;0,8..60,700&family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/vega@5.30.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5.21.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6.26.0"></script>
+<style>
+:root{
+  --bg:#f4f2ee; --raised:#ffffff; --line:#e3ded4; --ink:#1a1714; --ink2:#3a352e; --muted:#8a8276;
+  --ocean:#164e63; --ok:#3f7a5c; --warn:#a06a1c; --err:#a43a3a; --accent:#164e63;
+  --serif:"Source Serif 4",Georgia,serif; --sans:"Inter",system-ui,sans-serif; --mono:"Geist Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.5}
+.page{max-width:1080px;margin:0 auto;padding:56px 48px 90px}
+.head{text-align:center;border-bottom:1px solid var(--line);padding-bottom:34px;margin-bottom:44px}
+.head .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--muted)}
+.head h1{font-family:var(--serif);font-weight:600;font-size:40px;letter-spacing:-.02em;margin:14px 0 12px;line-height:1.08}
+.head .sub{font-size:15px;color:var(--ink2);max-width:620px;margin:0 auto}
+.head .meta{margin-top:18px;font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--muted)}
+
+/* Hero metric — one number, huge */
+.hero{display:grid;grid-template-columns:1.1fr 1fr;gap:48px;align-items:center;margin-bottom:56px}
+.hero .big .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+.hero .big .num{font-family:var(--serif);font-size:76px;font-weight:600;letter-spacing:-.03em;line-height:1;margin:10px 0 14px}
+.hero .big .delta{font-size:15px;font-weight:600;color:var(--err);display:inline-flex;gap:8px;align-items:center}
+.hero .big .note{font-size:14px;color:var(--ink2);margin-top:16px;max-width:380px;line-height:1.55}
+.hero .chart{height:200px}
+
+/* secondary KPIs as a quiet rule-separated row */
+.kstrip{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-bottom:56px}
+.kstrip .k{padding:26px 8px;text-align:center;border-right:1px solid var(--line)}
+.kstrip .k:last-child{border-right:0}
+.kstrip .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+.kstrip .v{font-family:var(--serif);font-size:34px;font-weight:600;letter-spacing:-.02em;margin-top:8px}
+.kstrip .d{font-size:12px;color:var(--err);font-weight:600;margin-top:6px}
+
+.block{margin-bottom:56px}
+.block .bh{text-align:center;margin-bottom:24px}
+.block .bh .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+.block .bh h2{font-family:var(--serif);font-size:24px;font-weight:600;letter-spacing:-.01em;margin-top:6px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:48px}
+.cap{font-size:12.5px;color:var(--muted);text-align:center;margin-top:10px;font-style:italic}
+footer{margin-top:40px;text-align:center;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div class="eyebrow">Clarion · Quarterly review</div>
+    <h1>Product Performance</h1>
+    <div class="sub">Revenue, volume and mix across products and item groups — June 2025 to June 2026.</div>
+    <div class="meta">ALL ITEM GROUPS · UPDATED 1 HOUR AGO</div>
+  </div>
+
+  <div class="hero">
+    <div class="big">
+      <div class="eyebrow">Total product revenue</div>
+      <div class="num">€344.376</div>
+      <div class="delta">↘ 33.7% <span style="color:var(--muted);font-weight:400">vs prior year</span></div>
+      <div class="note">A volume-driven decline: 530 units sold (−28.7%) while average price held within 7%. The book has narrowed to a handful of products.</div>
+    </div>
+    <div class="chart" id="hero_chart"></div>
+  </div>
+
+  <div class="kstrip">
+    <div class="k"><div class="lbl">Units sold</div><div class="v">530</div><div class="d">↘ 28.7%</div></div>
+    <div class="k"><div class="lbl">Avg net price</div><div class="v">€649,77</div><div class="d">↘ 7.0%</div></div>
+    <div class="k"><div class="lbl">Top-2 concentration</div><div class="v">59%</div><div class="d" style="color:var(--warn)">▲ risk</div></div>
+  </div>
+
+  <div class="block">
+    <div class="bh"><div class="eyebrow">Where revenue concentrates</div><h2>Two products carry the book</h2></div>
+    <div id="rank_chart" style="height:300px"></div>
+    <div class="cap">Cube Racefiets &amp; Jan Jansen Nemo account for €203k of €344k total revenue.</div>
+  </div>
+
+  <div class="block">
+    <div class="two">
+      <div>
+        <div class="bh"><div class="eyebrow">Mix</div><h2>By item group</h2></div>
+        <div id="donut_chart" style="height:260px"></div>
+      </div>
+      <div>
+        <div class="bh"><div class="eyebrow">Performance</div><h2>Actual vs target</h2></div>
+        <div id="bullet_chart" style="height:260px"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>CLARION — DESIGN MOCKUP C · “BOARDROOM”</footer>
+</div>
+
+<script>
+const OCEAN="#164e63",OK="#3f7a5c",WARN="#a06a1c",PLUM="#6b4e8c",TERRA="#8c5a3c",TEAL="#2d6e78",MUTED="#8a8276",GRID="rgba(26,23,20,.07)";
+const PALETTE=[OCEAN,TEAL,OK,WARN,PLUM,TERRA];
+vega.formatLocale({decimal:",",thousands:".",grouping:[3],currency:["€",""]});
+const FONT="Inter, system-ui, sans-serif", SERIF="Source Serif 4, Georgia, serif";
+const cfg={background:"transparent",font:FONT,view:{stroke:null},
+  axis:{labelColor:MUTED,labelFontSize:11,titleColor:MUTED,titleFontSize:10,domain:false,ticks:false,grid:true,gridColor:GRID,gridDash:[2,4],labelFont:FONT},
+  axisX:{grid:false},legend:{labelColor:"#3a352e",labelFontSize:11,symbolType:"circle",orient:"bottom"},range:{category:PALETTE}};
+const emb=(el,spec)=>vegaEmbed(el,{...spec,config:cfg,width:"container"},{actions:false,renderer:"canvas",tooltip:{theme:"light"}});
+const months=["Jun","Jul","Aug","Sep","Oct","Nov","Dec","Jan","Feb","Mar","Apr","May"];
+const cur=[21663,57577,59396,52000,66931,48000,49738,38000,34000,29000,26000,22000];
+const prv=[34000,82000,86000,70000,92000,66000,68000,52000,47000,40000,36000,33000];
+
+// hero: area current vs prior, minimal
+emb("#hero_chart",{height:200,data:{values:[...months.map((m,i)=>({m,s:"This year",v:cur[i]})),...months.map((m,i)=>({m,s:"Prior year",v:prv[i]}))]},
+ mark:{type:"line",interpolate:"monotone",strokeWidth:2.5,point:false},
+ encoding:{x:{field:"m",type:"nominal",sort:null,title:null},y:{field:"v",type:"quantitative",title:null,axis:{format:"$.2~s",tickCount:4}},
+  color:{field:"s",type:"nominal",title:null,scale:{range:[OCEAN,"#c9c2b4"]}},
+  tooltip:[{field:"m",title:" "},{field:"s"},{field:"v",title:"Revenue",format:"$,.0f"}]}});
+
+const prods=[["Cube Racefiets",115636],["Jan Jansen Nemo",87781],["Trek Domane",41200],["Specialized Allez",33900],["Giant Defy",24433],["Cube Reaction",19012],["Gazelle Ultimate",12900],["Cortina U4",6800],["Batavus Quip",2160]];
+emb("#rank_chart",{height:300,data:{values:prods.map(([label,value],i)=>({label,value,top:i<2}))},
+ mark:{type:"bar",cornerRadiusEnd:5},
+ encoding:{y:{field:"label",type:"nominal",sort:"-x",title:null,axis:{labelLimit:160,labelFontSize:12}},
+  x:{field:"value",type:"quantitative",title:null,axis:{format:"$.2~s"}},
+  color:{field:"top",type:"nominal",legend:null,scale:{domain:[true,false],range:[OCEAN,"#cdd5d8"]}},
+  tooltip:[{field:"label",title:" "},{field:"value",title:"Revenue",format:"$,.0f"}]}});
+
+emb("#donut_chart",{height:260,data:{values:[{g:"Sportfietsen",v:203417},{g:"Fietsen",v:129787},{g:"Diensten",v:10800},{g:"Std. artikel",v:289}]},
+ mark:{type:"arc",innerRadius:66,cornerRadius:3,padAngle:.018},encoding:{theta:{field:"v",type:"quantitative",stack:true},
+  color:{field:"g",type:"nominal",title:null,scale:{range:PALETTE},legend:{orient:"bottom"}},order:{field:"v",sort:"descending"},
+  tooltip:[{field:"g",title:" "},{field:"v",title:"Revenue",format:"$,.0f"}]}});
+
+const groups=[{g:"Sportfietsen",a:203417,t:300000},{g:"Fietsen",a:129787,t:150000},{g:"Diensten",a:10800,t:9000},{g:"Std. artikel",a:289,t:1200}];
+emb("#bullet_chart",{height:260,data:{values:groups},layer:[
+  {mark:{type:"bar",color:"#e6ece6",cornerRadiusEnd:3},encoding:{x:{field:"t",type:"quantitative",title:null,axis:{format:"$.2~s"}}}},
+  {mark:{type:"bar",color:OCEAN,cornerRadiusEnd:3,height:12},encoding:{x:{field:"a",type:"quantitative"}}},
+  {mark:{type:"tick",color:"#1a1714",thickness:2,size:26},encoding:{x:{field:"t",type:"quantitative"}}}
+ ],encoding:{y:{field:"g",type:"nominal",sort:"-x",title:null,axis:{labelFontSize:12}},
+  tooltip:[{field:"g",title:" "},{field:"a",title:"Actual",format:"$,.0f"},{field:"t",title:"Target",format:"$,.0f"}]}});
+</script>
+</body>
+</html>

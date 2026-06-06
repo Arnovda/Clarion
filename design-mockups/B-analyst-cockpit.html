@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Clarion — Design B · Analyst Cockpit</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600&family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.jsdelivr.net/npm/vega@5.30.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5.21.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6.26.0"></script>
+<style>
+:root{
+  --bg:#eef0f2; --raised:#ffffff; --soft:#e3e6ea; --softer:#edeff2; --line:#d0d5da;
+  --ink:#0f1a22; --ink2:#334049; --ink3:#4a5660; --muted:#6b7680; --muted2:#8891a0;
+  --ocean:#164e63; --ocean-softer:#e8f0f3; --ok:#3f7a5c; --ok-soft:#dbe8e0; --err:#a43a3a; --err-soft:#f1d7d7; --warn:#a06a1c;
+  --serif:"Source Serif 4",Georgia,serif; --sans:"Inter",system-ui,sans-serif; --mono:"Geist Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.45}
+.top{background:var(--raised);border-bottom:1px solid var(--line);padding:14px 28px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:5}
+.top h1{font-family:var(--serif);font-size:18px;font-weight:600}
+.top .eyebrow{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.filters{margin-left:auto;display:flex;gap:8px;align-items:center}
+.chip{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:6px 12px;background:var(--raised);color:var(--ink2);display:flex;gap:8px;align-items:center}
+.chip .k{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.wrap{max-width:1320px;margin:0 auto;padding:20px 28px 70px}
+/* dense KPI strip */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}
+.kpi{background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.kpi .val{font-size:22px;font-weight:700;letter-spacing:-.02em;margin-top:5px;font-variant-numeric:tabular-nums}
+.kpi .delta{font-size:11px;font-weight:600;margin-top:4px}
+.kpi .delta.neg{color:var(--err)} .kpi .delta.pos{color:var(--ok)}
+.row{display:grid;gap:12px;margin-bottom:12px}
+.r-3{grid-template-columns:1fr 1fr 1fr}
+.r-2a{grid-template-columns:1.4fr 1fr}
+.r-1{grid-template-columns:1fr}
+.card{background:var(--raised);border:1px solid var(--line);border-radius:10px;padding:14px 14px 6px}
+.card .hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.card h3{font-size:12.5px;font-weight:600;color:var(--ink2)}
+.card .tools{margin-left:auto;display:flex;gap:6px;color:var(--muted2)}
+.card .tools span{font-size:11px;cursor:default}
+.chart{width:100%}
+.small-mult{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.sm{border:1px solid var(--softer);border-radius:8px;padding:8px}
+.sm .t{font-size:10.5px;color:var(--ink3);font-weight:600;margin-bottom:2px}
+.sm .n{font-size:14px;font-weight:700;font-variant-numeric:tabular-nums}
+.sm .d{font-size:10px;font-weight:600}
+.sm .d.neg{color:var(--err)} .sm .d.pos{color:var(--ok)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:left;padding:6px 10px;border-bottom:1px solid var(--line)}
+td{padding:7px 10px;border-bottom:1px solid var(--softer);font-variant-numeric:tabular-nums}
+td.r{text-align:right}
+.bar-cell{position:relative}
+.bar-cell .fill{position:absolute;inset:0;background:var(--ocean-softer);border-radius:4px}
+.bar-cell .txt{position:relative}
+footer{margin-top:30px;font-family:var(--mono);font-size:10.5px;color:var(--muted2);text-align:center}
+</style>
+</head>
+<body>
+<div class="top">
+  <div><div class="eyebrow">Data product</div><h1>Product Performance</h1></div>
+  <div class="filters">
+    <span class="chip"><span class="k">Period</span> Jun 2025 – Jun 2026</span>
+    <span class="chip"><span class="k">Item group</span> All ▾</span>
+    <span class="chip"><span class="k">Layer</span> Product ▾</span>
+  </div>
+</div>
+<div class="wrap">
+  <div class="kpis">
+    <div class="kpi"><div class="lbl">Revenue</div><div class="val">€344k</div><div class="delta neg">↘ 33.7%</div></div>
+    <div class="kpi"><div class="lbl">Units</div><div class="val">530</div><div class="delta neg">↘ 28.7%</div></div>
+    <div class="kpi"><div class="lbl">Avg price</div><div class="val">€650</div><div class="delta neg">↘ 7.0%</div></div>
+    <div class="kpi"><div class="lbl">Active SKUs</div><div class="val">9</div><div class="delta neg">↘ 10.0%</div></div>
+    <div class="kpi"><div class="lbl">Top-2 share</div><div class="val">59%</div><div class="delta neg">▲ conc.</div></div>
+    <div class="kpi"><div class="lbl">Avg discount</div><div class="val">3,5%</div><div class="delta pos">↘ 31%</div></div>
+  </div>
+
+  <div class="row r-2a">
+    <div class="card"><div class="hd"><h3>Revenue — this year vs prior</h3><div class="tools"><span>⤢</span><span>⋯</span></div></div><div class="chart" id="c_combo"></div></div>
+    <div class="card"><div class="hd"><h3>Group vs prior-year target</h3><div class="tools"><span>⋯</span></div></div><div class="chart" id="c_bullet"></div></div>
+  </div>
+
+  <div class="row r-1">
+    <div class="card"><div class="hd"><h3>Monthly revenue per item group</h3><div class="tools"><span>small multiples</span></div></div>
+      <div class="small-mult" id="sm"></div>
+    </div>
+  </div>
+
+  <div class="row r-3">
+    <div class="card"><div class="hd"><h3>Top products by revenue</h3></div><div class="chart" id="c_bar"></div></div>
+    <div class="card"><div class="hd"><h3>Units vs revenue</h3><div class="tools"><span>bubble</span></div></div><div class="chart" id="c_scatter"></div></div>
+    <div class="card"><div class="hd"><h3>Revenue mix</h3></div><div class="chart" id="c_donut"></div></div>
+  </div>
+
+  <div class="row r-1">
+    <div class="card"><div class="hd"><h3>Product detail</h3><div class="tools"><span>+ calc column</span><span>export</span></div></div>
+      <table>
+        <thead><tr><th>Product</th><th>Group</th><th>Code</th><th class="r">Revenue</th><th class="r">Units</th><th class="r">Avg price</th></tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+  <footer>Clarion · design mockup B — “Analyst Cockpit”. Dense, exploration-first. Charts: Vega-Lite.</footer>
+</div>
+
+<script>
+const OCEAN="#164e63",OK="#3f7a5c",WARN="#a06a1c",PLUM="#6b4e8c",TERRA="#8c5a3c",TEAL="#2d6e78",MUTED="#6b7680",GRID="rgba(13,28,47,.06)";
+const PALETTE=[OCEAN,OK,WARN,PLUM,TERRA,TEAL];
+vega.formatLocale({decimal:",",thousands:".",grouping:[3],currency:["€",""]});
+const FONT="Inter, system-ui, sans-serif";
+const cfg={background:"transparent",font:FONT,view:{stroke:null},
+  axis:{labelColor:MUTED,labelFontSize:9,titleColor:MUTED,titleFontSize:9,domain:false,ticks:false,grid:true,gridColor:GRID,gridDash:[2,3],labelFont:FONT},
+  axisX:{grid:false},legend:{labelColor:"#334049",labelFontSize:9,symbolType:"circle",orient:"bottom"},range:{category:PALETTE}};
+const emb=(el,spec)=>vegaEmbed(el,{...spec,config:cfg,width:"container"},{actions:false,renderer:"canvas",tooltip:{theme:"light"}});
+const months=["06","07","08","09","10","11","12","01","02","03","04","05"];
+const cur=[21663,57577,59396,52000,66931,48000,49738,38000,34000,29000,26000,22000];
+const rate=[6.1,7.3,5.9,6.4,6.0,5.5,5.8,5.2,5.0,4.8,4.6,4.5];
+
+emb("#c_combo",{height:210,resolve:{scale:{y:"independent"}},data:{values:months.map((m,i)=>({m,v:cur[i],r:rate[i]}))},
+ layer:[
+  {mark:{type:"bar",cornerRadiusEnd:3,color:OCEAN},encoding:{x:{field:"m",type:"nominal",sort:null,title:null},y:{field:"v",type:"quantitative",title:null,axis:{format:"$.2~s"}}}},
+  {mark:{type:"line",point:{filled:true,size:30},color:TERRA,interpolate:"monotone",strokeWidth:2},encoding:{x:{field:"m",type:"nominal",sort:null},y:{field:"r",type:"quantitative",title:null,axis:{grid:false,format:".2~s"}}}}
+ ],encoding:{tooltip:[{field:"m",title:"Month"},{field:"v",title:"Revenue",format:"$,.0f"},{field:"r",title:"Discount %"}]}});
+
+const groups=[{g:"Sportfietsen",a:203417,t:300000},{g:"Fietsen",a:129787,t:150000},{g:"Diensten",a:10800,t:9000},{g:"Std. artikel",a:289,t:1200}];
+emb("#c_bullet",{height:210,data:{values:groups},layer:[
+  {mark:{type:"bar",color:"#e8f0f3",cornerRadiusEnd:3},encoding:{x:{field:"t",type:"quantitative",title:null,axis:{format:"$.2~s"}}}},
+  {mark:{type:"bar",color:OCEAN,cornerRadiusEnd:3,height:9},encoding:{x:{field:"a",type:"quantitative"}}},
+  {mark:{type:"tick",color:"#0f1a22",thickness:2,size:20},encoding:{x:{field:"t",type:"quantitative"}}}
+ ],encoding:{y:{field:"g",type:"nominal",sort:"-x",title:null},tooltip:[{field:"g",title:" "},{field:"a",title:"Actual",format:"$,.0f"},{field:"t",title:"Target",format:"$,.0f"}]}});
+
+// small multiples
+const smdata={Sportfietsen:[16276,36148,30731,22611,44293,24433,28921,21000,18000,15000,13000,11000],Fietsen:[5386,19227,26463,19012,18276,22928,18491,14000,12000,10000,9000,8000],Diensten:[0,2160,2160,0,4320,0,2160,2000,1800,1500,1300,1100]};
+const smMeta={Sportfietsen:["€203k","↘ 32%","neg"],Fietsen:["€130k","↘ 28%","neg"],Diensten:["€10,8k","↗ 12%","pos"]};
+const smEl=document.getElementById("sm");
+Object.entries(smdata).forEach(([g,vals])=>{
+  const div=document.createElement("div");div.className="sm";
+  const [n,d,dir]=smMeta[g];
+  div.innerHTML=`<div class="t">${g}</div><div class="n">${n} <span class="d ${dir}">${d}</span></div><div class="ch"></div>`;
+  smEl.appendChild(div);
+  vegaEmbed(div.querySelector(".ch"),{config:{background:"transparent",view:{stroke:null}},width:"container",height:60,
+    data:{values:vals.map((v,i)=>({m:months[i],v}))},mark:{type:"area",line:{color:OCEAN,strokeWidth:1.5},
+      color:{x1:1,y1:1,x2:1,y2:0,gradient:"linear",stops:[{offset:0,color:"rgba(22,78,99,0)"},{offset:1,color:"rgba(22,78,99,.16)"}]}},
+    encoding:{x:{field:"m",type:"nominal",sort:null,axis:null},y:{field:"v",type:"quantitative",axis:null}}},{actions:false,renderer:"canvas"});
+});
+
+const prods=[["Cube Racefiets","Sportfietsen","080",115636,80,1445],["Jan Jansen Nemo","Sportfietsen","112",87781,60,1463],["Trek Domane","Sportfietsen","045",41200,28,1471],["Specialized Allez","Fietsen","067",33900,40,847],["Giant Defy","Fietsen","023",24433,30,814],["Cube Reaction","Fietsen","051",19012,26,731],["Gazelle Ultimate","Fietsen","089",12900,18,717],["Cortina U4","Fietsen","102",6800,12,567],["Batavus Quip","Diensten","200",2160,120,18]];
+emb("#c_bar",{height:200,data:{values:prods.slice(0,8).map(p=>({label:p[0],value:p[3]}))},mark:{type:"bar",cornerRadiusEnd:4,color:OCEAN},
+ encoding:{y:{field:"label",type:"nominal",sort:"-x",title:null,axis:{labelLimit:110}},x:{field:"value",type:"quantitative",title:null,axis:{format:"$.2~s"}},tooltip:[{field:"label",title:" "},{field:"value",title:"Revenue",format:"$,.0f"}]}});
+
+emb("#c_scatter",{height:200,data:{values:prods.map(p=>({label:p[0],units:p[4],rev:p[3],group:p[1]}))},
+ mark:{type:"circle",opacity:.85},encoding:{x:{field:"units",type:"quantitative",title:"Units"},y:{field:"rev",type:"quantitative",title:null,axis:{format:"$.2~s"}},
+  size:{field:"rev",type:"quantitative",legend:null,scale:{range:[60,600]}},color:{field:"group",type:"nominal",legend:null,scale:{range:PALETTE}},
+  tooltip:[{field:"label",title:" "},{field:"units",title:"Units"},{field:"rev",title:"Revenue",format:"$,.0f"}]}});
+
+emb("#c_donut",{height:200,data:{values:[{g:"Sportfietsen",v:203417},{g:"Fietsen",v:129787},{g:"Diensten",v:10800},{g:"Std.",v:289}]},
+ mark:{type:"arc",innerRadius:46,cornerRadius:2,padAngle:.015},encoding:{theta:{field:"v",type:"quantitative",stack:true},
+  color:{field:"g",type:"nominal",title:null,scale:{range:PALETTE},legend:{orient:"bottom"}},order:{field:"v",sort:"descending"},
+  tooltip:[{field:"g",title:" "},{field:"v",title:"Revenue",format:"$,.0f"}]}});
+
+// table with inline bars
+const maxRev=Math.max(...prods.map(p=>p[3]));
+document.getElementById("tbody").innerHTML=prods.map(p=>`<tr>
+ <td>${p[0]}</td><td>${p[1]}</td><td style="font-family:var(--mono);color:var(--muted)">${p[2]}</td>
+ <td class="r bar-cell"><span class="fill" style="width:${(p[3]/maxRev*100).toFixed(0)}%"></span><span class="txt">€${p[3].toLocaleString("nl-BE")}</span></td>
+ <td class="r">${p[4]}</td><td class="r">€${p[5].toLocaleString("nl-BE")}</td></tr>`).join("");
+</script>
+</body>
+</html>
