@@ -32,14 +32,10 @@
     "react": "^18",
     "react-dom": "^18",
     "react-markdown": "^10.1.0",
-    "react-vega": "^8.0.0",
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
-    "sql-formatter": "^15.7.3",
-    "vega": "^6.2.0",
-    "vega-lite": "^6.4.3",
-    "vega-tooltip": "^1.1.0"
+    "sql-formatter": "^15.7.3"
   },
   "devDependencies": {
     "@types/node": "^20",

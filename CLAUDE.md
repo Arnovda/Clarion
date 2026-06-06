@@ -31,84 +31,39 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-06-06 (Dashboard render robustness: SVG renderer + 3-layer blank-chart guards)
+**Last updated:** 2026-06-06 (Dashboards reverted to Recharts — Vega migration backed out)
 
-**Dashboard render robustness — blank-chart guards (2026-06-06):** The new
-bullet/scatter/small-multiples widgets rendered blank in production (empty cards
-with the cross-filter hint, NO console error) even though their SQL returned the
-correct columns. Root cause: the Vega **canvas** renderer silently draws nothing
-for some layered/faceted/symbol spec shapes. Headless proof: every spec renders
-real data marks under the SVG renderer (bullet 9, scatter 3, small-multiples 8).
-Fix is layered so this whole failure class can't recur:
-- **VegaChart renderer canvas → svg** (`EMBED_OPTIONS.renderer`). SVG renders
-  every spec shape reliably, is crisper, and is fast enough for the small
-  pre-aggregated datasets dashboards use (Recharts was SVG too). The real fix.
-- **Layer 1 — post-render mark detection** (`countDataMarks` in `VegaChart.tsx`):
-  after embed, walks the scenegraph counting `role === 'mark'` items (excludes
-  axes/legend/title); 0 marks → swap to `<EmptyWidget>` (`noMarks` state, reset
-  on spec change). Safety net for ANY future blank, any chart type.
-- **Layer 2 — deterministic column-contract coercion** (`coerceType` in
-  `vegaSpecBuilder.ts`, called at top of `buildVegaSpec`): scatter w/ <2 numeric
-  measures → `bar_chart`; small_multiples w/o a `facet`/`series`/`group` column
-  → `line_chart`. Guards AI alias drift without an AI round-trip — never a blank.
-- **Bullet spec hardened**: y-encoding now inline-per-layer + data pre-sorted by
-  value DESC (was a shared top-level `encoding` with `sort:'-x'`, which can't
-  resolve across layers that encode different x fields and triggered a Vega
-  sort-conflict warning). Degrades to a ranked bar when no `target` column.
-- **Layer 3 — data-table outlier flag** (`ChartWidgets.tsx` DataTableWidget):
-  per-column median; a cell >1000× its column median (JOIN fan-out / bad source
-  value, e.g. €1.7-trillion on one invoice line) renders in `--warn` with a ⚠
-  and a hover note. Data is never altered, only flagged.
-- **Validated:** `next build` exit 0; 6/6 builder cases (incl. both coercion
-  fallbacks) render >0 data marks headless through the real vega-lite compiler.
-
-**Analyst-cockpit chart vocabulary (2026-06-06):** Added three new
-Vega-rendered widget types so AI-generated dashboards read as an analyst
-cockpit (actual-vs-target, two-measure relationships, trend-across-groups)
-rather than a wall of bars. Builds on the single-engine Vega-Lite renderer
-shipped earlier (`90d6970`/`f9fe7b7`). All additive — existing widget types
-untouched; zero bundle weight added (Vega is dynamically imported, `/dashboards`
-First Load JS stays 193 kB).
-
-**Analyst-cockpit chart vocabulary (2026-06-06):** Added three new
-Vega-rendered widget types so AI-generated dashboards read as an analyst
-cockpit (actual-vs-target, two-measure relationships, trend-across-groups)
-rather than a wall of bars. Builds on the single-engine Vega-Lite renderer
-shipped earlier (`90d6970`/`f9fe7b7`). All additive — existing widget types
-untouched; zero bundle weight added (Vega is dynamically imported, `/dashboards`
-First Load JS stays 193 kB).
-- **New widget types** (`bullet_chart`, `scatter_chart`, `small_multiples`)
-  wired end-to-end: `frontend/app/dashboards/types.ts` union,
-  `utils/vegaSpecBuilder.ts` builders (`bullet`/`scatter`/`smallMultiples`)
-  + `VEGA_SUPPORTED` + switch, `components/ChartWidgets.tsx` one-liner
-  components delegating to `<VegaChart>`, `page.tsx` `renderWidget` switch +
-  `defaultCols`/`minCols` maps + imports.
-  - `bullet_chart` — SQL returns `label`,`value`,`target`. Layered track +
-    actual bar + target tick (horizontal). Degrades to a plain ranked bar
-    when no `target` column is present.
-  - `scatter_chart` — bubble. Columns inferred from the SQL's own names
-    (text col = label, first two numeric = x/y, third numeric = size, second
-    text = colour group) so axes/tooltips stay self-documenting via a new
-    `humanize()` helper. Supports `x`/`y`/`size`/`group` explicit aliases too.
-  - `small_multiples` — SQL returns `facet`,`label`,`value`. Faceted area
-    sparklines, independent y per panel, ≤3 columns. Built as a faceted
-    Vega-Lite spec WITHOUT top-level container width.
-- **`VegaChart.tsx` facet-aware sizing:** faceted specs ignore top-level
-  width, so the width override now detects `built.facet && built.spec` and
-  sizes the child `spec.width` = measured width split across `columns`
-  (16px gutters) instead of setting top-level width.
-- **`vegaTheme.ts`:** new `VEGA_TRACK` (faint ocean) + `VEGA_TICK` (--ink)
-  exports for the bullet track/target marker.
-- **Prompt (`backend/src/ai/prompts/dashboardPrompt.ts`):** added the three
-  widget docs (with example SQL), decision-table rows, an "Analyst Cockpit"
-  layout section (richer rows, 7–10 widgets, "use ≥1 of the new types when the
-  data supports it"), `small_multiples` exempt from the mandatory
-  `crossFilterKey` rule, and validation fix-rules 5b/5c/5d for the new
-  contracts (convert to bar/line when required columns are missing). Backend
-  `WidgetSpec['type']` union widened to match.
-- **Validated:** `next build` exit 0; all five builder cases compile through
-  the real `vega-lite` compiler + a `vega.View` (renderer 'none') with zero
-  render errors (headless harness). No new lint/type errors in changed files.
+**Dashboards reverted to Recharts (2026-06-06):** The entire Vega-Lite migration
+(commits `90d6970`, `f9fe7b7`, `b723884`, `a6ebba9`, `e73c887`, `aabed9f`) was
+reverted in a single revert commit. Dashboards are back on the original Recharts
+engine — the state working before 2026-06-06. **Why:** the Vega migration kept
+producing silent blank charts in production (most recently bullet / scatter /
+small-multiples rendered empty cards with NO console errors despite correct SQL
+output). Multiple attempted fixes (autosize, format strings, SVG renderer,
+post-render mark detection) all passed headless validation through the real
+vega-lite compiler + vega.View but failed in the actual browser — i.e. the
+sandbox tests didn't reproduce the browser's behaviour, so each fix shipped
+blind. After several failed iterations the user (rightly) requested a rollback.
+- **What was kept:** the deploy traffic-routing fix (`fb981aa` — pins 100% to
+  the latest revision after `az containerapp update --image`, critical and
+  unrelated to charts) and the three design-direction HTML mockups
+  (`design-mockups/A-executive-brief.html`, `B-analyst-cockpit.html`,
+  `C-boardroom.html` from `e16e9dd` — useful reference if/when the visual
+  refresh is attempted again).
+- **What's gone:** every Vega file (`utils/vegaSpecBuilder.ts`,
+  `utils/vegaTheme.ts`, `components/VegaChart.tsx`), the vega/vega-lite/
+  react-vega/vega-tooltip deps from `package.json`, the `canvas: false` webpack
+  alias in `next.config.mjs`, the new widget types (bullet_chart, scatter_chart,
+  small_multiples) from `frontend/app/dashboards/types.ts` +
+  `backend/src/ai/prompts/dashboardPrompt.ts`, and the cockpit-style prompt
+  changes. The Recharts-based ChartWidgets and the original prompt layout
+  rules are back exactly as they were before the migration.
+- **Validated:** `next build` exit 0; the production state is the one shown in
+  the user's screenshot where bars, lines, and top-lists render correctly.
+- **If anyone attempts the Vega migration again:** the lesson is that headless
+  vega-lite/vega.View tests do NOT reproduce browser canvas/SVG rendering
+  edge cases. Don't ship without verifying in a real browser (e.g. Playwright
+  driving `/dashboards` and snapshotting actual rendered marks).
 
 **Earlier last-updated:** 2026-05-07 (SCD1 foundation: Delta + Python sidecar + change-evolution chart)
 
