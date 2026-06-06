@@ -181,6 +181,16 @@ jobs:
             --name ${{ secrets.BACKEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
+          # `update --image` creates a NEW revision but does NOT shift traffic
+          # to it when the app is in multiple-revision mode — so the new code
+          # never serves and freshly-added routes 404 despite a green deploy.
+          # Force 100% traffic onto the latest revision. No-op (and tolerated)
+          # in single-revision mode, where traffic auto-routes to latest.
+          az containerapp ingress traffic set \
+            --name ${{ secrets.BACKEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --revision-weight latest=100 \
+            || echo "single-revision mode — traffic already on latest"
 
       - name: Deploy frontend
         run: |
@@ -188,6 +198,11 @@ jobs:
             --name ${{ secrets.FRONTEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }}
+          az containerapp ingress traffic set \
+            --name ${{ secrets.FRONTEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --revision-weight latest=100 \
+            || echo "single-revision mode — traffic already on latest"
 
       - name: Deploy ETL
         run: |
