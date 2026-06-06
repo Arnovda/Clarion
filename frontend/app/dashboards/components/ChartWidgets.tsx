@@ -31,6 +31,9 @@ export function ComboChartWidget(props: WidgetExecutionProps)       { return <Ve
 export function TopListWidget(props: WidgetExecutionProps)          { return <VegaChart {...props} />; }
 export function TreemapWidget(props: WidgetExecutionProps)          { return <VegaChart {...props} />; }
 export function RadarChartWidget(props: WidgetExecutionProps)       { return <VegaChart {...props} />; }
+export function BulletChartWidget(props: WidgetExecutionProps)      { return <VegaChart {...props} />; }
+export function ScatterChartWidget(props: WidgetExecutionProps)     { return <VegaChart {...props} />; }
+export function SmallMultiplesWidget(props: WidgetExecutionProps)   { return <VegaChart {...props} />; }
 
 // ─── Safe formula evaluator ──────────────────────────────────────────────────
 

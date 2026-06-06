@@ -94,8 +94,24 @@ export default function VegaChart({
     const built = buildVegaSpec(spec, data.rows, { highlightValue: crossFilterValue });
     if (!built) return null;
     // Override the container width with the measured pixel width so charts
-    // reflow precisely on grid / panel resizes.
-    if (width > 0) (built as { width?: number | string }).width = width - 2;
+    // reflow precisely on grid / panel resizes. Faceted specs (small multiples)
+    // ignore top-level width — they compute size from the child `spec`, so we
+    // divide the measured width across the columns and size each facet instead.
+    if (width > 0) {
+      const w = width - 2;
+      const b = built as {
+        width?: number | string;
+        facet?: unknown;
+        columns?: number;
+        spec?: { width?: number };
+      };
+      if (b.facet && b.spec) {
+        const cols = b.columns ?? 1;
+        b.spec.width = Math.max(80, Math.floor((w - (cols - 1) * 16 - 4) / cols));
+      } else {
+        b.width = w;
+      }
+    }
     return built;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec, data.rows, crossFilterValue, width]);

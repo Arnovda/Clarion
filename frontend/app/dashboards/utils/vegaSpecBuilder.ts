@@ -10,7 +10,9 @@
 //   combo         : { label, value, line }       (bar = value, line = line)
 
 import type { TopLevelSpec } from 'vega-lite';
-import { CLARION_VEGA_CONFIG, valueAxisFormat, tooltipFormat, VEGA_COLORS } from './vegaTheme';
+import {
+  CLARION_VEGA_CONFIG, valueAxisFormat, tooltipFormat, VEGA_COLORS, VEGA_TRACK, VEGA_TICK,
+} from './vegaTheme';
 import type { WidgetSpec } from '../types';
 
 type Row = Record<string, unknown>;
@@ -60,7 +62,16 @@ export const VEGA_SUPPORTED = new Set<WidgetSpec['type']>([
   'bar_chart', 'vertical_bar_chart', 'stacked_bar_chart',
   'line_chart', 'pie_chart', 'combo_chart',
   'top_list', 'radar_chart', 'treemap_chart',
+  'bullet_chart', 'scatter_chart', 'small_multiples',
 ]);
+
+/** Humanise a raw column key for use as an axis / tooltip title:
+ *  "avg_net_price" → "Avg net price". Used by the scatter builder, whose
+ *  two measure axes are inferred from the SQL's own column names. */
+function humanize(key: string): string {
+  const s = key.replace(/_/g, ' ').trim();
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 /**
  * Main entry. Returns a complete Vega-Lite OR full-Vega spec (vega-embed
@@ -86,6 +97,9 @@ export function buildVegaSpec(
     case 'pie_chart':          return donut(rows, fmt, opts);
     case 'combo_chart':        return combo(rows, fmt, opts);
     case 'top_list':           return topList(rows, fmt, opts);
+    case 'bullet_chart':       return bullet(rows, fmt, opts);
+    case 'scatter_chart':      return scatter(rows, fmt, opts);
+    case 'small_multiples':    return smallMultiples(rows, fmt);
     case 'treemap_chart':      return treemap(rows, fmt);
     case 'radar_chart':        return radar(rows, fmt);
     default:                   return null;
@@ -339,6 +353,181 @@ function topList(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec 
       },
     ],
   } as TopLevelSpec;
+}
+
+// ── Bullet (actual vs target, horizontal) ────────────────────────────────────
+// Three layered marks per category: a faint full "track" sized to the target,
+// the actual value as a thin bold bar, and a dark tick at the target line.
+// Reads "actual vs target" at a glance — the analyst's KPI-with-context chart.
+// Degrades gracefully to a plain ranked bar when no target column is present.
+
+function bullet(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
+  const hasTarget = rows.some((r) => r.target !== undefined && r.target !== null);
+  const data = rows.map((r) => ({
+    label: str(r.label),
+    value: num(r.value),
+    ...(hasTarget ? { target: num(r.target) } : {}),
+  }));
+  const h = Math.max(150, Math.min(data.length * 40 + 24, 380));
+
+  const actualTooltip = [
+    { field: 'label', type: 'nominal' as const, title: ' ' },
+    { field: 'value', type: 'quantitative' as const, title: 'Actual', ...tooltipFormat(fmt) },
+    ...(hasTarget
+      ? [{ field: 'target', type: 'quantitative' as const, title: 'Target', ...tooltipFormat(fmt) }]
+      : []),
+  ];
+
+  const actualLayer = {
+    mark: {
+      type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_COLORS[0], tooltip: true,
+      ...(hasTarget ? { height: 10 } : {}),
+    },
+    encoding: {
+      x: { field: 'value', type: 'quantitative' as const, ...(hasTarget ? {} : { axis: valueAxis(fmt) }) },
+      opacity: highlightOpacity('label', opts.highlightValue),
+      tooltip: actualTooltip,
+    },
+  };
+
+  return {
+    ...base(data),
+    height: h,
+    encoding: {
+      y: { field: 'label', type: 'nominal', sort: '-x', title: null, axis: { labelLimit: 160 } },
+    },
+    layer: hasTarget
+      ? [
+          {
+            mark: { type: 'bar' as const, cornerRadiusEnd: 3, color: VEGA_TRACK },
+            encoding: { x: { field: 'target', type: 'quantitative' as const, axis: valueAxis(fmt) } },
+          },
+          actualLayer,
+          {
+            mark: { type: 'tick' as const, color: VEGA_TICK, thickness: 2, size: 24 },
+            encoding: { x: { field: 'target', type: 'quantitative' as const } },
+          },
+        ]
+      : [actualLayer],
+  } as TopLevelSpec;
+}
+
+// ── Scatter / bubble (two measures, optional size + colour group) ─────────────
+// Columns are inferred from the SQL's own names so tooltips/axes stay
+// self-documenting: a text column is the point label, the first two numeric
+// columns become x and y, a third numeric (if any) drives bubble size, and a
+// second text column colours the points by group.
+
+function scatter(rows: Row[], fmt?: string, opts: BuildOpts = {}): TopLevelSpec {
+  const cols = Object.keys(rows[0] ?? {});
+  const isNumCol = (c: string) =>
+    rows.some((r) => looksNumeric(r[c])) && rows.every((r) => r[c] == null || looksNumeric(r[c]));
+
+  const labelKey = cols.includes('label')
+    ? 'label'
+    : (cols.find((c) => !isNumCol(c)) ?? cols[0] ?? 'label');
+  const numericCols = cols.filter((c) => c !== labelKey && isNumCol(c));
+  const xKey = cols.includes('x') ? 'x' : (numericCols[0] ?? cols[0]);
+  const yKey = cols.includes('y') ? 'y' : (numericCols.find((c) => c !== xKey) ?? numericCols[0] ?? cols[0]);
+  const sizeKey = cols.includes('size')
+    ? 'size'
+    : numericCols.find((c) => c !== xKey && c !== yKey);
+  const groupKey = cols.includes('group')
+    ? 'group'
+    : cols.find((c) => c !== labelKey && c !== xKey && c !== yKey && c !== sizeKey && !isNumCol(c));
+
+  const data = rows.map((r) => ({
+    label: str(r[labelKey]),
+    x: num(r[xKey]),
+    y: num(r[yKey]),
+    ...(sizeKey ? { size: num(r[sizeKey]) } : {}),
+    ...(groupKey ? { group: str(r[groupKey]) } : {}),
+  }));
+
+  return {
+    ...base(data),
+    height: 280,
+    mark: { type: 'circle', opacity: 0.82, tooltip: true },
+    encoding: {
+      x: { field: 'x', type: 'quantitative', title: humanize(xKey), axis: { format: '.3~s' } },
+      y: { field: 'y', type: 'quantitative', title: null, axis: valueAxis(fmt) },
+      size: sizeKey
+        ? { field: 'size', type: 'quantitative', legend: null, scale: { range: [80, 700] } }
+        : { value: 120 },
+      color: groupKey
+        ? { field: 'group', type: 'nominal', title: null, scale: { range: VEGA_COLORS }, legend: { orient: 'top' } }
+        : { value: VEGA_COLORS[0] },
+      opacity: highlightOpacity('label', opts.highlightValue),
+      tooltip: [
+        { field: 'label', type: 'nominal', title: ' ' },
+        { field: 'x', type: 'quantitative', title: humanize(xKey), format: ',.2f' },
+        { field: 'y', type: 'quantitative', title: humanize(yKey), ...tooltipFormat(fmt) },
+        ...(sizeKey ? [{ field: 'size', type: 'quantitative' as const, title: humanize(sizeKey), format: ',.2f' }] : []),
+        ...(groupKey ? [{ field: 'group', type: 'nominal' as const, title: 'Group' }] : []),
+      ],
+    },
+  } as TopLevelSpec;
+}
+
+// ── Small multiples (a grid of mini area charts, one per group) ───────────────
+// Faceted area sparklines sharing an x (time) axis but independent y scales, so
+// each group's shape is legible regardless of magnitude. Built as a faceted
+// Vega-Lite spec WITHOUT a top-level container width — <VegaChart> sizes the
+// child spec to fit the measured container (facet specs ignore top-level width).
+
+function smallMultiples(rows: Row[], fmt?: string): TopLevelSpec {
+  const cols = Object.keys(rows[0] ?? {});
+  const facetKey = ['facet', 'series', 'group'].find((c) => cols.includes(c)) ?? cols[0];
+  const rest = cols.filter((c) => c !== facetKey);
+  const valueKey = rest.includes('value')
+    ? 'value'
+    : (rest.find((c) => rows.some((r) => looksNumeric(r[c])) && rows.every((r) => r[c] == null || looksNumeric(r[c]))) ?? rest[rest.length - 1] ?? 'value');
+  const labelKey = rest.includes('label') ? 'label' : (rest.find((c) => c !== valueKey) ?? rest[0] ?? 'label');
+
+  const data = rows.map((r) => ({
+    facet: str(r[facetKey]),
+    label: str(r[labelKey]),
+    value: num(r[valueKey]),
+  }));
+  const facetCount = new Set(data.map((d) => d.facet)).size;
+  const columns = Math.min(Math.max(facetCount, 1), 3);
+
+  return {
+    $schema: 'https://vega.github.io/schema/vega-lite/v6.json',
+    config: CLARION_VEGA_CONFIG,
+    data: { values: data },
+    columns,
+    facet: {
+      field: 'facet', type: 'nominal', title: null,
+      header: { labelFontSize: 11, labelFontWeight: 600, labelColor: '#3a4654', labelAnchor: 'start' },
+    },
+    spec: {
+      width: 200,
+      height: 78,
+      mark: {
+        type: 'area',
+        line: { color: VEGA_COLORS[0], strokeWidth: 1.5 },
+        color: {
+          x1: 1, y1: 1, x2: 1, y2: 0, gradient: 'linear',
+          stops: [
+            { offset: 0, color: 'rgba(22,78,99,0)' },
+            { offset: 1, color: 'rgba(22,78,99,0.18)' },
+          ],
+        },
+        tooltip: true,
+      },
+      encoding: {
+        x: { field: 'label', type: 'nominal', sort: null, axis: null },
+        y: { field: 'value', type: 'quantitative', axis: null },
+        tooltip: [
+          { field: 'facet', type: 'nominal', title: ' ' },
+          { field: 'label', type: 'nominal', title: 'Period' },
+          { field: 'value', type: 'quantitative', title: 'Value', ...tooltipFormat(fmt) },
+        ],
+      },
+    },
+    resolve: { scale: { y: 'independent' } },
+  } as unknown as TopLevelSpec;
 }
 
 // ── Treemap (full Vega, since Vega-Lite has no treemap transform) ────────────

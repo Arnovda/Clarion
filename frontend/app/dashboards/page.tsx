@@ -45,6 +45,9 @@ import {
   ComboChartWidget,
   RadarChartWidget,
   TreemapWidget,
+  BulletChartWidget,
+  ScatterChartWidget,
+  SmallMultiplesWidget,
   PivotTableWidget,
 } from './components/ChartWidgets';
 import { FilterBar } from './components/FilterBar';
@@ -1144,6 +1147,7 @@ export default function DashboardsPage() {
       kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
       line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
       combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
+      bullet_chart: 6, scatter_chart: 6, small_multiples: 12,
     };
     const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
     // Minimum width per type — guards against AI emitting too-narrow specs on
@@ -1152,6 +1156,7 @@ export default function DashboardsPage() {
       top_list: 6, data_table: 12, pivot_table: 12, treemap_chart: 6,
       radar_chart: 6, stacked_bar_chart: 6, combo_chart: 6, line_chart: 6,
       bar_chart: 6, vertical_bar_chart: 6,
+      bullet_chart: 6, scatter_chart: 6, small_multiples: 9,
     };
     const requested = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
     const col12 = Math.max(requested, minCols[widget.type] ?? 3);
@@ -1290,6 +1295,38 @@ export default function DashboardsPage() {
         return (
           <WidgetCard {...cardProps}>
             <TreemapWidget {...widgetProps} />
+          </WidgetCard>
+        );
+      case 'bullet_chart':
+        return (
+          <WidgetCard {...cardProps}>
+            <BulletChartWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+              isCrossFilterActive={isCrossFilterSource}
+              drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
+              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
+              onContextMenu={hasCrossFilter ? onCtx : undefined}
+            />
+          </WidgetCard>
+        );
+      case 'scatter_chart':
+        return (
+          <WidgetCard {...cardProps}>
+            <ScatterChartWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+              isCrossFilterActive={isCrossFilterSource}
+              drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
+              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
+              onContextMenu={hasCrossFilter ? onCtx : undefined}
+            />
+          </WidgetCard>
+        );
+      case 'small_multiples':
+        return (
+          <WidgetCard {...cardProps}>
+            <SmallMultiplesWidget {...widgetProps} />
           </WidgetCard>
         );
       case 'pivot_table':

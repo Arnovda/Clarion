@@ -109,11 +109,15 @@ Return JSON only — no prose, no markdown fences, no explanation outside the JS
 | Part of whole (>3 slices) | bar_chart horizontal | NEVER pie_chart |
 | Single KPI headline | kpi_card | — |
 | Ranked list with values | top_list or bar_chart | pie_chart |
+| Actual vs target per category | bullet_chart | two separate bars |
+| Relationship between TWO measures | scatter_chart | two bar charts side by side |
+| Same trend across many groups | small_multiples | one busy multi-line chart |
 | Record-level detail | data_table | — |
 | Two-dimension cross-tab (rows × cols) | pivot_table | data_table |
 
 NEVER use pie_chart with more than 3 data points — use bar_chart instead.
 NEVER use vertical_bar_chart for ranked categories — use bar_chart (horizontal).
+PREFER bullet_chart over a plain bar whenever a target / budget / plan / prior-year benchmark exists for the measure — context-with-the-number is what analysts want.
 
 ━━━ WIDGET TYPES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -140,6 +144,15 @@ pie_chart — ONLY <=3 slices. SQL returns "label" and "value".
 
 top_list — ranked list. SQL returns "label" and "value". Prefer colSpan 2; use colSpan 3 if labels are long or >8 rows.
   { "id": "w_top", "type": "top_list", "title": "Top 10 Products by Units Sold", "sql": "...", "format": "number", "colSpan": 2 }
+
+bullet_chart — actual vs target per category (budget, plan, prior-year benchmark). SQL returns "label", "value" (the actual), and "target" (the benchmark). One row per category, sorted by actual DESC. Renders each category as a faint target track + a bold actual bar + a target tick — reads "are we hitting target?" at a glance. Prefer colSpan 2.
+  { "id": "w_bullet", "type": "bullet_chart", "title": "Revenue vs Target by Product Group", "sql": "SELECT pg.naam AS label, ROUND(SUM(ol.amount),2) AS value, ROUND(SUM(ol.target_amount),2) AS target FROM order_lines ol JOIN product_groups pg ON ol.group_id = pg.id WHERE ol.order_date >= '{{date_filter_from}}' AND ol.order_date <= '{{date_filter_to}}' GROUP BY 1 ORDER BY 2 DESC", "format": "currency", "colSpan": 2, "crossFilterKey": "pg.naam" }
+
+scatter_chart — relationship between TWO measures across items (e.g. units vs revenue, price vs volume). SQL returns "label" (the item name) plus exactly two measure columns named after the measures (e.g. units, revenue). OPTIONAL: a third numeric column for bubble size, and a text "group" column to colour points. Axis titles + tooltips come from the column names, so name them clearly. Prefer colSpan 2.
+  { "id": "w_scatter", "type": "scatter_chart", "title": "Units vs Revenue — Where Volume Meets Value", "sql": "SELECT da.naam AS label, COUNT(ol.id) AS units, ROUND(SUM(ol.amount),2) AS revenue, pg.naam AS group FROM order_lines ol JOIN articles da ON ol.article_id = da.id JOIN product_groups pg ON da.group_id = pg.id WHERE ol.order_date >= '{{date_filter_from}}' AND ol.order_date <= '{{date_filter_to}}' GROUP BY 1, 4 ORDER BY revenue DESC LIMIT 60", "format": "currency", "colSpan": 2, "crossFilterKey": "da.naam" }
+
+small_multiples — the SAME trend shown once per group, as a grid of mini area charts (sparklines). Use when comparing a time-series shape across several categories (revenue per item group per month, headcount per department per month). SQL returns exactly three columns: "facet" (the group), "label" (the period, chronological), "value". ORDER BY facet, label. Always colSpan 4 (full width). Each panel uses an independent y-axis so small groups stay legible. Do NOT set crossFilterKey on small_multiples.
+  { "id": "w_sm", "type": "small_multiples", "title": "Monthly Revenue per Item Group", "sql": "SELECT pg.naam AS facet, strftime(ol.order_date, '%Y-%m') AS label, ROUND(SUM(ol.amount),2) AS value FROM order_lines ol JOIN product_groups pg ON ol.group_id = pg.id WHERE ol.order_date >= '{{date_filter_from}}' AND ol.order_date <= '{{date_filter_to}}' GROUP BY 1, 2 ORDER BY 1, 2", "format": "currency", "colSpan": 4 }
 
 data_table — tabular detail. SQL returns multiple named columns. Always colSpan 4 (full width).
   { "id": "w_table", "type": "data_table", "title": "Recent Orders Detail", "sql": "...", "colSpan": 4 }
@@ -211,7 +224,7 @@ _pct / _percent / _rate suffix and renders those columns as percentages even ins
 
 ━━━ CROSS-FILTER RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Every non-kpi_card widget MUST declare "crossFilterKey": the SQL column name used as the main grouping dimension (the label column, before aliasing).
+Every non-kpi_card widget (EXCEPT small_multiples, which facets by group and has no single click dimension) MUST declare "crossFilterKey": the SQL column name used as the main grouping dimension (the label column, before aliasing).
   Example: if SQL has "SELECT customer_name as label, ..." then crossFilterKey = "customer_name"
   Example: if SQL has "SELECT product_name as label, ..." then crossFilterKey = "product_name"
 
@@ -222,7 +235,11 @@ All non-kpi_card widget SQLs MUST include cross-filter receive placeholders for 
 
 This enables clicking a customer bar to instantly cross-filter all other charts to that customer's data.
 
-━━━ LAYOUT RULES — INVERTED PYRAMID ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ LAYOUT RULES — ANALYST COCKPIT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Build a dense, exploration-first cockpit: a scannable KPI strip on top, then
+progressively detailed analytical rows, ending in record-level detail. Mix the
+chart vocabulary — do NOT emit five bar charts in a row.
 
 Grid is 12 columns. colSpan maps: 1→3 cols (quarter), 2→6 cols (half), 3→9 cols, 4→12 cols (full).
 
@@ -232,20 +249,24 @@ CRITICAL: Every row MUST sum to exactly 12 columns. No gaps, no overflow.
 
 Widget order is top-to-bottom, left-to-right. The grid auto-flows: plan widgets in rows.
 
-Row 1: 4× kpi_card (colSpan 1 each) = 1+1+1+1 — ALWAYS first.
-Row 2: Primary chart colSpan 2 + secondary chart colSpan 2 = 2+2. Use 2+2 whenever both widgets benefit from ≥6 cols (line charts, stacked bars, bar charts with >5 categories, top_list with long labels).
-Row 3: EITHER another 2+2 row OR 3+1 (wide chart + small KPI/pie) OR 4 (full-width table/pivot).
-Row 4 (optional): data_table OR pivot_table colSpan 4 = full width.
+Recommended cockpit composition (adapt to the request and available data):
+  Row 1: 4× kpi_card (colSpan 1 each) = 1+1+1+1 — ALWAYS first. Pick the 4 metrics that matter most; each with a delta vs prior period.
+  Row 2: a primary trend (combo_chart or vertical_bar_chart, colSpan 2) + a benchmark view (bullet_chart, colSpan 2) = 2+2.
+  Row 3: small_multiples (colSpan 4) when the same trend is worth comparing across groups — OR another 2+2 analytical pair.
+  Row 4: a ranked bar_chart (colSpan 2) + a scatter_chart relating two measures (colSpan 2) = 2+2; or 2+1+1 with a small pie/donut.
+  Row 5: data_table OR pivot_table (colSpan 4) — record-level detail, ALWAYS last.
 
 Widget width guidance:
   - top_list: colSpan 2 minimum (labels need room). colSpan 3 if >8 rows or long names.
   - pie_chart: colSpan 1 or 2. Never larger — pies waste space.
-  - line_chart / stacked_bar_chart / combo_chart: prefer colSpan 2 or 3.
+  - line_chart / stacked_bar_chart / combo_chart / bullet_chart / scatter_chart: prefer colSpan 2.
+  - small_multiples: ALWAYS colSpan 4 (full width — it is a grid of panels).
   - data_table: ALWAYS colSpan 4 (full width).
   - pivot_table: ALWAYS colSpan 4 (full width).
   - treemap_chart / radar_chart: colSpan 2 minimum.
 
-Total: 6–9 widgets. KPI cards always first. data_table/pivot_table always last.
+Total: 7–10 widgets. KPI cards always first. data_table/pivot_table always last.
+Aim to use at least one of {bullet_chart, scatter_chart, small_multiples} when the data supports it — they are what make the dashboard feel analytical rather than a wall of bars.
 
 ━━━ TITLE RULES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -322,7 +343,7 @@ export interface FilterSpec {
 
 export interface WidgetSpec {
   id: string;
-  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart' | 'pivot_table';
+  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart' | 'bullet_chart' | 'scatter_chart' | 'small_multiples' | 'pivot_table';
   title: string;
   sql: string;
   drillDownSql?: string;
@@ -503,6 +524,12 @@ Return the complete fixed DashboardSpec as JSON only — no prose, no markdown f
 4. KPI CARD WITH WRONG COLUMNS → Fix SQL so it returns a "value" column (and optionally "delta", "delta_label").
 
 5. STACKED BAR WITH MISSING "series" COLUMN → Fix SQL to return label, series, value.
+
+5b. BULLET CHART MISSING "target" → Fix SQL to return label, value, target. If no benchmark column exists in the schema, convert the widget to "bar_chart" (keep SQL minus target).
+
+5c. SCATTER CHART → must return "label" plus two numeric measure columns (named after the measures). If it returns only one numeric column, convert to "bar_chart".
+
+5d. SMALL_MULTIPLES → must return exactly "facet", "label", "value". If it returns no "facet" grouping column, convert to "line_chart" (label, value).
 
 6. WIDGET WITH NULL/UNDEFINED VALUES → Add COALESCE or NULLIF guards.
 

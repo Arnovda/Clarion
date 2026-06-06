@@ -134,3 +134,9 @@ export function tooltipFormat(format?: string): { format: string; formatType?: s
 
 export const VEGA_COLORS = SERIES_COLORS as string[];
 export { OCEAN as VEGA_OCEAN };
+
+// Bullet-chart "track" (the faint full-width bar showing the target range) and
+// the dark target tick drawn on top. Kept here so the bullet builder speaks the
+// same palette as every other chart.
+export const VEGA_TRACK = '#e8f0f3';   // ocean, heavily tinted
+export const VEGA_TICK = '#0f1a22';    // --ink — the target marker

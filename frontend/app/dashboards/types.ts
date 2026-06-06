@@ -27,6 +27,9 @@ export interface WidgetSpec {
     | 'combo_chart'
     | 'radar_chart'
     | 'treemap_chart'
+    | 'bullet_chart'
+    | 'scatter_chart'
+    | 'small_multiples'
     | 'pivot_table';
   title: string;
   sql: string;

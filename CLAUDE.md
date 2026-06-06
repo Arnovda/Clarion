@@ -31,7 +31,49 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-05-07 (SCD1 foundation: Delta + Python sidecar + change-evolution chart)
+**Last updated:** 2026-06-06 (Analyst-cockpit chart vocabulary: bullet + bubble-scatter + small-multiples)
+
+**Analyst-cockpit chart vocabulary (2026-06-06):** Added three new
+Vega-rendered widget types so AI-generated dashboards read as an analyst
+cockpit (actual-vs-target, two-measure relationships, trend-across-groups)
+rather than a wall of bars. Builds on the single-engine Vega-Lite renderer
+shipped earlier (`90d6970`/`f9fe7b7`). All additive — existing widget types
+untouched; zero bundle weight added (Vega is dynamically imported, `/dashboards`
+First Load JS stays 193 kB).
+- **New widget types** (`bullet_chart`, `scatter_chart`, `small_multiples`)
+  wired end-to-end: `frontend/app/dashboards/types.ts` union,
+  `utils/vegaSpecBuilder.ts` builders (`bullet`/`scatter`/`smallMultiples`)
+  + `VEGA_SUPPORTED` + switch, `components/ChartWidgets.tsx` one-liner
+  components delegating to `<VegaChart>`, `page.tsx` `renderWidget` switch +
+  `defaultCols`/`minCols` maps + imports.
+  - `bullet_chart` — SQL returns `label`,`value`,`target`. Layered track +
+    actual bar + target tick (horizontal). Degrades to a plain ranked bar
+    when no `target` column is present.
+  - `scatter_chart` — bubble. Columns inferred from the SQL's own names
+    (text col = label, first two numeric = x/y, third numeric = size, second
+    text = colour group) so axes/tooltips stay self-documenting via a new
+    `humanize()` helper. Supports `x`/`y`/`size`/`group` explicit aliases too.
+  - `small_multiples` — SQL returns `facet`,`label`,`value`. Faceted area
+    sparklines, independent y per panel, ≤3 columns. Built as a faceted
+    Vega-Lite spec WITHOUT top-level container width.
+- **`VegaChart.tsx` facet-aware sizing:** faceted specs ignore top-level
+  width, so the width override now detects `built.facet && built.spec` and
+  sizes the child `spec.width` = measured width split across `columns`
+  (16px gutters) instead of setting top-level width.
+- **`vegaTheme.ts`:** new `VEGA_TRACK` (faint ocean) + `VEGA_TICK` (--ink)
+  exports for the bullet track/target marker.
+- **Prompt (`backend/src/ai/prompts/dashboardPrompt.ts`):** added the three
+  widget docs (with example SQL), decision-table rows, an "Analyst Cockpit"
+  layout section (richer rows, 7–10 widgets, "use ≥1 of the new types when the
+  data supports it"), `small_multiples` exempt from the mandatory
+  `crossFilterKey` rule, and validation fix-rules 5b/5c/5d for the new
+  contracts (convert to bar/line when required columns are missing). Backend
+  `WidgetSpec['type']` union widened to match.
+- **Validated:** `next build` exit 0; all five builder cases compile through
+  the real `vega-lite` compiler + a `vega.View` (renderer 'none') with zero
+  render errors (headless harness). No new lint/type errors in changed files.
+
+**Earlier last-updated:** 2026-05-07 (SCD1 foundation: Delta + Python sidecar + change-evolution chart)
 
 **SCD1 + change tracking — Delta + Python sidecar (2026-05-07):** Replaces
 the parquet-overwrite write path for product tables with Delta Lake +
