@@ -13,7 +13,15 @@ import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-type Group = 'home' | 'discover' | 'analyze' | 'build' | 'curate' | 'settings';
+// IA model (2026-06 redesign): the rail is business-first.
+//   • workspace — the calm default surface every business data-owner lives in
+//     (no eyebrow; it IS the app). Ask / see / understand your data.
+//   • studio    — builder + technical tools (sources, modelling, refresh,
+//     review, notebooks), visually demoted under a "Studio" header so they're
+//     out of the business owner's way. analyst+ only.
+//   • settings  — admin-only org config.
+// Every existing route is preserved — this is a regrouping, not a removal.
+type Group = 'workspace' | 'studio' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
@@ -46,16 +54,19 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'home' },
-  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
-  { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'discover' },
-  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'analyze' },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'analyze' },
-  { key: 'products',   href: '/products',   label: 'Build',           icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'build' },
-  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'build' },
-  { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'sources' },
-  { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'curate', badgeKey: 'review' },
+  // ── Workspace — the business data-owner's default surface ───────────────
+  { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
+  { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
+  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'studio' },
+  // ── Settings — admin-only org config ────────────────────────────────────
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
   { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
@@ -77,15 +88,15 @@ const ROUTE_ALIASES: Record<string, string[]> = {
 };
 
 const GROUP_LABELS: Record<Group, string> = {
-  home:     '',
-  discover: 'Discover',
-  analyze:  'Analyze',
-  build:    'Build',
-  curate:   'Curate',
-  settings: 'Settings',
+  // No eyebrow on the workspace group — it's the unlabelled default surface,
+  // which keeps the top of the rail calm. Studio + Settings are labelled so
+  // the builder/admin tools read as a clearly separate, secondary area.
+  workspace: '',
+  studio:    'Studio',
+  settings:  'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['home', 'discover', 'analyze', 'build', 'curate', 'settings'];
+const GROUP_ORDER: Group[] = ['workspace', 'studio', 'settings'];
 
 // ─── Sizing constants ─────────────────────────────────────────────────────
 // Width range for the resize handle. Below MIN we'd start clipping labels;
