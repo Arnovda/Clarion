@@ -90,6 +90,10 @@ should NOT be a first-class destination for the business owner.
     reuses QualityPanel + the `/quality/tables` endpoint.
   - Catalog facet bar is now **Browse · Trust · Glossary** — the single
     "understand your data" surface the blueprint called for.
+  - **/health folded in (DONE):** the Trust facet gained a "Check all tables"
+    (profile-all) control, so `/health` now redirects to `/catalog?facet=trust`.
+    One door to quality. Per-source profiling still lives in Sources (Studio).
+    Both standalone pages (`/glossary`, `/health`) are now thin redirects.
 - **Phase 4 — "Ask AI to change it"** as the primary tuning affordance on every
   definition / metric / dataset; raw SQL editing moves to Studio only. *Gated —
   needs backend NL-edit endpoints + a running app.*

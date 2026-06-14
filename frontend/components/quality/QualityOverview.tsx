@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, ChevronLeft } from 'lucide-react';
+import { Loader2, ChevronLeft, Play } from 'lucide-react';
 import api from '@/lib/api';
 import QualityPanel from '@/components/QualityPanel';
 
@@ -48,6 +48,7 @@ export default function QualityOverview() {
   const [selected, setSelected] = useState<
     { connId: number; tableName: string; displayName?: string; productTableId?: number | null } | null
   >(null);
+  const [profiling, setProfiling] = useState<{ done: number; total: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +62,28 @@ export default function QualityOverview() {
     }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  // Profile every table (source tables by connection+name, product tables by
+  // product_table_id). User-initiated; runs sequentially with a progress
+  // counter so the user can see it work. Profiling can also be triggered
+  // per-source from Sources (Studio) — this is the convenient "do it all" path.
+  const profileAll = useCallback(async () => {
+    if (profiling) return;
+    setProfiling({ done: 0, total: tables.length });
+    for (let i = 0; i < tables.length; i++) {
+      const t = tables[i];
+      try {
+        if (t.layer === 'product' && t.product_table_id != null) {
+          await api.post(`/quality/product/${t.product_table_id}/profile`);
+        } else if ((t.layer ?? 'source') === 'source') {
+          await api.post(`/quality/${t.connection_id}/${encodeURIComponent(t.table_name)}/profile`);
+        }
+      } catch { /* continue on error */ }
+      setProfiling({ done: i + 1, total: tables.length });
+    }
+    setProfiling(null);
+    await load();
+  }, [profiling, tables, load]);
 
   const profiled = useMemo(() => tables.filter((t) => t.overall_score !== null), [tables]);
   const avgScore = profiled.length > 0
@@ -124,6 +147,25 @@ export default function QualityOverview() {
             {profiled.length} of {tables.length} tables profiled across all your data
           </p>
         </div>
+        {tables.length > 0 && (
+          <div className="flex-shrink-0">
+            {profiling ? (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-ocean-softer text-ocean text-[12px] font-medium border border-line">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                Checking {profiling.done}/{profiling.total}…
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={profileAll}
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-ocean text-white text-[13px] font-medium hover:bg-ocean-hover transition-colors"
+              >
+                <Play className="w-3.5 h-3.5" strokeWidth={2} fill="currentColor" />
+                Check all {tables.length} tables
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Worst-first table grid */}
