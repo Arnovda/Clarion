@@ -355,9 +355,15 @@ function CatalogInner() {
           {viewMode === 'structure' && <LayerChips value={layer} onChange={updateLayer} />}
         </div>
         <div className="flex items-center gap-2">
-          {canSeeStructure && (
-            <ViewModeToggle value={viewMode} onChange={updateViewMode} />
-          )}
+          <BrowseLayoutControl
+            layout={cardsLayout}
+            viewMode={viewMode}
+            canSeeStructure={canSeeStructure}
+            onSelect={(v) => {
+              if (v === 'structure') { updateViewMode('structure'); }
+              else { updateViewMode('cards'); updateCardsLayout(v); }
+            }}
+          />
           {isAdmin() && (
             <button
               type="button"
@@ -382,7 +388,6 @@ function CatalogInner() {
           search={search}
           onSearchChange={setSearch}
           layout={cardsLayout}
-          onLayoutChange={updateCardsLayout}
           headerStats={headerStats}
           selectedId={productRootId}
           selectedReferenceTableId={referenceTableId}
@@ -458,22 +463,38 @@ function CatalogInner() {
 
 type Facet = 'browse' | 'glossary' | 'trust';
 
-function LayoutToggle({ value, onChange }: { value: CardsLayout; onChange: (l: CardsLayout) => void }) {
-  const opts: { id: CardsLayout; label: string; icon: React.ReactNode }[] = [
+/**
+ * Unified Browse layout control: Grid · List · Structure. Replaces the old
+ * separate "Browse/Structure" view-mode toggle + in-body "Grid/List" toggle so
+ * there's a single place to choose how the catalog is laid out. Structure (the
+ * technical tree) only appears for analyst+; it switches the whole body.
+ */
+type BrowseLayoutValue = CardsLayout | 'structure';
+function BrowseLayoutControl({
+  layout, viewMode, canSeeStructure, onSelect,
+}: {
+  layout: CardsLayout;
+  viewMode: ViewMode;
+  canSeeStructure: boolean;
+  onSelect: (v: BrowseLayoutValue) => void;
+}) {
+  const opts: { id: BrowseLayoutValue; label: string; icon: React.ReactNode }[] = [
     { id: 'grid', label: 'Grid', icon: <LayoutGrid className="w-3 h-3" strokeWidth={2} /> },
     { id: 'list', label: 'List', icon: <List className="w-3 h-3" strokeWidth={2} /> },
+    ...(canSeeStructure ? [{ id: 'structure' as const, label: 'Structure', icon: <Network className="w-3 h-3" strokeWidth={2} /> }] : []),
   ];
+  const active: BrowseLayoutValue = viewMode === 'structure' ? 'structure' : layout;
   return (
     <div className="inline-flex items-center gap-0.5 bg-softer border border-line rounded-md p-0.5">
       {opts.map((o) => (
         <button
           key={o.id}
           type="button"
-          onClick={() => onChange(o.id)}
-          aria-pressed={value === o.id}
+          onClick={() => onSelect(o.id)}
+          aria-pressed={active === o.id}
           className={cn(
             'inline-flex items-center gap-1 px-2 py-1 text-[11.5px] font-medium rounded transition-colors',
-            value === o.id ? 'bg-raised text-ink shadow-sm border border-line' : 'text-muted hover:text-ink-2',
+            active === o.id ? 'bg-raised text-ink shadow-sm border border-line' : 'text-muted hover:text-ink-2',
           )}
           title={`${o.label} view`}
         >
@@ -533,7 +554,6 @@ function CardsBody(props: {
   search: string;
   onSearchChange: (s: string) => void;
   layout: CardsLayout;
-  onLayoutChange: (l: CardsLayout) => void;
   /** Counts shown in the hero subtitle — N sources / analytics / dimensions. */
   headerStats: { sources: number; analytics: number; dimensions: number };
   selectedId: number | null;
@@ -646,11 +666,6 @@ function CardsBody(props: {
               is searching. Canonical business definitions before products
               — Atlan / Hex / Lightdash pattern. Hidden when search empty. */}
           <GlossaryMatchCards entries={props.glossary} search={props.search} />
-
-          {/* Grid / List layout toggle (dScribe-style), right-aligned. */}
-          <div className="flex items-center justify-end mb-4">
-            <LayoutToggle value={props.layout} onChange={props.onLayoutChange} />
-          </div>
 
           <CatalogSplitView
             sources={props.catalogBlocks}
@@ -793,41 +808,6 @@ function StructureSearchInput({
   );
 }
 
-function ViewModeToggle({ value, onChange }: { value: ViewMode; onChange: (v: ViewMode) => void }) {
-  return (
-    <div className="inline-flex items-center gap-0.5 bg-softer border border-line rounded-md p-0.5">
-      <button
-        type="button"
-        onClick={() => onChange('cards')}
-        className={cn(
-          'inline-flex items-center gap-1 px-2 py-1 text-[11.5px] font-medium rounded transition-colors',
-          value === 'cards'
-            ? 'bg-raised text-ink shadow-sm border border-line'
-            : 'text-muted hover:text-ink-2',
-        )}
-        title="Card grid (browse data products)"
-      >
-        <LayoutGrid className="w-3 h-3" strokeWidth={2} />
-        Browse
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange('structure')}
-        className={cn(
-          'inline-flex items-center gap-1 px-2 py-1 text-[11.5px] font-medium rounded transition-colors',
-          value === 'structure'
-            ? 'bg-raised text-ink shadow-sm border border-line'
-            : 'text-muted hover:text-ink-2',
-        )}
-        title="Structure view (sources, tables, schema diagram)"
-      >
-        <Network className="w-3 h-3" strokeWidth={2} />
-        Structure
-      </button>
-    </div>
-  );
-}
-
 function LayerChips({ value, onChange }: { value: LayerFilter; onChange: (v: LayerFilter) => void }) {
   const chips: { id: LayerFilter; label: string }[] = [
     { id: 'all',      label: 'All' },
@@ -876,12 +856,12 @@ function CatalogHero({
   // Calm, editorial, search-forward header (dScribe-style): a clear purpose
   // line and a prominent search as the focal point; counts quieted underneath.
   return (
-    <header className="mb-10 pt-2 text-center">
-      <p className="text-[10.5px] font-mono tracking-[0.18em] uppercase text-muted-2 mb-3">Catalog</p>
-      <h1 className="font-display text-[40px] sm:text-[44px] text-ink leading-[1.04] tracking-[-0.03em] mb-3">
+    <header className="mb-7 text-center">
+      <p className="text-[10.5px] font-mono tracking-[0.18em] uppercase text-muted-2 mb-2.5">Catalog</p>
+      <h1 className="font-display text-[32px] sm:text-[36px] text-ink leading-[1.05] tracking-[-0.03em] mb-2.5">
         Find and understand your data
       </h1>
-      <p className="text-[14px] text-muted leading-relaxed max-w-xl mx-auto mb-7">
+      <p className="text-[13.5px] text-muted leading-relaxed max-w-lg mx-auto mb-5">
         Browse every dataset, see what each field means, and check you can trust it — all in plain language.
       </p>
       <div className="max-w-xl mx-auto">

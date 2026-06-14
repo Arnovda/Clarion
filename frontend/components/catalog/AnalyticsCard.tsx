@@ -73,18 +73,13 @@ export default function AnalyticsCard({
           </div>
         )}
 
-        {/* Tiny "ANALYTICS" eyebrow above the name. */}
-        <div className={cn('flex items-center gap-1.5 mb-1', palette.eyebrow)}>
-          <Database className="w-3 h-3" strokeWidth={2} />
-          <span className="text-[10px] font-mono uppercase tracking-[0.14em]">
-            Analytics
-          </span>
-        </div>
-
+        {/* No per-card eyebrow — the column is already titled "Analytics".
+            A small product icon sits inline with the name instead. */}
         <h3 className={cn(
-          'font-display text-[22px] tracking-[-0.01em] leading-tight mb-2 transition-colors',
+          'font-display text-[22px] tracking-[-0.01em] leading-tight mb-2 flex items-center gap-2 transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
+          <Database className={cn('w-4 h-4 shrink-0', palette.eyebrow)} strokeWidth={1.75} />
           {data.name}
         </h3>
 

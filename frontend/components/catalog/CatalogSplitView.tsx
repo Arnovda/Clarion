@@ -202,8 +202,9 @@ function SourceBand({
         onClick={() => setCollapsed((c) => !c)}
         className={cn(
           'w-full px-6 py-4 flex items-center gap-3 text-left transition-colors',
-          palette.tintBg,
-          'hover:brightness-[0.99]',
+          // Calm white header — colour identity comes from the top accent strip
+          // + the dot, not a heavy tinted fill.
+          'bg-raised hover:bg-softer/40',
         )}
         aria-expanded={!collapsed}
       >
