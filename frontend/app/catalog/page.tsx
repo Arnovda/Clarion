@@ -22,7 +22,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Plus, LayoutGrid, Network, Search, X, Library, ShieldCheck } from 'lucide-react';
+import { Loader2, Plus, LayoutGrid, Network, Search, X, Library, ShieldCheck, List } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
 import GlossaryPanel from '@/components/semantic/GlossaryPanel';
 import QualityOverview from '@/components/quality/QualityOverview';
@@ -45,11 +45,13 @@ import ProductFullView from '@/components/catalog/ProductFullView';
 
 type ViewMode = 'cards' | 'structure';
 type LayerFilter = 'all' | 'sources' | 'products';
+type CardsLayout = 'grid' | 'list';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
-const VIEW_MODE_KEY = 'catalog:viewMode';
-const LAYER_KEY     = 'catalog:layer';
+const VIEW_MODE_KEY    = 'catalog:viewMode';
+const LAYER_KEY        = 'catalog:layer';
+const CARDS_LAYOUT_KEY = 'catalog:cardsLayout';
 
 function CatalogInner() {
   const router = useRouter();
@@ -91,6 +93,19 @@ function CatalogInner() {
 
   // ── Search (cards mode) ────────────────────────────────────────────────────
   const [search, setSearch] = useState('');
+
+  // ── Browse layout: grid (rich cards) or list (compact rows, dScribe-style) ──
+  const [cardsLayout, setCardsLayout] = useState<CardsLayout>('grid');
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(CARDS_LAYOUT_KEY);
+      if (v === 'grid' || v === 'list') setCardsLayout(v);
+    } catch { /* ignore */ }
+  }, []);
+  const updateCardsLayout = useCallback((next: CardsLayout) => {
+    setCardsLayout(next);
+    try { window.localStorage.setItem(CARDS_LAYOUT_KEY, next); } catch { /* ignore */ }
+  }, []);
 
   // ── Layer filter (structure mode) ──────────────────────────────────────────
   const [layer, setLayer] = useState<LayerFilter>('all');
@@ -366,6 +381,8 @@ function CatalogInner() {
           loading={productsLoading}
           search={search}
           onSearchChange={setSearch}
+          layout={cardsLayout}
+          onLayoutChange={updateCardsLayout}
           headerStats={headerStats}
           selectedId={productRootId}
           selectedReferenceTableId={referenceTableId}
@@ -441,6 +458,33 @@ function CatalogInner() {
 
 type Facet = 'browse' | 'glossary' | 'trust';
 
+function LayoutToggle({ value, onChange }: { value: CardsLayout; onChange: (l: CardsLayout) => void }) {
+  const opts: { id: CardsLayout; label: string; icon: React.ReactNode }[] = [
+    { id: 'grid', label: 'Grid', icon: <LayoutGrid className="w-3 h-3" strokeWidth={2} /> },
+    { id: 'list', label: 'List', icon: <List className="w-3 h-3" strokeWidth={2} /> },
+  ];
+  return (
+    <div className="inline-flex items-center gap-0.5 bg-softer border border-line rounded-md p-0.5">
+      {opts.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          onClick={() => onChange(o.id)}
+          aria-pressed={value === o.id}
+          className={cn(
+            'inline-flex items-center gap-1 px-2 py-1 text-[11.5px] font-medium rounded transition-colors',
+            value === o.id ? 'bg-raised text-ink shadow-sm border border-line' : 'text-muted hover:text-ink-2',
+          )}
+          title={`${o.label} view`}
+        >
+          {o.icon}
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CatalogFacetBar({
   facet, onChange,
 }: { facet: Facet; onChange: (f: Facet) => void }) {
@@ -488,6 +532,8 @@ function CardsBody(props: {
   loading: boolean;
   search: string;
   onSearchChange: (s: string) => void;
+  layout: CardsLayout;
+  onLayoutChange: (l: CardsLayout) => void;
   /** Counts shown in the hero subtitle — N sources / analytics / dimensions. */
   headerStats: { sources: number; analytics: number; dimensions: number };
   selectedId: number | null;
@@ -601,9 +647,15 @@ function CardsBody(props: {
               — Atlan / Hex / Lightdash pattern. Hidden when search empty. */}
           <GlossaryMatchCards entries={props.glossary} search={props.search} />
 
+          {/* Grid / List layout toggle (dScribe-style), right-aligned. */}
+          <div className="flex items-center justify-end mb-4">
+            <LayoutToggle value={props.layout} onChange={props.onLayoutChange} />
+          </div>
+
           <CatalogSplitView
             sources={props.catalogBlocks}
             search={props.search}
+            layout={props.layout}
             selectedAnalyticsId={props.selectedId}
             selectedReferenceTableId={props.selectedReferenceTableId}
             onSelectAnalytics={props.onSelectProduct}

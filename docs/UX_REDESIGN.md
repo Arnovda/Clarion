@@ -124,6 +124,10 @@ should NOT be a first-class destination for the business owner.
   "N metrics" chip (what you can measure) + an "Updated …" freshness signal.
   Reference cards were already quiet/dScribe-like and left as-is. Less chrome,
   more meaning.
+- **List view (DONE):** a Grid / List toggle on Browse (persisted). List mode
+  renders each dataset as a compact, scannable row (type icon + name + meaning +
+  quiet meta) per source band — the dScribe-style dense alternative to the rich
+  card grid. Selection + drill-in behaviour is shared with grid mode.
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*

@@ -24,7 +24,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Plus, ChevronUp } from 'lucide-react';
+import { Plus, ChevronUp, Database, Tag } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatRelativeShort } from '@/lib/dates';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
@@ -43,6 +43,8 @@ export interface SourceBlockData {
 interface Props {
   sources: SourceBlockData[];
   search: string;
+  /** 'grid' = rich cards (default); 'list' = compact rows (dScribe-style). */
+  layout?: 'grid' | 'list';
   selectedAnalyticsId: number | null;
   selectedReferenceTableId: number | null;
   onSelectAnalytics: (productId: number) => void;
@@ -72,7 +74,7 @@ function latestRefresh(block: SourceBlockData): string | null {
 }
 
 export default function CatalogSplitView({
-  sources, search, selectedAnalyticsId, selectedReferenceTableId,
+  sources, search, layout = 'grid', selectedAnalyticsId, selectedReferenceTableId,
   onSelectAnalytics, onSelectReference, onCreate, isAdmin, loading,
   showCuratorSignals,
 }: Props) {
@@ -143,6 +145,7 @@ export default function CatalogSplitView({
             key={`${s.connectionId ?? 'x'}-${s.name}`}
             block={s}
             palette={palette}
+            layout={layout}
             selectedAnalyticsId={selectedAnalyticsId}
             selectedReferenceTableId={selectedReferenceTableId}
             onSelectAnalytics={onSelectAnalytics}
@@ -162,13 +165,14 @@ export default function CatalogSplitView({
 // ───────────────────────────────────────────────────────────────────────────
 
 function SourceBand({
-  block, palette,
+  block, palette, layout = 'grid',
   selectedAnalyticsId, selectedReferenceTableId,
   onSelectAnalytics, onSelectReference,
   showCuratorSignals, isAdmin, onCreate,
 }: {
   block: SourceBlockData;
   palette: SourcePalette;
+  layout?: 'grid' | 'list';
   selectedAnalyticsId: number | null;
   selectedReferenceTableId: number | null;
   onSelectAnalytics: (id: number) => void;
@@ -246,7 +250,42 @@ function SourceBand({
         </span>
       </button>
 
-      {!collapsed && (
+      {!collapsed && layout === 'list' && (
+        <div className="px-4 py-3 space-y-1">
+          {block.analytics.length === 0 && block.reference.length === 0 ? (
+            <p className="text-[12px] text-muted italic px-2 py-2">Nothing here yet.</p>
+          ) : (
+            <>
+              {block.analytics.map((a) => (
+                <EntityRow
+                  key={`a-${a.productId}`}
+                  kind="analytic"
+                  name={a.name}
+                  description={a.description}
+                  meta={`${a.metricCount} ${a.metricCount === 1 ? 'metric' : 'metrics'}`}
+                  palette={palette}
+                  selected={selectedAnalyticsId === a.productId}
+                  onSelect={() => onSelectAnalytics(a.productId)}
+                />
+              ))}
+              {block.reference.map((r) => (
+                <EntityRow
+                  key={`r-${r.tableId}`}
+                  kind="reference"
+                  name={r.name}
+                  description={r.description}
+                  meta={r.rowCount != null ? `${r.rowCount.toLocaleString('en-GB')} rows` : null}
+                  palette={palette}
+                  selected={selectedReferenceTableId === r.tableId}
+                  onSelect={() => onSelectReference(r.tableId)}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {!collapsed && layout !== 'list' && (
         <div className="grid grid-cols-1 lg:grid-cols-[2fr_3fr] gap-6 p-6">
           {/* Left: Analytics */}
           <div>
@@ -303,6 +342,50 @@ function SourceBand({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Compact list row (list layout). One line per dataset: type icon + name +
+ * truncated meaning + a quiet meta on the right. The calm, scannable
+ * dScribe-style alternative to the rich card grid.
+ */
+function EntityRow({
+  kind, name, description, meta, palette, selected, onSelect,
+}: {
+  kind: 'analytic' | 'reference';
+  name: string;
+  description: string | null;
+  meta: string | null;
+  palette: SourcePalette;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const Icon = kind === 'analytic' ? Database : Tag;
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={cn(
+        'group w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-md border transition-colors',
+        selected ? 'border-ocean bg-ocean/5' : 'border-transparent hover:bg-softer',
+      )}
+    >
+      <Icon className={cn('w-3.5 h-3.5 shrink-0', palette.eyebrow)} strokeWidth={2} />
+      <span className={cn(
+        'text-[13.5px] font-medium shrink-0 max-w-[40%] truncate',
+        selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
+      )}>
+        {name}
+      </span>
+      <span className="text-[12.5px] text-muted truncate flex-1 min-w-0">
+        {description || 'No description yet.'}
+      </span>
+      {meta && (
+        <span className="text-[11px] font-mono text-muted-2 tabular-nums shrink-0">{meta}</span>
+      )}
+    </button>
   );
 }
 
