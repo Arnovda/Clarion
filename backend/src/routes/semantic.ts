@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
-import { generateSchemaDraft, suggestRelationships } from '../ai/AIService';
+import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
 import type { SemanticContext } from '../ai/prompts/schemaDraftPrompt';
@@ -222,6 +222,87 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'column', id, body.display_name as string ?? body.column_name as string, { fields: Object.keys(changes) });
 
     res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// Conversational tuning — "Ask AI to change this description"
+//
+// Returns an AI-improved description for the user to review; it does NOT save.
+// On accept, the client calls the existing PATCH /tables|/columns/:id. This is
+// the business-owner's plain-language way to tune meaning without writing the
+// text (or any SQL) themselves.
+// ---------------------------------------------------------------------------
+
+function readInstruction(req: Request, res: Response): string | null {
+  const instruction = (req.body as { instruction?: unknown })?.instruction;
+  if (typeof instruction !== 'string' || instruction.trim().length === 0) {
+    res.status(400).json({ ok: false, error: 'An instruction is required.' });
+    return null;
+  }
+  if (instruction.length > 1000) {
+    res.status(400).json({ ok: false, error: 'Instruction is too long (max 1000 characters).' });
+    return null;
+  }
+  return instruction.trim();
+}
+
+// POST /api/semantic/tables/:id/improve-description  { instruction }
+router.post('/tables/:id/improve-description', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) { res.status(400).json({ ok: false, error: 'Invalid id' }); return; }
+    const instruction = readInstruction(req, res);
+    if (instruction === null) return;
+
+    const table = await db('source_tables').where({ id }).first();
+    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+    const conn = table.connection_id
+      ? await db('connections').where({ id: table.connection_id }).first()
+      : null;
+
+    const proposal = await improveDescription({
+      entityType: 'table',
+      name: String(table.display_name || table.table_name || 'table'),
+      currentDescription: String(table.description ?? ''),
+      instruction,
+      connectorType: conn?.connector_type ?? conn?.type ?? null,
+    });
+
+    res.json({ ok: true, data: { current_description: String(table.description ?? ''), ai_proposal: proposal, instruction } });
+  } catch (err) { next(err); }
+});
+
+// POST /api/semantic/columns/:id/improve-description  { instruction }
+router.post('/columns/:id/improve-description', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) { res.status(400).json({ ok: false, error: 'Invalid id' }); return; }
+    const instruction = readInstruction(req, res);
+    if (instruction === null) return;
+
+    const col = await db('source_columns').where({ id }).first();
+    if (!col) { res.status(404).json({ ok: false, error: 'Column not found' }); return; }
+    const parent = col.source_table_id
+      ? await db('source_tables').where({ id: col.source_table_id }).first()
+      : null;
+    const conn = parent?.connection_id
+      ? await db('connections').where({ id: parent.connection_id }).first()
+      : null;
+
+    const proposal = await improveDescription({
+      entityType: 'column',
+      name: String(col.display_name || col.column_name || 'column'),
+      tableName: parent ? String(parent.display_name || parent.table_name) : null,
+      dataType: col.data_type ?? null,
+      currentDescription: String(col.description ?? ''),
+      instruction,
+      connectorType: conn?.connector_type ?? conn?.type ?? null,
+    });
+
+    res.json({ ok: true, data: { current_description: String(col.description ?? ''), ai_proposal: proposal, instruction } });
   } catch (err) { next(err); }
 });
 

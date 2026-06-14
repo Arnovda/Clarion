@@ -2428,3 +2428,74 @@ export async function generateDashboardInsights(
   }
   return [];
 }
+
+// ---------------------------------------------------------------------------
+// Conversational tuning — "Ask AI to change this description"
+// ---------------------------------------------------------------------------
+
+/**
+ * Improve a single table/column description from a plain-language instruction.
+ *
+ * The business-data-owner's primary way to tune meaning: instead of writing the
+ * text themselves, they say what they want ("make it clearer", "explain the
+ * business purpose", "mention it's in euros") and we return a revised
+ * description for them to confirm. No customer row data is sent — only the
+ * entity's name/type, the current description, the glossary, and the
+ * instruction — so this is a schema-class call.
+ *
+ * Returns plain text (no quotes/markdown). Kept short + cheap via Haiku.
+ */
+export async function improveDescription(args: {
+  entityType: 'table' | 'column';
+  name: string;
+  tableName?: string | null;
+  dataType?: string | null;
+  currentDescription: string;
+  instruction: string;
+  connectorType?: string | null;
+}): Promise<string> {
+  const { entityType, name, tableName, dataType, currentDescription, instruction, connectorType } = args;
+  const glossary = await loadGlossaryBlock();
+
+  const system =
+    `You write clear, concise business descriptions for data ${entityType}s in a ` +
+    `semantic data catalog used by non-technical business users. ` +
+    `Return ONE short paragraph (max 2 sentences), plain business language, no jargon, ` +
+    `no markdown, no surrounding quotes. Describe what it means for the business — ` +
+    `not how it's stored. Honour the user's instruction.` +
+    (glossary ? `\n\n${glossary}` : '');
+
+  const ctx: string[] = [];
+  if (connectorType) ctx.push(`Source system: ${connectorType}`);
+  if (entityType === 'column') {
+    ctx.push(`Column: ${name}`);
+    if (tableName) ctx.push(`In table: ${tableName}`);
+    if (dataType) ctx.push(`Data type: ${dataType}`);
+  } else {
+    ctx.push(`Table: ${name}`);
+  }
+  ctx.push(`Current description: ${currentDescription ? currentDescription : '(none yet)'}`);
+
+  const user =
+    `${ctx.join('\n')}\n\n` +
+    `Instruction from the user: ${instruction}\n\n` +
+    `Write the improved description now (one short paragraph, plain text only).`;
+
+  const raw = await callClaude(system, user, {
+    model: MODEL_HAIKU,
+    maxTokens: 300,
+    temperature: 0.4,
+    callLabel: `improve_${entityType}_description`,
+    kind: 'schema',
+  });
+
+  // Strip accidental wrapping quotes / code fences / leading label.
+  let out = raw.trim()
+    .replace(/^```(?:\w+)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  if ((out.startsWith('"') && out.endsWith('"')) || (out.startsWith('“') && out.endsWith('”'))) {
+    out = out.slice(1, -1).trim();
+  }
+  return out;
+}

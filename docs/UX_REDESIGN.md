@@ -94,9 +94,15 @@ should NOT be a first-class destination for the business owner.
     (profile-all) control, so `/health` now redirects to `/catalog?facet=trust`.
     One door to quality. Per-source profiling still lives in Sources (Studio).
     Both standalone pages (`/glossary`, `/health`) are now thin redirects.
-- **Phase 4 — "Ask AI to change it"** as the primary tuning affordance on every
-  definition / metric / dataset; raw SQL editing moves to Studio only. *Gated —
-  needs backend NL-edit endpoints + a running app.*
+- **Phase 4 — "Ask AI to change it" (DONE — descriptions).** Conversational
+  tuning of meaning without forms or SQL. Backend: `improveDescription()` in
+  AIService (Haiku, schema-class, glossary-aware, no row data sent) + two POST
+  routes `POST /semantic/{tables,columns}/:id/improve-description` that return a
+  proposal (no write). Frontend: `<AiPromptDialog>` + an "Ask AI" affordance on
+  the table and column description fields in `TableDetailPanel` — the user
+  describes the change in plain language, reviews the suggestion, clicks "Use
+  this" to fill the field, then saves via the normal flow. Extending the same
+  pattern to metrics/transformations is the next increment.
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*
