@@ -22,9 +22,10 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Plus, LayoutGrid, Network, Search, X, Library } from 'lucide-react';
+import { Loader2, Plus, LayoutGrid, Network, Search, X, Library, ShieldCheck } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
 import GlossaryPanel from '@/components/semantic/GlossaryPanel';
+import QualityOverview from '@/components/quality/QualityOverview';
 import { isAdmin, getTokenPayload } from '@/lib/auth';
 import CatalogBrowser, {
   type CatalogSchemaSelection,
@@ -68,11 +69,12 @@ function CatalogInner() {
 
   // ── Facet (top-level lens on "your data") ────────────────────────────────
   // Catalog is the single "understand your data" surface. Browse = discover +
-  // confirm meanings; Glossary = shared business terms (merged in from the old
-  // standalone /glossary). Trust (quality) is the next facet to fold in.
-  const [facet, setFacet] = useState<'browse' | 'glossary'>(
-    params.get('facet') === 'glossary' ? 'glossary' : 'browse',
-  );
+  // confirm meanings; Trust = data quality/health; Glossary = shared business
+  // terms (both merged in from the old standalone /health + /glossary pages).
+  const [facet, setFacet] = useState<'browse' | 'glossary' | 'trust'>(() => {
+    const f = params.get('facet');
+    return f === 'glossary' ? 'glossary' : f === 'trust' ? 'trust' : 'browse';
+  });
 
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   useEffect(() => {
@@ -322,6 +324,12 @@ function CatalogInner() {
             <GlossaryPanel canEdit={canEditGlossary} />
           </div>
         </div>
+      ) : facet === 'trust' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
+          <div className="max-w-5xl mx-auto">
+            <QualityOverview />
+          </div>
+        </div>
       ) : (
       <>
       {/* Slim chrome bar — only the controls live here now. The hero
@@ -431,12 +439,15 @@ function CatalogInner() {
 // Catalog facet bar — the single "understand your data" surface lens
 // ───────────────────────────────────────────────────────────────────────────
 
+type Facet = 'browse' | 'glossary' | 'trust';
+
 function CatalogFacetBar({
   facet, onChange,
-}: { facet: 'browse' | 'glossary'; onChange: (f: 'browse' | 'glossary') => void }) {
-  const tabs: { id: 'browse' | 'glossary'; label: string; icon: React.ReactNode }[] = [
-    { id: 'browse',   label: 'Browse',   icon: <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-    { id: 'glossary', label: 'Glossary', icon: <Library className="w-3.5 h-3.5" strokeWidth={1.75} /> },
+}: { facet: Facet; onChange: (f: Facet) => void }) {
+  const tabs: { id: Facet; label: string; icon: React.ReactNode }[] = [
+    { id: 'browse',   label: 'Browse',   icon: <LayoutGrid  className="w-3.5 h-3.5" strokeWidth={1.75} /> },
+    { id: 'trust',    label: 'Trust',    icon: <ShieldCheck className="w-3.5 h-3.5" strokeWidth={1.75} /> },
+    { id: 'glossary', label: 'Glossary', icon: <Library     className="w-3.5 h-3.5" strokeWidth={1.75} /> },
   ];
   return (
     <div className="bg-canvas border-b border-line px-6 pt-2.5 flex items-center gap-1 flex-shrink-0">

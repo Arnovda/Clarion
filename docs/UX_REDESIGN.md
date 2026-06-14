@@ -82,10 +82,14 @@ should NOT be a first-class destination for the business owner.
     `GlossaryPanel` inside Catalog. The standalone Glossary nav item is removed
     (Workspace is now Home · Ask AI · Dashboards · Catalog — 4 items); the
     `/glossary` route still works for deep links and highlights Catalog.
-  - **Trust (quality) facet — TODO:** needs `/health`'s inner content extracted
-    into a reusable component (today `/health` builds its own shell), then
-    mounted as a third facet. Deferred to keep this change verifiable.
-  - Held on the feature branch for visual review before merging to main.
+  - **Trust (quality) facet (DONE):** new shell-free `<QualityOverview>`
+    component (`components/quality/QualityOverview.tsx`) — average-score hero +
+    worst-first table grid + inline drill-down into the existing `QualityPanel`.
+    Mounted as the Catalog "Trust" facet. `/health` is left intact (deep link,
+    highlights Catalog) and can be retired later. Composition, not a rewrite —
+    reuses QualityPanel + the `/quality/tables` endpoint.
+  - Catalog facet bar is now **Browse · Trust · Glossary** — the single
+    "understand your data" surface the blueprint called for.
 - **Phase 4 — "Ask AI to change it"** as the primary tuning affordance on every
   definition / metric / dataset; raw SQL editing moves to Studio only. *Gated —
   needs backend NL-edit endpoints + a running app.*
