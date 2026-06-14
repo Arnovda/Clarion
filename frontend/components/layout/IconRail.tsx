@@ -149,6 +149,14 @@ export default function IconRail() {
         if (Array.isArray(parsed.openGroups)) {
           setOpenGroups(parsed.openGroups.filter((g): g is Group => COLLAPSIBLE_GROUPS.includes(g as Group)));
         }
+      } else {
+        // First-ever load (no saved preference): open Studio for builders so a
+        // brand-new admin can immediately find Sources / Data products to set
+        // up their data. Viewers never see Studio, so their calm 4-item
+        // Workspace is unaffected. Once the user collapses it, the choice is
+        // persisted and respected.
+        const r = getTokenPayload()?.role;
+        if (r === 'admin' || r === 'analyst') setOpenGroups(['studio']);
       }
     } catch { /* ignore — fall back to defaults */ }
     setHydrated(true);
