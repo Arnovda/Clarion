@@ -76,8 +76,16 @@ should NOT be a first-class destination for the business owner.
   questions). It already serves the inbox intent. Remaining: optional vocabulary
   pass + pull `/gaps` low-confidence questions in. *Gated.*
 - **Phase 3 — Merge Catalog + Quality + Glossary** into one "understand your
-  data" surface with Browse / Meanings / Trust / Glossary facets. *Gated — needs
-  a running app to validate; risky to ship blind.*
+  data" surface with Browse / Trust / Glossary facets.
+  - **Glossary facet (DONE on branch, NOT merged to main):** `/catalog` now has
+    a facet bar (Browse · Glossary); Glossary renders the existing
+    `GlossaryPanel` inside Catalog. The standalone Glossary nav item is removed
+    (Workspace is now Home · Ask AI · Dashboards · Catalog — 4 items); the
+    `/glossary` route still works for deep links and highlights Catalog.
+  - **Trust (quality) facet — TODO:** needs `/health`'s inner content extracted
+    into a reusable component (today `/health` builds its own shell), then
+    mounted as a third facet. Deferred to keep this change verifiable.
+  - Held on the feature branch for visual review before merging to main.
 - **Phase 4 — "Ask AI to change it"** as the primary tuning affordance on every
   definition / metric / dataset; raw SQL editing moves to Studio only. *Gated —
   needs backend NL-edit endpoints + a running app.*

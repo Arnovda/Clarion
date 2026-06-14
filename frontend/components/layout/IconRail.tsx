@@ -58,8 +58,9 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  // Catalog is the single "understand your data" surface. Glossary + Trust are
+  // facets inside it (see /catalog), not separate destinations.
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
-  { key: 'glossary',   href: '/glossary',   label: 'Glossary',        icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
   { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'studio' },
@@ -77,10 +78,11 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/query':      ['/query', '/ask'],
   '/dashboards': ['/dashboards'],
   '/notebooks':  ['/notebooks'],
-  '/catalog':    ['/catalog', '/semantic'],
+  // /glossary + /health are facets of Catalog now — keep them highlighting
+  // the Catalog rail item so deep links don't orphan the active state.
+  '/catalog':    ['/catalog', '/semantic', '/glossary', '/health'],
   '/products':   ['/products'],
   '/pipelines':  ['/pipelines'],
-  '/glossary':   ['/glossary'],
   '/sources':    ['/sources', '/setup'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],

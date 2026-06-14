@@ -22,8 +22,9 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Plus, LayoutGrid, Network, Search, X } from 'lucide-react';
+import { Loader2, Plus, LayoutGrid, Network, Search, X, Library } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
+import GlossaryPanel from '@/components/semantic/GlossaryPanel';
 import { isAdmin, getTokenPayload } from '@/lib/auth';
 import CatalogBrowser, {
   type CatalogSchemaSelection,
@@ -63,6 +64,15 @@ function CatalogInner() {
     if (r === 'admin' || r === 'analyst' || r === 'viewer') setRole(r);
   }, []);
   const canSeeStructure = role === 'admin' || role === 'analyst';
+  const canEditGlossary = role === 'admin' || role === 'analyst';
+
+  // ── Facet (top-level lens on "your data") ────────────────────────────────
+  // Catalog is the single "understand your data" surface. Browse = discover +
+  // confirm meanings; Glossary = shared business terms (merged in from the old
+  // standalone /glossary). Trust (quality) is the next facet to fold in.
+  const [facet, setFacet] = useState<'browse' | 'glossary'>(
+    params.get('facet') === 'glossary' ? 'glossary' : 'browse',
+  );
 
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   useEffect(() => {
@@ -296,6 +306,24 @@ function CatalogInner() {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* Facet bar — the single "understand your data" surface. Browse +
+          Glossary today (Glossary merged in from the old standalone page);
+          Trust/quality folds in next. */}
+      <CatalogFacetBar facet={facet} onChange={setFacet} />
+
+      {facet === 'glossary' ? (
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
+          <div className="max-w-5xl mx-auto">
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Catalog</p>
+            <h1 className="font-display text-[28px] text-ink leading-tight tracking-[-0.02em] mb-1">Glossary</h1>
+            <p className="text-[12.5px] text-muted mb-6 leading-relaxed max-w-2xl">
+              Shared business terms and abbreviations the AI uses as context across questions, dashboards, and definitions.
+            </p>
+            <GlossaryPanel canEdit={canEditGlossary} />
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Slim chrome bar — only the controls live here now. The hero
           (title + subtitle stats + search) lives inside the body so it
           can scroll with the content like a normal page. */}
@@ -393,6 +421,45 @@ function CatalogInner() {
           }}
         />
       )}
+      </>
+      )}
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Catalog facet bar — the single "understand your data" surface lens
+// ───────────────────────────────────────────────────────────────────────────
+
+function CatalogFacetBar({
+  facet, onChange,
+}: { facet: 'browse' | 'glossary'; onChange: (f: 'browse' | 'glossary') => void }) {
+  const tabs: { id: 'browse' | 'glossary'; label: string; icon: React.ReactNode }[] = [
+    { id: 'browse',   label: 'Browse',   icon: <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> },
+    { id: 'glossary', label: 'Glossary', icon: <Library className="w-3.5 h-3.5" strokeWidth={1.75} /> },
+  ];
+  return (
+    <div className="bg-canvas border-b border-line px-6 pt-2.5 flex items-center gap-1 flex-shrink-0">
+      {tabs.map((t) => {
+        const active = facet === t.id;
+        return (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onChange(t.id)}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3 py-2 text-[13px] font-medium rounded-t-md border-b-2 -mb-px transition-colors',
+              active
+                ? 'border-ocean text-ink'
+                : 'border-transparent text-muted hover:text-ink-2',
+            )}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
