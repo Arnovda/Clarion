@@ -101,8 +101,12 @@ should NOT be a first-class destination for the business owner.
   proposal (no write). Frontend: `<AiPromptDialog>` + an "Ask AI" affordance on
   the table and column description fields in `TableDetailPanel` — the user
   describes the change in plain language, reviews the suggestion, clicks "Use
-  this" to fill the field, then saves via the normal flow. Extending the same
-  pattern to metrics/transformations is the next increment.
+  this" to fill the field, then saves via the normal flow.
+  - **Product layer (DONE):** the same affordance + dialog now also covers
+    **product** table & column descriptions (`ProductTableDetailPanel`), backed
+    by `POST /semantic/product-{tables,columns}/:id/improve-description`.
+    `<AiPromptDialog>` takes an optional `endpoint` so one component serves both
+    source and product layers. Extending to KPIs / transformation SQL is next.
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*

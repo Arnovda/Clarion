@@ -20,6 +20,12 @@ interface Props {
   entityId: number;
   entityName?: string;
   currentDescription: string;
+  /**
+   * Override the POST endpoint. Defaults to the source-layer route
+   * (/semantic/{tables|columns}/:id/improve-description); product-layer
+   * callers pass /semantic/product-{tables|columns}/:id/improve-description.
+   */
+  endpoint?: string;
   onAccept: (proposal: string) => void;
   onClose: () => void;
 }
@@ -31,7 +37,7 @@ const SUGGESTIONS = [
 ];
 
 export default function AiPromptDialog({
-  entityType, entityId, entityName, currentDescription, onAccept, onClose,
+  entityType, entityId, entityName, currentDescription, endpoint, onAccept, onClose,
 }: Props) {
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<string | null>(null);
@@ -46,10 +52,10 @@ export default function AiPromptDialog({
     setError('');
     setProposal(null);
     try {
-      const endpoint = entityType === 'table'
+      const url = endpoint ?? (entityType === 'table'
         ? `/semantic/tables/${entityId}/improve-description`
-        : `/semantic/columns/${entityId}/improve-description`;
-      const res = await api.post(endpoint, { instruction: instr });
+        : `/semantic/columns/${entityId}/improve-description`);
+      const res = await api.post(url, { instruction: instr });
       setProposal(String(res.data?.data?.ai_proposal ?? ''));
     } catch (e) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;

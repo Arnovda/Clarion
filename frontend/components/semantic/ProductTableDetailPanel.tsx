@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { format as formatSql } from 'sql-formatter';
-import { ArrowRight, GitBranch, X } from 'lucide-react';
+import { ArrowRight, GitBranch, X, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
+import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
@@ -121,6 +122,8 @@ export default function ProductTableDetailPanel({
   // Table state
   const [tbl, setTbl]                 = useState(table);
   const [cols, setCols]               = useState<ProductColumn[]>(columns);
+  // "Ask AI to change this description" target (table or a specific column).
+  const [aiTarget, setAiTarget] = useState<{ kind: 'table' } | { kind: 'column'; col: ProductColumn } | null>(null);
   const [prevTableId, setPrevTableId] = useState(tableId);
   const [prevColLen, setPrevColLen]    = useState(columns.length);
   const [savingTable, setSavingTable] = useState(false);
@@ -403,7 +406,20 @@ export default function ProductTableDetailPanel({
             </div>
 
             <div>
-              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Description</label>
+              <div className="flex items-center mb-1.5">
+                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
+                {curator && (
+                  <button
+                    type="button"
+                    onClick={() => setAiTarget({ kind: 'table' })}
+                    className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
+                    title="Ask AI to change this description in plain language"
+                  >
+                    <Sparkles className="w-3 h-3" strokeWidth={1.75} />
+                    Ask AI
+                  </button>
+                )}
+              </div>
               <textarea
                 value={tbl.description ?? ''}
                 onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
@@ -669,7 +685,20 @@ export default function ProductTableDetailPanel({
                     </div>
 
                     <div className="mb-4">
-                      <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Description</label>
+                      <div className="flex items-center mb-1">
+                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
+                        {curator && (
+                          <button
+                            type="button"
+                            onClick={() => setAiTarget({ kind: 'column', col })}
+                            className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
+                            title="Ask AI to change this description in plain language"
+                          >
+                            <Sparkles className="w-3 h-3" strokeWidth={1.75} />
+                            Ask AI
+                          </button>
+                        )}
+                      </div>
                       <input
                         value={col.description ?? ''}
                         onChange={(e) => updateCol(col.id, { description: e.target.value })}
@@ -752,6 +781,30 @@ export default function ProductTableDetailPanel({
         <div className="flex-1 overflow-y-auto px-6 py-6">
           <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
         </div>
+      )}
+
+      {/* Ask AI to change a description — fills the field; user still saves. */}
+      {aiTarget && aiTarget.kind === 'table' && (
+        <AiPromptDialog
+          entityType="table"
+          entityId={tbl.id}
+          entityName={tbl.display_name || tbl.table_name}
+          currentDescription={tbl.description ?? ''}
+          endpoint={`/semantic/product-tables/${tbl.id}/improve-description`}
+          onAccept={(text) => setTbl({ ...tbl, description: text })}
+          onClose={() => setAiTarget(null)}
+        />
+      )}
+      {aiTarget && aiTarget.kind === 'column' && (
+        <AiPromptDialog
+          entityType="column"
+          entityId={aiTarget.col.id}
+          entityName={aiTarget.col.display_name || aiTarget.col.column_name}
+          currentDescription={aiTarget.col.description ?? ''}
+          endpoint={`/semantic/product-columns/${aiTarget.col.id}/improve-description`}
+          onAccept={(text) => updateCol(aiTarget.col.id, { description: text })}
+          onClose={() => setAiTarget(null)}
+        />
       )}
     </div>
   );

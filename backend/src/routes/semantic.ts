@@ -1597,6 +1597,57 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
   } catch (err) { next(err); }
 });
 
+// POST /api/semantic/product-tables/:id/improve-description  { instruction }
+router.post('/product-tables/:id/improve-description', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) { res.status(400).json({ ok: false, error: 'Invalid id' }); return; }
+    const instruction = readInstruction(req, res);
+    if (instruction === null) return;
+
+    const table = await db('product_tables').where({ id }).first();
+    if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
+
+    const proposal = await improveDescription({
+      entityType: 'table',
+      name: String(table.display_name || table.table_name || 'table'),
+      currentDescription: String(table.description ?? ''),
+      instruction,
+    });
+
+    res.json({ ok: true, data: { current_description: String(table.description ?? ''), ai_proposal: proposal, instruction } });
+  } catch (err) { next(err); }
+});
+
+// POST /api/semantic/product-columns/:id/improve-description  { instruction }
+router.post('/product-columns/:id/improve-description', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) { res.status(400).json({ ok: false, error: 'Invalid id' }); return; }
+    const instruction = readInstruction(req, res);
+    if (instruction === null) return;
+
+    const col = await db('product_columns').where({ id }).first();
+    if (!col) { res.status(404).json({ ok: false, error: 'Column not found' }); return; }
+    const parent = col.product_table_id
+      ? await db('product_tables').where({ id: col.product_table_id }).first()
+      : null;
+
+    const proposal = await improveDescription({
+      entityType: 'column',
+      name: String(col.display_name || col.column_name || 'column'),
+      tableName: parent ? String(parent.display_name || parent.table_name) : null,
+      dataType: col.data_type ?? null,
+      currentDescription: String(col.description ?? ''),
+      instruction,
+    });
+
+    res.json({ ok: true, data: { current_description: String(col.description ?? ''), ai_proposal: proposal, instruction } });
+  } catch (err) { next(err); }
+});
+
 // GET /api/semantic/product-preview?productTableId=123&limit=10
 router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
