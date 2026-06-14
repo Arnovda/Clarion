@@ -2446,7 +2446,8 @@ export async function generateDashboardInsights(
  * Returns plain text (no quotes/markdown). Kept short + cheap via Haiku.
  */
 export async function improveDescription(args: {
-  entityType: 'table' | 'column';
+  /** 'table' | 'column' get specific context; any other label (e.g. 'KPI') is treated generically. */
+  entityType: string;
   name: string;
   tableName?: string | null;
   dataType?: string | null;
@@ -2457,8 +2458,11 @@ export async function improveDescription(args: {
   const { entityType, name, tableName, dataType, currentDescription, instruction, connectorType } = args;
   const glossary = await loadGlossaryBlock();
 
+  const noun = entityType === 'column' ? 'column'
+    : entityType === 'table' ? 'table'
+    : entityType; // e.g. 'KPI', 'metric'
   const system =
-    `You write clear, concise business descriptions for data ${entityType}s in a ` +
+    `You write clear, concise business descriptions for a data ${noun} in a ` +
     `semantic data catalog used by non-technical business users. ` +
     `Return ONE short paragraph (max 2 sentences), plain business language, no jargon, ` +
     `no markdown, no surrounding quotes. Describe what it means for the business — ` +
@@ -2471,8 +2475,10 @@ export async function improveDescription(args: {
     ctx.push(`Column: ${name}`);
     if (tableName) ctx.push(`In table: ${tableName}`);
     if (dataType) ctx.push(`Data type: ${dataType}`);
-  } else {
+  } else if (entityType === 'table') {
     ctx.push(`Table: ${name}`);
+  } else {
+    ctx.push(`${noun}: ${name}`);
   }
   ctx.push(`Current description: ${currentDescription ? currentDescription : '(none yet)'}`);
 

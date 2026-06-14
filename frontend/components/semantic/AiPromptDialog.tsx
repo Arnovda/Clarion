@@ -23,9 +23,14 @@ interface Props {
   /**
    * Override the POST endpoint. Defaults to the source-layer route
    * (/semantic/{tables|columns}/:id/improve-description); product-layer
-   * callers pass /semantic/product-{tables|columns}/:id/improve-description.
+   * callers pass /semantic/product-{tables|columns}/:id/improve-description,
+   * and id-less callers (e.g. KPI drafts) pass /semantic/improve-text.
    */
   endpoint?: string;
+  /** Extra fields merged into the POST body (for the id-less improve-text route). */
+  extraBody?: Record<string, unknown>;
+  /** Override the word shown in the dialog title (e.g. "KPI"). */
+  entityLabel?: string;
   onAccept: (proposal: string) => void;
   onClose: () => void;
 }
@@ -37,7 +42,7 @@ const SUGGESTIONS = [
 ];
 
 export default function AiPromptDialog({
-  entityType, entityId, entityName, currentDescription, endpoint, onAccept, onClose,
+  entityType, entityId, entityName, currentDescription, endpoint, extraBody, entityLabel, onAccept, onClose,
 }: Props) {
   const [instruction, setInstruction] = useState('');
   const [proposal, setProposal] = useState<string | null>(null);
@@ -55,7 +60,7 @@ export default function AiPromptDialog({
       const url = endpoint ?? (entityType === 'table'
         ? `/semantic/tables/${entityId}/improve-description`
         : `/semantic/columns/${entityId}/improve-description`);
-      const res = await api.post(url, { instruction: instr });
+      const res = await api.post(url, { instruction: instr, ...(extraBody ?? {}) });
       setProposal(String(res.data?.data?.ai_proposal ?? ''));
     } catch (e) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
@@ -77,7 +82,7 @@ export default function AiPromptDialog({
         <div className="flex items-center gap-2 px-5 py-3.5 border-b border-line">
           <Sparkles className="w-4 h-4 text-ocean" strokeWidth={1.75} />
           <h3 className="font-display text-[16px] text-ink tracking-[-0.01em] flex-1">
-            Ask AI to change this {entityType}{entityName ? ` — ${entityName}` : ''}
+            Ask AI to change this {entityLabel ?? entityType}{entityName ? ` — ${entityName}` : ''}
           </h3>
           <button onClick={onClose} className="text-muted hover:text-ink transition-colors" aria-label="Close">
             <X className="w-4 h-4" strokeWidth={2} />

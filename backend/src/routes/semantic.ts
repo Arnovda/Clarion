@@ -1648,6 +1648,32 @@ router.post('/product-columns/:id/improve-description', requireAuth, requireRole
   } catch (err) { next(err); }
 });
 
+// POST /api/semantic/improve-text  { entityType, name, currentDescription, instruction, tableName?, dataType? }
+// Generic, id-less variant for surfaces that tune an in-memory draft (e.g. a
+// new KPI's description before it's saved). No DB lookup — operates purely on
+// the supplied text via the same safe schema-class AI call.
+router.post('/improve-text', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const instruction = readInstruction(req, res);
+    if (instruction === null) return;
+    const b = req.body as Record<string, unknown>;
+    const entityType = (typeof b.entityType === 'string' && b.entityType.trim()) ? b.entityType.trim().slice(0, 32) : 'item';
+    const name = typeof b.name === 'string' ? b.name.slice(0, 200) : '';
+    const currentDescription = typeof b.currentDescription === 'string' ? b.currentDescription.slice(0, 4000) : '';
+
+    const proposal = await improveDescription({
+      entityType,
+      name,
+      tableName: typeof b.tableName === 'string' ? b.tableName.slice(0, 200) : null,
+      dataType: typeof b.dataType === 'string' ? b.dataType.slice(0, 64) : null,
+      currentDescription,
+      instruction,
+    });
+
+    res.json({ ok: true, data: { current_description: currentDescription, ai_proposal: proposal, instruction } });
+  } catch (err) { next(err); }
+});
+
 // GET /api/semantic/product-preview?productTableId=123&limit=10
 router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {

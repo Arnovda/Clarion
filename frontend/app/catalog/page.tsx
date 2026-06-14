@@ -821,23 +821,27 @@ function CatalogHero({
   search: string;
   onSearchChange: (s: string) => void;
 }) {
+  // Calm, editorial, search-forward header (dScribe-style): a clear purpose
+  // line and a prominent search as the focal point; counts quieted underneath.
   return (
-    <header className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-8">
-      <div className="flex-1 min-w-0">
-        <h1 className="font-display text-[36px] text-ink leading-[1.05] tracking-[-0.025em] mb-1.5">
-          Data Catalog
-        </h1>
-        <p className="text-[11.5px] font-mono tracking-[0.06em] text-muted-2 tabular-nums">
-          {stats.sources} {stats.sources === 1 ? 'source' : 'sources'}
-          <span className="text-muted-2/40 mx-1.5">·</span>
-          {stats.analytics} {stats.analytics === 1 ? 'analytic' : 'analytics'}
-          <span className="text-muted-2/40 mx-1.5">·</span>
-          {stats.dimensions} {stats.dimensions === 1 ? 'dimension' : 'dimensions'}
-        </p>
-      </div>
-      <div className="lg:flex-1 lg:max-w-md lg:mt-1">
+    <header className="mb-10 pt-2 text-center">
+      <p className="text-[10.5px] font-mono tracking-[0.18em] uppercase text-muted-2 mb-3">Catalog</p>
+      <h1 className="font-display text-[40px] sm:text-[44px] text-ink leading-[1.04] tracking-[-0.03em] mb-3">
+        Find and understand your data
+      </h1>
+      <p className="text-[14px] text-muted leading-relaxed max-w-xl mx-auto mb-7">
+        Browse every dataset, see what each field means, and check you can trust it — all in plain language.
+      </p>
+      <div className="max-w-xl mx-auto">
         <SearchInput value={search} onChange={onSearchChange} />
       </div>
+      <p className="text-[11px] font-mono tracking-[0.08em] text-muted-2 tabular-nums mt-3.5">
+        {stats.sources} {stats.sources === 1 ? 'source' : 'sources'}
+        <span className="text-muted-2/40 mx-1.5">·</span>
+        {stats.analytics} {stats.analytics === 1 ? 'analytic' : 'analytics'}
+        <span className="text-muted-2/40 mx-1.5">·</span>
+        {stats.dimensions} {stats.dimensions === 1 ? 'dimension' : 'dimensions'}
+      </p>
     </header>
   );
 }
@@ -845,13 +849,13 @@ function CatalogHero({
 function SearchInput({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   return (
     <div className="relative">
-      <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-2" strokeWidth={1.75} />
+      <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-muted-2" strokeWidth={1.75} />
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Search data products by name or description…"
-        className="w-full pl-10 pr-9 py-3 text-[13.5px] bg-raised border border-line rounded-full focus:outline-none focus:border-ocean focus:ring-2 focus:ring-ocean/20 transition-colors shadow-sm"
+        placeholder="Search datasets, fields, or business terms…"
+        className="w-full pl-11 pr-9 py-3.5 text-[14px] bg-raised border border-line rounded-full focus:outline-none focus:border-ocean focus:ring-2 focus:ring-ocean/20 transition-colors shadow-sm text-center focus:text-left placeholder:text-muted-2"
       />
       {value && (
         <button

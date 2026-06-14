@@ -105,8 +105,21 @@ should NOT be a first-class destination for the business owner.
   - **Product layer (DONE):** the same affordance + dialog now also covers
     **product** table & column descriptions (`ProductTableDetailPanel`), backed
     by `POST /semantic/product-{tables,columns}/:id/improve-description`.
-    `<AiPromptDialog>` takes an optional `endpoint` so one component serves both
-    source and product layers. Extending to KPIs / transformation SQL is next.
+  - **KPIs (DONE):** "Ask AI" on the KPI **description** in `KpiManager`, via a
+    generic id-less `POST /semantic/improve-text` (works on the in-memory draft
+    before the KPI is saved). KPI *formulas* already had AI-draft. `<AiPromptDialog>`
+    gained `endpoint` / `extraBody` / `entityLabel` so one component serves all
+    surfaces (source, product, and id-less drafts).
+  - **Remaining:** transformation SQL ("how it's calculated") — Studio-only,
+    generates runnable SQL, treated carefully later.
+
+## Catalog look & feel (dScribe-style) — in progress
+- **Hero refresh (DONE):** the Catalog Browse header is now calm + editorial +
+  search-forward — a mono eyebrow, a serif "Find and understand your data"
+  title, a one-line plain-language purpose, a prominent centred search as the
+  focal point, and the source/analytics/dimension counts quieted underneath.
+  Facet bar (Browse · Trust · Glossary) sits above. Card internals unchanged
+  for now (lower-risk); further card/list polish can follow.
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*

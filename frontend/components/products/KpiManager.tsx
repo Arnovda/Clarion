@@ -21,6 +21,7 @@ import { useState, useCallback } from 'react';
 import { Sparkles, Gauge, Plus, Pencil, Trash2, Loader2, X, Wand2, AlertCircle } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
+import AiPromptDialog from '@/components/semantic/AiPromptDialog';
 import type { ProductKpi } from '@/app/products/types';
 
 interface KpiManagerProps {
@@ -315,6 +316,7 @@ function KpiEditor({
   saving: boolean;
   mode: 'new' | 'edit';
 }) {
+  const [aiOpen, setAiOpen] = useState(false);
   return (
     <div className="bg-raised border border-ocean/30 rounded-md p-4 space-y-3 ring-1 ring-ocean/10">
       <div className="flex items-center justify-between">
@@ -344,10 +346,21 @@ function KpiEditor({
       </label>
 
       {/* Description */}
-      <label className="block">
-        <span className="block text-[11px] font-medium text-muted-2 uppercase tracking-wider mb-1">
-          Description <span className="font-normal text-muted normal-case tracking-normal">— what does this measure mean to a business reader?</span>
-        </span>
+      <div className="block">
+        <div className="flex items-center mb-1">
+          <span className="block text-[11px] font-medium text-muted-2 uppercase tracking-wider">
+            Description <span className="font-normal text-muted normal-case tracking-normal">— what does this measure mean to a business reader?</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setAiOpen(true)}
+            className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors shrink-0"
+            title="Ask AI to write or refine this description in plain language"
+          >
+            <Sparkles className="w-3 h-3" strokeWidth={1.75} />
+            Ask AI
+          </button>
+        </div>
         <input
           type="text"
           value={draft.description}
@@ -355,7 +368,21 @@ function KpiEditor({
           placeholder="e.g. Sum of invoice amounts for paid orders"
           className="w-full px-3 py-2 text-[13px] bg-bg border border-line rounded focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
         />
-      </label>
+      </div>
+
+      {aiOpen && (
+        <AiPromptDialog
+          entityType="table"
+          entityLabel="KPI"
+          entityId={0}
+          entityName={draft.name || undefined}
+          currentDescription={draft.description}
+          endpoint="/semantic/improve-text"
+          extraBody={{ entityType: 'KPI', name: draft.name, currentDescription: draft.description }}
+          onAccept={(text) => setDraft((d) => ({ ...d, description: text }))}
+          onClose={() => setAiOpen(false)}
+        />
+      )}
 
       {/* AI-assist row */}
       <div className="flex items-center gap-2">
