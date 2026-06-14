@@ -15,8 +15,9 @@
  * from "1 metric" and the visual weight should reflect that.
  */
 
-import { Database } from 'lucide-react';
+import { Database, BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { formatRelativeShort } from '@/lib/dates';
 import type { SourcePalette } from './sourcePalette';
 
 export interface AnalyticsCardData {
@@ -46,6 +47,8 @@ export default function AnalyticsCard({
   const showStatus = showCuratorSignals
     && data.status
     && !['approved', 'success'].includes(data.status);
+
+  const refreshedLabel = data.lastRefreshedAt ? formatRelativeShort(data.lastRefreshedAt) : null;
 
   return (
     <button
@@ -86,63 +89,35 @@ export default function AnalyticsCard({
         </h3>
 
         {data.description ? (
-          <p className="text-[13.5px] text-ink-2 leading-relaxed line-clamp-2 mb-5">
+          <p className="text-[13.5px] text-ink-2 leading-relaxed line-clamp-2 mb-4">
             {data.description}
           </p>
         ) : (
-          <p className="text-[13.5px] text-muted italic mb-5">
+          <p className="text-[13.5px] text-muted italic mb-4">
             No description yet.
           </p>
         )}
 
-        {/* Three stat boxes. The first one uses the source palette tint so the
-            primary stat (metrics) gets visual emphasis; facts/tables stay neutral. */}
-        <div className="flex items-stretch gap-2">
-          <StatBox
-            value={data.metricCount}
-            label="metrics"
-            highlighted
-            palette={palette}
-          />
-          <StatBox
-            value={data.factCount}
-            label={data.factCount === 1 ? 'fact' : 'facts'}
-          />
-          <StatBox
-            value={data.tableCount}
-            label={data.tableCount === 1 ? 'table' : 'tables'}
-          />
+        {/* Calm meta line — what you can measure here + when it last refreshed.
+            Business-friendly: no "facts / tables" warehouse jargon on the
+            consumer card (that detail lives in the panel for curators). */}
+        <div className="flex items-center gap-2.5 text-[11.5px]">
+          <span className={cn(
+            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border font-medium',
+            palette.tintBg, 'border-line', palette.eyebrow,
+          )}>
+            <BarChart3 className="w-3.5 h-3.5" strokeWidth={2} />
+            {data.metricCount} {data.metricCount === 1 ? 'metric' : 'metrics'}
+          </span>
+          {refreshedLabel && (
+            <span className="inline-flex items-center gap-1.5 text-muted">
+              <span className={cn('w-1.5 h-1.5 rounded-full', palette.dot)} aria-hidden />
+              Updated {refreshedLabel}
+            </span>
+          )}
         </div>
       </div>
     </button>
-  );
-}
-
-function StatBox({
-  value, label, highlighted, palette,
-}: {
-  value: number;
-  label: string;
-  highlighted?: boolean;
-  palette?: SourcePalette;
-}) {
-  return (
-    <div className={cn(
-      'flex-1 min-w-0 px-3 py-2.5 rounded-md border text-center',
-      highlighted && palette
-        ? cn(palette.tintBg, 'border-line')
-        : 'bg-softer/60 border-line',
-    )}>
-      <div className={cn(
-        'font-display text-[22px] tracking-[-0.01em] leading-none mb-1 tabular-nums',
-        highlighted && palette ? palette.eyebrow : 'text-ink',
-      )}>
-        {value}
-      </div>
-      <div className="text-[9.5px] font-mono uppercase tracking-[0.12em] text-muted-2">
-        {label}
-      </div>
-    </div>
   );
 }
 

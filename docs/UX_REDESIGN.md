@@ -118,8 +118,12 @@ should NOT be a first-class destination for the business owner.
   search-forward — a mono eyebrow, a serif "Find and understand your data"
   title, a one-line plain-language purpose, a prominent centred search as the
   focal point, and the source/analytics/dimension counts quieted underneath.
-  Facet bar (Browse · Trust · Glossary) sits above. Card internals unchanged
-  for now (lower-risk); further card/list polish can follow.
+  Facet bar (Browse · Trust · Glossary) sits above.
+- **Card refresh (DONE):** the analytics cards dropped the jargon-y
+  "metrics / facts / tables" stat-box row for a calm meta line — a single
+  "N metrics" chip (what you can measure) + an "Updated …" freshness signal.
+  Reference cards were already quiet/dScribe-like and left as-is. Less chrome,
+  more meaning.
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*
