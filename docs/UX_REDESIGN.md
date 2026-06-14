@@ -63,17 +63,34 @@ should NOT be a first-class destination for the business owner.
   Refresh, AI review queue, Notebooks; analyst+) + **Settings** (admin). Every
   route preserved — pure regrouping, fully revertible. `/products` relabelled
   "Build" → "Data products".
-- **Phase 2 — Home as a "Needs you" inbox.** Merge the useful parts of `/review`
-  + `/gaps` into Home cards ("suggestions to confirm", low-confidence questions,
-  stale data). *Gated on feedback.*
+- **Phase 5 (brought forward) — Studio/Settings collapsible, collapsed by
+  default (DONE 2026-06-14).** Workspace always shows; Studio + Settings are
+  disclosure sections the user opens deliberately, so a business owner's rail is
+  just the 5 calm items. A closed section with pending reviews/sources shows an
+  attention dot. State persists to localStorage. (Icon-collapsed rail mode still
+  shows all rows behind dividers.) This is the "opt-in builder mode" in its
+  lightest, lowest-risk form — no separate route, fully revertible.
+- **Phase 2 — Home "Needs you" (LARGELY ALREADY DONE).** The existing `/home`
+  is already a single-endpoint daily-driver (health ring + attention feed
+  [alerts, stale data, failed runs, pending review] + recent dashboards/
+  questions). It already serves the inbox intent. Remaining: optional vocabulary
+  pass + pull `/gaps` low-confidence questions in. *Gated.*
 - **Phase 3 — Merge Catalog + Quality + Glossary** into one "understand your
-  data" surface with Browse / Meanings / Trust / Glossary facets. *Gated.*
+  data" surface with Browse / Meanings / Trust / Glossary facets. *Gated — needs
+  a running app to validate; risky to ship blind.*
 - **Phase 4 — "Ask AI to change it"** as the primary tuning affordance on every
-  definition / metric / dataset; raw SQL editing moves to Studio only. *Gated.*
-- **Phase 5 — Studio as an opt-in mode** (toggle) rather than always-visible
-  rail groups; invisible automatic refresh for owners. *Gated.*
+  definition / metric / dataset; raw SQL editing moves to Studio only. *Gated —
+  needs backend NL-edit endpoints + a running app.*
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
-  source-layer toggle from the default app. *Gated.*
+  source-layer toggle from the default app; business-vocabulary sweep across
+  Studio page titles. *Gated.*
+
+## Verification note
+Changes are validated with `tsc --noEmit` (adds no new errors over the
+pre-existing baseline). The full app can't be run in the dev sandbox (needs
+Postgres/Neo4j/Redis/backend), so visual/interaction verification and the deeper
+page-level phases (3, 4) are best done against a running instance — they're left
+gated rather than shipped blind.
 
 ## Keep (Clarion's real advantages)
 Conversational NL→SQL with confidence + repair, AI-drafted definitions, the AI

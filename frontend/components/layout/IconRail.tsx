@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
-  Home as HomeIcon, DollarSign, ChevronLeft,
+  Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -98,6 +98,11 @@ const GROUP_LABELS: Record<Group, string> = {
 
 const GROUP_ORDER: Group[] = ['workspace', 'studio', 'settings'];
 
+// Groups that render as collapsible disclosures (collapsed by default) so the
+// business owner's rail is just the calm Workspace items until they choose to
+// open the builder/admin tools. `workspace` is never collapsible — it's the app.
+const COLLAPSIBLE_GROUPS: Group[] = ['studio', 'settings'];
+
 // ─── Sizing constants ─────────────────────────────────────────────────────
 // Width range for the resize handle. Below MIN we'd start clipping labels;
 // above MAX the rail starts to feel like a sidebar instead of a nav.
@@ -110,6 +115,8 @@ const STORAGE_KEY         = 'clarion:navRail';
 interface PersistedState {
   width: number;
   collapsed: boolean;
+  /** Which collapsible groups (studio/settings) are expanded. Default: none. */
+  openGroups?: Group[];
 }
 
 export default function IconRail() {
@@ -122,6 +129,7 @@ export default function IconRail() {
   // so the SSR render stays deterministic (avoids hydration warnings).
   const [width, setWidth] = useState<number>(NAV_DEFAULT_WIDTH);
   const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [openGroups, setOpenGroups] = useState<Group[]>([]); // studio/settings collapsed by default
   const [hydrated, setHydrated] = useState<boolean>(false);
 
   useEffect(() => {
@@ -136,6 +144,9 @@ export default function IconRail() {
         if (typeof parsed.collapsed === 'boolean') {
           setCollapsed(parsed.collapsed);
         }
+        if (Array.isArray(parsed.openGroups)) {
+          setOpenGroups(parsed.openGroups.filter((g): g is Group => COLLAPSIBLE_GROUPS.includes(g as Group)));
+        }
       }
     } catch { /* ignore — fall back to defaults */ }
     setHydrated(true);
@@ -146,9 +157,9 @@ export default function IconRail() {
   useEffect(() => {
     if (!hydrated) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ width, collapsed } satisfies PersistedState));
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ width, collapsed, openGroups } satisfies PersistedState));
     } catch { /* ignore */ }
-  }, [width, collapsed, hydrated]);
+  }, [width, collapsed, openGroups, hydrated]);
 
   // Badge counts for analyst+
   useEffect(() => {
@@ -184,6 +195,17 @@ export default function IconRail() {
     return 0;
   }
 
+  function toggleGroup(g: Group) {
+    setOpenGroups((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
+  }
+
+  // Sum of pending badges inside a group — shown as an attention dot on a
+  // collapsed disclosure header so "something needs you" is visible without
+  // expanding the section.
+  function groupBadgeTotal(items: NavItem[]): number {
+    return items.reduce((sum, it) => sum + badgeFor(it), 0);
+  }
+
   // ─── Drag-to-resize handle ─────────────────────────────────────────────
   // While the user drags we attach window-level listeners so the gesture
   // continues even when the cursor leaves the handle. body cursor + select
@@ -214,6 +236,53 @@ export default function IconRail() {
 
   const effectiveWidth = collapsed ? NAV_COLLAPSED_WIDTH : width;
 
+  // One nav row (the Link). Extracted so the workspace items and the
+  // disclosure groups render identical rows.
+  function renderNavLink(it: NavItem) {
+    const active = isActive(it.href);
+    const badge = badgeFor(it);
+    return (
+      <Link
+        key={it.key}
+        href={it.href}
+        title={collapsed ? `${it.label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
+        className={cn(
+          'group flex items-center rounded-sm text-[13.5px]',
+          'transition-colors duration-1 ease-observatory',
+          'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(255,255,255,0.25)]',
+          collapsed ? 'justify-center px-2 py-2' : 'gap-2.5 px-2.5 py-2',
+          active
+            ? 'bg-white/15 text-white font-medium'
+            : 'text-[var(--ocean-soft)] hover:bg-white/10 hover:text-white',
+        )}
+        aria-current={active ? 'page' : undefined}
+      >
+        <span className={cn(active ? 'text-white' : 'text-[var(--ocean-soft)] group-hover:text-white')}>
+          {it.icon}
+        </span>
+        {!collapsed && (
+          <>
+            <span className="truncate flex-1">{it.label}</span>
+            {badge > 0 && (
+              <span className={cn(
+                'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
+                active ? 'bg-white text-[var(--ocean)]' : 'bg-[var(--ocean-hover)] text-white',
+              )}>
+                {badge > 99 ? '99+' : badge}
+              </span>
+            )}
+          </>
+        )}
+        {collapsed && badge > 0 && (
+          <span
+            className="absolute mt-[-12px] ml-[14px] w-[8px] h-[8px] rounded-full bg-white border border-[var(--ocean)]"
+            aria-label={`${badge} pending`}
+          />
+        )}
+      </Link>
+    );
+  }
+
   return (
     <div
       className="relative h-full shrink-0 transition-[width] duration-150 ease-out"
@@ -236,86 +305,53 @@ export default function IconRail() {
           {GROUP_ORDER.map((g) => {
             const items = visible.filter((i) => i.group === g);
             if (items.length === 0) return null;
+
+            const isCollapsible = COLLAPSIBLE_GROUPS.includes(g);
+            // In icon-only rail mode we can't show a disclosure header, so
+            // every group just renders its rows (separated by a divider).
+            // In expanded mode, collapsible groups hide their rows until the
+            // user opens the section — keeping the default rail calm.
+            const showRows = !isCollapsible || collapsed || openGroups.includes(g);
+            const pending = isCollapsible ? groupBadgeTotal(items) : 0;
+
             return (
               <div key={g} className="contents">
-                {/* Group eyebrow — hidden when collapsed; replaced with a
-                    subtle horizontal divider so the visual grouping still
-                    reads even without the label. */}
+                {/* Group header. Workspace has none (it's the default surface).
+                    Studio/Settings are clickable disclosures; collapsed-rail
+                    mode falls back to a plain divider. */}
                 {GROUP_LABELS[g] && (
                   collapsed ? (
                     <div className="mx-3 my-2 border-t border-white/10" aria-hidden />
+                  ) : isCollapsible ? (
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(g)}
+                      aria-expanded={openGroups.includes(g)}
+                      className="group/disc mt-2 flex items-center gap-1.5 rounded-sm px-2.5 pt-2 pb-1.5 text-left hover:bg-white/5 transition-colors"
+                    >
+                      <ChevronDown
+                        className={cn(
+                          'w-3 h-3 text-white/45 transition-transform duration-150',
+                          !openGroups.includes(g) && '-rotate-90',
+                        )}
+                        strokeWidth={2}
+                      />
+                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/55 font-medium">
+                        {GROUP_LABELS[g]}
+                      </span>
+                      {/* Attention dot when the section is closed but something
+                          inside needs the user (pending reviews / sources). */}
+                      {!openGroups.includes(g) && pending > 0 && (
+                        <span className="ml-1 w-[7px] h-[7px] rounded-full bg-white/80" aria-label={`${pending} pending`} />
+                      )}
+                    </button>
                   ) : (
                     <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/55 px-2.5 pt-3 pb-1.5 font-medium">
                       {GROUP_LABELS[g]}
                     </div>
                   )
                 )}
-                {items.map((it) => {
-                  const active = isActive(it.href);
-                  const badge = badgeFor(it);
-                  return (
-                    <Link
-                      key={it.key}
-                      href={it.href}
-                      // The native title is the accessibility + power-user
-                      // hover hint for the collapsed mode. Cheap, works
-                      // without a tooltip component, screen-reader friendly.
-                      title={collapsed ? `${it.label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
-                      className={cn(
-                        'group flex items-center rounded-sm text-[13.5px]',
-                        'transition-colors duration-1 ease-observatory',
-                        'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(255,255,255,0.25)]',
-                        collapsed
-                          ? 'justify-center px-2 py-2'
-                          : 'gap-2.5 px-2.5 py-2',
-                        active
-                          // Active: brighter overlay + crisp white text — the
-                          // route the user is on gets the loudest voice in
-                          // the rail.
-                          ? 'bg-white/15 text-white font-medium'
-                          // Inactive: ocean-soft for text (the natural light
-                          // tint of the brand) with a gentle hover overlay.
-                          : 'text-[var(--ocean-soft)] hover:bg-white/10 hover:text-white',
-                      )}
-                      aria-current={active ? 'page' : undefined}
-                    >
-                      <span className={cn(
-                        active ? 'text-white' : 'text-[var(--ocean-soft)] group-hover:text-white',
-                      )}>
-                        {it.icon}
-                      </span>
-                      {!collapsed && (
-                        <>
-                          <span className="truncate flex-1">{it.label}</span>
-                          {badge > 0 && (
-                            <span className={cn(
-                              'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
-                              // Active row: white pill, ocean text — high
-                              // contrast against the active overlay.
-                              // Inactive: dark-tinted pill that pops out of
-                              // the inactive text without competing with
-                              // the active state.
-                              active
-                                ? 'bg-white text-[var(--ocean)]'
-                                : 'bg-[var(--ocean-hover)] text-white',
-                            )}>
-                              {badge > 99 ? '99+' : badge}
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {/* Collapsed-mode badge — small dot in the top-right
-                          corner of the icon tile so the user still sees
-                          "something's waiting" without the count. */}
-                      {collapsed && badge > 0 && (
-                        <span
-                          className="absolute mt-[-12px] ml-[14px] w-[8px] h-[8px] rounded-full bg-white border border-[var(--ocean)]"
-                          aria-label={`${badge} pending`}
-                        />
-                      )}
-                    </Link>
-                  );
-                })}
+                {showRows && items.map((it) => renderNavLink(it))}
               </div>
             );
           })}
