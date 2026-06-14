@@ -31,7 +31,100 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-06-06 (Dashboards reverted to Recharts — Vega migration backed out)
+**Last updated:** 2026-06-14 (Odoo source connector + connector-framework hardening)
+
+**Odoo source connector + framework hardening (2026-06-14):** Added **Odoo** as
+a first-class source connector built the same way as ExactOnline (the
+`packages/connectors/` `SourceConnector` framework — NOT the legacy
+`backend/src/connectors` + ETL path). Preceded by a critical audit of the
+connector framework; the Odoo connector is built to dodge the framework's
+latent bugs, and the "required hardening" subset of the audit fixes shipped
+alongside it. ExactOnline behaviour is unchanged (every shared change is
+additive or default-off).
+- **New connector package `packages/connectors/src/odoo/`:**
+  - `schema.ts` — JSON-Schema config (`url`/`db`/`username`/`apiKey`); API-key
+    auth (no OAuth). `asOdooConfig` strips trailing slashes.
+  - `transport.ts` — `OdooTransport` interface + `resolveOdooTransport()`
+    (probes JSON-2, falls back to XML-RPC) + a strict **read-only method
+    allow-list** (`assertReadOnly`: only fields_get/search/search_read/
+    search_count/read/read_group — create/write/unlink impossible by
+    construction) + error types (`OdooAuthError`, `OdooEndpointMissingError`).
+  - `json2Transport.ts` — **PRIMARY** transport. Odoo 19+/Online `/json/2`
+    REST, `Authorization: bearer <apiKey>`, `X-Odoo-Database`. Reuses the
+    shared HttpClient with `requestsPerSecond: 1` (Odoo Online throttles ~1
+    req/sec). The only non-deprecated path (`/xmlrpc/2` + `/jsonrpc` are
+    deprecated in Odoo 19, removed earliest on Odoo Online).
+  - `xmlrpcTransport.ts` + `xmlrpcCodec.ts` — **FALLBACK** for older on-prem
+    (Odoo ≤ ~16). Hand-rolled XML-RPC encode + `fast-xml-parser` decode; the
+    codec is fully unit-tested (`xmlrpcCodec.test.ts`) so it's not shipped
+    blind. Auth in body, no Authorization header.
+  - `entities.ts` — 21-model curated allowlist with **dotted→underscore
+    table-name mapping** (`account.move.line` → `account_move_line`; required
+    because the warehouse writer's `isSafeTableName` rejects dots). Every entity
+    is incremental on `write_date` with `businessKey:'id'`. Plus
+    `ODOO_KNOWN_RELATIONSHIPS` (documented many2one FKs) and
+    `odooTypeToDuckDb` (Odoo field type → stable DuckDB SQL type).
+  - `OdooConnector.ts` — `testConnection`/`listEntities`/`probeEntities`
+    (dynamic "available tables": `search_count` per model; missing models like
+    `stock.valuation.layer` on v19 surface as `not_found`)/`sync`/
+    `getKnownRelationships`. Sync paginates `search_read` (PAGE 2000, order
+    `id`), passes the writer an **explicit `columns` schema from `fields_get`**
+    (stable types — no per-sync inference drift), flattens many2one
+    `[id,name]→id` and Odoo's `false` empty-sentinel → null (type-aware: a real
+    boolean `false` is preserved), and uses a **`write_date >= cursor`** filter
+    (not `>`) with merge-by-`id` so boundary-second rows are never skipped
+    (idempotent re-pull). Cursor advances only on strictly-greater `write_date`
+    (satisfies the orchestrator's monotonicity guard).
+  - `index.ts` registers the connector; `packages/connectors/src/index.ts`
+    imports `./odoo`. No backend route, ETL, or migration changes — the
+    `add-source` wizard + `/source-types` are registry-driven, so Odoo appears
+    automatically.
+- **Required framework hardening (shared, additive / default-off):**
+  - **HttpClient client-side rate limiting** (`requestsPerSecond` /
+    `minIntervalMs`, per-instance single-flight pacer) — default off, so EO is
+    unchanged; Odoo sets 1/sec. Also fixed `Retry-After` to honour the HTTP-date
+    form. Test bypass via `HTTP_CLIENT_RATE_LIMIT_DISABLED=1`.
+  - **Explicit-schema writes** — `WriteTableOptions.columns` threaded through
+    both `ParquetWriter` + `BlobSasWarehouseWriter` (`read_json(columns=…)`
+    instead of `auto_detect`). Eliminates type drift / date-as-string /
+    bigint-precision loss for connectors that know their schema. EO (no
+    `columns`) keeps `auto_detect` — unchanged.
+  - **`source_sync_runs` reaper** (`backend/src/index.ts`) — startup closes
+    `queued`/`running` rows interrupted by a restart; the 5-min interval reaper
+    fails rows stuck >30min (`COALESCE(started_at, queued_at)`). Fixes the
+    "zombie running row permanently blocks a connection" blocker for ALL
+    connectors. Also resets the connection's denormalised `last_sync_status`.
+  - **Connector conformance suite** (`conformance.ts` + `conformance.test.ts`)
+    — every registered connector is checked for metadata invariants (lower-snake
+    type, compilable configSchema, non-empty egressAllowList, oauth
+    preAuthFields ⊆ schema props) and every catalog for entity invariants
+    (`supportsIncremental === !!incrementalCursor`, **`incrementalCursor ⇒
+    businessKey`** — the table-wipe blocker — name safety, uniqueness). Runs over
+    both Odoo and ExactOnline today; the gate that scales to many connectors.
+- **Frontend** (`frontend/app/sources/page.tsx`): removed the stale
+  `available:false` Odoo tile and added Odoo to `REGISTRY_DESCRIPTIONS` /
+  `REGISTRY_COLORS`, so the live tile renders from `/source-types` and routes to
+  the registry-driven `add-source` wizard — identical to how ExactOnline works.
+- **Validated:** `tsc -p packages/connectors --noEmit` clean; 32 tests pass
+  (`xmlrpcCodec` 11, `registry` 6, `OdooConnector` 10, `conformance` 5).
+  DuckDB-dependent tests (`OdooConnector.sync.test.ts`, `ParquetWriter.test.ts`,
+  `ExactOnlineConnector.test.ts`) can't run in the dev sandbox here — Node 22 has
+  no DuckDB prebuilt and the native build needs toolchain/network — they run in
+  CI / the backend image where DuckDB is available.
+- **Deferred (tracked, NOT in this change — from the framework audit):** Azure
+  warehouse SAS is container-scoped not path-scoped (cross-tenant write
+  isolation rests on worker convention); `egressAllowList` is declarative-only
+  (never enforced) + SSRF via followed pagination links; error
+  excerpts/`log_excerpt` not redaction-scrubbed; RLS conditional on a prod-absent
+  role + a few id-only `WHERE`s (cross-tenant IDOR); no worker wall-clock timeout
+  / SIGKILL escalation; `source_sync_runs` unbounded growth + TOCTOU in the
+  in-flight dedupe; config not validated on `PATCH /source-config`; merge path
+  rewrites the whole table each incremental sync (route large incremental tables
+  through the Delta sidecar). Apply the EO cursor `>`→`>=` fix too when touching
+  EO (it has the same boundary-skip latent bug; deferred to avoid changing the
+  working connector without explicit sign-off).
+
+**Earlier last-updated:** 2026-06-06 (Dashboards reverted to Recharts — Vega migration backed out)
 
 **Dashboards reverted to Recharts (2026-06-06):** The entire Vega-Lite migration
 (commits `90d6970`, `f9fe7b7`, `b723884`, `a6ebba9`, `e73c887`, `aabed9f`) was

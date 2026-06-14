@@ -109,8 +109,9 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
       // single-_placeholder shape — keeps downstream profilers from
       // crashing on missing files but isn't useful for understanding
       // what an empty table would contain.
-      if (opts?.emptySchema && opts.emptySchema.length > 0) {
-        await writeEmptyParquetWithSchema(outFile, opts.emptySchema);
+      const emptyCols = opts?.emptySchema?.length ? opts.emptySchema : opts?.columns;
+      if (emptyCols && emptyCols.length > 0) {
+        await writeEmptyParquetWithSchema(outFile, emptyCols);
       } else {
         await writeEmptyParquet(outFile);
       }
@@ -118,11 +119,11 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
     } else if (useMerge) {
       // Merge existing + delta on mergeKey. DuckDB does the heavy lifting
       // in SQL — no per-row JavaScript memory cost.
-      await mergeNdjsonIntoExistingParquet(stagingPath, existingPath!, outFile, opts!.mergeKey!);
+      await mergeNdjsonIntoExistingParquet(stagingPath, existingPath!, outFile, opts!.mergeKey!, opts?.columns);
       await fs.unlink(stagingPath).catch(() => undefined);
     } else {
       // Standard overwrite path.
-      await convertNdjsonToParquet(stagingPath, outFile);
+      await convertNdjsonToParquet(stagingPath, outFile, opts?.columns);
       await fs.unlink(stagingPath).catch(() => undefined);
     }
 
@@ -136,13 +137,40 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
 }
 
 // ─── DuckDB-backed conversion ─────────────────────────────────────────────
-async function convertNdjsonToParquet(ndjsonPath: string, parquetPath: string): Promise<void> {
+type ColumnSchema = ReadonlyArray<{ name: string; sqlType: string }>;
+
+/**
+ * Build the `read_json(...)` table expression for an NDJSON staging file.
+ * When `columns` is supplied, DuckDB uses the explicit schema (stable types,
+ * NULL-fills missing keys, ignores extras) instead of sampling via
+ * `auto_detect`. Names + types are validated against the same allow-lists the
+ * empty-schema path uses, so nothing untrusted reaches the SQL string.
+ */
+function readJsonExpr(escNdPath: string, columns?: ColumnSchema): string {
+  if (columns && columns.length > 0) {
+    const struct = columns
+      .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
+      .map((c) => `'${c.name}': '${c.sqlType}'`)
+      .join(', ');
+    if (struct.length > 0) {
+      return `read_json('${escNdPath}', format='newline_delimited', columns={${struct}})`;
+    }
+  }
+  return `read_json('${escNdPath}', format='newline_delimited', auto_detect=true)`;
+}
+
+async function convertNdjsonToParquet(
+  ndjsonPath: string,
+  parquetPath: string,
+  columns?: ColumnSchema,
+): Promise<void> {
   // In-memory DuckDB instance per write. Cheap (~10ms cold start) and avoids
   // sharing state between concurrent connector runs.
   const db = await Database.create(':memory:');
   try {
     // read_json with format=newline_delimited handles NDJSON natively.
-    // auto_detect=true lets DuckDB infer the schema from a sample.
+    // Explicit `columns` (when the connector knows its schema) gives stable
+    // types; otherwise auto_detect infers from a sample.
     // SAFE escaping of paths: DuckDB doesn't support parameterised paths in COPY,
     // so we apply a strict allow-list above (`isSafeTableName`) and use absolute
     // paths only. Single-quotes inside the path are escaped here as a defensive
@@ -151,7 +179,7 @@ async function convertNdjsonToParquet(ndjsonPath: string, parquetPath: string): 
     const escPq = parquetPath.replace(/'/g, "''");
     await db.all(`
       COPY (
-        SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+        SELECT * FROM ${readJsonExpr(escNd, columns)}
       )
       TO '${escPq}' (FORMAT 'parquet', COMPRESSION 'snappy')
     `);
@@ -184,6 +212,7 @@ async function mergeNdjsonIntoExistingParquet(
   existingParquetPath: string,
   outPath: string,
   mergeKey: string,
+  columns?: ColumnSchema,
 ): Promise<void> {
   // Copy the existing parquet to tmpdir first so DuckDB's read lock sits
   // on the copy, not on outPath. Without this, on Windows the lock
@@ -200,6 +229,7 @@ async function mergeNdjsonIntoExistingParquet(
     const escEx = existingCopy.replace(/'/g, "''");
     const escOut = tmpOut.replace(/'/g, "''");
     const escKey = mergeKey.replace(/"/g, '""');
+    const deltaExpr = readJsonExpr(escNd, columns);
 
     // Guard: merge-by-key with NULL values in the key column silently
     // produces duplicates. PARTITION BY treats every NULL as its own
@@ -208,7 +238,7 @@ async function mergeNdjsonIntoExistingParquet(
     // do the same — accumulating one duplicate per sync. Better to
     // fail loudly here than to silently corrupt the table.
     const nullCheck = await db.all(
-      `SELECT COUNT(*) AS n FROM read_json('${escNd}', format='newline_delimited', auto_detect=true) WHERE "${escKey}" IS NULL`,
+      `SELECT COUNT(*) AS n FROM ${deltaExpr} WHERE "${escKey}" IS NULL`,
     ) as Array<{ n: number | bigint }>;
     const nullCount = Number(nullCheck[0]?.n ?? 0);
     if (nullCount > 0) {
@@ -233,7 +263,7 @@ async function mergeNdjsonIntoExistingParquet(
     await db.all(`
       COPY (
         WITH delta AS (
-          SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+          SELECT * FROM ${deltaExpr}
         ),
         existing AS (
           SELECT * FROM read_parquet('${escEx}')

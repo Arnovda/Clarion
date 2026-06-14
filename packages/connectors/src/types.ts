@@ -526,6 +526,32 @@ export interface WriteTableOptions {
    * rows always wins. Only consulted on the empty-write branch.
    */
   emptySchema?: ReadonlyArray<{ name: string; sqlType: string }>;
+
+  /**
+   * Explicit column schema for the POPULATED write path. When provided, the
+   * writer hands DuckDB a fixed `columns={…}` map instead of inferring types
+   * from a JSON sample (`auto_detect`). This eliminates the type-drift class
+   * of bugs that plague sample-based inference:
+   *
+   *   • a column that's all-null in one sync and typed in another no longer
+   *     flips type between runs (which would break the merge UNION),
+   *   • dates land as real `TIMESTAMP`/`DATE` instead of strings,
+   *   • large integers / monetary values keep their declared precision.
+   *
+   * Connectors that know their schema authoritatively (Odoo via `fields_get`,
+   * any SQL-introspectable source, GraphQL introspection, …) should pass it.
+   * Each entry is `{ name, sqlType }` with a DuckDB-compatible SQL type;
+   * names + types are validated against an allow-list before interpolation.
+   *
+   * Columns present here but absent from a given row are filled NULL; JSON
+   * keys not listed here are ignored. Applies to both the overwrite and the
+   * delta side of a merge. When unset, the writer falls back to
+   * `auto_detect` (legacy behaviour — unchanged for existing connectors).
+   *
+   * Doubles as the empty-table schema: if rows turn out to be zero and no
+   * `emptySchema` was given, `columns` is used for the empty write too.
+   */
+  columns?: ReadonlyArray<{ name: string; sqlType: string }>;
 }
 
 export interface WarehouseWriter {

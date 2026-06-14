@@ -125,8 +125,9 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
         // the parquet WITH those columns so the catalog can show the
         // table's shape. Otherwise fall back to the legacy
         // single-_placeholder schema.
-        if (opts?.emptySchema && opts.emptySchema.length > 0) {
-          await writeEmptyParquetWithSchema(stagingParquet, opts.emptySchema);
+        const emptyCols = opts?.emptySchema?.length ? opts.emptySchema : opts?.columns;
+        if (emptyCols && emptyCols.length > 0) {
+          await writeEmptyParquetWithSchema(stagingParquet, emptyCols);
         } else {
           await writeEmptyParquet(stagingParquet);
         }
@@ -136,9 +137,10 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
           existingParquet,
           stagingParquet,
           opts!.mergeKey!,
+          opts?.columns,
         );
       } else {
-        await convertNdjsonToParquet(stagingNdjson, stagingParquet);
+        await convertNdjsonToParquet(stagingNdjson, stagingParquet, opts?.columns);
       }
 
       // ─── Upload to Blob ──────────────────────────────────────────────
@@ -164,14 +166,38 @@ async function blobExists(blockBlob: { exists(): Promise<boolean> }): Promise<bo
 }
 
 // ─── DuckDB helpers (mirror LocalFileWarehouseWriter) ─────────────────────
-async function convertNdjsonToParquet(ndjsonPath: string, parquetPath: string): Promise<void> {
+type ColumnSchema = ReadonlyArray<{ name: string; sqlType: string }>;
+
+/** See ParquetWriter.readJsonExpr — kept in sync; library-isolated copy. */
+function readJsonExpr(escNdPath: string, columns?: ColumnSchema): string {
+  if (columns && columns.length > 0) {
+    const struct = columns
+      .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
+      .map((c) => `'${c.name}': '${c.sqlType}'`)
+      .join(', ');
+    if (struct.length > 0) {
+      return `read_json('${escNdPath}', format='newline_delimited', columns={${struct}})`;
+    }
+  }
+  return `read_json('${escNdPath}', format='newline_delimited', auto_detect=true)`;
+}
+
+function isSafeSqlType(t: string): boolean {
+  return /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/.test(t);
+}
+
+async function convertNdjsonToParquet(
+  ndjsonPath: string,
+  parquetPath: string,
+  columns?: ColumnSchema,
+): Promise<void> {
   const db = await Database.create(':memory:');
   try {
     const escNd = ndjsonPath.replace(/'/g, "''");
     const escPq = parquetPath.replace(/'/g, "''");
     await db.all(`
       COPY (
-        SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+        SELECT * FROM ${readJsonExpr(escNd, columns)}
       )
       TO '${escPq}' (FORMAT 'parquet', COMPRESSION 'snappy')
     `);
@@ -230,6 +256,7 @@ async function mergeNdjsonIntoExistingParquet(
   existingParquetPath: string,
   outPath: string,
   mergeKey: string,
+  columns?: ColumnSchema,
 ): Promise<void> {
   // The Blob writer's `existingParquetPath` is already a tmpdir-local
   // file (the downloadToFile result), so no further staging copy is
@@ -240,12 +267,13 @@ async function mergeNdjsonIntoExistingParquet(
     const escEx = existingParquetPath.replace(/'/g, "''");
     const escOut = outPath.replace(/'/g, "''");
     const escKey = mergeKey.replace(/"/g, '""');
+    const deltaExpr = readJsonExpr(escNd, columns);
 
     // Mirror of ParquetWriter's NULL-key guard. PARTITION BY treats each
     // NULL as a distinct partition, so a merge with NULL business keys
     // silently produces one duplicate per sync. Fail loudly instead.
     const nullCheck = await db.all(
-      `SELECT COUNT(*) AS n FROM read_json('${escNd}', format='newline_delimited', auto_detect=true) WHERE "${escKey}" IS NULL`,
+      `SELECT COUNT(*) AS n FROM ${deltaExpr} WHERE "${escKey}" IS NULL`,
     ) as Array<{ n: number | bigint }>;
     const nullCount = Number(nullCheck[0]?.n ?? 0);
     if (nullCount > 0) {
@@ -258,7 +286,7 @@ async function mergeNdjsonIntoExistingParquet(
     await db.all(`
       COPY (
         WITH delta AS (
-          SELECT * FROM read_json('${escNd}', format='newline_delimited', auto_detect=true)
+          SELECT * FROM ${deltaExpr}
         ),
         existing AS (
           SELECT * FROM read_parquet('${escEx}')

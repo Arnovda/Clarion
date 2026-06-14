@@ -155,15 +155,10 @@ const CONNECTORS: Connector[] = [
     iconLetter: 'E',
     formFields: [],
   },
-  {
-    id: 'odoo',
-    name: 'Odoo',
-    description: 'Open-source ERP & CRM',
-    available: false,
-    color: 'bg-purple-500',
-    iconLetter: 'O',
-    formFields: [],
-  },
+  // NOTE: Odoo is a registry source connector (packages/connectors/src/odoo).
+  // Its live tile is rendered from the /source-types fetch below (see
+  // REGISTRY_* maps), so there is no hardcoded entry here — same pattern as
+  // Exact Online.
   {
     id: 'salesforce',
     name: 'Salesforce',
@@ -195,10 +190,12 @@ const CONNECTORS: Connector[] = [
 
 const REGISTRY_DESCRIPTIONS: Record<string, string> = {
   exactonline: 'Sync GL, sales and master data from Exact Online.',
+  odoo: 'Sync accounting, sales and inventory from Odoo (ERP & CRM).',
 };
 
 const REGISTRY_COLORS: Record<string, string> = {
   exactonline: 'bg-orange-500',
+  odoo: 'bg-purple-500',
 };
 
 // ---------------------------------------------------------------------------

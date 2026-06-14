@@ -39,6 +39,7 @@ export {
 // Adding a new connector: add an `import './<vendor>';` line below.
 // Each connector subfolder's index.ts calls `registerConnector(...)` on import.
 import './exactonline';
+import './odoo';
 // import './netsuite';     // future
 // import './quickbooks';   // future
 // import './airbyte';      // future

@@ -292,6 +292,28 @@ if (!process.env.VITEST) {
           });
         if (staleRuns > 0) console.log(`[startup] Closed ${staleRuns} orphaned transformation run(s)`);
 
+        // Source-connector syncs (ExactOnline, Odoo, …): a worker that died
+        // between status='running' and a terminal update leaves the row
+        // pinned 'running'. The SyncOrchestrator's in-flight guard then keeps
+        // returning that zombie run and refuses to start a new sync — the
+        // connection becomes permanently un-syncable. Close out any
+        // queued/running rows from before this restart so the next trigger
+        // can proceed. (The worker process itself was killed with the parent.)
+        const staleSyncs = await semanticDb('source_sync_runs')
+          .whereIn('status', ['queued', 'running'])
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: 'Sync was interrupted by a server restart',
+          });
+        if (staleSyncs > 0) {
+          console.log(`[startup] Closed ${staleSyncs} interrupted source sync run(s)`);
+          // Keep the connection's denormalised status in step with the runs.
+          await semanticDb('connections')
+            .whereIn('last_sync_status', ['queued', 'running'])
+            .update({ last_sync_status: 'failed' });
+        }
+
         // One-time backfill for dim_date rows in non-first products. Older
         // rows were inserted with transformation_sql=null but no
         // is_shared_dimension flag — see busMatrixBuilder.ts. Without that
@@ -364,6 +386,32 @@ if (!process.env.VITEST) {
             profiling_progress: 0,
           });
         if (staleProfiling > 0) console.log(`[cleanup] Marked ${staleProfiling} stale profiling job(s) as failed`);
+
+        // Source-connector syncs stuck >30min. Mirrors the ingestion/profiling
+        // reaper. Without this a worker that hangs (no terminal event, no
+        // crash) keeps source_sync_runs 'running' forever and the in-flight
+        // guard blocks every future sync of that connection. Uses
+        // coalesce(started_at, queued_at) so a job that never started still
+        // ages out.
+        const staleSyncRuns = await semanticDb('source_sync_runs')
+          .whereIn('status', ['queued', 'running'])
+          .whereRaw("COALESCE(started_at, queued_at) < NOW() - INTERVAL '30 minutes'")
+          .update({
+            status: 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: 'Sync timed out (>30 minutes)',
+          });
+        if (staleSyncRuns > 0) {
+          console.log(`[cleanup] Marked ${staleSyncRuns} stale source sync run(s) as failed`);
+          await semanticDb('connections')
+            .whereIn('last_sync_status', ['queued', 'running'])
+            .whereRaw(`NOT EXISTS (
+              SELECT 1 FROM source_sync_runs s
+              WHERE s.connection_id = connections.id
+                AND s.status IN ('queued','running')
+            )`)
+            .update({ last_sync_status: 'failed' });
+        }
       } catch { /* non-fatal */ }
     }, 5 * 60 * 1000);
   });

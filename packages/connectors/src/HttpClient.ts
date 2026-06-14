@@ -33,6 +33,25 @@ export interface HttpClientOptions {
   maxRetries?: number;
 
   /**
+   * Client-side rate limiting. When set, the client paces outbound requests
+   * so no two leave less than `minIntervalMs` apart (a simple single-flight
+   * token bucket). This is PROACTIVE throttling — it keeps the connector
+   * under a SaaS API's documented request budget instead of only reacting
+   * to 429s after the fact.
+   *
+   * Use `requestsPerSecond` for the common "N req/sec" case; the client
+   * derives `minIntervalMs = 1000 / requestsPerSecond`. If both are set,
+   * `minIntervalMs` wins.
+   *
+   * Default: unset (no pacing) — existing connectors are unaffected.
+   *
+   * Example: Odoo Online throttles around ~1 req/sec, so the Odoo connector
+   * constructs its client with `requestsPerSecond: 1`.
+   */
+  minIntervalMs?: number;
+  requestsPerSecond?: number;
+
+  /**
    * Called when a request returns 401. Should refresh the credential and
    * return a new Authorization header value to use for the retry.
    *
@@ -88,9 +107,20 @@ export class HttpClient {
   private readonly opts: HttpClientOptions;
   private currentAuthHeader: string | undefined;
 
+  /** Rate-limit pacing state (see `minIntervalMs` / `requestsPerSecond`). */
+  private readonly minIntervalMs: number;
+  private nextAllowedAt = 0;
+  private pacingChain: Promise<void> = Promise.resolve();
+
   constructor(opts: HttpClientOptions) {
     this.opts = opts;
     this.currentAuthHeader = opts.authHeader;
+    // Pacing can be disabled via env for tests (so a 1 req/sec connector
+    // doesn't make its test suite sleep for real). Production never sets this.
+    this.minIntervalMs = process.env.HTTP_CLIENT_RATE_LIMIT_DISABLED === '1'
+      ? 0
+      : (opts.minIntervalMs
+        ?? (opts.requestsPerSecond && opts.requestsPerSecond > 0 ? 1000 / opts.requestsPerSecond : 0));
     this.axios = axios.create({
       baseURL: opts.baseUrl,
       timeout: opts.timeoutMs ?? 60_000,
@@ -108,12 +138,38 @@ export class HttpClient {
     return this.requestWithRetries<T>(req, 0, /* unauthorisedHandled */ false);
   }
 
+  /**
+   * Block until the next request slot is due, then reserve the slot after it.
+   * Serialised through `pacingChain` so concurrent callers queue rather than
+   * all reading the same `nextAllowedAt`. No-op when pacing is disabled.
+   */
+  private async pace(): Promise<void> {
+    if (this.minIntervalMs <= 0) return;
+    const prev = this.pacingChain;
+    let release!: () => void;
+    this.pacingChain = new Promise<void>((r) => { release = r; });
+    try {
+      await prev;
+      const now = Date.now();
+      const scheduled = Math.max(now, this.nextAllowedAt);
+      const wait = scheduled - now;
+      if (wait > 0) await sleep(wait);
+      this.nextAllowedAt = scheduled + this.minIntervalMs;
+    } finally {
+      release();
+    }
+  }
+
   private async requestWithRetries<T>(
     req: HttpRequest,
     attempt: number,
     unauthorisedHandled: boolean,
   ): Promise<HttpResponse<T>> {
     const maxRetries = this.opts.maxRetries ?? 5;
+
+    // Proactive pacing (no-op unless minIntervalMs/requestsPerSecond is set).
+    // Applied to retries too, so a 429 storm doesn't bypass the budget.
+    await this.pace();
 
     let resp: AxiosResponse<T>;
     try {
@@ -249,8 +305,11 @@ function backoffMs(attempt: number): number {
 function parseRetryAfter(value: string | undefined): number | null {
   if (!value) return null;
   const seconds = Number(value);
-  if (Number.isFinite(seconds)) return seconds * 1000;
-  // RFC 7231 also allows HTTP-date — ignore for now, fall back to backoff.
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  // RFC 7231 also allows an HTTP-date form (`Retry-After: Wed, 21 Oct 2026
+  // 07:28:00 GMT`). Several APIs behind Microsoft/Azure fronts emit it.
+  const when = Date.parse(value);
+  if (Number.isFinite(when)) return Math.max(0, when - Date.now());
   return null;
 }
 

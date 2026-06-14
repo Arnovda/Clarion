@@ -1,0 +1,47 @@
+/**
+ * Conformance suite — every registered connector must pass.
+ *
+ * Importing `./index` self-registers all connectors. This file is the gate
+ * that scales the framework to many connectors: add a connector, it's
+ * automatically held to the contract here (metadata) and, by importing its
+ * catalog below, to the entity invariants too.
+ */
+
+import { describe, expect, it } from 'vitest';
+// Register connectors via their side-effect modules directly (rather than
+// './index') so this suite doesn't transitively load the DuckDB-backed
+// warehouse writers — conformance is pure metadata + catalog checks.
+import './exactonline';
+import './odoo';
+import { getConnector, listConnectorTypes } from './registry';
+import { validateConnectorMetadata, validateEntityCatalog } from './conformance';
+import { EXACT_ONLINE_ENTITIES } from './exactonline/entities';
+import { ODOO_ENTITIES } from './odoo/entities';
+
+describe('connector conformance — metadata (all registered connectors)', () => {
+  const types = listConnectorTypes();
+
+  it('registers at least the known connectors', () => {
+    expect(types).toContain('exactonline');
+    expect(types).toContain('odoo');
+  });
+
+  it.each(types)('connector "%s" passes metadata invariants', (type) => {
+    const errs = validateConnectorMetadata(getConnector(type));
+    expect(errs).toEqual([]);
+  });
+});
+
+describe('connector conformance — entity catalogs', () => {
+  // Each connector registers its raw catalog here so the entity invariants
+  // (incrementalCursor ⇒ businessKey, name safety, …) are enforced.
+  const catalogs: Array<[string, typeof ODOO_ENTITIES]> = [
+    ['exactonline', EXACT_ONLINE_ENTITIES],
+    ['odoo', ODOO_ENTITIES],
+  ];
+
+  it.each(catalogs)('catalog for "%s" passes entity invariants', (type, entities) => {
+    const errs = validateEntityCatalog(type, entities);
+    expect(errs).toEqual([]);
+  });
+});
