@@ -31,7 +31,61 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-06-14 (Odoo source connector + connector-framework hardening)
+**Last updated:** 2026-06-14 (connector-framework audit fixes — security + reliability)
+
+**Connector-framework audit fixes (2026-06-14, follow-up to the Odoo work):**
+Tackled the deferred findings from the framework audit. All connector-package
+changes are unit-tested (37 tests, `tsc` clean); backend changes typecheck
+clean (`tsc --noEmit`, only the pre-existing `knexfile.ts` rootDir warning).
+- **Egress enforcement (SSRF guard).** `HttpClient` now enforces an
+  `egressAllowList`: every request (including server-provided pagination
+  links) is host-checked and a request off the list is refused before it
+  leaves the process. Wired into ExactOnline (its static `*.exactonline.*`
+  list) and Odoo (the single configured host, so self-hosted instances aren't
+  blocked). Closes the "follow a tampered next-link to exfiltrate creds" hole.
+- **Error redaction.** `HttpClient` runs error-response excerpts through
+  `redact()` before they reach the thrown message; the orchestrator redacts
+  `error_message` / `warnings` / `log_excerpt` before persisting. Secrets in an
+  error body can no longer land in the DB / UI.
+- **Worker wall-clock timeout + force-kill.** Orchestrator races `handle.done`
+  against `SYNC_MAX_DURATION_MS` (default 30 min) and cancels on timeout;
+  `JobLauncher.cancel` now escalates SIGTERM → SIGKILL after
+  `WORKER_CANCEL_GRACE_MS` (default 20s). A hung worker can no longer sit in
+  `running` forever, and cancellation has teeth.
+- **stdout flood guard.** The launcher caps the line-reassembly buffer (1 MB);
+  a newline-less blob from the child can't exhaust memory.
+- **In-flight dedupe is now a DB invariant.** New migration
+  `20260614000067_source_sync_runs_inflight_unique.ts` adds a partial unique
+  index on `source_sync_runs(connection_id) WHERE status IN ('queued','running')`
+  (pre-cleans existing duplicates first); `triggerSync` catches the 23505
+  conflict and returns the winning run — closes the TOCTOU race.
+- **Retention.** The 5-min reaper now prunes terminal `source_sync_runs` older
+  than `SYNC_RUN_RETENTION_DAYS` (default 90) so the table can't grow forever.
+- **Tenant-context injection hardening.** All `SET app.current_tenant` string
+  interpolations in the orchestrator replaced with a parameterised
+  `set_config('app.current_tenant', ?, false)` helper.
+- **Config validation on write.** New package export `validateConnectorConfig`
+  (compiles the connector's JSON Schema); `PATCH /:id/source-config` now
+  rejects a schema-invalid merged config with 400 instead of writing it to the
+  encrypted cell to fail deep in the next sync.
+- **ExactOnline cursor `>` → `>=`.** Applied the boundary-safe incremental
+  filter to EO too (it merges by businessKey, so the re-pull is idempotent);
+  removes the same second-precision watermark skip the Odoo connector already
+  avoided. Cursor still only advances on a strictly-greater value.
+- **Azure SAS (NOT code-fixed — honest docs only).** The warehouse SAS is
+  still container-scoped; true path scoping (per-blob / HNS-directory SAS, or
+  per-tenant containers) is an infra change that can't be verified without a
+  live Azure account, so shipping it blind was declined. The misleading
+  comments in `types.ts` + `BlobSasWarehouseWriter.ts` that claimed Azure
+  returns a 403 for out-of-prefix writes are corrected to state the real
+  guarantee (code-enforced pathPrefix + tenant-prefixed layout). Worker-side
+  confinement (pathPrefix + `isSafeTableName`) is unchanged and remains the
+  active control. **Still open:** path-scoped SAS, RLS-in-prod for
+  `source_sync_runs`/`oauth_pending` + id-only IDOR `WHERE`s, worker secrets via
+  stdin instead of env (local launcher), merge-via-Delta for large incremental
+  tables. These remain tracked.
+
+**Last updated (prior):** 2026-06-14 (Odoo source connector + connector-framework hardening)
 
 **Odoo source connector + framework hardening (2026-06-14):** Added **Odoo** as
 a first-class source connector built the same way as ExactOnline (the

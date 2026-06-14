@@ -412,6 +412,16 @@ if (!process.env.VITEST) {
             )`)
             .update({ last_sync_status: 'failed' });
         }
+
+        // Retention: source_sync_runs grows unbounded otherwise (every
+        // scheduled sync adds a fat row with log_excerpt + JSONB counts).
+        // Keep terminal runs for 90 days; never delete in-flight rows.
+        const SYNC_RUN_RETENTION_DAYS = Number(process.env.SYNC_RUN_RETENTION_DAYS) || 90;
+        const prunedSyncRuns = await semanticDb('source_sync_runs')
+          .whereIn('status', ['succeeded', 'failed', 'cancelled'])
+          .whereRaw(`COALESCE(completed_at, queued_at) < NOW() - (? * INTERVAL '1 day')`, [SYNC_RUN_RETENTION_DAYS])
+          .del();
+        if (prunedSyncRuns > 0) console.log(`[cleanup] Pruned ${prunedSyncRuns} source sync run(s) older than ${SYNC_RUN_RETENTION_DAYS}d`);
       } catch { /* non-fatal */ }
     }, 5 * 60 * 1000);
   });

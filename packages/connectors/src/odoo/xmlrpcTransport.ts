@@ -15,6 +15,7 @@ import { HttpClient, HttpError } from '../HttpClient';
 import type { Logger } from '../types';
 import type { OdooConfig } from './schema';
 import { encodeMethodCall, parseMethodResponse, XmlRpcFault } from './xmlrpcCodec';
+import { hostAllowList } from './json2Transport';
 import {
   assertReadOnly,
   OdooAuthError,
@@ -37,6 +38,7 @@ export class XmlRpcTransport implements OdooTransport {
       log,
       maxRetries: 6,
       requestsPerSecond: ODOO_REQUESTS_PER_SECOND,
+      egressAllowList: hostAllowList(config.url),
       // No authHeader: XML-RPC carries credentials in the request body.
     });
   }

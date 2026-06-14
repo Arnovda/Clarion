@@ -35,6 +35,11 @@ export {
   type ConnectorCatalogEntry,
 } from './registry';
 
+export {
+  validateConnectorConfig,
+  type ConfigValidationResult,
+} from './configValidation';
+
 // ─── Self-register all connectors (side-effect imports) ───────────────────
 // Adding a new connector: add an `import './<vendor>';` line below.
 // Each connector subfolder's index.ts calls `registerConnector(...)` on import.

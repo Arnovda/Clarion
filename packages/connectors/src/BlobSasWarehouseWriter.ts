@@ -7,14 +7,17 @@
  * Azure Blob Storage instead of the local filesystem.
  *
  * Security model:
- *   • The orchestrator generates a short-lived SAS URL scoped to a
- *     single connection's path (e.g. `warehouse-container?<sas>` with
- *     a path-prefix permission of `conn_<id>/`). It hands the URL to
- *     the worker via env var.
+ *   • The orchestrator generates a short-lived user-delegation SAS URL for
+ *     the warehouse container and hands it to the worker.
  *   • The worker NEVER sees a Storage account key. All writes go through
- *     the BlobSASSignatureValues encoded in the URL.
- *   • A worker that tries to write outside its scoped path gets a 403
- *     from Azure regardless of what the connector code does.
+ *     the SAS encoded in the URL.
+ *   • Path confinement to `tenant_<tid>/conn_<cid>/` is enforced HERE: every
+ *     write prepends `pathPrefix` and `isSafeTableName` rejects traversal.
+ *     IMPORTANT: the SAS today is CONTAINER-scoped, so this is a code-level
+ *     guarantee, not a storage-level one — Azure will NOT 403 an
+ *     out-of-prefix path. Strong per-path scoping (per-blob SAS, an
+ *     HNS-directory SAS, or a per-tenant container) is a tracked infra
+ *     follow-up; until then do not weaken the pathPrefix/table-name guards.
  *
  * Pipeline:
  *   1. Stream rows → NDJSON file in the container's tmpdir (same as local

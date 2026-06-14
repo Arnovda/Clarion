@@ -80,6 +80,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       authHeader: `Bearer ${accessToken}`,
       log: ctx.log,
       maxRetries: 1, // no retry for a probe — fail fast
+      egressAllowList: this.egressAllowList,
     });
 
     try {
@@ -255,6 +256,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       baseUrl: config.baseUrl,
       authHeader: `Bearer ${accessToken}`,
       log: ctx.log,
+      egressAllowList: this.egressAllowList,
       // Inside a sync, retries on 429 / 5xx are valuable — we want to ride
       // out transient failures rather than abort and re-do everything.
       // Bumped to 10 (from 5) because EO's heaviest endpoints
@@ -546,10 +548,16 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     const filterParts: string[] = [];
     if (entity.defaultFilter) filterParts.push(entity.defaultFilter);
     if (entity.incrementalCursor && priorCursor && priorCursor.type === 'timestamp') {
-      // EO OData expects: `Modified gt datetime'YYYY-MM-DDTHH:MM:SS'`.
-      // The cursor's value is the literal ISO string (no quotes), we
-      // wrap it here when composing the filter.
-      filterParts.push(`${entity.incrementalCursor.field} gt datetime'${priorCursor.value}'`);
+      // EO OData expects: `Modified ge datetime'YYYY-MM-DDTHH:MM:SS'`.
+      // We use `ge` (>=), NOT `gt`: `Modified` is second-precision and not
+      // unique, so a strictly-greater filter can permanently skip rows that
+      // share the boundary second with the cursor (some returned, some not,
+      // when a page boundary or a same-second write lands across syncs).
+      // `ge` re-pulls the boundary instant; the merge-by-businessKey writer
+      // makes the re-pull idempotent — a tiny duplicate fetch in exchange
+      // for never losing a row. The cursor still only ADVANCES on a strictly
+      // greater Modified (see the maxCursorSeen guard), so this doesn't loop.
+      filterParts.push(`${entity.incrementalCursor.field} ge datetime'${priorCursor.value}'`);
     }
 
     const params: string[] = [];

@@ -31,6 +31,11 @@ import {
 /** Odoo Online throttles around ~1 req/sec sustained; pace to stay under it. */
 const ODOO_REQUESTS_PER_SECOND = 1;
 
+/** The single host the connector is allowed to reach (the configured one). */
+export function hostAllowList(url: string): string[] {
+  try { return [new URL(url).host]; } catch { return []; }
+}
+
 export class Json2Transport implements OdooTransport {
   readonly kind = 'json2' as const;
   private readonly http: HttpClient;
@@ -42,6 +47,11 @@ export class Json2Transport implements OdooTransport {
       log,
       maxRetries: 6,
       requestsPerSecond: ODOO_REQUESTS_PER_SECOND,
+      // Lock egress to the configured host (self-hosted Odoo lives on
+      // customer domains, so a static list can't be used). Odoo uses
+      // offset pagination — it never follows server-provided links — so the
+      // host never changes mid-sync.
+      egressAllowList: hostAllowList(config.url),
     });
   }
 

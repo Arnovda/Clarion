@@ -31,6 +31,16 @@ import {
   type WorkerEvent,
 } from '@databridge/connectors';
 
+/** Grace period after SIGTERM before we SIGKILL a worker that won't stop. */
+const CANCEL_GRACE_MS = Number(process.env.WORKER_CANCEL_GRACE_MS) || 20_000;
+
+/**
+ * Cap on the stdout line-reassembly buffer. A worker (or a noisy library it
+ * loads) that writes a huge blob with no newline must not grow this without
+ * bound — that's a memory-exhaustion path driven by child output.
+ */
+const MAX_STDOUT_BUFFER = 1_000_000; // 1 MB
+
 // ─── Public interface ─────────────────────────────────────────────────────
 export interface JobSpec {
   connectorType: string;
@@ -139,6 +149,18 @@ export class LocalProcessJobLauncher implements JobLauncher {
           });
         }
       }
+      // Newline-less flood guard: a single colossal line can't grow the
+      // reassembly buffer unbounded. Drop it (keep a small tail) and warn.
+      if (stdoutBuffer.length > MAX_STDOUT_BUFFER) {
+        onEvent({
+          type: 'log',
+          ts: new Date().toISOString(),
+          level: 'warn',
+          msg: 'worker stdout exceeded reassembly cap without a newline — discarding buffered output',
+          fields: { bufferedBytes: stdoutBuffer.length },
+        });
+        stdoutBuffer = stdoutBuffer.slice(-4096);
+      }
     });
 
     child.stderr!.setEncoding('utf-8');
@@ -148,9 +170,14 @@ export class LocalProcessJobLauncher implements JobLauncher {
       stderrBuffer = (stderrBuffer + chunk).slice(-8192);
     });
 
+    // Escalation timer: set on cancel(), cleared on close so we never kill a
+    // process that already exited.
+    let killTimer: NodeJS.Timeout | null = null;
+
     const done = new Promise<{ exitCode: number }>((resolve) => {
       child.on('close', (code, signal) => {
-        const exitCode = code ?? (signal === 'SIGTERM' || signal === 'SIGINT' ? EXIT_CANCELLED : 1);
+        if (killTimer) { clearTimeout(killTimer); killTimer = null; }
+        const exitCode = code ?? (signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGKILL' ? EXIT_CANCELLED : 1);
         // If the worker died without emitting a terminal event, synthesise one
         // so the orchestrator never leaves a run in `running`.
         if (!terminalEventEmitted) {
@@ -183,7 +210,18 @@ export class LocalProcessJobLauncher implements JobLauncher {
     return {
       done,
       cancel: () => {
+        // Cooperative first (SIGTERM → worker flips its cancellation token),
+        // then force-kill if it hasn't exited within the grace window. Without
+        // the escalation a worker stuck inside a long request/native call
+        // would ignore SIGTERM forever.
         try { child.kill('SIGTERM'); } catch { /* already exited */ }
+        if (!killTimer) {
+          killTimer = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch { /* already exited */ }
+          }, CANCEL_GRACE_MS);
+          // Don't let the timer keep the event loop alive on shutdown.
+          if (typeof killTimer.unref === 'function') killTimer.unref();
+        }
       },
     };
   }

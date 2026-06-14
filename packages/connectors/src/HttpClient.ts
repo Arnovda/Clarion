@@ -18,6 +18,7 @@
 
 import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { Logger } from './types';
+import { redact } from './logging';
 
 export interface HttpClientOptions {
   /** Base URL prepended to relative paths. Optional. */
@@ -50,6 +51,25 @@ export interface HttpClientOptions {
    */
   minIntervalMs?: number;
   requestsPerSecond?: number;
+
+  /**
+   * Egress allow-list — host patterns this client is permitted to call.
+   * When set (non-empty), every request's resolved host is checked and a
+   * request to any other host is REFUSED before it leaves the process.
+   *
+   * This is the runtime enforcement of a connector's declared egress scope.
+   * It closes the SSRF vector where a connector follows a server-provided
+   * pagination/next link to an attacker-controlled host: the link is checked
+   * against the allow-list like any other request.
+   *
+   * Patterns: exact host (`start.exactonline.nl`) or a leading wildcard
+   * (`*.exactonline.nl`, matching one-or-more leading labels). For sources
+   * whose host is user-configured (e.g. self-hosted Odoo), pass the single
+   * configured host rather than a static list.
+   *
+   * Default: unset → no enforcement (legacy behaviour).
+   */
+  egressAllowList?: readonly string[];
 
   /**
    * Called when a request returns 401. Should refresh the credential and
@@ -167,6 +187,11 @@ export class HttpClient {
   ): Promise<HttpResponse<T>> {
     const maxRetries = this.opts.maxRetries ?? 5;
 
+    // Egress allow-list enforcement. Checked on every call (including
+    // retries + server-provided next links) so a connector can never reach
+    // a host outside its declared scope.
+    this.assertEgressAllowed(req);
+
     // Proactive pacing (no-op unless minIntervalMs/requestsPerSecond is set).
     // Applied to retries too, so a 429 storm doesn't bypass the budget.
     await this.pace();
@@ -242,13 +267,47 @@ export class HttpClient {
     // Anything else → throw a structured error with a redacted excerpt.
     // Include the body excerpt directly in the message so it shows up in
     // worker IPC events (which only carry .message, not the full HttpError).
-    const excerpt = excerptOfBody(resp.data);
+    // The excerpt is run through `redact()` so an error body that echoes a
+    // token / secret (OAuth error payloads, misbehaving APIs) can't leak into
+    // the persisted error_message / log_excerpt the UI shows.
+    const rawExcerpt = excerptOfBody(resp.data);
+    const excerpt = rawExcerpt ? redact(rawExcerpt) : undefined;
     throw new HttpError(
       `HTTP ${resp.status} from ${this.safeUrl(req)}${excerpt ? ` — ${excerpt}` : ''}`,
       resp.status,
       this.safeUrl(req),
       excerpt,
     );
+  }
+
+  /**
+   * Resolve a request's absolute host and reject it if an egress allow-list
+   * is configured and the host isn't on it. No-op when no allow-list is set.
+   */
+  private assertEgressAllowed(req: HttpRequest): void {
+    const allow = this.opts.egressAllowList;
+    if (!allow || allow.length === 0) return;
+    let host: string;
+    try {
+      host = new URL(this.absoluteUrl(req.url)).host;
+    } catch {
+      throw new HttpError(`Refused request to an unparseable URL (egress policy)`, 0, '<unparseable>', undefined);
+    }
+    if (!allow.some((pattern) => hostMatches(host, pattern))) {
+      throw new HttpError(
+        `Egress blocked: ${host} is not in this connector's allow-list`,
+        0,
+        host,
+        undefined,
+      );
+    }
+  }
+
+  /** Resolve a possibly-relative URL against baseUrl into an absolute URL. */
+  private absoluteUrl(url: string): string {
+    if (/^https?:\/\//i.test(url)) return url;
+    const base = (this.opts.baseUrl ?? '').replace(/\/$/, '');
+    return base + (url.startsWith('/') ? url : `/${url}`);
   }
 
   private toAxios(req: HttpRequest): AxiosRequestConfig {
@@ -315,6 +374,17 @@ function parseRetryAfter(value: string | undefined): number | null {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Host match: exact, or a leading `*.` wildcard over one-or-more labels. */
+function hostMatches(host: string, pattern: string): boolean {
+  const h = host.toLowerCase();
+  const p = pattern.toLowerCase();
+  if (p.startsWith('*.')) {
+    const suffix = p.slice(1); // '.exactonline.nl'
+    return h.endsWith(suffix) && h.length > suffix.length;
+  }
+  return h === p;
 }
 
 function cleanQuery(

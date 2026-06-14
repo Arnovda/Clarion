@@ -565,9 +565,13 @@ export interface WarehouseWriter {
    * incoming rows by key, writes the merged result back. Existing rows
    * whose key is absent from the new batch are KEPT (no delete detection).
    *
-   * The writer is sandboxed — in production it holds a SAS token scoped to
-   * `warehouse/conn_<id>/`. A connector that tries to write outside that
-   * path gets a 403 from Azure Blob, regardless of the path it passes.
+   * The writer confines writes to `warehouse/tenant_<tid>/conn_<cid>/` by
+   * prefixing every blob path and rejecting unsafe table names. NOTE: in the
+   * current Azure deployment the SAS is CONTAINER-scoped (write+create), so
+   * this confinement is enforced by the writer's code + the tenant-prefixed
+   * layout, NOT by the SAS itself — a path-scoped (per-blob / HNS-directory)
+   * SAS or per-tenant container is the tracked infra follow-up. Don't rely on
+   * Azure returning a 403 for an out-of-prefix path today.
    *
    * `rows` is an async iterable so connectors can stream pages from the
    * source without buffering the entire dataset. The writer batches

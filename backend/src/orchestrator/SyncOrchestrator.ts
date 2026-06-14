@@ -33,6 +33,7 @@ import { logger as rootLogger } from '../utils/logger';
 import {
   EXIT_CANCELLED,
   EXIT_OK,
+  redact,
   type ConnectorConfig,
   type WorkerEvent,
 } from '@databridge/connectors';
@@ -47,6 +48,24 @@ const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
 // Path layout matches existing conn_900 + the rest of the warehouse.
 const WAREHOUSE_ROOT = path.resolve(__dirname, '../../../warehouse');
+
+/**
+ * Hard ceiling on a single sync's wall-clock time. A worker that hangs (stuck
+ * socket, infinite loop the cycle-detector misses) is cancelled — and
+ * force-killed by the launcher if it ignores the cancel — so a run can never
+ * sit in `running` forever and block the connection. Override via env.
+ */
+const SYNC_MAX_DURATION_MS = Number(process.env.SYNC_MAX_DURATION_MS) || 30 * 60 * 1000;
+
+/**
+ * Set the tenant RLS context using a bound parameter (NOT string
+ * interpolation). `set_config(..., false)` is session-scoped, equivalent to
+ * `SET`. Parameterised so the isolation boundary can't become an injection
+ * point if tenant ids ever stop being plain integers.
+ */
+async function setTenant(tenantId: number): Promise<void> {
+  await semanticDb.raw(`SELECT set_config('app.current_tenant', ?, false)`, [String(Number(tenantId))]);
+}
 
 /**
  * Resolve the warehouse path that DuckDB should read from after a sync.
@@ -193,7 +212,7 @@ export async function triggerSync(args: {
 }): Promise<TriggerSyncResult> {
   const { connectionId, tenantId, triggeredByUserId } = args;
 
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+  await setTenant(tenantId);
 
   const conn = await semanticDb('connections')
     .where({ id: connectionId, tenant_id: tenantId })
@@ -216,16 +235,39 @@ export async function triggerSync(args: {
     return { syncRunId: inFlight.id, started: false };
   }
 
-  const [insertedId] = await semanticDb('source_sync_runs')
-    .insert({
-      tenant_id: tenantId,
-      connection_id: connectionId,
-      status: 'queued',
-      triggered_by_user_id: triggeredByUserId ?? null,
-    })
-    .returning('id');
-  const syncRunId: number =
-    typeof insertedId === 'object' ? (insertedId as { id: number }).id : (insertedId as number);
+  // The SELECT-then-INSERT above is a TOCTOU race (two concurrent triggers can
+  // both pass the SELECT). A partial unique index on (connection_id) WHERE
+  // status IN ('queued','running') makes "one in-flight run per connection" a
+  // DB-enforced invariant; here we catch the conflict and return the run that
+  // won the race instead of erroring.
+  let syncRunId: number;
+  try {
+    const [insertedId] = await semanticDb('source_sync_runs')
+      .insert({
+        tenant_id: tenantId,
+        connection_id: connectionId,
+        status: 'queued',
+        triggered_by_user_id: triggeredByUserId ?? null,
+      })
+      .returning('id');
+    syncRunId =
+      typeof insertedId === 'object' ? (insertedId as { id: number }).id : (insertedId as number);
+  } catch (e) {
+    // 23505 = unique_violation. Another trigger inserted the in-flight row
+    // between our SELECT and INSERT — return it rather than starting a second.
+    if ((e as { code?: string }).code === '23505') {
+      const winner = await semanticDb('source_sync_runs')
+        .where({ connection_id: connectionId, tenant_id: tenantId })
+        .whereIn('status', ['queued', 'running'])
+        .orderBy('id', 'desc')
+        .first();
+      if (winner) {
+        log.info({ connectionId, syncRunId: winner.id }, 'lost in-flight insert race — returning existing run');
+        return { syncRunId: winner.id, started: false };
+      }
+    }
+    throw e;
+  }
 
   log.info({ connectionId, syncRunId, tenantId }, 'sync queued');
 
@@ -255,7 +297,7 @@ async function runSyncInBackground(args: {
   let logExcerpt = '';
 
   try {
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+    await setTenant(tenantId);
 
     // Mark running. Loaded fresh after to make sure connector_config_encrypted
     // wasn't cleared between queue + start (defence in depth).
@@ -345,7 +387,7 @@ async function runSyncInBackground(args: {
           (async () => {
             try {
               const reencrypted = encryptCredentials(JSON.stringify(newConfig));
-              await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+              await setTenant(tenantId);
               await semanticDb('connections')
                 .where({ id: connectionId, tenant_id: tenantId })
                 .update({ connector_config_encrypted: reencrypted });
@@ -365,7 +407,7 @@ async function runSyncInBackground(args: {
           lastFlushAt = now;
           (async () => {
             try {
-              await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+              await setTenant(tenantId);
               await semanticDb('source_sync_runs')
                 .where({ id: syncRunId, tenant_id: tenantId })
                 .update({ row_counts: JSON.stringify(rowCounts) });
@@ -378,8 +420,32 @@ async function runSyncInBackground(args: {
     // Register cancellation handle so requestCancellation(syncRunId) can hit it.
     cancellationHandles.set(syncRunId, { handle, tenantId });
 
-    const { exitCode } = await handle.done;
+    // Wall-clock guard. If the worker exceeds the ceiling, cancel it (the
+    // launcher escalates SIGTERM → SIGKILL). `handle.done` still resolves
+    // once the process is gone, so we never leak a `running` row.
+    let timedOut = false;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      childLog.error({ maxMs: SYNC_MAX_DURATION_MS }, 'sync exceeded max duration — cancelling worker');
+      handle.cancel();
+    }, SYNC_MAX_DURATION_MS);
+
+    let exitCode: number;
+    try {
+      ({ exitCode } = await handle.done);
+    } finally {
+      clearTimeout(timeoutTimer);
+    }
     cancellationHandles.delete(syncRunId);
+    if (timedOut && exitCode !== EXIT_OK) {
+      errorMessage = errorMessage ?? `Sync exceeded the maximum duration (${Math.round(SYNC_MAX_DURATION_MS / 60000)} min) and was cancelled`;
+    }
+
+    // Scrub anything connector/worker-derived before it's persisted + shown in
+    // the UI. HttpClient already redacts its error excerpts, but a connector
+    // can throw arbitrary strings — defence in depth on the isolation boundary.
+    const safeWarnings = warnings.map((w) => redact(w));
+    const safeLogExcerpt = logExcerpt ? redact(logExcerpt) : null;
 
     // Map exit code → final status. The worker's `result`/`error`/`cancelled`
     // event already populated `rowCounts` / `errorMessage`. Exit code is the
@@ -396,8 +462,8 @@ async function runSyncInBackground(args: {
           status: 'succeeded',
           completed_at: semanticDb.fn.now(),
           row_counts: JSON.stringify(rowCounts),
-          warnings: JSON.stringify(warnings),
-          log_excerpt: logExcerpt || null,
+          warnings: JSON.stringify(safeWarnings),
+          log_excerpt: safeLogExcerpt,
         });
 
       // ── Persist per-entity cursors ──────────────────────────────────
@@ -511,8 +577,8 @@ async function runSyncInBackground(args: {
           status: 'cancelled',
           completed_at: semanticDb.fn.now(),
           row_counts: JSON.stringify(rowCounts),
-          warnings: JSON.stringify(warnings),
-          log_excerpt: logExcerpt || null,
+          warnings: JSON.stringify(safeWarnings),
+          log_excerpt: safeLogExcerpt,
         });
       await semanticDb('connections')
         .where({ id: connectionId, tenant_id: tenantId })
@@ -524,9 +590,9 @@ async function runSyncInBackground(args: {
           status: 'failed',
           completed_at: semanticDb.fn.now(),
           row_counts: JSON.stringify(rowCounts),
-          warnings: JSON.stringify(warnings),
-          error_message: (errorMessage ?? `Worker exited with code ${exitCode}`).slice(0, 4000),
-          log_excerpt: logExcerpt || null,
+          warnings: JSON.stringify(safeWarnings),
+          error_message: redact(errorMessage ?? `Worker exited with code ${exitCode}`).slice(0, 4000),
+          log_excerpt: safeLogExcerpt,
         });
       await semanticDb('connections')
         .where({ id: connectionId, tenant_id: tenantId })
@@ -537,13 +603,13 @@ async function runSyncInBackground(args: {
     const message = e instanceof Error ? e.message : String(e);
     childLog.error({ err: e }, 'orchestrator-side error');
     try {
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+      await setTenant(tenantId);
       await semanticDb('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'failed',
           completed_at: semanticDb.fn.now(),
-          error_message: message.slice(0, 4000),
+          error_message: redact(message).slice(0, 4000),
         });
       await semanticDb('connections')
         .where({ id: connectionId, tenant_id: tenantId })
@@ -648,7 +714,7 @@ async function runProfilerInBackground(args: {
 }): Promise<void> {
   const { connectionId, tenantId } = args;
   const { profilingProgressPct } = await import('../routes/connections');
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
+  await setTenant(tenantId);
 
   // Read the current connection state once. We need its stored
   // schema_hash for drift detection, plus the live row to pass into

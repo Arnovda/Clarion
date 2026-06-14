@@ -5,6 +5,7 @@ import {
   createAdapterLogger,
   getConnector,
   ConfigValidationError,
+  validateConnectorConfig,
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
@@ -473,6 +474,17 @@ router.patch('/:id/source-config', requireAuth, requireRole('admin'), async (req
       if (value === '••••••••') continue;
       merged[key] = value;
     }
+
+    // Validate the merged config against the connector's JSON Schema BEFORE
+    // persisting. Without this, a malformed edit (extra props, wrong types,
+    // dropped required fields) was written straight to the encrypted cell and
+    // only blew up deep inside the next sync's worker.
+    const validation = validateConnectorConfig(row.connector_type, merged);
+    if (!validation.ok) {
+      res.status(400).json({ ok: false, error: `Invalid config: ${validation.errors.join('; ')}` });
+      return;
+    }
+
     const encrypted = encryptCredentials(JSON.stringify(merged));
     await db('connections').where({ id: req.params.id }).update({
       connector_config_encrypted: encrypted,
