@@ -108,10 +108,10 @@ function ReviewQueueInner() {
         {/* Top bar */}
         <div className="bg-raised border-b border-line px-6 py-4 flex items-center justify-between flex-shrink-0">
           <div>
-            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Curate</p>
-            <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">AI review queue</h1>
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Studio</p>
+            <h1 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em]">Suggestions</h1>
             <p className="text-[12px] text-muted mt-1 leading-relaxed">
-              {items.length} item{items.length === 1 ? '' : 's'} awaiting confirmation · AI-suggested descriptions and relationships
+              {items.length} suggestion{items.length === 1 ? '' : 's'} to confirm · AI-proposed descriptions and relationships
             </p>
           </div>
           <button

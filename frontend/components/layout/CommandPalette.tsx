@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { getTokenPayload } from '@/lib/auth';
+
+type Role = 'admin' | 'analyst' | 'viewer';
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -40,14 +43,23 @@ const PALETTE_ICONS: Record<IconKey, React.ReactNode> = {
   bolt:    <Zap           className={ICON_CLASS} strokeWidth={1.5} aria-hidden="true" />,
 };
 
-/* ── Static actions ────────────────────────────────────────────────── */
+/* ── Static actions (role-aware) ───────────────────────────────────── */
+// Business-first ordering: the things everyone does come first; builder/admin
+// actions are role-gated so a viewer never sees "Connect a source" or "Team".
 
-const ACTIONS: SearchResult[] = [
-  { type: 'action', id: 'ask',        title: 'Ask a question',    subtitle: 'Query your data with AI',  icon: 'chat',  href: '/query' },
-  { type: 'action', id: 'dashboard',  title: 'Create dashboard',  subtitle: 'Build a new AI dashboard', icon: 'grid',  href: '/dashboards' },
-  { type: 'action', id: 'connect',    title: 'Connect a source',  subtitle: 'Add a new database',       icon: 'plug',  href: '/sources' },
-  { type: 'action', id: 'catalog',    title: 'Catalog',           subtitle: 'Browse sources & products', icon: 'book',  href: '/catalog' },
-  { type: 'action', id: 'team',       title: 'Team management',   subtitle: 'Users & invites',          icon: 'users', href: '/users' },
+interface ActionDef extends SearchResult { roles: Role[] }
+
+const ALL: ['admin', 'analyst', 'viewer'] = ['admin', 'analyst', 'viewer'];
+
+const ACTIONS_ALL: ActionDef[] = [
+  { type: 'action', id: 'ask',        title: 'Ask a question',     subtitle: 'Get an answer in plain language', icon: 'chat',  href: '/query',      roles: ALL },
+  { type: 'action', id: 'dashboard',  title: 'Create a dashboard', subtitle: 'Describe a report, AI builds it',  icon: 'grid',  href: '/dashboards', roles: ALL },
+  { type: 'action', id: 'catalog',    title: 'Browse the catalog', subtitle: 'Find & understand your data',      icon: 'book',  href: '/catalog',    roles: ALL },
+  { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/glossary',   roles: ALL },
+  { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
+  { type: 'action', id: 'products',   title: 'Data products',      subtitle: 'Studio · model your data',          icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] },
+  { type: 'action', id: 'suggestions',title: 'Suggestions',        subtitle: 'Studio · confirm AI proposals',     icon: 'bolt',  href: '/review',     roles: ['admin', 'analyst'] },
+  { type: 'action', id: 'team',       title: 'Team & roles',       subtitle: 'Settings · users & invites',        icon: 'users', href: '/users',      roles: ['admin'] },
 ];
 
 function iconForType(type: SearchResult['type']): IconKey {
@@ -72,6 +84,10 @@ export default function CommandPalette() {
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const [role, setRole] = useState<Role>('viewer');
+  useEffect(() => { setRole(getTokenPayload()?.role ?? 'viewer'); }, []);
+  // Role-filtered actions — viewers never see builder/admin commands.
+  const actions = useMemo(() => ACTIONS_ALL.filter((a) => a.roles.includes(role)), [role]);
 
   // Cmd+K / Ctrl+K toggle (unchanged keybinds)
   useEffect(() => {
@@ -97,14 +113,14 @@ export default function CommandPalette() {
 
   const search = useCallback(async (q: string) => {
     if (!q.trim()) {
-      setResults(ACTIONS);
+      setResults(actions);
       setLoading(false);
       return;
     }
 
     setLoading(true);
     const lower = q.toLowerCase();
-    const actionMatches = ACTIONS.filter(
+    const actionMatches = actions.filter(
       (a) => a.title.toLowerCase().includes(lower) || (a.subtitle ?? '').toLowerCase().includes(lower),
     );
 
@@ -126,18 +142,18 @@ export default function CommandPalette() {
       setResults(actionMatches);
     }
     setLoading(false);
-  }, []);
+  }, [actions]);
 
   useEffect(() => {
     if (!open) return;
     clearTimeout(debounceRef.current);
     if (!query.trim()) {
-      setResults(ACTIONS);
+      setResults(actions);
       return;
     }
     debounceRef.current = setTimeout(() => search(query), 200);
     return () => clearTimeout(debounceRef.current);
-  }, [query, open, search]);
+  }, [query, open, search, actions]);
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'ArrowDown') {

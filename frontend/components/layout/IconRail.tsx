@@ -64,7 +64,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
   { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
-  { key: 'review',     href: '/review',     label: 'AI review queue', icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
+  { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'studio' },
   // ── Settings — admin-only org config ────────────────────────────────────
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
