@@ -8,7 +8,7 @@ export interface JobStep {
   status: 'pending' | 'running' | 'done' | 'error';
 }
 
-export interface JobProgressBannerProps extends HTMLAttributes<HTMLDivElement> {
+export interface JobProgressBannerProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title'> {
   title?: ReactNode;
   steps: JobStep[];
   progress?: number;
@@ -41,7 +41,7 @@ export function JobProgressBanner({
       aria-live="polite"
       className={cn(
         'bg-ocean-softer border-b border-ocean-soft',
-        error && 'bg-err-soft border-b-err',
+        error ? 'bg-err-soft border-b-err' : undefined,
         className
       )}
       {...rest}

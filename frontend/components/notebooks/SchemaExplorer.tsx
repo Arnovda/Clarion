@@ -96,7 +96,7 @@ export default function SchemaExplorer({ connectionId, scope, onInsert }: Schema
       if (res.data.ok) {
         setSchema(res.data.data);
         // Auto-expand all namespaces
-        const nsIds = new Set(res.data.data.namespaces.map((ns: Namespace) => ns.id));
+        const nsIds = new Set<string>(res.data.data.namespaces.map((ns: Namespace) => ns.id as string));
         setExpandedNs(nsIds);
       }
     } catch {

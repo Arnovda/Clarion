@@ -15,6 +15,7 @@ import {
   ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
 import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
@@ -135,7 +136,7 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
   const colourOf = (i: number) => SERIES[i % SERIES.length] ?? OBSERVATORY.ocean;
 
   // ── Toolbar ──
-  const toolbarBtn = (t: VisualizationType, label: string, Icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>) => {
+  const toolbarBtn = (t: VisualizationType, label: string, Icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }> | LucideIcon) => {
     const ok = t === 'stacked_bar' ? !!groupBy : t === 'pie' ? !!xKey && !!yKey && rows.length <= 12 : t === 'table' ? true : !!xKey && !!yKey;
     if (!ok) return null;
     const isActive = active === t;

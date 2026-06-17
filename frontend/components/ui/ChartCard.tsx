@@ -39,7 +39,7 @@ export const CHART_TOOLTIP_STYLE = {
   boxShadow: 'var(--shadow-2)',
 } as const;
 
-export interface ChartCardProps extends HTMLAttributes<HTMLDivElement> {
+export interface ChartCardProps extends Omit<HTMLAttributes<HTMLDivElement>, 'title'> {
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;

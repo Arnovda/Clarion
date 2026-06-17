@@ -1,0 +1,20 @@
+# Root build context (backend + worker build from `context: .`). Keep the
+# context small so image builds don't ship junk. CI checks out clean, but this
+# also speeds up local docker builds.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+.git
+.github
+**/*.log
+**/.env
+**/.env.*
+warehouse
+etl-data
+**/coverage
+**/__pycache__
+**/*.pyc
+*.md
+docs
+design-mockups

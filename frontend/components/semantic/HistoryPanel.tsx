@@ -123,7 +123,7 @@ export default function HistoryPanel({ entityType, entityId, entityName, onRever
       {/* Version list */}
       <div className="space-y-2">
         {versions.map((v, idx) => {
-          const changes = parseJson(v.changes);
+          const changes = parseJson(v.changes) as Record<string, { from?: unknown; to?: unknown }>;
           const changedKeys = Object.keys(changes);
           const isExpanded = expandedVersion === v.version;
           const isLatest = idx === 0;

@@ -790,10 +790,10 @@ function ConnectionCard({
         {config.filepath && (
           <p className="text-[11px] text-ink-3 font-mono truncate" title={config.filepath}>{config.filepath}</p>
         )}
-        {(config as Record<string, unknown>).host && (
+        {!!(config as Record<string, unknown>).host && (
           <p className="text-[11px] text-ink-3 font-mono truncate">
-            {(config as Record<string, unknown>).host}:{(config as Record<string, unknown>).port ?? ''}
-            {(config as Record<string, unknown>).database ? ` / ${(config as Record<string, unknown>).database}` : ''}
+            {String((config as Record<string, unknown>).host)}:{String((config as Record<string, unknown>).port ?? '')}
+            {(config as Record<string, unknown>).database ? ` / ${String((config as Record<string, unknown>).database)}` : ''}
           </p>
         )}
         {(() => {

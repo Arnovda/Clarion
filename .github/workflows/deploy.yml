@@ -1,31 +1,26 @@
 # CI/CD — Build, push to ACR, deploy to Azure Container Apps
 #
-# Triggers:
-#   - Push to main → build images, run (additive) migrations, deploy backend +
-#     frontend as NEW revisions at 0% TRAFFIC (staging). They do NOT serve users
-#     yet — you test them on their per-revision URLs (printed in the job summary)
-#     with real data, then run the "Promote to production" workflow to shift
-#     100% traffic to the latest revision.
-#   - Push to staging → same, against the staging GitHub environment.
+# Fast + surgical:
+#   • Only the services whose files changed are built/deployed (paths-filter).
+#     A frontend-only push skips the backend / ETL / worker builds, the SQL
+#     migration, and the Neo4j step entirely.
+#   • Docker layer caching (type=gha) makes every build incremental — npm ci /
+#     next build / pip install are reused unless their inputs change.
 #
-# Why: lets a solo dev verify a deployed build before users see it, without a
-# second always-on environment. See docs/DEV_FLOW.md.
+# Deploy model (see docs/DEV_FLOW.md):
+#   • Push to main → build (cached), run migrations (only if a migration file
+#     changed), then deploy backend + frontend as NEW revisions at 0% TRAFFIC.
+#     They do NOT serve users — test them on the per-revision URLs printed in the
+#     job summary, then run the "Promote to production" workflow.
 #
 # IMPORTANT: migrations must stay backward-compatible (additive: CREATE/ADD,
-# never DROP/RENAME in the same deploy) because the 0%-traffic revision shares
-# the database with the live one during the test window.
+# never DROP/RENAME in the same deploy) — the 0%-traffic revision shares the DB
+# with the live one during the test window.
 #
-# Required GitHub secrets:
-#   AZURE_CREDENTIALS        — Service principal JSON (az ad sp create-for-rbac --sdk-auth)
-#   ACR_LOGIN_SERVER          — e.g. databridgeacr.azurecr.io
-#   ACR_USERNAME              — ACR admin username
-#   ACR_PASSWORD              — ACR admin password
-#   AZURE_RESOURCE_GROUP      — e.g. databridge-rg
-#   BACKEND_APP_NAME          — Container App name for backend (e.g. databridge-backend)
-#   FRONTEND_APP_NAME         — Container App name for frontend (e.g. databridge-frontend)
-#   ETL_APP_NAME              — Container App name for ETL (e.g. databridge-etl)
-#   NEO4J_URI                 — Neo4j bolt URI (e.g. bolt://databridge-prod-neo4j:7687)
-#   NEO4J_PASSWORD            — Neo4j password
+# Required GitHub secrets: AZURE_CREDENTIALS, ACR_LOGIN_SERVER, ACR_USERNAME,
+# ACR_PASSWORD, AZURE_RESOURCE_GROUP, BACKEND_APP_NAME, FRONTEND_APP_NAME,
+# ETL_APP_NAME, DATABASE_URL, NEO4J_URI, NEO4J_PASSWORD, PROD_API_URL,
+# STAGING_API_URL.
 
 name: Build & Deploy
 
@@ -37,66 +32,100 @@ env:
   ACR_REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
 
 jobs:
-  # ── Build & push Docker images ────────────────────────────────────────────
-  # Frontend and ETL build from their own folder context (their Dockerfiles
-  # don't reference any sibling package). Backend builds from repo root
-  # because it depends on packages/connectors via `file:../packages/connectors`.
-  build:
+  # ── Detect which areas changed ────────────────────────────────────────────
+  changes:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        service: [frontend, etl]
+    outputs:
+      frontend: ${{ steps.f.outputs.frontend }}
+      backend: ${{ steps.f.outputs.backend }}
+      etl: ${{ steps.f.outputs.etl }}
+      worker: ${{ steps.f.outputs.worker }}
+      migrations: ${{ steps.f.outputs.migrations }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+            etl:
+              - 'etl/**'
+            backend:
+              - 'backend/**'
+              - 'packages/connectors/**'
+            worker:
+              - 'worker/**'
+              - 'packages/connectors/**'
+            migrations:
+              - 'backend/src/db/migrations/**'
 
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+  # ── Builds (each gated to its service; all layer-cached) ──────────────────
+  build-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Set image tag
-        id: tag
-        run: |
-          SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          BRANCH=${{ github.ref_name }}
-          echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
-
-      - name: Build and push ${{ matrix.service }}
-        uses: docker/build-push-action@v5
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v5
         with:
-          context: ./${{ matrix.service }}
+          context: ./frontend
           push: true
           tags: |
-            ${{ env.ACR_REGISTRY }}/databridge-${{ matrix.service }}:${{ steps.tag.outputs.tag }}
-            ${{ env.ACR_REGISTRY }}/databridge-${{ matrix.service }}:${{ github.ref_name }}-latest
+            ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }}
+            ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ github.ref_name }}-latest
           build-args: |
             NEXT_PUBLIC_API_URL=${{ github.ref_name == 'main' && secrets.PROD_API_URL || secrets.STAGING_API_URL }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
-  # Backend has its own job because its Dockerfile context is repo root
-  # (multi-package build pulling in packages/connectors).
-  build-backend:
+  build-etl:
+    needs: changes
+    if: needs.changes.outputs.etl == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./etl
+          push: true
+          tags: |
+            ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
+            ${{ env.ACR_REGISTRY }}/databridge-etl:${{ github.ref_name }}-latest
+          cache-from: type=gha,scope=etl
+          cache-to: type=gha,mode=max,scope=etl
 
-      - name: Set image tag
-        id: tag
-        run: |
-          SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          BRANCH=${{ github.ref_name }}
-          echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
-
-      - name: Build and push backend
-        uses: docker/build-push-action@v5
+  build-backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v5
         with:
           context: .
           file: ./backend/Dockerfile
@@ -104,73 +133,60 @@ jobs:
           tags: |
             ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
             ${{ env.ACR_REGISTRY }}/databridge-backend:${{ github.ref_name }}-latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
-  # ── Build & push the sync-worker image ────────────────────────────────────
-  # Separate from the matrix because it has a multi-package build context
-  # (needs both `worker/` and `packages/connectors/`).
   build-worker:
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Set image tag
-        id: tag
-        run: |
-          SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          BRANCH=${{ github.ref_name }}
-          echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
-
-      - name: Build and push sync-worker
-        uses: docker/build-push-action@v5
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v5
         with:
-          # Repo root — Dockerfile copies from packages/connectors AND worker.
           context: .
           file: ./worker/Dockerfile
           push: true
           tags: |
             ${{ env.ACR_REGISTRY }}/databridge-sync-worker:${{ steps.tag.outputs.tag }}
             ${{ env.ACR_REGISTRY }}/databridge-sync-worker:${{ github.ref_name }}-latest
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
 
-  # ── Run SQL migrations BEFORE deploy ──────────────────────────────────────
-  # Migrations are kept strictly additive (CREATE TABLE / ADD COLUMN — no
-  # DROP / RENAME without a multi-stage rollout), so running them ahead of
-  # the new container image is safe: old code ignores the new schema.
-  # Order matters: previously this ran AFTER deploy, which meant any
-  # request hitting a new endpoint (e.g. GET /schema-changes) during the
-  # ~60s migration window would 500 with "relation does not exist".
+  # ── SQL migrations (only when a migration file changed) ───────────────────
   migrate-sql:
-    needs: [build, build-backend, build-worker]
+    needs: [changes, build-backend]
+    if: ${{ !cancelled() && !failure() && needs.changes.outputs.migrations == 'true' }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci
-
       - name: Run Knex migrations
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: npm run migrate:latest
 
-  # ── Deploy to Azure Container Apps ────────────────────────────────────────
+  # ── Deploy changed services as 0%-traffic revisions ───────────────────────
   deploy:
-    needs: [build, build-backend, build-worker, migrate-sql]
+    needs: [changes, build-frontend, build-etl, build-backend, build-worker, migrate-sql]
+    if: ${{ !cancelled() && !failure() && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.etl == 'true') }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
@@ -179,19 +195,15 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set image tag
-        id: tag
-        run: |
-          SHA=$(echo ${{ github.sha }} | cut -c1-7)
-          BRANCH=${{ github.ref_name }}
-          echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
 
-      # Backend + frontend deploy as NEW revisions at 0% traffic (staging).
-      # We deliberately do NOT shift traffic — the live revision keeps serving
-      # until you run the "Promote to production" workflow. `revision set-mode
-      # multiple` is idempotent and required for 0%-traffic revisions; switching
-      # from single keeps existing traffic on the current revision.
+      # Backend + frontend land as NEW revisions at 0% traffic. We deliberately
+      # do NOT shift traffic — the live revision keeps serving until you run the
+      # "Promote to production" workflow. `revision set-mode multiple` is
+      # idempotent and required for 0%-traffic revisions.
       - name: Deploy backend (staging revision, 0% traffic)
+        if: needs.changes.outputs.backend == 'true'
         run: |
           az containerapp revision set-mode \
             --name ${{ secrets.BACKEND_APP_NAME }} \
@@ -212,6 +224,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy frontend (staging revision, 0% traffic)
+        if: needs.changes.outputs.frontend == 'true'
         run: |
           az containerapp revision set-mode \
             --name ${{ secrets.FRONTEND_APP_NAME }} \
@@ -234,42 +247,33 @@ jobs:
       # ETL is internal plumbing (backend calls it) and stays auto-live on
       # deploy. Backward-compatible changes only (same rule as migrations).
       - name: Deploy ETL
+        if: needs.changes.outputs.etl == 'true'
         run: |
           az containerapp update \
             --name ${{ secrets.ETL_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
 
-      # Sync-worker Job: no `az containerapp job update` step needed.
-      # The Job spec references `databridge-sync-worker:main-latest`, and
-      # Container Apps Jobs pull the image fresh on every execution — so as
-      # long as CI's build-worker step pushed the new `main-latest` tag,
-      # the next sync triggered by the orchestrator will use the new code.
-      # If you ever pin the Job to a SHA tag, add an update step here.
+      # Sync-worker Job: no update step needed — the Job references
+      # `databridge-sync-worker:<branch>-latest` and pulls the image fresh on
+      # every execution, so the next sync uses the freshly-built worker image.
 
-  # ── Neo4j constraints (idempotent, after deploy) ──────────────────────────
-  # Constraint creation uses `IF NOT EXISTS` semantics in semanticGraph,
-  # so it's safe to run on every deploy. Kept after the container flip
-  # because the constraint logic occasionally evolves alongside backend
-  # code that uses it; running last means we never have a constraint
-  # mismatch against an older container.
+  # ── Neo4j constraints (only when backend changed; idempotent) ─────────────
   neo4j-constraints:
-    needs: deploy
+    needs: [changes, deploy]
+    if: ${{ !cancelled() && !failure() && needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: backend/package-lock.json
-
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci
-
       - name: Ensure Neo4j constraints
         working-directory: backend
         env:

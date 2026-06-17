@@ -1,0 +1,36 @@
+# Fast type-check gate — runs on every push/PR.
+#
+# Pure `tsc --noEmit` for the two self-contained packages (frontend +
+# connectors) — no database, no native builds, no full test suite. ~1–2 min.
+# This is the green/red signal you glance at before clicking "Promote to
+# production". It does NOT block deploy (deploy.yml lands a 0%-traffic revision
+# regardless). Backend types are covered by its Docker build (tsconfig.build.json);
+# the heavier vitest suite stays in test.yml (manual until it's green again).
+
+name: Check
+
+on:
+  push:
+    branches: [main, staging, 'claude/**']
+  pull_request:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Type-check connectors
+        working-directory: packages/connectors
+        run: |
+          npm ci --ignore-scripts
+          npm run check
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm run check

@@ -42,9 +42,10 @@ export function usePyodide() {
 
     setLoading(true);
     try {
-      // Dynamic import from CDN
+      // Dynamic import from CDN — resolved at runtime, not by TS/bundler.
       const { loadPyodide: loader } = await import(
         /* webpackIgnore: true */
+        // @ts-expect-error remote ESM URL has no type declarations
         'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs'
       );
       const pyodide = await loader({

@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "check": "npm --prefix frontend run check && npm --prefix packages/connectors run check"
+  },
   "devDependencies": {
     "@playwright/test": "^1.59.1"
   }
