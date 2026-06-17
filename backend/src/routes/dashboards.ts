@@ -11,6 +11,7 @@ import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBui
 import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
+import { logger } from '../utils/logger';
 
 const router = Router();
 
@@ -416,13 +417,24 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
       return;
     }
 
+    // Latency instrumentation (free, log-only): separates the three places the
+    // wall-clock goes — pool connect (cold extension load + view registration),
+    // SQL exec over Parquet/blob (cache misses), and cache hits. Surfaces in
+    // structured logs / App Insights so we optimise measured latency, not
+    // assumed latency. See docs/DASHBOARD_PERF.md.
+    const reqStart = Date.now();
+    const connectStart = Date.now();
     const connector = productPath
       ? await createProductConnector(productPath, connection.id, tenantId)
       : await createConnector(connection);
     await connector.connect();
+    const connectMs = Date.now() - connectStart;
 
     try {
       const results: Record<string, { rows?: Record<string, unknown>[]; error?: string }> = {};
+      let cacheHits = 0;
+      let cacheMisses = 0;
+      let slowestWidgetMs = 0;
 
       await Promise.all(
         widgets.map(async ({ id, sql, filterValues }) => {
@@ -438,10 +450,13 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 
           const cached = tenantId ? getWidgetCache(tenantId, resolvedSql) : null;
           if (cached) {
+            cacheHits += 1;
             results[id] = { rows: cached };
             return;
           }
 
+          cacheMisses += 1;
+          const widgetStart = Date.now();
           try {
             const result = await connector.executeQuery(resolvedSql);
             const rows = result.rows as Record<string, unknown>[];
@@ -458,8 +473,26 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
                 ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
                 : 'This chart could not load data. Try regenerating the dashboard.';
             results[id] = { error: friendly };
+          } finally {
+            slowestWidgetMs = Math.max(slowestWidgetMs, Date.now() - widgetStart);
           }
         }),
+      );
+
+      logger.info(
+        {
+          evt: 'dashboard.batch_execute',
+          tenantId,
+          connectionId,
+          layer: useSource ? 'source' : 'product',
+          widgets: widgets.length,
+          cacheHits,
+          cacheMisses,
+          connectMs,
+          slowestWidgetMs,
+          totalMs: Date.now() - reqStart,
+        },
+        'batch-execute timing',
       );
 
       res.json({ ok: true, data: { results } });
