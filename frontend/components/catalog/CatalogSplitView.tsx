@@ -29,7 +29,7 @@ import { cn } from '@/lib/cn';
 import { formatRelativeShort } from '@/lib/dates';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 import AnalyticsCard, { type AnalyticsCardData } from './AnalyticsCard';
-import { type ReferenceCardData } from './ReferenceCard';
+import ReferenceCard, { type ReferenceCardData } from './ReferenceCard';
 
 export interface SourceBlockData {
   connectionId: number | null;
@@ -327,9 +327,9 @@ function SourceBand({
                 No reference entities for this source yet.
               </p>
             ) : (
-              <div className="flex flex-wrap gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                 {block.reference.map((r) => (
-                  <ReferenceChip
+                  <ReferenceCard
                     key={r.tableId}
                     data={r}
                     selected={selectedReferenceTableId === r.tableId}
@@ -394,41 +394,6 @@ function formatCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}m`;
   if (n >= 1_000)     return `${(n / 1_000).toFixed(1).replace(/\.0$/, '')}k`;
   return n.toLocaleString('en-GB');
-}
-
-/**
- * Reference entity as a calm chip/pill (grid layout). Reference data is
- * "what you analyse BY" — a quiet pill is far lighter than a full card when
- * there are many of them. Name on the face; description + record count live in
- * the hover title and the detail panel.
- */
-function ReferenceChip({
-  data, selected, onSelect, palette,
-}: {
-  data: ReferenceCardData;
-  selected: boolean;
-  onSelect: () => void;
-  palette: SourcePalette;
-}) {
-  const records = data.rowCount != null ? `${formatCount(data.rowCount)} records` : null;
-  const title = [data.description, records].filter(Boolean).join(' · ') || data.name;
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-pressed={selected}
-      title={title}
-      className={cn(
-        'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border text-[12.5px] max-w-full transition-colors',
-        selected
-          ? 'border-ocean bg-ocean/5 text-ocean'
-          : 'border-line bg-raised text-ink-2 hover:border-ocean/40 hover:text-ink',
-      )}
-    >
-      <Tag className={cn('w-3 h-3 shrink-0', selected ? 'text-ocean' : palette.eyebrow)} strokeWidth={2} />
-      <span className="truncate">{data.name}</span>
-    </button>
-  );
 }
 
 /**

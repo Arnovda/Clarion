@@ -55,33 +55,36 @@ export default function AnalyticsCard({
       type="button"
       onClick={onSelect}
       className={cn(
-        'group relative w-full text-left bg-raised border rounded-lg overflow-hidden',
+        'group relative w-full text-left bg-raised border rounded-xl overflow-hidden p-4',
         'transition-all duration-150',
         'hover:shadow-md hover:-translate-y-0.5',
         selected
-          ? 'border-ocean ring-2 ring-ocean/20'
+          ? 'border-ocean ring-2 ring-ocean/15'
           : 'border-line hover:border-ocean/40',
       )}
     >
-      {/* Left colored accent bar. */}
-      <div className={cn('absolute left-0 top-0 bottom-0 w-1', palette.edge)} aria-hidden />
+      {showStatus && (
+        <div className="absolute top-3 right-3">
+          <StatusPill status={data.status} />
+        </div>
+      )}
 
-      <div className="pl-4 pr-4 py-3.5">
-        {showStatus && (
-          <div className="absolute top-3 right-3">
-            <StatusPill status={data.status} />
-          </div>
-        )}
-
-        {/* No per-card eyebrow — the column is already titled "Analytics".
-            A small product icon sits inline with the name instead. */}
+      {/* Header: source-tinted icon badge + name (shared language with
+          ReferenceCard; the badge carries the per-source colour identity). */}
+      <div className="flex items-center gap-2.5 mb-2">
+        <span className={cn(
+          'flex items-center justify-center w-8 h-8 rounded-lg shrink-0',
+          palette.tintBg, palette.eyebrow,
+        )}>
+          <Database className="w-4 h-4" strokeWidth={1.75} />
+        </span>
         <h3 className={cn(
-          'font-display text-[18px] tracking-[-0.01em] leading-tight mb-1.5 flex items-center gap-2 transition-colors',
+          'font-display text-[19px] tracking-[-0.01em] leading-tight truncate transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
-          <Database className={cn('w-3.5 h-3.5 shrink-0', palette.eyebrow)} strokeWidth={1.75} />
           {data.name}
         </h3>
+      </div>
 
         {data.description ? (
           <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-3">
@@ -111,7 +114,6 @@ export default function AnalyticsCard({
             </span>
           )}
         </div>
-      </div>
     </button>
   );
 }
