@@ -13,20 +13,22 @@
  */
 
 export interface SourcePalette {
-  edge:    string;   // 3px left bar on the card
-  dot:     string;   // small dot in section header
-  eyebrow: string;   // tint for the colored eyebrow + connector type label
-  tintBg:  string;   // very faint background tint for section header bar
+  edge:       string;   // solid bar — card accent rail + band top edge
+  dot:        string;   // small dot in section header
+  eyebrow:    string;   // tint for the colored eyebrow + connector type label
+  tintBg:     string;   // very faint background tint (section bands, reference wash)
+  tintStrong: string;   // stronger tint for filled icon tiles
+  ring:       string;   // border tone that matches the tint (tile + tinted card)
 }
 
-export const PALETTE_EMERALD: SourcePalette = { edge: 'bg-emerald-500',  dot: 'bg-emerald-500',  eyebrow: 'text-emerald-700',  tintBg: 'bg-emerald-50/60'  };
-export const PALETTE_AMBER:   SourcePalette = { edge: 'bg-amber-500',    dot: 'bg-amber-500',    eyebrow: 'text-amber-700',    tintBg: 'bg-amber-50/60'    };
-export const PALETTE_INDIGO:  SourcePalette = { edge: 'bg-indigo-500',   dot: 'bg-indigo-500',   eyebrow: 'text-indigo-700',   tintBg: 'bg-indigo-50/60'   };
-export const PALETTE_ROSE:    SourcePalette = { edge: 'bg-rose-500',     dot: 'bg-rose-500',     eyebrow: 'text-rose-700',     tintBg: 'bg-rose-50/60'     };
-export const PALETTE_TEAL:    SourcePalette = { edge: 'bg-teal-500',     dot: 'bg-teal-500',     eyebrow: 'text-teal-700',     tintBg: 'bg-teal-50/60'     };
-export const PALETTE_VIOLET:  SourcePalette = { edge: 'bg-violet-500',   dot: 'bg-violet-500',   eyebrow: 'text-violet-700',   tintBg: 'bg-violet-50/60'   };
-export const PALETTE_SLATE:   SourcePalette = { edge: 'bg-slate-400',    dot: 'bg-slate-400',    eyebrow: 'text-slate-600',    tintBg: 'bg-slate-50/80'    };
-export const PALETTE_NEUTRAL: SourcePalette = { edge: 'bg-neutral-300',  dot: 'bg-neutral-300',  eyebrow: 'text-neutral-600',  tintBg: 'bg-neutral-50/80'  };
+export const PALETTE_EMERALD: SourcePalette = { edge: 'bg-emerald-500',  dot: 'bg-emerald-500',  eyebrow: 'text-emerald-700',  tintBg: 'bg-emerald-50/60',  tintStrong: 'bg-emerald-100/80',  ring: 'border-emerald-200'  };
+export const PALETTE_AMBER:   SourcePalette = { edge: 'bg-amber-500',    dot: 'bg-amber-500',    eyebrow: 'text-amber-700',    tintBg: 'bg-amber-50/60',    tintStrong: 'bg-amber-100/80',    ring: 'border-amber-200'    };
+export const PALETTE_INDIGO:  SourcePalette = { edge: 'bg-indigo-500',   dot: 'bg-indigo-500',   eyebrow: 'text-indigo-700',   tintBg: 'bg-indigo-50/60',   tintStrong: 'bg-indigo-100/80',   ring: 'border-indigo-200'   };
+export const PALETTE_ROSE:    SourcePalette = { edge: 'bg-rose-500',     dot: 'bg-rose-500',     eyebrow: 'text-rose-700',     tintBg: 'bg-rose-50/60',     tintStrong: 'bg-rose-100/80',     ring: 'border-rose-200'     };
+export const PALETTE_TEAL:    SourcePalette = { edge: 'bg-teal-500',     dot: 'bg-teal-500',     eyebrow: 'text-teal-700',     tintBg: 'bg-teal-50/60',     tintStrong: 'bg-teal-100/80',     ring: 'border-teal-200'     };
+export const PALETTE_VIOLET:  SourcePalette = { edge: 'bg-violet-500',   dot: 'bg-violet-500',   eyebrow: 'text-violet-700',   tintBg: 'bg-violet-50/60',   tintStrong: 'bg-violet-100/80',   ring: 'border-violet-200'   };
+export const PALETTE_SLATE:   SourcePalette = { edge: 'bg-slate-400',    dot: 'bg-slate-400',    eyebrow: 'text-slate-600',    tintBg: 'bg-slate-50/80',    tintStrong: 'bg-slate-100/80',    ring: 'border-slate-200'    };
+export const PALETTE_NEUTRAL: SourcePalette = { edge: 'bg-neutral-300',  dot: 'bg-neutral-300',  eyebrow: 'text-neutral-600',  tintBg: 'bg-neutral-50/80',  tintStrong: 'bg-neutral-100/80',  ring: 'border-neutral-200'  };
 
 /**
  * Deterministic palette assignment — connector_type wins, then connection

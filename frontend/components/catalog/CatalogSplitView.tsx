@@ -24,10 +24,11 @@
  */
 
 import { useMemo, useState } from 'react';
-import { Plus, ChevronUp, Database, Tag } from 'lucide-react';
+import { Plus, ChevronUp, Database, Tag, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatRelativeShort } from '@/lib/dates';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
+import { iconForAnalytics, iconForReference } from './entityIcons';
 import AnalyticsCard, { type AnalyticsCardData } from './AnalyticsCard';
 import ReferenceCard, { type ReferenceCardData } from './ReferenceCard';
 
@@ -208,7 +209,12 @@ function SourceBand({
         )}
         aria-expanded={!collapsed}
       >
-        <span className={cn('w-2.5 h-2.5 rounded-full shrink-0', palette.dot)} aria-hidden />
+        <span className={cn(
+          'flex items-center justify-center w-9 h-9 rounded-xl shrink-0 border',
+          palette.tintStrong, palette.ring, palette.eyebrow,
+        )} aria-hidden>
+          <Database className="w-[18px] h-[18px]" strokeWidth={1.75} />
+        </span>
         <h2 className="font-display text-[22px] tracking-[-0.01em] text-ink">
           {block.name}
         </h2>
@@ -291,6 +297,8 @@ function SourceBand({
           {/* Left: Analytics */}
           <div>
             <ColumnHeader
+              icon={Database}
+              palette={palette}
               title="Analytics"
               subtitle="What you can analyse"
             />
@@ -319,6 +327,8 @@ function SourceBand({
           {/* Right: Reference data — 3 columns on wide screens. */}
           <div>
             <ColumnHeader
+              icon={Tag}
+              palette={palette}
               title="Reference data"
               subtitle="What you can analyse it by"
             />
@@ -362,7 +372,7 @@ function EntityRow({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const Icon = kind === 'analytic' ? Database : Tag;
+  const Icon = kind === 'analytic' ? iconForAnalytics(name) : iconForReference(name);
   return (
     <button
       type="button"
@@ -397,13 +407,22 @@ function formatCount(n: number): string {
 }
 
 /**
- * Section header — `LABEL — SUBTITLE` on one line, all in mono uppercase.
- * Matches the eyebrow style used across Observatory chrome.
+ * Section header — tinted glyph + `LABEL — SUBTITLE`. The little coloured
+ * icon gives each column a tiny anchor so the Analytics/Reference split reads
+ * at a glance, while staying in the Observatory mono-eyebrow register.
  */
-function ColumnHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function ColumnHeader({
+  icon: Icon, palette, title, subtitle,
+}: { icon: LucideIcon; palette: SourcePalette; title: string; subtitle: string }) {
   return (
-    <div className="mb-4 flex items-baseline gap-2">
-      <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted">
+    <div className="mb-4 flex items-center gap-2">
+      <span className={cn(
+        'flex items-center justify-center w-5 h-5 rounded-md shrink-0',
+        palette.tintBg, palette.eyebrow,
+      )}>
+        <Icon className="w-3 h-3" strokeWidth={2} />
+      </span>
+      <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ink-3">
         {title}
       </span>
       <span className="text-muted-2/50 text-[10.5px]">—</span>

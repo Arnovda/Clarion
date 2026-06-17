@@ -3,21 +3,25 @@
 /**
  * <AnalyticsCard> — left-column card on the two-column /catalog layout.
  *
- * Visual identity:
- *   - Tinted top-left accent (palette.edge, vertical 4px bar)
- *   - Small uppercase mono `ANALYTICS` eyebrow with database icon
- *   - Large product name (display font)
- *   - 2-line description
- *   - Three large stat boxes side-by-side: metrics / facts / tables
+ * An analytics product is a "subject you can analyse" (Finance, Sales…). It's
+ * the hero object of the catalog, so it carries real visual weight:
  *
- * The big stat boxes are the punchline. They tell the user at a glance
- * how rich this data product is — "12 metrics" is meaningfully different
- * from "1 metric" and the visual weight should reflect that.
+ *   ▌[glyph]  Finance                          ← accent rail + domain glyph
+ *             General ledger transactions, bank statement lines…
+ *   ─────────────────────────────────────────
+ *   ▦ 6 metrics                  ● Updated 4 Jun   ← hairline-divided footer
+ *
+ * The colour comes from the source palette (every ExactOnline product is
+ * emerald), the GLYPH comes from the product name (Finance→Landmark,
+ * Sales→Receipt) — so products from one source are cohesive in colour yet
+ * individually recognisable. The metric count is a confident coloured stat,
+ * not a buried pill: "6 metrics" vs "1 metric" should read at a glance.
  */
 
-import { Database, BarChart3 } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { formatRelativeShort } from '@/lib/dates';
+import { iconForAnalytics } from './entityIcons';
 import type { SourcePalette } from './sourcePalette';
 
 export interface AnalyticsCardData {
@@ -49,71 +53,72 @@ export default function AnalyticsCard({
     && !['approved', 'success'].includes(data.status);
 
   const refreshedLabel = data.lastRefreshedAt ? formatRelativeShort(data.lastRefreshedAt) : null;
+  const Glyph = iconForAnalytics(data.name);
 
   return (
     <button
       type="button"
       onClick={onSelect}
       className={cn(
-        'group relative w-full text-left bg-raised border rounded-xl overflow-hidden p-4',
-        'transition-all duration-150',
+        'group relative w-full text-left bg-raised border rounded-xl overflow-hidden',
+        'pl-5 pr-4 py-4 transition-all duration-150',
         'hover:shadow-md hover:-translate-y-0.5',
         selected
           ? 'border-ocean ring-2 ring-ocean/15'
           : 'border-line hover:border-ocean/40',
       )}
     >
+      {/* Full-height colour accent rail — carries the source identity with
+          conviction instead of a 1px hairline. */}
+      <span className={cn('absolute left-0 inset-y-0 w-1.5', palette.edge)} aria-hidden />
+
       {showStatus && (
         <div className="absolute top-3 right-3">
           <StatusPill status={data.status} />
         </div>
       )}
 
-      {/* Header: source-tinted icon badge + name (shared language with
-          ReferenceCard; the badge carries the per-source colour identity). */}
-      <div className="flex items-center gap-2.5 mb-2">
+      {/* Header: filled glyph tile + serif name. */}
+      <div className="flex items-center gap-3 mb-2">
         <span className={cn(
-          'flex items-center justify-center w-8 h-8 rounded-lg shrink-0',
-          palette.tintBg, palette.eyebrow,
+          'flex items-center justify-center w-9 h-9 rounded-lg shrink-0 border',
+          palette.tintStrong, palette.ring, palette.eyebrow,
         )}>
-          <Database className="w-4 h-4" strokeWidth={1.75} />
+          <Glyph className="w-[18px] h-[18px]" strokeWidth={1.75} />
         </span>
         <h3 className={cn(
-          'font-display text-[19px] tracking-[-0.01em] leading-tight truncate transition-colors',
+          'font-display text-[20px] tracking-[-0.01em] leading-tight truncate transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
           {data.name}
         </h3>
       </div>
 
-        {data.description ? (
-          <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-3">
-            {data.description}
-          </p>
-        ) : (
-          <p className="text-[13px] text-muted italic mb-3">
-            No description yet.
-          </p>
-        )}
+      {data.description ? (
+        <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-3.5">
+          {data.description}
+        </p>
+      ) : (
+        <p className="text-[13px] text-muted italic mb-3.5">
+          No description yet.
+        </p>
+      )}
 
-        {/* Calm meta line — what you can measure here + when it last refreshed.
-            Business-friendly: no "facts / tables" warehouse jargon on the
-            consumer card (that detail lives in the panel for curators). */}
-        <div className="flex items-center gap-2.5 text-[11.5px]">
-          <span className={cn(
-            'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border font-medium',
-            palette.tintBg, 'border-line', palette.eyebrow,
-          )}>
-            <BarChart3 className="w-3.5 h-3.5" strokeWidth={2} />
-            {data.metricCount} {data.metricCount === 1 ? 'metric' : 'metrics'}
+      {/* Hairline-divided footer: the metric count is the punchline (coloured,
+          confident), freshness sits quietly on the right. */}
+      <div className="flex items-center justify-between pt-3 border-t border-line/70 text-[11.5px]">
+        <span className={cn('inline-flex items-center gap-1.5 font-medium', palette.eyebrow)}>
+          <BarChart3 className="w-3.5 h-3.5" strokeWidth={2} />
+          <span className="tabular-nums">{data.metricCount}</span>
+          {data.metricCount === 1 ? 'metric' : 'metrics'}
+        </span>
+        {refreshedLabel && (
+          <span className="inline-flex items-center gap-1.5 text-muted">
+            <span className={cn('w-1.5 h-1.5 rounded-full', palette.dot)} aria-hidden />
+            Updated {refreshedLabel}
           </span>
-          {refreshedLabel && (
-            <span className="inline-flex items-center gap-1.5 text-muted">
-              <span className={cn('w-1.5 h-1.5 rounded-full', palette.dot)} aria-hidden />
-              Updated {refreshedLabel}
-            </span>
-          )}
-        </div>
+        )}
+      </div>
     </button>
   );
 }
