@@ -64,7 +64,7 @@ jobs:
           echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
 
       - name: Build and push ${{ matrix.service }}
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.service }}
           push: true
@@ -96,7 +96,7 @@ jobs:
           echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
 
       - name: Build and push backend
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./backend/Dockerfile
@@ -128,7 +128,7 @@ jobs:
           echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
 
       - name: Build and push sync-worker
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           # Repo root — Dockerfile copies from packages/connectors AND worker.
           context: .
