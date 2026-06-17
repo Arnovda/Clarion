@@ -6,16 +6,17 @@
  * An analytics product is a "subject you can analyse" (Finance, Sales…). It's
  * the hero object of the catalog, so it carries real visual weight:
  *
- *   ▌[glyph]  Finance                          ← accent rail + domain glyph
- *             General ledger transactions, bank statement lines…
+ *   [glyph]  Finance                          ← filled domain-glyph tile
+ *            General ledger transactions, bank statement lines…
  *   ─────────────────────────────────────────
  *   ▦ 6 metrics                  ● Updated 4 Jun   ← hairline-divided footer
  *
- * The colour comes from the source palette (every ExactOnline product is
- * emerald), the GLYPH comes from the product name (Finance→Landmark,
- * Sales→Receipt) — so products from one source are cohesive in colour yet
- * individually recognisable. The metric count is a confident coloured stat,
- * not a buried pill: "6 metrics" vs "1 metric" should read at a glance.
+ * The colour is carried as calm fills — the tinted glyph tile + the coloured
+ * footer metric — not saturated edge bars (those read as a template accent).
+ * Every ExactOnline product is emerald; the GLYPH comes from the product name
+ * (Finance→Landmark, Sales→Receipt) so products from one source are cohesive
+ * in colour yet individually recognisable. The metric count is a confident
+ * coloured stat, not a buried pill: "6 metrics" vs "1 metric" reads at a glance.
  */
 
 import { BarChart3 } from 'lucide-react';
@@ -61,17 +62,13 @@ export default function AnalyticsCard({
       onClick={onSelect}
       className={cn(
         'group relative w-full text-left bg-raised border rounded-xl overflow-hidden',
-        'pl-5 pr-4 py-4 transition-all duration-150',
+        'p-4 transition-all duration-150',
         'hover:shadow-md hover:-translate-y-0.5',
         selected
           ? 'border-ocean ring-2 ring-ocean/15'
           : 'border-line hover:border-ocean/40',
       )}
     >
-      {/* Full-height colour accent rail — carries the source identity with
-          conviction instead of a 1px hairline. */}
-      <span className={cn('absolute left-0 inset-y-0 w-1.5', palette.edge)} aria-hidden />
-
       {showStatus && (
         <div className="absolute top-3 right-3">
           <StatusPill status={data.status} />

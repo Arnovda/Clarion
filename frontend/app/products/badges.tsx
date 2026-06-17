@@ -6,36 +6,29 @@
  */
 
 import { Loader2 } from 'lucide-react';
-import { productIconEmoji } from './helpers';
+import { iconForAnalytics } from '@/components/catalog/entityIcons';
 
 /**
- * AI-generated line-icon for a data product, with emoji fallback.
- * The SVG arrives from the backend as plain markup; it has been validated
- * server-side (see sanitizeProductIconSvg in AIService.ts) so it's safe to
- * inject. Strokes inherit `currentColor` — wrap with text-ocean / text-on-surface
- * to theme the icon.
+ * Domain glyph for a data product — the SAME curated icon set the catalog
+ * uses (entityIcons.iconForAnalytics), so a product wears one consistent
+ * icon everywhere it appears: catalog card, detail header, pipeline rows.
+ *
+ * Resolved from the product NAME (Finance→Landmark, Sales→Receipt…) rather
+ * than a per-product AI-generated SVG — curated beats bespoke here: it's
+ * consistent, never off-brand, and never looks auto-generated. The optional
+ * `product.icon_svg` field is intentionally ignored.
  */
 export function ProductIcon({
   product,
   name,
-  className = 'w-6 h-6 text-on-surface',
+  className = 'w-6 h-6',
 }: {
   product?: { name: string; icon_svg?: string | null } | null;
   name?: string;
   className?: string;
 }) {
-  const svg = product?.icon_svg;
-  if (svg) {
-    return (
-      <span
-        className={`inline-flex items-center justify-center ${className}`}
-        aria-hidden="true"
-        dangerouslySetInnerHTML={{ __html: svg }}
-      />
-    );
-  }
-  const fallbackName = product?.name ?? name ?? '';
-  return <span className={`inline-flex items-center justify-center ${className}`} aria-hidden="true">{productIconEmoji(fallbackName)}</span>;
+  const Glyph = iconForAnalytics(product?.name ?? name ?? '');
+  return <Glyph className={className} strokeWidth={1.75} aria-hidden />;
 }
 
 export function StatusDot({ status, title }: { status: string; title?: string }) {

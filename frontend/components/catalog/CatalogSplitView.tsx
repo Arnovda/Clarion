@@ -3,8 +3,8 @@
 /**
  * <CatalogSplitView> — the two-column /catalog layout.
  *
- * Per-source bands stacked vertically. Each band is a rounded card with
- * a colored top accent (palette.edge) + tinted header bar. Inside:
+ * Per-source bands stacked vertically. Each band is a clean rounded card
+ * anchored by a tinted source icon tile in its header. Inside:
  *
  *   ┌─ Source name  · EXACTONLINE   1 analytic · 5 reference · • 2h ago ─┐
  *   │  ANALYTICS — WHAT YOU CAN ANALYSE   REFERENCE DATA — WHAT YOU CAN ANALYSE IT BY  │
@@ -187,17 +187,9 @@ function SourceBand({
   const refreshedLabel = refreshedAt ? formatRelativeShort(refreshedAt) : null;
 
   return (
-    <section
-      className={cn(
-        'border border-line rounded-2xl overflow-hidden bg-raised',
-        // Subtle colored top edge — wraps over the header. ~3px tall, palette-tinted.
-        'shadow-sm',
-      )}
-    >
-      {/* Colored top accent strip. */}
-      <div className={cn('h-1', palette.edge)} aria-hidden />
-
-      {/* Header — clickable to collapse/expand. */}
+    <section className="border border-line rounded-2xl overflow-hidden bg-raised shadow-sm">
+      {/* Header — clickable to collapse/expand. Source identity comes from the
+          tinted icon tile + dot, not a saturated colour strip. */}
       <button
         type="button"
         onClick={() => setCollapsed((c) => !c)}

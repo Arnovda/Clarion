@@ -33,6 +33,7 @@
 
 import { useMemo } from 'react';
 import { Plus, Database, AlertCircle } from 'lucide-react';
+import { iconForAnalytics } from './entityIcons';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
@@ -257,6 +258,8 @@ function ProductCard({
     ? formatRelative(product.last_refreshed_at)
     : 'Not refreshed yet';
 
+  const Glyph = iconForAnalytics(product.name);
+
   // Status pill: only render for off-normal states. "approved" and
   // "success" are the steady state — no pill needed. "draft", "error",
   // "pending" deserve attention.
@@ -277,12 +280,7 @@ function ProductCard({
           : 'border-line hover:border-ocean/40',
       )}
     >
-      {/* Colored left edge — the source's accent. 3px wide, full-height,
-          subtle but consistent. Strongest signal of "which source does
-          this product come from?" without any text. */}
-      <div className={cn('absolute left-0 top-0 bottom-0 w-1', palette.edge)} aria-hidden />
-
-      <div className="pl-5 pr-5 py-5">
+      <div className="p-5">
         {/* Status pill — top-right, curator-only, off-normal-only.
             Pure cosmetic when steady-state. */}
         {showStatus && (
@@ -291,13 +289,22 @@ function ProductCard({
           </div>
         )}
 
-        {/* Title. Display serif, slightly larger than v1 for visual weight. */}
-        <h3 className={cn(
-          'font-display text-[19px] tracking-[-0.01em] leading-tight mb-1.5 transition-colors',
-          selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
-        )}>
-          {product.name}
-        </h3>
+        {/* Header: tinted domain-glyph tile + serif title. The tile carries
+            the source colour as a calm fill (no saturated edge bar). */}
+        <div className="flex items-center gap-3 mb-1.5">
+          <span className={cn(
+            'flex items-center justify-center w-9 h-9 rounded-lg shrink-0 border',
+            palette.tintStrong, palette.ring, palette.eyebrow,
+          )}>
+            <Glyph className="w-[18px] h-[18px]" strokeWidth={1.75} />
+          </span>
+          <h3 className={cn(
+            'font-display text-[19px] tracking-[-0.01em] leading-tight truncate transition-colors',
+            selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
+          )}>
+            {product.name}
+          </h3>
+        </div>
 
         {/* Description — line-clamped to 2 lines so cards align to a grid. */}
         {product.description ? (
