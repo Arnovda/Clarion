@@ -1,0 +1,54 @@
+# Promote to production — manual traffic shift.
+#
+# `deploy.yml` lands new backend + frontend code as 0%-traffic revisions on
+# every push to main (staging). Once you've tested those revisions' URLs (see
+# the deploy job summary), run this workflow to shift 100% of user traffic to
+# the latest revision — that's the moment it goes live.
+#
+# Run it from the GitHub Actions tab → "Promote to production" → Run workflow.
+#
+# Reuses the same secrets as deploy.yml (AZURE_CREDENTIALS, *_APP_NAME,
+# AZURE_RESOURCE_GROUP).
+
+name: Promote to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which apps to promote to 100% traffic'
+        type: choice
+        default: 'backend + frontend'
+        options:
+          - 'backend + frontend'
+          - 'backend only'
+          - 'frontend only'
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Shift traffic to the latest revision
+        run: |
+          set -euo pipefail
+          promote() {
+            local app="$1"
+            echo "Promoting $app → latest=100…"
+            az containerapp ingress traffic set \
+              --name "$app" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --revision-weight latest=100
+          }
+          case "${{ github.event.inputs.target }}" in
+            "backend only")  promote "${{ secrets.BACKEND_APP_NAME }}" ;;
+            "frontend only") promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
+            *)               promote "${{ secrets.BACKEND_APP_NAME }}"; promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
+          esac
+          echo "### ✅ Promoted to production" >> "$GITHUB_STEP_SUMMARY"
+          echo "Target: ${{ github.event.inputs.target }} — latest revision now serves 100% of traffic." >> "$GITHUB_STEP_SUMMARY"

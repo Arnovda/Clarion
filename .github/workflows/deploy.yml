@@ -1,8 +1,19 @@
 # CI/CD — Build, push to ACR, deploy to Azure Container Apps
 #
 # Triggers:
-#   - Push to main → deploy to production
-#   - Push to staging → deploy to staging
+#   - Push to main → build images, run (additive) migrations, deploy backend +
+#     frontend as NEW revisions at 0% TRAFFIC (staging). They do NOT serve users
+#     yet — you test them on their per-revision URLs (printed in the job summary)
+#     with real data, then run the "Promote to production" workflow to shift
+#     100% traffic to the latest revision.
+#   - Push to staging → same, against the staging GitHub environment.
+#
+# Why: lets a solo dev verify a deployed build before users see it, without a
+# second always-on environment. See docs/DEV_FLOW.md.
+#
+# IMPORTANT: migrations must stay backward-compatible (additive: CREATE/ADD,
+# never DROP/RENAME in the same deploy) because the 0%-traffic revision shares
+# the database with the live one during the test window.
 #
 # Required GitHub secrets:
 #   AZURE_CREDENTIALS        — Service principal JSON (az ad sp create-for-rbac --sdk-auth)
@@ -175,35 +186,53 @@ jobs:
           BRANCH=${{ github.ref_name }}
           echo "tag=${BRANCH}-${SHA}" >> $GITHUB_OUTPUT
 
-      - name: Deploy backend
+      # Backend + frontend deploy as NEW revisions at 0% traffic (staging).
+      # We deliberately do NOT shift traffic — the live revision keeps serving
+      # until you run the "Promote to production" workflow. `revision set-mode
+      # multiple` is idempotent and required for 0%-traffic revisions; switching
+      # from single keeps existing traffic on the current revision.
+      - name: Deploy backend (staging revision, 0% traffic)
         run: |
+          az containerapp revision set-mode \
+            --name ${{ secrets.BACKEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --mode multiple || true
           az containerapp update \
             --name ${{ secrets.BACKEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }}
-          # `update --image` creates a NEW revision but does NOT shift traffic
-          # to it when the app is in multiple-revision mode — so the new code
-          # never serves and freshly-added routes 404 despite a green deploy.
-          # Force 100% traffic onto the latest revision. No-op (and tolerated)
-          # in single-revision mode, where traffic auto-routes to latest.
-          az containerapp ingress traffic set \
+            --image ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }} \
+            --revision-suffix ${{ steps.tag.outputs.tag }}
+          FQDN=$(az containerapp revision list \
             --name ${{ secrets.BACKEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --revision-weight latest=100 \
-            || echo "single-revision mode — traffic already on latest"
+            --query "[?contains(name, '${{ steps.tag.outputs.tag }}')].properties.fqdn | [0]" -o tsv)
+          {
+            echo "### 🧪 Backend staging revision (0% traffic)";
+            echo "API: \`https://$FQDN/api\` — test, then run **Promote to production**.";
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy frontend
+      - name: Deploy frontend (staging revision, 0% traffic)
         run: |
+          az containerapp revision set-mode \
+            --name ${{ secrets.FRONTEND_APP_NAME }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --mode multiple || true
           az containerapp update \
             --name ${{ secrets.FRONTEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }}
-          az containerapp ingress traffic set \
+            --image ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }} \
+            --revision-suffix ${{ steps.tag.outputs.tag }}
+          FQDN=$(az containerapp revision list \
             --name ${{ secrets.FRONTEND_APP_NAME }} \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --revision-weight latest=100 \
-            || echo "single-revision mode — traffic already on latest"
+            --query "[?contains(name, '${{ steps.tag.outputs.tag }}')].properties.fqdn | [0]" -o tsv)
+          {
+            echo "### 🧪 Frontend staging revision (0% traffic)";
+            echo "Open: \`https://$FQDN\` — click through, then run **Promote to production**.";
+          } >> "$GITHUB_STEP_SUMMARY"
 
+      # ETL is internal plumbing (backend calls it) and stays auto-live on
+      # deploy. Backward-compatible changes only (same rule as migrations).
       - name: Deploy ETL
         run: |
           az containerapp update \
