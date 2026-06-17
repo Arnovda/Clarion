@@ -128,6 +128,15 @@ should NOT be a first-class destination for the business owner.
   renders each dataset as a compact, scannable row (type icon + name + meaning +
   quiet meta) per source band — the dScribe-style dense alternative to the rich
   card grid. Selection + drill-in behaviour is shared with grid mode.
+- **Chrome consolidation + calm bands (DONE):** three stacked control clusters
+  collapsed into one segmented control (Grid · List · Structure); source-band
+  headers lightened (white, accent strip only); per-card "ANALYTICS" eyebrow
+  dropped; hero tightened.
+- **Reference as chips + density (DONE):** reference entities now render as calm
+  pills (name on the face; description + record count in the hover/detail)
+  instead of full cards — far lighter when there are many. Analytics cards
+  tightened (smaller title, less padding). "rows" → "records" everywhere on the
+  catalog surface (friendlier than the technical "rows").
 - **Phase 6 — Decommission** standalone `/gaps`; redirect cruft; remove the
   source-layer toggle from the default app; business-vocabulary sweep across
   Studio page titles. *Gated.*

@@ -66,7 +66,7 @@ export default function AnalyticsCard({
       {/* Left colored accent bar. */}
       <div className={cn('absolute left-0 top-0 bottom-0 w-1', palette.edge)} aria-hidden />
 
-      <div className="pl-5 pr-5 py-5">
+      <div className="pl-4 pr-4 py-3.5">
         {showStatus && (
           <div className="absolute top-3 right-3">
             <StatusPill status={data.status} />
@@ -76,19 +76,19 @@ export default function AnalyticsCard({
         {/* No per-card eyebrow — the column is already titled "Analytics".
             A small product icon sits inline with the name instead. */}
         <h3 className={cn(
-          'font-display text-[22px] tracking-[-0.01em] leading-tight mb-2 flex items-center gap-2 transition-colors',
+          'font-display text-[18px] tracking-[-0.01em] leading-tight mb-1.5 flex items-center gap-2 transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
-          <Database className={cn('w-4 h-4 shrink-0', palette.eyebrow)} strokeWidth={1.75} />
+          <Database className={cn('w-3.5 h-3.5 shrink-0', palette.eyebrow)} strokeWidth={1.75} />
           {data.name}
         </h3>
 
         {data.description ? (
-          <p className="text-[13.5px] text-ink-2 leading-relaxed line-clamp-2 mb-4">
+          <p className="text-[13px] text-ink-2 leading-relaxed line-clamp-2 mb-3">
             {data.description}
           </p>
         ) : (
-          <p className="text-[13.5px] text-muted italic mb-4">
+          <p className="text-[13px] text-muted italic mb-3">
             No description yet.
           </p>
         )}
