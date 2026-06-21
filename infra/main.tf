@@ -337,7 +337,14 @@ resource "azurerm_container_app" "neo4j" {
   tags                         = var.tags
 
   template {
-    min_replicas = 1
+    # Scale to zero when idle — Neo4j is ~65% of the Azure bill when always-on.
+    # Trade-off: the first semantic operation after an idle period pays a
+    # ~30–60s cold start (JVM + readiness) while the container wakes; the
+    # backend's getSession() retries with backoff to ride that out. Validate
+    # in prod that an inbound bolt connection actually activates the container
+    # from zero (internal TCP ingress); if it doesn't wake reliably, switch to
+    # scheduled scaling (down nights/weekends) instead.
+    min_replicas = 0
     max_replicas = 1
 
     volume {
@@ -577,7 +584,8 @@ resource "azurerm_container_app" "backend" {
         name        = "CREDENTIALS_ENCRYPTION_KEY"
         secret_name = "credentials-encryption-key"
       }
-      # No REDIS_URL — app uses in-memory cache + inline job execution
+      # REDIS_URL is set further down — Redis backs BullMQ (scheduled syncs,
+      # transformations, email reports). (This stale "no Redis" note was wrong.)
       env {
         name        = "AZURE_STORAGE_CONNECTION_STRING"
         secret_name = "storage-connection-string"
