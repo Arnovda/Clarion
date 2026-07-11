@@ -57,6 +57,18 @@ jobs:
         working-directory: backend
         run: npm ci
 
+      # The RLS runtime role is provisioned out-of-band in dev/prod (see
+      # docs/runbooks/db-role-flip.md), so the fresh CI Postgres doesn't have
+      # it — but several migrations GRANT to it. Create it idempotently before
+      # migrating. Tests still connect as the superuser (DATABASE_URL above);
+      # the role only needs to EXIST for the GRANTs to succeed.
+      - name: Create RLS app role
+        env:
+          PGPASSWORD: databridge
+        run: |
+          psql -h localhost -U databridge -d databridge_test -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='databridge_app') THEN CREATE ROLE databridge_app WITH LOGIN PASSWORD 'databridge' NOBYPASSRLS; END IF; END \$\$;"
+
       - name: Run migrations
         working-directory: backend
         run: npx knex --knexfile knexfile.ts migrate:latest
