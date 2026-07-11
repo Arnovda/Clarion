@@ -35,6 +35,7 @@ import {
   setupDuckDBForWarehouse,
   createScanView,
   writeParquet,
+  ensureWarehouseContainer,
 } from './warehouse';
 
 interface ProductRow {
@@ -385,6 +386,10 @@ export async function runProductTransformation(
 
   if (!useAzure) {
     fs.mkdirSync(productDir, { recursive: true });
+  } else if (tenantId) {
+    // Per-tenant-container mode: make sure the tenant's Blob container exists
+    // before DuckDB writes product Parquet into it. No-op in shared mode.
+    await ensureWarehouseContainer(tenantId);
   }
 
   const sorted = [...tables].sort((a, b) => a.dag_order - b.dag_order);

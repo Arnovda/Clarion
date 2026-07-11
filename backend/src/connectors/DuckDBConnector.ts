@@ -7,6 +7,7 @@ import {
   isAzurePath,
   setupDuckDBForWarehouse,
   createScanView,
+  capResultRows,
 } from '../services/warehouse';
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
@@ -19,6 +20,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     );
   });
 }
+
 
 /**
  * DuckDBConnector — reads from Delta Lake tables via DuckDB's delta_scan().
@@ -294,7 +296,7 @@ export class DuckDBConnector extends BaseConnector {
       this.viewsCreated = true;
     }
 
-    const rawRows = await db.all(sql) as Record<string, unknown>[];
+    const rawRows = await db.all(capResultRows(sql)) as Record<string, unknown>[];
     const rows = rawRows.map((row) => {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {

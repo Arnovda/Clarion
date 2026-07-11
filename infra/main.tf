@@ -121,14 +121,14 @@ resource "azurerm_container_registry" "main" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "azurerm_postgresql_flexible_server" "main" {
-  name                          = "${var.project_name}-${var.environment}-pg"
-  resource_group_name           = azurerm_resource_group.main.name
-  location                      = azurerm_resource_group.main.location
-  version                       = "16"
-  administrator_login           = var.pg_admin_user
-  administrator_password        = var.pg_admin_password
-  storage_mb                    = 32768
-  sku_name                      = var.pg_sku
+  name                   = "${var.project_name}-${var.environment}-pg"
+  resource_group_name    = azurerm_resource_group.main.name
+  location               = azurerm_resource_group.main.location
+  version                = "16"
+  administrator_login    = var.pg_admin_user
+  administrator_password = var.pg_admin_password
+  storage_mb             = 32768
+  sku_name               = var.pg_sku
   # 14-day point-in-time recovery + geo-redundant backups to a paired
   # Azure region. Survives a single-region Azure outage; minimum bar
   # for SOC 2 / ISO 27001 customer expectations on data durability.
@@ -171,10 +171,10 @@ resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_local" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "azurerm_storage_account" "warehouse" {
-  name                     = replace("${var.project_name}${var.environment}st", "-", "")
-  resource_group_name      = azurerm_resource_group.main.name
-  location                 = azurerm_resource_group.main.location
-  account_tier             = "Standard"
+  name                = replace("${var.project_name}${var.environment}st", "-", "")
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  account_tier        = "Standard"
   # GRS = geo-redundant storage. Data is asynchronously replicated to a
   # paired Azure region. Survives a single-region outage. Slight cost
   # increase (~2× LRS) but customer expectation for any production
@@ -197,7 +197,7 @@ resource "azurerm_storage_account" "warehouse" {
     versioning_enabled = true
   }
 
-  tags                     = var.tags
+  tags = var.tags
 }
 
 resource "azurerm_storage_container" "warehouse" {
@@ -217,11 +217,11 @@ resource "azurerm_storage_share" "neo4j_data" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "azurerm_key_vault" "main" {
-  name                       = "db-${var.environment}-kv-${random_string.suffix.result}"
-  location                   = azurerm_resource_group.main.location
-  resource_group_name        = azurerm_resource_group.main.name
-  tenant_id                  = data.azurerm_client_config.current.tenant_id
-  sku_name                   = "standard"
+  name                = "db-${var.environment}-kv-${random_string.suffix.result}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
   # 90 days soft-delete + purge protection on. Auditors want a clear
   # recovery window for accidentally-deleted secrets, and purge
   # protection prevents a panicked operator from wiping the vault
@@ -670,6 +670,28 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "AZURE_WAREHOUSE_CONTAINER"
         value = azurerm_storage_container.warehouse.name
+      }
+      # Warehouse tenant-isolation mode. 'shared' (default) keeps every tenant
+      # in the single container above under a tenant_<id>/ prefix. Set to
+      # 'per-tenant' to give each tenant its OWN Blob container (hard storage
+      # isolation + one-call offboarding). Per-tenant mode requires the backend
+      # identity to be able to CREATE containers — the "Storage Blob Data
+      # Contributor" role assignment below (azurerm_role_assignment.backend_*)
+      # already grants that on the account. Flip only after validating in
+      # staging; existing data keeps reading from its stored absolute URI.
+      env {
+        name  = "WAREHOUSE_CONTAINER_MODE"
+        value = var.warehouse_container_mode
+      }
+      # DuckDB compute guardrails — bound memory/threads so a heavy AI query on
+      # a small replica can't OOM the process (it spills to disk instead).
+      env {
+        name  = "DUCKDB_MEMORY_LIMIT"
+        value = var.duckdb_memory_limit
+      }
+      env {
+        name  = "DUCKDB_THREADS"
+        value = tostring(var.duckdb_threads)
       }
       env {
         name  = "AZURE_HEARTBEAT_STORAGE_ACCOUNT"

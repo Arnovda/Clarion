@@ -27,6 +27,7 @@ import {
 } from '@azure/storage-blob';
 import { DefaultAzureCredential } from '@azure/identity';
 import { logger as rootLogger } from '../utils/logger';
+import { warehouseContainer } from '../services/warehouse';
 
 const log = rootLogger.child({ mod: 'sas-issuer' });
 
@@ -34,6 +35,12 @@ interface IssueArgs {
   purpose: 'warehouse' | 'heartbeat';
   syncRunId: string;
   connectionId: string;
+  /**
+   * Tenant the sync belongs to. In per-tenant-container mode the warehouse
+   * SAS is scoped to this tenant's own Blob container, so the token is
+   * physically incapable of writing to another tenant's data.
+   */
+  tenantId: number;
   pathPrefix: string;
   ttlMinutes: number;
 }
@@ -58,9 +65,13 @@ export async function issueWarehouseOrHeartbeatSas(args: IssueArgs): Promise<str
   const { purpose, ttlMinutes, pathPrefix } = args;
 
   const accountEnv = purpose === 'warehouse' ? 'AZURE_WAREHOUSE_STORAGE_ACCOUNT' : 'AZURE_HEARTBEAT_STORAGE_ACCOUNT';
-  const containerEnv = purpose === 'warehouse' ? 'AZURE_WAREHOUSE_CONTAINER' : 'AZURE_HEARTBEAT_CONTAINER';
   const account = requireEnv(accountEnv);
-  const container = requireEnv(containerEnv);
+  // Warehouse container is mode-aware (shared 'warehouse' vs per-tenant
+  // 'tenant-<id>'); heartbeat always uses its dedicated container. Per-tenant
+  // warehouse containers live in the same storage account.
+  const container = purpose === 'warehouse'
+    ? warehouseContainer(args.tenantId)
+    : requireEnv('AZURE_HEARTBEAT_CONTAINER');
 
   const blobService = new BlobServiceClient(
     `https://${account}.blob.core.windows.net`,

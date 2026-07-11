@@ -32,20 +32,81 @@ export function isAzureMode(): boolean {
 }
 
 /**
+ * Warehouse container isolation mode.
+ *
+ *   • `shared`     (default) — one Azure Blob container ('warehouse') holds
+ *     every tenant's data, separated by a `tenant_<id>/` path prefix.
+ *     Isolation is code-enforced (path prefix + catalog-mediated views).
+ *   • `per-tenant`           — each tenant gets its own Blob container
+ *     (`<prefix><tenantId>`, e.g. `tenant-42`). Isolation becomes a hard
+ *     storage boundary: a worker SAS scoped to `tenant-42` is physically
+ *     incapable of touching `tenant-43`, and offboarding a tenant is a
+ *     single `deleteContainer` call.
+ *
+ * Default is `shared` so this is behaviour-preserving: existing deployments
+ * are untouched until `WAREHOUSE_CONTAINER_MODE=per-tenant` is set. Because
+ * every stored `delta_path` / `warehouse_path` is an absolute URI (it
+ * includes the container), old data written under the shared container keeps
+ * reading correctly after the flag flips — new writes simply land in the
+ * per-tenant container. Migration is per-table, exactly like the v1→v2
+ * path migration.
+ *
+ * Local (filesystem) mode has no containers; the tenant is always a path
+ * segment there regardless of this flag.
+ */
+export type WarehouseContainerMode = 'shared' | 'per-tenant';
+
+export function warehouseContainerMode(): WarehouseContainerMode {
+  return process.env.WAREHOUSE_CONTAINER_MODE === 'per-tenant' ? 'per-tenant' : 'shared';
+}
+
+/**
+ * The Azure Blob container name for a tenant.
+ *
+ *   • shared mode      → AZURE_WAREHOUSE_CONTAINER (default 'warehouse')
+ *   • per-tenant mode  → `<AZURE_WAREHOUSE_CONTAINER_PREFIX><tenantId>`
+ *                        (default prefix 'tenant-', e.g. 'tenant-42')
+ *
+ * When `tenantId` is omitted the shared container is always returned — so
+ * legacy call-sites that don't yet thread a tenant id keep working (they
+ * only ever mattered in shared mode). Azure container names must be 3–63
+ * chars, lowercase alphanumeric + single hyphens; `tenant-<int>` satisfies
+ * that for any realistic tenant id.
+ */
+export function warehouseContainer(tenantId?: number): string {
+  const shared = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
+  if (warehouseContainerMode() === 'per-tenant' && tenantId != null) {
+    const prefix = process.env.AZURE_WAREHOUSE_CONTAINER_PREFIX ?? 'tenant-';
+    return `${prefix}${tenantId}`;
+  }
+  return shared;
+}
+
+/**
  * The canonical warehouse root URI for the current environment.
  *
- *   • Azure: `az://<container>` (container from AZURE_WAREHOUSE_CONTAINER, default 'warehouse')
+ *   • Azure: `az://<container>` (see `warehouseContainer` for the container)
  *   • Local: `<repo>/warehouse` (resolves relative to backend/src/services/warehouse/)
  *
  * All v2 paths (sources, products, rollups) compose on top of this root.
+ * Pass `tenantId` so per-tenant-container mode resolves to the tenant's own
+ * container; omit it (shared mode only) to get the shared root.
  */
-export function warehouseRoot(): string {
+export function warehouseRoot(tenantId?: number): string {
   if (isAzureMode()) {
-    const container = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
-    return `az://${container}`;
+    return `az://${warehouseContainer(tenantId)}`;
   }
   // backend/src/services/warehouse/paths.ts → ../../../../warehouse (repo root)
   return path.resolve(__dirname, '../../../../warehouse');
+}
+
+/**
+ * Whether the tenant segment lives in the container name (per-tenant mode)
+ * rather than as a path prefix. When true, source/product paths must NOT
+ * repeat `tenant_<id>/` in the blob path — the container already encodes it.
+ */
+function tenantIsContainer(): boolean {
+  return isAzureMode() && warehouseContainerMode() === 'per-tenant';
 }
 
 /**
@@ -74,11 +135,51 @@ export function warehouseLayoutVersion(): WarehouseLayoutVersion {
  *   `<root>/tenant_<tid>/product_<pid>`
  */
 export function productBasePathV2(tenantId: number, productId: number): string {
-  const root = warehouseRoot();
+  const root = warehouseRoot(tenantId);
   if (isAzurePath(root)) {
-    return `${root}/tenant_${tenantId}/product_${productId}`;
+    // In per-tenant-container mode the container IS the tenant boundary, so we
+    // don't repeat `tenant_<id>/` in the blob path. In shared mode we keep the
+    // tenant segment so tenants don't collide inside the shared container.
+    const tenantSeg = tenantIsContainer() ? '' : `/tenant_${tenantId}`;
+    return `${root}${tenantSeg}/product_${productId}`;
   }
   return path.join(root, `tenant_${tenantId}`, `product_${productId}`);
+}
+
+/**
+ * v2 source directory — where an ingested connection's tables live. Mirrors
+ * `productBasePathV2` for the source layer so both agree on the container /
+ * tenant-segment rules. This is the READ path DuckDB registers views over;
+ * the worker WRITE path derives the same location from its SAS URL container
+ * plus the `conn_<id>/` prefix (see BlobSasTokenIssuer / the launcher).
+ *
+ *   • shared Azure     : `az://warehouse/tenant_<tid>/conn_<cid>`
+ *   • per-tenant Azure : `az://tenant_<tid>/conn_<cid>`  (container = tenant)
+ *   • local            : `<repo>/warehouse/tenant_<tid>/conn_<cid>`
+ */
+export function sourceBasePathV2(tenantId: number, connectionId: number): string {
+  const root = warehouseRoot(tenantId);
+  if (isAzurePath(root)) {
+    const tenantSeg = tenantIsContainer() ? '' : `/tenant_${tenantId}`;
+    return `${root}${tenantSeg}/conn_${connectionId}`;
+  }
+  return path.join(root, `tenant_${tenantId}`, `conn_${connectionId}`);
+}
+
+/**
+ * The blob path-prefix the sync worker writes under, inside whichever
+ * container its SAS is scoped to.
+ *
+ *   • shared mode     → `tenant_<tid>/conn_<cid>/`  (tenant is a path segment)
+ *   • per-tenant mode → `conn_<cid>/`               (tenant is the container)
+ *
+ * Keep this in lockstep with `sourceBasePathV2` — the worker's writes must
+ * land exactly where the backend later reads.
+ */
+export function sourceWorkerPathPrefix(tenantId: number, connectionId: number): string {
+  return tenantIsContainer()
+    ? `conn_${connectionId}/`
+    : `tenant_${tenantId}/conn_${connectionId}/`;
 }
 
 /** Parse an Azure Blob URI like `az://<container>/<path>` into parts. */

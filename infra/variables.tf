@@ -101,3 +101,27 @@ variable "custom_domain" {
   default     = ""
   description = "Custom domain name. Leave empty to skip DNS zone creation."
 }
+
+# ── Warehouse & compute (storage-layer hardening) ───────────────────────────
+
+variable "warehouse_container_mode" {
+  type        = string
+  default     = "shared"
+  description = "Warehouse tenant-isolation mode. 'shared' = one Blob container, tenants separated by tenant_<id>/ prefix (code-enforced). 'per-tenant' = one Blob container per tenant (hard storage boundary + one-call offboarding). Behaviour-preserving default; flip only after staging validation."
+  validation {
+    condition     = contains(["shared", "per-tenant"], var.warehouse_container_mode)
+    error_message = "warehouse_container_mode must be 'shared' or 'per-tenant'."
+  }
+}
+
+variable "duckdb_memory_limit" {
+  type        = string
+  default     = "70%"
+  description = "DuckDB memory_limit for the backend (e.g. '512MB', '1GB', '70%'). Bounds analytical query memory so a heavy AI query can't OOM the replica; excess spills to disk."
+}
+
+variable "duckdb_threads" {
+  type        = number
+  default     = 2
+  description = "DuckDB thread cap for the backend. Keeps a single query from saturating all cores on a small shared replica."
+}

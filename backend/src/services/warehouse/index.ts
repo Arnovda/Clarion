@@ -20,16 +20,26 @@ export {
   isAzureMode,
   warehouseRoot,
   warehouseLayoutVersion,
+  warehouseContainerMode,
+  warehouseContainer,
   parseAzurePath,
   productBasePath,
   productBasePathV2,
+  sourceBasePathV2,
+  sourceWorkerPathPrefix,
   productTablePath,
   productSlug,
   sqlEscapePath,
 } from './paths';
-export type { WarehouseLayoutVersion } from './paths';
+export type { WarehouseLayoutVersion, WarehouseContainerMode } from './paths';
 
-export { setupDuckDBForWarehouse } from './duckdb';
+export { setupDuckDBForWarehouse, applyResourceGuardrails, capResultRows } from './duckdb';
+
+export {
+  ensureWarehouseContainer,
+  deleteTenantWarehouseContainer,
+  perTenantContainersActive,
+} from './container';
 
 export { createScanView } from './views';
 export type { CreateScanViewOptions } from './views';

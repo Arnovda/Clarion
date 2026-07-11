@@ -43,6 +43,7 @@ import {
   type JobLauncher,
   type JobSpec,
 } from './JobLauncher';
+import { sourceBasePathV2, ensureWarehouseContainer } from '../services/warehouse';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -87,14 +88,15 @@ async function setTenant(tenantId: number): Promise<void> {
  * means Azure.
  */
 function computeWarehousePathForDuckDB(connectionId: number, tenantId: number): string {
-  const tenantSeg = `tenant_${tenantId}`;
-  const connSeg = `conn_${connectionId}`;
   const isAzureMode = !!process.env.AZURE_CONTAINER_APPS_JOB_NAME;
   if (isAzureMode) {
-    const container = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
-    return `az://${container}/${tenantSeg}/${connSeg}`;
+    // Delegates to the warehouse path layer so shared vs per-tenant-container
+    // mode is decided in one place. Shared mode yields the historical
+    // `az://warehouse/tenant_<tid>/conn_<cid>`; per-tenant mode yields
+    // `az://tenant-<tid>/conn_<cid>`.
+    return sourceBasePathV2(tenantId, connectionId);
   }
-  return path.join(WAREHOUSE_ROOT, tenantSeg, connSeg);
+  return path.join(WAREHOUSE_ROOT, `tenant_${tenantId}`, `conn_${connectionId}`);
 }
 
 // ─── Launcher selection ──────────────────────────────────────────────────
@@ -348,6 +350,11 @@ async function runSyncInBackground(args: {
     //     `az://` URL; in local mode it's the same filesystem path.
     const localWarehousePath = path.join(WAREHOUSE_ROOT, `tenant_${tenantId}`, `conn_${connectionId}`);
     const duckdbReadPath = computeWarehousePathForDuckDB(connectionId, tenantId);
+
+    // In per-tenant-container mode the worker's SAS is scoped to the tenant's
+    // own Blob container, which must exist before we issue that SAS. No-op in
+    // shared mode (the single 'warehouse' container is Terraform-managed).
+    await ensureWarehouseContainer(tenantId);
 
     const jobSpec: JobSpec = {
       connectorType: conn.connector_type,

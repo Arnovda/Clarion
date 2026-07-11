@@ -31,7 +31,70 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-06-14 (connector-framework audit fixes — security + reliability)
+**Last updated:** 2026-07-11 (storage-layer hardening — per-tenant containers + DuckDB guardrails)
+
+**Storage-layer hardening — per-tenant warehouse containers + DuckDB compute guardrails (2026-07-11):**
+Outcome of the platform professionality audit (see repo-root
+`Clarion-Platform-Professionality-Audit.docx`). Two shipped changes, both
+additive; the container work is feature-flagged **default-off** so this deploy
+is behaviour-preserving until the flag is set. Backend typechecks clean; new
+unit tests pass (19); Terraform validates + formatted.
+- **Per-tenant warehouse containers (opt-in, `WAREHOUSE_CONTAINER_MODE`).**
+  New `shared` (default) | `per-tenant` mode. In `per-tenant` mode each tenant
+  gets its own Azure Blob container (`<AZURE_WAREHOUSE_CONTAINER_PREFIX><id>`,
+  default `tenant-<id>`), turning tenant isolation on the data side from a
+  code-enforced path prefix into a **hard storage boundary**: a worker SAS
+  scoped to `tenant-42` physically cannot touch `tenant-43`, and offboarding a
+  tenant becomes a single container delete. Backward-compatible: existing
+  `delta_path`/`warehouse_path` are absolute URIs, so old data keeps reading
+  after the flip; only NEW writes land in per-tenant containers (same
+  incremental-migration model as v1→v2 layout).
+  - `services/warehouse/paths.ts` — new `warehouseContainerMode()`,
+    `warehouseContainer(tenantId?)`, `warehouseRoot(tenantId?)` (now
+    tenant-aware), `sourceBasePathV2(tenantId, connectionId)`,
+    `sourceWorkerPathPrefix(...)`; `productBasePathV2` drops the redundant
+    `tenant_<id>/` path segment in per-tenant mode (container encodes it).
+  - `services/warehouse/container.ts` (new) — `ensureWarehouseContainer(tid)`
+    (createIfNotExists, memoised) called before worker SAS issuance
+    (SyncOrchestrator) and before product writes (transformationRunner);
+    `deleteTenantWarehouseContainer(tid)` offboarding primitive;
+    `perTenantContainersActive()`.
+  - `orchestrator/BlobSasTokenIssuer.ts` — warehouse SAS now scoped to
+    `warehouseContainer(tenantId)` (heartbeat unchanged); `IssueArgs.tenantId`
+    added. `orchestrator/AzureContainerAppsJobLauncher.ts` — passes `tenantId`,
+    uses `sourceWorkerPathPrefix` (so worker write prefix + backend read path
+    always agree). `orchestrator/SyncOrchestrator.ts` —
+    `computeWarehousePathForDuckDB` Azure branch delegates to
+    `sourceBasePathV2`; ensures the container before launch.
+  - Terraform: `WAREHOUSE_CONTAINER_MODE` / `DUCKDB_MEMORY_LIMIT` /
+    `DUCKDB_THREADS` env on the backend app; new vars in `infra/variables.tf`
+    (default `shared` / `70%` / `2`). Per-tenant mode needs the backend
+    identity to create containers — the existing `Storage Blob Data
+    Contributor` role covers it. **Validate in staging before flipping.**
+- **DuckDB compute guardrails (default ON).** `services/warehouse/duckdb.ts`
+  `applyResourceGuardrails()` runs on every warehouse session:
+  `SET memory_limit` (default `70%`, env `DUCKDB_MEMORY_LIMIT`), `SET threads`
+  (default 2, `DUCKDB_THREADS`), `SET temp_directory` (spills to disk instead
+  of OOM, `DUCKDB_TEMP_DIR`). Plus `capResultRows()` (default 100k, env
+  `DUCKDB_MAX_RESULT_ROWS`, 0=off) wraps single SELECT/WITH reads in
+  `DuckDBConnector.executeQuery` to bound the Node heap — leaves multi-statement
+  scripts and notebook DDL/PRAGMA/COPY untouched. Fixes the audit's "DuckDB
+  unbounded on 1 GB container" red-flag (Tier-A A2). Transformation write path
+  and introspection are unaffected.
+- **Tests:** `services/warehouse/paths.test.ts` (new, 19 cases) — proves
+  shared-mode URIs are byte-identical to today, per-tenant URIs are correct,
+  read path ↔ worker write prefix agree, local mode is container-mode-agnostic,
+  and `capResultRows` caps SELECTs while leaving DDL/multi-statement alone.
+  Runs without a live DB or native DuckDB (pure functions).
+- **New env vars (documented in `.env.example`):** `WAREHOUSE_CONTAINER_MODE`,
+  `AZURE_WAREHOUSE_CONTAINER_PREFIX`, `DUCKDB_MEMORY_LIMIT`, `DUCKDB_THREADS`,
+  `DUCKDB_TEMP_DIR`, `DUCKDB_MAX_RESULT_ROWS`.
+- **Audit docs at repo root** (untracked, generated via `.archdoc/`):
+  `Clarion-Platform-Professionality-Audit.docx` (rubric + grades + Tier A/B/C
+  action plan), `Clarion-AI-Analytics-Gap-Analysis.docx`,
+  `Clarion-Technical-Architecture.docx`. This change closes Tier-A A2 (DuckDB
+  guardrails) and delivers the storage-isolation half of the "alternatives"
+  recommendation (per-tenant containers over moving to Postgres).
 
 **Connector-framework audit fixes (2026-06-14, follow-up to the Odoo work):**
 Tackled the deferred findings from the framework audit. All connector-package

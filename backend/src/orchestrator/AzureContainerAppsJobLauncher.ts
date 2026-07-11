@@ -45,6 +45,7 @@ import { isWorkerEvent, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, type WorkerEvent } 
 import { logger as rootLogger } from '../utils/logger';
 import type { JobHandle, JobLauncher, JobSpec } from './JobLauncher';
 import { stageConfig, unstageConfig } from './BlobConfigStager';
+import { sourceWorkerPathPrefix } from '../services/warehouse';
 
 const log = rootLogger.child({ mod: 'azure-job-launcher' });
 
@@ -63,6 +64,8 @@ export interface AzureLauncherConfig {
     purpose: 'warehouse' | 'heartbeat';
     syncRunId: string;
     connectionId: string;
+    /** Tenant the sync belongs to — selects the per-tenant warehouse container. */
+    tenantId: number;
     /** Path scope inside the container (e.g. `conn_42/` or `runs/123/`). */
     pathPrefix: string;
     /** Lifetime of the URL in minutes. Should be longer than the longest sync we'll run. */
@@ -126,12 +129,19 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
         // writes outside its `conn_<cid>/` prefix still stays within its
         // own tenant's subtree (Azure SAS doesn't natively path-restrict
         // at the SAS level — see BlobSasTokenIssuer for the long story).
-        const warehousePathPrefix = `tenant_${spec.tenantId}/conn_${spec.connectionId}/`;
+        // Path prefix inside the container the SAS is scoped to. In per-tenant
+        // mode the container already encodes the tenant, so the prefix is just
+        // `conn_<id>/`; in shared mode it's `tenant_<id>/conn_<id>/`. The
+        // backend read path derives the same location (sourceBasePathV2), so
+        // writes and reads always agree.
+        const tenantIdNum = Number(spec.tenantId);
+        const warehousePathPrefix = sourceWorkerPathPrefix(tenantIdNum, Number(spec.connectionId));
         const heartbeatPathPrefix = `runs/${spec.syncRunId}/`;
         const warehouseSas = await this.cfg.issueSas({
           purpose: 'warehouse',
           syncRunId: spec.syncRunId,
           connectionId: spec.connectionId,
+          tenantId: tenantIdNum,
           pathPrefix: warehousePathPrefix,
           ttlMinutes: 90,
         });
@@ -139,6 +149,7 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
           purpose: 'heartbeat',
           syncRunId: spec.syncRunId,
           connectionId: spec.connectionId,
+          tenantId: tenantIdNum,
           pathPrefix: `${heartbeatPathPrefix}heartbeat.ndjson`,
           ttlMinutes: 90,
         });
