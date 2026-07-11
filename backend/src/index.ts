@@ -1,5 +1,12 @@
 // Monitoring must be imported BEFORE other modules for auto-instrumentation
-import { initMonitoring } from './utils/monitoring';
+import { initMonitoring, trackException } from './utils/monitoring';
+
+// Patches Express 4's router so a throw (or rejected promise) inside an async
+// route handler is forwarded to the error-handling middleware instead of
+// becoming an unhandled rejection. Must be imported before the routers are
+// built. Without it, an un-try/caught async throw in any of ~321 handlers
+// escapes Express entirely and can crash the process.
+import 'express-async-errors';
 
 import express from 'express';
 import cors from 'cors';
@@ -449,6 +456,28 @@ if (!process.env.VITEST) {
   }
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // Process-level safety net. Registered only in the running server (not under
+  // the test runner). express-async-errors routes route-handler throws to the
+  // error middleware, so anything reaching here is a genuinely unhandled
+  // async path (a stray fire-and-forget promise, a bug outside a request).
+  //
+  //   • unhandledRejection — log loudly + report; do NOT exit. Most are
+  //     non-fatal background tasks, and Node would otherwise crash the whole
+  //     server for one stray rejection. Surfacing it is what matters.
+  //   • uncaughtException — the process state is undefined per the Node docs;
+  //     log, attempt a best-effort graceful shutdown, then exit non-zero so
+  //     the orchestrator restarts a clean process.
+  process.on('unhandledRejection', (reason) => {
+    const err = reason instanceof Error ? reason : new Error(String(reason));
+    logger.error({ err }, 'unhandledRejection — a promise rejected with no catch');
+    trackException(err);
+  });
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err }, 'uncaughtException — process state is undefined, shutting down');
+    trackException(err);
+    void shutdown().finally(() => process.exit(1));
+  });
 }
 
 export default app;

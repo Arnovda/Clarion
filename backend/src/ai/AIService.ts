@@ -69,6 +69,7 @@ import {
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
+import { AI_OUTPUT_SCHEMAS } from './outputSchemas';
 import {
   REFINE_PRODUCT_SYSTEM,
   REFINE_CROSS_PRODUCT_SYSTEM,
@@ -595,7 +596,17 @@ export async function callClaudeMultiTurn(
   return block.text;
 }
 
-function parseJson<T>(raw: string): T {
+/**
+ * Parse a JSON object out of a raw Claude response.
+ *
+ * Without `schema` this is a compile-time cast (the historical behaviour) —
+ * fine for transient outputs the caller guards itself. Pass a Zod `schema` for
+ * any output that gets PERSISTED (star-schema design, dashboard spec, schema
+ * draft): the parsed value is validated and a shape mismatch throws a clear,
+ * actionable error instead of writing malformed data to the database. See
+ * ai/outputSchemas.ts.
+ */
+function parseJson<T>(raw: string, schema?: import('zod').ZodType<T>): T {
   // Strip markdown code fences if Claude wraps the JSON
   let cleaned = raw.replace(/^```(?:json)?\s*/im, '').replace(/\s*```\s*$/m, '').trim();
   // When extended thinking is on Claude sometimes emits prose before/after the JSON
@@ -603,7 +614,16 @@ function parseJson<T>(raw: string): T {
   const start = cleaned.indexOf('{');
   const end   = cleaned.lastIndexOf('}');
   if (start !== -1 && end > start) cleaned = cleaned.slice(start, end + 1);
-  return JSON.parse(cleaned) as T;
+  const parsed = JSON.parse(cleaned) as unknown;
+  if (!schema) return parsed as T;
+  const result = schema.safeParse(parsed);
+  if (!result.success) {
+    const issues = result.error.issues.slice(0, 5)
+      .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+      .join('; ');
+    throw new Error(`AI response failed schema validation: ${issues}`);
+  }
+  return result.data;
 }
 
 /**
@@ -754,7 +774,7 @@ async function draftOneBatch(
     { maxTokens: 16000, cacheSystem: true, kind: 'row' },
   );
   try {
-    return parseJson<SchemaDraftOutput>(raw);
+    return parseJson<SchemaDraftOutput>(raw, AI_OUTPUT_SCHEMAS.schemaDraft);
   } catch (err) {
     // Truncated / malformed JSON usually means Claude hit the output cap.
     // Halve the batch and retry. A 1-table batch that still truncates
@@ -1345,7 +1365,7 @@ export async function refineDashboardSpec(
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
     { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
-  const refined = parseJson<DashboardSpec>(raw);
+  const refined = parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 
   logger.info(
     { before: currentSpec.widgets.length, after: refined.widgets.length, refinement: refinement.slice(0, 120) },
@@ -1406,7 +1426,7 @@ export async function generateDashboardSpec(
     // of variety on regeneration.
     { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
-  return parseJson<DashboardSpec>(raw);
+  return parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 }
 
 // ---------------------------------------------------------------------------
@@ -1425,7 +1445,7 @@ export async function validateAndFixDashboardSpec(
     // temperature 0: same broken spec should get the same fix.
     { maxTokens: 16000, cacheSystem: true, temperature: 0 },
   );
-  return parseJson<DashboardSpec>(raw);
+  return parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 }
 
 // ---------------------------------------------------------------------------
@@ -1471,7 +1491,7 @@ export async function generateStarSchemaDesign(
     true,
     0, // temperature 0: deterministic schema design.
   );
-  return parseJson<StarSchemaDesignOutput>(raw);
+  return parseJson<StarSchemaDesignOutput>(raw, AI_OUTPUT_SCHEMAS.starSchemaDesign);
 }
 
 /**
@@ -1524,7 +1544,7 @@ export async function generateStarSchemaDesignStreaming(
     } catch { /* best-effort */ }
   }
 
-  return parseJson<StarSchemaDesignOutput>(fullText);
+  return parseJson<StarSchemaDesignOutput>(fullText, AI_OUTPUT_SCHEMAS.starSchemaDesign);
 }
 
 // ---------------------------------------------------------------------------
