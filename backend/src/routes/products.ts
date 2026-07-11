@@ -1921,7 +1921,7 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
     const results = await runProductTransformation(product, tables, req.user?.tenantId);
 
     // Sync updated row counts / status to Neo4j
-    syncProductToNeo4j(product.id).catch(() => {});
+    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
@@ -1953,7 +1953,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
     const result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
 
     // Sync updated row counts / status to Neo4j
-    syncProductToNeo4j(product.id).catch(() => {});
+    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
@@ -4517,7 +4517,7 @@ router.post('/tables/:tableId/deploy', requireAuth, requireRole('admin'), async 
     const refreshedTable = await db('product_tables').where({ id: tableId }).first();
     const result = (await runProductTransformation(product, [refreshedTable], req.user?.tenantId))[0] ?? null;
 
-    syncProductToNeo4j(product.id).catch(() => {});
+    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
@@ -4581,7 +4581,7 @@ router.post('/:id/deploy-all', requireAuth, requireRole('admin'), async (req: Re
       .orderBy('dag_order', 'asc');
     const results = await runProductTransformation(product, freshTables, req.user?.tenantId);
 
-    syncProductToNeo4j(product.id).catch(() => {});
+    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: { updated, results } });
   } catch (err) { next(err); }
