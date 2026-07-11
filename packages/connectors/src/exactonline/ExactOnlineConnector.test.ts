@@ -264,11 +264,12 @@ describe('ExactOnlineConnector — sync', () => {
   it('appends $filter when an incremental cursor is provided', async () => {
     mockTokenRefresh();
     // We pass a prior cursor for Accounts. The connector should append
-    // `$filter=Modified gt datetime'...'` to the request URL — that's the
-    // entire point of incremental sync.
+    // `$filter=Modified ge datetime'...'` to the request URL — that's the
+    // entire point of incremental sync. (`ge`, not `gt`: the boundary-safe
+    // >= filter that re-pulls the watermark second and merges by business key.)
     const filterMock = nock(BASE_URL)
       .get(`/api/v1/${DIVISION}/crm/Accounts`)
-      .query((q) => typeof q.$filter === 'string' && q.$filter.includes("Modified gt datetime'2026-01-01T00:00:00'"))
+      .query((q) => typeof q.$filter === 'string' && q.$filter.includes("Modified ge datetime'2026-01-01T00:00:00'"))
       .reply(200, { d: { results: [{ ID: 'a1', Modified: '2026-02-01T10:00:00' }] } });
 
     const root = await makeWarehouse();

@@ -100,12 +100,20 @@ app.use(express.json({ limit: '2mb' }));
 // Structured request logging + request ID tracing
 app.use(requestLogger);
 
+// Rate limiters are disabled under the test runner so integration tests
+// exercise business logic (400/401/etc.), not the limiter — a suite makes
+// dozens of auth calls from one IP and would otherwise trip the 5/15-min
+// brute-force window. No test asserts rate-limiting; if one is added, gate it
+// on its own flag rather than removing this skip.
+const skipRateLimit = (): boolean => process.env.NODE_ENV === 'test';
+
 // Global rate limiter: 200 requests per minute per IP
 const globalLimiter = rateLimit({
   windowMs:  60 * 1000,
   max:       200,
   standardHeaders: true,
   legacyHeaders:   false,
+  skip:      skipRateLimit,
   message: { ok: false, error: 'Too many requests, please try again later' },
 });
 app.use(globalLimiter);
@@ -118,6 +126,7 @@ const authLimiter = rateLimit({
   max:       20,
   standardHeaders: true,
   legacyHeaders:   false,
+  skip:      skipRateLimit,
   message: { ok: false, error: 'Too many authentication attempts, please try again later' },
 });
 
@@ -137,6 +146,7 @@ const bruteForceLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:   false,
   message: { ok: false, error: 'Too many attempts. Please wait 15 minutes and try again.' },
+  skip:      skipRateLimit,
   // Only count failed attempts so a legit user who logs in successfully
   // doesn't consume a "slot" needed for a retry on a typo.
   skipSuccessfulRequests: true,
@@ -148,6 +158,7 @@ const aiLimiter = rateLimit({
   max:       30,
   standardHeaders: true,
   legacyHeaders:   false,
+  skip:      skipRateLimit,
   message: { ok: false, error: 'AI rate limit reached, please try again shortly' },
 });
 

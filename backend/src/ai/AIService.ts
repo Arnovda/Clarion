@@ -193,7 +193,12 @@ async function loadGlossaryBlock(): Promise<string> {
   }
 }
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
+// Don't override env vars in test mode — setup.ts sets NODE_ENV/DATABASE_URL
+// and .env's NODE_ENV=development would otherwise clobber them (breaking the
+// rate-limit skip and the health check). Matches the guard in index.ts/knex.ts.
+if (!process.env.VITEST) {
+  dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
+}
 
 // Lazy singleton — created on first use.
 // If the key still isn't in the environment by then (dotenv path resolution
@@ -202,7 +207,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true }
 let _client: Anthropic | null = null;
 function getClient(): Anthropic {
   if (!_client) {
-    if (!process.env.ANTHROPIC_API_KEY) {
+    if (!process.env.ANTHROPIC_API_KEY && !process.env.VITEST) {
       dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });
     }
     _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });

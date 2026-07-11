@@ -144,19 +144,33 @@ describe('GET /api/auth/me', () => {
 });
 
 describe('POST /api/auth/refresh', () => {
-  it('returns a fresh token', async () => {
+  it('returns a fresh access token from a refresh token', async () => {
     await cleanTestDb();
-    const { token } = await registerUser({ email: 'refresh@test.com' });
+    // The /refresh contract takes the rotating refresh token in the body
+    // (not the access token in the header) — see refreshTokenService.
+    const { refreshToken } = await registerUser({ email: 'refresh@test.com' });
+    expect(refreshToken).toBeDefined();
 
     const res = await (await request())
       .post('/api/auth/refresh')
-      .set('Authorization', `Bearer ${token}`);
+      .send({ refreshToken });
 
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.data.token).toBeDefined();
-    // Token may be identical if iat rounds to same second — just check it's a valid JWT
     expect(res.body.data.token.split('.')).toHaveLength(3);
+  });
+
+  it('rejects a missing refresh token with 400', async () => {
+    const res = await (await request()).post('/api/auth/refresh').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a bogus refresh token with 401', async () => {
+    const res = await (await request())
+      .post('/api/auth/refresh')
+      .send({ refreshToken: 'not-a-real-token' });
+    expect(res.status).toBe(401);
   });
 });
 

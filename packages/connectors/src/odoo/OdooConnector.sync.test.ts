@@ -91,7 +91,10 @@ describe('sync (end-to-end, Parquet readback)', () => {
       expect(out[1].active).toBe(false);            // boolean false preserved
     } finally {
       await db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      // Best-effort temp cleanup — on Windows DuckDB's file handle may linger
+      // briefly after close(), making rmSync throw EPERM. A leftover temp dir
+      // is harmless (the OS reaps it); it must never fail a passing test.
+      try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 });

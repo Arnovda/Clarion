@@ -66,6 +66,7 @@ export async function registerUser(overrides: {
 
   return {
     token: res.body.data.token as string,
+    refreshToken: res.body.data.refreshToken as string,
     user: res.body.data.user as {
       id: number;
       tenantId: number;
