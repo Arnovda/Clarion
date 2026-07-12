@@ -22,6 +22,7 @@ import {
   type ConnectorConfig,
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { config } from '../config';
 import { validate } from '../middleware/validate';
 import { reqDb } from '../db/reqDb';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
@@ -259,13 +260,9 @@ router.get('/:type/oauth-callback', (req: Request, res: Response) => {
   const state = typeof req.query.state === 'string' ? req.query.state : null;
   const providerError = typeof req.query.error === 'string' ? req.query.error : null;
 
-  const frontendBase = process.env.FRONTEND_BASE_URL?.replace(/\/$/, '');
-  if (!frontendBase) {
-    // Hard fail with a visible message rather than try to fall back —
-    // misconfiguration here would silently break the OAuth UX in subtle ways.
-    res.status(500).send('Server misconfigured: FRONTEND_BASE_URL not set');
-    return;
-  }
+  // Resolved centrally (config.appUrl always yields an absolute URL). In prod
+  // Terraform sets the app URL; in dev it defaults to localhost:3000.
+  const frontendBase = config.appUrl;
 
   // Build the fragment payload. Encode each value so the parser on the
   // frontend can decode safely.

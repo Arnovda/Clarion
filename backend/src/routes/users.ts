@@ -15,6 +15,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
+import { config } from '../config';
 import { validate } from '../middleware/validate';
 import { inviteUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
@@ -100,7 +101,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
 
     // Dev convenience: log the invite URL so a developer can grab it
     // without SMTP. Production must have SMTP configured.
-    const inviteUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:3000'}/reset-password?token=${resetToken}&email=${encodeURIComponent(email.toLowerCase())}`;
+    const inviteUrl = `${config.appUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(email.toLowerCase())}`;
     if (process.env.NODE_ENV === 'development') {
       console.log(`[invite-dev] Invite URL for ${email}: ${inviteUrl}`);
     }

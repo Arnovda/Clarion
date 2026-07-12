@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { semanticDb } from '../db/knex';
+import { config, requireJwtSecret } from '../config';
 import {
   hashPassword,
   verifyPassword,
@@ -281,9 +282,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
  * it from a real access token at verification time.
  */
 function getMfaChallengeSecret(): string {
-  const s = process.env.JWT_SECRET;
-  if (!s) throw new Error('JWT_SECRET not set');
-  return s;
+  return requireJwtSecret();
 }
 
 // ---------------------------------------------------------------------------
@@ -445,11 +444,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     // relative URLs in mail.telenet.be → 404s). Always emit an absolute
     // URL — defaulting to '' in prod was the bug that locked the user
     // out after the very first forgot-password attempt in prod.
-    const baseUrl = process.env.FRONTEND_URL
-      ?? process.env.FRONTEND_BASE_URL          // ← Terraform sets this name on the backend Container App
-      ?? process.env.PUBLIC_APP_URL
-      ?? (process.env.NODE_ENV === 'production' ? '' : 'http://localhost:3000');
-    const resetUrl = `${baseUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`;
+    const resetUrl = `${config.appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`;
     try {
       const { sendEmail } = await import('../services/emailService');
       await sendEmail({

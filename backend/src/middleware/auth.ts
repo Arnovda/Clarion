@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import type { Knex } from 'knex';
 import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
+import { config, requireJwtSecret } from '../config';
 import { withTenantAiContext } from '../services/aiBudget';
 import { logger } from '../utils/logger';
 
@@ -53,26 +54,9 @@ export async function verifyPassword(plain: string, hash: string): Promise<boole
 // JWT helpers
 // ---------------------------------------------------------------------------
 
-function getSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) throw new Error('JWT_SECRET not set');
-  // Fail loudly in production if the secret is the dev default OR
-  // obviously weak. Token forgery becomes trivial if the secret is
-  // shared with public examples.
-  if (process.env.NODE_ENV === 'production') {
-    const tooWeak = secret.length < 32
-      || secret === 'change_me_in_production'
-      || secret === 'changeme'
-      || /^(test|dev|local)/i.test(secret);
-    if (tooWeak) {
-      throw new Error(
-        'JWT_SECRET is too weak for production. ' +
-        'Provide a random ≥32-character secret via JWT_SECRET (or Key Vault).',
-      );
-    }
-  }
-  return secret;
-}
+// The JWT secret + production weak-secret guard now live in config.ts so every
+// token operation (access, MFA challenge, WebAuthn) shares the same check.
+const getSecret = requireJwtSecret;
 
 /**
  * Sign an access token. Short-lived (15 minutes by default) — pair with
@@ -83,7 +67,7 @@ function getSecret(): string {
  */
 export function signAccessToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
   return jwt.sign(payload, getSecret(), {
-    expiresIn: process.env.JWT_ACCESS_EXPIRES_IN ?? '15m',
+    expiresIn: config.jwt.accessExpiresIn,
   } as jwt.SignOptions);
 }
 
@@ -93,10 +77,7 @@ export function signAccessToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): strin
  * issuance with `createRefreshToken()` from authTokens.ts.
  */
 export function signToken(payload: Omit<JwtPayload, 'iat' | 'exp'>): string {
-  // Allow JWT_EXPIRES_IN as the legacy override knob during the transition.
-  // The plan is to drop this once every caller has been migrated.
-  const expiresIn = process.env.JWT_EXPIRES_IN ?? process.env.JWT_ACCESS_EXPIRES_IN ?? '15m';
-  return jwt.sign(payload, getSecret(), { expiresIn } as jwt.SignOptions);
+  return jwt.sign(payload, getSecret(), { expiresIn: config.jwt.accessExpiresIn } as jwt.SignOptions);
 }
 
 export function verifyToken(token: string): JwtPayload {

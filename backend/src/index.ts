@@ -16,6 +16,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
+import { config } from './config';
 
 // Don't override env vars in test mode — setup.ts sets DATABASE_URL to test DB
 if (!process.env.VITEST) {
@@ -98,8 +99,7 @@ app.use(helmet({
 }));
 
 // CORS — locked to configured origins
-const CORS_ORIGIN = process.env.CORS_ORIGIN ?? 'http://localhost:3000';
-app.use(cors({ origin: CORS_ORIGIN.split(','), credentials: true }));
+app.use(cors({ origin: config.corsOrigins, credentials: true }));
 
 // Body parsing with size limits
 app.use(express.json({ limit: '2mb' }));
@@ -257,7 +257,7 @@ app.use(errorHandler);
 
 // Skip server start when running under Vitest (tests use supertest directly)
 if (!process.env.VITEST) {
-  const PORT = Number(process.env.PORT ?? 3001);
+  const PORT = config.port;
   const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Clarion backend running');
     // Start Neo4j constraint setup in the background — non-blocking.

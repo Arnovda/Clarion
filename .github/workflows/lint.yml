@@ -1,11 +1,13 @@
 name: Lint
 
-# Lightweight, fast lint gate that always runs on PRs + main pushes.
-# Independent of the (currently disabled) vitest suite. Catches the
-# specific class of bug that ate the May 23 2026 /query DISTINCT-ON
-# cascade: a defensive `.catch(() => …)` chained to a Knex query
-# inside the shared request transaction. See
-# backend/scripts/lint-shared-trx-catch.ts for the full rationale.
+# Lightweight, fast lint gates (ratchets) that always run on PRs + main pushes.
+# Independent of the vitest suite. Each guards a specific bug class that has
+# bitten us and locks in a fix so it can't regress:
+#   • shared-trx-catch   — a defensive `.catch(() => …)` on a Knex query inside
+#     the shared request transaction (the May 23 2026 /query 25P02 cascade).
+#   • scattered-config    — reading the app URL under FRONTEND_URL /
+#     FRONTEND_BASE_URL / PUBLIC_APP_URL instead of config.appUrl (the drift
+#     that caused a prod password-reset lockout).
 on:
   pull_request:
     branches: [main]
@@ -30,3 +32,6 @@ jobs:
       # beyond Node's built-in fs/path.
       - name: shared-trx-catch
         run: npx --yes tsx@4.22 backend/scripts/lint-shared-trx-catch.ts
+
+      - name: scattered-config
+        run: npx --yes tsx@4.22 backend/scripts/lint-scattered-config.ts

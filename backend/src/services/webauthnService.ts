@@ -51,6 +51,7 @@ import type {
 import jwt from 'jsonwebtoken';
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
+import { config, requireJwtSecret } from '../config';
 
 // ─── Configuration ────────────────────────────────────────────────────────
 
@@ -67,11 +68,8 @@ const RP_NAME = 'Clarion';
  * deliberately strict on this point. That's the point.
  */
 function getRpId(): string {
-  const base = process.env.FRONTEND_BASE_URL?.replace(/\/$/, '')
-    ?? process.env.PUBLIC_APP_URL?.replace(/\/$/, '')
-    ?? 'http://localhost:3000';
   try {
-    return new URL(base).hostname;
+    return new URL(config.appUrl).hostname;
   } catch {
     return 'localhost';
   }
@@ -84,10 +82,12 @@ function getRpId(): string {
  * in dev, both the bare hostname and the localhost variant.
  */
 function getExpectedOrigins(): string[] {
-  const base = process.env.FRONTEND_BASE_URL?.replace(/\/$/, '')
-    ?? process.env.PUBLIC_APP_URL?.replace(/\/$/, '');
-  if (base) return [base];
-  return ['http://localhost:3000', 'http://127.0.0.1:3000'];
+  // config.appUrl always resolves (defaults to localhost:3000 in dev), so
+  // return it plus the 127.0.0.1 variant for local dev convenience.
+  const base = config.appUrl;
+  return base === 'http://localhost:3000'
+    ? ['http://localhost:3000', 'http://127.0.0.1:3000']
+    : [base];
 }
 
 // ─── Challenge tokens ────────────────────────────────────────────────────
@@ -104,9 +104,7 @@ interface WebauthnChallengePayload {
 }
 
 function getChallengeSecret(): string {
-  const s = process.env.JWT_SECRET;
-  if (!s) throw new Error('JWT_SECRET not set');
-  return s;
+  return requireJwtSecret();
 }
 
 function signChallenge(payload: WebauthnChallengePayload): string {
