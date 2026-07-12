@@ -150,11 +150,15 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   // `KNEX_POOL_MAX` if you see acquire timeouts at peak.
   if (payload.tenantId) {
     let resolvedDone = false;
+    let releaseTrx: (() => void) | null = null;
+    let abortTrx: ((e: Error) => void) | null = null;
+
     const trxReady = new Promise<void>((resolveReady, rejectReady) => {
       // We hold the transaction inside a knex.transaction() callback so
       // it can't accidentally outlive its physical connection. The
-      // callback only resolves once res emits 'finish' or 'close'.
-      semanticDb.transaction(async (trx) => {
+      // callback only resolves when the response is about to be sent
+      // (see the res.end patch below) or the client disconnects.
+      const trxSettled = semanticDb.transaction(async (trx) => {
         try {
           await trx.raw(`SET LOCAL app.current_tenant = '${Number(payload.tenantId)}'`);
         } catch (err) {
@@ -163,30 +167,45 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         }
         req.dbTrx = trx;
         resolveReady();
-        // Block this callback until the response is fully sent —
-        // throwing causes Knex to rollback, returning causes commit.
+        // Block this callback until released — throwing causes Knex to
+        // rollback, returning causes commit.
         await new Promise<void>((finishResolve, finishReject) => {
-          const onFinish = () => {
-            if (resolvedDone) return;
-            resolvedDone = true;
-            res.removeListener('close', onClose);
-            finishResolve();
-          };
-          const onClose = () => {
-            if (resolvedDone) return;
-            resolvedDone = true;
-            res.removeListener('finish', onFinish);
-            // Aborted / disconnected before finish — rollback by throwing.
-            finishReject(new Error('request_closed_before_finish'));
-          };
-          res.once('finish', onFinish);
-          res.once('close', onClose);
+          releaseTrx = finishResolve;
+          abortTrx = finishReject;
         });
       }).catch((err) => {
         // Swallow the rollback marker; surface real errors as logger.warn.
         if (err?.message !== 'request_closed_before_finish') {
           logger.warn({ err }, 'tenant transaction rolled back unexpectedly');
         }
+      });
+
+      // ── Read-your-writes ordering: COMMIT BEFORE the response leaves ──
+      // The previous design committed on res 'finish' — i.e. AFTER the
+      // client already received the response. A client that saved and
+      // immediately re-fetched could start its next request before our
+      // COMMIT landed, and read the pre-write snapshot (surfaced as the
+      // CI-only DELETE-then-GET-returns-200 flake; real frontends do
+      // save-then-reload constantly). We now intercept the FINAL send:
+      // release the transaction, wait for the commit to settle, then let
+      // the last bytes go out. Streaming writes (SSE res.write) are
+      // unaffected — only res.end is deferred, so a stream's final close
+      // simply waits for the commit like any other response.
+      const origEnd = res.end.bind(res) as (...args: unknown[]) => Response;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (res as any).end = (...args: unknown[]): Response => {
+        if (resolvedDone) return origEnd(...args);
+        resolvedDone = true;
+        releaseTrx?.();
+        void trxSettled.finally(() => origEnd(...args));
+        return res;
+      };
+
+      // Client disconnected before we sent anything — roll back.
+      res.once('close', () => {
+        if (resolvedDone) return;
+        resolvedDone = true;
+        abortTrx?.(new Error('request_closed_before_finish'));
       });
     });
 
