@@ -6,13 +6,16 @@
  * to different connections, and RLS silently filters out all rows.
  */
 import { semanticDb } from '../db/knex';
+import { setTenantContext } from '../db/tenantContext';
 
 export async function tenantQuery<T>(
   tenantId: number | undefined,
   fn: (trx: import('knex').Knex) => Promise<T>,
 ): Promise<T> {
   return semanticDb.transaction(async (trx) => {
-    if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
+    // Preserve this helper's original semantics: falsy tenantId → no
+    // tenant context is set (RLS then filters everything out).
+    if (tenantId) await setTenantContext(trx, tenantId);
     return fn(trx);
   });
 }

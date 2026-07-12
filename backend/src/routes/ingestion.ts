@@ -9,6 +9,7 @@ import { triggerMaintenanceNow } from '../jobs/warehouseMaintenance';
 import { invalidateTenantCache } from '../services/queryCache';
 import { invalidateWidgetCache } from '../services/widgetCache';
 import { isAzurePath } from '../services/warehouse';
+import { startSSE } from '../services/sse';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import axios from 'axios';
 import { logger as rootLogger } from '../utils/logger';
@@ -97,6 +98,7 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
     const etlRes = await axios.post(`${ETL_URL}/discover`, etlPayload, { timeout: 30000 });
 
     if (!etlRes.data.ok) {
+      // deliberate-500: static friendly message, no raw error to leak (ETL responded but reported failure — no `err` to rethrow)
       res.status(500).json({ ok: false, error: 'ETL discover failed' });
       return;
     }
@@ -199,14 +201,9 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
     const streamStart = Date.now();
     const syncStart = streamStart;
     if (wantsStream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders();
+      const sse = startSSE(res);
 
-      const emit = (data: object) => {
-        try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* disconnected */ }
-      };
+      const emit = (data: object) => sse.emit(data);
 
       try {
         emit({ phase: 'ingesting', message: `Ingesting ${tables.length} table(s)…` });
@@ -312,7 +309,7 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
         });
         emit({ phase: 'error', message: errMsg });
       }
-      res.end();
+      sse.end();
     } else {
       // Synchronous fallback
       try {
@@ -390,7 +387,9 @@ router.post('/ingest', requireAuth, requireRole('admin'), async (req: Request, r
           ingestion_status: 'error',
           ingestion_error: errMsg,
         });
-        res.status(500).json({ ok: false, error: errMsg });
+        // Rethrow to the central errorHandler (admins see the real message,
+        // others a generic one) instead of echoing the raw error inline.
+        throw err;
       }
     }
   } catch (err) {

@@ -9,8 +9,13 @@ import {
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
+import { profilingProgressPct } from '../services/profilingProgress';
+// Static now that the orchestrator no longer reaches back into this route
+// module (profilingProgressPct moved to services/) — the cycle is gone.
+import { triggerSync, requestCancellation } from '../orchestrator/SyncOrchestrator';
 import { reqDb } from '../db/reqDb';
 import { tenantScopedWrite } from '../db/tenantScopedWrite';
+import { startSSE } from '../services/sse';
 import { createConnector, createSourceConnector, testConnector, SUPPORTED_TYPES } from '../connectors/ConnectorFactory';
 import {
   deleteWarehousePaths,
@@ -303,7 +308,6 @@ router.post(
         res.status(400).json({ ok: false, error: 'Invalid connection id' });
         return;
       }
-      const { triggerSync } = await import('../orchestrator/SyncOrchestrator');
       const result = await triggerSync({
         connectionId: id,
         tenantId: req.user!.tenantId,
@@ -378,7 +382,6 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const syncRunId = Number(req.params.syncRunId);
-      const { requestCancellation } = await import('../orchestrator/SyncOrchestrator');
       // Pass tenantId — registry validates the run belongs to this tenant.
       const result = requestCancellation(syncRunId, req.user!.tenantId);
       if (result === 'forbidden' || result === 'not_found') {
@@ -557,27 +560,6 @@ router.post('/:id/oauth-reconnect', requireAuth, requireRole('admin'), async (re
   }
 });
 
-// Helper: compute profiling progress percentage from phase
-const PROFILING_PHASES = ['schema', 'quality', 'ai_draft', 'storing', 'neo4j', 'done'] as const;
-export function profilingProgressPct(phase: string, tableIndex?: number, tableCount?: number): number {
-  // Each phase gets a weight — quality + ai_draft are heaviest
-  const weights: Record<string, [number, number]> = {
-    schema:   [0,  10],
-    quality:  [10, 45],
-    ai_draft: [45, 80],
-    storing:  [80, 90],
-    neo4j:    [90, 98],
-    done:     [100, 100],
-    error:    [0, 0],
-  };
-  const [start, end] = weights[phase] ?? [0, 0];
-  if (phase === 'error') return 0;
-  if (tableIndex != null && tableCount && tableCount > 0) {
-    return Math.round(start + (end - start) * (tableIndex + 1) / tableCount);
-  }
-  return end;
-}
-
 // POST /api/connections/:id/profile — re-run schema profiling with SSE progress
 router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   const db = reqDb(req);
@@ -611,14 +593,9 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
   // If client accepts SSE, stream progress events
   const wantsStream = req.headers.accept?.includes('text/event-stream');
   if (wantsStream) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    const sse = startSSE(res);
 
-    const emit = (data: object) => {
-      try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
-    };
+    const emit = (data: object) => sse.emit(data);
 
     try {
       let connectorOverride;
@@ -670,7 +647,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
         }
       }
     }
-    res.end();
+    sse.end();
   } else {
     // Fallback: synchronous JSON response for non-SSE clients
     try {
@@ -709,7 +686,9 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
           log.error({ err: markErr }, '[Profile] failed to mark profiling errored');
         }
       }
-      res.status(500).json({ ok: false, error: errMsg });
+      // Rethrow to the central errorHandler (admins see the real message,
+      // others a generic one) instead of echoing the raw error inline.
+      throw err;
     }
   }
 });

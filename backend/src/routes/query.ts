@@ -5,6 +5,7 @@ import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
 import { reqDb } from '../db/reqDb';
+import { startSSE } from '../services/sse';
 import { notifyAdmins } from '../services/notificationService';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
@@ -1113,14 +1114,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 // ---------------------------------------------------------------------------
 
 router.post('/think', requireAuth, async (req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+  const sse = startSSE(res);
 
-  const emit = (data: object) => {
-    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
-  };
+  const emit = (data: object) => sse.emit(data);
 
   try {
     const db = reqDb(req);
@@ -1132,7 +1128,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     if (!question?.trim()) {
       emit({ type: 'error', message: 'question is required' });
-      res.end(); return;
+      sse.end(); return;
     }
 
     // Load conversation history for follow-up context (if conversationId provided)
@@ -1179,7 +1175,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
           flag_reason:      null,
         });
         emit({ type: 'done', data: buildClarifyResponse(nlResult, 'product') });
-        res.end();
+        sse.end();
         return;
       }
 
@@ -1205,7 +1201,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
           sql: '',
           intent: 'explain',
         }});
-        res.end();
+        sse.end();
         return;
       }
 
@@ -1229,7 +1225,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
           flagReason: thinkBlockCheck.reason,
           blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         }});
-        res.end(); return;
+        sse.end(); return;
       }
 
       emit({ type: 'phase', text: 'Running query on star schema…' });
@@ -1260,7 +1256,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
         debug: { hint: `Query executed against product layer with confidence ${Math.round(nlResult.confidence * 100)}%.` },
       }});
-      res.end(); return;
+      sse.end(); return;
     }
 
     // ── SOURCE LAYER STREAMING PATH (fallback) ──────────────────────────
@@ -1397,7 +1393,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         flag_reason:      null,
       });
       emit({ type: 'done', data: buildClarifyResponse(nlResult, 'source') });
-      res.end();
+      sse.end();
       return;
     }
 
@@ -1423,7 +1419,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         sql: '',
         intent: 'explain',
       }});
-      res.end();
+      sse.end();
       return;
     }
 
@@ -1454,7 +1450,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: thinkBlockCheck.reason, semanticContext, relationshipContext, kpiFormulas },
       }});
-      res.end(); return;
+      sse.end(); return;
     }
 
     // ── 6. Entity pre-flight check ──────────────────────────────────────────
@@ -1523,7 +1519,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         confidence: nlResult.confidence, blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint, semanticContext, relationshipContext, kpiFormulas },
       }});
-      res.end(); return;
+      sse.end(); return;
     }
 
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
@@ -1556,7 +1552,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
         semanticContext, relationshipContext, kpiFormulas },
     }});
-    res.end();
+    sse.end();
 
   } catch (err) {
     log.error({ err }, '[/think] Error');
@@ -1571,7 +1567,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       message: 'Something went wrong. Please try again.',
       ...(canSeeDetails ? { errorDetail: detail, errorStack: stack } : {}),
     });
-    res.end();
+    sse.end();
   }
 });
 
@@ -1581,14 +1577,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
 router.post('/repair', requireAuth, async (req: Request, res: Response) => {
   // SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
+  const sse = startSSE(res);
 
   function send(type: string, data: Record<string, unknown> = {}) {
-    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    sse.emit({ type, ...data });
     (res as unknown as { flush?: () => void }).flush?.();
   }
 
@@ -1803,12 +1795,12 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
       }
     }
 
-    res.end();
+    sse.end();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err }, '[Repair] investigation failed');
     send('error', { text: `Investigation failed: ${msg}` });
-    res.end();
+    sse.end();
   } finally {
     sqliteConnector?.disconnect();
   }

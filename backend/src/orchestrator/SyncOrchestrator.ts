@@ -44,6 +44,7 @@ import {
   type JobSpec,
 } from './JobLauncher';
 import { sourceBasePathV2, ensureWarehouseContainer } from '../services/warehouse';
+import { profilingProgressPct } from '../services/profilingProgress';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -720,7 +721,6 @@ async function runProfilerInBackground(args: {
   tenantId: number;
 }): Promise<void> {
   const { connectionId, tenantId } = args;
-  const { profilingProgressPct } = await import('../routes/connections');
   await setTenant(tenantId);
 
   // Read the current connection state once. We need its stored

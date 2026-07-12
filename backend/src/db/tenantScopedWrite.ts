@@ -31,20 +31,16 @@
 
 import type { Knex } from 'knex';
 import { semanticDb } from './knex';
+import { setTenantContext } from './tenantContext';
 
 export async function tenantScopedWrite<T>(
   tenantId: number,
   fn: (trx: Knex.Transaction) => Promise<T>,
 ): Promise<T> {
-  // Defensive: the SET LOCAL value is interpolated into a raw SQL string
-  // (Postgres won't accept SET parameters via $1 binding). Coerce to a
-  // finite positive integer first so a malformed caller can never inject.
-  const tid = Number(tenantId);
-  if (!Number.isFinite(tid) || tid <= 0 || !Number.isInteger(tid)) {
-    throw new Error(`tenantScopedWrite: invalid tenantId ${tenantId}`);
-  }
+  // setTenantContext validates (finite positive integer, throws otherwise)
+  // and runs the parameterised set_config equivalent of SET LOCAL.
   return semanticDb.transaction(async (trx) => {
-    await trx.raw(`SET LOCAL app.current_tenant = '${tid}'`);
+    await setTenantContext(trx, tenantId);
     return fn(trx);
   });
 }

@@ -11,6 +11,7 @@ import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBui
 import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
+import { startSSE } from '../services/sse';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'dashboards' });
@@ -562,15 +563,9 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
 
     // Start SSE. From here on every error path emits a `done` event
     // instead of throwing JSON.
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
+    const sse = startSSE(res, { headers: { 'Cache-Control': 'no-cache, no-transform' } });
 
-    const emit = (event: Record<string, unknown>) => {
-      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client disconnected */ }
-    };
+    const emit = (event: Record<string, unknown>) => sse.emit(event);
 
     // Resolve each widget's SQL: programmatic cross-filter injection
     // (Phase 3) → filter placeholder substitution (legacy) → cache
@@ -601,7 +596,7 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
 
     if (remaining.length === 0) {
       emit({ type: 'done' });
-      res.end();
+      sse.end();
       return;
     }
 
@@ -642,7 +637,7 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
       if (!aborted) emit({ type: 'done' });
     } finally {
       connector.disconnect();
-      try { res.end(); } catch { /* ignore */ }
+      sse.end();
     }
   } catch (err) {
     next(err);
@@ -873,7 +868,7 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
       const friendly = raw.includes('does not exist')
         ? 'The underlying table is not available right now.'
         : 'Could not load source rows for this value.';
-      res.status(500).json({ ok: false, error: friendly });
+      res.status(500).json({ ok: false, error: friendly }); // deliberate-500: user-friendly mapped message, not an error leak
     } finally {
       connector.disconnect();
     }
@@ -1741,13 +1736,10 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
     }
 
     // Set up SSE
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
+    const sse = startSSE(res);
 
     function emit(obj: Record<string, unknown>) {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      sse.emit(obj);
     }
 
     try {
@@ -1759,7 +1751,7 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
       if (!plan.queries.length) {
         emit({ type: 'conclusion', text: 'Not enough context to run diagnostic queries.' });
         emit({ type: 'done' });
-        res.end();
+        sse.end();
         return;
       }
 
@@ -1775,7 +1767,7 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
       if (!connection) {
         emit({ type: 'error', text: 'Connection not found.' });
         emit({ type: 'done' });
-        res.end();
+        sse.end();
         return;
       }
 
@@ -1813,12 +1805,12 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
       const conclusion = await synthesizeInvestigation(question, plan.hypothesis, diagnosticResults);
       emit({ type: 'conclusion', text: conclusion });
       emit({ type: 'done' });
-      res.end();
+      sse.end();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Investigation failed.';
       emit({ type: 'error', text: msg });
       emit({ type: 'done' });
-      res.end();
+      sse.end();
     }
   } catch (err) {
     next(err);

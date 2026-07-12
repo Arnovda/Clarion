@@ -21,7 +21,7 @@ import {
   type InvestigateEvent,
 } from '../services/investigateService';
 import { tenantQuery } from '../services/tenantQuery';
-import { logger } from '../utils/logger';
+import { startSSE } from '../services/sse';
 
 const router = Router();
 
@@ -69,19 +69,9 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       return;
     }
 
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
+    const sse = startSSE(res, { headers: { 'Cache-Control': 'no-cache, no-transform' } });
 
-    const send = (event: InvestigateEvent) => {
-      try {
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
-      } catch (err) {
-        logger.warn({ err }, 'investigations: SSE write failed (client disconnected?)');
-      }
-    };
+    const send = (event: InvestigateEvent) => sse.emit(event);
 
     let aborted = false;
     req.on('close', () => { aborted = true; });
@@ -104,7 +94,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
         send({ type: 'failed', investigation: null as never, reason: msg });
       }
     } finally {
-      try { res.end(); } catch { /* ignore */ }
+      sse.end();
     }
   } catch (err) { next(err); }
 });

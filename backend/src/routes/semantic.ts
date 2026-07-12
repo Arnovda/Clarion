@@ -12,6 +12,7 @@ import { notifyTenant } from '../services/notificationService';
 import { invalidateTenantCache } from '../services/queryCache';
 import { buildXlsx, buildCsv, escapeCsvField } from '../utils/xlsxBuilder';
 import { isAzurePath } from '../services/warehouse';
+import { startSSE } from '../services/sse';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'semantic' });
@@ -472,18 +473,9 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 
   const wantsStream = req.headers.accept?.includes('text/event-stream');
 
-  if (wantsStream) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-  }
+  const sse = wantsStream ? startSSE(res) : null;
 
-  const emit = (data: object) => {
-    if (wantsStream) {
-      try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* client disconnected */ }
-    }
-  };
+  const emit = (data: object) => { sse?.emit(data); };
 
   try {
     const db = reqDb(req);
@@ -500,7 +492,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 
     if (!tables.length) {
       const msg = 'No tables found for this connection — run profiling first';
-      if (wantsStream) { emit({ phase: 'error', message: msg }); res.end(); }
+      if (sse) { emit({ phase: 'error', message: msg }); sse.end(); }
       else res.status(400).json({ ok: false, error: msg });
       return;
     }
@@ -617,12 +609,12 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 
     emit({ phase: 'done', message: `Done — ${inserted} relationships created` });
 
-    if (wantsStream) res.end();
+    if (sse) sse.end();
     else res.json({ ok: true, data: { inserted } });
   } catch (err) {
-    if (wantsStream) {
+    if (sse) {
       emit({ phase: 'error', message: err instanceof Error ? err.message : 'Re-suggest failed' });
-      res.end();
+      sse.end();
     } else {
       next(err);
     }

@@ -11,6 +11,7 @@ import { tenantQuery } from '../services/tenantQuery';
 import { recordAudit } from '../services/auditService';
 import { reqDb } from '../db/reqDb';
 import { tenantScopedWrite } from '../db/tenantScopedWrite';
+import { startSSE } from '../services/sse';
 import type {
   ProductSummary,
   RefineChange,
@@ -1322,27 +1323,22 @@ router.get('/:id/sources', requireAuth, async (req: Request, res: Response, next
 
 router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   // SSE setup
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+  const sse = startSSE(res);
 
-  const emit = (data: Record<string, unknown>) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
+  const emit = (data: Record<string, unknown>) => sse.emit(data);
 
   const db = reqDb(req);
   try {
     const product = await db('data_products').where({ id: req.params.id }).first();
     if (!product) {
       emit({ type: 'error', message: 'Data product not found' });
-      res.end(); return;
+      sse.end(); return;
     }
 
     const sources = await db('data_product_sources').where({ data_product_id: product.id });
     if (sources.length === 0) {
       emit({ type: 'error', message: 'No source tables selected for this data product' });
-      res.end(); return;
+      sse.end(); return;
     }
 
     // Mark as designing
@@ -1634,7 +1630,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     await syncProductToNeo4j(product.id);
 
     emit({ type: 'done' });
-    res.end();
+    sse.end();
   } catch (err: unknown) {
     log.error({ err }, '[products/design-stream] Error');
     // Mark the product as errored in a FRESH transaction. The request
@@ -1657,7 +1653,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
       }
     }
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Design failed. Please try again.' });
-    res.end();
+    sse.end();
   }
 });
 
@@ -2829,8 +2825,9 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 
     return res.json({ ok: true, data: proposal });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to propose data product';
-    return res.status(500).json({ error: msg });
+    // Route to the central errorHandler (admins see the real message,
+    // others get a generic one) instead of echoing raw errors inline.
+    throw err;
   }
 });
 
@@ -2915,7 +2912,7 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req:
 
     res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix', mode: 'refresh', syncSource } });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to start refresh' });
+    throw err; // central errorHandler — no inline raw-error echo
   }
 });
 
@@ -2970,7 +2967,7 @@ router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: 
 
     res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix' } });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to start bus matrix job' });
+    throw err; // central errorHandler — no inline raw-error echo
   }
 });
 
@@ -3007,7 +3004,7 @@ router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: 
       },
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to query active jobs' });
+    throw err; // central errorHandler — no inline raw-error echo
   }
 });
 
@@ -3051,35 +3048,29 @@ router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), asyn
       },
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to cancel job' });
+    throw err; // central errorHandler — no inline raw-error echo
   }
 });
 
 router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders();
+  const sse = startSSE(res);
 
   const tenantId = req.user?.tenantId;
   const { jobId } = req.params;
 
-  const emit = (data: Record<string, unknown>) => {
-    try { res.write(`data: ${JSON.stringify(data)}\n\n`); } catch { /* ignore */ }
-  };
+  const emit = (data: Record<string, unknown>) => sse.emit(data);
 
   const { getBusMatrixQueue } = await import('../jobs/queues');
   const queue = getBusMatrixQueue();
   if (!queue) {
     emit({ type: 'error', message: 'Job queue not available' });
-    res.end();
+    sse.end();
     return;
   }
 
   const job = await queue.getJob(jobId);
-  if (!job) { emit({ type: 'error', message: 'Job not found' }); res.end(); return; }
-  if (job.data.tenantId !== tenantId) { emit({ type: 'error', message: 'Forbidden' }); res.end(); return; }
+  if (!job) { emit({ type: 'error', message: 'Job not found' }); sse.end(); return; }
+  if (job.data.tenantId !== tenantId) { emit({ type: 'error', message: 'Forbidden' }); sse.end(); return; }
 
   let clientClosed = false;
   req.on('close', () => { clientClosed = true; });
@@ -3135,7 +3126,7 @@ router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin'), async
   }
 
   clearInterval(keepalive);
-  res.end();
+  sse.end();
 });
 
 // ---------------------------------------------------------------------------
@@ -3147,11 +3138,7 @@ router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin'), async
 router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
   const reqId = `bms-${Date.now().toString(36)}`;
   const startTs = Date.now();
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // disable any proxy buffering
-  res.flushHeaders();
+  const sse = startSSE(res);
 
   log.info(`[${reqId}] bus-matrix-stream START (connectionId=${(req.body as { connectionId?: number })?.connectionId})`);
 
@@ -3161,26 +3148,17 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
     log.warn(`[${reqId}] CLIENT DISCONNECTED after ${Date.now() - startTs}ms`);
   });
 
-  const emit = (data: Record<string, unknown>) => {
-    try {
-      const written = res.write(`data: ${JSON.stringify(data)}\n\n`);
-      if (!written) {
-        log.warn(`[${reqId}] res.write returned false (backpressure) type=${data.type as string}`);
-      }
-    } catch (err) {
-      log.error({ err }, `[${reqId}] res.write failed type=${data.type as string}`);
-    }
-  };
+  const emit = (data: Record<string, unknown>) => sse.emit(data);
 
   let keepaliveInterval: NodeJS.Timeout | null = null;
 
   try {
     const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
-    if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); res.end(); return; }
+    if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); sse.end(); return; }
 
     const connection = await db('connections').where({ id: connectionId }).first();
-    if (!connection) { emit({ type: 'error', message: 'Connection not found' }); res.end(); return; }
+    if (!connection) { emit({ type: 'error', message: 'Connection not found' }); sse.end(); return; }
 
     emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
 
@@ -3254,7 +3232,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
       const msg = aiErr instanceof Error ? aiErr.message : 'AI call failed';
       log.error({ err: aiErr }, `[${reqId}] AI call FAILED after ${Date.now() - aiStart}ms: ${msg}`);
       emit({ type: 'error', message: `AI design failed: ${msg}` });
-      res.end();
+      sse.end();
       return;
     }
 
@@ -3269,7 +3247,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
     } catch { /* response already closed */ }
   }
   log.info(`[${reqId}] res.end() (total ${Date.now() - startTs}ms, clientDisconnected=${clientDisconnected})`);
-  res.end();
+  sse.end();
 });
 
 // ---------------------------------------------------------------------------
@@ -3719,13 +3697,10 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const table = (err as any)?.table ?? null;
     log.error({ code, detail, constraint, table, stack }, `[${reqId}] build-bus-matrix FAILED: ${msg}`);
-    if (!res.headersSent) {
-      res.status(500).json({
-        ok: false,
-        error: `Failed to save bus matrix: ${msg}`,
-        details: { code, constraint, table, detail },
-      });
-    }
+    if (res.headersSent) return;
+    // Rethrow to the central errorHandler (admins get the real message,
+    // non-admins a generic one) instead of echoing code/constraint/detail.
+    throw err;
   }
 });
 
@@ -3736,20 +3711,17 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
 // ---------------------------------------------------------------------------
 
 router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
+  const sse = startSSE(res);
 
-  const emit = (data: Record<string, unknown>) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  const emit = (data: Record<string, unknown>) => sse.emit(data);
 
   try {
     const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
-    if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); res.end(); return; }
+    if (!connectionId) { emit({ type: 'error', message: 'connectionId required' }); sse.end(); return; }
 
     const connection = await db('connections').where({ id: connectionId }).first();
-    if (!connection) { emit({ type: 'error', message: 'Connection not found' }); res.end(); return; }
+    if (!connection) { emit({ type: 'error', message: 'Connection not found' }); sse.end(); return; }
 
     emit({ type: 'phase', text: `Reading schema for ${connection.name}…` });
 
@@ -3823,7 +3795,7 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
     log.error({ err }, '[products/propose-stream] Error');
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
   }
-  res.end();
+  sse.end();
 });
 
 // POST /api/products/propose — AI auto-proposes all data products for a connection

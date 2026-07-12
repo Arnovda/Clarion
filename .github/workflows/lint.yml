@@ -10,6 +10,10 @@ name: Lint
 #     that caused a prod password-reset lockout).
 #   • no-console          — raw console.* calls in backend/src instead of the
 #     structured pino logger (no level/redaction, silently dropped args).
+#   • no-internal-dynamic-import — new `await import('./…')` of our own modules
+#     (papers over circular dependencies; baseline only ever goes down).
+#   • no-inline-500       — inline `res.status(500)` in routes instead of
+#     throwing to the central errorHandler (raw-error echo to clients).
 on:
   pull_request:
     branches: [main]
@@ -40,3 +44,9 @@ jobs:
 
       - name: no-console
         run: npx --yes tsx@4.22 backend/scripts/lint-no-console.ts
+
+      - name: no-internal-dynamic-import
+        run: npx --yes tsx@4.22 backend/scripts/lint-no-internal-dynamic-import.ts
+
+      - name: no-inline-500
+        run: npx --yes tsx@4.22 backend/scripts/lint-no-inline-500.ts

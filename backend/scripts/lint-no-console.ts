@@ -32,8 +32,6 @@ const ALLOWED_FILES = new Set(
     'backend/src/db/migrateSemanticToNeo4j.ts',
     // The logger itself.
     'backend/src/utils/logger.ts',
-    // Dead code — will be deleted in Phase 3.
-    'backend/src/utils/storage.ts',
   ].map((p) => p.split('/').join(sep)),
 );
 

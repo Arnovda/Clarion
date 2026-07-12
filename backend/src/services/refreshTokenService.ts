@@ -24,6 +24,7 @@ import type { Request } from 'express';
 import { semanticDb } from '../db/knex';
 import { unauthQuery } from '../db/unauthQuery';
 import { tenantScopedWrite } from '../db/tenantScopedWrite';
+import { setTenantContext } from '../db/tenantContext';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'refreshToken' });
@@ -89,7 +90,7 @@ export async function createRefreshToken(
   // some earlier authenticated request left with a different tenant
   // would silently fail the WITH CHECK and throw.
   await semanticDb.transaction(async (trx) => {
-    await trx.raw(`SET LOCAL app.current_tenant = '${Number(user.tenantId)}'`);
+    await setTenantContext(trx, user.tenantId);
     await trx('refresh_tokens').insert({
       tenant_id:         user.tenantId,
       user_id:           user.userId,
