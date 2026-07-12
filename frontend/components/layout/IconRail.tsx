@@ -11,6 +11,7 @@ import {
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 
 type Role = 'admin' | 'analyst' | 'viewer';
 // IA model (2026-06 redesign): the rail is business-first.
@@ -112,7 +113,7 @@ const NAV_DEFAULT_WIDTH   = 220;
 const NAV_MIN_WIDTH       = 180;
 const NAV_MAX_WIDTH       = 360;
 const NAV_COLLAPSED_WIDTH = 56;
-const STORAGE_KEY         = 'clarion:navRail';
+const STORAGE_KEY         = storageKeys.navRail;
 
 interface PersistedState {
   width: number;
@@ -137,7 +138,7 @@ export default function IconRail() {
   useEffect(() => {
     setPayload(getTokenPayload());
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const raw = getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<PersistedState>;
         if (typeof parsed.width === 'number' && parsed.width >= NAV_MIN_WIDTH && parsed.width <= NAV_MAX_WIDTH) {
@@ -166,9 +167,7 @@ export default function IconRail() {
   // overwrite the stored value with a default-state snapshot).
   useEffect(() => {
     if (!hydrated) return;
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ width, collapsed, openGroups } satisfies PersistedState));
-    } catch { /* ignore */ }
+    setItem(STORAGE_KEY, JSON.stringify({ width, collapsed, openGroups } satisfies PersistedState));
   }, [width, collapsed, openGroups, hydrated]);
 
   // Badge counts for analyst+

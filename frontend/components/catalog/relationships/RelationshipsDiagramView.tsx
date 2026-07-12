@@ -26,6 +26,7 @@ import FocusedClusterView from './FocusedClusterView';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
 import type { RelationshipRow } from './useSchema';
 import { cn } from '@/lib/cn';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 
 interface Props {
   connectionId:   number;
@@ -42,16 +43,13 @@ export default function RelationshipsDiagramView({
   // null = "all tables" (full schema). A number = focused table id.
   const [focusedId, setFocusedId] = useState<number | null>(null);
   // Rail collapsed (icons-only) vs expanded. Persists per-session.
-  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try { return window.localStorage.getItem('catalog:diagram:rail') === 'collapsed'; }
-    catch { return false; }
-  });
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(
+    () => getItem(storageKeys.catalogDiagramRail) === 'collapsed',
+  );
   const toggleRail = () => {
     setRailCollapsed((v) => {
       const next = !v;
-      try { window.localStorage.setItem('catalog:diagram:rail', next ? 'collapsed' : 'expanded'); }
-      catch { /* ignore */ }
+      setItem(storageKeys.catalogDiagramRail, next ? 'collapsed' : 'expanded');
       return next;
     });
   };

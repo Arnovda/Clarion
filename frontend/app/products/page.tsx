@@ -5,7 +5,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Database, X, ChevronRight, Plus, RefreshCw, ChevronDown, Wrench } from 'lucide-react';
 import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
-import { getToken } from '@/lib/auth';
+import { streamSSE, SSEHttpError } from '@/lib/sse';
+import { getItem, setItem, removeItem, storageKeys } from '@/lib/storage';
 import RequireRole from '@/components/RequireRole';
 import dynamic from 'next/dynamic';
 const QualityTab = dynamic(() => import('./QualityTab'), { ssr: false });
@@ -163,45 +164,19 @@ function ProductsPageInner() {
   // the work — only the live view of it.
   const attachToJob = useCallback(async (jobId: string) => {
     setBuildJobId(jobId);
-    localStorage.setItem('busMatrixJobId', jobId);
+    setItem(storageKeys.busMatrixJobId, jobId);
 
-    const token = getToken();
     const abortController = new AbortController();
     buildAbortRef.current = abortController;
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
-        method: 'GET',
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        signal: abortController.signal,
-      });
-
-      if (!response.ok) {
-        addBuildLog(`Error: stream returned ${response.status}`);
-        setBuildDone(true);
-        setBuilding(false);
-        localStorage.removeItem('busMatrixJobId');
-        return;
-      }
-
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
       let allOk = true;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
-
-        const lines = buffer.split('\n');
-        buffer = done ? '' : (lines.pop() ?? '');
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let event: Record<string, unknown>;
-          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; }
-          catch { continue; }
-
+      await streamSSE(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
+        method: 'GET',
+        signal: abortController.signal,
+        onEvent: (raw) => {
+          const event = raw as Record<string, unknown>;
           const type = event.type as string;
 
           if (type === 'phase') {
@@ -237,12 +212,12 @@ function ProductsPageInner() {
             setBuildSuccess(allOk);
             setBuildDone(true);
             setBuilding(false);
-            localStorage.removeItem('busMatrixJobId');
+            removeItem(storageKeys.busMatrixJobId);
 
             // Refresh product list
             setDetails(new Map());
             setKpis(new Map());
-            await loadProducts();
+            void loadProducts();
           } else if (type === 'failed') {
             const msg = event.error as string;
             const cancelled = msg && /cancel/i.test(msg);
@@ -250,20 +225,26 @@ function ProductsPageInner() {
             setBuildSuccess(false);
             setBuildDone(true);
             setBuilding(false);
-            localStorage.removeItem('busMatrixJobId');
-            await loadProducts();
+            removeItem(storageKeys.busMatrixJobId);
+            void loadProducts();
           } else if (type === 'error') {
             addBuildLog(`Error: ${event.message as string}`);
             setBuildDone(true);
             setBuilding(false);
-            localStorage.removeItem('busMatrixJobId');
+            removeItem(storageKeys.busMatrixJobId);
           }
-        }
-        if (done) break;
-      }
+        },
+      });
     } catch (err) {
       // AbortError means the user navigated away or cancelled — work continues server-side.
-      if ((err as { name?: string })?.name !== 'AbortError') {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        // fall through to finally
+      } else if (err instanceof SSEHttpError) {
+        addBuildLog(`Error: stream returned ${err.status}`);
+        setBuildDone(true);
+        setBuilding(false);
+        removeItem(storageKeys.busMatrixJobId);
+      } else {
         addBuildLog(`Stream error: ${(err as Error)?.message ?? 'unknown'}`);
         setBuildDone(true);
         setBuilding(false);
@@ -396,7 +377,7 @@ function ProductsPageInner() {
     let cancelled = false;
     (async () => {
       try {
-        const stored = typeof window !== 'undefined' ? localStorage.getItem('busMatrixJobId') : null;
+        const stored = getItem(storageKeys.busMatrixJobId);
         const res = await api.get('/products/bus-matrix/active');
         const active = res.data?.data as { jobId?: string; connectionId?: number; state?: string } | null;
         if (cancelled) return;
@@ -410,7 +391,7 @@ function ProductsPageInner() {
           await attachToJob(active.jobId);
         } else if (stored) {
           // Job finished server-side while we were away — nothing live to attach to.
-          localStorage.removeItem('busMatrixJobId');
+          removeItem(storageKeys.busMatrixJobId);
         }
       } catch { /* ignore */ }
     })();

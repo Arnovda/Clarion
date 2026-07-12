@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { X, Search, ChevronDown, ChevronUp } from 'lucide-react';
-import { getToken } from '../../../lib/auth';
+import { streamSSE } from '@/lib/sse';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -69,55 +69,32 @@ export function InvestigationPanel({
     abortRef.current = new AbortController();
 
     try {
-      const token = getToken();
-      const response = await fetch(`${BACKEND_URL}/api/dashboards/investigate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
+      await streamSSE(`${BACKEND_URL}/api/dashboards/investigate`, {
+        body: {
           connectionId,
           widgetTitle,
           widgetSql,
           widgetRows: widgetRows.slice(0, 20),
           question: question.trim(),
           filterValues,
-        }),
+        },
         signal: abortRef.current.signal,
+        onEvent: (raw) => {
+          const event = raw as Event;
+          if (event.type === 'status') setStatusText(event.text);
+          if (event.type === 'hypothesis') setHypothesis(event.text);
+          if (event.type === 'querying') {
+            setRunningLabels((prev) => new Set([...prev, event.label]));
+          }
+          if (event.type === 'result') {
+            setRunningLabels((prev) => { const s = new Set(prev); s.delete(event.label); return s; });
+            setQueryResults((prev) => [...prev, { label: event.label, rows: event.rows, error: event.error }]);
+          }
+          if (event.type === 'conclusion') setConclusion(event.text);
+          if (event.type === 'error') setFatalError(event.text);
+          if (event.type === 'done') setRunning(false);
+        },
       });
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response stream');
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const event = JSON.parse(line.slice(6)) as Event;
-            if (event.type === 'status') setStatusText(event.text);
-            if (event.type === 'hypothesis') setHypothesis(event.text);
-            if (event.type === 'querying') {
-              setRunningLabels((prev) => new Set([...prev, event.label]));
-            }
-            if (event.type === 'result') {
-              setRunningLabels((prev) => { const s = new Set(prev); s.delete(event.label); return s; });
-              setQueryResults((prev) => [...prev, { label: event.label, rows: event.rows, error: event.error }]);
-            }
-            if (event.type === 'conclusion') setConclusion(event.text);
-            if (event.type === 'error') setFatalError(event.text);
-            if (event.type === 'done') setRunning(false);
-          } catch { /* ignore malformed event */ }
-        }
-      }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') setFatalError('Investigation failed. Please try again.');
       setRunning(false);

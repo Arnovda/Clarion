@@ -5,12 +5,15 @@
  * investigate run without mounting the whole panel. Same protocol,
  * same SSE event shape (see investigationTypes.ts).
  *
- * The browser's EventSource doesn't support POST, so we use
- * `fetch(.., { body }).body.getReader()` and parse the data: lines
- * ourselves. Same approach as /query/think.
+ * Transport is the shared streamSSE helper (lib/sse.ts); this module
+ * keeps the investigation-specific error shaping: a non-OK response is
+ * surfaced as a synthetic 'failed' event (with the server's JSON error
+ * message when present) rather than a thrown error, and an abort (panel
+ * closed / unmount) returns quietly.
  */
 
 import api from '@/lib/api';
+import { streamSSE, SSEHttpError } from '@/lib/sse';
 import type { InvestigationSseEvent } from './investigationTypes';
 
 interface RunOpts {
@@ -25,57 +28,34 @@ interface RunOpts {
 
 export async function runInvestigation(opts: RunOpts): Promise<void> {
   const baseUrl = (api.defaults?.baseURL ?? '/api').replace(/\/$/, '');
-  const token = (typeof window !== 'undefined') ? localStorage.getItem('clarion_token') ?? '' : '';
-  const res = await fetch(`${baseUrl}/investigations`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      question: opts.question,
-      focus: opts.focus,
-      data_product_id: opts.dataProductId,
-      pulse_entry_id: opts.pulseEntryId,
-      brief_id: opts.briefId,
-    }),
-    signal: opts.signal,
-  });
-
-  if (!res.ok || !res.body) {
-    let reason = `HTTP ${res.status}`;
-    try { reason = (await res.json()).error ?? reason; } catch { /* ignore */ }
-    // We don't have an Investigation object yet at this stage — emit a
-    // failed event with a synthetic placeholder so the renderer can
-    // show the failure banner. The runtime cast keeps the union honest.
-    opts.onEvent({
-      type: 'failed',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      investigation: null as any,
-      reason,
+  try {
+    await streamSSE(`${baseUrl}/investigations`, {
+      body: {
+        question: opts.question,
+        focus: opts.focus,
+        data_product_id: opts.dataProductId,
+        pulse_entry_id: opts.pulseEntryId,
+        brief_id: opts.briefId,
+      },
+      signal: opts.signal,
+      onEvent: (evt) => opts.onEvent(evt as InvestigationSseEvent),
     });
-    return;
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const block = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      const dataLine = block.split('\n').find((l) => l.startsWith('data: '));
-      if (!dataLine) continue;
-      try {
-        const evt = JSON.parse(dataLine.slice(6)) as InvestigationSseEvent;
-        opts.onEvent(evt);
-      } catch { /* ignore malformed event */ }
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') return; // caller cancelled
+    if (err instanceof SSEHttpError) {
+      let reason = `HTTP ${err.status}`;
+      try { reason = JSON.parse(err.detail).error ?? reason; } catch { /* ignore */ }
+      // We don't have an Investigation object yet at this stage — emit a
+      // failed event with a synthetic placeholder so the renderer can
+      // show the failure banner. The runtime cast keeps the union honest.
+      opts.onEvent({
+        type: 'failed',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        investigation: null as any,
+        reason,
+      });
+      return;
     }
+    throw err; // network / stream errors propagate to the caller, as before
   }
 }

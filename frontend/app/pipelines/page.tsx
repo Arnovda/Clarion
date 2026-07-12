@@ -44,7 +44,7 @@ import { OBSERVATORY } from '@/lib/observatory';
 import RequireRole from '@/components/RequireRole';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
-import { getToken } from '@/lib/auth';
+import { streamSSE } from '@/lib/sse';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -1639,27 +1639,14 @@ function RunActivityDock({
   useEffect(() => { onCompletedRef.current = onCompleted; }, [onCompleted]);
 
   useEffect(() => {
-    let cancelled = false;
     const ctrl = new AbortController();
     (async () => {
       try {
-        const token = getToken();
-        const res = await fetch(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
-          headers: { Authorization: `Bearer ${token}` },
+        await streamSSE(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
+          method: 'GET',
           signal: ctrl.signal,
-        });
-        const reader = res.body!.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        while (!cancelled) {
-          const { done: d, value } = await reader.read();
-          if (value) buf += dec.decode(value, { stream: !d });
-          const lines = buf.split('\n');
-          buf = d ? '' : (lines.pop() ?? '');
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+          onEvent: (raw) => {
+              const ev = raw as Record<string, unknown>;
               const t = ev.type as string;
               if (t === 'phase') {
                 setLog((l) => [...l, { kind: 'phase', text: ev.text as string }]);
@@ -1749,13 +1736,11 @@ function RunActivityDock({
                 setLog((l) => [...l, { kind: 'error', text: `Error: ${ev.error}` }]);
                 onCompletedRef.current();
               }
-            } catch { /* skip malformed */ }
-          }
-          if (d) break;
-        }
-      } catch { /* aborted */ }
+          },
+        });
+      } catch { /* aborted / stream error — run continues server-side */ }
     })();
-    return () => { cancelled = true; ctrl.abort(); };
+    return () => { ctrl.abort(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId, updateNodeByName]);
 

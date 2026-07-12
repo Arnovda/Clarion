@@ -23,6 +23,7 @@ import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/dates';
 import { useRole, canCurate, isAdminRole } from '@/lib/role';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 import type {
   Connection,
   DataProduct,
@@ -126,16 +127,14 @@ export default function ProductRootPanel({
   const toast = useToast();
 
   useEffect(() => {
-    try {
-      const v = window.localStorage.getItem('product-detail:ai-panel-open');
-      if (v != null) setAiPanelOpen(v === '1');
-    } catch { /* ignore */ }
+    const v = getItem(storageKeys.productDetailAiPanel);
+    if (v != null) setAiPanelOpen(v === '1');
   }, []);
 
   const toggleAiPanel = useCallback(() => {
     setAiPanelOpen((prev) => {
       const next = !prev;
-      try { window.localStorage.setItem('product-detail:ai-panel-open', next ? '1' : '0'); } catch { /* ignore */ }
+      setItem(storageKeys.productDetailAiPanel, next ? '1' : '0');
       return next;
     });
   }, []);

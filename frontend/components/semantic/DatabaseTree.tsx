@@ -146,7 +146,7 @@ export default function DatabaseTree({
       }
     }
 
-    const dims: SharedDim[] = [...dimByName.entries()]
+    const dims: SharedDim[] = Array.from(dimByName.entries())
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([tableName, { best, bestProductId, products }]) => ({
         tableName,
@@ -162,7 +162,7 @@ export default function DatabaseTree({
       else { fMap.set(f.product.productId, { product: f.product, tables: [f.table] }); }
     }
 
-    return { sharedDimensions: dims, factsByProduct: [...fMap.values()] };
+    return { sharedDimensions: dims, factsByProduct: Array.from(fMap.values()) };
   }, [productTree]);
 
   const hasProducts = sharedDimensions.length > 0 || factsByProduct.length > 0;
@@ -356,7 +356,7 @@ export default function DatabaseTree({
                             {group.product.productName}
                           </span>
                         </div>
-                        {group.tables.map((table) => {
+                        {group.tables.map((table: ProductTable) => {
                           const isSelected = selectedProductTableId === table.id;
                           return (
                             <div

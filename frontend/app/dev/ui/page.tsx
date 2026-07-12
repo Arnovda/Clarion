@@ -21,7 +21,6 @@ import {
 } from '@/components/ui/ChartCard';
 import { AIResponseBlock } from '@/components/ui/AIResponseBlock';
 import { JobProgressBanner } from '@/components/ui/JobProgressBanner';
-import { NotificationBell } from '@/components/ui/NotificationBell';
 import { SourceCard } from '@/components/ui/SourceCard';
 import { OutlineRail } from '@/components/ui/OutlineRail';
 import { NotebookCell, AddCellMenu } from '@/components/ui/NotebookCell';
@@ -161,34 +160,6 @@ function CompositeSections() {
             ]}
           />
         </div>
-      </Section>
-
-      <Section eyebrow="15 · NotificationBell" title="NotificationBell">
-        <Row>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted">With items</span>
-            <NotificationBell
-              items={[
-                { id: 1, title: 'Ingestion finished',   body: 'orders · 1.28M rows',  time: '2 min ago' },
-                { id: 2, title: 'Quality alert: nulls', body: 'customers.email @ 4%', time: '1h ago'    },
-                { id: 3, title: 'Jan joined the team',  body: 'Now invited as Analyst', time: 'Yesterday', read: true },
-              ]}
-              onMarkAllRead={() => {}}
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted">Empty</span>
-            <NotificationBell items={[]} />
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted">Loading</span>
-            <NotificationBell loading items={[]} />
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted">Error</span>
-            <NotificationBell error="network unreachable" items={[]} />
-          </div>
-        </Row>
       </Section>
 
       <Section eyebrow="16 · SourceCard" title="SourceCard">

@@ -6,6 +6,8 @@ import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
+import { getToken } from '@/lib/auth';
+import { streamSSE, SSEHttpError } from '@/lib/sse';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1612,56 +1614,27 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
   useEffect(() => {
     if (!startStream || !connId) return;
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
+    const token = getToken();
     const abortCtrl = new AbortController();
 
     (async () => {
       try {
-        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/connections/${connId}/profile`, {
+        await streamSSE(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/connections/${connId}/profile`, {
           method: 'POST',
-          headers: {
-            'Accept': 'text/event-stream',
-            'Content-Type': 'application/json',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-          },
           signal: abortCtrl.signal,
+          onEvent: (evt) => {
+            if (evt.phase === 'done') {
+              setCurrentPhase('done');
+              setDoneMessage(evt.message ?? 'Analysis complete');
+              setFinished(true);
+            } else if (evt.phase === 'error') {
+              setError(evt.message ?? 'Profiling failed');
+            } else {
+              setCurrentPhase(evt.phase);
+              setMessage(evt.message);
+            }
+          },
         });
-
-        if (!res.ok || !res.body) {
-          let detail = `HTTP ${res.status}`;
-          try { detail = await res.text(); } catch { /* ignore */ }
-          console.error('[ProfilingBanner] stream failed:', res.status, detail);
-          setError(`Failed to start profiling stream (${res.status})`);
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-          const { done: streamDone, value } = await reader.read();
-          if (streamDone) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const evt = JSON.parse(line.slice(6));
-              if (evt.phase === 'done') {
-                setCurrentPhase('done');
-                setDoneMessage(evt.message ?? 'Analysis complete');
-                setFinished(true);
-              } else if (evt.phase === 'error') {
-                setError(evt.message ?? 'Profiling failed');
-              } else {
-                setCurrentPhase(evt.phase);
-                setMessage(evt.message);
-              }
-            } catch { /* skip unparseable */ }
-          }
-        }
         // Stream ended without explicit done/error — almost always means
         // Azure Container Apps' Envoy proxy cut the long-lived SSE
         // connection at its ~4 min timeout. The server-side profile is
@@ -1698,7 +1671,10 @@ function ProfilingBanner({ name, connId, onDismiss, startStream }: {
           }
         }
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
+        if (err instanceof SSEHttpError) {
+          console.error('[ProfilingBanner] stream failed:', err.status, err.detail);
+          setError(`Failed to start profiling stream (${err.status})`);
+        } else if ((err as Error).name !== 'AbortError') {
           // Same logic as the stream-ended branch — server-side might
           // still be running, prefer polling over a red error banner.
           setPollingFallback(true);

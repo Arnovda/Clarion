@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import api from '@/lib/api';
+import { streamSSE, SSEHttpError } from '@/lib/sse';
 
 interface SourceTable {
   table_name: string;
@@ -88,50 +89,19 @@ export default function IngestionWizard({
     setIngestionMessage(`Ingesting ${selected.size} table(s)...`);
     setTableResults([]);
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
     const abortCtrl = new AbortController();
     abortRef.current = abortCtrl;
 
     try {
-      const res = await fetch(
+      await streamSSE(
         `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/ingestion/ingest`,
         {
-          method: 'POST',
-          headers: {
-            'Accept': 'text/event-stream',
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({
+          body: {
             connectionId,
             tables: Array.from(selected),
-          }),
+          },
           signal: abortCtrl.signal,
-        },
-      );
-
-      if (!res.ok || !res.body) {
-        let detail = `HTTP ${res.status}`;
-        try { detail = await res.text(); } catch { /* ignore */ }
-        setError(`Ingestion failed: ${detail}`);
-        setStep('error');
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done: streamDone, value } = await reader.read();
-        if (streamDone) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const evt = JSON.parse(line.slice(6));
+          onEvent: (evt) => {
             if (evt.phase === 'done') {
               setStep('done');
               setIngestionMessage(evt.message ?? 'Ingestion complete');
@@ -153,11 +123,14 @@ export default function IngestionWizard({
                 ]);
               }
             }
-          } catch { /* skip */ }
-        }
-      }
+          },
+        },
+      );
     } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
+      if (err instanceof SSEHttpError) {
+        setError(`Ingestion failed: ${err.detail || `HTTP ${err.status}`}`);
+        setStep('error');
+      } else if ((err as Error).name !== 'AbortError') {
         setError('Connection to server lost');
         setStep('error');
       }

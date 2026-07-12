@@ -38,6 +38,7 @@ import type { CatalogId } from '@/lib/catalog';
 import { parseIdFromSlug } from '@/lib/catalog';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 import ProductCardGrid, { type ProductCardData } from '@/components/catalog/ProductCardGrid';
 import CatalogSplitView, { type SourceBlockData } from '@/components/catalog/CatalogSplitView';
 import GlossaryMatchCards, { type GlossaryEntry } from '@/components/catalog/GlossaryMatchCards';
@@ -49,9 +50,9 @@ type CardsLayout = 'grid' | 'list';
 
 interface Connection { id: number; name: string; domains?: string[]; }
 
-const VIEW_MODE_KEY    = 'catalog:viewMode';
-const LAYER_KEY        = 'catalog:layer';
-const CARDS_LAYOUT_KEY = 'catalog:cardsLayout';
+const VIEW_MODE_KEY    = storageKeys.catalogViewMode;
+const LAYER_KEY        = storageKeys.catalogLayer;
+const CARDS_LAYOUT_KEY = storageKeys.catalogCardsLayout;
 
 function CatalogInner() {
   const router = useRouter();
@@ -81,14 +82,12 @@ function CatalogInner() {
   const [viewMode, setViewMode] = useState<ViewMode>('cards');
   useEffect(() => {
     if (!canSeeStructure) return;  // viewers locked to cards
-    try {
-      const v = window.localStorage.getItem(VIEW_MODE_KEY);
-      if (v === 'cards' || v === 'structure') setViewMode(v);
-    } catch { /* ignore */ }
+    const v = getItem(VIEW_MODE_KEY);
+    if (v === 'cards' || v === 'structure') setViewMode(v);
   }, [canSeeStructure]);
   const updateViewMode = useCallback((next: ViewMode) => {
     setViewMode(next);
-    try { window.localStorage.setItem(VIEW_MODE_KEY, next); } catch { /* ignore */ }
+    setItem(VIEW_MODE_KEY, next);
   }, []);
 
   // ── Search (cards mode) ────────────────────────────────────────────────────
@@ -97,27 +96,23 @@ function CatalogInner() {
   // ── Browse layout: grid (rich cards) or list (compact rows, dScribe-style) ──
   const [cardsLayout, setCardsLayout] = useState<CardsLayout>('grid');
   useEffect(() => {
-    try {
-      const v = window.localStorage.getItem(CARDS_LAYOUT_KEY);
-      if (v === 'grid' || v === 'list') setCardsLayout(v);
-    } catch { /* ignore */ }
+    const v = getItem(CARDS_LAYOUT_KEY);
+    if (v === 'grid' || v === 'list') setCardsLayout(v);
   }, []);
   const updateCardsLayout = useCallback((next: CardsLayout) => {
     setCardsLayout(next);
-    try { window.localStorage.setItem(CARDS_LAYOUT_KEY, next); } catch { /* ignore */ }
+    setItem(CARDS_LAYOUT_KEY, next);
   }, []);
 
   // ── Layer filter (structure mode) ──────────────────────────────────────────
   const [layer, setLayer] = useState<LayerFilter>('all');
   useEffect(() => {
-    try {
-      const v = window.localStorage.getItem(LAYER_KEY);
-      if (v === 'sources' || v === 'products' || v === 'all') setLayer(v);
-    } catch { /* ignore */ }
+    const v = getItem(LAYER_KEY);
+    if (v === 'sources' || v === 'products' || v === 'all') setLayer(v);
   }, []);
   const updateLayer = useCallback((next: LayerFilter) => {
     setLayer(next);
-    try { window.localStorage.setItem(LAYER_KEY, next); } catch { /* ignore */ }
+    setItem(LAYER_KEY, next);
   }, []);
 
   // ── Selection state (shared between cards + structure modes) ──────────────

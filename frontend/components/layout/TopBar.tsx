@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { clearToken, getRefreshToken, getTokenPayload, TokenPayload } from '@/lib/auth';
 import api from '@/lib/api';
+import { removeSessionItem, storageKeys } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import NotificationBell from '../NotificationBell';
 import CommandPalette from './CommandPalette';
@@ -61,7 +62,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
   }
 
   async function signOut() {
-    sessionStorage.removeItem('clarion_tenant_name');
+    removeSessionItem(storageKeys.tenantName);
     // Revoke the refresh token server-side so logout actually invalidates
     // the session everywhere (not just clearing it from this browser).
     // Best-effort — if the API call fails, we still clear locally.

@@ -9,6 +9,8 @@ import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react'
 import { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
+import { streamSSE } from '@/lib/sse';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import { useToast } from '@/components/ui/Toast';
 import { useDebouncedCallback } from '@/lib/hooks/useDebounce';
@@ -164,19 +166,21 @@ export default function DashboardsPage() {
 
   // Hydrate the toggle from localStorage once on mount.
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = window.localStorage.getItem('clarion:fastMode');
-      if (stored === '1') setFastMode(true);
-    } catch { /* ignore */ }
+    if (getItem(storageKeys.fastMode) === '1') setFastMode(true);
   }, []);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem('clarion:fastMode', fastMode ? '1' : '0');
-    } catch { /* ignore */ }
+    setItem(storageKeys.fastMode, fastMode ? '1' : '0');
   }, [fastMode]);
+
+  // In-flight batch-execute SSE streams — aborted on unmount so a
+  // navigated-away dashboard doesn't keep a server stream (and state
+  // updates) alive in the background.
+  const sseControllersRef = useRef<Set<AbortController>>(new Set());
+  useEffect(() => {
+    const controllers = sseControllersRef.current;
+    return () => { controllers.forEach((c) => c.abort()); };
+  }, []);
 
   // ── Load saved dashboards ──────────────────────────────────────────────────
 
@@ -330,7 +334,7 @@ export default function DashboardsPage() {
       // to every non-source widget's SQL — no more dependency on the AI
       // having embedded `{{xf_<key>}}` placeholders. Legacy filterValues
       // entry is kept too so old saved dashboards still substitute.
-      const body = JSON.stringify({
+      const body = {
         connectionId: connId,
         widgets: widgetsPayload,
         ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
@@ -341,8 +345,7 @@ export default function DashboardsPage() {
               value: xFilter.value,
             } }
           : {}),
-      });
-      const token = typeof window !== 'undefined' ? localStorage.getItem('clarion_token') : null;
+      };
       const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
 
       // Collected widget results — fed into insights at the end. Mirrors
@@ -360,58 +363,25 @@ export default function DashboardsPage() {
         });
       };
 
+      const ctrl = new AbortController();
+      sseControllersRef.current.add(ctrl);
       try {
-        const res = await fetch(`${baseURL}/dashboards/batch-execute-stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'text/event-stream',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body,
-        });
-
-        if (!res.ok || !res.body) {
-          markAllAsError(res.statusText || 'Query failed');
-          return;
-        }
-
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-
-        // Parse SSE — events are separated by blank lines, each starting
-        // with "data: ". We accumulate partial chunks until we see "\n\n".
         // Each widget event updates that widget's state immediately so
         // fast widgets render as soon as their result lands.
-        const processEvent = (raw: string) => {
-          const line = raw.split('\n').find((l) => l.startsWith('data: '));
-          if (!line) return;
-          const payload = line.slice(6);
-          let evt: { type?: string; id?: string; rows?: Record<string, unknown>[]; error?: string };
-          try { evt = JSON.parse(payload); } catch { return; }
-          if (evt.type === 'widget' && evt.id) {
-            const data: WidgetData = evt.error
-              ? { rows: [], loading: false, error: evt.error }
-              : { rows: evt.rows ?? [], loading: false };
-            finalResults[evt.id] = evt.error ? { error: evt.error } : { rows: evt.rows ?? [] };
-            widgetCacheRef.current[evt.id] = data;
-            setWidgetData((prev) => ({ ...prev, [evt.id!]: data }));
-          }
-        };
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buf.indexOf('\n\n')) >= 0) {
-            const eventStr = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            if (eventStr.trim()) processEvent(eventStr);
-          }
-        }
+        await streamSSE(`${baseURL}/dashboards/batch-execute-stream`, {
+          body,
+          signal: ctrl.signal,
+          onEvent: (evt: { type?: string; id?: string; rows?: Record<string, unknown>[]; error?: string }) => {
+            if (evt.type === 'widget' && evt.id) {
+              const data: WidgetData = evt.error
+                ? { rows: [], loading: false, error: evt.error }
+                : { rows: evt.rows ?? [], loading: false };
+              finalResults[evt.id] = evt.error ? { error: evt.error } : { rows: evt.rows ?? [] };
+              widgetCacheRef.current[evt.id] = data;
+              setWidgetData((prev) => ({ ...prev, [evt.id!]: data }));
+            }
+          },
+        });
 
         // Fire insights once on first load (not on filter/drill changes).
         // Same behaviour as the old non-streaming path.
@@ -430,8 +400,11 @@ export default function DashboardsPage() {
             .finally(() => setInsightsLoading(false));
         }
       } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') return; // unmounted mid-stream
         const msg = err instanceof Error ? err.message : 'Query failed';
         markAllAsError(msg);
+      } finally {
+        sseControllersRef.current.delete(ctrl);
       }
     },
     [fastMode],

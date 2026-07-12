@@ -1,24 +1,24 @@
 'use client';
 
-const TOKEN_KEY         = 'clarion_token';
-const REFRESH_TOKEN_KEY = 'clarion_refresh_token';
+import { getItem, setItem, removeItem, storageKeys } from '@/lib/storage';
+
+const TOKEN_KEY         = storageKeys.token;
+const REFRESH_TOKEN_KEY = storageKeys.refreshToken;
 
 export function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(TOKEN_KEY);
+  return getItem(TOKEN_KEY);
 }
 
 export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
+  setItem(TOKEN_KEY, token);
 }
 
 export function getRefreshToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+  return getItem(REFRESH_TOKEN_KEY);
 }
 
 export function setRefreshToken(token: string): void {
-  localStorage.setItem(REFRESH_TOKEN_KEY, token);
+  setItem(REFRESH_TOKEN_KEY, token);
 }
 
 /**
@@ -30,8 +30,8 @@ export function setAuthTokens(accessToken: string, refreshToken: string): void {
 }
 
 export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  removeItem(TOKEN_KEY);
+  removeItem(REFRESH_TOKEN_KEY);
 }
 
 export function isAuthenticated(): boolean {

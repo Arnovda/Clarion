@@ -12,6 +12,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import api from '@/lib/api';
+import { streamSSE } from '@/lib/sse';
 import { SourceTable, SourceColumn, Relationship } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -748,38 +749,11 @@ function RelationshipPanel({ relationships, tables, columnsByTable, connectionId
     setReSuggesting(true);
     setReSuggestStatus('Starting…');
     try {
-      const token = localStorage.getItem('clarion_token');
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/semantic/relationships/re-suggest?connectionId=${connectionId}`, {
+      await streamSSE(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api'}/semantic/relationships/re-suggest?connectionId=${connectionId}`, {
         method: 'POST',
-        headers: {
-          'Accept': 'text/event-stream',
-          'Authorization': `Bearer ${token}`,
-        },
         signal: controller.signal,
+        onEvent: (evt) => setReSuggestStatus(evt.message ?? ''),
       });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      if (reader) {
-        let buffer = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              try {
-                const evt = JSON.parse(line.slice(6));
-                setReSuggestStatus(evt.message ?? '');
-              } catch { /* ignore parse errors */ }
-            }
-          }
-        }
-      }
 
       abortRef.current = null;
       await onReload();

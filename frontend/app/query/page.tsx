@@ -6,6 +6,8 @@ import { useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { getToken, getTokenPayload } from '@/lib/auth';
+import { streamSSE, SSEHttpError } from '@/lib/sse';
+import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { formatRelativeTime, getOverallFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
 import { X, Loader2, ArrowRight } from 'lucide-react';
 import { type DataSource } from './components';
@@ -119,6 +121,15 @@ function QueryPageInner() {
   const inputRef    = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
 
+  // In-flight SSE streams (/think + /repair) — aborted on unmount so a
+  // navigated-away chat doesn't keep streaming into dead state setters.
+  const thinkAbortRef  = useRef<AbortController | null>(null);
+  const repairAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    thinkAbortRef.current?.abort();
+    repairAbortRef.current?.abort();
+  }, []);
+
   useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'admin'); }, []);
 
   // Fetch data freshness info
@@ -177,9 +188,9 @@ function QueryPageInner() {
       if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
         const key = `c:${urlConnectionId}`;
         setSelectedSource(key);
-        localStorage.setItem('clarion_query_source', key);
+        setItem(storageKeys.querySource, key);
       } else {
-        const saved = localStorage.getItem('clarion_query_source');
+        const saved = getItem(storageKeys.querySource);
         if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
           setSelectedSource(saved);
         } else if (all.length > 0) {
@@ -442,39 +453,7 @@ function QueryPageInner() {
   }) {
     setRepairState({ forMessageId: params.messageId, events: [], isActive: true });
 
-    const token = getToken();
-    let response: Response;
-    try {
-      response = await fetch(`${BACKEND_URL}/api/query/repair`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          connectionId:        selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : 1,
-          question:            params.question,
-          originalSql:         params.originalSql,
-          originalRows:        params.originalRows,
-          warning:             params.warning,
-          conversationHistory: params.conversationHistory,
-          clarificationAnswer: params.clarificationAnswer,
-          ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
-        }),
-      });
-    } catch {
-      setRepairState((prev) => prev
-        ? { ...prev, isActive: false, events: [...prev.events, { kind: 'thinking', text: '⚠ Could not reach the backend. Please try again.' }] }
-        : null,
-      );
-      return;
-    }
-
-    const reader  = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffer    = '';
-
-    // Defined before the loop so it can be called from inside it cleanly
+    // Defined before the stream starts so it can be passed as the handler cleanly
     const handleEvent = (event: Record<string, unknown>) => {
       const type = event.type as string;
 
@@ -536,22 +515,32 @@ function QueryPageInner() {
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (value) buffer += decoder.decode(value, { stream: !done });
-
-      // When done=true keep ALL lines (no trailing pop); otherwise keep the last
-      // incomplete line in buffer for the next chunk
-      const lines = buffer.split('\n');
-      buffer = done ? '' : (lines.pop() ?? '');
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        try { handleEvent(JSON.parse(line.slice(6)) as Record<string, unknown>); }
-        catch { /* skip malformed line */ }
-      }
-
-      if (done) break;
+    const ctrl = new AbortController();
+    repairAbortRef.current = ctrl;
+    try {
+      await streamSSE(`${BACKEND_URL}/api/query/repair`, {
+        body: {
+          connectionId:        selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : 1,
+          question:            params.question,
+          originalSql:         params.originalSql,
+          originalRows:        params.originalRows,
+          warning:             params.warning,
+          conversationHistory: params.conversationHistory,
+          clarificationAnswer: params.clarificationAnswer,
+          ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+        },
+        signal: ctrl.signal,
+        onEvent: (event) => handleEvent(event as Record<string, unknown>),
+      });
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return; // unmounted mid-repair
+      setRepairState((prev) => prev
+        ? { ...prev, isActive: false, events: [...prev.events, { kind: 'thinking', text: '⚠ Could not reach the backend. Please try again.' }] }
+        : null,
+      );
+      return;
+    } finally {
+      if (repairAbortRef.current === ctrl) repairAbortRef.current = null;
     }
 
     setRepairState((prev) => prev ? { ...prev, isActive: false } : null);
@@ -851,55 +840,23 @@ function QueryPageInner() {
       }
 
       // Single-source: use the streaming /think endpoint
-      const token = getToken();
-      const response = await fetch(`${BACKEND_URL}/api/query/think`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          connectionId: sourceId,
-          question:     q,
-          ...(cid && cid > 0 ? { conversationId: cid } : {}),
-          ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
-          ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
-        }),
-      });
-
-      if (!response.ok || !response.body) {
-        const detail = await response.text().catch(() => '');
-        console.error('[chat] /think failed', { status: response.status, detail });
-        const friendly = response.status === 401
-          ? 'Your session expired. Please sign in again.'
-          : response.status >= 500
-            ? 'The server hit an error processing your question. Please try again in a moment.'
-            : `Could not run your question (HTTP ${response.status}). Please try again.`;
-        setMessages((prev) => [...prev, {
-          id: nextId.current++, role: 'assistant', text: friendly, error: true,
-        }]);
-        return;
-      }
-
-      const reader  = response.body.getReader();
-      const decoder = new TextDecoder();
-      let   buffer  = '';
       let   assistantId = -1;
       let   accumulatedThinking = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (value) buffer += decoder.decode(value, { stream: !done });
-
-        const lines = buffer.split('\n');
-        buffer = done ? '' : (lines.pop() ?? '');
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          let event: Record<string, unknown>;
-          try { event = JSON.parse(line.slice(6)) as Record<string, unknown>; }
-          catch { continue; }
-
+      const ctrl = new AbortController();
+      thinkAbortRef.current = ctrl;
+      try {
+        await streamSSE(`${BACKEND_URL}/api/query/think`, {
+          body: {
+            connectionId: sourceId,
+            question:     q,
+            ...(cid && cid > 0 ? { conversationId: cid } : {}),
+            ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+            ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+          },
+          signal: ctrl.signal,
+          onEvent: (raw) => {
+          const event = raw as Record<string, unknown>;
           const type = event.type as string;
 
           if (type === 'phase') {
@@ -964,9 +921,25 @@ function QueryPageInner() {
               errorStack: event.errorStack as string | undefined,
             }]);
           }
+          },
+        });
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return; // unmounted mid-stream
+        if (err instanceof SSEHttpError) {
+          console.error('[chat] /think failed', { status: err.status, detail: err.detail });
+          const friendly = err.status === 401
+            ? 'Your session expired. Please sign in again.'
+            : err.status >= 500
+              ? 'The server hit an error processing your question. Please try again in a moment.'
+              : `Could not run your question (HTTP ${err.status}). Please try again.`;
+          setMessages((prev) => [...prev, {
+            id: nextId.current++, role: 'assistant', text: friendly, error: true,
+          }]);
+          return;
         }
-
-        if (done) break;
+        throw err; // network / stream errors → generic handler below
+      } finally {
+        if (thinkAbortRef.current === ctrl) thinkAbortRef.current = null;
       }
 
     } catch {
