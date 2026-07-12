@@ -13,6 +13,8 @@ import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filter
 import { reqDb } from '../db/reqDb';
 import { logger } from '../utils/logger';
 
+const log = logger.child({ mod: 'dashboards' });
+
 const router = Router();
 
 // ---------------------------------------------------------------------------
@@ -370,7 +372,7 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       res.json({ ok: true, data: { rows: result.rows } });
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
-      console.warn('[dashboards/execute] Widget SQL error:', raw);
+      log.warn({ raw }, '[dashboards/execute] Widget SQL error');
       const friendly = raw.includes('does not exist')
         ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
         : raw.includes('Serialization')
@@ -465,8 +467,8 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
           } catch (err: unknown) {
             const raw = err instanceof Error ? err.message : String(err);
             // Log raw error + SQL for diagnosis (truncated to avoid log flood)
-            console.error(`[batch-execute] widget ${id} FAILED: ${raw.slice(0, 400)}`);
-            console.error(`[batch-execute] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
+            log.error(`[batch-execute] widget ${id} FAILED: ${raw.slice(0, 400)}`);
+            log.error(`[batch-execute] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
             const friendly = raw.includes('does not exist')
               ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
               : raw.includes('Serialization')
@@ -626,8 +628,8 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
           } catch (err: unknown) {
             if (aborted) return;
             const raw = err instanceof Error ? err.message : String(err);
-            console.error(`[batch-execute-stream] widget ${id} FAILED: ${raw.slice(0, 400)}`);
-            console.error(`[batch-execute-stream] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
+            log.error(`[batch-execute-stream] widget ${id} FAILED: ${raw.slice(0, 400)}`);
+            log.error(`[batch-execute-stream] widget ${id} SQL: ${resolvedSql.slice(0, 800)}`);
             const friendly = raw.includes('does not exist')
               ? 'This chart references data that is not yet available. Try regenerating the dashboard.'
               : raw.includes('Serialization')
@@ -866,8 +868,8 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
       });
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
-      console.error(`[drill-rows] FAILED: ${raw.slice(0, 400)}`);
-      console.error(`[drill-rows] SQL: ${resolvedSql.slice(0, 800)}`);
+      log.error(`[drill-rows] FAILED: ${raw.slice(0, 400)}`);
+      log.error(`[drill-rows] SQL: ${resolvedSql.slice(0, 800)}`);
       const friendly = raw.includes('does not exist')
         ? 'The underlying table is not available right now.'
         : 'Could not load source rows for this value.';
@@ -1002,7 +1004,7 @@ router.post('/cube', requireAuth, async (req: Request, res: Response, next: Next
           // gracefully — the widget's SQL will fail in WASM and the
           // frontend will fall back to the server for that widget.
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[cube] failed to materialise '${tableName}': ${msg.slice(0, 200)}`);
+          log.warn(`[cube] failed to materialise '${tableName}': ${msg.slice(0, 200)}`);
           continue;
         }
 
@@ -1109,7 +1111,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     const folder = req.query.folder as string | undefined;
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
 
-    console.log(`[dashboards GET /] userId=${userId} tenantId=${tenantId} folder=${folder ?? 'none'} NEW_CODE_V2`);
+    log.info(`GET / userId=${userId} tenantId=${tenantId} folder=${folder ?? 'none'} NEW_CODE_V2`);
 
     // Wrap in a transaction with SET LOCAL tenant so RLS consistently applies
     // (session-level SET from auth middleware can be lost across pool connections).
@@ -1141,7 +1143,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
       return { total: count, rows: selected };
     });
 
-    console.log(`[dashboards GET /] returned ${rows.length} rows (total=${total}) for userId=${userId} tenantId=${tenantId}`);
+    log.info(`GET / returned ${rows.length} rows (total=${total}) for userId=${userId} tenantId=${tenantId}`);
 
     const tagged = rows.map((r: Record<string, unknown>) => {
       const isOwner = Number(r.user_id) === Number(userId);
@@ -1966,8 +1968,7 @@ router.post('/widget-context', requireAuth, async (req: Request, res: Response, 
       const { explainSqlInPlainEnglish } = await import('../ai/AIService');
       plainEnglish = await explainSqlInPlainEnglish(title, sql, tableContext || undefined);
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('[widget-context] explainSqlInPlainEnglish failed:', err);
+      log.warn({ err }, '[widget-context] explainSqlInPlainEnglish failed');
     }
 
     res.json({

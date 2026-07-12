@@ -6,6 +6,9 @@
  */
 
 import IORedis from 'ioredis';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'redis' });
 
 let _connection: IORedis | null = null;
 
@@ -14,7 +17,7 @@ export function getRedisConnection(): IORedis | null {
 
   const url = process.env.REDIS_URL;
   if (!url) {
-    console.log('[jobs] REDIS_URL not set — job queues disabled, using inline execution');
+    log.info('REDIS_URL not set — job queues disabled, using inline execution');
     return null;
   }
 
@@ -24,11 +27,11 @@ export function getRedisConnection(): IORedis | null {
   });
 
   _connection.on('error', (err) => {
-    console.error('[jobs] Redis connection error:', err.message);
+    log.error({ err }, 'Redis connection error');
   });
 
   _connection.on('connect', () => {
-    console.log('[jobs] Redis connected');
+    log.info('Redis connected');
   });
 
   return _connection;

@@ -167,6 +167,8 @@ export type SqlDialect = 'sqlite' | 'duckdb';
 
 import { logger } from '../utils/logger';
 import { trackMetric, trackEvent } from '../utils/monitoring';
+
+const log = logger.child({ mod: 'AIService' });
 import {
   getTenantAiContext,
   checkTenantAiBudget,
@@ -781,8 +783,7 @@ async function draftOneBatch(
     // bubbles up — at that point the table is genuinely too wide for
     // a single Claude call and a different strategy is needed.
     if (batch.length === 1) throw err;
-    // eslint-disable-next-line no-console
-    console.warn(`[AIService] schema draft JSON parse failed for ${batch.length}-table batch; splitting and retrying`, err instanceof Error ? err.message : err);
+    log.warn({ err }, `schema draft JSON parse failed for ${batch.length}-table batch; splitting and retrying`);
     const mid = Math.ceil(batch.length / 2);
     const left = batch.slice(0, mid);
     const right = batch.slice(mid);
@@ -817,7 +818,7 @@ export async function detectSchemaConventions(
     );
     return parseJson<SchemaConventions>(raw);
   } catch (err) {
-    console.warn('[AIService] detectSchemaConventions failed (non-fatal):', err);
+    log.warn({ err }, 'detectSchemaConventions failed (non-fatal)');
     return null;
   }
 }
@@ -875,10 +876,10 @@ export async function generateColumnDescriptions(
       // If the batch is too wide and Claude truncates, fall back to halving.
       // Reuse the same recursive split as draftOneBatch.
       if (batch.length === 1) {
-        console.warn(`[AIService] column descriptions failed for single-table batch ${batch[0].tableName}:`, err);
+        log.warn({ err }, `column descriptions failed for single-table batch ${batch[0].tableName}`);
         continue;
       }
-      console.warn(`[AIService] column descriptions JSON parse failed for ${batch.length}-table batch; splitting`);
+      log.warn(`column descriptions JSON parse failed for ${batch.length}-table batch; splitting`);
       const mid = Math.ceil(batch.length / 2);
       for (const sub of [batch.slice(0, mid), batch.slice(mid)]) {
         const sub2Stats = qualityStats.filter((s) => sub.some((t) => t.tableName === s.table_name));
@@ -891,7 +892,7 @@ export async function generateColumnDescriptions(
           const part = parseJson<ColumnDescriptionsOutput>(raw);
           merged.columns.push(...part.columns);
         } catch (err2) {
-          console.warn(`[AIService] column descriptions sub-batch failed:`, err2);
+          log.warn({ err: err2 }, `column descriptions sub-batch failed`);
         }
       }
     }
@@ -963,18 +964,18 @@ ${dimensionTables.map((t) => `  ${t.tableName} (${t.role}): columns = ${t.column
 
 Which unmatched columns are business keys to which dimension columns?`;
 
-  console.log(`[FK AI] Asking Claude to match ${unmatchedColumns.length} unmatched key column(s) against ${dimensionTables.length} dimension table(s)…`);
+  log.info(`[FK AI] Asking Claude to match ${unmatchedColumns.length} unmatched key column(s) against ${dimensionTables.length} dimension table(s)…`);
   try {
     // temperature 0: same unmatched columns + dimension tables → same FK suggestions.
     const raw = await callClaude(FK_SUGGESTION_SYSTEM, userPrompt, { maxTokens: 4096, temperature: 0, kind: 'row' });
     const result = parseJson<{ suggestions: AiFkSuggestion[] }>(raw);
-    console.log(`[FK AI] Claude suggested ${result.suggestions.length} match(es):`);
+    log.info(`[FK AI] Claude suggested ${result.suggestions.length} match(es):`);
     for (const s of result.suggestions) {
-      console.log(`[FK AI]   ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: ${s.reasoning}`);
+      log.info(`[FK AI]   ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: ${s.reasoning}`);
     }
     return result.suggestions;
   } catch (err) {
-    console.warn('[FK AI] suggestion call failed:', err);
+    log.warn({ err }, '[FK AI] suggestion call failed');
     return [];
   }
 }

@@ -1,4 +1,7 @@
 import neo4j, { Driver, Session } from 'neo4j-driver';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'neo4j' });
 
 let _driver: Driver | null = null;
 
@@ -91,15 +94,15 @@ export async function ensureNeo4jConstraints(): Promise<void> {
       for (const cypher of indexes) {
         await session.run(cypher);
       }
-      console.log('Neo4j constraints verified.');
+      log.info('Neo4j constraints verified.');
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (attempt < maxAttempts) {
-        console.log(`Neo4j not ready yet (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in 3s…`);
+        log.info(`Neo4j not ready yet (attempt ${attempt}/${maxAttempts}): ${msg} — retrying in 3s…`);
         await new Promise(r => setTimeout(r, 3000));
       } else {
-        console.error('Neo4j failed to become ready after all retries:', msg);
+        log.error({ msg }, 'Neo4j failed to become ready after all retries');
         // Non-fatal — app can still start; Neo4j writes will fail gracefully.
       }
     } finally {

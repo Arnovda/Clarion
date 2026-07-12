@@ -261,19 +261,19 @@ if (!process.env.VITEST) {
   const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Clarion backend running');
     // Start Neo4j constraint setup in the background — non-blocking.
-    ensureNeo4jConstraints().catch(err => console.error('Neo4j constraint setup error:', err));
+    ensureNeo4jConstraints().catch(err => logger.error({ err }, 'Neo4j constraint setup error'));
     // Start BullMQ workers (no-op if Redis not configured)
     startWorkers();
     // Load scheduled transformations from DB into BullMQ
-    loadSchedules().catch(err => console.error('Schedule loading error:', err));
+    loadSchedules().catch(err => logger.error({ err }, 'Schedule loading error'));
     // Load email report schedules from DB into BullMQ
-    loadEmailSchedules().catch(err => console.error('Email schedule loading error:', err));
+    loadEmailSchedules().catch(err => logger.error({ err }, 'Email schedule loading error'));
     // Load connection sync schedules from DB into BullMQ
-    loadConnectionSyncSchedules().catch(err => console.error('Connection sync schedule loading error:', err));
+    loadConnectionSyncSchedules().catch(err => logger.error({ err }, 'Connection sync schedule loading error'));
     // Load pipeline cron triggers from DB into BullMQ. on-source-sync
     // triggers are evaluated in-process in SyncOrchestrator; nothing to
     // pre-load for those.
-    loadPipelineSchedules().catch(err => console.error('Pipeline schedule loading error:', err));
+    loadPipelineSchedules().catch(err => logger.error({ err }, 'Pipeline schedule loading error'));
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
@@ -287,7 +287,7 @@ if (!process.env.VITEST) {
             profiling_message: 'Profiling was interrupted by a server restart',
             profiling_progress: 0,
           });
-        if (stale > 0) console.log(`[startup] Reset ${stale} stale profiling job(s)`);
+        if (stale > 0) logger.info(`[startup] Reset ${stale} stale profiling job(s)`);
 
         // Same treatment for product_tables: any row pinned to 'running' at
         // startup must be from a previous worker that died mid-transformation.
@@ -298,7 +298,7 @@ if (!process.env.VITEST) {
             last_run_at: new Date().toISOString(),
             last_run_error: 'Run interrupted by worker restart',
           });
-        if (staleTables > 0) console.log(`[startup] Reset ${staleTables} stuck product_table run(s)`);
+        if (staleTables > 0) logger.info(`[startup] Reset ${staleTables} stuck product_table run(s)`);
 
         // Also close out any transformation_runs left in 'running' state.
         const staleRuns = await semanticDb('transformation_runs')
@@ -308,7 +308,7 @@ if (!process.env.VITEST) {
             error_message: 'Run interrupted by worker restart',
             finished_at: new Date(),
           });
-        if (staleRuns > 0) console.log(`[startup] Closed ${staleRuns} orphaned transformation run(s)`);
+        if (staleRuns > 0) logger.info(`[startup] Closed ${staleRuns} orphaned transformation run(s)`);
 
         // Source-connector syncs (ExactOnline, Odoo, …): a worker that died
         // between status='running' and a terminal update leaves the row
@@ -325,7 +325,7 @@ if (!process.env.VITEST) {
             error_message: 'Sync was interrupted by a server restart',
           });
         if (staleSyncs > 0) {
-          console.log(`[startup] Closed ${staleSyncs} interrupted source sync run(s)`);
+          logger.info(`[startup] Closed ${staleSyncs} interrupted source sync run(s)`);
           // Keep the connection's denormalised status in step with the runs.
           await semanticDb('connections')
             .whereIn('last_sync_status', ['queued', 'running'])
@@ -343,7 +343,7 @@ if (!process.env.VITEST) {
           .whereNull('transformation_sql')
           .where((qb) => qb.whereNull('is_shared_dimension').orWhere('is_shared_dimension', false))
           .update({ is_shared_dimension: true });
-        if (flagged > 0) console.log(`[startup] Backfilled is_shared_dimension=true on ${flagged} dim_date stub row(s)`);
+        if (flagged > 0) logger.info(`[startup] Backfilled is_shared_dimension=true on ${flagged} dim_date stub row(s)`);
 
         // One-time repair for the inverted is_shared_dimension flag. Older
         // bus-matrix builds inserted OWNED dims with is_shared_dimension=true
@@ -360,7 +360,7 @@ if (!process.env.VITEST) {
           .where('transformation_sql', '!=', '')
           .update({ is_shared_dimension: false });
         if (repaired > 0) {
-          console.log(
+          logger.info(
             `[startup] Repaired is_shared_dimension flag on ${repaired} owned ` +
             `dim row(s) (had non-null SQL but were flagged as stubs). ` +
             `Re-run the refresh pipeline to materialise their parquet.`,
@@ -374,7 +374,7 @@ if (!process.env.VITEST) {
       try {
         const { autoApproveAllTenants } = await import('./services/autoApproveService');
         const count = await autoApproveAllTenants();
-        if (count > 0) console.log(`[startup] Auto-approved ${count} stale AI draft(s)`);
+        if (count > 0) logger.info(`[startup] Auto-approved ${count} stale AI draft(s)`);
       } catch { /* non-fatal */ }
     }, 30_000);
 
@@ -391,7 +391,7 @@ if (!process.env.VITEST) {
             ingestion_status: 'error',
             ingestion_error: 'Ingestion timed out (>30 minutes)',
           });
-        if (staleIngestion > 0) console.log(`[cleanup] Marked ${staleIngestion} stale ingestion(s) as failed`);
+        if (staleIngestion > 0) logger.info(`[cleanup] Marked ${staleIngestion} stale ingestion(s) as failed`);
 
         const staleProfiling = await semanticDb('connections')
           .where('profiling_status', 'running')
@@ -403,7 +403,7 @@ if (!process.env.VITEST) {
             profiling_message: 'Profiling timed out (>30 minutes)',
             profiling_progress: 0,
           });
-        if (staleProfiling > 0) console.log(`[cleanup] Marked ${staleProfiling} stale profiling job(s) as failed`);
+        if (staleProfiling > 0) logger.info(`[cleanup] Marked ${staleProfiling} stale profiling job(s) as failed`);
 
         // Source-connector syncs stuck >30min. Mirrors the ingestion/profiling
         // reaper. Without this a worker that hangs (no terminal event, no
@@ -420,7 +420,7 @@ if (!process.env.VITEST) {
             error_message: 'Sync timed out (>30 minutes)',
           });
         if (staleSyncRuns > 0) {
-          console.log(`[cleanup] Marked ${staleSyncRuns} stale source sync run(s) as failed`);
+          logger.info(`[cleanup] Marked ${staleSyncRuns} stale source sync run(s) as failed`);
           await semanticDb('connections')
             .whereIn('last_sync_status', ['queued', 'running'])
             .whereRaw(`NOT EXISTS (
@@ -439,7 +439,7 @@ if (!process.env.VITEST) {
           .whereIn('status', ['succeeded', 'failed', 'cancelled'])
           .whereRaw(`COALESCE(completed_at, queued_at) < NOW() - (? * INTERVAL '1 day')`, [SYNC_RUN_RETENTION_DAYS])
           .del();
-        if (prunedSyncRuns > 0) console.log(`[cleanup] Pruned ${prunedSyncRuns} source sync run(s) older than ${SYNC_RUN_RETENTION_DAYS}d`);
+        if (prunedSyncRuns > 0) logger.info(`[cleanup] Pruned ${prunedSyncRuns} source sync run(s) older than ${SYNC_RUN_RETENTION_DAYS}d`);
       } catch { /* non-fatal */ }
     }, 5 * 60 * 1000);
   });

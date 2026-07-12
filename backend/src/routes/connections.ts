@@ -25,6 +25,8 @@ import { validate } from '../middleware/validate';
 import { testConnectionSchema, createConnectionSchema, updateConnectionSchema } from '../middleware/schemas';
 import { logger } from '../utils/logger';
 
+const log = logger.child({ mod: 'connections' });
+
 const router = Router();
 
 // POST /api/connections/test — test a source connection without saving it
@@ -621,19 +623,19 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
     try {
       let connectorOverride;
       if (connection.query_engine === 'duckdb' && connection.warehouse_path) {
-        console.log(`[Profile] Connection ${connectionId}: using DuckDB connector (warehouse: ${connection.warehouse_path})`);
+        log.info(`[Profile] Connection ${connectionId}: using DuckDB connector (warehouse: ${connection.warehouse_path})`);
         connectorOverride = await createConnector(connection);
         await connectorOverride.connect();
-        console.log(`[Profile] Connection ${connectionId}: DuckDB connected successfully`);
+        log.info(`[Profile] Connection ${connectionId}: DuckDB connected successfully`);
       } else {
-        console.log(`[Profile] Connection ${connectionId}: using source connector (type: ${connection.type})`);
+        log.info(`[Profile] Connection ${connectionId}: using source connector (type: ${connection.type})`);
         connectorOverride = createSourceConnector(connection);
         await connectorOverride.connect();
-        console.log(`[Profile] Connection ${connectionId}: source connector connected`);
+        log.info(`[Profile] Connection ${connectionId}: source connector connected`);
       }
 
       const result = await runSchemaProfiler(connection.id, (p) => {
-        console.log(`[Profile] Connection ${connectionId}: ${p.phase} — ${p.message}`);
+        log.info(`[Profile] Connection ${connectionId}: ${p.phase} — ${p.message}`);
         emit(p);
         persistProgress(p);
       }, connectorOverride);
@@ -649,7 +651,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Profiling failed';
-      console.error(`[Profile] Connection ${connectionId} profiling failed:`, err);
+      log.error({ err }, `[Profile] Connection ${connectionId} profiling failed`);
       emit({ phase: 'error', message: errMsg });
       // Use a fresh tenantScopedWrite for the "mark errored" update —
       // the request trx may already be poisoned by the upstream failure,
@@ -664,7 +666,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
             }),
           );
         } catch (markErr) {
-          console.error('[Profile] failed to mark profiling errored', markErr);
+          log.error({ err: markErr }, '[Profile] failed to mark profiling errored');
         }
       }
     }
@@ -704,7 +706,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
             }),
           );
         } catch (markErr) {
-          console.error('[Profile] failed to mark profiling errored', markErr);
+          log.error({ err: markErr }, '[Profile] failed to mark profiling errored');
         }
       }
       res.status(500).json({ ok: false, error: errMsg });
@@ -919,7 +921,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
         const resolved = await listProductTables(tenantId, dp.id);
         for (const t of resolved) if (t.uri) productWarehouseUris.add(t.uri);
       } catch (err) {
-        console.warn(`[connections.delete] catalog lookup for product=${dp.id} failed`, err);
+        log.warn({ err }, `[connections.delete] catalog lookup for product=${dp.id} failed`);
       }
       // Also the v2 product directory + v1 slug-based directory, same
       // as the product DELETE route. Catches v2 deployments where the
@@ -970,15 +972,15 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 
     const allUris = [connWarehouseDir, ...productWarehouseUris];
     const warehouseResult = await deleteWarehousePaths(allUris);
-    console.log(
-      `[connections] connection=${id} deleted ${warehouseResult.deleted} warehouse file(s) ` +
+    log.info(
+      `connection=${id} deleted ${warehouseResult.deleted} warehouse file(s) ` +
       `(${warehouseResult.kind}) from ${allUris.length} candidate path(s) ` +
       `(${dependentProducts.length} dependent product(s) cascade-cleaned)`,
     );
     if (warehouseResult.errors.length > 0) {
-      console.warn(
-        `[connections] connection=${id} warehouse cleanup had ${warehouseResult.errors.length} errors:`,
-        warehouseResult.errors.slice(0, 5),
+      log.warn(
+        { errors: warehouseResult.errors.slice(0, 5) },
+        `connection=${id} warehouse cleanup had ${warehouseResult.errors.length} errors`,
       );
     }
 

@@ -15,6 +15,9 @@ import type {
   ProductSummary,
   RefineChange,
 } from '../ai/prompts/refineProductPrompt';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'products' });
 
 const router = Router();
 
@@ -1248,7 +1251,7 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
         if (t.uri) urisToDelete.add(t.uri);
       }
     } catch (err) {
-      console.warn('[products.delete] catalog lookup failed; falling back to layout-based paths', err);
+      log.warn({ err }, '[products.delete] catalog lookup failed; falling back to layout-based paths');
     }
 
     // (2) Expected v2 product directory. Stable across renames.
@@ -1262,13 +1265,13 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
 
     const warehouseDeleteResult = await deleteWarehousePaths(Array.from(urisToDelete));
     if (warehouseDeleteResult.errors.length > 0) {
-      console.warn(
-        `[products.delete] product=${productId} warehouse cleanup had ${warehouseDeleteResult.errors.length} errors:`,
-        warehouseDeleteResult.errors.slice(0, 5),
+      log.warn(
+        { errors: warehouseDeleteResult.errors.slice(0, 5) },
+        `[products.delete] product=${productId} warehouse cleanup had ${warehouseDeleteResult.errors.length} errors`,
       );
     }
-    console.log(
-      `[products] product=${productId} deleted ${warehouseDeleteResult.deleted} warehouse file(s) ` +
+    log.info(
+      `product=${productId} deleted ${warehouseDeleteResult.deleted} warehouse file(s) ` +
       `(${warehouseDeleteResult.kind}) from ${urisToDelete.size} candidate path(s)`,
     );
 
@@ -1417,7 +1420,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
         }
       }
     } catch (depErr) {
-      console.warn('[products/design-stream] Could not load dependency dims:', depErr);
+      log.warn({ err: depErr }, '[products/design-stream] Could not load dependency dims');
     }
 
     const fullSourceContext = sharedDimsContext
@@ -1633,7 +1636,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     emit({ type: 'done' });
     res.end();
   } catch (err: unknown) {
-    console.error('[products/design-stream] Error:', err);
+    log.error({ err }, '[products/design-stream] Error');
     // Mark the product as errored in a FRESH transaction. The request
     // trx (`db`) may already be poisoned by whatever blew up upstream
     // (Postgres rejects every statement in a failed trx with 25P02);
@@ -1650,7 +1653,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
           }),
         );
       } catch (markErr) {
-        console.error('[products/design-stream] failed to mark errored', markErr);
+        log.error({ err: markErr }, '[products/design-stream] failed to mark errored');
       }
     }
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Design failed. Please try again.' });
@@ -1885,7 +1888,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
           }),
         );
       } catch (markErr) {
-        console.error('[products] failed to mark errored', markErr);
+        log.error({ err: markErr }, 'failed to mark errored');
       }
     }
     next(err);
@@ -3150,22 +3153,22 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
   res.setHeader('X-Accel-Buffering', 'no'); // disable any proxy buffering
   res.flushHeaders();
 
-  console.log(`[${reqId}] bus-matrix-stream START (connectionId=${(req.body as { connectionId?: number })?.connectionId})`);
+  log.info(`[${reqId}] bus-matrix-stream START (connectionId=${(req.body as { connectionId?: number })?.connectionId})`);
 
   let clientDisconnected = false;
   req.on('close', () => {
     clientDisconnected = true;
-    console.warn(`[${reqId}] CLIENT DISCONNECTED after ${Date.now() - startTs}ms`);
+    log.warn(`[${reqId}] CLIENT DISCONNECTED after ${Date.now() - startTs}ms`);
   });
 
   const emit = (data: Record<string, unknown>) => {
     try {
       const written = res.write(`data: ${JSON.stringify(data)}\n\n`);
       if (!written) {
-        console.warn(`[${reqId}] res.write returned false (backpressure) type=${data.type as string}`);
+        log.warn(`[${reqId}] res.write returned false (backpressure) type=${data.type as string}`);
       }
     } catch (err) {
-      console.error(`[${reqId}] res.write failed type=${data.type as string}:`, err instanceof Error ? err.message : err);
+      log.error({ err }, `[${reqId}] res.write failed type=${data.type as string}`);
     }
   };
 
@@ -3218,7 +3221,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
         relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
       }
     } catch (err) {
-      console.warn(`[${reqId}] Failed to load Neo4j relationships:`, err instanceof Error ? err.message : err);
+      log.warn({ err }, `[${reqId}] Failed to load Neo4j relationships`);
     }
 
     const sourceContext = tablesText + relationshipsText;
@@ -3245,27 +3248,27 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
           else if (type === 'diag') emit({ type: 'diag', text: delta });
         },
       );
-      console.log(`[${reqId}] AI call completed in ${Date.now() - aiStart}ms`);
+      log.info(`[${reqId}] AI call completed in ${Date.now() - aiStart}ms`);
     } catch (aiErr) {
       if (keepaliveInterval) clearInterval(keepaliveInterval);
       const msg = aiErr instanceof Error ? aiErr.message : 'AI call failed';
-      console.error(`[${reqId}] AI call FAILED after ${Date.now() - aiStart}ms:`, msg, aiErr instanceof Error ? aiErr.stack : '');
+      log.error({ err: aiErr }, `[${reqId}] AI call FAILED after ${Date.now() - aiStart}ms: ${msg}`);
       emit({ type: 'error', message: `AI design failed: ${msg}` });
       res.end();
       return;
     }
 
     if (keepaliveInterval) clearInterval(keepaliveInterval);
-    console.log(`[${reqId}] Emitting 'done' (total ${Date.now() - startTs}ms, dims=${busMatrix.conformed_dimensions?.length ?? 0}, facts=${busMatrix.fact_tables?.length ?? 0})`);
+    log.info(`[${reqId}] Emitting 'done' (total ${Date.now() - startTs}ms, dims=${busMatrix.conformed_dimensions?.length ?? 0}, facts=${busMatrix.fact_tables?.length ?? 0})`);
     emit({ type: 'done', busMatrix });
   } catch (err) {
     if (keepaliveInterval) clearInterval(keepaliveInterval);
-    console.error(`[${reqId}] Outer error after ${Date.now() - startTs}ms:`, err instanceof Error ? err.message : err, err instanceof Error ? err.stack : '');
+    log.error({ err }, `[${reqId}] Outer error after ${Date.now() - startTs}ms`);
     try {
       emit({ type: 'error', message: err instanceof Error ? err.message : 'Bus matrix design failed' });
     } catch { /* response already closed */ }
   }
-  console.log(`[${reqId}] res.end() (total ${Date.now() - startTs}ms, clientDisconnected=${clientDisconnected})`);
+  log.info(`[${reqId}] res.end() (total ${Date.now() - startTs}ms, clientDisconnected=${clientDisconnected})`);
   res.end();
 });
 
@@ -3294,7 +3297,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
     const { recoverIncompleteBusMatrix } = await import('../services/busMatrixBuilder');
     const recovery = recoverIncompleteBusMatrix(busMatrix);
     if (recovery.recovered) {
-      console.log(`[${reqId}] bus matrix truncation recovered: ${recovery.notes.join('; ')}`);
+      log.info(`[${reqId}] bus matrix truncation recovered: ${recovery.notes.join('; ')}`);
     }
     const validationErrors: string[] = [];
     if (!Array.isArray(busMatrix.conformed_dimensions)) validationErrors.push('conformed_dimensions missing or not an array');
@@ -3320,10 +3323,10 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       if (!f.transformation_sql) validationErrors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql missing`);
     });
 
-    console.log(`[${reqId}] build-bus-matrix START: ${busMatrix.conformed_dimensions?.length ?? 0} dims, ${busMatrix.fact_tables?.length ?? 0} facts, ${busMatrix.data_products?.length ?? 0} products, ${validationErrors.length} validation errors`);
+    log.info(`[${reqId}] build-bus-matrix START: ${busMatrix.conformed_dimensions?.length ?? 0} dims, ${busMatrix.fact_tables?.length ?? 0} facts, ${busMatrix.data_products?.length ?? 0} products, ${validationErrors.length} validation errors`);
 
     if (validationErrors.length > 0) {
-      console.error(`[${reqId}] bus matrix failed validation:`, validationErrors.slice(0, 20));
+      log.error({ validationErrors: validationErrors.slice(0, 20) }, `[${reqId}] bus matrix failed validation`);
       res.status(400).json({
         ok: false,
         error: 'Bus matrix is incomplete — the AI output was likely truncated. Retry the design.',
@@ -3432,7 +3435,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       for (const dimName of dp.owned_dimensions) {
         const dim = dimByName.get(dimName);
         if (!dim) {
-          console.warn(`[build-bus-matrix] Product "${dp.name}": owned dimension "${dimName}" not found in conformed_dimensions — skipping`);
+          log.warn(`[build-bus-matrix] Product "${dp.name}": owned dimension "${dimName}" not found in conformed_dimensions — skipping`);
           continue;
         }
 
@@ -3494,7 +3497,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       for (const factName of dp.fact_tables) {
         const fact = factByName.get(factName);
         if (!fact) {
-          console.warn(`[build-bus-matrix] Product "${dp.name}": fact table "${factName}" not found in fact_tables — skipping`);
+          log.warn(`[build-bus-matrix] Product "${dp.name}": fact table "${factName}" not found in fact_tables — skipping`);
           continue;
         }
 
@@ -3690,19 +3693,19 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
       // Count tables actually inserted for this product
       const tableCount = await trx('product_tables').where({ star_schema_id: schemaId }).count('id as count').first();
       const count = Number(tableCount?.count ?? 0);
-      console.log(`[build-bus-matrix] Product "${dp.name}" (id=${pid}): ${count} tables created (owned_dims: ${dp.owned_dimensions.length}, facts: ${dp.fact_tables.length})`);
+      log.info(`[build-bus-matrix] Product "${dp.name}" (id=${pid}): ${count} tables created (owned_dims: ${dp.owned_dimensions.length}, facts: ${dp.fact_tables.length})`);
 
       _results.push({ name: dp.name, id: pid, status: 'created' });
     }
 
     // Summary
-    console.log(`[build-bus-matrix] Summary: AI designed ${busMatrix.conformed_dimensions?.length ?? 0} dims + ${busMatrix.fact_tables?.length ?? 0} facts → ${_results.length} products`);
+    log.info(`[build-bus-matrix] Summary: AI designed ${busMatrix.conformed_dimensions?.length ?? 0} dims + ${busMatrix.fact_tables?.length ?? 0} facts → ${_results.length} products`);
 
     return _results;
 
     }); // end transaction
 
-    console.log(`[${reqId}] build-bus-matrix SUCCESS: ${results.length} products created`);
+    log.info(`[${reqId}] build-bus-matrix SUCCESS: ${results.length} products created`);
     res.json({ ok: true, data: { products: results } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -3715,7 +3718,7 @@ router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: 
     const constraint = (err as any)?.constraint ?? null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const table = (err as any)?.table ?? null;
-    console.error(`[${reqId}] build-bus-matrix FAILED: ${msg}`, { code, detail, constraint, table, stack });
+    log.error({ code, detail, constraint, table, stack }, `[${reqId}] build-bus-matrix FAILED: ${msg}`);
     if (!res.headersSent) {
       res.status(500).json({
         ok: false,
@@ -3817,7 +3820,7 @@ router.post('/propose-stream', requireAuth, requireRole('admin'), async (req: Re
 
     emit({ type: 'done', proposal });
   } catch (err) {
-    console.error('[products/propose-stream] Error:', err);
+    log.error({ err }, '[products/propose-stream] Error');
     emit({ type: 'error', message: err instanceof Error ? err.message : 'Unknown error' });
   }
   res.end();

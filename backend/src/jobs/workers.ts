@@ -21,6 +21,9 @@ import { startMorningBriefWorker, stopMorningBriefWorker } from './morningBriefJ
 import { startSecurityMaintenanceWorker, stopSecurityMaintenanceWorker } from './securityMaintenanceJob';
 import { withTenantAiContext } from '../services/aiBudget';
 import type { OrchestratorEvent } from '../services/busMatrixOrchestrator';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'workers' });
 
 const workers: Worker[] = [];
 
@@ -104,7 +107,7 @@ async function processIngestionJob(job: Job<IngestionJobData>): Promise<{ ingest
       }, { timeout: 300_000 });
       ingested++;
     } catch (err) {
-      console.error(`[ingestion-worker] Failed to ingest ${tableName}:`, err);
+      log.error({ err }, `Failed to ingest ${tableName}`);
       // Continue with remaining tables
     }
   }
@@ -253,7 +256,7 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
 export function startWorkers(): void {
   const conn = getRedisConnection();
   if (!conn) {
-    console.log('[workers] Redis not available — workers not started');
+    log.info('Redis not available — workers not started');
     return;
   }
 
@@ -271,7 +274,7 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 1 }, // AI calls are expensive, limit to 1
   );
   schemaWorker.on('failed', (job, err) => {
-    console.error(`[worker] schema-profiling job ${job?.id} failed:`, err.message);
+    log.error({ err }, `schema-profiling job ${job?.id} failed`);
     trackException(err, { queue: 'schema-profiling', jobId: job?.id ?? 'unknown' });
   });
   workers.push(schemaWorker);
@@ -283,7 +286,7 @@ export function startWorkers(): void {
     defaultOpts,
   );
   ingestionWorker.on('failed', (job, err) => {
-    console.error(`[worker] ingestion job ${job?.id} failed:`, err.message);
+    log.error({ err }, `ingestion job ${job?.id} failed`);
     trackException(err, { queue: 'ingestion', jobId: job?.id ?? 'unknown' });
   });
   workers.push(ingestionWorker);
@@ -295,7 +298,7 @@ export function startWorkers(): void {
     defaultOpts,
   );
   transformationWorker.on('failed', (job, err) => {
-    console.error(`[worker] transformation job ${job?.id} failed:`, err.message);
+    log.error({ err }, `transformation job ${job?.id} failed`);
     trackException(err, { queue: 'transformation', jobId: job?.id ?? 'unknown' });
   });
   workers.push(transformationWorker);
@@ -361,7 +364,7 @@ export function startWorkers(): void {
         }
 
         // Log failure for alerting
-        console.error(`[scheduled-transformation] Product ${productId} failed:`, err);
+        log.error({ err }, `scheduled transformation for product ${productId} failed`);
         trackEvent('scheduled_transformation_failed', {
           productId: String(productId),
           tenantId: String(tenantId),
@@ -374,7 +377,7 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 1 },
   );
   scheduledTransWorker.on('failed', (job, err) => {
-    console.error(`[worker] scheduled-transformation job ${job?.id} failed:`, err.message);
+    log.error({ err }, `scheduled-transformation job ${job?.id} failed`);
     trackException(err, { queue: 'scheduled-transformation', jobId: job?.id ?? 'unknown' });
   });
   workers.push(scheduledTransWorker);
@@ -396,7 +399,7 @@ export function startWorkers(): void {
     },
   );
   busMatrixWorker.on('failed', (job, err) => {
-    console.error(`[worker] bus-matrix job ${job?.id} failed:`, err.message);
+    log.error({ err }, `bus-matrix job ${job?.id} failed`);
     trackException(err, { queue: 'bus-matrix', jobId: job?.id ?? 'unknown' });
   });
   workers.push(busMatrixWorker);
@@ -412,7 +415,7 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 3 },
   );
   emailReportWorker.on('failed', (job, err) => {
-    console.error(`[worker] email-report job ${job?.id} failed:`, err.message);
+    log.error({ err }, `email-report job ${job?.id} failed`);
     trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown' });
   });
   workers.push(emailReportWorker);
@@ -492,7 +495,7 @@ export function startWorkers(): void {
     workers.push(secWorker);
   }
 
-  console.log(`[workers] Started ${workers.length} workers`);
+  log.info(`Started ${workers.length} workers`);
 }
 
 /**

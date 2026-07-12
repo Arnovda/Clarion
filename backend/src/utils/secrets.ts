@@ -8,6 +8,10 @@
  *   const apiKey = await getSecret('ANTHROPIC_API_KEY');
  */
 
+import { logger as rootLogger } from './logger';
+
+const log = rootLogger.child({ mod: 'secrets' });
+
 // ---------------------------------------------------------------------------
 // Cache to avoid repeated Key Vault calls
 // ---------------------------------------------------------------------------
@@ -32,7 +36,7 @@ export async function getSecret(name: string): Promise<string | undefined> {
         return value;
       }
     } catch (err) {
-      console.warn(`[secrets] Key Vault lookup failed for "${name}":`, err);
+      log.warn({ err }, `Key Vault lookup failed for "${name}"`);
       // Fall through to env var
     }
   }
@@ -56,10 +60,10 @@ export async function preloadSecrets(names: string[]): Promise<void> {
     return;
   }
 
-  console.log(`[secrets] Pre-loading ${names.length} secrets from Key Vault…`);
+  log.info(`Pre-loading ${names.length} secrets from Key Vault…`);
   const results = await Promise.allSettled(names.map((n) => getSecret(n)));
   const loaded = results.filter((r) => r.status === 'fulfilled' && r.value !== undefined).length;
-  console.log(`[secrets] Loaded ${loaded}/${names.length} secrets`);
+  log.info(`Loaded ${loaded}/${names.length} secrets`);
 }
 
 /**

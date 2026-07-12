@@ -18,6 +18,9 @@ import { getPipelineScheduleQueue } from './queues';
 import type { PipelineScheduleJobData } from './queues';
 import { semanticDb } from '../db/knex';
 import { enqueueSavedPipelineRun, type PipelineTrigger } from '../services/pipelineService';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'pipelineScheduler' });
 
 interface PipelineRow {
   id: number;
@@ -72,8 +75,7 @@ export async function registerPipelineTriggers(pipeline: PipelineRow): Promise<v
         removeOnFail: { age: 14 * 24 * 60 * 60 },
       },
     );
-    // eslint-disable-next-line no-console
-    console.log(`[pipelineScheduler] Registered cron ${jobId}: ${t.cron} (${t.tz || 'UTC'})`);
+    log.info(`Registered cron ${jobId}: ${t.cron} (${t.tz || 'UTC'})`);
   }
 }
 
@@ -90,8 +92,7 @@ export async function unregisterPipelineTriggers(pipelineId: number): Promise<vo
   for (const r of repeatables) {
     if (r.id?.startsWith(prefix)) {
       await q.removeRepeatableByKey(r.key);
-      // eslint-disable-next-line no-console
-      console.log(`[pipelineScheduler] Removed ${r.id}`);
+      log.info(`Removed ${r.id}`);
     }
   }
 }
@@ -103,8 +104,7 @@ export async function unregisterPipelineTriggers(pipelineId: number): Promise<vo
 export async function loadPipelineSchedules(): Promise<void> {
   const q = getPipelineScheduleQueue();
   if (!q) {
-    // eslint-disable-next-line no-console
-    console.log('[pipelineScheduler] Redis not available — pipeline triggers disabled');
+    log.info('Redis not available — pipeline triggers disabled');
     return;
   }
   const rows = await semanticDb('pipelines').where({ enabled: true }).select('id', 'tenant_id', 'enabled', 'triggers');
@@ -114,8 +114,7 @@ export async function loadPipelineSchedules(): Promise<void> {
     cronCount += triggers.filter((t) => t.kind === 'cron').length;
     await registerPipelineTriggers(r as PipelineRow);
   }
-  // eslint-disable-next-line no-console
-  console.log(`[pipelineScheduler] Loaded ${rows.length} pipeline(s), ${cronCount} cron trigger(s)`);
+  log.info(`Loaded ${rows.length} pipeline(s), ${cronCount} cron trigger(s)`);
 }
 
 /**
@@ -150,9 +149,8 @@ export async function firePipelineTriggersOnSourceSync(opts: {
       if (hit) matches.push(r.id);
     }
     if (matches.length === 0) return;
-    // eslint-disable-next-line no-console
-    console.log(
-      `[pipelineScheduler] Source ${opts.connectionId} synced — firing ${matches.length} pipeline(s): ${matches.join(', ')}`,
+    log.info(
+      `Source ${opts.connectionId} synced — firing ${matches.length} pipeline(s): ${matches.join(', ')}`,
     );
     for (const pipelineId of matches) {
       await enqueueSavedPipelineRun({
@@ -162,7 +160,6 @@ export async function firePipelineTriggersOnSourceSync(opts: {
       });
     }
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error('[pipelineScheduler] firePipelineTriggersOnSourceSync error', err);
+    log.error({ err }, 'firePipelineTriggersOnSourceSync error');
   }
 }

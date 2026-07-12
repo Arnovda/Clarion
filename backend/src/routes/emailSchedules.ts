@@ -14,6 +14,9 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { registerEmailSchedule, unregisterEmailSchedule } from '../jobs/emailScheduler';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'emailSchedules' });
 
 const router = Router();
 
@@ -165,7 +168,7 @@ router.post('/:id/send-now', requireAuth, requireRole('admin', 'analyst'), async
       // Inline execution (no Redis)
       const { sendScheduledReport } = await import('../services/reportEmailService');
       sendScheduledReport(schedule.id).catch((err) => {
-        console.error('[send-now] inline report failed:', err);
+        log.error({ err }, '[send-now] inline report failed');
       });
     }
 

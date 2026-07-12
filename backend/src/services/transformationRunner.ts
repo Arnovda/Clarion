@@ -37,6 +37,9 @@ import {
   writeParquet,
   ensureWarehouseContainer,
 } from './warehouse';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'transformationRunner' });
 
 interface ProductRow {
   id: number;
@@ -133,7 +136,7 @@ async function syncProductColumns(
   }
 
   if (toRemove.length > 0 || actualCols.some((ac) => !existingMap.has(ac.column_name))) {
-    console.log(`[transformationRunner] Synced product_columns for table ${productTableId}: ` +
+    log.info(`Synced product_columns for table ${productTableId}: ` +
       `removed ${toRemove.length}, added ${actualCols.filter((ac) => !existingMap.has(ac.column_name)).length}`);
   }
 }
@@ -219,9 +222,9 @@ async function loadDependencyDimensions(
     for (const dim of dims) {
       try {
         await createScanView(db, dim.tableName, dim.uri);
-        console.log(`  [dep] loaded shared dim: ${dep.source_product_name}.${dim.tableName}`);
+        log.info(`  [dep] loaded shared dim: ${dep.source_product_name}.${dim.tableName}`);
       } catch {
-        console.warn(`  [dep] could not load ${dep.source_product_name}.${dim.tableName} — skipping`);
+        log.warn(`  [dep] could not load ${dep.source_product_name}.${dim.tableName} — skipping`);
       }
     }
   }
@@ -453,8 +456,8 @@ export async function runProductTransformation(
         ? (connRow.selected_entities as string[])
         : [];
       if (selectedEntities.length > 0) {
-        console.log(
-          `[transformationRunner] No ingested_tables for connection ${product.connection_id} ` +
+        log.info(
+          `No ingested_tables for connection ${product.connection_id} ` +
           `— falling back to ${selectedEntities.length} source-connector entit${selectedEntities.length === 1 ? 'y' : 'ies'} ` +
           `via selected_entities`,
         );
@@ -466,16 +469,16 @@ export async function runProductTransformation(
             await createScanView(db, entityName, entityPath);
             sourceViewsRegistered++;
           } catch (err) {
-            console.warn(
-              `[transformationRunner]   failed to register ${entityName} at ${entityPath}:`,
-              err instanceof Error ? err.message : err,
+            log.warn(
+              { err },
+              `failed to register ${entityName} at ${entityPath}`,
             );
           }
         }
       }
     }
-    console.log(
-      `[transformationRunner] Registered ${sourceViewsRegistered} source view(s) for "${product.name}"`,
+    log.info(
+      `Registered ${sourceViewsRegistered} source view(s) for "${product.name}"`,
     );
 
     // Load shared dimensions from dependency products (conformed dims)
@@ -490,7 +493,7 @@ export async function runProductTransformation(
         .where('transformation_status', 'success')
     );
 
-    console.log(`[transformationRunner] Pre-loading ${allProductTables.length} existing product tables for "${product.name}"`);
+    log.info(`Pre-loading ${allProductTables.length} existing product tables for "${product.name}"`);
     for (const pt of allProductTables) {
       if (sorted.some((s) => s.id === pt.id)) continue;
 
@@ -499,14 +502,14 @@ export async function runProductTransformation(
       // Local mode: skip directories that don't exist yet (avoids a noisy
       // DuckDB error). createScanView handles delta-vs-parquet detection.
       if (!useAzure && !fs.existsSync(ptPath)) {
-        console.log(`  skip (no dir): ${pt.table_name}`);
+        log.info(`  skip (no dir): ${pt.table_name}`);
         continue;
       }
       try {
         await createScanView(db, pt.table_name, ptPath);
-        console.log(`  loaded${useAzure ? ' (azure)' : ''}: ${pt.table_name}`);
+        log.info(`  loaded${useAzure ? ' (azure)' : ''}: ${pt.table_name}`);
       } catch {
-        console.log(`  skip: ${pt.table_name}`);
+        log.info(`  skip: ${pt.table_name}`);
       }
     }
 
@@ -530,7 +533,7 @@ export async function runProductTransformation(
           status: 'success',
           row_count: mirrored?.rowCount ?? 0,
         });
-        console.log(`[transformationRunner] Skipped shared dim ${table.table_name} — points at upstream parquet`);
+        log.info(`Skipped shared dim ${table.table_name} — points at upstream parquet`);
         continue;
       }
 
@@ -578,7 +581,7 @@ export async function runProductTransformation(
         // worse prose. A real transformation always starts with SELECT,
         // WITH, or an opening parenthesis.
         if (!isSqlShaped(sql)) {
-          console.warn(`[transformationRunner] ${table.table_name} has non-SQL transformation_sql — regenerating from scratch.`);
+          log.warn(`${table.table_name} has non-SQL transformation_sql — regenerating from scratch.`);
           const schemasText = await collectAvailableSchemas(db);
           if (!schemasText) {
             throw new Error(
@@ -607,7 +610,7 @@ export async function runProductTransformation(
             await tenantQuery(tenantId, (trx) =>
               trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
             );
-            console.log(`[transformationRunner] ${table.table_name} regenerated from scratch — persisted`);
+            log.info(`${table.table_name} regenerated from scratch — persisted`);
           } catch (regenErr) {
             // If we can't reach Claude (credits, network, etc.) we don't
             // want every refresh to keep trying forever. Throw a clean
@@ -644,7 +647,7 @@ export async function runProductTransformation(
               .test(errMsg);
           if (!isRepairable) throw firstErr;
 
-          console.warn(`[transformationRunner] ${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
+          log.warn(`${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
           const schemasText = await collectAvailableSchemas(db);
           const { repairTransformationSql, AiCreditExhaustedError } = await import('../ai/AIService');
           let repaired: string;
@@ -674,14 +677,14 @@ export async function runProductTransformation(
           // would feed Claude its own apology and get worse output. The
           // higher-level shape check is the single source of truth.
           if (!isSqlShaped(repaired)) {
-            console.warn(`[transformationRunner] ${table.table_name} AI repair returned non-SQL — rejecting`);
+            log.warn(`${table.table_name} AI repair returned non-SQL — rejecting`);
             throw firstErr;
           }
           sql = repaired;
           aiRepaired = true;
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
           await db.exec(`CREATE OR REPLACE TABLE ${tempTable} AS ${sql};`);
-          console.log(`[transformationRunner] ${table.table_name} repaired by AI — retry succeeded`);
+          log.info(`${table.table_name} repaired by AI — retry succeeded`);
         }
 
         const rowResult = await db.all(`SELECT COUNT(*) AS cnt FROM ${tempTable}`);
@@ -696,7 +699,7 @@ export async function runProductTransformation(
         try {
           await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql, tenantId);
         } catch (checkErr) {
-          console.warn(`[transformationRunner] Quality checks failed for ${table.table_name}:`, checkErr);
+          log.warn({ err: checkErr }, `Quality checks failed for ${table.table_name}`);
         }
 
         // Write output
@@ -769,7 +772,7 @@ export async function runProductTransformation(
             const businessCols = actualCols.filter((c) => c.column_name !== '_row_hash');
             await syncProductColumns(table.id, businessCols, tenantId);
           } catch (syncErr) {
-            console.warn(`[transformationRunner] Column sync failed for ${table.table_name}:`, syncErr);
+            log.warn({ err: syncErr }, `Column sync failed for ${table.table_name}`);
           }
 
           results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
@@ -840,7 +843,7 @@ export async function runProductTransformation(
           await db.exec(`DROP VIEW IF EXISTS "${descView}";`);
           await syncProductColumns(table.id, actualCols, tenantId);
         } catch (syncErr) {
-          console.warn(`[transformationRunner] Column sync failed for ${table.table_name}:`, syncErr);
+          log.warn({ err: syncErr }, `Column sync failed for ${table.table_name}`);
         }
 
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
@@ -850,10 +853,10 @@ export async function runProductTransformation(
           try {
             const rollup = await generateMonthlyRollup(db, table.id, table.table_name, parquetPath, productDir, useAzure, tenantId);
             if (rollup) {
-              console.log(`[transformationRunner] Rollup: ${rollup.rollupName} (${rollup.rowCount} rows)`);
+              log.info(`Rollup: ${rollup.rollupName} (${rollup.rowCount} rows)`);
             }
           } catch (rollupErr) {
-            console.warn(`[transformationRunner] Rollup generation skipped for ${table.table_name}:`, rollupErr);
+            log.warn({ err: rollupErr }, `Rollup generation skipped for ${table.table_name}`);
           }
         }
       } catch (err: unknown) {
@@ -871,14 +874,14 @@ export async function runProductTransformation(
     try {
       await syncProductToNeo4j(product.id);
     } catch (neo4jErr) {
-      console.warn(`[transformationRunner] Neo4j product sync failed (non-fatal):`, neo4jErr);
+      log.warn({ err: neo4jErr }, `Neo4j product sync failed (non-fatal)`);
     }
 
     // Invalidate pooled DuckDB instances so subsequent queries see fresh tables.
     try {
       await DuckDBConnector.invalidateWarehouse(warehousePath);
     } catch (invErr) {
-      console.warn(`[transformationRunner] DuckDB pool invalidation failed (non-fatal):`, invErr);
+      log.warn({ err: invErr }, `DuckDB pool invalidation failed (non-fatal)`);
     }
 
     // Pre-warm the pool so the first post-transformation dashboard request
@@ -886,7 +889,7 @@ export async function runProductTransformation(
     const warmConn = new DuckDBConnector(warehousePath);
     warmConn.connect()
       .then(() => { warmConn.disconnect(); })
-      .catch((err) => console.warn('[transformationRunner] DuckDB pool warm-up failed (non-fatal):', err));
+      .catch((err) => log.warn({ err }, 'DuckDB pool warm-up failed (non-fatal)'));
 
     // Bust the widget result cache + filter dropdown options cache so
     // stale rows / stale dropdowns aren't served from memory. Both

@@ -10,6 +10,10 @@
  * auto-instrumentation can patch HTTP, Express, and other libraries.
  */
 
+import { logger as rootLogger } from './logger';
+
+const log = rootLogger.child({ mod: 'monitoring' });
+
 let appInsights: typeof import('applicationinsights') | null = null;
 
 /**
@@ -18,7 +22,7 @@ let appInsights: typeof import('applicationinsights') | null = null;
 export function initMonitoring(): void {
   const connString = process.env.APPLICATIONINSIGHTS_CONNECTION_STRING;
   if (!connString) {
-    console.log('[monitoring] Application Insights not configured — telemetry disabled');
+    log.info('Application Insights not configured — telemetry disabled');
     return;
   }
 
@@ -37,9 +41,9 @@ export function initMonitoring(): void {
       .setSendLiveMetrics(true)
       .start();
 
-    console.log('[monitoring] Application Insights initialized');
+    log.info('Application Insights initialized');
   } catch (err) {
-    console.warn('[monitoring] Failed to initialize Application Insights:', err);
+    log.warn({ err }, 'Failed to initialize Application Insights');
     appInsights = null;
   }
 }

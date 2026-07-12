@@ -21,6 +21,9 @@ import fs from 'fs';
 import path from 'path';
 import type { Database } from 'duckdb-async';
 import { isAzurePath, sqlEscapePath } from './paths';
+import { logger as rootLogger } from '../../utils/logger';
+
+const log = rootLogger.child({ mod: 'warehouse-views' });
 
 export interface CreateScanViewOptions {
   /**
@@ -104,8 +107,8 @@ export async function createScanView(
     const dMsg = deltaErr instanceof Error ? deltaErr.message : String(deltaErr);
     const pMsg = parquetFileErr instanceof Error ? parquetFileErr.message : String(parquetFileErr);
     const gMsg = globErr instanceof Error ? globErr.message : String(globErr);
-    console.warn(
-      `[warehouse] createScanView("${viewName}") failed for ${uri} — ` +
+    log.warn(
+      `createScanView("${viewName}") failed for ${uri} — ` +
       `delta=${dMsg} | data.parquet=${pMsg} | *.parquet=${gMsg}`,
     );
     throw globErr;

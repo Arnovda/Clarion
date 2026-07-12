@@ -12,6 +12,9 @@ import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 import { getConnector as getSourceConnector } from '@databridge/connectors';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'SchemaProfiler' });
 
 export interface ProfilerResult {
   connectionId: number;
@@ -107,10 +110,10 @@ export async function runSchemaProfiler(
             confidence: 1.0,
           });
         }
-        console.log(`[SchemaProfiler] Loaded ${knownFks.length} known relationship(s) from ${connectorType}`);
+        log.info(`Loaded ${knownFks.length} known relationship(s) from ${connectorType}`);
       }
     } catch (err) {
-      console.warn(`[SchemaProfiler] getKnownRelationships(${connectorType}) failed:`, err);
+      log.warn({ err }, `getKnownRelationships(${connectorType}) failed`);
     }
   }
 
@@ -161,7 +164,7 @@ export async function runSchemaProfiler(
           const row = result.rows[0] as { matched: number; total: number } | undefined;
           const ratio = row && row.total > 0 ? row.matched / row.total : 0;
           if (ratio >= 0.5) {
-            console.log(`[FK AI] verified: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+            log.info(`[FK AI] verified: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
             allFkCandidates.push({
               fromTable: s.from_table, fromColumn: s.from_column,
               toTable: s.to_table, toColumn: s.to_column,
@@ -169,14 +172,14 @@ export async function runSchemaProfiler(
               overlapRatio: ratio,
             });
           } else {
-            console.log(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
           }
         } catch { /* verification query failed — skip */ }
       }
       const aiAdded = allFkCandidates.length - knownFks.length - heuristicMinusKnown.length;
       if (aiAdded > 0) emit({ phase: 'schema', message: `Step 1/7 — Claude found ${aiAdded} additional relationship(s)` });
     } catch (err) {
-      console.warn('[SchemaProfiler] AI FK matching failed (non-fatal):', err);
+      log.warn({ err }, 'AI FK matching failed (non-fatal)');
     }
   }
 
@@ -210,7 +213,7 @@ export async function runSchemaProfiler(
         })),
       });
     } catch (err) {
-      console.warn(`[SchemaProfiler] quality pre-profile skipped for ${table.tableName}:`, err);
+      log.warn({ err }, `quality pre-profile skipped for ${table.tableName}`);
     }
   }
 
@@ -218,7 +221,7 @@ export async function runSchemaProfiler(
   emit({ phase: 'ai_draft', message: 'Step 3/7 — Detecting naming conventions (PascalCase / snake_case / camelCase)…' });
   const conventions = await detectSchemaConventions(connectorType, schema.tables);
   if (conventions) {
-    console.log(`[SchemaProfiler] Conventions: ${conventions.naming_style} (confidence ${conventions.confidence})`);
+    log.info(`Conventions: ${conventions.naming_style} (confidence ${conventions.confidence})`);
     emit({ phase: 'ai_draft', message: `Step 3/7 — Detected ${conventions.naming_style} naming (confidence ${Math.round(conventions.confidence * 100)}%)` });
   }
 
@@ -240,10 +243,10 @@ export async function runSchemaProfiler(
     tableContext = await generateTableContext(
       connectorType, conventions, schema.tables, qualityStats, fkLikes,
     );
-    console.log(`[SchemaProfiler] Pass B: ${tableContext.tables.length} tables, ${tableContext.relationships.length} relationships`);
+    log.info(`Pass B: ${tableContext.tables.length} tables, ${tableContext.relationships.length} relationships`);
     emit({ phase: 'ai_draft', message: `Step 4/7 — Claude described ${tableContext.tables.length} tables and suggested ${tableContext.relationships.length} relationship(s)` });
   } catch (err) {
-    console.warn('[SchemaProfiler] generateTableContext failed (non-fatal):', err);
+    log.warn({ err }, 'generateTableContext failed (non-fatal)');
     tableContext = {
       tables: schema.tables.map((t) => ({
         table_name: t.tableName, display_name: t.tableName, description: '', grain: '',
@@ -271,7 +274,7 @@ export async function runSchemaProfiler(
     rel.to_table = toCanon;
   }
   if (droppedAiRels.length > 0) {
-    console.warn(`[SchemaProfiler] Dropped ${droppedAiRels.length} AI relationship(s) — table not in schema: ${droppedAiRels.slice(0, 5).join(', ')}${droppedAiRels.length > 5 ? '…' : ''}`);
+    log.warn(`Dropped ${droppedAiRels.length} AI relationship(s) — table not in schema: ${droppedAiRels.slice(0, 5).join(', ')}${droppedAiRels.length > 5 ? '…' : ''}`);
   }
   // Drop the canonicalised-out rels (those whose endpoint tables don't exist).
   tableContext.relationships = tableContext.relationships.filter(
@@ -324,10 +327,10 @@ export async function runSchemaProfiler(
           overlapRatio: ratio,
         });
         aiVerified++;
-        console.log(`[SchemaProfiler] AI rel verified: ${key} (overlap ${Math.round(ratio * 100)}%)`);
+        log.info(`AI rel verified: ${key} (overlap ${Math.round(ratio * 100)}%)`);
       } else {
         aiDropped++;
-        console.log(`[SchemaProfiler] AI rel rejected: ${key} (overlap ${Math.round(ratio * 100)}%)`);
+        log.info(`AI rel rejected: ${key} (overlap ${Math.round(ratio * 100)}%)`);
       }
     } catch {
       // Verification failed (timeout / type mismatch) — keep the rel
@@ -353,7 +356,7 @@ export async function runSchemaProfiler(
     );
     emit({ phase: 'ai_draft', message: `Step 6/7 — Claude described ${columnDescriptions.columns.length} columns` });
   } catch (err) {
-    console.warn('[SchemaProfiler] generateColumnDescriptions failed (non-fatal):', err);
+    log.warn({ err }, 'generateColumnDescriptions failed (non-fatal)');
     columnDescriptions = { columns: [] };
   }
 
@@ -658,7 +661,7 @@ export async function runSchemaProfiler(
       }
     }
 
-    console.log(`[SchemaProfiler] Neo4j sync: ${graphTables.length} tables, ${graphColumns.length} columns, ${pgRelsForNeo4j.length} relationships`);
+    log.info(`Neo4j sync: ${graphTables.length} tables, ${graphColumns.length} columns, ${pgRelsForNeo4j.length} relationships`);
     const graphRels: graph.UpsertRelationshipInput[] = (pgRelsForNeo4j as {
       id: number; from_table_id: number; to_table_id: number;
       from_column_id: number | null; to_column_id: number | null;
@@ -693,7 +696,7 @@ export async function runSchemaProfiler(
       );
     }
   } catch (neo4jErr) {
-    console.warn('[SchemaProfiler] Neo4j sync failed (non-fatal):', neo4jErr);
+    log.warn({ err: neo4jErr }, 'Neo4j sync failed (non-fatal)');
   }
 
   return { connectionId, tablesInserted, columnsInserted, relationshipsInserted };

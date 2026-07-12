@@ -29,6 +29,9 @@ import {
   createScanView,
 } from '../services/warehouse';
 import { listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'notebooks' });
 
 const router = Router();
 router.use(requireAuth);
@@ -69,7 +72,7 @@ async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId
     try {
       await createView(connection.name, t.tableName, t.uri);
     } catch (err) {
-      console.warn(`[notebooks] Failed to create view for source ${connection.name}.${t.tableName}:`, err);
+      log.warn({ err }, `Failed to create view for source ${connection.name}.${t.tableName}`);
     }
   }
 
@@ -86,7 +89,7 @@ async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId
       try {
         await createView(t.productName, t.tableName, t.uri);
       } catch (err) {
-        console.warn(`[notebooks] Failed to create view for product ${t.productName}.${t.tableName}:`, err);
+        log.warn({ err }, `Failed to create view for product ${t.productName}.${t.tableName}`);
       }
     }
   }
@@ -102,7 +105,7 @@ async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId
     try {
       await db.exec(`SET search_path = '${schemaList}';`);
     } catch (err) {
-      console.warn('[notebooks] Failed to set search_path:', err);
+      log.warn({ err }, 'Failed to set search_path');
     }
   }
 

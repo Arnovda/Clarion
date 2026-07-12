@@ -21,6 +21,9 @@ import os from 'os';
 import path from 'path';
 import type { Database } from 'duckdb-async';
 import { isAzurePath, parseAzurePath, sqlEscapePath } from './paths';
+import { logger as rootLogger } from '../../utils/logger';
+
+const log = rootLogger.child({ mod: 'warehouse-writer' });
 
 /**
  * Write the result of `selectSql` to `uri` as Parquet.
@@ -72,7 +75,7 @@ async function writeParquetToAzure(
     await containerClient.createIfNotExists();
     const blobClient = containerClient.getBlockBlobClient(blob);
     await blobClient.uploadFile(tmpFile);
-    console.log(`[warehouse] uploaded parquet → ${azurePath}`);
+    log.info(`uploaded parquet → ${azurePath}`);
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }

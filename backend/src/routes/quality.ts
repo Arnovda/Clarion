@@ -28,6 +28,9 @@ import { isAzurePath } from '../services/warehouse';
 import { resolveProductTableById, resolveSourceTable } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
 import { generateQualityAlertContext } from '../ai/AIService';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'quality' });
 
 const router = Router();
 
@@ -168,7 +171,7 @@ async function evaluateRulesCore(
       try {
         failures = await dialect.findFailures(rule);
       } catch (e) {
-        console.error(`[RuleEngine] rule ${rule.id} failed:`, e);
+        log.error({ err: e }, `[RuleEngine] rule ${rule.id} failed`);
       }
 
       // If a field-requiring rule has no field configured, mark as not configured
@@ -1015,7 +1018,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
         });
       }
     } catch (neo4jErr) {
-      console.warn('[Quality] Neo4j stats sync failed (non-fatal):', neo4jErr);
+      log.warn({ err: neo4jErr }, 'Neo4j stats sync failed (non-fatal)');
     }
 
     res.json({ ok: true, data: updated });

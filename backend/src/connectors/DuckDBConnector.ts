@@ -9,6 +9,9 @@ import {
   createScanView,
   capResultRows,
 } from '../services/warehouse';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'DuckDBConnector' });
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -164,9 +167,9 @@ export class DuckDBConnector extends BaseConnector {
         created++;
       } catch (err) {
         failed++;
-        console.warn(
-          `[DuckDBConnector] Failed to create view for ${tableName} (path: ${tPath}):`,
-          err instanceof Error ? err.message : err,
+        log.warn(
+          { err },
+          `Failed to create view for ${tableName} (path: ${tPath})`,
         );
       }
     }
@@ -181,12 +184,12 @@ export class DuckDBConnector extends BaseConnector {
       try {
         await db.exec(`SET search_path = '${schemaList}';`);
       } catch (err) {
-        console.warn('[DuckDBConnector] Failed to set search_path:', err instanceof Error ? err.message : err);
+        log.warn({ err }, 'Failed to set search_path');
       }
     }
 
-    console.log(
-      `[DuckDBConnector] ${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''}${registeredSchemas.size > 0 ? ` across ${registeredSchemas.size} schema(s)` : ''} (pooled)`,
+    log.info(
+      `${created}/${tableNames.length} views created${failed > 0 ? ` (${failed} failed)` : ''}${registeredSchemas.size > 0 ? ` across ${registeredSchemas.size} schema(s)` : ''} (pooled)`,
     );
   }
 
@@ -227,7 +230,7 @@ export class DuckDBConnector extends BaseConnector {
         const deltaPath = this.tablePath(tableName);
 
         try {
-          console.log(`[DuckDBConnector] introspecting table ${ti + 1}/${tableNames.length}: ${tableName} (${deltaPath})`);
+          log.info(`introspecting table ${ti + 1}/${tableNames.length}: ${tableName} (${deltaPath})`);
           const viewName = `__introspect_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`;
           const viewStart = Date.now();
           await withTimeout(
@@ -235,7 +238,7 @@ export class DuckDBConnector extends BaseConnector {
             perTableTimeout,
             `createDeltaView(${tableName})`,
           );
-          console.log(`[DuckDBConnector] view created for ${tableName} in ${Date.now() - viewStart}ms`);
+          log.info(`view created for ${tableName} in ${Date.now() - viewStart}ms`);
 
           const colRows = await db.all(`DESCRIBE "${viewName}"`) as Array<{
             column_name: string;
@@ -274,7 +277,7 @@ export class DuckDBConnector extends BaseConnector {
           tables.push({ tableName, columns });
           await db.exec(`DROP VIEW IF EXISTS "${viewName}"`);
         } catch (err) {
-          console.warn(`[DuckDBConnector] Failed to introspect table ${tableName}:`, err);
+          log.warn({ err }, `Failed to introspect table ${tableName}`);
         }
       }
 
@@ -356,7 +359,7 @@ export class DuckDBConnector extends BaseConnector {
 
     // Fallback: scan local filesystem (only works in local mode)
     if (this.isAzure) {
-      console.warn('[DuckDBConnector] Azure mode requires tableNames in constructor');
+      log.warn('Azure mode requires tableNames in constructor');
       return [];
     }
 

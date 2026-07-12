@@ -16,6 +16,9 @@ import { Queue } from 'bullmq';
 import { getRedisConnection } from './redis';
 import type { ConnectionSyncScheduleJobData } from './queues';
 import { semanticDb } from '../db/knex';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'connSyncScheduler' });
 
 const QUEUE_NAME = 'connection-sync-schedule';
 let queue: Queue<ConnectionSyncScheduleJobData> | null = null;
@@ -62,8 +65,7 @@ export async function registerConnectionSyncSchedule(s: ConnectionSyncSchedule):
       removeOnFail: { age: 14 * 24 * 60 * 60 },
     },
   );
-  // eslint-disable-next-line no-console
-  console.log(`[connSyncScheduler] Registered schedule ${s.id} for connection ${s.connection_id}: ${s.cron_expression} (${s.timezone})`);
+  log.info(`Registered schedule ${s.id} for connection ${s.connection_id}: ${s.cron_expression} (${s.timezone})`);
 }
 
 /** Remove a previously-registered repeatable. */
@@ -74,8 +76,7 @@ export async function removeConnectionSyncSchedule(scheduleId: number): Promise<
   for (const r of repeatables) {
     if (r.id === `connsync-${scheduleId}`) {
       await q.removeRepeatableByKey(r.key);
-      // eslint-disable-next-line no-console
-      console.log(`[connSyncScheduler] Removed schedule ${scheduleId}`);
+      log.info(`Removed schedule ${scheduleId}`);
       break;
     }
   }
@@ -88,14 +89,12 @@ export async function removeConnectionSyncSchedule(scheduleId: number): Promise<
 export async function loadConnectionSyncSchedules(): Promise<void> {
   const q = getQueue();
   if (!q) {
-    // eslint-disable-next-line no-console
-    console.log('[connSyncScheduler] Redis not available — connection sync schedules disabled');
+    log.info('Redis not available — connection sync schedules disabled');
     return;
   }
   const rows = await semanticDb('connection_sync_schedules').where({ enabled: true }).select('*');
   for (const r of rows) {
     await registerConnectionSyncSchedule(r);
   }
-  // eslint-disable-next-line no-console
-  console.log(`[connSyncScheduler] Loaded ${rows.length} enabled connection-sync schedule(s)`);
+  log.info(`Loaded ${rows.length} enabled connection-sync schedule(s)`);
 }

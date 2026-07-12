@@ -8,6 +8,9 @@
 
 import os from 'os';
 import type { Database } from 'duckdb-async';
+import { logger as rootLogger } from '../../utils/logger';
+
+const log = rootLogger.child({ mod: 'warehouse-duckdb' });
 
 /**
  * Apply memory / thread / spill guardrails to a DuckDB session. Idempotent
@@ -137,7 +140,7 @@ export async function setupDuckDBForWarehouse(
 
   const connStr = process.env.AZURE_STORAGE_CONNECTION_STRING ?? '';
   if (!connStr) {
-    console.warn('[warehouse] AZURE_STORAGE_CONNECTION_STRING not set — blob reads will fail');
+    log.warn('AZURE_STORAGE_CONNECTION_STRING not set — blob reads will fail');
     return;
   }
 

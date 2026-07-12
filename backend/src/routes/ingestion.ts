@@ -11,6 +11,9 @@ import { invalidateWidgetCache } from '../services/widgetCache';
 import { isAzurePath } from '../services/warehouse';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import axios from 'axios';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'ingestion' });
 
 const router = Router();
 
@@ -84,7 +87,7 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
     }
 
     const config = decryptConfig(conn.config);
-    console.log(`[ingestion/discover] type=${conn.type}, configKeys=${Object.keys(config).join(',')}`);
+    log.info(`discover: type=${conn.type}, configKeys=${Object.keys(config).join(',')}`);
 
     // Call the ETL service to discover tables — remap paths for Docker
     const etlPayload = {
@@ -119,7 +122,7 @@ router.get('/discover', requireAuth, requireRole('admin'), async (req: Request, 
       }
       // Forward ETL error details (e.g. 422 validation error)
       const detail = err.response?.data?.detail ?? err.response?.data?.error ?? err.message;
-      console.error(`[ingestion/discover] ETL error ${err.response?.status}: ${JSON.stringify(detail)}`);
+      log.error(`discover: ETL error ${err.response?.status}: ${JSON.stringify(detail)}`);
       res.status(err.response?.status ?? 500).json({ ok: false, error: `ETL error: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` });
       return;
     }

@@ -12,6 +12,9 @@ import { notifyTenant } from '../services/notificationService';
 import { invalidateTenantCache } from '../services/queryCache';
 import { buildXlsx, buildCsv, escapeCsvField } from '../utils/xlsxBuilder';
 import { isAzurePath } from '../services/warehouse';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'semantic' });
 
 const router = Router();
 
@@ -1140,8 +1143,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
         await db('kpi_definitions').where({ id: entityId }).update(pgPatch).catch(() => { /* table optional */ });
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[semantic POST /approve] postgres mirror failed', e);
+      log.error({ err: e }, '[semantic POST /approve] postgres mirror failed');
     }
 
     await invalidateSemanticCache();

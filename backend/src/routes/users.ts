@@ -21,6 +21,9 @@ import { inviteUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
 import { revokeAllForUser } from '../services/refreshTokenService';
 import { disableMfa } from '../services/mfaService';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'users' });
 
 const router = Router();
 
@@ -103,7 +106,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
     // without SMTP. Production must have SMTP configured.
     const inviteUrl = `${config.appUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(email.toLowerCase())}`;
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[invite-dev] Invite URL for ${email}: ${inviteUrl}`);
+      log.info(`[invite-dev] Invite URL for ${email}: ${inviteUrl}`);
     }
 
     await recordAudit(req, {
@@ -167,7 +170,7 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
       try {
         await revokeAllForUser(userId, req.user!.tenantId, 'role_change');
       } catch (err) {
-        console.warn('[users.patch] revokeAllForUser failed', err);
+        log.warn({ err }, '[users.patch] revokeAllForUser failed');
       }
     }
 
@@ -213,7 +216,7 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
     try {
       await revokeAllForUser(userId, req.user!.tenantId, 'user_deactivated');
     } catch (err) {
-      console.warn('[users.deactivate] revokeAllForUser failed', err);
+      log.warn({ err }, '[users.deactivate] revokeAllForUser failed');
     }
 
     await recordAudit(req, {
@@ -306,7 +309,7 @@ router.post('/:id/reset-mfa', requireRole('admin'), async (req: Request, res: Re
     try {
       await revokeAllForUser(userId, req.user!.tenantId, 'mfa_reset_by_admin');
     } catch (err) {
-      console.warn('[users/reset-mfa] revokeAllForUser failed', err);
+      log.warn({ err }, '[users/reset-mfa] revokeAllForUser failed');
     }
 
     await recordAudit(req, {
@@ -471,7 +474,7 @@ router.post('/profile/password', async (req: Request, res: Response, next: NextF
     try {
       await revokeAllForUser(req.user!.sub, req.user!.tenantId, 'password_change');
     } catch (err) {
-      console.warn('[users/profile/password] revokeAllForUser failed', err);
+      log.warn({ err }, '[users/profile/password] revokeAllForUser failed');
     }
 
     await recordAudit(req, {

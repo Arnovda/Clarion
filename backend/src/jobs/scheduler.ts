@@ -14,6 +14,9 @@ import { trackEvent } from '../utils/monitoring';
 import { registerWeeklyMaintenance } from './warehouseMaintenance';
 import { registerDailyBrief } from './morningBriefJob';
 import { registerSecurityMaintenance } from './securityMaintenanceJob';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'scheduler' });
 
 const QUEUE_NAME = 'scheduled-transformation';
 let schedulerQueue: Queue<TransformationJobData> | null = null;
@@ -67,7 +70,7 @@ export async function registerSchedule(schedule: {
     },
   );
 
-  console.log(`[scheduler] Registered schedule ${schedule.id} for product ${schedule.product_id}: ${schedule.cron_expression} (${schedule.timezone})`);
+  log.info(`Registered schedule ${schedule.id} for product ${schedule.product_id}: ${schedule.cron_expression} (${schedule.timezone})`);
 }
 
 /**
@@ -82,7 +85,7 @@ export async function removeSchedule(scheduleId: number): Promise<void> {
   for (const r of repeatables) {
     if (r.id === `schedule-${scheduleId}`) {
       await queue.removeRepeatableByKey(r.key);
-      console.log(`[scheduler] Removed schedule ${scheduleId}`);
+      log.info(`Removed schedule ${scheduleId}`);
       break;
     }
   }
@@ -95,12 +98,12 @@ export async function removeSchedule(scheduleId: number): Promise<void> {
 export async function loadSchedules(): Promise<void> {
   const queue = getSchedulerQueue();
   if (!queue) {
-    console.log('[scheduler] Redis not available — scheduled transformations disabled');
+    log.info('Redis not available — scheduled transformations disabled');
     return;
   }
 
   const schedules = await semanticDb('transformation_schedules').where({ enabled: true });
-  console.log(`[scheduler] Loading ${schedules.length} schedule(s)…`);
+  log.info(`Loading ${schedules.length} schedule(s)…`);
 
   for (const s of schedules) {
     await registerSchedule(s);

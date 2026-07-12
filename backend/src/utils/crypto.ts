@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import { logger as rootLogger } from './logger';
+
+const log = rootLogger.child({ mod: 'crypto' });
 
 /**
  * AES-256-GCM encryption for connection credentials at rest.
@@ -76,7 +79,7 @@ export function decryptCredentials(value: string): string {
 
   const key = getKey();
   if (!key) {
-    console.warn('[crypto] Encrypted credentials found but CREDENTIALS_ENCRYPTION_KEY is not set — cannot decrypt');
+    log.warn('Encrypted credentials found but CREDENTIALS_ENCRYPTION_KEY is not set — cannot decrypt');
     throw new Error('Cannot decrypt credentials: encryption key not configured');
   }
 

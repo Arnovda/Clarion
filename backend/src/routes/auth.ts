@@ -44,6 +44,9 @@ import { verifyPassword as verifyPasswordFn } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { unauthQuery } from '../db/unauthQuery';
 import { tenantScopedWrite } from '../db/tenantScopedWrite';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'auth' });
 
 const router = Router();
 
@@ -272,7 +275,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
         },
       },
     });
-  } catch (err) { console.error('[auth/login] Error:', err); next(err); }
+  } catch (err) { log.error({ err }, '[auth/login] Error'); next(err); }
 });
 
 /**
@@ -464,8 +467,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
           `<p style="color:#999;font-size:12px">If you didn't request this, you can safely ignore this email — your password won't change.</p>`,
       });
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[auth] forgot-password email send failed', e);
+      log.error({ err: e }, 'forgot-password email send failed');
       // Fall through — we still respond with the generic message so we
       // don't leak whether SMTP is broken vs the account doesn't exist.
     }
@@ -474,7 +476,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     // === 'development' (NOT just != 'production') — staging logs are
     // routinely searched by ops people, and a reset URL is a credential.
     if (process.env.NODE_ENV === 'development') {
-      console.log(`[auth-dev] Password reset URL for ${normalizedEmail}: ${resetUrl}`);
+      log.info(`[auth-dev] Password reset URL for ${normalizedEmail}: ${resetUrl}`);
     }
 
     res.json({ ok: true, data: { message: 'If an account exists, a reset link has been sent.' } });
@@ -533,7 +535,7 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     try {
       await revokeAllForUser(user.id, user.tenant_id, 'password_reset');
     } catch (err) {
-      console.warn('[auth/reset-password] revokeAllForUser failed', err);
+      log.warn({ err }, '[auth/reset-password] revokeAllForUser failed');
     }
 
     res.json({ ok: true, data: { message: 'Password has been reset. You can now log in.' } });

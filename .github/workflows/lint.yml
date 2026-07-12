@@ -8,6 +8,8 @@ name: Lint
 #   • scattered-config    — reading the app URL under FRONTEND_URL /
 #     FRONTEND_BASE_URL / PUBLIC_APP_URL instead of config.appUrl (the drift
 #     that caused a prod password-reset lockout).
+#   • no-console          — raw console.* calls in backend/src instead of the
+#     structured pino logger (no level/redaction, silently dropped args).
 on:
   pull_request:
     branches: [main]
@@ -35,3 +37,6 @@ jobs:
 
       - name: scattered-config
         run: npx --yes tsx@4.22 backend/scripts/lint-scattered-config.ts
+
+      - name: no-console
+        run: npx --yes tsx@4.22 backend/scripts/lint-no-console.ts

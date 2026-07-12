@@ -61,6 +61,9 @@ function resolveDataLayer(requested: unknown, hasProduct: boolean): DataLayer {
 import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
 import { buildCacheKey, getCachedSql, putCachedSql } from '../services/queryCache';
 import { trackMetric, trackEvent } from '../utils/monitoring';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'query' });
 
 function shouldBlockQuery(r: NlToSqlOutput): { blocked: boolean; reason: string } {
   if (r.confidence < 0.7)
@@ -1556,7 +1559,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     res.end();
 
   } catch (err) {
-    console.error('[/think] Error:', err);
+    log.error({ err }, '[/think] Error');
     // Show the real error to admin/analyst — viewers still get the generic
     // message because raw errors can leak SQL / file paths / internals.
     const role = req.user?.role;
@@ -1803,7 +1806,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     res.end();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[Repair]', err);
+    log.error({ err }, '[Repair] investigation failed');
     send('error', { text: `Investigation failed: ${msg}` });
     res.end();
   } finally {

@@ -6,6 +6,9 @@
 import { semanticDb } from '../db/knex';
 import * as graph from '../db/semanticGraph';
 import { nextPgId } from '../db/semanticGraph';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'productGraphSync' });
 
 /**
  * Sync a data product's tables and columns to Neo4j.
@@ -101,7 +104,7 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
     await graph.upsertProductGraph(productId, mappedTables, mappedColumns);
   } catch (err) {
     // Non-fatal: log and continue — Neo4j sync failure shouldn't block product operations
-    console.error(`[productGraphSync] Failed to sync product ${productId} to Neo4j:`, err);
+    log.error({ err }, `Failed to sync product ${productId} to Neo4j`);
   }
 }
 
@@ -112,6 +115,6 @@ export async function deleteProductFromNeo4j(productId: number): Promise<void> {
   try {
     await graph.deleteProductGraph(productId);
   } catch (err) {
-    console.error(`[productGraphSync] Failed to delete product ${productId} from Neo4j:`, err);
+    log.error({ err }, `Failed to delete product ${productId} from Neo4j`);
   }
 }

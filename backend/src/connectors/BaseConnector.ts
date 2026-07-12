@@ -1,3 +1,7 @@
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'BaseConnector' });
+
 export interface ColumnInfo {
   name: string;
   type: string;
@@ -266,7 +270,7 @@ export abstract class BaseConnector {
         role = 'dimension';
       }
 
-      console.log(`[FK] classify: ${t.tableName} → ${role} (${rc} rows, ${fkCount} key cols, ${businessKeys.length} biz keys)`);
+      log.info(`[FK] classify: ${t.tableName} → ${role} (${rc} rows, ${fkCount} key cols, ${businessKeys.length} biz keys)`);
       return { tableName: t.tableName, role, rowCount: rc, businessKeys, keyColumns };
     });
   }
@@ -300,13 +304,13 @@ export abstract class BaseConnector {
     const classMap = new Map(classifications.map((c) => [c.tableName, c]));
 
     // ── Layer 1: Engine-specific declared FKs ────────────────────────────────
-    console.log(`[FK] Layer 1: checking declared FKs for ${tables.length} tables…`);
+    log.info(`[FK] Layer 1: checking declared FKs for ${tables.length} tables…`);
     try {
       const declared = await this.introspectDeclaredFks(tables);
       for (const fk of declared) addCandidate(fk);
-      console.log(`[FK] Layer 1: ${declared.length} declared FK(s)${declared.length ? ': ' + declared.map(f => `${f.fromTable}.${f.fromColumn}→${f.toTable}.${f.toColumn}`).join(', ') : ''}`);
+      log.info(`[FK] Layer 1: ${declared.length} declared FK(s)${declared.length ? ': ' + declared.map(f => `${f.fromTable}.${f.fromColumn}→${f.toTable}.${f.toColumn}`).join(', ') : ''}`);
     } catch (err) {
-      console.warn('[FK] Layer 1 failed:', err);
+      log.warn({ err }, '[FK] Layer 1 failed');
     }
 
     // ── Layer 2: Name-pattern matching ───────────────────────────────────────
@@ -358,7 +362,7 @@ export abstract class BaseConnector {
       }
     }
     const layer2Added = candidates.length - preLayer2;
-    console.log(`[FK] Layer 2: ${layer2Added} name-pattern match(es)${layer2Added ? ': ' + candidates.slice(preLayer2).map(c => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}`).join(', ') : ''}`);
+    log.info(`[FK] Layer 2: ${layer2Added} name-pattern match(es)${layer2Added ? ': ' + candidates.slice(preLayer2).map(c => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}`).join(', ') : ''}`);
 
     // ── Layer 3: Value overlap verification ──────────────────────────────────
     // Time-boxed: 10s per query, 2 min total budget for Layer 3+4
@@ -368,7 +372,7 @@ export abstract class BaseConnector {
     const fkTimedOut = () => Date.now() - fkBudgetStart > FK_TOTAL_BUDGET;
 
     const toVerify = candidates.filter(c => c.overlapRatio === undefined).length;
-    console.log(`[FK] Layer 3: verifying ${toVerify} candidate(s) with value overlap JOINs…`);
+    log.info(`[FK] Layer 3: verifying ${toVerify} candidate(s) with value overlap JOINs…`);
     let verified = 0, killed = 0, skipped = 0;
     for (const c of [...candidates]) {
       if (c.overlapRatio !== undefined) continue;
@@ -390,21 +394,21 @@ export abstract class BaseConnector {
           else if (c.overlapRatio >= 0.80) { c.confidence = Math.max(c.confidence, 0.85); verified++; }
           else if (c.overlapRatio >= 0.50) { c.confidence = Math.max(c.confidence, 0.7); verified++; }
           else { c.confidence = Math.min(c.confidence, 0.3); killed++; }
-          console.log(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: overlap ${Math.round(c.overlapRatio * 100)}% → conf ${c.confidence.toFixed(2)}`);
+          log.info(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: overlap ${Math.round(c.overlapRatio * 100)}% → conf ${c.confidence.toFixed(2)}`);
         } else {
           c.confidence = 0.1; c.overlapRatio = 0; killed++;
-          console.log(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: no overlap → killed`);
+          log.info(`[FK]   ${c.fromTable}.${c.fromColumn} → ${c.toTable}.${c.toColumn}: no overlap → killed`);
         }
       } catch { /* type mismatch or timeout */ }
     }
-    console.log(`[FK] Layer 3: ${verified} verified, ${killed} killed${skipped ? `, ${skipped} skipped (budget)` : ''}`);
+    log.info(`[FK] Layer 3: ${verified} verified, ${killed} killed${skipped ? `, ${skipped} skipped (budget)` : ''}`);
 
     // ── Layer 4: Value overlap discovery (fact key columns → dimension PKs) ──
     // Only check fact/bridge tables against dimension/unknown tables
     if (fkTimedOut()) {
-      console.log(`[FK] Layer 4: skipped (time budget exhausted)`);
+      log.info(`[FK] Layer 4: skipped (time budget exhausted)`);
     } else {
-      console.log(`[FK] Layer 4: scanning fact key columns against dimension PKs…`);
+      log.info(`[FK] Layer 4: scanning fact key columns against dimension PKs…`);
     }
     const preLayer4 = candidates.length;
     const factTables = classifications.filter((c) => c.role === 'fact' || c.role === 'bridge');
@@ -454,7 +458,7 @@ export abstract class BaseConnector {
               if (row && row.total > 0 && row.matched > 0) {
                 const ratio = row.matched / row.total;
                 if (ratio >= 0.7 && row.total <= row.target_rows * 1.5) {
-                  console.log(`[FK]   discovered: ${factClass.tableName}.${fromCol.name} → ${dimClass.tableName}.${toCol.name}: overlap ${Math.round(ratio * 100)}%`);
+                  log.info(`[FK]   discovered: ${factClass.tableName}.${fromCol.name} → ${dimClass.tableName}.${toCol.name}: overlap ${Math.round(ratio * 100)}%`);
                   addCandidate({
                     fromTable: factClass.tableName, fromColumn: fromCol.name,
                     toTable: dimClass.tableName, toColumn: toCol.name,
@@ -471,11 +475,11 @@ export abstract class BaseConnector {
     }
     const layer4Added = candidates.length - preLayer4;
     const fkElapsed = Math.round((Date.now() - fkBudgetStart) / 1000);
-    console.log(`[FK] Layer 4: ${layer4Added} new FK(s) discovered (${fkElapsed}s elapsed)`);
+    log.info(`[FK] Layer 4: ${layer4Added} new FK(s) discovered (${fkElapsed}s elapsed)`);
 
     // Drop candidates with very low confidence
     const final = candidates.filter((c) => c.confidence >= 0.3);
-    console.log(`[FK] Heuristic done: ${final.length} candidates kept (${candidates.length - final.length} dropped)`);
+    log.info(`[FK] Heuristic done: ${final.length} candidates kept (${candidates.length - final.length} dropped)`);
     return { candidates: final.sort((a, b) => b.confidence - a.confidence), classifications };
   }
 

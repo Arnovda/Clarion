@@ -16,6 +16,9 @@ import { reqDb } from '../db/reqDb';
 import { tenantQuery } from '../services/tenantQuery';
 import { resolveUpstreamProductsTopo } from '../services/productOwnership';
 import { getTransformationQueue, TransformationJobData } from '../jobs/queues';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'pipelines' });
 
 const router = Router();
 
@@ -482,8 +485,7 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
         triggers: triggers ?? [],
       });
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[pipelines POST /saved] registerPipelineTriggers failed', e);
+      log.error({ err: e }, '[pipelines POST /saved] registerPipelineTriggers failed');
     }
 
     res.json({ ok: true, data: { id, stableId: `custom:${id}` } });
@@ -530,8 +532,7 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (re
           await registerPipelineTriggers(fresh);
         }
       } catch (e) {
-        // eslint-disable-next-line no-console
-        console.error('[pipelines PUT /saved] registerPipelineTriggers failed', e);
+        log.error({ err: e }, '[pipelines PUT /saved] registerPipelineTriggers failed');
       }
     }
 
@@ -558,8 +559,7 @@ router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async 
       const { unregisterPipelineTriggers } = await import('../jobs/pipelineScheduler');
       await unregisterPipelineTriggers(id);
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error('[pipelines DELETE /saved] unregisterPipelineTriggers failed', e);
+      log.error({ err: e }, '[pipelines DELETE /saved] unregisterPipelineTriggers failed');
     }
 
     res.json({ ok: true });

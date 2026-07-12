@@ -6,6 +6,9 @@ import { MysqlConnector, MysqlConnectionConfig } from './MysqlConnector';
 import { MssqlConnector, MssqlConnectionConfig } from './MssqlConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
 import { semanticDb } from '../db/knex';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'ConnectorFactory' });
 
 interface ConnectionRow {
   id: number;
@@ -171,7 +174,7 @@ export async function createProductConnector(productWarehousePath: string, conne
   }
 
   const productCount = new Set(productTables.map((t) => t.productName)).size;
-  console.log(`[createProductConnector] Connection ${connectionId}: ${tableNames.length} product tables from ${productCount} product(s): ${tableNames.join(', ')}`);
+  log.info(`createProductConnector: Connection ${connectionId}: ${tableNames.length} product tables from ${productCount} product(s): ${tableNames.join(', ')}`);
 
   return new DuckDBConnector(productWarehousePath, tableNames, tablePaths, tableSchemas);
 }
