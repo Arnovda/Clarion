@@ -3,6 +3,8 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { askQuestionSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { reqDb } from '../db/reqDb';
 import { startSSE } from '../services/sse';
@@ -231,7 +233,7 @@ async function upsertDefinitionGap(
 }
 
 // POST /api/query
-router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, dashboardContext } = req.body as {
@@ -243,11 +245,6 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
        *  to bound the per-call cost. */
       dashboardContext?: string;
     };
-
-    if (!question?.trim()) {
-      res.status(400).json({ ok: false, error: 'question is required' });
-      return;
-    }
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId

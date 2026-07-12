@@ -12,6 +12,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { createPipelineSchema, updatePipelineSchema, runPipelineSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { tenantQuery } from '../services/tenantQuery';
 import { resolveUpstreamProductsTopo } from '../services/productOwnership';
@@ -448,7 +450,7 @@ router.get('/list', requireAuth, async (req: Request, res: Response, next: NextF
 // POST /api/pipelines/saved — create a custom pipeline
 // Body: { name, description?, scope, triggers?: [], enabled? }
 // ---------------------------------------------------------------------------
-router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/saved', requireAuth, requireRole('admin', 'analyst'), validate(createPipelineSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user!.tenantId;
@@ -457,8 +459,6 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
       name: string; description?: string;
       scope: unknown; triggers?: unknown[]; enabled?: boolean;
     };
-    if (!name?.trim()) return res.status(400).json({ ok: false, error: 'name is required' });
-    if (!scope) return res.status(400).json({ ok: false, error: 'scope is required' });
 
     const [row] = await db('pipelines').insert({
       tenant_id: tenantId,
@@ -495,7 +495,7 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), async (req: 
 // ---------------------------------------------------------------------------
 // PUT /api/pipelines/saved/:id — update name / description / scope / triggers
 // ---------------------------------------------------------------------------
-router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), validate(updatePipelineSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user!.tenantId;
@@ -573,7 +573,7 @@ router.delete('/saved/:id', requireAuth, requireRole('admin', 'analyst'), async 
 // Returns { jobId, pipelineRunId } so the frontend can attach via the
 // existing /bus-matrix/:jobId/stream SSE.
 // ---------------------------------------------------------------------------
-router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/run-pipeline', requireAuth, requireRole('admin', 'analyst'), validate(runPipelineSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user!.tenantId;

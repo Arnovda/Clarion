@@ -18,6 +18,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import {
+  createNotebookSchema, updateNotebookSchema, createNotebookCellSchema, updateNotebookCellSchema,
+} from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { callClaudeMultiTurn } from '../ai/AIService';
@@ -492,10 +496,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── CREATE notebook ────────────────────────────────────────────────────────
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', validate(createNotebookSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
-    const { title, description, connectionId } = req.body as {
+    const { title, description, connectionId } = (req.body ?? {}) as {
       title?: string;
       description?: string;
       connectionId?: number;
@@ -547,7 +551,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── UPDATE notebook ────────────────────────────────────────────────────────
-router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', validate(updateNotebookSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
     const { title, description, connectionId } = req.body as {
@@ -612,7 +616,7 @@ router.patch('/:id/star', async (req: Request, res: Response, next: NextFunction
 });
 
 // ─── ADD cell ───────────────────────────────────────────────────────────────
-router.post('/:id/cells', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/cells', validate(createNotebookCellSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
     const notebookId = Number(req.params.id);
@@ -626,7 +630,7 @@ router.post('/:id/cells', async (req: Request, res: Response, next: NextFunction
       return;
     }
 
-    const { cellType, source, position } = req.body as {
+    const { cellType, source, position } = (req.body ?? {}) as {
       cellType?: string;
       source?: string;
       position?: number;
@@ -667,7 +671,7 @@ router.post('/:id/cells', async (req: Request, res: Response, next: NextFunction
 });
 
 // ─── UPDATE cell ────────────────────────────────────────────────────────────
-router.patch('/cells/:cellId', async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/cells/:cellId', validate(updateNotebookCellSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
     const cellId = Number(req.params.cellId);

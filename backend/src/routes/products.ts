@@ -1,5 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import {
+  createProductSchema, updateProductSchema, updateProductTableSchema, updateProductTableSqlSchema,
+  updateProductColumnSchema, createProductKpiSchema, updateProductKpiSchema, productRefreshStartSchema,
+} from '../middleware/schemas';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
 import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { syncProductToNeo4j, deleteProductFromNeo4j } from '../services/productGraphSync';
@@ -887,7 +892,7 @@ router.get('/tables/:tableId/used-by', requireAuth, async (req: Request, res: Re
 // POST /api/products — Create a data product
 // ---------------------------------------------------------------------------
 
-router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin'), validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { name, description, connectionId, sourceTables } = req.body as {
@@ -896,11 +901,6 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
       connectionId: number;
       sourceTables: { sourceTableId: number; tableName: string }[];
     };
-
-    if (!name?.trim()) {
-      res.status(400).json({ ok: false, error: 'name is required' });
-      return;
-    }
 
     const [row] = await db('data_products')
       .insert({
@@ -1165,7 +1165,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 // PUT /api/products/:id — Update data product
 // ---------------------------------------------------------------------------
 
-router.put('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', requireAuth, requireRole('admin'), validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { name, description, status } = req.body as { name?: string; description?: string; status?: string };
@@ -1963,7 +1963,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 // (currently: description, display_name)
 // ---------------------------------------------------------------------------
 
-router.patch('/tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/tables/:tableId', requireAuth, requireRole('admin'), validate(updateProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const allowed = ['description', 'display_name'];
@@ -2044,7 +2044,7 @@ router.post('/:id/tables', requireAuth, requireRole('admin', 'analyst'), async (
 // PUT /api/products/tables/:tableId/sql — Update transformation SQL
 // ---------------------------------------------------------------------------
 
-router.put('/tables/:tableId/sql', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/tables/:tableId/sql', requireAuth, requireRole('admin'), validate(updateProductTableSqlSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { sql } = req.body as { sql: string };
@@ -2143,7 +2143,7 @@ router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request,
 // PUT /api/products/columns/:columnId — Update a product column
 // ---------------------------------------------------------------------------
 
-router.put('/columns/:columnId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/columns/:columnId', requireAuth, requireRole('admin'), validate(updateProductColumnSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const allowed = [
@@ -2589,17 +2589,13 @@ router.get('/:id/starters', requireAuth, async (req: Request, res: Response, nex
 // (matches the role gating on /semantic confirms).
 // ---------------------------------------------------------------------------
 
-router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(createProductKpiSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { name, description, formulaPlainText, formulaSql, ownerName } = req.body as {
       name: string; description?: string; formulaPlainText?: string;
       formulaSql?: string; ownerName?: string;
     };
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      res.status(400).json({ ok: false, error: 'KPI name is required' });
-      return;
-    }
 
     const tenantId = req.user?.tenantId;
     const id = await tenantQuery(tenantId, async (trx) => {
@@ -2624,7 +2620,7 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), async (re
 // PUT /api/products/kpis/:kpiId — Update a KPI
 // ---------------------------------------------------------------------------
 
-router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), validate(updateProductKpiSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const allowed = ['name', 'description', 'formula_plain_text', 'formula_sql', 'owner_name', 'ai_draft'];
@@ -2853,7 +2849,7 @@ router.post('/propose-single', requireAuth, requireRole('admin'), async (req: Re
 // Returns { jobId } — frontend then attaches via /bus-matrix/:jobId/stream
 // (the SSE / cancel / active-job endpoints are mode-agnostic).
 // ---------------------------------------------------------------------------
-router.post('/:id/refresh-start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+router.post('/:id/refresh-start', requireAuth, requireRole('admin'), validate(productRefreshStartSchema), async (req: Request, res: Response) => {
   try {
     const db = reqDb(req);
     const productId = Number(req.params.id);

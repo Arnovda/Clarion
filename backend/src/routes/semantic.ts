@@ -1,6 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import {
+  updateTableSchema, updateColumnSchema, createRelationshipSchema, updateRelationshipSchema,
+  createKpiSchema, createGlossarySchema, updateGlossarySchema,
+} from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
@@ -124,7 +129,7 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
 });
 
 // PATCH /api/semantic/tables/:id — confirm or edit a table definition
-router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
@@ -196,7 +201,7 @@ router.get('/columns', requireAuth, async (req: Request, res: Response, next: Ne
 });
 
 // PATCH /api/semantic/columns/:id
-router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateColumnSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
@@ -356,7 +361,7 @@ router.get('/relationships', requireAuth, async (req: Request, res: Response, ne
 });
 
 // POST /api/semantic/relationships
-router.post('/relationships', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/relationships', requireAuth, requireRole('admin'), validate(createRelationshipSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description } =
@@ -414,7 +419,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), async (req: Req
 // Phase A IA redesign so analysts can confirm/flag from the review
 // queue). Relationships review now lives in the same /review surface,
 // so the role gate must match.
-router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateRelationshipSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { relationship_type, description, from_column_id, to_column_id } =
@@ -635,7 +640,7 @@ router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextF
 });
 
 // POST /api/semantic/kpis
-router.post('/kpis', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/kpis', requireAuth, requireRole('admin'), validate(createKpiSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connection_id, name, description, formula_plain_text, formula_sql, owner_name } =
@@ -723,7 +728,7 @@ router.get('/glossary', requireAuth, async (req: Request, res: Response, next: N
 });
 
 // POST /api/semantic/glossary
-router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), validate(createGlossarySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { term, meaning, examples, tags } = req.body as Record<string, unknown>;
@@ -756,7 +761,7 @@ router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), async (re
 });
 
 // PATCH /api/semantic/glossary/:id
-router.patch('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateGlossarySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);

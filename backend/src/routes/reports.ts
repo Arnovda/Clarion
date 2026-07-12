@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { generateReportSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -11,7 +13,7 @@ import { parsePagination, paginatedResponse } from '../utils/paginate';
 const router = Router();
 
 // POST /api/reports/generate
-router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/generate', requireAuth, validate(generateReportSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, title, period, kpiIds } = req.body as {
@@ -20,11 +22,6 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       period: string;
       kpiIds: number[];
     };
-
-    if (!kpiIds?.length) {
-      res.status(400).json({ ok: false, error: 'At least one KPI is required' });
-      return;
-    }
 
     // 1. Fetch confirmed KPI definitions from Neo4j
     const kpis = await getKpisByIds(kpiIds, connectionId);

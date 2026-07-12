@@ -1,5 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
@@ -243,18 +245,13 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
 // POST /api/dashboards/refine — get clarifying questions before generation
 // ---------------------------------------------------------------------------
 
-router.post('/refine', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, request, productIds, dataLayer } = req.body as {
       connectionId: number; request: string; productIds?: number[];
       dataLayer?: 'product' | 'source';
     };
-
-    if (!request?.trim()) {
-      res.status(400).json({ ok: false, error: 'request is required' });
-      return;
-    }
 
     const productCtx = dataLayer === 'source'
       ? null
@@ -392,7 +389,7 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
 // POST /api/dashboards/batch-execute — run all widget SQLs in one request
 // ---------------------------------------------------------------------------
 
-router.post('/batch-execute', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/batch-execute', requireAuth, validate(batchExecuteSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { connectionId, widgets, dataLayer, crossFilter } = req.body as {
       connectionId: number;
@@ -400,11 +397,6 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
       dataLayer?: 'product' | 'source';
       crossFilter?: { sourceWidgetId: string; dimension: string; value: string };
     };
-
-    if (!Array.isArray(widgets) || widgets.length === 0) {
-      res.status(400).json({ ok: false, error: 'widgets array required' });
-      return;
-    }
 
     const tenantId = req.user!.tenantId;
     const useSource = dataLayer === 'source';
@@ -524,7 +516,7 @@ router.post('/batch-execute', requireAuth, async (req: Request, res: Response, n
 // so a fully-cached dashboard emits every event without touching DuckDB.
 // ---------------------------------------------------------------------------
 
-router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/batch-execute-stream', requireAuth, validate(batchExecuteSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { connectionId, widgets, dataLayer, crossFilter } = req.body as {
       connectionId: number;
@@ -537,11 +529,6 @@ router.post('/batch-execute-stream', requireAuth, async (req: Request, res: Resp
        *  so saved dashboards keep working. */
       crossFilter?: { sourceWidgetId: string; dimension: string; value: string };
     };
-
-    if (!Array.isArray(widgets) || widgets.length === 0) {
-      res.status(400).json({ ok: false, error: 'widgets array required' });
-      return;
-    }
 
     const tenantId = req.user!.tenantId;
     const useSource = dataLayer === 'source';
@@ -1180,7 +1167,7 @@ router.get('/folders', requireAuth, async (req: Request, res: Response, next: Ne
 // POST /api/dashboards
 // ---------------------------------------------------------------------------
 
-router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, validate(createDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, title, description, spec, folder } = req.body as {
@@ -1418,7 +1405,7 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
 // PATCH /api/dashboards/:id — update dashboard properties (title, folder, sharing, auto-refresh)
 // ---------------------------------------------------------------------------
 
-router.patch('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', requireAuth, validate(updateDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = req.user!.sub;

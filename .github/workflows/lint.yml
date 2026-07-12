@@ -14,6 +14,9 @@ name: Lint
 #     (papers over circular dependencies; baseline only ever goes down).
 #   • no-inline-500       — inline `res.status(500)` in routes instead of
 #     throwing to the central errorHandler (raw-error echo to clients).
+#   • validate-coverage   — new mutating routes shipped without the Zod
+#     validate() middleware (blind `req.body as {...}` casts; baseline only
+#     ever goes down).
 on:
   pull_request:
     branches: [main]
@@ -50,3 +53,6 @@ jobs:
 
       - name: no-inline-500
         run: npx --yes tsx@4.22 backend/scripts/lint-no-inline-500.ts
+
+      - name: validate-coverage
+        run: npx --yes tsx@4.22 backend/scripts/lint-validate-coverage.ts

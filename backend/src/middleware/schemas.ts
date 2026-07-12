@@ -18,6 +18,19 @@ const nonEmptyString = z.string().min(1, 'Required').transform((v) => v.trim());
 const optionalString = z.string().optional();
 const booleanish = z.union([z.boolean(), z.literal('true'), z.literal('false')]).transform((v) => v === true || v === 'true');
 
+// Non-transforming "must contain non-whitespace" check. Unlike nonEmptyString
+// it does NOT trim the value — handlers that store the raw string keep
+// exactly what the client sent (behaviour-preserving for valid requests).
+const nonBlankString = z.string().refine((v) => v.trim().length > 0, 'Required');
+// Body ids arrive as JSON numbers; null is a meaningful "clear this" value on
+// several PATCH surfaces, so we deliberately avoid z.coerce here (coerce turns
+// null into 0 and destroys the null semantics).
+const idNumber = z.number().int().positive();
+const nullableId = z.number().int().nullable().optional();
+const nullableOptionalString = z.string().nullable().optional();
+const jsonObject = z.record(z.string(), z.unknown());
+const dataLayerEnum = z.enum(['product', 'source']).optional();
+
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -99,38 +112,95 @@ export const semanticConnectionQuery = z.object({
   }),
 });
 
+// PATCH /semantic/tables/:id — the handler forwards the whole body to
+// graph.updateTable + the version/audit trail, so the schema is passthrough:
+// it type-checks the known fields without stripping anything. Frontend echoes
+// DB values back, so nullable strings/booleans are part of the real contract.
 export const updateTableSchema = z.object({
-  params: z.object({ id: z.string().regex(/^\d+$/) }),
   body: z.object({
-    display_name: optionalString,
-    description: optionalString,
-    owner_name: optionalString,
-    is_active: z.boolean().optional(),
-    grain: optionalString,
-    business_key_column: optionalString,
-  }),
+    display_name: nullableOptionalString,
+    description: nullableOptionalString,
+    owner_name: nullableOptionalString,
+    is_active: z.boolean().nullable().optional(),
+    grain: nullableOptionalString,
+    business_key_column: nullableOptionalString,
+    approval_status: nullableOptionalString,
+    ai_draft: z.boolean().optional(),
+    domains: z.union([z.array(z.string()), z.string()]).nullable().optional(),
+    change_reason: nullableOptionalString,
+  }).passthrough(),
 });
 
+// PATCH /semantic/columns/:id — same passthrough rationale as tables.
 export const updateColumnSchema = z.object({
-  params: z.object({ id: z.string().regex(/^\d+$/) }),
   body: z.object({
-    display_name: optionalString,
-    description: optionalString,
-    owner_name: optionalString,
-    is_dimension: z.boolean().optional(),
-    is_measure: z.boolean().optional(),
-  }),
+    display_name: nullableOptionalString,
+    description: nullableOptionalString,
+    owner_name: nullableOptionalString,
+    is_dimension: z.boolean().nullable().optional(),
+    is_measure: z.boolean().nullable().optional(),
+    approval_status: nullableOptionalString,
+    ai_draft: z.boolean().optional(),
+  }).passthrough(),
 });
 
+// POST /semantic/relationships
+export const createRelationshipSchema = z.object({
+  body: z.object({
+    from_table_id: idNumber,
+    to_table_id: idNumber,
+    from_column_id: nullableId,
+    to_column_id: nullableId,
+    relationship_type: optionalString,
+    description: nullableOptionalString,
+  }).passthrough(),
+});
+
+// PATCH /semantic/relationships/:id — an empty body is a valid "confirm"
+// (server flips ai_draft=false); null column ids mean "clear the column".
+export const updateRelationshipSchema = z.object({
+  body: z.object({
+    relationship_type: optionalString,
+    description: nullableOptionalString,
+    from_column_id: nullableId,
+    to_column_id: nullableId,
+    ai_draft: z.boolean().optional(),
+  }).passthrough(),
+});
+
+// POST /semantic/kpis (source-layer KPI create)
 export const createKpiSchema = z.object({
   body: z.object({
     connection_id: positiveInt,
-    name: nonEmptyString,
-    description: optionalString,
-    formula_plain_text: optionalString,
-    formula_sql: optionalString,
-    owner_name: optionalString,
-  }),
+    name: nonBlankString,
+    description: nullableOptionalString,
+    formula_plain_text: nullableOptionalString,
+    formula_sql: nullableOptionalString,
+    owner_name: nullableOptionalString,
+  }).passthrough(),
+});
+
+// POST /semantic/glossary — examples/tags accept an array OR a JSON string
+// (the handler's parseJsonArray handles both). Whitespace-only term/meaning is
+// still rejected by the handler's own trim check (kept — stricter than this).
+export const createGlossarySchema = z.object({
+  body: z.object({
+    term: z.string(),
+    meaning: z.string(),
+    examples: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+    tags: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+  }).passthrough(),
+});
+
+// PATCH /semantic/glossary/:id
+export const updateGlossarySchema = z.object({
+  body: z.object({
+    term: optionalString,
+    meaning: optionalString,
+    examples: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+    tags: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+    ai_draft: z.boolean().optional(),
+  }).passthrough(),
 });
 
 export const previewTableSchema = z.object({
@@ -145,42 +215,84 @@ export const previewTableSchema = z.object({
 // Query (NL→SQL chat)
 // ---------------------------------------------------------------------------
 
+// POST /query — matches what the handler actually reads (connectionId,
+// question, domains, conversationId, dataLayer, dashboardContext).
+// Passthrough so auxiliary fields some callers send (e.g. selectedEntity from
+// the disambiguation flow) survive untouched.
 export const askQuestionSchema = z.object({
   body: z.object({
-    question: nonEmptyString,
+    question: nonBlankString,
     connectionId: positiveInt,
-    conversationId: optionalString,
-    selectedEntity: z.object({
-      value: z.string(),
-      column: z.string(),
-      table: z.string(),
-    }).optional(),
-  }),
+    domains: z.array(z.string()).optional(),
+    conversationId: nullableId,
+    dataLayer: dataLayerEnum,
+    dashboardContext: optionalString,
+  }).passthrough(),
 });
 
 // ---------------------------------------------------------------------------
 // Dashboards
 // ---------------------------------------------------------------------------
 
+// POST /dashboards — real contract is { connectionId, title, description,
+// spec, folder }. connectionId may be null (dashboards without a connection
+// are allowed — the test suite exercises this).
 export const createDashboardSchema = z.object({
   body: z.object({
-    title: nonEmptyString,
-    description: optionalString,
-    connection_id: positiveInt,
-    spec: z.record(z.string(), z.unknown()),
-    source_question: optionalString,
-    folder_id: z.number().int().nullable().optional(),
-  }),
+    connectionId: z.number().int().nullable(),
+    title: nonBlankString,
+    description: nullableOptionalString,
+    spec: jsonObject,
+    folder: nullableOptionalString,
+  }).passthrough(),
 });
 
+// PATCH /dashboards/:id — every field optional; an empty body is a valid
+// no-op today (handler returns the row unchanged).
 export const updateDashboardSchema = z.object({
-  params: z.object({ id: z.string().regex(/^\d+$/) }),
   body: z.object({
     title: optionalString,
-    description: optionalString,
-    spec: z.record(z.string(), z.unknown()).optional(),
-    folder_id: z.number().int().nullable().optional(),
-  }),
+    description: nullableOptionalString,
+    folder: nullableOptionalString,
+    is_shared: z.boolean().optional(),
+    shared_permission: optionalString,
+    auto_refresh_seconds: z.number().int().nullable().optional(),
+    spec: jsonObject.optional(),
+  }).passthrough(),
+});
+
+// POST /dashboards/batch-execute + /batch-execute-stream
+export const batchExecuteSchema = z.object({
+  body: z.object({
+    connectionId: idNumber,
+    widgets: z.array(
+      z.object({
+        id: z.string(),
+        sql: z.string(),
+        filterValues: z.record(
+          z.string(),
+          z.union([z.string(), z.number(), z.boolean(), z.null()]),
+        ).nullable().optional(),
+      }).passthrough(),
+    ).min(1, 'widgets array required'),
+    dataLayer: dataLayerEnum,
+    crossFilter: z.object({
+      sourceWidgetId: z.string(),
+      dimension: z.string(),
+      value: z.union([z.string(), z.number(), z.boolean()]),
+    }).passthrough().optional(),
+  }).passthrough(),
+});
+
+// POST /dashboards/refine — clarifying-questions step before generation.
+// Passthrough: the frontend also sends `domains` which the handler ignores.
+export const refineDashboardSchema = z.object({
+  body: z.object({
+    connectionId: nullableId,
+    request: nonBlankString,
+    productIds: z.array(z.number().int()).optional(),
+    dataLayer: dataLayerEnum,
+  }).passthrough(),
 });
 
 export const dashboardIdParam = z.object({
@@ -197,9 +309,9 @@ export const generateReportSchema = z.object({
   body: z.object({
     connectionId: positiveInt,
     kpiIds: z.array(positiveInt).min(1, 'At least one KPI required'),
-    period: optionalString,
-    title: optionalString,
-  }),
+    period: nullableOptionalString,
+    title: nullableOptionalString,
+  }).passthrough(),
 });
 
 // ---------------------------------------------------------------------------
@@ -239,17 +351,185 @@ export const profileTableSchema = z.object({
 // Conversations
 // ---------------------------------------------------------------------------
 
+// POST /conversations — real contract is { title?, sourceKey? }; both are
+// optional (the handler defaults title to "New conversation").
 export const createConversationSchema = z.object({
   body: z.object({
-    title: nonEmptyString,
-    connection_id: positiveInt,
-  }),
+    title: nullableOptionalString,
+    sourceKey: nullableOptionalString,
+  }).passthrough().optional(),
 });
 
+// PATCH /conversations/:id — title is required and must be non-blank.
 export const updateConversationSchema = z.object({
-  params: z.object({ id: z.string().regex(/^\d+$/) }),
+  body: z.object({
+    title: nonBlankString,
+  }).passthrough(),
+});
+
+// ---------------------------------------------------------------------------
+// Products
+// ---------------------------------------------------------------------------
+
+// POST /products
+export const createProductSchema = z.object({
+  body: z.object({
+    name: nonBlankString,
+    description: nullableOptionalString,
+    connectionId: nullableId,
+    sourceTables: z.array(
+      z.object({
+        sourceTableId: z.number().int(),
+        tableName: z.string(),
+      }).passthrough(),
+    ).nullable().optional(),
+  }).passthrough(),
+});
+
+// PUT /products/:id
+export const updateProductSchema = z.object({
+  body: z.object({
+    name: optionalString,
+    description: nullableOptionalString,
+    status: optionalString,
+  }).passthrough(),
+});
+
+// PATCH /products/tables/:tableId — description / display_name only
+export const updateProductTableSchema = z.object({
+  body: z.object({
+    description: nullableOptionalString,
+    display_name: nullableOptionalString,
+  }).passthrough(),
+});
+
+// PUT /products/tables/:tableId/sql — transformation SQL edit
+export const updateProductTableSqlSchema = z.object({
+  body: z.object({
+    sql: z.string(),
+  }).passthrough(),
+});
+
+// PUT /products/columns/:columnId — the handler applies a fixed allow-list;
+// this validates the types of those allowed fields.
+export const updateProductColumnSchema = z.object({
+  body: z.object({
+    column_name: nullableOptionalString,
+    data_type: nullableOptionalString,
+    display_name: nullableOptionalString,
+    description: nullableOptionalString,
+    column_role: nullableOptionalString,
+    fk_target_table: nullableOptionalString,
+    fk_target_column: nullableOptionalString,
+    transformation_expression: nullableOptionalString,
+    additivity: nullableOptionalString,
+    scd_type: nullableOptionalString,
+    sort_order: z.number().int().nullable().optional(),
+  }).passthrough(),
+});
+
+// POST /products/:id/kpis (product-layer KPI create — camelCase contract)
+export const createProductKpiSchema = z.object({
+  body: z.object({
+    name: nonBlankString,
+    description: nullableOptionalString,
+    formulaPlainText: nullableOptionalString,
+    formulaSql: nullableOptionalString,
+    ownerName: nullableOptionalString,
+  }).passthrough(),
+});
+
+// PUT /products/kpis/:kpiId (snake_case allow-list contract)
+export const updateProductKpiSchema = z.object({
+  body: z.object({
+    name: optionalString,
+    description: nullableOptionalString,
+    formula_plain_text: nullableOptionalString,
+    formula_sql: nullableOptionalString,
+    owner_name: nullableOptionalString,
+    ai_draft: z.boolean().optional(),
+  }).passthrough(),
+});
+
+// POST /products/:id/refresh-start — body may be absent entirely
+export const productRefreshStartSchema = z.object({
+  body: z.object({
+    syncSource: z.boolean().optional(),
+  }).passthrough().optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Pipelines
+// ---------------------------------------------------------------------------
+
+// POST /pipelines/saved
+export const createPipelineSchema = z.object({
+  body: z.object({
+    name: nonBlankString,
+    description: nullableOptionalString,
+    scope: jsonObject,
+    triggers: z.array(z.unknown()).nullable().optional(),
+    enabled: z.boolean().optional(),
+  }).passthrough(),
+});
+
+// PUT /pipelines/saved/:id
+export const updatePipelineSchema = z.object({
+  body: z.object({
+    name: optionalString,
+    description: nullableOptionalString,
+    scope: jsonObject.optional(),
+    triggers: z.array(z.unknown()).optional(),
+    enabled: z.boolean().optional(),
+  }).passthrough(),
+});
+
+// POST /pipelines/run-pipeline — pipelineId XOR adhocScope; the either-or
+// check stays inline in the handler (it is part of the resolution logic).
+export const runPipelineSchema = z.object({
+  body: z.object({
+    pipelineId: optionalString,
+    adhocScope: jsonObject.optional(),
+  }).passthrough(),
+});
+
+// ---------------------------------------------------------------------------
+// Notebooks
+// ---------------------------------------------------------------------------
+
+// POST /notebooks — everything optional (handler supplies defaults)
+export const createNotebookSchema = z.object({
+  body: z.object({
+    title: nullableOptionalString,
+    description: nullableOptionalString,
+    connectionId: nullableId,
+  }).passthrough().optional(),
+});
+
+// PATCH /notebooks/:id — title/description must be strings when present
+// (the handler calls .trim() on them); connectionId null clears the pin.
+export const updateNotebookSchema = z.object({
   body: z.object({
     title: optionalString,
-    is_pinned: z.boolean().optional(),
-  }),
+    description: optionalString,
+    connectionId: z.number().int().nullable().optional(),
+  }).passthrough(),
+});
+
+// POST /notebooks/:id/cells
+export const createNotebookCellSchema = z.object({
+  body: z.object({
+    cellType: optionalString,
+    source: optionalString,
+    position: z.number().int().optional(),
+  }).passthrough().optional(),
+});
+
+// PATCH /notebooks/cells/:cellId
+export const updateNotebookCellSchema = z.object({
+  body: z.object({
+    source: optionalString,
+    cellType: optionalString,
+    position: z.number().int().optional(),
+  }).passthrough(),
 });

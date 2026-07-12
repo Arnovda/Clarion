@@ -15,6 +15,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { validate } from '../middleware/validate';
+import { createConversationSchema, updateConversationSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { safeQuery } from '../db/safeQuery';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
@@ -47,10 +49,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── CREATE conversation ─────────────────────────────────────────────────────
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', validate(createConversationSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { title, sourceKey } = req.body as { title?: string; sourceKey?: string };
+    const { title, sourceKey } = (req.body ?? {}) as { title?: string; sourceKey?: string };
 
     const [conv] = await db('conversations')
       .insert({
@@ -85,11 +87,10 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // ─── UPDATE title ────────────────────────────────────────────────────────────
-router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', validate(updateConversationSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { title } = req.body as { title: string };
-    if (!title?.trim()) { res.status(400).json({ ok: false, error: 'Title is required' }); return; }
 
     const count = await db('conversations')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
