@@ -533,3 +533,18 @@ export const updateNotebookCellSchema = z.object({
     position: z.number().int().optional(),
   }).passthrough(),
 });
+
+// DELETE /users/:id — GDPR erasure. No body required; schema present so the
+// validate-coverage ratchet is satisfied and extra fields are tolerated.
+export const eraseUserSchema = z.object({
+  body: z.object({}).passthrough().optional(),
+});
+
+// POST /settings/delete-tenant — irreversible full account closure. Requires
+// the caller to re-confirm their password AND type the exact org name.
+export const deleteTenantSchema = z.object({
+  body: z.object({
+    confirmName: z.string().min(1, 'Type your organisation name to confirm'),
+    password: z.string().min(1, 'Password is required to confirm deletion'),
+  }),
+});

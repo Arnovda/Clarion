@@ -530,6 +530,41 @@ export async function deleteRelationship(pgId: number): Promise<void> {
   }
 }
 
+/**
+ * Purge every graph node belonging to a tenant — used by the tenant-deletion
+ * flow. Nodes are scoped by `connectionId` (source side: SourceTable,
+ * SourceColumn, KpiDefinition, QualityRule, CrossSourceView) or `dataProductId`
+ * (product side: ProductTable → ProductColumn). Pass the tenant's connection
+ * and product ids (collected from Postgres before the rows are deleted).
+ * DETACH DELETE removes each node with all its edges. No-op if both lists are
+ * empty.
+ */
+export async function deleteTenantGraph(
+  connectionIds: number[],
+  productIds: number[],
+): Promise<void> {
+  if (connectionIds.length === 0 && productIds.length === 0) return;
+  const session = getSession();
+  try {
+    if (productIds.length > 0) {
+      await session.run(
+        `MATCH (pt:ProductTable) WHERE pt.dataProductId IN $pids
+         OPTIONAL MATCH (pt)-[:HAS_COLUMN]->(pc:ProductColumn)
+         DETACH DELETE pt, pc`,
+        { pids: productIds },
+      );
+    }
+    if (connectionIds.length > 0) {
+      await session.run(
+        `MATCH (n) WHERE n.connectionId IN $cids DETACH DELETE n`,
+        { cids: connectionIds },
+      );
+    }
+  } finally {
+    await session.close();
+  }
+}
+
 export async function deleteAiDraftRelationships(connectionId: number): Promise<void> {
   const session = getSession();
   try {

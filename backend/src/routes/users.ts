@@ -17,8 +17,9 @@ import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
 import { config } from '../config';
 import { validate } from '../middleware/validate';
-import { inviteUserSchema } from '../middleware/schemas';
+import { inviteUserSchema, eraseUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
+import { eraseUser } from '../services/accountDeletion';
 import { revokeAllForUser } from '../services/refreshTokenService';
 import { disableMfa } from '../services/mfaService';
 import { logger as rootLogger } from '../utils/logger';
@@ -225,6 +226,53 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
       entityId:   userId,
     });
 
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/users/:id — GDPR erasure (anonymise PII + drop credentials)
+// ---------------------------------------------------------------------------
+router.delete('/:id', requireRole('admin'), validate(eraseUserSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const userId = Number(req.params.id);
+    const tenantId = req.user!.tenantId;
+
+    if (userId === req.user!.sub) {
+      res.status(400).json({ ok: false, error: 'You cannot erase your own account here — use account closure instead' });
+      return;
+    }
+
+    const target = await db('users').where({ id: userId }).select('id', 'role', 'is_active').first();
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'User not found' });
+      return;
+    }
+
+    // Never erase the last remaining active admin — it would lock the tenant out.
+    if (target.role === 'admin') {
+      const otherAdmins = await db('users')
+        .where({ role: 'admin', is_active: true })
+        .whereNot({ id: userId })
+        .count<{ count: string }[]>('* as count');
+      if (Number(otherAdmins[0].count) === 0) {
+        res.status(400).json({ ok: false, error: 'Cannot erase the last active admin. Promote another admin first.' });
+        return;
+      }
+    }
+
+    // eraseUser nests its work in a sub-transaction of the request's
+    // already-tenant-scoped transaction.
+    await eraseUser(db, tenantId, userId);
+
+    try {
+      await revokeAllForUser(userId, tenantId, 'user_erased');
+    } catch (err) {
+      log.warn({ err }, '[users.erase] revokeAllForUser failed');
+    }
+
+    await recordAudit(req, { action: 'user.erase', entityType: 'user', entityId: userId });
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
