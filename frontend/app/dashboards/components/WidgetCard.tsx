@@ -27,6 +27,10 @@ interface WidgetCardProps {
   /** Whether the current user is admin/analyst — gates the raw SQL view
    * inside the provenance modal. */
   isAdminOrAnalyst?: boolean;
+  /** Render-time self-heal: shown when the widget errored. Calls
+   * POST /dashboards/fix-widget and patches the spec in place. */
+  onFixWidget?: () => void;
+  fixing?: boolean;
 }
 
 export function WidgetCard({
@@ -43,6 +47,8 @@ export function WidgetCard({
   isInvestigating,
   dataLayer,
   isAdminOrAnalyst,
+  onFixWidget,
+  fixing,
 }: WidgetCardProps) {
   const isKpi = spec.type === 'kpi_card';
   const featured = spec.featured;
@@ -114,6 +120,22 @@ export function WidgetCard({
             : 'border-line hover:border-line-strong'
       }`}
     >
+      {/* Self-heal banner — shown when the widget's SQL failed at render
+          time (schema drift, renamed column). One click re-runs the
+          execute → contract-check → AI-repair loop for just this widget. */}
+      {data?.error && onFixWidget && (
+        <div className="px-5 py-2 flex items-center justify-between gap-3 border-b border-line bg-err/5 shrink-0">
+          <span className="text-[11px] text-err truncate">This widget is broken</span>
+          <button
+            onClick={onFixWidget}
+            disabled={fixing}
+            className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover disabled:opacity-50 transition-colors shrink-0"
+          >
+            {fixing ? 'Fixing…' : 'Fix with AI'}
+          </button>
+        </div>
+      )}
+
       {/* Card header (non-KPI only) */}
       {!isKpi && (
         <div className="px-5 pt-4 pb-3 flex items-center justify-between gap-3 shrink-0 border-b border-line">

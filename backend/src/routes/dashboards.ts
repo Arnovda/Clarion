@@ -170,6 +170,82 @@ async function executeSpecForValidation(
 }
 
 // ---------------------------------------------------------------------------
+// Helper — full validation + repair pass over a spec (best-effort).
+//
+// Executes widget SQLs with default filters, runs the deterministic
+// column-contract check (shared/widgetContracts.ts), the Haiku semantic
+// check, and — if anything is broken — one Sonnet repair call. Never throws:
+// on failure the input spec is returned unrepaired and the failure is logged
+// loudly. `onlyWidgetIds` scopes execution to a subset (used by refine-spec
+// to validate just the widgets the refinement changed).
+// ---------------------------------------------------------------------------
+
+async function validateAndRepairSpec(
+  spec: DashboardSpec,
+  connectionId: number,
+  tenantId: number | undefined,
+  dataLayer: 'product' | 'source' | undefined,
+  semanticCtx: { semanticContext: string; relationshipContext: string },
+  onlyWidgetIds?: Set<string>,
+): Promise<DashboardSpec> {
+  try {
+    const widgetsToCheck = onlyWidgetIds
+      ? spec.widgets.filter((w) => onlyWidgetIds.has(w.id))
+      : spec.widgets;
+    if (widgetsToCheck.length === 0) return spec;
+
+    const executionResults = await executeSpecForValidation(
+      { ...spec, widgets: widgetsToCheck },
+      connectionId,
+      tenantId,
+      dataLayer,
+    );
+
+    // Deterministic column-contract check — a widget whose SQL doesn't
+    // return the exact column names its type requires (label/value/series/…)
+    // renders as an EMPTY card, not an error, so it would otherwise slip
+    // through validation entirely.
+    for (const r of executionResults) {
+      if (!r.error && r.rowCount > 0) {
+        const issue = validateWidgetColumns(r.type, r.sampleRows);
+        if (issue) r.contractIssue = issue;
+      }
+    }
+
+    // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
+    const semanticIssues = await Promise.all(
+      executionResults.map(async (r) => {
+        if (r.error || r.rowCount === 0) return null;
+        return checkWidgetSemantics(r.title, r.type, r.sampleRows);
+      }),
+    );
+    semanticIssues.forEach((issue, idx) => {
+      if (issue) executionResults[idx].semanticIssue = issue;
+    });
+
+    const hasIssues = executionResults.some(
+      (r) => r.error || r.rowCount === 0 || r.semanticIssue || r.contractIssue
+        || (r.type === 'pie_chart' && r.rowCount > 3),
+    );
+    if (hasIssues) {
+      return await validateAndFixDashboardSpec(
+        spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext,
+      );
+    }
+    return spec;
+  } catch (validationErr) {
+    // Validation is best-effort — never block the response if it fails.
+    // But a swallowed failure means the spec ships UNVALIDATED, so log it
+    // loudly instead of hiding it.
+    log.warn(
+      { err: validationErr instanceof Error ? validationErr.message : String(validationErr) },
+      'dashboard validation pass failed — returning unvalidated spec',
+    );
+    return spec;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/dashboards/generate
 // ---------------------------------------------------------------------------
 
@@ -216,49 +292,7 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       productCtx?.kpiFormulas ?? '',
     );
 
-    // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets.
-    // Also runs a cheap Haiku-based semantic check: does each widget's data match its title?
-    try {
-      const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId, dataLayer);
-
-      // Deterministic column-contract check — a widget whose SQL doesn't
-      // return the exact column names its type requires (label/value/series/…)
-      // renders as an EMPTY card, not an error, so it would otherwise slip
-      // through validation entirely.
-      for (const r of executionResults) {
-        if (!r.error && r.rowCount > 0) {
-          const issue = validateWidgetColumns(r.type, r.sampleRows);
-          if (issue) r.contractIssue = issue;
-        }
-      }
-
-      // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
-      const semanticIssues = await Promise.all(
-        executionResults.map(async (r) => {
-          if (r.error || r.rowCount === 0) return null;
-          return checkWidgetSemantics(r.title, r.type, r.sampleRows);
-        }),
-      );
-      semanticIssues.forEach((issue, idx) => {
-        if (issue) executionResults[idx].semanticIssue = issue;
-      });
-
-      const hasIssues = executionResults.some(
-        (r) => r.error || r.rowCount === 0 || r.semanticIssue || r.contractIssue
-          || (r.type === 'pie_chart' && r.rowCount > 3),
-      );
-      if (hasIssues) {
-        spec = await validateAndFixDashboardSpec(spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext);
-      }
-    } catch (validationErr) {
-      // Validation is best-effort — never block the response if it fails.
-      // But a swallowed failure means the spec ships UNVALIDATED, so log it
-      // loudly instead of hiding it.
-      log.warn(
-        { err: validationErr instanceof Error ? validationErr.message : String(validationErr) },
-        'dashboard generate: validation pass failed — returning unvalidated spec',
-      );
-    }
+    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx);
 
     res.json({ ok: true, data: { spec } });
   } catch (err) {
@@ -322,9 +356,80 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
-    const spec = await refineDashboardSpec(refinement, currentSpec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+    let spec = await refineDashboardSpec(
+      refinement,
+      currentSpec,
+      semanticCtx.semanticContext,
+      semanticCtx.relationshipContext,
+      productCtx?.kpiFormulas ?? '',
+    );
+
+    // Validate only what the refinement actually changed — new widgets and
+    // widgets whose SQL/type was rewritten. Untouched widgets were already
+    // validated when first generated; re-executing them would double the
+    // pass's cost and latency for no signal.
+    const before = new Map(currentSpec.widgets.map((w) => [w.id, w]));
+    const changedIds = new Set(
+      spec.widgets
+        .filter((w) => {
+          const prev = before.get(w.id);
+          return !prev || prev.sql !== w.sql || prev.type !== w.type;
+        })
+        .map((w) => w.id),
+    );
+    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, changedIds);
 
     res.json({ ok: true, data: { spec } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/fix-widget — render-time self-heal for ONE widget
+//
+// A saved dashboard can break long after generation (schema drift, renamed
+// column, dropped rollup). Until now the user's only recourse was "regenerate
+// the whole dashboard". This endpoint re-runs the execute → contract-check →
+// AI-repair loop scoped to a single widget and returns the fixed widget so
+// the client can patch it into the spec in place.
+// ---------------------------------------------------------------------------
+
+router.post('/fix-widget', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { connectionId, spec, widgetId, productIds, dataLayer } = req.body as {
+      connectionId: number;
+      spec: DashboardSpec;
+      widgetId: string;
+      productIds?: number[];
+      dataLayer?: 'product' | 'source';
+    };
+
+    if (!spec || !Array.isArray(spec.widgets)) {
+      res.status(400).json({ ok: false, error: 'spec is required' });
+      return;
+    }
+    const widget = spec.widgets.find((w) => w.id === widgetId);
+    if (!widget) {
+      res.status(404).json({ ok: false, error: 'widget not found in spec' });
+      return;
+    }
+
+    const productCtx = dataLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId, productIds, db);
+    const semanticCtx = productCtx
+      ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
+      : await buildSemanticContext(connectionId);
+
+    const repaired = await validateAndRepairSpec(
+      spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, new Set([widgetId]),
+    );
+    const fixedWidget = repaired.widgets.find((w) => w.id === widgetId) ?? widget;
+    const fixed = JSON.stringify(fixedWidget) !== JSON.stringify(widget);
+
+    res.json({ ok: true, data: { widget: fixedWidget, fixed } });
   } catch (err) {
     next(err);
   }

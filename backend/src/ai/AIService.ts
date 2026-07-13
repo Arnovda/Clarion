@@ -69,7 +69,7 @@ import {
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
-import { AI_OUTPUT_SCHEMAS } from './outputSchemas';
+import { AI_OUTPUT_SCHEMAS, DASHBOARD_SPEC_JSON_SCHEMA } from './outputSchemas';
 import {
   REFINE_PRODUCT_SYSTEM,
   REFINE_CROSS_PRODUCT_SYSTEM,
@@ -279,6 +279,27 @@ interface CallClaudeOptions {
    * Foundry; everything else stays on Claude.
    */
   kind?: AiCallKind;
+  /**
+   * JSON Schema for constrained decoding (Anthropic structured outputs,
+   * GA on the Claude 4.6 line). When set AND the AI_STRUCTURED_OUTPUTS=1
+   * env flag is on, the Anthropic call includes `output_format:
+   * {type:'json_schema', schema}` + the structured-outputs beta header, so
+   * the response is GUARANTEED well-formed JSON matching the schema —
+   * no fences, no truncated brackets, no unknown widget types.
+   *
+   * Default OFF: our pinned @anthropic-ai/sdk predates the feature (params
+   * are cast), so this must be verified against the live API in staging
+   * before flipping the flag. Flag off = exact previous behaviour.
+   * Note: guarantees SHAPE, not semantics — Zod + the column-contract
+   * validation gate stay in place regardless. Ignored on Azure fallback
+   * paths (those keep prompt-based JSON).
+   */
+  jsonOutputSchema?: Record<string, unknown>;
+}
+
+/** Env-gated: structured outputs must be staging-verified before use. */
+function structuredOutputsEnabled(): boolean {
+  return process.env.AI_STRUCTURED_OUTPUTS === '1';
 }
 
 export async function callClaude(
@@ -377,14 +398,26 @@ export async function callClaude(
   const start = Date.now();
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const message = await getClient().messages.create({
-        model: effectiveModel,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content: userPrompt }],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        system: systemParam as any,
-        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      });
+      const useStructured = !!opts.jsonOutputSchema && structuredOutputsEnabled();
+      const message = await getClient().messages.create(
+        {
+          model: effectiveModel,
+          max_tokens: maxTokens,
+          messages: [{ role: 'user', content: userPrompt }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          system: systemParam as any,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+          // `output_format` postdates our pinned SDK's types — the cast is
+          // deliberate and the whole param is env-gated (see jsonOutputSchema).
+          ...(useStructured
+            ? { output_format: { type: 'json_schema', schema: opts.jsonOutputSchema } }
+            : {}),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+        useStructured
+          ? { headers: { 'anthropic-beta': 'structured-outputs-2025-11-13' } }
+          : undefined,
+      );
 
       const block = message.content[0];
       if (block.type !== 'text') {
@@ -1374,12 +1407,13 @@ export async function refineDashboardSpec(
   currentSpec: DashboardSpec,
   semanticContext: string,
   relationshipContext: string,
+  kpiFormulas = '',
 ): Promise<DashboardSpec> {
   const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
-    buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary),
-    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
+    buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary, kpiFormulas),
+    { maxTokens: 16000, cacheSystem: true, temperature: 0, jsonOutputSchema: DASHBOARD_SPEC_JSON_SCHEMA },
   );
   const refined = parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 
@@ -1441,7 +1475,7 @@ export async function generateDashboardSpec(
     // temperature 0: same request should produce the same dashboard. Users
     // are more frustrated by "same intent, different widgets" than by lack
     // of variety on regeneration.
-    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
+    { maxTokens: 16000, cacheSystem: true, temperature: 0, jsonOutputSchema: DASHBOARD_SPEC_JSON_SCHEMA },
   );
   return parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 }
@@ -1460,7 +1494,7 @@ export async function validateAndFixDashboardSpec(
     VALIDATE_DASHBOARD_SYSTEM,
     buildValidateUser(spec, executionResults, semanticContext, relationshipContext),
     // temperature 0: same broken spec should get the same fix.
-    { maxTokens: 16000, cacheSystem: true, temperature: 0 },
+    { maxTokens: 16000, cacheSystem: true, temperature: 0, jsonOutputSchema: DASHBOARD_SPEC_JSON_SCHEMA },
   );
   return parseJson<DashboardSpec>(raw, AI_OUTPUT_SCHEMAS.dashboardSpec);
 }

@@ -47,6 +47,8 @@ export const TYPE_ACCENT: Record<string, string> = {
   combo_chart:        '#2d6e78',
   radar_chart:        '#6b4e8c',
   treemap_chart:      '#3f7a5c',
+  scatter_chart:      '#164e63',
+  bullet_chart:       '#3f7a5c',
 };
 
 // ─── Series Helpers ───────────────────────────────────────────────────────────

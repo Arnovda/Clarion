@@ -32,6 +32,8 @@ export const REQUIRED_WIDGET_COLUMNS: Record<WidgetType, string[]> = {
   radar_chart: ['label', 'value'],
   treemap_chart: ['label', 'value'],
   pivot_table: ['row_label', 'col_label', 'value'],
+  scatter_chart: ['label', 'x', 'y'], // optional: "size" (bubble area)
+  bullet_chart: ['label', 'value', 'target'],
 };
 
 /**

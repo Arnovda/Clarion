@@ -116,6 +116,8 @@ Return JSON only — no prose, no markdown fences, no explanation outside the JS
 | Volume + rate/ratio together over time | combo_chart | two separate charts |
 | Proportional share, 5–15 categories | treemap_chart | pie_chart |
 | Profile across 4–8 comparable axes | radar_chart (rare) | radar for time series |
+| Two measures correlated across entities | scatter_chart | two separate bar charts |
+| Actual vs target per category | bullet_chart | pie_chart, gauge |
 
 NEVER use pie_chart with more than 3 data points — use bar_chart instead.
 NEVER use vertical_bar_chart for ranked categories — use bar_chart (horizontal).
@@ -160,6 +162,12 @@ treemap_chart — proportional area tiles. Use for share-of-total across 5–15 
 
 radar_chart — single-series profile across 4–8 comparable axes (e.g. quality dimensions, department scores). Use SPARINGLY and only when axes share a comparable scale. NEVER for time series or ranked categories. SQL returns "label" (axis name) and "value", 4–8 rows.
   { "id": "w_radar", "type": "radar_chart", "title": "Quality Score Profile by Dimension", "sql": "SELECT dimension as label, ROUND(AVG(score),1) as value FROM quality_scores GROUP BY 1 LIMIT 8", "format": "number", "colSpan": 2 }
+
+scatter_chart — correlation between TWO measures across entities (e.g. units sold vs revenue per product, order count vs avg value per customer). SQL returns "label" (entity name), "x", "y", and optionally "size" (third measure → bubble area). LIMIT 50. Each point is one entity — never one time period.
+  { "id": "w_scatter", "type": "scatter_chart", "title": "Units vs Revenue by Product", "sql": "SELECT p.product_name as label, SUM(ol.quantity) as x, ROUND(SUM(ol.quantity * ol.unit_price),2) as y FROM order_lines ol JOIN products p ON ol.product_id = p.id GROUP BY 1 ORDER BY 3 DESC LIMIT 50", "format": "currency", "colSpan": 2 }
+
+bullet_chart — compact actual-vs-target comparison per category (e.g. revenue vs budget per business unit, output vs plan per line). SQL returns "label", "value" (actual), "target". Sorted by value DESC, LIMIT 8.
+  { "id": "w_bullet", "type": "bullet_chart", "title": "Revenue vs Budget by Unit", "sql": "SELECT unit_name as label, ROUND(SUM(actual),2) as value, ROUND(SUM(budget),2) as target FROM finance GROUP BY 1 ORDER BY 2 DESC LIMIT 8", "format": "currency", "colSpan": 2 }
 
 ━━━ FILTER SPEC FORMAT (REQUIRED FIELDS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -257,7 +265,8 @@ Widget width guidance:
   - line_chart / stacked_bar_chart / combo_chart: prefer colSpan 2 or 3.
   - data_table: ALWAYS colSpan 4 (full width).
   - pivot_table: ALWAYS colSpan 4 (full width).
-  - treemap_chart / radar_chart: colSpan 2 minimum.
+  - treemap_chart / radar_chart / scatter_chart: colSpan 2 minimum.
+  - bullet_chart: colSpan 1 or 2 (it is deliberately compact).
 
 Total: 6–9 widgets. KPI cards always first. data_table/pivot_table always last.
 
@@ -410,12 +419,16 @@ export function buildRefineSpecUser(
   semanticContext: string,
   relationshipContext: string,
   glossaryContext = '',
+  kpiFormulas = '',
 ): string {
   const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
+  const kpiSection = kpiFormulas && kpiFormulas !== 'No KPIs defined yet.'
+    ? `\n\n━━━ Defined KPI formulas (when the refinement mentions one of these, use its SQL formula exactly) ━━━\n${kpiFormulas}`
+    : '';
   // Compact JSON (no pretty-print). Claude reads compact JSON fine and the
   // 2-space indent costs ~20% extra tokens on every refine call. The spec
   // can run 5–15K input tokens for a populated dashboard, so this is real.
-  return `Refinement request: "${refinement}"${glossarySection}
+  return `Refinement request: "${refinement}"${glossarySection}${kpiSection}
 
 Current dashboard spec:
 ${JSON.stringify(currentSpec)}

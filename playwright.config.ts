@@ -8,6 +8,13 @@ export default defineConfig({
     baseURL: 'http://localhost:3000',
     headless: true,
     screenshot: 'only-on-failure',
+    // Sandboxed/managed environments pre-install a Chromium build that may
+    // not match this @playwright/test version's expected revision. Point
+    // PLAYWRIGHT_CHROMIUM_PATH at that binary to use it; when unset (CI,
+    // local dev after `npx playwright install`) default resolution applies.
+    ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+      ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } }
+      : {}),
   },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },

@@ -21,6 +21,7 @@
  */
 
 import { z } from 'zod';
+import { REQUIRED_WIDGET_COLUMNS } from '../shared/widgetContracts';
 import type { DashboardSpec } from './prompts/dashboardPrompt';
 import type { SchemaDraftOutput } from './prompts/schemaDraftPrompt';
 import type { StarSchemaDesignOutput } from './prompts/starSchemaPrompt';
@@ -39,7 +40,8 @@ const widgetSpecSchema = z.object({
   type: z.enum([
     'kpi_card', 'bar_chart', 'vertical_bar_chart', 'stacked_bar_chart',
     'line_chart', 'pie_chart', 'top_list', 'data_table', 'combo_chart',
-    'radar_chart', 'treemap_chart', 'pivot_table',
+    'radar_chart', 'treemap_chart', 'pivot_table', 'scatter_chart',
+    'bullet_chart',
   ]),
   title: z.string(),
   sql: z.string().min(1),
@@ -122,4 +124,57 @@ export const AI_OUTPUT_SCHEMAS = {
   dashboardSpec: dashboardSpecSchema as unknown as z.ZodType<DashboardSpec>,
   schemaDraft: schemaDraftSchema as unknown as z.ZodType<SchemaDraftOutput>,
   starSchemaDesign: starSchemaDesignSchema as unknown as z.ZodType<StarSchemaDesignOutput>,
+};
+
+// ─── JSON Schema for Anthropic structured outputs (constrained decoding) ────
+// Passed as `output_format.schema` when AI_STRUCTURED_OUTPUTS=1 — the API then
+// guarantees the response parses as JSON matching this schema. Mirrors the Zod
+// schema above (`additionalProperties: true` ≙ `.passthrough()`); the widget
+// type enum derives from REQUIRED_WIDGET_COLUMNS so all three spec surfaces
+// (contract union, Zod enum, this schema) stay aligned via the contract test.
+export const DASHBOARD_SPEC_JSON_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: true,
+  required: ['title', 'description', 'filters', 'widgets'],
+  properties: {
+    title: { type: 'string' },
+    description: { type: 'string' },
+    filters: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['id', 'type', 'label', 'table', 'column'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          type: { enum: ['date_range', 'select'] },
+          label: { type: 'string' },
+          table: { type: 'string' },
+          column: { type: 'string' },
+          allLabel: { type: 'string' },
+        },
+      },
+    },
+    widgets: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        additionalProperties: true,
+        required: ['id', 'type', 'title', 'sql'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          type: { enum: Object.keys(REQUIRED_WIDGET_COLUMNS) },
+          title: { type: 'string' },
+          sql: { type: 'string', minLength: 1 },
+          drillDownSql: { type: 'string' },
+          drillDownLabel: { type: 'string' },
+          format: { enum: ['currency', 'number', 'percentage'] },
+          colSpan: { enum: [1, 2, 3, 4] },
+          featured: { type: 'boolean' },
+          crossFilterKey: { type: 'string' },
+        },
+      },
+    },
+  },
 };

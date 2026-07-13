@@ -97,7 +97,9 @@ export interface WidgetSpec {
     | 'combo_chart'
     | 'radar_chart'
     | 'treemap_chart'
-    | 'pivot_table';
+    | 'pivot_table'
+    | 'scatter_chart'
+    | 'bullet_chart';
   title: string;
   sql: string;
   drillDownSql?: string;
@@ -108,6 +110,13 @@ export interface WidgetSpec {
   featured?: boolean;
   /** SQL column name emitted as {{xf_<key>}} when a bar/segment is clicked. */
   crossFilterKey?: string;
+  /**
+   * User-adjusted grid placement (react-grid-layout units on a 12-col grid).
+   * Absent on freshly generated specs — the renderer then falls back to the
+   * document-order flow layout driven by colSpan. Written when the user
+   * drags/resizes in edit mode; wins over colSpan when present.
+   */
+  layout?: { x: number; y: number; w: number; h: number };
 }
 
 export interface DashboardSpec {

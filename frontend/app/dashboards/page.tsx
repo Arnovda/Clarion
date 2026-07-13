@@ -49,6 +49,7 @@ import {
   TreemapWidget,
   PivotTableWidget,
 } from './components/ChartWidgets';
+import { ScatterChartWidget, BulletChartWidget } from './components/EChartsWidgets';
 import { FilterBar } from './components/FilterBar';
 import { MarkdownAnswer } from './components/MarkdownAnswer';
 import { CreateInput } from './components/CreateInput';
@@ -105,6 +106,7 @@ export default function DashboardsPage() {
   const [availableDomains,  setAvailableDomains]  = useState<string[]>([]);
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
+  const [fixingWidgets,     setFixingWidgets]     = useState<Set<string>>(new Set());
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
   const [products, setProducts] = useState<{
     id: number;
@@ -683,6 +685,46 @@ export default function DashboardsPage() {
     } catch { /* ignore */ }
   }
 
+  // ── Render-time widget self-heal ──────────────────────────────────────────
+  // A saved dashboard can break long after generation (schema drift, renamed
+  // column). "Fix with AI" re-runs the execute → contract-check → repair loop
+  // server-side for just the broken widget and patches the spec in place.
+
+  async function handleFixWidget(widgetId: string) {
+    if (!currentSpec || fixingWidgets.has(widgetId)) return;
+    setFixingWidgets((prev) => new Set(prev).add(widgetId));
+    try {
+      const res = await api.post('/dashboards/fix-widget', {
+        connectionId,
+        spec: currentSpec,
+        widgetId,
+        dataLayer: currentSpec.dataLayer ?? 'product',
+      });
+      const { widget: fixedWidget, fixed } = res.data?.data ?? {};
+      if (fixed && fixedWidget) {
+        const newSpec: DashboardSpec = {
+          ...currentSpec,
+          widgets: currentSpec.widgets.map((w) => (w.id === widgetId ? fixedWidget : w)),
+        };
+        setCurrentSpec(newSpec);
+        setIsUnsaved(true); // spec changed — user must re-save to persist the fix
+        delete widgetCacheRef.current[widgetId];
+        executeAllWidgets(newSpec, filterValues, crossFilter, connectionId);
+        toast.success('Widget repaired', { description: 'Review the result and save to keep the fix.' });
+      } else {
+        toast.warn('Could not repair automatically', { description: 'Try refining the dashboard instead.' });
+      }
+    } catch {
+      toast.error('Fix attempt failed — please try again');
+    } finally {
+      setFixingWidgets((prev) => {
+        const next = new Set(prev);
+        next.delete(widgetId);
+        return next;
+      });
+    }
+  }
+
   // ── Handle cross-filter / drill-down ─────────────────────────────────────
 
   function handleCrossFilter(widgetId: string, xfKey: string, value: string | null) {
@@ -1118,6 +1160,7 @@ export default function DashboardsPage() {
       kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
       line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
       combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
+      scatter_chart: 6, bullet_chart: 6,
     };
     const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
     // Minimum width per type — guards against AI emitting too-narrow specs on
@@ -1125,7 +1168,7 @@ export default function DashboardsPage() {
     const minCols: Record<string, number> = {
       top_list: 6, data_table: 12, pivot_table: 12, treemap_chart: 6,
       radar_chart: 6, stacked_bar_chart: 6, combo_chart: 6, line_chart: 6,
-      bar_chart: 6, vertical_bar_chart: 6,
+      bar_chart: 6, vertical_bar_chart: 6, scatter_chart: 6,
     };
     const requested = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
     const col12 = Math.max(requested, minCols[widget.type] ?? 3);
@@ -1177,6 +1220,9 @@ export default function DashboardsPage() {
       // Provenance modal context
       dataLayer: currentSpec?.dataLayer ?? 'product',
       isAdminOrAnalyst: isAdmin,
+      // Self-heal — only offered when the widget actually errored
+      onFixWidget: data.error ? () => handleFixWidget(widget.id) : undefined,
+      fixing: fixingWidgets.has(widget.id),
     };
 
     switch (widget.type) {
@@ -1270,6 +1316,24 @@ export default function DashboardsPage() {
         return (
           <WidgetCard {...cardProps}>
             <PivotTableWidget {...widgetProps} />
+          </WidgetCard>
+        );
+      case 'scatter_chart':
+        return (
+          <WidgetCard {...cardProps}>
+            <ScatterChartWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+            />
+          </WidgetCard>
+        );
+      case 'bullet_chart':
+        return (
+          <WidgetCard {...cardProps}>
+            <BulletChartWidget
+              {...widgetProps}
+              onCrossFilter={hasCrossFilter ? onCF : undefined}
+            />
           </WidgetCard>
         );
       default:

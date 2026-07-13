@@ -67,12 +67,24 @@ describe('validateWidgetColumns', () => {
     expect(validateWidgetColumns('kpi_card', [])).toBeNull();
   });
 
+  it('flags scatter_chart missing x/y and bullet_chart missing target', () => {
+    const scatter = validateWidgetColumns('scatter_chart', [row(['label', 'value'])]);
+    expect(scatter).toContain('x');
+    expect(scatter).toContain('y');
+    expect(validateWidgetColumns('scatter_chart', [row(['label', 'x', 'y', 'size'])])).toBeNull();
+
+    const bullet = validateWidgetColumns('bullet_chart', [row(['label', 'value'])]);
+    expect(bullet).toContain('target');
+    expect(validateWidgetColumns('bullet_chart', [row(['label', 'value', 'target'])])).toBeNull();
+  });
+
   it('has a contract entry for every widget type in the shared contract', () => {
-    // 12 widget types today — if the contract enum grows, this map must too.
+    // 14 widget types today — if the contract enum grows, this map must too.
     expect(Object.keys(REQUIRED_WIDGET_COLUMNS).sort()).toEqual([
-      'bar_chart', 'combo_chart', 'data_table', 'kpi_card', 'line_chart',
-      'pie_chart', 'pivot_table', 'radar_chart', 'stacked_bar_chart',
-      'top_list', 'treemap_chart', 'vertical_bar_chart',
+      'bar_chart', 'bullet_chart', 'combo_chart', 'data_table', 'kpi_card',
+      'line_chart', 'pie_chart', 'pivot_table', 'radar_chart',
+      'scatter_chart', 'stacked_bar_chart', 'top_list', 'treemap_chart',
+      'vertical_bar_chart',
     ]);
   });
 });
