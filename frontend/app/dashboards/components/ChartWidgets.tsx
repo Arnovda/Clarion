@@ -13,6 +13,7 @@ import { SERIES_COLORS, PALETTE, getSeriesColor } from '../utils/chart-theme';
 import { formatValue, inferColumnFormat } from '../utils/format';
 import { PremiumTooltip } from './PremiumTooltip';
 import { ChartSkeleton, WidgetSkeleton, WidgetError, EmptyWidget } from './WidgetSkeletons';
+import { useWindowedRows } from '../utils/useWindowedRows';
 
 // ─── Shared axis formatter ──────────────────────────────────────────────────
 
@@ -453,6 +454,9 @@ export function DataTableWidget({
   const [formulaName, setFormulaName] = useState('');
   const [formulaExpr, setFormulaExpr] = useState('');
   const [formulaError, setFormulaError] = useState('');
+  // Window rendering for large result sets — must be called before any early
+  // return (hooks rule); inert for tables under the threshold.
+  const windowed = useWindowedRows(data.rows);
 
   if (data.loading) return <WidgetSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
@@ -525,7 +529,11 @@ export function DataTableWidget({
         </div>
       )}
 
-    <div className="overflow-y-auto rounded-md border border-line" style={{ maxHeight: 300 }}>
+    <div
+      className="overflow-y-auto rounded-md border border-line"
+      style={{ maxHeight: 300 }}
+      onScroll={windowed.onScroll}
+    >
       <table className="w-full text-[12px] border-collapse">
         <thead>
           <tr className="sticky top-0 bg-softer z-10">
@@ -545,9 +553,10 @@ export function DataTableWidget({
           </tr>
         </thead>
         <tbody>
-          {data.rows.map((row, i) => (
+          {windowed.padTop > 0 && <tr style={{ height: windowed.padTop }} aria-hidden />}
+          {windowed.visible.map((row, i) => (
             <tr
-              key={i}
+              key={windowed.startIndex + i}
               onClick={
                 onCrossFilter && firstTextKey
                   ? () => onCrossFilter(String(row[firstTextKey] ?? ''))
@@ -587,6 +596,7 @@ export function DataTableWidget({
               })}
             </tr>
           ))}
+          {windowed.padBottom > 0 && <tr style={{ height: windowed.padBottom }} aria-hidden />}
         </tbody>
       </table>
     </div>
@@ -696,13 +706,28 @@ function CustomTreemapContent(props: {
 // SQL must return: row_label, col_label, value
 // e.g. SELECT month AS row_label, category AS col_label, SUM(amount) AS value ...
 
+/** Distinct row labels of a pivot result, in first-appearance order. */
+function pivotRowLabels(rows: Record<string, unknown>[]): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const label = String(r.row_label ?? '');
+    if (!seen.has(label)) { seen.add(label); labels.push(label); }
+  }
+  return labels;
+}
+
 export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
+  // Hook before any early return (hooks rule). Windows the pivot's BODY rows
+  // when the cross-tab has hundreds of row labels; totals still aggregate
+  // over the full data set.
+  const windowedPivot = useWindowedRows(pivotRowLabels(data.rows), 29);
   if (data.loading) return <ChartSkeleton />;
   if (data.error) return <WidgetError msg={data.error} />;
   if (!data.rows.length) return <EmptyWidget />;
 
   // Build cross-tab structure
-  const rowLabels: string[] = [];
+  const rowLabels = pivotRowLabels(data.rows);
   const colLabels: string[] = [];
   const cellMap: Record<string, Record<string, number>> = {};
 
@@ -710,7 +735,6 @@ export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
     const row = String(r.row_label ?? '');
     const col = String(r.col_label ?? '');
     const val = Number(r.value ?? 0);
-    if (!rowLabels.includes(row)) rowLabels.push(row);
     if (!colLabels.includes(col)) colLabels.push(col);
     if (!cellMap[row]) cellMap[row] = {};
     cellMap[row][col] = (cellMap[row][col] ?? 0) + val;
@@ -727,7 +751,7 @@ export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
   );
 
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: 420 }} onScroll={windowedPivot.onScroll}>
       <table className="w-full border-collapse text-[11px]">
         <thead>
           <tr>
@@ -743,7 +767,9 @@ export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
           </tr>
         </thead>
         <tbody>
-          {rowLabels.map((row, ri) => {
+          {windowedPivot.padTop > 0 && <tr style={{ height: windowedPivot.padTop }} aria-hidden />}
+          {windowedPivot.visible.map((row, wi) => {
+            const ri = windowedPivot.startIndex + wi;
             const rowTotal = rowTotals[ri];
             return (
               <tr key={row} className="hover:bg-softer transition-colors">
@@ -769,6 +795,7 @@ export function PivotTableWidget({ spec, data }: WidgetExecutionProps) {
               </tr>
             );
           })}
+          {windowedPivot.padBottom > 0 && <tr style={{ height: windowedPivot.padBottom }} aria-hidden />}
         </tbody>
         <tfoot>
           <tr className="bg-softer">

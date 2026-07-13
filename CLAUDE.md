@@ -69,10 +69,58 @@ DuckDB-WASM cross-filtering (Tier 3). Tier 1 shipped in this session
   `productContext` but only used for NL→SQL; now threaded through
   `generateDashboardSpec` → `buildDashboardUser` as a "use these formulas
   verbatim" section.
-- **Next steps (Tier 1b, in the plan doc):** structured outputs behind an
-  env flag (needs live-API staging verification), Playwright per-widget-type
-  render smoke test (the recorded Vega lesson, still unimplemented), extend
-  contract check + kpiFormulas to the refine-spec path.
+- **Tier 1b + Tier 2/3 shipped later the same day (2026-07-13, same branch):**
+  - **Structured outputs** behind `AI_STRUCTURED_OUTPUTS=1` (default OFF —
+    verify against the live API in staging before flipping; pinned SDK
+    predates the feature, params passed via cast). Generate/refine/validate
+    dashboard calls send `DASHBOARD_SPEC_JSON_SCHEMA` (in `outputSchemas.ts`,
+    widget enum derived from `REQUIRED_WIDGET_COLUMNS`) as `output_format`
+    + the structured-outputs beta header. Documented in `.env.example`.
+  - **refine-spec parity**: kpiFormulas in the refine prompt; the validation
+    pass (extracted to `validateAndRepairSpec()` in `routes/dashboards.ts`)
+    now also runs on `/refine-spec`, scoped to only the widgets the
+    refinement changed.
+  - **Widget self-heal**: `POST /dashboards/fix-widget` re-runs
+    execute→contract-check→repair for ONE widget; frontend `WidgetCard`
+    shows "Fix with AI" on errored widgets and patches the spec in place
+    (marks dashboard unsaved).
+  - **ECharts 6 second rendering backend** (tree-shaken `echarts/core`,
+    ~100 kB gz, SVG renderer so marks are DOM-assertable, own ~40-line
+    wrapper `components/EChart.tsx` — NOT echarts-for-react — with a
+    visible render-error state; Observatory theme in
+    `utils/echartsSetup.ts`). Two new widget types shipped on it
+    full-stack: **scatter_chart** (label/x/y[/size]) and **bullet_chart**
+    (label/value/target, attainment colouring) — added to the shared
+    contract (both copies), Zod enum, JSON schema, prompt decision table +
+    spec blocks, `REQUIRED_WIDGET_COLUMNS`, page switch.
+  - **The Vega-lesson render gate, implemented**: `/dev/widgets` fixture
+    gallery renders every DSL widget type (no auth/backend);
+    `e2e/widgets.spec.ts` asserts in REAL Chromium that each type draws
+    visible SVG marks, the ECharts types are on the ECharts engine, and no
+    page errors fire. PASSING. Add every new widget type to the gallery or
+    the spec fails on its count check. `playwright.config.ts` accepts
+    `PLAYWRIGHT_CHROMIUM_PATH` for managed environments.
+  - **Code-split chart bundle**: widget-type switch extracted to
+    `components/WidgetBody.tsx`, loaded via next/dynamic —
+    `/dashboards` first-load JS now **210 kB** (was ~565 kB with static
+    Recharts). `next build` green.
+  - **Table virtualization**: dependency-free `utils/useWindowedRows.ts`
+    (spacer-row windowing, inert ≤150 rows) in `DataTableWidget`,
+    `PivotTableWidget`, `DrillDetailModal`.
+  - **User-adjustable layout**: "Arrange" mode on `/dashboards` via
+    react-grid-layout 2.2 (drag/resize, 12-col grid, rowHeight 96;
+    `useContainerWidth` for measurement). Placements persist per widget as
+    `spec.widgets[].layout {x,y,w,h}` (new optional contract field); view
+    mode renders explicit CSS-grid placement when every widget has a
+    layout, and falls back to the legacy flow layout otherwise (so
+    refine-added widgets never overlap).
+  - **New frontend deps**: `echarts ^6.1.0`, `react-grid-layout ^2.2.3`.
+    New root devDep usage: `@playwright/test` (already declared).
+- **Still open (see plan doc §2/§3):** flip `AI_STRUCTURED_OUTPUTS` after
+  staging verification; small-multiples widget + brush/zoom on ECharts;
+  dark mode; token-source consolidation; paginated PDF export; Mosaic-style
+  DuckDB-WASM cross-filter graduation; VisEval-style eval harness (needs
+  live API); domain-detection upgrade.
 
 **Last updated (prior):** 2026-07-11 (storage-layer hardening — per-tenant containers + DuckDB guardrails)
 

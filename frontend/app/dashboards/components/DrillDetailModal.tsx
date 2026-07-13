@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { WidgetSkeleton } from './WidgetSkeletons';
+import { useWindowedRows } from '../utils/useWindowedRows';
 
 interface DrillDetailModalProps {
   title: string;
@@ -28,6 +29,9 @@ export function DrillDetailModal({ title, loading, rows, onClose }: DrillDetailM
   }, [onClose]);
 
   const keys = rows.length > 0 ? Object.keys(rows[0]) : [];
+  // Drill-throughs return up to 1000 records — window the DOM so the modal
+  // opens instantly instead of mounting a thousand <tr> nodes.
+  const windowed = useWindowedRows(rows);
 
   return (
     <div
@@ -53,7 +57,7 @@ export function DrillDetailModal({ title, loading, rows, onClose }: DrillDetailM
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto" onScroll={windowed.onScroll}>
           {loading ? (
             <div className="p-6"><WidgetSkeleton /></div>
           ) : rows.length === 0 ? (
@@ -75,8 +79,9 @@ export function DrillDetailModal({ title, loading, rows, onClose }: DrillDetailM
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, i) => (
-                  <tr key={i} className="border-b border-line last:border-b-0 hover:bg-softer transition-colors">
+                {windowed.padTop > 0 && <tr style={{ height: windowed.padTop }} aria-hidden />}
+                {windowed.visible.map((row, i) => (
+                  <tr key={windowed.startIndex + i} className="border-b border-line last:border-b-0 hover:bg-softer transition-colors">
                     {keys.map((k) => (
                       <td
                         key={k}
@@ -89,6 +94,7 @@ export function DrillDetailModal({ title, loading, rows, onClose }: DrillDetailM
                     ))}
                   </tr>
                 ))}
+                {windowed.padBottom > 0 && <tr style={{ height: windowed.padBottom }} aria-hidden />}
               </tbody>
             </table>
           )}

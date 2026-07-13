@@ -31,6 +31,10 @@ interface WidgetCardProps {
    * POST /dashboards/fix-widget and patches the spec in place. */
   onFixWidget?: () => void;
   fixing?: boolean;
+  /** Explicit CSS-grid placement (user-arranged layout). Wins over colSpan. */
+  gridPlacement?: { x: number; y: number; w: number; h: number };
+  /** Fill the parent's height (arrange-mode grid cells are fixed-size). */
+  fillHeight?: boolean;
 }
 
 export function WidgetCard({
@@ -49,6 +53,8 @@ export function WidgetCard({
   isAdminOrAnalyst,
   onFixWidget,
   fixing,
+  gridPlacement,
+  fillHeight,
 }: WidgetCardProps) {
   const isKpi = spec.type === 'kpi_card';
   const featured = spec.featured;
@@ -108,10 +114,19 @@ export function WidgetCard({
     <motion.div
       ref={cardRef}
       variants={widgetVariants}
-      style={{
-        gridColumn: `span ${colSpan}`,
-        gridRow: featured ? 'span 2' : undefined,
-      }}
+      style={
+        fillHeight
+          ? { height: '100%' }
+          : gridPlacement
+            ? {
+                gridColumn: `${gridPlacement.x + 1} / span ${gridPlacement.w}`,
+                gridRow: `${gridPlacement.y + 1} / span ${gridPlacement.h}`,
+              }
+            : {
+                gridColumn: `span ${colSpan}`,
+                gridRow: featured ? 'span 2' : undefined,
+              }
+      }
       className={`group/widget rounded-lg overflow-hidden flex flex-col bg-raised border transition-colors duration-200 ${
         isCrossFilterSource
           ? 'border-ocean/40 ring-1 ring-ocean/20'

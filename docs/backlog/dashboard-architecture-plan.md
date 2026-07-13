@@ -45,22 +45,22 @@ Three patterns exist for LLM→dashboard:
 | 3 | Widget column contracts (`label`/`value`/`series`/`row_label`…) were implicit — a mis-aliased SELECT rendered an empty card, not an error (the Vega failure class in miniature) | **FIXED (Tier 1)** — `shared/widgetContracts.ts` + deterministic check in the `/generate` validation pass; violations flow into the repair call as `contractIssue` (fix rule 8) |
 | 4 | `kpiFormulas` computed by `productContext` but never fed to dashboard generation | **FIXED (Tier 1)** — passed through `generateDashboardSpec` → `buildDashboardUser` |
 | 5 | Validation pass failures silently swallowed (`catch {}`) — spec could ship unvalidated with no trace | **FIXED (Tier 1)** — logged loudly (still best-effort by design) |
-| 6 | No render-time self-healing: a saved dashboard broken by schema drift shows "Try regenerating" forever | Open — Tier 2 candidate (re-run the validate/fix call on demand from the widget error state) |
+| 6 | No render-time self-healing: a saved dashboard broken by schema drift shows "Try regenerating" forever | **FIXED (Tier 2, 2026-07-13)** — `POST /dashboards/fix-widget` + "Fix with AI" action on errored widgets; repaired widget patched into the spec in place |
 | 7 | Domain detection (`detectDomain`) is first-match-wins regex; only one domain block ever injected | Open — low priority; consider multi-domain injection or a Haiku classifier |
 | 8 | `{{xf_*}}` cross-filter placeholders still mandated in the prompt although server-side `injectCrossFilter` handles non-CTE widgets deterministically | Open — deliberate: placeholders remain the only cross-filter path for CTE widgets (injection bails on `WITH`). Revisit if injection learns CTEs |
-| 9 | **Structured outputs**: Claude strict tool-use / `output_format` (GA for Sonnet 4.6) can guarantee schema-valid specs at decode time, deleting the malformed-JSON class entirely | Open — Tier 1b. Needs a live API key to verify; ship behind an env flag (e.g. `DASHBOARD_STRUCTURED_OUTPUT=1`), default off, validate in staging. Note: guarantees *shape not semantics* — the deterministic column-contract gate stays |
+| 9 | **Structured outputs**: Claude strict tool-use / `output_format` (GA for Sonnet 4.6) can guarantee schema-valid specs at decode time, deleting the malformed-JSON class entirely | **IMPLEMENTED behind `AI_STRUCTURED_OUTPUTS=1`, default OFF (2026-07-13)** — generate/refine/validate pass `DASHBOARD_SPEC_JSON_SCHEMA` as `output_format` + beta header. **Still needs live-API verification in staging before flipping the flag** (pinned SDK predates the feature; params passed via cast). Shape-only guarantee — the column-contract gate stays |
 
 ### Rendering & UX (all open)
 | # | Finding | Planned response |
 |---|---------|------------------|
-| 10 | No user layout editing (order + quarter-width spans only, AI-owned) | Tier 3: react-grid-layout 2.x; LLM emits `{x,y,w,h}` per widget (schema-constrained), persisted in the existing `spec` jsonb |
-| 11 | Recharts ceiling: SVG-only, ~2–10k point practical limit, basic brush, no linked zoom; blocks the analyst-cockpit chart vocabulary (bullet, scatter, small multiples) from the retained design mockups | Tier 2: add **ECharts 6** as a *second rendering backend behind the same DSL* (see §3) |
-| 12 | Recharts statically imported → ~565 kB first load (Vega branch proved 304 kB via code-split) | Tier 2: dynamic-import the widget module |
+| 10 | No user layout editing (order + quarter-width spans only, AI-owned) | **SHIPPED (2026-07-13)** — "Arrange" mode via react-grid-layout 2.2 (drag/resize, 12-col); placements persist per widget as `spec.widgets[].layout {x,y,w,h}`; view mode uses explicit CSS-grid placement when every widget has a layout |
+| 11 | Recharts ceiling: SVG-only, ~2–10k point practical limit, basic brush, no linked zoom; blocks the analyst-cockpit chart vocabulary (bullet, scatter, small multiples) from the retained design mockups | **STARTED (2026-07-13)** — ECharts 6 (tree-shaken, SVG renderer, own ~40-line wrapper, Observatory theme) is live as the second backend; `scatter_chart` + `bullet_chart` shipped on it full-stack. Remaining: small multiples, brush/zoom on dense time-series, optional consolidation |
+| 12 | Recharts statically imported → ~565 kB first load (Vega branch proved 304 kB via code-split) | **SHIPPED (2026-07-13)** — widget-type switch extracted to `WidgetBody.tsx`, loaded via next/dynamic. `/dashboards` first-load JS measured at **210 kB** post-split |
 | 13 | No dark mode (single `:root`; PDF export hardcodes white) | Tier 2: with ECharts 6 dynamic theming charts are nearly free; CSS variables are the bulk |
-| 14 | No virtualization — tables/pivots/drill modals mount every row | Tier 2: TanStack Virtual on `DataTableWidget`, `PivotTableWidget`, `DrillDetailModal` |
+| 14 | No virtualization — tables/pivots/drill modals mount every row | **SHIPPED (2026-07-13)** — dependency-free `useWindowedRows` hook (spacer-row windowing, inert ≤150 rows) applied to `DataTableWidget`, `PivotTableWidget`, `DrillDetailModal` |
 | 15 | Three duplicated color-token sources (`globals.css`, `chart-theme.ts`, `observatory.ts`) | Tier 2: generate the JS mirrors from one source at build time |
 | 16 | PDF export is a single unpaginated html2canvas screenshot | Tier 3: server-side render or paginated export |
-| 17 | No browser-level render verification (the recorded Vega lesson) | Tier 1b: Playwright smoke test — render every widget type against fixture rows, assert marks > 0 |
+| 17 | No browser-level render verification (the recorded Vega lesson) | **SHIPPED (2026-07-13)** — `/dev/widgets` fixture gallery + `e2e/widgets.spec.ts`: real-Chromium assertion that every DSL widget type draws visible marks, ECharts types are on the ECharts engine, and no page errors fire. Fails if a new widget type isn't added to the gallery |
 
 ## 3. Roadmap
 

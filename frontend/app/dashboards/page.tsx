@@ -1,8 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import nextDynamic from 'next/dynamic';
+import { GridLayout, useContainerWidth } from 'react-grid-layout';
+import type { Layout as RglLayout, LayoutItem as RglLayoutItem } from 'react-grid-layout';
+import 'react-grid-layout/css/styles.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react';
+import { ChartSkeleton } from './components/WidgetSkeletons';
+import { Copy, Star, X, Lightbulb, Zap, FileText, Settings, LayoutGrid, Check } from 'lucide-react';
 // We import only the helpers — the picker buttons need to recolor based on
 // selection state, so they can't use <SourceBadge> directly. Keeping the
 // grouping rule shared via the helpers preserves cross-page consistency.
@@ -35,21 +40,71 @@ import { buildDashboardContext } from './utils/dashboardContext';
 
 // ─── Extracted components ────────────────────────────────────────────────────
 import { WidgetCard } from './components/WidgetCard';
-import { KpiCard } from './components/KpiCard';
-import {
-  BarChartWidget,
-  VerticalBarChartWidget,
-  LineChartWidget,
-  StackedBarChartWidget,
-  PieChartWidget,
-  TopListWidget,
-  DataTableWidget,
-  ComboChartWidget,
-  RadarChartWidget,
-  TreemapWidget,
-  PivotTableWidget,
-} from './components/ChartWidgets';
-import { ScatterChartWidget, BulletChartWidget } from './components/EChartsWidgets';
+// WidgetBody owns the widget-type switch and ALL heavy chart imports
+// (Recharts + ECharts). Loading it via next/dynamic keeps the chart engines
+// out of the dashboards route's first-load bundle — they arrive as a
+// separate chunk when the first widget renders.
+const WidgetBody = nextDynamic(() => import('./components/WidgetBody'), {
+  ssr: false,
+  loading: () => <ChartSkeleton />,
+});
+
+// ─── Grid layout helpers (user-adjustable dashboard layout) ──────────────────
+// The AI emits colSpan (quarter-width hints); users can refine placement in
+// "Arrange" mode (react-grid-layout, 12-col grid). Adjusted positions persist
+// per-widget as spec.widgets[].layout {x,y,w,h} — see shared contract.
+
+const SPAN_MAP_12: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
+const DEFAULT_COLS_12: Record<string, number> = {
+  kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
+  line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
+  combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
+  scatter_chart: 6, bullet_chart: 6,
+};
+const MIN_COLS_12: Record<string, number> = {
+  top_list: 6, data_table: 12, pivot_table: 12, treemap_chart: 6,
+  radar_chart: 6, stacked_bar_chart: 6, combo_chart: 6, line_chart: 6,
+  bar_chart: 6, vertical_bar_chart: 6, scatter_chart: 6,
+};
+/** Grid rows (× RGL_ROW_HEIGHT px) a widget type needs by default. */
+const DEFAULT_ROWS: Record<string, number> = {
+  kpi_card: 2, data_table: 4, pivot_table: 4, bar_chart: 4, bullet_chart: 3,
+};
+const RGL_ROW_HEIGHT = 96;
+
+function widgetCol12(widget: WidgetSpec): number {
+  const requested = widget.colSpan
+    ? (SPAN_MAP_12[widget.colSpan] ?? 6)
+    : (DEFAULT_COLS_12[widget.type] ?? 6);
+  return Math.max(requested, MIN_COLS_12[widget.type] ?? 3);
+}
+
+/**
+ * Layout for react-grid-layout: stored placement when present, otherwise the
+ * flow position the CSS grid would produce (so entering Arrange mode doesn't
+ * shuffle anything). Mixed specs (refine added a widget) rely on the
+ * compactor to resolve collisions.
+ */
+function deriveRglLayout(widgets: WidgetSpec[]): RglLayout {
+  const items: RglLayoutItem[] = [];
+  let x = 0;
+  let y = 0;
+  let rowMaxH = 0;
+  for (const w of widgets) {
+    if (w.layout) {
+      items.push({ i: w.id, ...w.layout, minW: 2, minH: 1 });
+      continue;
+    }
+    const cols = widgetCol12(w);
+    const h = DEFAULT_ROWS[w.type] ?? 3;
+    if (x + cols > 12) { x = 0; y += rowMaxH; rowMaxH = 0; }
+    items.push({ i: w.id, x, y, w: cols, h, minW: 2, minH: 1 });
+    x += cols;
+    rowMaxH = Math.max(rowMaxH, h);
+    if (x >= 12) { x = 0; y += rowMaxH; rowMaxH = 0; }
+  }
+  return items;
+}
 import { FilterBar } from './components/FilterBar';
 import { MarkdownAnswer } from './components/MarkdownAnswer';
 import { CreateInput } from './components/CreateInput';
@@ -107,6 +162,9 @@ export default function DashboardsPage() {
   const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
   const [connectionId,      setConnectionId]      = useState<number>(1);
   const [fixingWidgets,     setFixingWidgets]     = useState<Set<string>>(new Set());
+  const [editLayout,        setEditLayout]        = useState(false);
+  // react-grid-layout needs a measured pixel width for the arrange grid
+  const { width: rglWidth, containerRef: rglContainerRef, mounted: rglMounted } = useContainerWidth();
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
   const [products, setProducts] = useState<{
     id: number;
@@ -685,6 +743,29 @@ export default function DashboardsPage() {
     } catch { /* ignore */ }
   }
 
+  // ── Arrange mode: persist drag/resize placements into the spec ───────────
+
+  function handleLayoutChange(layout: RglLayout) {
+    if (!currentSpec) return;
+    const byId = new Map(layout.map((it) => [it.i, it]));
+    let changed = false;
+    const widgets = currentSpec.widgets.map((w) => {
+      const it = byId.get(w.id);
+      if (!it) return w;
+      const next = { x: it.x, y: it.y, w: it.w, h: it.h };
+      const prev = w.layout;
+      if (prev && prev.x === next.x && prev.y === next.y && prev.w === next.w && prev.h === next.h) return w;
+      changed = true;
+      return { ...w, layout: next };
+    });
+    // onLayoutChange also fires on mount (compaction) — only dirty the spec
+    // when a placement actually moved.
+    if (changed) {
+      setCurrentSpec({ ...currentSpec, widgets });
+      setIsUnsaved(true);
+    }
+  }
+
   // ── Render-time widget self-heal ──────────────────────────────────────────
   // A saved dashboard can break long after generation (schema drift, renamed
   // column). "Fix with AI" re-runs the execute → contract-check → repair loop
@@ -1153,25 +1234,15 @@ export default function DashboardsPage() {
 
   // ── Render widget by type ─────────────────────────────────────────────────
 
+  // Explicit placement only applies when EVERY widget has a stored layout —
+  // a mixed spec (refine added a widget) falls back to flow layout so the
+  // new widget doesn't overlap arranged ones.
+  const allWidgetsHaveLayout = currentSpec ? currentSpec.widgets.every((w) => w.layout) : false;
+
   function renderWidget(widget: WidgetSpec) {
     const data: WidgetData = widgetData[widget.id] ?? { rows: [], loading: true };
 
-    const defaultCols: Record<string, number> = {
-      kpi_card: 3, bar_chart: 6, vertical_bar_chart: 6, stacked_bar_chart: 6,
-      line_chart: 6, pie_chart: 6, top_list: 6, data_table: 12,
-      combo_chart: 6, radar_chart: 6, treemap_chart: 6, pivot_table: 12,
-      scatter_chart: 6, bullet_chart: 6,
-    };
-    const SPAN_MAP: Record<number, number> = { 1: 3, 2: 6, 3: 9, 4: 12 };
-    // Minimum width per type — guards against AI emitting too-narrow specs on
-    // widgets whose contents need room (labels, tables, multi-series charts).
-    const minCols: Record<string, number> = {
-      top_list: 6, data_table: 12, pivot_table: 12, treemap_chart: 6,
-      radar_chart: 6, stacked_bar_chart: 6, combo_chart: 6, line_chart: 6,
-      bar_chart: 6, vertical_bar_chart: 6, scatter_chart: 6,
-    };
-    const requested = widget.colSpan ? (SPAN_MAP[widget.colSpan] ?? 6) : (defaultCols[widget.type] ?? 6);
-    const col12 = Math.max(requested, minCols[widget.type] ?? 3);
+    const col12 = widgetCol12(widget);
 
     const isCrossFilterSource = crossFilter?.widgetId === widget.id;
     const isFiltered = crossFilter !== null && !isCrossFilterSource;
@@ -1201,7 +1272,6 @@ export default function DashboardsPage() {
       downloadFile(url, `${widget.title.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`);
     } : undefined;
 
-    const widgetProps = { spec: widget, data };
     const canInvestigate = widget.type !== 'kpi_card' && widget.type !== 'pivot_table';
     const cardProps = {
       key: widget.id,
@@ -1223,122 +1293,27 @@ export default function DashboardsPage() {
       // Self-heal — only offered when the widget actually errored
       onFixWidget: data.error ? () => handleFixWidget(widget.id) : undefined,
       fixing: fixingWidgets.has(widget.id),
+      // Layout: explicit CSS-grid placement when the user has arranged the
+      // dashboard; height-fill inside the arrange grid.
+      gridPlacement: !editLayout && allWidgetsHaveLayout ? widget.layout : undefined,
+      fillHeight: editLayout,
     };
 
-    switch (widget.type) {
-      case 'kpi_card':
-        return (
-          <WidgetCard {...cardProps}>
-            <KpiCard
-              {...widgetProps}
-              onDrillDetail={widget.drillDownSql ? () => openDrillDetail(widget) : undefined}
-              onContextMenu={onCtx}
-            />
-          </WidgetCard>
-        );
-      case 'bar_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <BarChartWidget
-              {...widgetProps}
-              onCrossFilter={hasCrossFilter ? onCF : undefined}
-              isCrossFilterActive={isCrossFilterSource}
-              drillLabel={isCrossFilterSource ? crossFilter!.label : undefined}
-              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
-              onContextMenu={hasCrossFilter ? onCtx : undefined}
-            />
-          </WidgetCard>
-        );
-      case 'line_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <LineChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
-          </WidgetCard>
-        );
-      case 'vertical_bar_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <VerticalBarChartWidget
-              {...widgetProps}
-              onCrossFilter={hasCrossFilter ? onCF : undefined}
-              crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
-              onContextMenu={hasCrossFilter ? onCtx : undefined}
-            />
-          </WidgetCard>
-        );
-      case 'stacked_bar_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <StackedBarChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
-          </WidgetCard>
-        );
-      case 'pie_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <PieChartWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
-          </WidgetCard>
-        );
-      case 'top_list':
-        return (
-          <WidgetCard {...cardProps}>
-            <TopListWidget {...widgetProps} onCrossFilter={hasCrossFilter ? onCF : undefined} />
-          </WidgetCard>
-        );
-      case 'data_table':
-        return (
-          <WidgetCard {...cardProps}>
-            <DataTableWidget
-              {...widgetProps}
-              onCrossFilter={hasCrossFilter ? onCF : undefined}
-              onContextMenu={hasCrossFilter ? onCtx : undefined}
-            />
-          </WidgetCard>
-        );
-      case 'combo_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <ComboChartWidget {...widgetProps} />
-          </WidgetCard>
-        );
-      case 'radar_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <RadarChartWidget {...widgetProps} />
-          </WidgetCard>
-        );
-      case 'treemap_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <TreemapWidget {...widgetProps} />
-          </WidgetCard>
-        );
-      case 'pivot_table':
-        return (
-          <WidgetCard {...cardProps}>
-            <PivotTableWidget {...widgetProps} />
-          </WidgetCard>
-        );
-      case 'scatter_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <ScatterChartWidget
-              {...widgetProps}
-              onCrossFilter={hasCrossFilter ? onCF : undefined}
-            />
-          </WidgetCard>
-        );
-      case 'bullet_chart':
-        return (
-          <WidgetCard {...cardProps}>
-            <BulletChartWidget
-              {...widgetProps}
-              onCrossFilter={hasCrossFilter ? onCF : undefined}
-            />
-          </WidgetCard>
-        );
-      default:
-        return null;
-    }
+    return (
+      <WidgetCard {...cardProps}>
+        <WidgetBody
+          widget={widget}
+          data={data}
+          hasCrossFilter={hasCrossFilter}
+          isCrossFilterSource={isCrossFilterSource}
+          crossFilterLabel={isCrossFilterSource ? crossFilter!.label : undefined}
+          crossFilterValue={isCrossFilterSource ? crossFilter!.value : undefined}
+          onCrossFilter={onCF}
+          onContextMenu={onCtx}
+          onDrillDetail={widget.drillDownSql ? () => openDrillDetail(widget) : undefined}
+        />
+      </WidgetCard>
+    );
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2068,17 +2043,61 @@ export default function DashboardsPage() {
                       ) : null}
                     </div>
                   )}
-                  <motion.div
-                    ref={dashboardGridRef}
-                    className="grid gap-4 p-6"
-                    style={{ gridTemplateColumns: 'repeat(12, minmax(0, 1fr))', gridAutoRows: 'min-content' }}
-                    variants={containerVariants}
-                    initial="hidden"
-                    animate="visible"
-                    key={currentSpec.title}
-                  >
-                    {currentSpec.widgets.map((widget) => renderWidget(widget))}
-                  </motion.div>
+                  {/* Arrange toggle — drag/resize widgets; placements persist in the spec */}
+                  <div className="px-6 pt-4 -mb-3 flex items-center justify-end gap-2">
+                    {editLayout && (
+                      <span className="text-[11px] text-muted">Drag to move · pull the corner to resize</span>
+                    )}
+                    <button
+                      onClick={() => setEditLayout((v) => !v)}
+                      className={cn(
+                        'flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono tracking-[0.08em] uppercase transition-colors',
+                        editLayout
+                          ? 'border-ocean/40 bg-ocean/5 text-ocean hover:bg-ocean/10'
+                          : 'border-line text-muted hover:text-ink-2 hover:border-line-strong',
+                      )}
+                    >
+                      {editLayout ? <Check className="w-3.5 h-3.5" strokeWidth={2} /> : <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.5} />}
+                      {editLayout ? 'Done arranging' : 'Arrange'}
+                    </button>
+                  </div>
+                  {editLayout ? (
+                    <div ref={rglContainerRef as React.RefObject<HTMLDivElement>} className="p-6">
+                      {rglMounted && (
+                        <GridLayout
+                          width={rglWidth}
+                          layout={deriveRglLayout(currentSpec.widgets)}
+                          gridConfig={{ cols: 12, rowHeight: RGL_ROW_HEIGHT, margin: [16, 16], containerPadding: [0, 0] }}
+                          dragConfig={{ cancel: 'button, input, select, textarea, a' }}
+                          onLayoutChange={handleLayoutChange}
+                        >
+                          {currentSpec.widgets.map((widget) => (
+                            <div key={widget.id} className="h-full cursor-grab active:cursor-grabbing">
+                              {renderWidget(widget)}
+                            </div>
+                          ))}
+                        </GridLayout>
+                      )}
+                    </div>
+                  ) : (
+                    <motion.div
+                      ref={dashboardGridRef}
+                      className="grid gap-4 p-6"
+                      style={{
+                        gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
+                        // With a user-arranged layout the grid uses explicit
+                        // row placement — rows get a base height matching the
+                        // arrange grid but stretch to fit content.
+                        gridAutoRows: allWidgetsHaveLayout ? `minmax(${RGL_ROW_HEIGHT}px, auto)` : 'min-content',
+                      }}
+                      variants={containerVariants}
+                      initial="hidden"
+                      animate="visible"
+                      key={currentSpec.title}
+                    >
+                      {currentSpec.widgets.map((widget) => renderWidget(widget))}
+                    </motion.div>
+                  )}
                 </div>
 
                 {/* Investigation panel — slides in on the right */}

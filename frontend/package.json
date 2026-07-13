@@ -32,6 +32,7 @@
     "next": "14.2.35",
     "react": "^18",
     "react-dom": "^18",
+    "react-grid-layout": "^2.2.3",
     "reactflow": "^11.11.4",
     "recharts": "^3.8.1",
     "sql-formatter": "^15.7.3"
