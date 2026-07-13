@@ -113,6 +113,9 @@ Return JSON only — no prose, no markdown fences, no explanation outside the JS
 | Ranked list with values | top_list or bar_chart | pie_chart |
 | Record-level detail | data_table | — |
 | Two-dimension cross-tab (rows × cols) | pivot_table | data_table |
+| Volume + rate/ratio together over time | combo_chart | two separate charts |
+| Proportional share, 5–15 categories | treemap_chart | pie_chart |
+| Profile across 4–8 comparable axes | radar_chart (rare) | radar for time series |
 
 NEVER use pie_chart with more than 3 data points — use bar_chart instead.
 NEVER use vertical_bar_chart for ranked categories — use bar_chart (horizontal).
@@ -148,6 +151,15 @@ data_table — tabular detail. SQL returns multiple named columns. Always colSpa
 
 pivot_table — cross-tab matrix (rows × columns → values). Use when the user wants to compare a measure across TWO dimensions simultaneously (e.g. revenue by month × category, headcount by department × role). SQL MUST return exactly three columns: "row_label", "col_label", "value". Always colSpan 4 (full width). Cells are heat-mapped by intensity automatically. Row and column totals are added automatically.
   { "id": "w_pivot", "type": "pivot_table", "title": "Revenue by Month × Category", "sql": "SELECT strftime('%Y-%m', o.order_date) AS row_label, p.category AS col_label, ROUND(SUM(ol.quantity * ol.unit_price),2) AS value FROM order_lines ol JOIN orders o ON ol.order_id = o.id JOIN products p ON ol.product_id = p.id WHERE o.order_date >= '{{date_filter_from}}' AND o.order_date <= '{{date_filter_to}}' GROUP BY 1, 2 ORDER BY 1, 2", "format": "currency", "colSpan": 4 }
+
+combo_chart — bars + line overlay on a second axis. Use when a volume AND a related rate/ratio belong together (revenue + margin %, orders + avg value). SQL returns "label" (period), "value" (the bar measure), and optionally "line" (the overlay measure, plotted on the right axis). Ordered chronologically.
+  { "id": "w_combo", "type": "combo_chart", "title": "Monthly Revenue and Margin %", "sql": "SELECT strftime(order_date, '%Y-%m') as label, ROUND(SUM(amount),2) as value, ROUND(SUM(profit) / NULLIF(SUM(amount),0) * 100, 1) as line FROM orders WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}' GROUP BY 1 ORDER BY 1", "format": "currency", "colSpan": 2 }
+
+treemap_chart — proportional area tiles. Use for share-of-total across 5–15 categories where a pie is forbidden and exact ranking matters less than relative share. SQL returns "label" and "value", sorted DESC, LIMIT 15.
+  { "id": "w_treemap", "type": "treemap_chart", "title": "Spend Share by Category", "sql": "SELECT category as label, ROUND(SUM(amount),2) as value FROM purchases WHERE order_date >= '{{date_filter_from}}' AND order_date <= '{{date_filter_to}}' GROUP BY 1 ORDER BY 2 DESC LIMIT 15", "format": "currency", "colSpan": 2 }
+
+radar_chart — single-series profile across 4–8 comparable axes (e.g. quality dimensions, department scores). Use SPARINGLY and only when axes share a comparable scale. NEVER for time series or ranked categories. SQL returns "label" (axis name) and "value", 4–8 rows.
+  { "id": "w_radar", "type": "radar_chart", "title": "Quality Score Profile by Dimension", "sql": "SELECT dimension as label, ROUND(AVG(score),1) as value FROM quality_scores GROUP BY 1 LIMIT 8", "format": "number", "colSpan": 2 }
 
 ━━━ FILTER SPEC FORMAT (REQUIRED FIELDS) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -304,13 +316,20 @@ export function buildDashboardUser(
   semanticContext: string,
   relationshipContext: string,
   glossaryContext = '',
+  kpiFormulas = '',
 ): string {
   const domainRef = detectDomain(request);
   const domainSection = domainRef
     ? `\n\n━━━ Domain-specific guidance (apply these recommendations) ━━━\n${domainRef}`
     : '';
   const glossarySection = glossaryContext ? `\n\n${glossaryContext}` : '';
-  return `User request: "${request}"${domainSection}${glossarySection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
+  // Curated KPI definitions are the tenant's own vocabulary — when a KPI the
+  // user asks about has a defined formula, the AI must use it verbatim rather
+  // than invent its own interpretation.
+  const kpiSection = kpiFormulas && kpiFormulas !== 'No KPIs defined yet.'
+    ? `\n\n━━━ Defined KPI formulas (when the request mentions one of these, use its SQL formula exactly) ━━━\n${kpiFormulas}`
+    : '';
+  return `User request: "${request}"${domainSection}${glossarySection}${kpiSection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
 }
 
 // The dashboard-spec types are part of the shared API contract (the backend
@@ -420,6 +439,8 @@ export interface WidgetExecutionResult {
   error?: string;
   sampleRows: Record<string, unknown>[];
   semanticIssue?: string;
+  /** Deterministic column-contract violation (see shared/widgetContracts.ts). */
+  contractIssue?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +508,8 @@ Return the complete fixed DashboardSpec as JSON only — no prose, no markdown f
 6. WIDGET WITH NULL/UNDEFINED VALUES → Add COALESCE or NULLIF guards.
 
 7. SEMANTIC MISMATCH (semanticIssue present) → Rewrite the SQL so the GROUP BY column and the returned "label" match what the title promises. Example: title says "Revenue by Product Group" but SQL groups by strftime('%Y-%m', order_date) → rewrite to GROUP BY product_group. Use the schema context to find the correct column. Keep the title unchanged.
+
+8. MISSING REQUIRED COLUMNS (contractIssue present) → The widget renders EMPTY when its SQL doesn't return the exact column names the widget type requires. Rewrite the SELECT so columns are aliased to the required names stated in the contractIssue (e.g. "AS label", "AS value", "AS series", "AS row_label"). Keep the widget type and intent unchanged.
 
 PRESERVE: Keep all filter specs, widget order, colSpan, titles, and drillDownSql unless broken.
 Only change what is broken. Do not invent new widgets or remove working widgets.`;

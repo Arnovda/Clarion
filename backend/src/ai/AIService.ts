@@ -616,7 +616,22 @@ function parseJson<T>(raw: string, schema?: import('zod').ZodType<T>): T {
   const start = cleaned.indexOf('{');
   const end   = cleaned.lastIndexOf('}');
   if (start !== -1 && end > start) cleaned = cleaned.slice(start, end + 1);
-  const parsed = JSON.parse(cleaned) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned) as unknown;
+  } catch (parseErr) {
+    // Salvage attempt for output truncated at the maxTokens cap (e.g. a 16K
+    // dashboard spec cut mid-widget). Closing unbalanced brackets/strings
+    // recovers everything before the cut; the Zod pass below still guards
+    // structure. Without this, one truncated spec 500s the whole request.
+    const repaired = repairTruncatedJson(raw);
+    if (repaired === null) throw parseErr;
+    parsed = JSON.parse(repaired) as unknown;
+    logger.warn(
+      { rawLength: raw.length },
+      'parseJson: JSON.parse failed on raw AI output; recovered via truncation repair',
+    );
+  }
   if (!schema) return parsed as T;
   const result = schema.safeParse(parsed);
   if (!result.success) {
@@ -1417,11 +1432,12 @@ export async function generateDashboardSpec(
   semanticContext: string,
   relationshipContext: string,
   dialect: SqlDialect = 'sqlite',
+  kpiFormulas = '',
 ): Promise<DashboardSpec> {
   const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     getDashboardSystem(dialect),
-    buildDashboardUser(request, semanticContext, relationshipContext, glossary),
+    buildDashboardUser(request, semanticContext, relationshipContext, glossary, kpiFormulas),
     // temperature 0: same request should produce the same dashboard. Users
     // are more frustrated by "same intent, different widgets" than by lack
     // of variety on regeneration.

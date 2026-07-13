@@ -13,6 +13,7 @@ import { buildXlsxFromRows, buildCsvFromRows, buildXlsx } from '../utils/xlsxBui
 import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
+import { validateWidgetColumns } from '../shared/widgetContracts';
 import { startSSE } from '../services/sse';
 import { logger } from '../utils/logger';
 
@@ -207,12 +208,29 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     const connection = await db('connections').where({ id: connectionId }).first();
     const dialect: SqlDialect = productCtx ? 'duckdb' : (connection?.query_engine === 'duckdb' ? 'duckdb' : 'sqlite');
 
-    let spec = await generateDashboardSpec(fullRequest, semanticCtx.semanticContext, semanticCtx.relationshipContext, dialect);
+    let spec = await generateDashboardSpec(
+      fullRequest,
+      semanticCtx.semanticContext,
+      semanticCtx.relationshipContext,
+      dialect,
+      productCtx?.kpiFormulas ?? '',
+    );
 
     // Validation pass — execute all widget SQLs with default filters and fix any broken/empty widgets.
     // Also runs a cheap Haiku-based semantic check: does each widget's data match its title?
     try {
       const executionResults = await executeSpecForValidation(spec, connectionId, req.user!.tenantId, dataLayer);
+
+      // Deterministic column-contract check — a widget whose SQL doesn't
+      // return the exact column names its type requires (label/value/series/…)
+      // renders as an EMPTY card, not an error, so it would otherwise slip
+      // through validation entirely.
+      for (const r of executionResults) {
+        if (!r.error && r.rowCount > 0) {
+          const issue = validateWidgetColumns(r.type, r.sampleRows);
+          if (issue) r.contractIssue = issue;
+        }
+      }
 
       // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
       const semanticIssues = await Promise.all(
@@ -226,13 +244,20 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
       });
 
       const hasIssues = executionResults.some(
-        (r) => r.error || r.rowCount === 0 || r.semanticIssue || (r.type === 'pie_chart' && r.rowCount > 3),
+        (r) => r.error || r.rowCount === 0 || r.semanticIssue || r.contractIssue
+          || (r.type === 'pie_chart' && r.rowCount > 3),
       );
       if (hasIssues) {
         spec = await validateAndFixDashboardSpec(spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext);
       }
-    } catch {
-      // Validation is best-effort — never block the response if it fails
+    } catch (validationErr) {
+      // Validation is best-effort — never block the response if it fails.
+      // But a swallowed failure means the spec ships UNVALIDATED, so log it
+      // loudly instead of hiding it.
+      log.warn(
+        { err: validationErr instanceof Error ? validationErr.message : String(validationErr) },
+        'dashboard generate: validation pass failed — returning unvalidated spec',
+      );
     }
 
     res.json({ ok: true, data: { spec } });

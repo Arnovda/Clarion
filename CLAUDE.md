@@ -31,7 +31,50 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-11 (storage-layer hardening — per-tenant containers + DuckDB guardrails)
+**Last updated:** 2026-07-13 (dashboard generation — architecture assessment + Tier-1 reliability hardening)
+
+**Dashboard generation — architecture assessment + Tier-1 hardening (2026-07-13):**
+Full review of the dashboard-generation stack (prompts, AIService, route
+validation pass, productContext, ChartWidgets, the reverted Vega migration)
+plus an external survey of the 2025–26 charting/AI-dashboard landscape.
+**Plan of record: `docs/backlog/dashboard-architecture-plan.md`** — read it
+before touching dashboard generation/rendering. Headline verdict: the
+current LLM→app-owned-JSON-DSL→deterministic Recharts pattern is the
+industry-winning architecture (same as Databricks Genie / Hex / Superset
+MCP); do NOT return to Vega-Lite (its silent-blank failure is a documented
+structural property + worst measured LLM generation accuracy); the upgrade
+path is ECharts 6 as a *second* backend behind the same DSL (Tier 2),
+react-grid-layout for user layout editing (Tier 3), Mosaic-style
+DuckDB-WASM cross-filtering (Tier 3). Tier 1 shipped in this session
+(backend typechecks clean; 11 new unit tests pass):
+- **`backend/src/shared/widgetContracts.ts` (new)** — single source of truth
+  for the per-widget-type required SQL column contract
+  (label/value/series/row_label/…); `validateWidgetColumns()` turns the
+  "mis-aliased SELECT renders an empty card" silent failure into a caught,
+  repairable issue. Unit-tested (`widgetContracts.test.ts`, pure functions).
+- **`/generate` validation pass hardened** (`routes/dashboards.ts`) —
+  deterministic column-contract check per executed widget feeds a new
+  `contractIssue` field into `hasIssues` + the repair prompt (new fix rule 8
+  in `VALIDATE_DASHBOARD_SYSTEM`); swallowed validation failures are now
+  logged loudly instead of silently shipping an unvalidated spec.
+- **Truncation repair wired into `parseJson`** (`AIService.ts`) — a 16K-token
+  spec cut at the maxTokens cap now goes through `repairTruncatedJson` +
+  Zod instead of 500ing the whole request.
+- **Prompt contracts for the three phantom widget types** — combo_chart /
+  treemap_chart / radar_chart were legal in the Zod enum but had no spec
+  block in `DASHBOARD_SYSTEM`; full blocks + decision-table rows added,
+  matching the actual frontend component contracts (combo: label/value +
+  optional `line` right-axis overlay).
+- **`kpiFormulas` now reaches dashboard generation** — was built by
+  `productContext` but only used for NL→SQL; now threaded through
+  `generateDashboardSpec` → `buildDashboardUser` as a "use these formulas
+  verbatim" section.
+- **Next steps (Tier 1b, in the plan doc):** structured outputs behind an
+  env flag (needs live-API staging verification), Playwright per-widget-type
+  render smoke test (the recorded Vega lesson, still unimplemented), extend
+  contract check + kpiFormulas to the refine-spec path.
+
+**Last updated (prior):** 2026-07-11 (storage-layer hardening — per-tenant containers + DuckDB guardrails)
 
 **Storage-layer hardening — per-tenant warehouse containers + DuckDB compute guardrails (2026-07-11):**
 Outcome of the platform professionality audit (see repo-root
