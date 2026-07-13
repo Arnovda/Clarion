@@ -40,11 +40,24 @@ const connectionUrl = process.env.DATABASE_URL
 // Azure Postgres requires SSL
 const needsSsl = connectionUrl.includes('azure.com') || connectionUrl.includes('sslmode=require');
 
+// Connection-pool sizing. Each backend replica AND each worker holds its own
+// pool, so the sum across replicas must stay under Postgres max_connections
+// (~50 on the B1ms tier). `KNEX_POOL_MAX` lets ops tune the per-process
+// ceiling per environment; `acquireTimeoutMillis` makes a saturated pool
+// FAIL FAST (a clear 500) instead of hanging the request indefinitely.
+const poolMax = Number(process.env.KNEX_POOL_MAX ?? 10);
+const poolMin = Number(process.env.KNEX_POOL_MIN ?? 2);
+
 export const semanticDb: Knex = knex({
   client: 'pg',
   connection: needsSsl
     ? { connectionString: connectionUrl, ssl: { rejectUnauthorized: false } }
     : connectionUrl,
+  pool: {
+    min: Number.isFinite(poolMin) && poolMin >= 0 ? poolMin : 2,
+    max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 10,
+    acquireTimeoutMillis: Number(process.env.KNEX_POOL_ACQUIRE_TIMEOUT_MS ?? 30000),
+  },
 });
 
 // Source database — SQLite file on disk (read-only)

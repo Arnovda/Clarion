@@ -5,6 +5,7 @@ import { PostgresConnector, PostgresConnectionConfig } from './PostgresConnector
 import { MysqlConnector, MysqlConnectionConfig } from './MysqlConnector';
 import { MssqlConnector, MssqlConnectionConfig } from './MssqlConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
+import { assertSafeDbHost } from '../utils/netGuard';
 import { semanticDb } from '../db/knex';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -51,6 +52,7 @@ function buildSourceConnector(type: string, config: Record<string, unknown>): Ba
 
     case 'postgres':
     case 'postgresql': {
+      assertSafeDbHost(config.host as string | undefined);
       const pgConfig: PostgresConnectionConfig = {
         host: (config.host as string) ?? 'localhost',
         port: Number(config.port) || 5432,
@@ -64,6 +66,7 @@ function buildSourceConnector(type: string, config: Record<string, unknown>): Ba
     }
 
     case 'mysql': {
+      assertSafeDbHost(config.host as string | undefined);
       const myConfig: MysqlConnectionConfig = {
         host: (config.host as string) ?? 'localhost',
         port: Number(config.port) || 3306,
@@ -76,6 +79,7 @@ function buildSourceConnector(type: string, config: Record<string, unknown>): Ba
     }
 
     case 'sqlserver': {
+      assertSafeDbHost(config.host as string | undefined);
       const msConfig: MssqlConnectionConfig = {
         host: (config.host as string) ?? 'localhost',
         port: Number(config.port) || 1433,
@@ -186,6 +190,14 @@ export async function testConnector(
   type: string,
   config: Record<string, unknown>,
 ): Promise<{ ok: boolean; message: string }> {
-  const connector = buildSourceConnector(type, config);
+  // Construction can throw for bad user config (disallowed SQLite path,
+  // metadata-endpoint host). That's a failed connection test, not a server
+  // error — surface it as { ok: false } so the UI shows it inline.
+  let connector: BaseConnector;
+  try {
+    connector = buildSourceConnector(type, config);
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Invalid connection configuration' };
+  }
   return connector.testConnection();
 }

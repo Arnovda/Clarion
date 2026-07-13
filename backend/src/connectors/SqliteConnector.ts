@@ -3,13 +3,42 @@ import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo, FkCandidate } from './BaseConnector';
 
+/**
+ * Directory SQLite source files must live under. A tenant-supplied
+ * `filepath` that resolves outside this sandbox is rejected — otherwise a
+ * connection could point at any file on the backend container (another
+ * tenant's uploaded DB, an app-local file, /etc/*). Defaults to the repo
+ * `data/` dir (where the sample DBs live); override with SQLITE_SOURCE_DIR
+ * (e.g. `/sources` in the Docker image).
+ */
+function sqliteBaseDir(): string {
+  return path.resolve(
+    process.env.SQLITE_SOURCE_DIR ?? path.resolve(__dirname, '../../../data'),
+  );
+}
+
+/** True if `resolved` is inside `base` (or is `base` itself). */
+function isContained(base: string, resolved: string): boolean {
+  const rel = path.relative(base, resolved);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 export class SqliteConnector extends BaseConnector {
   private readonly filePath: string;
   private db: Database.Database | null = null;
 
   constructor(filePath: string) {
     super();
-    this.filePath = path.resolve(filePath);
+    if (typeof filePath !== 'string' || !filePath.trim()) {
+      throw new Error('SQLite connection requires a file path');
+    }
+    const resolved = path.resolve(filePath);
+    const base = sqliteBaseDir();
+    if (!isContained(base, resolved)) {
+      // Don't echo the resolved absolute path back — just refuse.
+      throw new Error('SQLite file path is outside the allowed source directory');
+    }
+    this.filePath = resolved;
   }
 
   async connect(): Promise<void> {

@@ -24,6 +24,19 @@ function getQueue(name: string): Queue | null {
   }
 }
 
+/**
+ * Every job we enqueue carries `tenantId` in its data (SchemaProfiling /
+ * Ingestion / Transformation / BusMatrix job data all include it). BullMQ
+ * queues are global, so a job id from one tenant is fetchable by any
+ * authenticated user unless we check ownership here. Compare as strings
+ * because some producers store the id as a number and others as a string.
+ */
+function jobBelongsToTenant(job: Job, tenantId: number | undefined): boolean {
+  if (tenantId == null) return false;
+  const jobTenant = (job.data as { tenantId?: number | string } | null)?.tenantId;
+  return jobTenant != null && String(jobTenant) === String(tenantId);
+}
+
 // GET /api/jobs/:queue/:id — job status
 router.get('/:queue/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -34,7 +47,9 @@ router.get('/:queue/:id', requireAuth, async (req: Request, res: Response, next:
     }
 
     const job = await queue.getJob(req.params.id);
-    if (!job) {
+    // Return 404 (not 403) on a cross-tenant id so we don't confirm the
+    // job exists to a tenant that doesn't own it.
+    if (!job || !jobBelongsToTenant(job, req.user?.tenantId)) {
       res.status(404).json({ ok: false, error: 'Job not found' });
       return;
     }
@@ -73,7 +88,7 @@ router.post('/:queue/:id/retry', requireAuth, async (req: Request, res: Response
     }
 
     const job = await queue.getJob(req.params.id);
-    if (!job) {
+    if (!job || !jobBelongsToTenant(job, req.user?.tenantId)) {
       res.status(404).json({ ok: false, error: 'Job not found' });
       return;
     }
@@ -92,7 +107,7 @@ router.post('/:queue/:id/retry', requireAuth, async (req: Request, res: Response
 });
 
 // GET /api/jobs/active — list all active/waiting jobs across all queues
-router.get('/', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const results: Array<{ queue: string; id: string | undefined; state: string; progress: unknown; data: unknown; createdAt: number | undefined }> = [];
 
@@ -102,6 +117,8 @@ router.get('/', requireAuth, async (_req: Request, res: Response, next: NextFunc
 
       const jobs = await queue.getJobs(['active', 'waiting', 'delayed', 'failed'], 0, 20);
       for (const job of jobs) {
+        // Only surface the caller's own tenant's jobs — the queues are global.
+        if (!jobBelongsToTenant(job, req.user?.tenantId)) continue;
         const state = await job.getState();
         results.push({
           queue: queueName,
