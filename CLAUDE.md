@@ -70,9 +70,10 @@ DuckDB-WASM cross-filtering (Tier 3). Tier 1 shipped in this session
   `generateDashboardSpec` → `buildDashboardUser` as a "use these formulas
   verbatim" section.
 - **Tier 1b + Tier 2/3 shipped later the same day (2026-07-13, same branch):**
-  - **Structured outputs** behind `AI_STRUCTURED_OUTPUTS=1` (default OFF —
-    verify against the live API in staging before flipping; pinned SDK
-    predates the feature, params passed via cast). Generate/refine/validate
+  - **Structured outputs** behind `AI_STRUCTURED_OUTPUTS=1` (default OFF.
+    No staging env — verify with the one-shot live check
+    `backend/scripts/verify-structured-outputs.ts` before flipping; pinned
+    SDK predates the feature, params passed via cast). Generate/refine/validate
     dashboard calls send `DASHBOARD_SPEC_JSON_SCHEMA` (in `outputSchemas.ts`,
     widget enum derived from `REQUIRED_WIDGET_COLUMNS`) as `output_format`
     + the structured-outputs beta header. Documented in `.env.example`.
@@ -117,7 +118,7 @@ DuckDB-WASM cross-filtering (Tier 3). Tier 1 shipped in this session
   - **New frontend deps**: `echarts ^6.1.0`, `react-grid-layout ^2.2.3`.
     New root devDep usage: `@playwright/test` (already declared).
 - **Still open (see plan doc §2/§3):** flip `AI_STRUCTURED_OUTPUTS` after
-  staging verification; small-multiples widget + brush/zoom on ECharts;
+  running the verify script against the live API; small-multiples widget + brush/zoom on ECharts;
   dark mode; token-source consolidation; paginated PDF export; Mosaic-style
   DuckDB-WASM cross-filter graduation; VisEval-style eval harness (needs
   live API); domain-detection upgrade.

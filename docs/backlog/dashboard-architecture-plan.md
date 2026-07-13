@@ -48,7 +48,7 @@ Three patterns exist for LLM→dashboard:
 | 6 | No render-time self-healing: a saved dashboard broken by schema drift shows "Try regenerating" forever | **FIXED (Tier 2, 2026-07-13)** — `POST /dashboards/fix-widget` + "Fix with AI" action on errored widgets; repaired widget patched into the spec in place |
 | 7 | Domain detection (`detectDomain`) is first-match-wins regex; only one domain block ever injected | Open — low priority; consider multi-domain injection or a Haiku classifier |
 | 8 | `{{xf_*}}` cross-filter placeholders still mandated in the prompt although server-side `injectCrossFilter` handles non-CTE widgets deterministically | Open — deliberate: placeholders remain the only cross-filter path for CTE widgets (injection bails on `WITH`). Revisit if injection learns CTEs |
-| 9 | **Structured outputs**: Claude strict tool-use / `output_format` (GA for Sonnet 4.6) can guarantee schema-valid specs at decode time, deleting the malformed-JSON class entirely | **IMPLEMENTED behind `AI_STRUCTURED_OUTPUTS=1`, default OFF (2026-07-13)** — generate/refine/validate pass `DASHBOARD_SPEC_JSON_SCHEMA` as `output_format` + beta header. **Still needs live-API verification in staging before flipping the flag** (pinned SDK predates the feature; params passed via cast). Shape-only guarantee — the column-contract gate stays |
+| 9 | **Structured outputs**: Claude strict tool-use / `output_format` (GA for Sonnet 4.6) can guarantee schema-valid specs at decode time, deleting the malformed-JSON class entirely | **IMPLEMENTED behind `AI_STRUCTURED_OUTPUTS=1`, default OFF (2026-07-13)** — generate/refine/validate pass `DASHBOARD_SPEC_JSON_SCHEMA` as `output_format` + beta header. **Still needs live-API verification before flipping the flag** — there is no staging env; run `backend/scripts/verify-structured-outputs.ts` (one cheap API call, touches no data) and flip on PASS (pinned SDK predates the feature; params passed via cast). Shape-only guarantee — the column-contract gate stays |
 
 ### Rendering & UX (all open)
 | # | Finding | Planned response |
@@ -71,8 +71,10 @@ widget types, deterministic column-contract validation
 generation prompt, loud logging on swallowed validation failures.
 
 ### Tier 1b — reliability, needs live verification (next)
-- **Structured outputs** behind an env flag (item 9). Verify against the real
-  API in staging; then delete the truncation-repair path's raison d'être.
+- **Structured outputs** behind an env flag (item 9). No staging env exists:
+  verify with `backend/scripts/verify-structured-outputs.ts` (one live call),
+  then flip the flag on the live backend; later, the truncation-repair path
+  becomes redundant.
 - **Playwright widget smoke test** (item 17): fixture rows per widget type →
   `/dashboards` render → assert non-empty marks. This is the exact gap that
   let the Vega blanks ship.
