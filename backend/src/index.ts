@@ -17,6 +17,10 @@ import path from 'path';
 import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
 import { config } from './config';
+import { runRetentionSweep } from './services/retention';
+
+// Gate for the daily data-retention sweep (driven off the 5-min reaper tick).
+let lastRetentionAt = 0;
 
 // Don't override env vars in test mode — setup.ts sets DATABASE_URL to test DB
 if (!process.env.VITEST) {
@@ -440,6 +444,15 @@ if (!process.env.VITEST) {
           .whereRaw(`COALESCE(completed_at, queued_at) < NOW() - (? * INTERVAL '1 day')`, [SYNC_RUN_RETENTION_DAYS])
           .del();
         if (prunedSyncRuns > 0) logger.info(`[cleanup] Pruned ${prunedSyncRuns} source sync run(s) older than ${SYNC_RUN_RETENTION_DAYS}d`);
+
+        // Data-retention sweep — the heavier age-based deletes on the
+        // append-only tables (notifications/ai_call_log by default;
+        // query_log/conversations opt-in). Driven off this reaper tick but
+        // gated to run at most once per 24h so it doesn't fire every 5 min.
+        if (Date.now() - lastRetentionAt > 24 * 60 * 60 * 1000) {
+          lastRetentionAt = Date.now();
+          await runRetentionSweep(semanticDb);
+        }
       } catch { /* non-fatal */ }
     }, 5 * 60 * 1000);
   });
