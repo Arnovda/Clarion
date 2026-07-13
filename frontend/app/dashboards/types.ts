@@ -2,54 +2,15 @@
 // Shared TypeScript interfaces for the Clarion dashboard system.
 // Import from here instead of defining inline in page.tsx.
 
-// ─── Filter & Widget Specs ────────────────────────────────────────────────────
+import type { WidgetSpec } from '@/lib/contract';
 
-export interface FilterSpec {
-  id: string;
-  type: 'date_range' | 'select';
-  label: string;
-  table: string;
-  column: string;
-  allLabel?: string;
-}
+// ─── Filter & Widget Specs (shared API contract) ─────────────────────────────
+// FilterSpec / WidgetSpec / DashboardSpec are what the backend AI generates and
+// persists — their canonical definitions live in @/lib/contract (mirrored
+// byte-identically at backend/src/shared/contract.ts). Re-exported here so all
+// existing `from './types'` imports keep working unchanged.
 
-export interface WidgetSpec {
-  id: string;
-  type:
-    | 'kpi_card'
-    | 'bar_chart'
-    | 'vertical_bar_chart'
-    | 'stacked_bar_chart'
-    | 'line_chart'
-    | 'pie_chart'
-    | 'top_list'
-    | 'data_table'
-    | 'combo_chart'
-    | 'radar_chart'
-    | 'treemap_chart'
-    | 'pivot_table';
-  title: string;
-  sql: string;
-  drillDownSql?: string;
-  drillDownLabel?: string;
-  format?: 'currency' | 'number' | 'percentage';
-  colSpan?: 1 | 2 | 3 | 4;
-  featured?: boolean;
-  /** SQL column name emitted as {{xf_<key>}} when a bar/segment is clicked */
-  crossFilterKey?: string;
-}
-
-// ─── Dashboard Specs ──────────────────────────────────────────────────────────
-
-export interface DashboardSpec {
-  title: string;
-  description: string;
-  filters: FilterSpec[];
-  widgets: WidgetSpec[];
-  // Which data layer the SQL was generated against. Persisted with the spec
-  // so subsequent re-executions hit the same connector. Default = 'product'.
-  dataLayer?: 'product' | 'source';
-}
+export type { FilterSpec, WidgetSpec, DashboardSpec } from '@/lib/contract';
 
 export interface SavedDashboard {
   id: number;

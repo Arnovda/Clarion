@@ -1,3 +1,5 @@
+import type { DashboardSpec } from '../../shared/contract';
+
 // ─── Domain reference data (extracted from dataviz skill) ──────────────────
 
 const DOMAIN_REFERENCES: Record<string, string> = {
@@ -311,33 +313,11 @@ export function buildDashboardUser(
   return `User request: "${request}"${domainSection}${glossarySection}\n\n━━━ Schema context ━━━\n${semanticContext}\n\n━━━ Relationships ━━━\n${relationshipContext}`;
 }
 
-export interface FilterSpec {
-  id: string;
-  type: 'date_range' | 'select';
-  label: string;
-  table: string;
-  column: string;
-  allLabel?: string;
-}
-
-export interface WidgetSpec {
-  id: string;
-  type: 'kpi_card' | 'bar_chart' | 'vertical_bar_chart' | 'stacked_bar_chart' | 'line_chart' | 'pie_chart' | 'top_list' | 'data_table' | 'combo_chart' | 'radar_chart' | 'treemap_chart' | 'pivot_table';
-  title: string;
-  sql: string;
-  drillDownSql?: string;
-  drillDownLabel?: string;
-  format?: 'currency' | 'number' | 'percentage';
-  colSpan?: 1 | 2 | 3 | 4;
-  crossFilterKey?: string;  // column name emitted as xf_<key> placeholder when a value is clicked
-}
-
-export interface DashboardSpec {
-  title: string;
-  description: string;
-  filters: FilterSpec[];
-  widgets: WidgetSpec[];
-}
+// The dashboard-spec types are part of the shared API contract (the backend
+// generates + persists them, the frontend renders them). Canonical definitions
+// live in shared/contract.ts; re-exported here so existing importers
+// (AIService, routes/dashboards, outputSchemas) keep working unchanged.
+export type { FilterSpec, WidgetSpec, DashboardSpec } from '../../shared/contract';
 
 // ---------------------------------------------------------------------------
 // Refinement prompt — generates clarifying questions before dashboard creation

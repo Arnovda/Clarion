@@ -7,7 +7,7 @@ import { Copy, Star, X, Lightbulb, Zap, FileText, Settings } from 'lucide-react'
 // selection state, so they can't use <SourceBadge> directly. Keeping the
 // grouping rule shared via the helpers preserves cross-page consistency.
 import { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
-import api from '@/lib/api';
+import api, { apiGet, apiPost } from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { streamSSE } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
@@ -186,8 +186,10 @@ export default function DashboardsPage() {
 
   const loadDashboards = useCallback(async () => {
     try {
-      const res = await api.get('/dashboards');
-      const sorted = (res.data.data as SavedDashboard[]).sort((a, b) => {
+      // Exemplar for the typed-helper pattern (Phase 4b): apiGet unwraps the
+      // ApiResponse envelope and returns the typed payload directly.
+      const rows = await apiGet<SavedDashboard[]>('/dashboards');
+      const sorted = [...rows].sort((a, b) => {
         if (a.is_favorite !== b.is_favorite) return a.is_favorite ? -1 : 1;
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
       });
@@ -505,13 +507,13 @@ export default function DashboardsPage() {
     if (!currentSpec) return;
     setSaving(true);
     try {
-      const res = await api.post('/dashboards', {
+      const saved = await apiPost<{ id: number }>('/dashboards', {
         connectionId: connectionId,
         title: currentSpec.title,
         description: currentSpec.description,
         spec: currentSpec,
       });
-      const savedId = res.data?.data?.id ?? res.data?.id;
+      const savedId = saved?.id;
       setIsUnsaved(false);
       if (savedId) setActiveId(savedId);
       await loadDashboards();
@@ -533,8 +535,7 @@ export default function DashboardsPage() {
 
   async function openDashboard(id: number) {
     try {
-      const res = await api.get(`/dashboards/${id}`);
-      const row = res.data.data;
+      const row = await apiGet<{ spec: string | DashboardSpec }>(`/dashboards/${id}`);
       const spec: DashboardSpec =
         typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
       const defaults = buildDefaultFilters(spec.filters);

@@ -1,6 +1,7 @@
 'use client';
 
 import { getItem, setItem, removeItem, storageKeys } from '@/lib/storage';
+import type { JwtPayload } from '@/lib/contract';
 
 const TOKEN_KEY         = storageKeys.token;
 const REFRESH_TOKEN_KEY = storageKeys.refreshToken;
@@ -38,14 +39,10 @@ export function isAuthenticated(): boolean {
   return !!getToken();
 }
 
-export interface TokenPayload {
-  sub: number;
-  tenantId: number;
-  email: string;
-  displayName: string;
-  role: 'admin' | 'analyst' | 'viewer';
-  exp: number;
-}
+// The decoded access-token payload is part of the shared API contract —
+// canonical definition in @/lib/contract (JwtPayload). `TokenPayload` is kept
+// as an alias so existing callsites keep working unchanged.
+export type TokenPayload = JwtPayload;
 
 export function getTokenPayload(): TokenPayload | null {
   const token = getToken();

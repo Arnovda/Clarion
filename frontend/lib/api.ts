@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 import { getToken, getRefreshToken, setToken, clearToken } from './auth';
+import type { ApiResponse } from './contract';
 
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api',
@@ -94,5 +95,46 @@ api.interceptors.response.use(
     return Promise.reject(err);
   },
 );
+
+// ─── Typed request helpers ──────────────────────────────────────────────────
+//
+// Every backend JSON endpoint replies with the ApiResponse envelope
+// ({ ok, data?, error? } — see lib/contract.ts). These helpers unwrap it once
+// so callsites get the typed payload directly instead of repeating
+// `res.data.data as T` + ad-hoc error plumbing:
+//
+//   const dashboards = await apiGet<SavedDashboard[]>('/dashboards');
+//
+// A response with `ok: false` throws an Error carrying the backend's error
+// message, which surfaces in the caller's existing catch path exactly like an
+// HTTP-level failure would. Adopt incrementally — the raw `api` axios instance
+// stays exported for callsites that need headers/blobs/envelope internals.
+
+function unwrapEnvelope<T>(envelope: ApiResponse<T>): T {
+  if (envelope && envelope.ok === false) {
+    throw new Error(envelope.error ?? 'Request failed');
+  }
+  return envelope.data as T;
+}
+
+export async function apiGet<T>(url: string): Promise<T> {
+  const res = await api.get<ApiResponse<T>>(url);
+  return unwrapEnvelope(res.data);
+}
+
+export async function apiPost<T>(url: string, body?: unknown): Promise<T> {
+  const res = await api.post<ApiResponse<T>>(url, body);
+  return unwrapEnvelope(res.data);
+}
+
+export async function apiPatch<T>(url: string, body?: unknown): Promise<T> {
+  const res = await api.patch<ApiResponse<T>>(url, body);
+  return unwrapEnvelope(res.data);
+}
+
+export async function apiDelete<T = void>(url: string): Promise<T> {
+  const res = await api.delete<ApiResponse<T>>(url);
+  return unwrapEnvelope(res.data);
+}
 
 export default api;

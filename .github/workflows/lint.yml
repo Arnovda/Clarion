@@ -17,6 +17,10 @@ name: Lint
 #   • validate-coverage   — new mutating routes shipped without the Zod
 #     validate() middleware (blind `req.body as {...}` casts; baseline only
 #     ever goes down).
+#   • contract-sync       — the shared API contract exists as two byte-identical
+#     copies (backend/src/shared/contract.ts + frontend/lib/contract.ts, because
+#     the frontend Docker build context can't reach a shared package); an edit
+#     that lands in only one copy fails here.
 on:
   pull_request:
     branches: [main]
@@ -56,3 +60,6 @@ jobs:
 
       - name: validate-coverage
         run: npx --yes tsx@4.22 backend/scripts/lint-validate-coverage.ts
+
+      - name: contract-sync
+        run: npx --yes tsx@4.22 backend/scripts/lint-contract-sync.ts

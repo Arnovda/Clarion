@@ -1,31 +1,6 @@
-// Shared TypeScript types used by both backend and frontend
+// Thin re-export shim — the canonical definitions live in ./contract
+// (the shared API contract, mirrored byte-identically at frontend/lib/contract.ts).
+// Kept so existing `from '../shared/types'` imports keep working; new code
+// should import from '../shared/contract' directly.
 
-// Roles: admin = full access, analyst = query + dashboards + reports, viewer = read-only
-export type UserRole = 'admin' | 'analyst' | 'viewer';
-
-export interface AuthUser {
-  id: number;
-  tenantId: number;
-  email: string;
-  displayName: string;
-  role: UserRole;
-}
-
-export interface JwtPayload {
-  sub: number;          // user id
-  tenantId: number;     // tenant id
-  email: string;
-  displayName: string;
-  name?: string;        // alias for displayName (used in route handlers)
-  role: UserRole;
-  iat?: number;
-  exp?: number;
-  [key: string]: unknown; // allow additional properties
-}
-
-// API response envelope
-export interface ApiResponse<T = unknown> {
-  ok: boolean;
-  data?: T;
-  error?: string;
-}
+export type { UserRole, AuthUser, JwtPayload, ApiResponse } from './contract';
