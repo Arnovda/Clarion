@@ -119,3 +119,39 @@ jobs:
       - name: Run connector tests
         working-directory: packages/connectors
         run: npx vitest run
+
+  # Widget render gate — the institutionalised Vega lesson (see
+  # docs/backlog/dashboard-architecture-plan.md §2 item 17). Renders every
+  # dashboard widget type against fixture rows in REAL Chromium and fails if
+  # any type draws no marks, errors, or is missing from the /dev/widgets
+  # gallery. Headless spec-level checks demonstrably do NOT catch blank
+  # charts; this does.
+  widget-render-gate:
+    name: Widget Render Gate (real browser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build frontend (production)
+        working-directory: frontend
+        run: npx next build
+      - name: Install Playwright + Chromium
+        run: npm ci && npx playwright install --with-deps chromium
+      - name: Start frontend and wait for it
+        working-directory: frontend
+        run: |
+          npx next start -p 3000 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/dev/widgets >/dev/null && exit 0
+            sleep 2
+          done
+          echo "frontend did not become ready" >&2; exit 1
+      - name: Run widget render smoke test
+        run: npx playwright test e2e/widgets.spec.ts
