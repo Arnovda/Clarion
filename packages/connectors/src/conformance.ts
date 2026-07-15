@@ -14,7 +14,7 @@
 
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
-import type { EntityDescriptor, SourceConnector } from './types';
+import type { EntityDescriptor, KnownRelationship, SourceConnector } from './types';
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
@@ -108,6 +108,48 @@ export function validateEntityCatalog(
     if (e.incrementalCursor && !e.incrementalCursor.field) {
       errs.push(`${id}: incrementalCursor.field is required`);
     }
+
+    // Documentation-before-inference (docs/SOURCE_ONBOARDING.md Phase C):
+    // every curated catalog entity carries a description — it feeds the
+    // wizard picker AND the trusted semantic tier. An empty description on
+    // a Tier 1/2 connector is a review blocker, enforced here.
+    if (!e.description || !e.description.trim()) {
+      errs.push(`${id}: description is required (playbook Phase C — curated catalogs document every entity)`);
+    }
+  }
+
+  return errs;
+}
+
+/**
+ * Known-relationship invariants (docs/SOURCE_ONBOARDING.md Phase E1): every
+ * declared FK must connect two catalogued entities with safe column names
+ * and a valid cardinality. Column EXISTENCE can't be checked statically
+ * (catalogs don't carry column lists) — the profiler's name-matching drops
+ * non-existent columns harmlessly at runtime.
+ */
+export function validateKnownRelationships(
+  connectorType: string,
+  relationships: ReadonlyArray<KnownRelationship>,
+  entities: ReadonlyArray<EntityDescriptor>,
+): string[] {
+  const errs: string[] = [];
+  const p = `[${connectorType}]`;
+  const names = new Set(entities.map((e) => e.name));
+  const seen = new Set<string>();
+
+  for (const r of relationships) {
+    const id = `${p} rel ${r.fromTable}.${r.fromColumn}→${r.toTable}.${r.toColumn}`;
+    if (!names.has(r.fromTable)) errs.push(`${id}: fromTable not in catalog`);
+    if (!names.has(r.toTable)) errs.push(`${id}: toTable not in catalog`);
+    if (!SAFE_COLUMN_NAME.test(r.fromColumn)) errs.push(`${id}: unsafe fromColumn`);
+    if (!SAFE_COLUMN_NAME.test(r.toColumn)) errs.push(`${id}: unsafe toColumn`);
+    if (r.type && !['many_to_one', 'one_to_many', 'many_to_many', 'one_to_one'].includes(r.type)) {
+      errs.push(`${id}: invalid type '${r.type}'`);
+    }
+    const key = `${r.fromTable}.${r.fromColumn}→${r.toTable}.${r.toColumn}`;
+    if (seen.has(key)) errs.push(`${id}: duplicate relationship`);
+    seen.add(key);
   }
 
   return errs;

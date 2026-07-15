@@ -1709,6 +1709,10 @@ export interface UpsertTableInput {
   displayName: string;
   description: string | null;
   grain?: string | null;
+  /** false when the description is connector-documented (trusted). Default true. */
+  aiDraft?: boolean;
+  /** Provenance rung: 'declared' | 'curated' | 'ai' (docs/SOURCE_ONBOARDING.md §1). */
+  semanticSource?: string | null;
 }
 
 export interface UpsertColumnInput {
@@ -1722,6 +1726,10 @@ export interface UpsertColumnInput {
   exampleValues: unknown;
   isDimension: boolean;
   isMeasure: boolean;
+  /** false when the description is connector-documented (trusted). Default true. */
+  aiDraft?: boolean;
+  /** Provenance rung: 'declared' | 'curated' | 'ai' (docs/SOURCE_ONBOARDING.md §1). */
+  semanticSource?: string | null;
 }
 
 export interface UpsertRelationshipInput {
@@ -1749,22 +1757,25 @@ export async function upsertConnectionGraph(
       await session.run(
         `MERGE (tbl:SourceTable {connectionId: $cid, tableName: $tn})
          ON CREATE SET
-           tbl.pgId         = $pgId,
-           tbl.displayName  = $displayName,
-           tbl.description  = $description,
-           tbl.grain        = $grain,
-           tbl.isActive     = true,
-           tbl.aiDraft      = true,
-           tbl.domains      = [],
-           tbl.createdAt    = $now,
-           tbl.updatedAt    = $now
+           tbl.pgId           = $pgId,
+           tbl.displayName    = $displayName,
+           tbl.description    = $description,
+           tbl.grain          = $grain,
+           tbl.isActive       = true,
+           tbl.aiDraft        = $aiDraft,
+           tbl.semanticSource = $semanticSource,
+           tbl.domains        = [],
+           tbl.createdAt      = $now,
+           tbl.updatedAt      = $now
          ON MATCH SET
-           tbl.pgId         = $pgId,
-           tbl.displayName  = $displayName,
-           tbl.description  = $description,
-           tbl.grain        = $grain,
-           tbl.updatedAt    = $now`,
-        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, now },
+           tbl.pgId           = $pgId,
+           tbl.displayName    = $displayName,
+           tbl.description    = $description,
+           tbl.grain          = $grain,
+           tbl.semanticSource = $semanticSource,
+           tbl.aiDraft        = CASE WHEN $aiDraft THEN tbl.aiDraft ELSE false END,
+           tbl.updatedAt      = $now`,
+        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, aiDraft: t.aiDraft ?? true, semanticSource: t.semanticSource ?? null, now },
       );
     }
 
@@ -1775,37 +1786,42 @@ export async function upsertConnectionGraph(
         `MATCH (tbl:SourceTable {pgId: $tpid})
          MERGE (col:SourceColumn {tableName: $tn, columnName: $cn})
          ON CREATE SET
-           col.pgId          = $pgId,
-           col.tablePgId     = $tpid,
-           col.dataType      = $dataType,
-           col.displayName   = $displayName,
-           col.description   = $description,
-           col.exampleValues = $exampleValues,
-           col.isDimension   = $isDimension,
-           col.isMeasure     = $isMeasure,
-           col.aiDraft       = true,
-           col.createdAt     = $now,
-           col.updatedAt     = $now
+           col.pgId           = $pgId,
+           col.tablePgId      = $tpid,
+           col.dataType       = $dataType,
+           col.displayName    = $displayName,
+           col.description    = $description,
+           col.exampleValues  = $exampleValues,
+           col.isDimension    = $isDimension,
+           col.isMeasure      = $isMeasure,
+           col.aiDraft        = $aiDraft,
+           col.semanticSource = $semanticSource,
+           col.createdAt      = $now,
+           col.updatedAt      = $now
          ON MATCH SET
-           col.pgId          = $pgId,
-           col.tablePgId     = $tpid,
-           col.dataType      = $dataType,
-           col.displayName   = $displayName,
-           col.description   = $description,
-           col.exampleValues = $exampleValues,
-           col.updatedAt     = $now
+           col.pgId           = $pgId,
+           col.tablePgId      = $tpid,
+           col.dataType       = $dataType,
+           col.displayName    = $displayName,
+           col.description    = $description,
+           col.exampleValues  = $exampleValues,
+           col.semanticSource = $semanticSource,
+           col.aiDraft        = CASE WHEN $aiDraft THEN col.aiDraft ELSE false END,
+           col.updatedAt      = $now
          MERGE (tbl)-[:HAS_COLUMN]->(col)`,
         {
-          pgId:          c.pgId,
-          tpid:          c.tablePgId,
-          tn:            c.tableName,
-          cn:            c.columnName,
-          dataType:      c.dataType,
-          displayName:   c.displayName,
-          description:   c.description,
-          exampleValues: JSON.stringify(c.exampleValues),
-          isDimension:   c.isDimension,
-          isMeasure:     c.isMeasure,
+          pgId:           c.pgId,
+          tpid:           c.tablePgId,
+          tn:             c.tableName,
+          cn:             c.columnName,
+          dataType:       c.dataType,
+          displayName:    c.displayName,
+          description:    c.description,
+          exampleValues:  JSON.stringify(c.exampleValues),
+          isDimension:    c.isDimension,
+          isMeasure:      c.isMeasure,
+          aiDraft:        c.aiDraft ?? true,
+          semanticSource: c.semanticSource ?? null,
           now,
         },
       );

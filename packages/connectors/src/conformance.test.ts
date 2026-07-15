@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import './exactonline';
 import './odoo';
 import { getConnector, listConnectorTypes } from './registry';
-import { validateConnectorMetadata, validateEntityCatalog } from './conformance';
+import { validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
+import { validateStarSchemaTemplate } from './starSchema';
 import { EXACT_ONLINE_ENTITIES } from './exactonline/entities';
 import { ODOO_ENTITIES } from './odoo/entities';
 
@@ -42,6 +43,24 @@ describe('connector conformance — entity catalogs', () => {
 
   it.each(catalogs)('catalog for "%s" passes entity invariants', (type, entities) => {
     const errs = validateEntityCatalog(type, entities);
+    expect(errs).toEqual([]);
+  });
+
+  it.each(catalogs)('known relationships for "%s" connect catalogued entities', (type, entities) => {
+    const connector = getConnector(type);
+    if (!connector.getKnownRelationships) return;
+    // Pass the full catalog as "selected" so every declared relationship is
+    // returned and validated.
+    const rels = connector.getKnownRelationships(entities.map((e) => e.name));
+    const errs = validateKnownRelationships(type, rels, entities);
+    expect(errs).toEqual([]);
+  });
+
+  it.each(catalogs)('star-schema template for "%s" (when shipped) passes template validation', (type, entities) => {
+    const connector = getConnector(type);
+    const template = connector.getStarSchemaTemplate?.();
+    if (!template) return;
+    const errs = validateStarSchemaTemplate(template, entities.map((e) => e.name));
     expect(errs).toEqual([]);
   });
 });

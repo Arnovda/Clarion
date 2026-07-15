@@ -26,9 +26,11 @@
 
 import { BaseSourceConnector } from '../BaseSourceConnector';
 import type {
+  ColumnDoc,
   ConnectorConfig,
   EntityAvailability,
   EntityDescriptor,
+  EntityDocs,
   KnownRelationship,
   ProbeContext,
   SourceConnector,
@@ -44,10 +46,12 @@ import {
   ENTITIES_BY_NAME,
   EXCLUDE_FIELD_PREFIXES,
   EXCLUDE_FIELD_TYPES,
+  MODEL_TO_TABLE,
   ODOO_ENTITIES,
   ODOO_KNOWN_RELATIONSHIPS,
   PAGE_SIZE,
   asEntityDescriptors,
+  odooFieldRole,
   odooTypeToDuckDb,
   type OdooEntity,
 } from './entities';
@@ -57,6 +61,8 @@ import {
   type OdooFieldMeta,
   type OdooTransport,
 } from './transport';
+import type { StarSchemaTemplate } from '../starSchema';
+import { ODOO_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
 
 export class OdooConnector extends BaseSourceConnector implements SourceConnector {
   readonly type = 'odoo';
@@ -257,6 +263,54 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
     const set = new Set(selectedEntities);
     return ODOO_KNOWN_RELATIONSHIPS.filter((r) => set.has(r.fromTable) && set.has(r.toTable));
   }
+
+  // ─── getStarSchemaTemplate ─────────────────────────────────────────────
+  /** Deterministic Kimball design for Odoo — see `starSchemaTemplate.ts`. */
+  getStarSchemaTemplate(): StarSchemaTemplate {
+    return ODOO_STAR_SCHEMA_TEMPLATE;
+  }
+
+  // ─── describeEntities ──────────────────────────────────────────────────
+  /**
+   * Harvest Odoo's OWN field documentation via `fields_get`: the `string`
+   * attribute is the display label, `help` is the description text, and
+   * `relation` on many2one fields names the target model — turning them into
+   * declared relationships. Because this runs against the connected instance,
+   * it covers customer custom fields (`x_...`) and installed-module fields
+   * that static curation never could.
+   *
+   * Sequential per model (the transport paces to Odoo Online's ~1 req/sec),
+   * so ~1s per selected entity during profiling. A model that fails
+   * `fields_get` is skipped — the profiler's AI pipeline covers it instead.
+   */
+  async describeEntities(
+    rawConfig: ConnectorConfig,
+    selectedEntities: readonly string[],
+    ctx: ProbeContext,
+  ): Promise<EntityDocs[]> {
+    this.validateConfig(rawConfig);
+    const config = asOdooConfig(rawConfig);
+
+    const selected = selectedEntities
+      .map((n) => ENTITIES_BY_NAME.get(n))
+      .filter((e): e is OdooEntity => !!e);
+    if (selected.length === 0) return [];
+
+    const { transport } = await resolveOdooTransport(config, ctx.log);
+    const selectedTables = new Set(selected.map((e) => e.name));
+
+    const out: EntityDocs[] = [];
+    for (const entity of selected) {
+      try {
+        const meta = await transport.fieldsGet(entity.model);
+        out.push(buildEntityDocs(entity, meta, selectedTables));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        ctx.log.warn(`describeEntities: fields_get failed for ${entity.model} — skipping`, { error: msg });
+      }
+    }
+    return out;
+  }
 }
 
 // ─── Field helpers (exported for unit tests) ─────────────────────────────────
@@ -309,4 +363,73 @@ export function buildColumnSchema(
     name,
     sqlType: name === 'id' ? 'BIGINT' : odooTypeToDuckDb(meta[name]?.type ?? 'char'),
   }));
+}
+
+/** Odoo returns `false` (or omits) unset string attributes — coerce to undefined. */
+function strAttr(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+/**
+ * Turn one model's `fields_get` metadata into `EntityDocs` — the vendor's own
+ * documentation for the semantic layer. Pure; exported for unit tests.
+ *
+ *   • Same field selection as sync (`ingestibleFields`), so every documented
+ *     column matches a Parquet header and nothing else.
+ *   • `help` text → column description verbatim. When a many2one has no
+ *     `help`, a description is synthesised deterministically from the label +
+ *     `relation` target ("Customer — references res_partner") — faithful to
+ *     the metadata, and FK columns are exactly where descriptions matter most.
+ *   • many2one `relation` targets inside the selected set become declared
+ *     relationships (fromColumn is the flattened id column, target is `id`).
+ */
+export function buildEntityDocs(
+  entity: OdooEntity,
+  meta: Record<string, OdooFieldMeta>,
+  selectedTables: ReadonlySet<string>,
+): EntityDocs {
+  const fields = ingestibleFields(meta);
+  const columns: ColumnDoc[] = [];
+  const relationships: KnownRelationship[] = [];
+
+  for (const name of fields) {
+    const f = meta[name];
+    const type = f?.type ?? '';
+    const label = strAttr(f?.string);
+    const help = strAttr(f?.help);
+    const relationModel = type === 'many2one' ? strAttr(f?.relation) : undefined;
+    const relationTable = relationModel ? MODEL_TO_TABLE.get(relationModel) : undefined;
+
+    let description = help;
+    if (!description && type === 'many2one' && label) {
+      description = `${label} — references ${relationTable ?? relationModel ?? 'another record'}.`;
+    }
+
+    columns.push({
+      name,
+      displayName: label,
+      description,
+      role: odooFieldRole(name, type),
+    });
+
+    if (relationTable && selectedTables.has(relationTable)) {
+      relationships.push({
+        fromTable: entity.name,
+        fromColumn: name,
+        toTable: relationTable,
+        toColumn: 'id',
+        type: 'many_to_one',
+        description: label ? `${label}.` : undefined,
+      });
+    }
+  }
+
+  return {
+    entityName: entity.name,
+    displayName: entity.displayName,
+    description: entity.description,
+    columns,
+    relationships,
+    provenance: 'declared',
+  };
 }

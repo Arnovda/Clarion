@@ -18,6 +18,7 @@ import { encodeMethodCall, parseMethodResponse, XmlRpcFault } from './xmlrpcCode
 import { hostAllowList } from './json2Transport';
 import {
   assertReadOnly,
+  FIELDS_GET_ATTRIBUTES,
   OdooAuthError,
   type OdooDomain,
   type OdooFieldMeta,
@@ -49,7 +50,7 @@ export class XmlRpcTransport implements OdooTransport {
   }
 
   async fieldsGet(model: string): Promise<Record<string, OdooFieldMeta>> {
-    const res = await this.executeKw(model, 'fields_get', [], { attributes: ['type', 'store'] });
+    const res = await this.executeKw(model, 'fields_get', [], { attributes: [...FIELDS_GET_ATTRIBUTES] });
     return (res ?? {}) as Record<string, OdooFieldMeta>;
   }
 

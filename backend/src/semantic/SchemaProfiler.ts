@@ -11,7 +11,13 @@ import { semanticDb } from '../db/knex';
 import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
-import { getConnector as getSourceConnector } from '@databridge/connectors';
+import {
+  createAdapterLogger,
+  getConnector as getSourceConnector,
+  type ColumnDoc,
+  type EntityDocs,
+} from '@databridge/connectors';
+import { decryptCredentials, encryptCredentials } from '../utils/crypto';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'SchemaProfiler' });
@@ -68,29 +74,74 @@ export async function runSchemaProfiler(
   let connectorType: string | null = null;
   let selectedEntities: readonly string[] | null = null;
 
+  // Fetched once — connector_type / selected_entities prime the AI prompts,
+  // connector_config_encrypted feeds the describeEntities docs harvest below.
+  const connRow = await semanticDb('connections').where({ id: connectionId }).first();
   if (connectorOverride) {
     connector = connectorOverride;
     shouldDisconnect = false;
-    // We may still want connector_type / selected_entities for AI priming.
-    const conn = await semanticDb('connections').where({ id: connectionId }).first();
-    connectorType = conn?.connector_type ?? null;
-    selectedEntities = (conn?.selected_entities as string[] | null) ?? null;
   } else {
-    const conn = await semanticDb('connections').where({ id: connectionId }).first();
-    if (!conn) {
+    if (!connRow) {
       throw new Error(`Connection ${connectionId} not found`);
     }
-    connector = await createConnector(conn);
-    connectorType = conn.connector_type ?? null;
-    selectedEntities = (conn.selected_entities as string[] | null) ?? null;
+    connector = await createConnector(connRow);
   }
+  connectorType = connRow?.connector_type ?? null;
+  selectedEntities = (connRow?.selected_entities as string[] | null) ?? null;
 
   await connector.connect();
   const schema = await connector.introspectSchema();
   const heuristicFks: FkCandidate[] = schema.fkCandidates ?? [];
   const classifications = schema.tableClassifications ?? [];
 
-  // ── 1a. Known-from-connector FKs (free signal, no AI tokens) ───────────
+  // ── 1a. Connector-documented semantics (docs/SOURCE_ONBOARDING.md §1) ──
+  // "Documentation before inference": self-describing sources return their
+  // OWN table/column docs + relationship facts via describeEntities (e.g.
+  // Odoo `fields_get` labels + help texts — which also cover customer custom
+  // fields). Everything returned is TRUSTED: it lands approved (not
+  // ai_draft), and the AI passes below only fill what's left uncovered.
+  // Failure degrades to the AI pipeline — never fatal.
+  let connectorDocs: EntityDocs[] = [];
+  if (connectorType && selectedEntities?.length && connRow?.connector_config_encrypted) {
+    try {
+      const sourceConnector = getSourceConnector(connectorType);
+      if (sourceConnector.describeEntities) {
+        emit({ phase: 'schema', message: 'Step 1/7 — Reading field documentation from the source system…' });
+        const connectorConfig = JSON.parse(decryptCredentials(connRow.connector_config_encrypted));
+        connectorDocs = await sourceConnector.describeEntities(connectorConfig, selectedEntities, {
+          log: createAdapterLogger(log),
+          // Some sources rotate credentials even on metadata reads — persist
+          // the rotation or the next sync would use a dead refresh token.
+          onCredentialRotated: async (newConfig) => {
+            await semanticDb('connections')
+              .where({ id: connectionId })
+              .update({ connector_config_encrypted: encryptCredentials(JSON.stringify(newConfig)) });
+          },
+        });
+        const documentedCols = connectorDocs.reduce(
+          (sum, d) => sum + d.columns.filter((c) => c.description).length, 0,
+        );
+        log.info(`describeEntities(${connectorType}): ${connectorDocs.length} entities, ${documentedCols} documented columns`);
+        if (documentedCols > 0) {
+          emit({ phase: 'schema', message: `Step 1/7 — Source documentation found for ${documentedCols} column(s) across ${connectorDocs.length} table(s)` });
+        }
+      }
+    } catch (err) {
+      log.warn({ err }, `describeEntities(${connectorType}) failed — falling back to AI descriptions`);
+      connectorDocs = [];
+    }
+  }
+
+  // Lookups for the trusted-docs rung. A column counts as DOCUMENTED only
+  // when the connector supplied a description — those skip AI Pass C.
+  const tableDocByName = new Map<string, EntityDocs>();
+  const colDocByKey = new Map<string, ColumnDoc>();
+  for (const d of connectorDocs) {
+    tableDocByName.set(d.entityName, d);
+    for (const c of d.columns) colDocByKey.set(`${d.entityName}.${c.name}`, c);
+  }
+
+  // ── 1b. Known-from-connector FKs (free signal, no AI tokens) ───────────
   // API-style sources (ExactOnline, NetSuite, …) ship a documented data
   // model — far more reliable than heuristic name-pattern matching on
   // PascalCase columns.
@@ -115,6 +166,30 @@ export async function runSchemaProfiler(
     } catch (err) {
       log.warn({ err }, `getKnownRelationships(${connectorType}) failed`);
     }
+  }
+
+  // Docs-derived relationship facts (e.g. Odoo many2one `relation` targets)
+  // join the declared rung too — deduped against the static catalog.
+  {
+    const seen = new Set(knownFks.map((k) => `${k.fromTable}.${k.fromColumn}→${k.toTable}.${k.toColumn}`));
+    let docRelCount = 0;
+    for (const d of connectorDocs) {
+      for (const rel of d.relationships ?? []) {
+        const key = `${rel.fromTable}.${rel.fromColumn}→${rel.toTable}.${rel.toColumn}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        knownFks.push({
+          fromTable:  rel.fromTable,
+          fromColumn: rel.fromColumn,
+          toTable:    rel.toTable,
+          toColumn:   rel.toColumn,
+          source:     'declared',
+          confidence: 1.0,
+        });
+        docRelCount++;
+      }
+    }
+    if (docRelCount > 0) log.info(`describeEntities(${connectorType}): +${docRelCount} declared relationship(s) from source metadata`);
   }
 
   // De-duplicate: heuristic FKs that match a known one are dropped.
@@ -345,19 +420,40 @@ export async function runSchemaProfiler(
   }
 
   // ── 6. AI Pass C — column descriptions with table+rel context ──────────
-  emit({ phase: 'ai_draft', message: `Step 6/7 — Claude is describing ${totalCols} columns across ${schema.tables.length} tables…` });
+  // Connector-documented columns are EXCLUDED from this pass: their vendor
+  // docs are already final (trusted rung), so Claude only describes the
+  // uncovered remainder — custom fields, undocumented columns. This is where
+  // the documentation channel saves tokens and review-queue load.
+  const isDocumented = (t: string, c: string) => !!colDocByKey.get(`${t}.${c}`)?.description;
+  const uncoveredTables = schema.tables
+    .map((t) => ({ ...t, columns: t.columns.filter((c) => !isDocumented(t.tableName, c.name)) }))
+    .filter((t) => t.columns.length > 0);
+  const uncoveredCols = uncoveredTables.reduce((sum, t) => sum + t.columns.length, 0);
+  const coveredCols = totalCols - uncoveredCols;
+
   let columnDescriptions;
-  try {
-    columnDescriptions = await generateColumnDescriptions(
-      connectorType, tableContext, schema.tables, qualityStats,
-      (tableNames, batchIndex, totalBatches) => {
-        emit({ phase: 'ai_draft', message: `Step 6/7 — Describing ${tableNames.join(', ')} (batch ${batchIndex + 1}/${totalBatches})…`, batchIndex, batchCount: totalBatches });
-      },
-    );
-    emit({ phase: 'ai_draft', message: `Step 6/7 — Claude described ${columnDescriptions.columns.length} columns` });
-  } catch (err) {
-    log.warn({ err }, 'generateColumnDescriptions failed (non-fatal)');
+  if (uncoveredCols === 0) {
     columnDescriptions = { columns: [] };
+    emit({ phase: 'ai_draft', message: `Step 6/7 — All ${totalCols} columns are documented by the source system — no AI descriptions needed` });
+  } else {
+    emit({
+      phase: 'ai_draft',
+      message: coveredCols > 0
+        ? `Step 6/7 — ${coveredCols} columns documented by the source; Claude is describing the remaining ${uncoveredCols}…`
+        : `Step 6/7 — Claude is describing ${totalCols} columns across ${schema.tables.length} tables…`,
+    });
+    try {
+      columnDescriptions = await generateColumnDescriptions(
+        connectorType, tableContext, uncoveredTables, qualityStats,
+        (tableNames, batchIndex, totalBatches) => {
+          emit({ phase: 'ai_draft', message: `Step 6/7 — Describing ${tableNames.join(', ')} (batch ${batchIndex + 1}/${totalBatches})…`, batchIndex, batchCount: totalBatches });
+        },
+      );
+      emit({ phase: 'ai_draft', message: `Step 6/7 — Claude described ${columnDescriptions.columns.length} columns` });
+    } catch (err) {
+      log.warn({ err }, 'generateColumnDescriptions failed (non-fatal)');
+      columnDescriptions = { columns: [] };
+    }
   }
 
   if (shouldDisconnect) connector.disconnect();
@@ -374,6 +470,44 @@ export async function runSchemaProfiler(
   const columnDefByKey = new Map<string, ColumnDefEntry>(
     columnDescriptions.columns.map((c) => [`${c.table_name}.${c.column_name}`, c] as const),
   );
+
+  // Merge the trusted docs rung with the AI drafts into final per-row persist
+  // values — computed ONCE and consumed by both the Postgres insert and the
+  // Neo4j sync, so the dual-write mirror can't diverge. Precedence per
+  // docs/SOURCE_ONBOARDING.md §1: connector docs > AI; a row whose
+  // description came from the connector lands approved (ai_draft=false) with
+  // its provenance recorded in semantic_source.
+  type TablePersist = { displayName: string; description: string | null; aiDraft: boolean; semanticSource: string };
+  type ColPersist = { displayName: string; description: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; semanticSource: string };
+  const tablePersistByName = new Map<string, TablePersist>();
+  const colPersistByKey = new Map<string, ColPersist>();
+  for (const table of schema.tables) {
+    const tCtx = tableContextByName.get(table.tableName);
+    const tDoc = tableDocByName.get(table.tableName);
+    const tableDocumented = !!tDoc?.description;
+    tablePersistByName.set(table.tableName, {
+      displayName:    tDoc?.displayName ?? tCtx?.display_name ?? table.tableName,
+      description:    tDoc?.description ?? tCtx?.description ?? null,
+      aiDraft:        !tableDocumented,
+      semanticSource: tableDocumented ? (tDoc?.provenance ?? 'declared') : 'ai',
+    });
+    for (const srcCol of table.columns) {
+      const key = `${table.tableName}.${srcCol.name}`;
+      const cDoc = colDocByKey.get(key);
+      const colDef = columnDefByKey.get(key);
+      const colDocumented = !!cDoc?.description;
+      colPersistByKey.set(key, {
+        // Vendor labels beat AI guesses even on undocumented columns; the
+        // role hint only fills in when the AI pass didn't cover the column.
+        displayName:    cDoc?.displayName ?? colDef?.display_name ?? srcCol.name,
+        description:    cDoc?.description ?? colDef?.description ?? null,
+        isDimension:    colDef?.is_dimension ?? (cDoc?.role === 'dimension'),
+        isMeasure:      colDef?.is_measure ?? (cDoc?.role === 'measure'),
+        aiDraft:        !colDocumented,
+        semanticSource: colDocumented ? (tDoc?.provenance ?? 'declared') : 'ai',
+      });
+    }
+  }
 
   // ── 7. Persist to Postgres + Neo4j ─────────────────────────────────────
   let tablesInserted = 0;
@@ -470,18 +604,22 @@ export async function runSchemaProfiler(
       await trx('source_tables').whereIn('id', existingTableIds).delete();
     }
 
-    // Re-insert tables and columns
+    // Re-insert tables and columns. Rows whose description came from the
+    // connector's documentation land approved (trusted rung); AI drafts keep
+    // the review-queue flow.
     for (const table of schema.tables) {
-      const ctx = tableContextByName.get(table.tableName);
+      const tp = tablePersistByName.get(table.tableName)!;
 
       const [row] = await trx('source_tables')
         .insert({
-          connection_id: connectionId,
-          table_name:    table.tableName,
-          display_name:  ctx?.display_name ?? table.tableName,
-          description:   ctx?.description  ?? null,
-          is_active:     true,
-          ai_draft:      true,
+          connection_id:   connectionId,
+          table_name:      table.tableName,
+          display_name:    tp.displayName,
+          description:     tp.description,
+          is_active:       true,
+          ai_draft:        tp.aiDraft,
+          semantic_source: tp.semanticSource,
+          approval_status: tp.aiDraft ? 'draft' : 'approved',
         })
         .returning('id');
 
@@ -490,19 +628,21 @@ export async function runSchemaProfiler(
       tablesInserted++;
 
       for (const srcCol of table.columns) {
-        const colDef = columnDefByKey.get(`${table.tableName}.${srcCol.name}`);
+        const cp = colPersistByKey.get(`${table.tableName}.${srcCol.name}`)!;
 
         const [colRow] = await trx('source_columns')
           .insert({
-            table_id:       tableId,
-            column_name:    srcCol.name,
-            data_type:      srcCol.type,
-            display_name:   colDef?.display_name ?? srcCol.name,
-            description:    colDef?.description  ?? null,
-            example_values: JSON.stringify(srcCol.sampleValues),
-            is_dimension:   colDef?.is_dimension  ?? false,
-            is_measure:     colDef?.is_measure    ?? false,
-            ai_draft:       true,
+            table_id:        tableId,
+            column_name:     srcCol.name,
+            data_type:       srcCol.type,
+            display_name:    cp.displayName,
+            description:     cp.description,
+            example_values:  JSON.stringify(srcCol.sampleValues),
+            is_dimension:    cp.isDimension,
+            is_measure:      cp.isMeasure,
+            ai_draft:        cp.aiDraft,
+            semantic_source: cp.semanticSource,
+            approval_status: cp.aiDraft ? 'draft' : 'approved',
           })
           .returning('id');
 
@@ -626,15 +766,19 @@ export async function runSchemaProfiler(
   // ── Sync to Neo4j ──────────────────────────────────────────────────────
   emit({ phase: 'neo4j', message: `Step 7/7 — Syncing ${schema.tables.length} tables to the knowledge graph for AI context…` });
   try {
+    // Mirror the SAME persist values Postgres received (dual-write contract).
     const graphTables: graph.UpsertTableInput[] = schema.tables.map((t) => {
       const ctx = tableContextByName.get(t.tableName);
+      const tp = tablePersistByName.get(t.tableName)!;
       return {
-        pgId:         tableIdMap.get(t.tableName) ?? 0,
+        pgId:           tableIdMap.get(t.tableName) ?? 0,
         connectionId,
-        tableName:    t.tableName,
-        displayName:  ctx?.display_name ?? t.tableName,
-        description:  ctx?.description  ?? null,
-        grain:        ctx?.grain        ?? null,
+        tableName:      t.tableName,
+        displayName:    tp.displayName,
+        description:    tp.description,
+        grain:          ctx?.grain ?? null,
+        aiDraft:        tp.aiDraft,
+        semanticSource: tp.semanticSource,
       };
     }).filter((t) => t.pgId > 0);
 
@@ -643,20 +787,22 @@ export async function runSchemaProfiler(
       const tablePgId = tableIdMap.get(t.tableName);
       if (!tablePgId) continue;
       for (const srcCol of t.columns) {
-        const colDef = columnDefByKey.get(`${t.tableName}.${srcCol.name}`);
+        const cp = colPersistByKey.get(`${t.tableName}.${srcCol.name}`)!;
         const colPgId = columnIdMap.get(`${t.tableName}.${srcCol.name}`);
         if (!colPgId) continue;
         graphColumns.push({
-          pgId:          colPgId,
+          pgId:           colPgId,
           tablePgId,
-          tableName:     t.tableName,
-          columnName:    srcCol.name,
-          dataType:      srcCol.type,
-          displayName:   colDef?.display_name ?? srcCol.name,
-          description:   colDef?.description  ?? null,
-          exampleValues: srcCol.sampleValues,
-          isDimension:   colDef?.is_dimension  ?? false,
-          isMeasure:     colDef?.is_measure    ?? false,
+          tableName:      t.tableName,
+          columnName:     srcCol.name,
+          dataType:       srcCol.type,
+          displayName:    cp.displayName,
+          description:    cp.description,
+          exampleValues:  srcCol.sampleValues,
+          isDimension:    cp.isDimension,
+          isMeasure:      cp.isMeasure,
+          aiDraft:        cp.aiDraft,
+          semanticSource: cp.semanticSource,
         });
       }
     }

@@ -14,6 +14,8 @@ export interface BuildBusMatrixOptions {
   tenantId: number | undefined;
   userEmail: string | undefined;
   busMatrix: BusMatrixOutput;
+  /** Set when the matrix came from a connector star-schema template (not AI). */
+  templateVersion?: number;
 }
 
 export interface BuiltProduct { name: string; id: number; status: string; build_order: number }
@@ -195,7 +197,7 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
  * products.
  */
 export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<BuildBusMatrixResult> {
-  const { connectionId, tenantId, userEmail, busMatrix } = opts;
+  const { connectionId, tenantId, userEmail, busMatrix, templateVersion } = opts;
   const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
 
   const products = await semanticDb.transaction(async (trx) => {
@@ -250,6 +252,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         kind: productKind,
         created_by: userEmail || 'ai',
         tenant_id: tenantId,
+        template_version: templateVersion ?? null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }).returning('id');

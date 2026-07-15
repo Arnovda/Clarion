@@ -28,12 +28,27 @@ import type { OdooConfig } from './schema';
 import { Json2Transport } from './json2Transport';
 import { XmlRpcTransport } from './xmlrpcTransport';
 
-/** Odoo `fields_get` per-field metadata (we only need type + store). */
+/**
+ * Odoo `fields_get` per-field metadata.
+ *
+ * `type` + `store` drive field selection and the column schema; `string`
+ * (display label), `help` (description) and `relation` (many2one target
+ * model) are the vendor's own field documentation — harvested by
+ * `describeEntities` so the semantic layer doesn't need AI to describe
+ * standard fields. Odoo omits or returns `false` for unset attributes, so
+ * consumers must coerce non-strings to undefined.
+ */
 export interface OdooFieldMeta {
   type: string;
   store?: boolean;
+  string?: string | false;
+  help?: string | false;
+  relation?: string | false;
   [k: string]: unknown;
 }
+
+/** Attributes requested from `fields_get` — keep both transports in sync. */
+export const FIELDS_GET_ATTRIBUTES: readonly string[] = ['type', 'store', 'string', 'help', 'relation'];
 
 /** A search domain — Odoo's list of `[field, op, value]` triplets / operators. */
 export type OdooDomain = unknown[];

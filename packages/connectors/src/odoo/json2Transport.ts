@@ -20,6 +20,7 @@ import type { Logger } from '../types';
 import type { OdooConfig } from './schema';
 import {
   assertReadOnly,
+  FIELDS_GET_ATTRIBUTES,
   OdooAuthError,
   OdooEndpointMissingError,
   type OdooDomain,
@@ -65,7 +66,7 @@ export class Json2Transport implements OdooTransport {
 
   async fieldsGet(model: string): Promise<Record<string, OdooFieldMeta>> {
     return this.call<Record<string, OdooFieldMeta>>(model, 'fields_get', {
-      attributes: ['type', 'store'],
+      attributes: [...FIELDS_GET_ATTRIBUTES],
     });
   }
 

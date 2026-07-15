@@ -22,6 +22,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { generateBusMatrixStreaming } from '../ai/AIService';
 import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, BuiltProduct } from './busMatrixBuilder';
+import { tryBuildBusMatrixFromTemplate } from './starSchemaTemplates';
 import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
 
 export type OrchestratorEventType =
@@ -93,67 +94,92 @@ export async function runBusMatrixWorkflow(
     .where({ 'st.connection_id': connectionId, 'st.is_active': true })
     .select('st.*');
 
-  const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
-  const sourceColumns = sourceTableIds.length
-    ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
-    : [];
-
-  const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
-    const cols = sourceColumns
-      .filter((c: { table_id: number }) => c.table_id === t.id)
-      .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
-        return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
-      }).join('\n');
-    return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
-  }).join('\n\n');
-
-  let relationshipsText = '';
-  let relCount = 0;
-  try {
-    const { getRelationshipsForContext } = await import('../db/semanticGraph');
-    const rels = await getRelationshipsForContext(connectionId);
-    if (rels.length > 0) {
-      const lines = rels.map((r) => {
-        const from = `${r.from_table as string}.${r.from_column as string}`;
-        const to = `${r.to_table as string}.${r.to_column as string}`;
-        const type = (r.relationship_type as string) || 'RELATES_TO';
-        const desc = (r.description as string) ? ` — ${r.description as string}` : '';
-        return `  ${from} → ${to} (${type})${desc}`;
-      }).join('\n');
-      relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
-      relCount = rels.length;
-    }
-  } catch (err) {
-    emit({ type: 'log', text: `Failed to load Neo4j relationships: ${err instanceof Error ? err.message : String(err)}` });
-  }
-
-  const sourceContext = tablesText + relationshipsText;
-
-  emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables, ${relCount} relationships — designing bus matrix…` });
-
-  await checkCancelled(opts);
-
-  // ── Phase B: AI design (cancellable) ─────────────────────────────────
-  const busMatrix = await generateBusMatrixStreaming(
-    connection.name as string,
-    sourceContext,
-    (type, delta) => {
-      if (type === 'thinking') emit({ type: 'thinking', text: delta });
-      else if (type === 'diag') emit({ type: 'diag', text: delta });
-    },
-    opts.abortSignal,
+  // ── Phase A.5: deterministic connector template ──────────────────────
+  // "Documentation before inference" (docs/SOURCE_ONBOARDING.md Phase F):
+  // connectors that ship a star-schema template skip the AI design phases
+  // entirely — same design for every customer, instant and token-free. The
+  // AI designer below remains the fallback (no template / template doesn't
+  // cover the synced entities / STAR_SCHEMA_TEMPLATES_DISABLED=1).
+  const templateHit = tryBuildBusMatrixFromTemplate(
+    (connection.connector_type as string | null) ?? null,
+    sourceTables.map((t: { table_name: string }) => t.table_name),
   );
 
-  await checkCancelled(opts);
+  let busMatrix: BusMatrixOutput;
+  let templateVersion: number | undefined;
 
-  // ── Phase C: validate ────────────────────────────────────────────────
-  // Recovery first — if the AI output was truncated and JSON-repair stripped
-  // data_products / relationships / etc., synthesize sensible defaults so the
-  // user doesn't lose the 5-10 min of dim/fact design they already paid for.
-  const recovery = recoverIncompleteBusMatrix(busMatrix);
-  if (recovery.recovered) {
-    emit({ type: 'log', text: `AI output was truncated — recovered with: ${recovery.notes.join('; ')}` });
+  if (templateHit) {
+    busMatrix = templateHit.busMatrix;
+    templateVersion = templateHit.templateVersion;
+    emit({
+      type: 'phase',
+      text: `Using the built-in ${connection.connector_type} star-schema template v${templateHit.templateVersion} — deterministic design, no AI needed (${busMatrix.conformed_dimensions.length} dimensions, ${busMatrix.fact_tables.length} fact tables)`,
+    });
+  } else {
+    const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
+    const sourceColumns = sourceTableIds.length
+      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+      : [];
+
+    const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
+      const cols = sourceColumns
+        .filter((c: { table_id: number }) => c.table_id === t.id)
+        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
+          return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
+        }).join('\n');
+      return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
+    }).join('\n\n');
+
+    let relationshipsText = '';
+    let relCount = 0;
+    try {
+      const { getRelationshipsForContext } = await import('../db/semanticGraph');
+      const rels = await getRelationshipsForContext(connectionId);
+      if (rels.length > 0) {
+        const lines = rels.map((r) => {
+          const from = `${r.from_table as string}.${r.from_column as string}`;
+          const to = `${r.to_table as string}.${r.to_column as string}`;
+          const type = (r.relationship_type as string) || 'RELATES_TO';
+          const desc = (r.description as string) ? ` — ${r.description as string}` : '';
+          return `  ${from} → ${to} (${type})${desc}`;
+        }).join('\n');
+        relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
+        relCount = rels.length;
+      }
+    } catch (err) {
+      emit({ type: 'log', text: `Failed to load Neo4j relationships: ${err instanceof Error ? err.message : String(err)}` });
+    }
+
+    const sourceContext = tablesText + relationshipsText;
+
+    emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables, ${relCount} relationships — designing bus matrix…` });
+
+    await checkCancelled(opts);
+
+    // ── Phase B: AI design (cancellable) ───────────────────────────────
+    busMatrix = await generateBusMatrixStreaming(
+      connection.name as string,
+      sourceContext,
+      (type, delta) => {
+        if (type === 'thinking') emit({ type: 'thinking', text: delta });
+        else if (type === 'diag') emit({ type: 'diag', text: delta });
+      },
+      opts.abortSignal,
+    );
+
+    await checkCancelled(opts);
+
+    // ── Phase C (AI path only): recover truncated output ───────────────
+    // If the AI output was truncated and JSON-repair stripped
+    // data_products / relationships / etc., synthesize sensible defaults so
+    // the user doesn't lose the 5-10 min of dim/fact design they paid for.
+    const recovery = recoverIncompleteBusMatrix(busMatrix);
+    if (recovery.recovered) {
+      emit({ type: 'log', text: `AI output was truncated — recovered with: ${recovery.notes.join('; ')}` });
+    }
   }
+
+  // ── Phase C: validate (template and AI output alike) ─────────────────
   const validationErrors = validateBusMatrix(busMatrix);
   if (validationErrors.length > 0) {
     throw new Error(`Bus matrix validation failed: ${validationErrors.slice(0, 5).join('; ')}`);
@@ -170,6 +196,7 @@ export async function runBusMatrixWorkflow(
     tenantId,
     userEmail: opts.userEmail,
     busMatrix,
+    templateVersion,
   });
 
   emit({ type: 'log', text: `Created ${products.length} data product(s)` });

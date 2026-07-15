@@ -33,7 +33,10 @@ import {
   type TestResult,
 } from '../types';
 import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
-import type { KnownRelationship } from '../types';
+import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
+import { EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
+import type { StarSchemaTemplate } from '../starSchema';
+import type { EntityDocs, KnownRelationship } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
 import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
 import { fetchODataMetadata, lookupEntitySchema, type ODataMetadata } from './metadata';
@@ -495,6 +498,43 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     return EXACT_ONLINE_KNOWN_RELATIONSHIPS.filter(
       (r) => set.has(r.fromTable) && set.has(r.toTable),
     );
+  }
+
+  // ─── getStarSchemaTemplate ─────────────────────────────────────────────
+  /** Deterministic Kimball design for ExactOnline — see `starSchemaTemplate.ts`. */
+  getStarSchemaTemplate(): StarSchemaTemplate {
+    return EXACT_ONLINE_STAR_SCHEMA_TEMPLATE;
+  }
+
+  /**
+   * Tier 2 (vendor-documented) docs channel: ExactOnline has no runtime
+   * field-metadata API usable here, but its REST reference documents every
+   * property. Those descriptions are transcribed into `docs.ts` at build
+   * time (`EXACT_ONLINE_COLUMN_DOCS`) and served statically — no network,
+   * `provenance: 'curated'`. Relationships are NOT repeated here; the static
+   * catalog already flows through `getKnownRelationships`. Columns EO added
+   * after transcription simply fall back to the AI pipeline.
+   */
+  async describeEntities(
+    rawConfig: ConnectorConfig,
+    selectedEntities: readonly string[],
+    _ctx: ProbeContext,
+  ): Promise<EntityDocs[]> {
+    this.validateConfig(rawConfig);
+    const out: EntityDocs[] = [];
+    for (const name of selectedEntities) {
+      const entity = ENTITIES_BY_NAME.get(name);
+      if (!entity) continue;
+      const cols = EXACT_ONLINE_COLUMN_DOCS[name];
+      out.push({
+        entityName: name,
+        displayName: entity.displayName,
+        description: entity.description,
+        columns: cols ? [...cols] : [],
+        provenance: 'curated',
+      });
+    }
+    return out;
   }
 
   /**

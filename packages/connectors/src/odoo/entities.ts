@@ -25,29 +25,35 @@ import type { EntityDescriptor, EntityCursorSpec, KnownRelationship } from '../t
  * the thousands of technical models Odoo ships. Order here is the order the
  * wizard shows.
  */
-export const ODOO_ALLOWLIST: ReadonlyArray<{ model: string; table: string; category: string; displayName: string }> = [
-  { model: 'res.partner',           table: 'res_partner',           category: 'Contacts',   displayName: 'Contacts / partners' },
-  { model: 'res.company',           table: 'res_company',           category: 'Contacts',   displayName: 'Companies' },
-  { model: 'res.currency',          table: 'res_currency',          category: 'Accounting', displayName: 'Currencies' },
-  { model: 'account.account',       table: 'account_account',       category: 'Accounting', displayName: 'Chart of accounts' },
-  { model: 'account.journal',       table: 'account_journal',       category: 'Accounting', displayName: 'Journals' },
-  { model: 'account.move',          table: 'account_move',          category: 'Accounting', displayName: 'Journal entries / invoices' },
-  { model: 'account.move.line',     table: 'account_move_line',     category: 'Accounting', displayName: 'Journal items' },
-  { model: 'account.payment',       table: 'account_payment',       category: 'Accounting', displayName: 'Payments' },
-  { model: 'account.payment.term',  table: 'account_payment_term',  category: 'Accounting', displayName: 'Payment terms' },
-  { model: 'account.tax',           table: 'account_tax',           category: 'Accounting', displayName: 'Taxes' },
-  { model: 'product.template',      table: 'product_template',      category: 'Products',   displayName: 'Product templates' },
-  { model: 'product.product',       table: 'product_product',       category: 'Products',   displayName: 'Product variants' },
-  { model: 'product.category',      table: 'product_category',      category: 'Products',   displayName: 'Product categories' },
-  { model: 'uom.uom',               table: 'uom_uom',               category: 'Products',   displayName: 'Units of measure' },
-  { model: 'sale.order',            table: 'sale_order',            category: 'Sales',      displayName: 'Sales orders' },
-  { model: 'sale.order.line',       table: 'sale_order_line',       category: 'Sales',      displayName: 'Sales order lines' },
-  { model: 'purchase.order',        table: 'purchase_order',        category: 'Purchasing', displayName: 'Purchase orders' },
-  { model: 'purchase.order.line',   table: 'purchase_order_line',   category: 'Purchasing', displayName: 'Purchase order lines' },
-  { model: 'stock.move',            table: 'stock_move',            category: 'Inventory',  displayName: 'Stock moves' },
-  { model: 'stock.quant',           table: 'stock_quant',           category: 'Inventory',  displayName: 'Stock quants (on-hand)' },
-  { model: 'stock.valuation.layer', table: 'stock_valuation_layer', category: 'Inventory',  displayName: 'Stock valuation layers' },
+export const ODOO_ALLOWLIST: ReadonlyArray<{ model: string; table: string; category: string; displayName: string; description: string }> = [
+  { model: 'res.partner',           table: 'res_partner',           category: 'Contacts',   displayName: 'Contacts / partners',       description: 'Customers, vendors and contacts — one row per person or organisation Odoo interacts with.' },
+  { model: 'res.company',           table: 'res_company',           category: 'Contacts',   displayName: 'Companies',                 description: 'Legal entities configured in this Odoo instance (multi-company setups have several).' },
+  { model: 'res.currency',          table: 'res_currency',          category: 'Accounting', displayName: 'Currencies',                description: 'Currencies with their rounding precision; referenced by journals, orders and invoices.' },
+  { model: 'account.account',       table: 'account_account',       category: 'Accounting', displayName: 'Chart of accounts',         description: 'The chart of accounts — one row per general-ledger account.' },
+  { model: 'account.journal',       table: 'account_journal',       category: 'Accounting', displayName: 'Journals',                  description: 'Accounting journals (sales, purchases, bank, cash, miscellaneous) that entries are posted in.' },
+  { model: 'account.move',          table: 'account_move',          category: 'Accounting', displayName: 'Journal entries / invoices', description: 'Journal entries, including customer invoices, vendor bills and credit notes (move_type distinguishes them). One row per document, header level.' },
+  { model: 'account.move.line',     table: 'account_move_line',     category: 'Accounting', displayName: 'Journal items',             description: 'Individual debit/credit lines of journal entries — the finest-grained accounting record.' },
+  { model: 'account.payment',       table: 'account_payment',       category: 'Accounting', displayName: 'Payments',                  description: 'Customer and vendor payments registered against bank or cash journals.' },
+  { model: 'account.payment.term',  table: 'account_payment_term',  category: 'Accounting', displayName: 'Payment terms',             description: 'Payment terms (e.g. 30 days net) applied to invoices and orders.' },
+  { model: 'account.tax',           table: 'account_tax',           category: 'Accounting', displayName: 'Taxes',                     description: 'Tax definitions (VAT rates etc.) applied on invoice and order lines.' },
+  { model: 'product.template',      table: 'product_template',      category: 'Products',   displayName: 'Product templates',         description: 'Products as defined in the catalog; variants of one product share a template.' },
+  { model: 'product.product',       table: 'product_product',       category: 'Products',   displayName: 'Product variants',          description: 'Sellable / purchasable product variants — the row that order lines and stock moves reference.' },
+  { model: 'product.category',      table: 'product_category',      category: 'Products',   displayName: 'Product categories',        description: 'Hierarchical product categories used for grouping and accounting defaults.' },
+  { model: 'uom.uom',               table: 'uom_uom',               category: 'Products',   displayName: 'Units of measure',          description: 'Units of measure (each in a UoM category) used on order and stock lines.' },
+  { model: 'sale.order',            table: 'sale_order',            category: 'Sales',      displayName: 'Sales orders',              description: 'Sales orders and quotations — one row per order, header level (state distinguishes quotation vs confirmed).' },
+  { model: 'sale.order.line',       table: 'sale_order_line',       category: 'Sales',      displayName: 'Sales order lines',         description: 'Sales order lines: product, quantity and price per line — the sales fact grain.' },
+  { model: 'purchase.order',        table: 'purchase_order',        category: 'Purchasing', displayName: 'Purchase orders',           description: 'Purchase orders sent to vendors — one row per order, header level.' },
+  { model: 'purchase.order.line',   table: 'purchase_order_line',   category: 'Purchasing', displayName: 'Purchase order lines',      description: 'Purchase order lines: product, quantity and cost per line — the purchasing fact grain.' },
+  { model: 'stock.move',            table: 'stock_move',            category: 'Inventory',  displayName: 'Stock moves',               description: 'Individual product movements between locations (receipts, deliveries, internal transfers).' },
+  { model: 'stock.quant',           table: 'stock_quant',           category: 'Inventory',  displayName: 'Stock quants (on-hand)',    description: 'Current on-hand quantity per product per location — the inventory snapshot.' },
+  { model: 'stock.valuation.layer', table: 'stock_valuation_layer', category: 'Inventory',  displayName: 'Stock valuation layers',    description: 'Inventory valuation entries — the monetary value of stock moves (absent on some Odoo versions).' },
 ];
+
+/** Dotted model name → warehouse table name, for resolving many2one `relation`
+ * targets from `fields_get` into relationship endpoints. */
+export const MODEL_TO_TABLE: ReadonlyMap<string, string> = new Map(
+  ODOO_ALLOWLIST.map((e) => [e.model, e.table]),
+);
 
 /**
  * Odoo stamps `write_date` on every modification, so it's the canonical
@@ -71,6 +77,7 @@ export const ODOO_ENTITIES: readonly OdooEntity[] = ODOO_ALLOWLIST.map((e) => ({
   name: e.table,
   displayName: e.displayName,
   category: e.category,
+  description: e.description,
   model: e.model,
   supportsIncremental: true,
   incrementalCursor: WRITE_DATE_CURSOR,
@@ -88,6 +95,7 @@ export function asEntityDescriptors(): EntityDescriptor[] {
     name: e.name,
     displayName: e.displayName,
     category: e.category,
+    description: e.description,
     supportsIncremental: e.supportsIncremental,
     incrementalCursor: e.incrementalCursor,
     businessKey: e.businessKey,
@@ -143,6 +151,31 @@ export function odooTypeToDuckDb(odooType: string): string {
     case 'html':
     case 'selection':
     default:               return 'VARCHAR';
+  }
+}
+
+/**
+ * Analytics-role hint from Odoo's field type system, used for documented
+ * columns that skip the AI classification pass:
+ *
+ *   • monetary / float — quantities and amounts → measure
+ *   • many2one / selection / char / boolean / date / datetime — attributes
+ *     you group or filter by → dimension
+ *   • integer / text / html — ambiguous (an integer can be a count OR a
+ *     sequence/colour index) → no hint, flags default to false
+ */
+export function odooFieldRole(name: string, odooType: string): 'measure' | 'dimension' | undefined {
+  if (name === 'id') return undefined;
+  switch (odooType) {
+    case 'monetary':
+    case 'float':      return 'measure';
+    case 'many2one':
+    case 'selection':
+    case 'char':
+    case 'boolean':
+    case 'date':
+    case 'datetime':   return 'dimension';
+    default:           return undefined;
   }
 }
 

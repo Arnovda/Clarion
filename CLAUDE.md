@@ -31,7 +31,176 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-13 (dashboard generation — architecture assessment + Tier-1 reliability hardening)
+**Last updated:** 2026-07-14 (source-onboarding playbook §8 COMPLETE: items 1-5 shipped)
+
+**EO star-schema template + §8 item 5 conformance checks (2026-07-14):**
+Closes the playbook's §8 platform-gap list. Connectors package: 111 tests
+pass, `tsc` clean, dist rebuilt; backend `npm run check` clean (no backend
+code changes — the template path from item 4 is generic, EO just plugs in).
+- **ExactOnline template v1** (`exactonline/starSchemaTemplate.ts`): 6
+  conformed dims (account, item, item_group, gl_account, journal
+  [code-keyed], payment_condition [code-keyed]), 6 facts
+  (fact_sales_invoice_lines [joins SalesInvoiceLines+SalesInvoices],
+  fact_transaction_lines, fact_sales_order_lines, fact_purchase_order_lines,
+  fact_receivables, fact_payables), 4 products (Core dimensions → Finance →
+  Sales → Purchasing), 25 relationships, 4 KPIs. Authored strictly from the
+  docs.ts transcription — the test suite PROVES every column lineage points
+  at a vendor-documented field. EO conventions: credit notes natively
+  negative (no sign-flip), *DC = division currency (additive), dates
+  TRY_CAST from ISO strings, GUID FKs raw VARCHAR + technical. No
+  dim_gl_classification (GLAccounts has no GLClassification field per the
+  vendor docs). Tested in `exactonline/starSchemaTemplate.test.ts` — same
+  DuckDB-execution rigor as Odoo's (synthetic tables, DESCRIBE column
+  equality, full materialisation, KPI runs, invoice+credit-note netting).
+- **Conformance (item 5)**: `validateEntityCatalog` now REQUIRES a
+  description on every entity; new `validateKnownRelationships` (endpoints ∈
+  catalog, safe columns, valid cardinality, no dupes); `conformance.test.ts`
+  runs both plus `validateStarSchemaTemplate` generically for every
+  registered connector that ships a template.
+- **Remaining follow-ups** (tracked, not §8): template-version UPGRADE flow
+  (`data_products.template_version` makes staleness visible); human-edit
+  tracking so re-profiles don't overwrite user edits; live-instance
+  validation of both templates against real Odoo/EO connections.
+
+**Deterministic star-schema templates (2026-07-14, §8 item 4):** The
+"Prepare my data" bus-matrix workflow now instantiates a connector-shipped
+template instead of the AI designer whenever one covers the synced entities —
+the AI is officially the fallback. Connectors package: 99 tests pass, `tsc`
+clean; backend `npm run check` clean, migrations applied, full backend suite
+green.
+- **Contract** (`packages/connectors/src/starSchema.ts`):
+  `SourceConnector.getStarSchemaTemplate(): StarSchemaTemplate | null` —
+  versioned template of conformed dims + facts (each with `sourceEntities`,
+  SQL over BARE source-table names, full column metadata incl. roles /
+  FK targets / isTechnical), product groupings (buildOrder), relationships,
+  KPIs (with `requiresTables`). `instantiateStarSchemaTemplate` = graceful
+  degradation (all-entities-or-drop per table; repairs relationships,
+  dimensionsUsed, product groupings, orphaned-dim ownership, renumbers
+  buildOrder; drops KPIs whose tables dropped; returns null when no fact
+  survives → caller uses AI). `validateStarSchemaTemplate` = structural
+  conformance, run in each connector's test suite.
+- **Odoo template v1** (`odoo/starSchemaTemplate.ts`): 9 conformed dims
+  (partner, product, product_category, account, journal, company, currency,
+  payment_term, uom), 6 facts (fact_invoice_lines with credit-note
+  sign-flip + display_type filter, fact_journal_items, fact_sales_order_lines,
+  fact_purchase_order_lines, fact_payments, fact_stock_moves), 5 products
+  (Core dimensions → Finance → Sales → Purchasing → Inventory), 33
+  relationships, 5 KPIs. Facts carry natural FK ids and never JOIN dims.
+  Targets modern Odoo (16+ fields). Tested in
+  `odoo/starSchemaTemplate.test.ts`: structural validation vs catalog,
+  degradation scenarios, and REAL DuckDB execution — synthetic Odoo source
+  tables, every dim/fact SQL executed with output columns asserted equal to
+  declared metadata, full template materialised, every KPI formula run.
+- **Backend integration**: `services/starSchemaTemplates.ts`
+  (`tryBuildBusMatrixFromTemplate`) maps the instantiated template onto
+  `BusMatrixOutput`; `busMatrixOrchestrator` tries it after loading
+  source_tables and skips AI Phases B/C-recovery on a hit (validation +
+  `buildBusMatrix` + transformations unchanged). Migration
+  `20260714000069_add_template_version.ts`: nullable
+  `data_products.template_version` (NULL = AI-designed);
+  `BuildBusMatrixOptions.templateVersion` threads it through. Env
+  `STAR_SCHEMA_TEMPLATES_DISABLED=1` forces the AI path (documented in
+  `.env.example`).
+- **Not yet**: EO star-schema template (authoring job — profiler+platform
+  side is generic); template-version UPGRADE flow (customers stay on their
+  materialised version; `template_version` column makes it visible); no
+  frontend changes (wizard flow is identical, just faster).
+
+**ExactOnline column-docs curation (2026-07-14, §8 item 3):** All 61 EO
+catalog entities transcribed from the vendor's REST reference into
+`packages/connectors/src/exactonline/docs.ts` (GENERATED file — 2,613
+documented columns). Transcription was DETERMINISTIC: a Node HTML-table
+parser over the docs details pages (each property row's checkbox input
+carries name/data-type/data-isnavigation; last `<td>` = description;
+navigation properties skipped) — no model in the loop, verbatim by
+construction. Role hints from Edm types (Double/Decimal → measure;
+Guid/String/Boolean/DateTime → dimension; ints → none).
+`ExactOnlineConnector.describeEntities` serves the map statically
+(`provenance: 'curated'`, no network; relationships NOT duplicated —
+`getKnownRelationships` already covers them; unknown entity names skipped).
+Docs-page-name quirk: `TimeCostTransactions` has no standalone REST docs
+page — transcribed from `SyncProjectTimeCostTransactions` (same model,
+`Timestamp` excluded). New `exactonline/docs.test.ts` (6 tests) gates the
+data: keys ⊆ catalog, safe names, non-empty descriptions, ≥40 entities /
+≥1000 columns, AmountDC-is-measure spot check. Package: 81 tests pass,
+`tsc` clean, dist rebuilt; backend `npm run check` clean (no backend
+changes needed — the profiler side shipped with §8 item 1). Next: §8
+item 4 — `getStarSchemaTemplate`.
+
+**Trusted-tier docs channel + Odoo `fields_get` harvest (2026-07-14):** Items
+1+2 of the playbook's §8 platform gaps — "documentation before inference" is
+now live end-to-end for Odoo. Connectors package: 75 tests pass (12 new);
+`tsc` clean. Backend: `npm run check` clean; migration applied locally.
+- **Connector contract** (`packages/connectors/src/types.ts`): new optional
+  `SourceConnector.describeEntities?(config, selectedEntities, ctx)` returning
+  `EntityDocs[]` — per-entity `description`/`displayName`, per-column
+  `ColumnDoc { name, displayName, description, role: 'measure'|'dimension' }`,
+  docs-derived `relationships`, and `provenance: 'declared' | 'curated'`.
+  Exported from the package index (with `KnownRelationship`).
+- **Odoo harvest**: transports now request
+  `['type','store','string','help','relation']` from `fields_get` (shared
+  `FIELDS_GET_ATTRIBUTES` const in `transport.ts`; previously only
+  type/store — the vendor's own field docs were discarded).
+  `OdooConnector.describeEntities` maps `help` → column description
+  (verbatim), `string` → display label, many2one `relation` → declared
+  relationships (target `id`, filtered to selected entities) + synthesised FK
+  descriptions ("Customer — references res_partner."), and field type → role
+  hints via `odooFieldRole` (`entities.ts`). Covers customer custom fields
+  (`x_...`) automatically since it runs against the connected instance.
+  `ODOO_ALLOWLIST` gained curated one-line `description`s for all 21 entities
+  (also shown in the wizard picker now). Pure builder `buildEntityDocs`
+  exported for tests; new `odoo/docs.test.ts` (12 tests, incl. mocked JSON-2
+  wiring + non-string `help: false` coercion).
+- **Profiler** (`backend/src/semantic/SchemaProfiler.ts`): new step 1a decrypts
+  `connections.connector_config_encrypted` and calls `describeEntities` (with
+  credential-rotation persist hook; failure degrades to the AI pipeline).
+  Documented columns are EXCLUDED from AI Pass C (token + review-queue win);
+  docs-derived relationships merge into the `declared` FK rung (deduped
+  against the static `getKnownRelationships` catalog). Persist values (display
+  name, description, dim/measure flags, ai_draft, semantic_source) are
+  computed ONCE in `tablePersistByName`/`colPersistByKey` maps and consumed by
+  BOTH the Postgres insert and the Neo4j sync so the dual-write mirror can't
+  diverge. Precedence: connector docs > AI; documented rows land
+  `ai_draft=false, approval_status='approved'` (skip the review queue);
+  vendor display labels beat AI guesses even on undocumented columns; role
+  hints fill dim/measure only where the AI pass didn't run.
+- **Migration `20260714000068_add_semantic_source.ts`**: nullable
+  `semantic_source` text on `source_tables` + `source_columns`
+  ('declared' | 'curated' | 'ai', NULL = pre-provenance). Mirrored to Neo4j:
+  `UpsertTableInput`/`UpsertColumnInput` gained `aiDraft`/`semanticSource`;
+  Cypher sets `semanticSource` on create+match, and `aiDraft` is forced false
+  on match only when the incoming row is trusted (preserves user confirmations
+  otherwise). Relationship EDGES in Neo4j still hardcode `aiDraft: true`
+  (pre-existing divergence from PG's `ai_draft=!isKnown`; PG drives the
+  review queue).
+- **Known limitation** (documented in the playbook §8): re-profiling still
+  rebuilds all rows, so human edits are overwritten on the next profile run —
+  pre-existing behaviour; "human edit beats everything" needs edit-tracking
+  (follow-up).
+- **Next**: §8 item 3 — EO column-docs curation (implement `describeEntities`
+  returning a static curated map, `provenance: 'curated'`; profiler side
+  already live). Then item 4 — `getStarSchemaTemplate`.
+
+**Source-onboarding playbook (2026-07-14):** New binding contract
+`docs/SOURCE_ONBOARDING.md` — the way of working for every new source
+connector. Core principle: *documentation before inference*. Classifies
+sources into three metadata tiers (1 self-describing via runtime metadata
+APIs, 2 vendor-documented → build-time curation in the connector package,
+3 undocumented → AI pipeline as today), defines the semantic precedence
+ladder (`declared > curated > ai_verified > ai_draft`, human edits beat
+all), a phase-by-phase checklist (research brief → transport/auth → entity
+catalog → sync correctness → semantic wiring → deterministic star-schema
+template → tests/conformance → registration), explicit fallback rules for
+missing documentation, and a Definition-of-Done merge gate. §8 lists the
+platform gaps the contract depends on, in build order: (1) trusted-tier
+descriptions in SchemaProfiler + provenance column, (2) Odoo `fields_get`
+harvest of `string`/`help`/`relation` (today only `['type','store']` are
+fetched — the vendor's own field docs are discarded), (3) EO column-docs
+curation, (4) `getStarSchemaTemplate` contract, (5) new conformance
+checks. Doc only — no code changed this session.
+
+
+**Prior last updated:** 2026-07-13 (dashboard generation — architecture assessment + Tier-1 reliability hardening)
 
 **Dashboard generation — architecture assessment + Tier-1 hardening (2026-07-13):**
 Full review of the dashboard-generation stack (prompts, AIService, route

@@ -12,6 +12,9 @@ export type {
   OAuthSpec,
   ConnectorConfig,
   EntityDescriptor,
+  ColumnDoc,
+  EntityDocs,
+  KnownRelationship,
   ProbeContext,
   SyncOptions,
   SyncContext,
@@ -25,6 +28,19 @@ export type {
 } from './types';
 
 export { CancellationError } from './types';
+
+// ─── Star-schema templates (deterministic modelling) ──────────────────────
+export {
+  instantiateStarSchemaTemplate,
+  validateStarSchemaTemplate,
+  type StarSchemaTemplate,
+  type TemplateColumn,
+  type TemplateDimension,
+  type TemplateFact,
+  type TemplateProduct,
+  type TemplateRelationship,
+  type TemplateKpi,
+} from './starSchema';
 
 // ─── Registry ─────────────────────────────────────────────────────────────
 export {

@@ -21,6 +21,7 @@
  */
 
 import type { JSONSchema7 } from 'json-schema';
+import type { StarSchemaTemplate } from './starSchema';
 
 // ─── The interface every connector implements ────────────────────────────
 export interface SourceConnector {
@@ -140,6 +141,114 @@ export interface SourceConnector {
    * subsequent layers (no duplicate name-pattern guesses).
    */
   getKnownRelationships?(selectedEntities: readonly string[]): readonly KnownRelationship[];
+
+  /**
+   * Optional. Return the source system's OWN documentation for the selected
+   * entities — table/column descriptions, display labels, analytics-role
+   * hints, and (for self-describing sources) relationship facts derived from
+   * the source's metadata API.
+   *
+   * This is the "documentation before inference" channel from
+   * docs/SOURCE_ONBOARDING.md. The schema profiler treats returned docs as
+   * TRUSTED: they land approved (not `ai_draft`), the AI description passes
+   * skip covered columns entirely, and docs-derived relationships merge in at
+   * the `declared` rung alongside `getKnownRelationships`.
+   *
+   * Two implementation styles, matching the playbook's metadata tiers:
+   *   • Tier 1 (self-describing) — call the source's metadata endpoint with
+   *     the customer's credentials (Odoo `fields_get`, OData `$metadata`,
+   *     GraphQL introspection). Covers per-instance custom fields.
+   *   • Tier 2 (vendor-documented) — return a map curated at build time from
+   *     the vendor's published data-model reference. No network needed.
+   *
+   * Contract:
+   *   • Column names must match the Parquet headers the sync writes
+   *     (post-flattening / post-renaming).
+   *   • Only return a `description` when the source actually documents the
+   *     field — an empty/missing description means "let the AI fill the gap".
+   *     Never fabricate docs; that's worse than an honest AI draft.
+   *   • Failures must not fail profiling: throw and the platform logs +
+   *     degrades to the AI pipeline for everything.
+   */
+  describeEntities?(
+    config: ConnectorConfig,
+    selectedEntities: readonly string[],
+    ctx: ProbeContext,
+  ): Promise<EntityDocs[]>;
+
+  /**
+   * Optional. Return the connector's deterministic star-schema template —
+   * the hand-written, versioned fact/dimension design for this source system
+   * (docs/SOURCE_ONBOARDING.md Phase F). When present and the template
+   * covers the synced entities, the platform instantiates it INSTEAD of
+   * asking the AI to design a star schema: deterministic, instant,
+   * token-free, identical across customers.
+   *
+   * Implementations return the FULL template; the platform filters it to the
+   * available entities via `instantiateStarSchemaTemplate` (graceful
+   * degradation). Return null when the connector has no template (the AI
+   * designer runs as before). Pure and synchronous — templates are
+   * compile-time data, not discovery.
+   */
+  getStarSchemaTemplate?(): StarSchemaTemplate | null;
+}
+
+// ─── Entity documentation (describeEntities) ──────────────────────────────
+/**
+ * Vendor documentation for one column, as exposed by `describeEntities`.
+ * `name` must match the Parquet header exactly (case-sensitive).
+ */
+export interface ColumnDoc {
+  name: string;
+
+  /** Vendor display label (e.g. Odoo's `string` attribute — "Customer"). */
+  displayName?: string;
+
+  /**
+   * Vendor description text (e.g. Odoo's `help` attribute). Presence marks
+   * the column as DOCUMENTED: the profiler stores it approved and skips the
+   * AI description pass for this column. Omit when the source has none.
+   */
+  description?: string;
+
+  /**
+   * Analytics-role hint derived deterministically from the vendor's type
+   * system (e.g. Odoo `monetary`/`float` → measure, `many2one`/`selection` →
+   * dimension). Used for `is_measure`/`is_dimension` on documented columns,
+   * which skip the AI classification pass. Omit when ambiguous.
+   */
+  role?: 'measure' | 'dimension';
+}
+
+/** Vendor documentation for one entity, returned by `describeEntities`. */
+export interface EntityDocs {
+  /** Matches `EntityDescriptor.name`. */
+  entityName: string;
+
+  /** Human-friendly table label (falls back to the AI's suggestion). */
+  displayName?: string;
+
+  /** Table-level description. Presence = documented (see ColumnDoc). */
+  description?: string;
+
+  columns: ColumnDoc[];
+
+  /**
+   * Relationship facts discovered from the source's metadata (e.g. Odoo
+   * many2one `relation` targets). Merged with `getKnownRelationships` at the
+   * `declared` trust rung. Only include relationships whose endpoints are
+   * both in the selected entities.
+   */
+  relationships?: KnownRelationship[];
+
+  /**
+   * Which playbook rung these docs came from:
+   *   • 'declared' — harvested at runtime from the source's metadata API
+   *   • 'curated'  — transcribed from vendor docs into the connector package
+   * Stored as row-level provenance so the UI can say "from Odoo" vs
+   * "AI suggestion".
+   */
+  provenance: 'declared' | 'curated';
 }
 
 // ─── Known relationships ──────────────────────────────────────────────────
