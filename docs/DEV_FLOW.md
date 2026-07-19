@@ -18,20 +18,38 @@ npm run dev                          # http://localhost:3000
   `CORS_ORIGIN` env var (comma-separated) so the browser may call it.
 - Use this for all UI/UX work — you see changes in <1s instead of in prod.
 
-## Loop 2 — staging revision on Azure (backend / migrations / full-stack)
+## Loop 2 — fixed test URL on Azure (backend / migrations / full-stack)
 For changes you can't see purely in the browser (backend logic, migrations):
 
 1. Merge to `main`. CI builds images, runs **additive** migrations, and deploys
    backend + frontend as **new revisions at 0% traffic** — they do NOT serve
-   users yet.
-2. Open the **deploy job summary** in GitHub Actions → it prints the
-   per-revision test URLs (backend API + frontend). Test there against real data.
-3. When happy, Actions tab → **"Promote to production"** → Run workflow. This
-   shifts 100% traffic to the latest revision. That's go-live.
+   users yet. Ready to test ~5–6 min after push (the slow Neo4j-constraints
+   job now only runs when `backend/src/db/neo4j.ts` changes).
+2. Open the **fixed test URL** — it never changes, so bookmark it once:
+   `https://<frontend-app>---staging.<env-domain>` (the deploy job summary
+   prints the exact URL on every run; same pattern for the backend API).
+   The `staging` label is moved to each new revision automatically, so this
+   URL always shows the newest pushed version.
+3. When happy, Actions tab → **"Promote to production"** → Run workflow →
+   green "Run workflow" button. This shifts 100% traffic to the newest
+   revision (by name). That's go-live, ~30 seconds.
 
 If something's wrong, just don't promote (users stay on the previous revision).
-To roll back after a promote: re-run Promote — or shift traffic back to the
-previous revision in the portal.
+If you already promoted and it's broken: Actions tab → **"Rollback
+production"** → Run workflow — shifts traffic back to the previous revision
+in ~30 seconds, no rebuild.
+
+**Caveat to know:** the test frontend calls the **live** backend (the API URL
+is baked in at build time). So the frontend bookmark shows new UI against the
+currently-live backend. To exercise a backend change before users see broken
+UI: promote **"backend only"** first, check the live app, then promote the
+frontend — and Rollback is the safety net either way.
+
+**Why traffic is always pinned by revision NAME:** a traffic entry set to
+`latest` auto-follows every future revision — the next push would go live
+immediately and silently break this whole test-first model. Both deploy and
+promote therefore always pin traffic to a named revision; never set
+`latest=100` by hand in the portal.
 
 ## The one rule (keep migrations safe)
 The 0%-traffic revision shares the database with the live one, so **migrations

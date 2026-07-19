@@ -1,0 +1,70 @@
+# Rollback production — one-click "go back to the previous version".
+#
+# Shifts 100% of traffic back to the revision that was live BEFORE the current
+# one (the newest active revision older than the one serving traffic now).
+# Use it when a promote turns out to be broken: no rebuild, takes ~30 seconds.
+#
+# Run it from the GitHub Actions tab → "Rollback production" → Run workflow.
+# Running Promote again afterwards returns to the newest version.
+
+name: Rollback production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which apps to roll back to their previous revision'
+        type: choice
+        default: 'backend + frontend'
+        options:
+          - 'backend + frontend'
+          - 'backend only'
+          - 'frontend only'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Shift traffic back to the previous revision
+        run: |
+          set -euo pipefail
+          RG="${{ secrets.AZURE_RESOURCE_GROUP }}"
+          rollback() {
+            local app="$1"
+            local current prev
+            # Which revision is serving traffic right now?
+            current=$(az containerapp ingress traffic show --name "$app" --resource-group "$RG" \
+              | jq -r '[.[] | select((.weight // 0) > 0 and .revisionName != null)][0].revisionName // empty')
+            if [ -z "$current" ]; then
+              current=$(az containerapp show --name "$app" --resource-group "$RG" \
+                --query properties.latestReadyRevisionName -o tsv)
+            fi
+            # Newest active revision that is OLDER than the current one.
+            prev=$(az containerapp revision list --name "$app" --resource-group "$RG" \
+              | jq -r --arg cur "$current" \
+                '[.[] | select(.properties.active == true and .name != $cur)]
+                 | sort_by(.properties.createdTime) | last | .name // empty')
+            if [ -z "$prev" ]; then
+              echo "::error::$app has no previous active revision to roll back to."
+              exit 1
+            fi
+            echo "Rolling back $app: $current → $prev (100% traffic)…"
+            az containerapp ingress traffic set \
+              --name "$app" --resource-group "$RG" \
+              --revision-weight "$prev=100"
+            echo "- **$app**: now serving \`$prev\` (was \`$current\`)" >> "$GITHUB_STEP_SUMMARY"
+          }
+          echo "### ⏪ Rolled back" >> "$GITHUB_STEP_SUMMARY"
+          case "${{ github.event.inputs.target }}" in
+            "backend only")  rollback "${{ secrets.BACKEND_APP_NAME }}" ;;
+            "frontend only") rollback "${{ secrets.FRONTEND_APP_NAME }}" ;;
+            *)               rollback "${{ secrets.BACKEND_APP_NAME }}"; rollback "${{ secrets.FRONTEND_APP_NAME }}" ;;
+          esac
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Run **Promote to production** to return to the newest version." >> "$GITHUB_STEP_SUMMARY"
