@@ -63,6 +63,12 @@ actually hold. See `docs/DEV_FLOW.md` (rewritten Loop 2) for the user flow.
 - **Not yet verified live**: the first push to main after this merge should
   be watched once — confirm the new revision lands at 0% traffic, the
   staging-label URLs resolve, and Promote/Rollback behave as described.
+- **Drive-by fix — validate-coverage ratchet red on main since 2026-07-14**:
+  `POST /dashboards/fix-widget` (Tier-1b self-heal endpoint) shipped without
+  Zod validation, pushing unvalidated mutating routes to 167 vs baseline 166.
+  Added `fixWidgetSchema` (`middleware/schemas.ts`) + `validate()` on the
+  route; lint back at 166, `tsc` clean (only the pre-existing knexfile
+  rootDir warning).
 
 **Prior last updated:** 2026-07-14 (source-onboarding playbook §8 COMPLETE: items 1-5 shipped)
 

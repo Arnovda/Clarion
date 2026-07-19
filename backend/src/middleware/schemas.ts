@@ -295,6 +295,20 @@ export const refineDashboardSchema = z.object({
   }).passthrough(),
 });
 
+// POST /dashboards/fix-widget — render-time self-heal for one widget. The
+// handler still owns the "widgetId exists in spec" check (404, not 400).
+export const fixWidgetSchema = z.object({
+  body: z.object({
+    connectionId: nullableId,
+    spec: z.object({
+      widgets: z.array(z.object({ id: z.string() }).passthrough()).min(1),
+    }).passthrough(),
+    widgetId: nonBlankString,
+    productIds: z.array(z.number().int()).optional(),
+    dataLayer: dataLayerEnum,
+  }).passthrough(),
+});
+
 export const dashboardIdParam = z.object({
   params: z.object({
     id: z.string().regex(/^\d+$/),
