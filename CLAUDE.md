@@ -31,7 +31,46 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-14 (source-onboarding playbook §8 COMPLETE: items 1-5 shipped)
+**Last updated:** 2026-07-19 (deploy flow streamlined: fixed staging URL, traffic-pinning fix, rollback workflow)
+
+**Deploy flow streamlined (2026-07-19):** CI/CD-only change (no app code).
+Cuts a typical deploy from ~13 min to ~6 min and makes the test-first model
+actually hold. See `docs/DEV_FLOW.md` (rewritten Loop 2) for the user flow.
+- **Neo4j-constraints job gated** (`deploy.yml`): it consistently burned ~7
+  min per deploy (slow connect to the Neo4j Container App) and the backend
+  ensures constraints at startup anyway. New `neo4j` paths-filter — the job
+  now only runs when `backend/src/db/neo4j.ts` itself changed.
+- **Traffic-pinning bug fixed** (`deploy.yml` + `promote.yml`): promote used
+  `--revision-weight latest=100`; a traffic entry pinned to "latest"
+  auto-follows every future revision, so after the first promote every
+  subsequent push went STRAIGHT LIVE — the 0%-traffic staging model was
+  silently broken (this is why "we can only test in production"). Both deploy
+  steps now pin traffic to the currently-live revision BY NAME before
+  creating the new revision, and promote resolves `latestReadyRevisionName`
+  and promotes by name. Never set `latest=100` (CI or portal).
+- **Fixed, bookmarkable test URL** (`deploy.yml`): each deploy moves the
+  Azure Container Apps revision label `staging` to the new revision, so
+  `https://<app>---staging.<env-domain>` (backend + frontend) is a stable URL
+  that always serves the newest pushed version. Printed in the job summary.
+- **New `rollback.yml` workflow**: "Rollback production" (workflow_dispatch,
+  backend/frontend/both) shifts 100% traffic to the newest active revision
+  older than the one currently serving — one-click undo after a bad promote.
+- **Known limitation** (documented in DEV_FLOW.md): the test frontend calls
+  the LIVE backend (`NEXT_PUBLIC_API_URL` baked at build). Full-stack staging
+  isolation would need either a second frontend build against the backend
+  staging-label URL or a runtime API proxy — deliberately not done (footgun:
+  a promoted frontend must never point at the moving staging label).
+- **Not yet verified live**: the first push to main after this merge should
+  be watched once — confirm the new revision lands at 0% traffic, the
+  staging-label URLs resolve, and Promote/Rollback behave as described.
+- **Drive-by fix — validate-coverage ratchet red on main since 2026-07-14**:
+  `POST /dashboards/fix-widget` (Tier-1b self-heal endpoint) shipped without
+  Zod validation, pushing unvalidated mutating routes to 167 vs baseline 166.
+  Added `fixWidgetSchema` (`middleware/schemas.ts`) + `validate()` on the
+  route; lint back at 166, `tsc` clean (only the pre-existing knexfile
+  rootDir warning).
+
+**Prior last updated:** 2026-07-14 (source-onboarding playbook §8 COMPLETE: items 1-5 shipped)
 
 **EO star-schema template + §8 item 5 conformance checks (2026-07-14):**
 Closes the playbook's §8 platform-gap list. Connectors package: 111 tests

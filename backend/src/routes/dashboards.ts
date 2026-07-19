@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema } from '../middleware/schemas';
+import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
@@ -395,7 +395,7 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
 // the client can patch it into the spec in place.
 // ---------------------------------------------------------------------------
 
-router.post('/fix-widget', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/fix-widget', requireAuth, validate(fixWidgetSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, spec, widgetId, productIds, dataLayer } = req.body as {

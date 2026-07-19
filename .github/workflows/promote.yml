@@ -37,13 +37,26 @@ jobs:
       - name: Shift traffic to the latest revision
         run: |
           set -euo pipefail
+          # IMPORTANT: promote BY REVISION NAME, never with `latest=100`.
+          # A traffic entry pinned to "latest" auto-follows every future
+          # revision, which would make the NEXT push go live immediately and
+          # silently break the test-first deploy model.
           promote() {
             local app="$1"
-            echo "Promoting $app → latest=100…"
+            local rev
+            rev=$(az containerapp show \
+              --name "$app" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --query properties.latestReadyRevisionName -o tsv)
+            if [ -z "$rev" ]; then
+              echo "::error::No ready revision found for $app — nothing to promote."
+              exit 1
+            fi
+            echo "Promoting $app → $rev=100…"
             az containerapp ingress traffic set \
               --name "$app" \
               --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --revision-weight latest=100
+              --revision-weight "$rev=100"
           }
           case "${{ github.event.inputs.target }}" in
             "backend only")  promote "${{ secrets.BACKEND_APP_NAME }}" ;;

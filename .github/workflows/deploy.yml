@@ -10,8 +10,10 @@
 # Deploy model (see docs/DEV_FLOW.md):
 #   • Push to main → build (cached), run migrations (only if a migration file
 #     changed), then deploy backend + frontend as NEW revisions at 0% TRAFFIC.
-#     They do NOT serve users — test them on the per-revision URLs printed in the
-#     job summary, then run the "Promote to production" workflow.
+#     They do NOT serve users — test them on the FIXED staging-label URLs
+#     (https://<app>---staging.<env-domain>, bookmarkable, printed in the job
+#     summary), then run the "Promote to production" workflow. "Rollback
+#     production" shifts traffic back to the previous revision if needed.
 #
 # IMPORTANT: migrations must stay backward-compatible (additive: CREATE/ADD,
 # never DROP/RENAME in the same deploy) — the 0%-traffic revision shares the DB
@@ -41,6 +43,7 @@ jobs:
       etl: ${{ steps.f.outputs.etl }}
       worker: ${{ steps.f.outputs.worker }}
       migrations: ${{ steps.f.outputs.migrations }}
+      neo4j: ${{ steps.f.outputs.neo4j }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -59,6 +62,8 @@ jobs:
               - 'packages/connectors/**'
             migrations:
               - 'backend/src/db/migrations/**'
+            neo4j:
+              - 'backend/src/db/neo4j.ts'
 
   # ── Builds (each gated to its service; all layer-cached) ──────────────────
   build-frontend:
@@ -202,46 +207,99 @@ jobs:
       # do NOT shift traffic — the live revision keeps serving until you run the
       # "Promote to production" workflow. `revision set-mode multiple` is
       # idempotent and required for 0%-traffic revisions.
-      - name: Deploy backend (staging revision, 0% traffic)
+      #
+      # Two invariants each deploy step maintains:
+      #   1. Traffic is pinned to the CURRENTLY-LIVE revision BY NAME before the
+      #      new revision is created. If traffic were assigned to "latest"
+      #      (which the old promote did), Azure auto-shifts 100% to every new
+      #      revision the moment it deploys — i.e. pushes would go straight to
+      #      production and the test-first model silently breaks.
+      #   2. The fixed "staging" label is moved to the new revision, so the test
+      #      URL (https://<app>---staging.<env-domain>) never changes and can be
+      #      bookmarked.
+      - name: Deploy backend (test revision, 0% traffic)
         if: needs.changes.outputs.backend == 'true'
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          set -euo pipefail
           az containerapp revision set-mode \
-            --name ${{ secrets.BACKEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --mode multiple || true
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          LIVE=$(az containerapp ingress traffic show --name "$APP" --resource-group "$RG" \
+            | jq -r '[.[] | select((.weight // 0) > 0 and .revisionName != null)][0].revisionName // empty')
+          if [ -z "$LIVE" ]; then
+            LIVE=$(az containerapp show --name "$APP" --resource-group "$RG" \
+              --query properties.latestReadyRevisionName -o tsv)
+          fi
+          if [ -n "$LIVE" ]; then
+            az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+              --revision-weight "$LIVE=100"
+          fi
+
           az containerapp update \
-            --name ${{ secrets.BACKEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_REGISTRY }}/databridge-backend:${{ steps.tag.outputs.tag }} \
-            --revision-suffix ${{ steps.tag.outputs.tag }}
-          FQDN=$(az containerapp revision list \
-            --name ${{ secrets.BACKEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --query "[?contains(name, '${{ steps.tag.outputs.tag }}')].properties.fqdn | [0]" -o tsv)
+            --name "$APP" \
+            --resource-group "$RG" \
+            --image ${{ env.ACR_REGISTRY }}/databridge-backend:$TAG \
+            --revision-suffix "$TAG"
+
+          az containerapp revision label remove --name "$APP" --resource-group "$RG" \
+            --label staging || true
+          az containerapp revision label add --name "$APP" --resource-group "$RG" \
+            --label staging --revision "$APP--$TAG"
+
+          FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn -o tsv)
           {
-            echo "### 🧪 Backend staging revision (0% traffic)";
-            echo "API: \`https://$FQDN/api\` — test, then run **Promote to production**.";
+            echo "### 🧪 Backend test version deployed (not live yet)";
+            echo "Fixed test API URL: \`https://${FQDN/./---staging.}/api\`";
+            echo "";
+            echo "When it works → Actions tab → **Promote to production** → Run workflow.";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy frontend (staging revision, 0% traffic)
+      - name: Deploy frontend (test revision, 0% traffic)
         if: needs.changes.outputs.frontend == 'true'
+        env:
+          APP: ${{ secrets.FRONTEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          set -euo pipefail
           az containerapp revision set-mode \
-            --name ${{ secrets.FRONTEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --mode multiple || true
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          LIVE=$(az containerapp ingress traffic show --name "$APP" --resource-group "$RG" \
+            | jq -r '[.[] | select((.weight // 0) > 0 and .revisionName != null)][0].revisionName // empty')
+          if [ -z "$LIVE" ]; then
+            LIVE=$(az containerapp show --name "$APP" --resource-group "$RG" \
+              --query properties.latestReadyRevisionName -o tsv)
+          fi
+          if [ -n "$LIVE" ]; then
+            az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+              --revision-weight "$LIVE=100"
+          fi
+
           az containerapp update \
-            --name ${{ secrets.FRONTEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_REGISTRY }}/databridge-frontend:${{ steps.tag.outputs.tag }} \
-            --revision-suffix ${{ steps.tag.outputs.tag }}
-          FQDN=$(az containerapp revision list \
-            --name ${{ secrets.FRONTEND_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --query "[?contains(name, '${{ steps.tag.outputs.tag }}')].properties.fqdn | [0]" -o tsv)
+            --name "$APP" \
+            --resource-group "$RG" \
+            --image ${{ env.ACR_REGISTRY }}/databridge-frontend:$TAG \
+            --revision-suffix "$TAG"
+
+          az containerapp revision label remove --name "$APP" --resource-group "$RG" \
+            --label staging || true
+          az containerapp revision label add --name "$APP" --resource-group "$RG" \
+            --label staging --revision "$APP--$TAG"
+
+          FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn -o tsv)
           {
-            echo "### 🧪 Frontend staging revision (0% traffic)";
-            echo "Open: \`https://$FQDN\` — click through, then run **Promote to production**.";
+            echo "### 🧪 Frontend test version deployed (not live yet)";
+            echo "Fixed test URL (bookmark this): \`https://${FQDN/./---staging.}\`";
+            echo "";
+            echo "This URL always shows the newest pushed version. When it looks good →";
+            echo "Actions tab → **Promote to production** → Run workflow.";
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ETL is internal plumbing (backend calls it) and stays auto-live on
@@ -258,10 +316,15 @@ jobs:
       # `databridge-sync-worker:<branch>-latest` and pulls the image fresh on
       # every execution, so the next sync uses the freshly-built worker image.
 
-  # ── Neo4j constraints (only when backend changed; idempotent) ─────────────
+  # ── Neo4j constraints (only when neo4j.ts itself changed; idempotent) ─────
+  # This job consistently takes ~7 minutes (slow connection to the Neo4j
+  # Container App) and the backend also ensures constraints at startup, so it
+  # only runs when the constraint definitions could actually have changed —
+  # i.e. when backend/src/db/neo4j.ts was touched. This cuts a typical deploy
+  # from ~13 min to ~6 min of wall clock.
   neo4j-constraints:
     needs: [changes, deploy]
-    if: ${{ !cancelled() && !failure() && needs.changes.outputs.backend == 'true' }}
+    if: ${{ !cancelled() && !failure() && needs.changes.outputs.neo4j == 'true' }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
