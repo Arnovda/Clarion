@@ -24,6 +24,11 @@ import {
   buildColumnDescriptionsUser,
   ColumnDescriptionsOutput,
   FkCandidateLike,
+  VendorDocsContext,
+  ENRICH_DESCRIPTIONS_SYSTEM,
+  buildEnrichmentUser,
+  EnrichmentOutput,
+  EnrichCandidate,
 } from './prompts/schemaContextPrompt';
 import {
   NL_TO_SQL_SYSTEM,
@@ -882,11 +887,12 @@ export async function generateTableContext(
   tables: TableInfo[],
   qualityStats: TableQualityStat[],
   fkCandidates: FkCandidateLike[],
+  vendorDocs?: VendorDocsContext,
 ): Promise<TableContextOutput> {
   const glossary = await loadGlossaryBlock();
   const raw = await callClaude(
     TABLE_CONTEXT_SYSTEM,
-    buildTableContextUser(sourceSystem, conventions, tables, qualityStats, fkCandidates, glossary),
+    buildTableContextUser(sourceSystem, conventions, tables, qualityStats, fkCandidates, glossary, vendorDocs),
     { maxTokens: 8000, cacheSystem: true, callLabel: 'table_context' },
   );
   return parseJson<TableContextOutput>(raw);
@@ -903,6 +909,7 @@ export async function generateColumnDescriptions(
   tables: TableInfo[],
   qualityStats: TableQualityStat[],
   onProgress?: (tableNames: string[], batchIndex: number, totalBatches: number) => void,
+  vendorDocs?: VendorDocsContext,
 ): Promise<ColumnDescriptionsOutput> {
   const glossary = await loadGlossaryBlock();
   const batches = buildDraftBatches(tables);
@@ -915,7 +922,7 @@ export async function generateColumnDescriptions(
     try {
       const raw = await callClaude(
         COLUMN_DESCRIPTIONS_SYSTEM,
-        buildColumnDescriptionsUser(sourceSystem, tableContext, batch, batchStats, glossary),
+        buildColumnDescriptionsUser(sourceSystem, tableContext, batch, batchStats, glossary, vendorDocs),
         { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions', kind: 'row' },
       );
       const part = parseJson<ColumnDescriptionsOutput>(raw);
@@ -934,7 +941,7 @@ export async function generateColumnDescriptions(
         try {
           const raw = await callClaude(
             COLUMN_DESCRIPTIONS_SYSTEM,
-            buildColumnDescriptionsUser(sourceSystem, tableContext, sub, sub2Stats, glossary),
+            buildColumnDescriptionsUser(sourceSystem, tableContext, sub, sub2Stats, glossary, vendorDocs),
             { maxTokens: 16000, cacheSystem: true, callLabel: 'column_descriptions', kind: 'row' },
           );
           const part = parseJson<ColumnDescriptionsOutput>(raw);
@@ -946,6 +953,47 @@ export async function generateColumnDescriptions(
     }
   }
   return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Enrichment — extend vendor descriptions with observed data context
+// (semantic-enrichment-plan Phase 3). One call per table; the caller batches
+// tables and enforces the selection rule + overall cap. Returns a map of
+// column name → enriched text with the vendor base GUARANTEED preserved:
+// if the model dropped or reworded the base, we prepend it deterministically.
+// ---------------------------------------------------------------------------
+
+export async function enrichColumnDescriptions(
+  sourceSystem: string | null,
+  tableName: string,
+  tableVendorDescription: string | null,
+  candidates: EnrichCandidate[],
+  relationshipLines: string[],
+): Promise<Map<string, string>> {
+  const glossary = await loadGlossaryBlock();
+  const out = new Map<string, string>();
+  if (candidates.length === 0) return out;
+  const raw = await callClaude(
+    ENRICH_DESCRIPTIONS_SYSTEM,
+    buildEnrichmentUser(sourceSystem, tableName, tableVendorDescription, candidates, relationshipLines, glossary),
+    { maxTokens: 8000, cacheSystem: true, callLabel: 'enrich_descriptions' },
+  );
+  const parsed = parseJson<EnrichmentOutput>(raw);
+  const byName = new Map(candidates.map((c) => [c.columnName, c] as const));
+  for (const c of parsed.columns ?? []) {
+    const cand = byName.get(c.column_name);
+    if (!cand || typeof c.enriched_description !== 'string') continue;
+    const enriched = c.enriched_description.trim();
+    if (!enriched) continue;
+    // Invariant enforcement: the vendor sentence leads, verbatim.
+    const final = enriched.startsWith(cand.vendorDescription)
+      ? enriched
+      : `${cand.vendorDescription} — ${enriched}`;
+    // No-op enrichments (base returned unchanged) are skipped — nothing to
+    // review, nothing to store.
+    if (final.trim() !== cand.vendorDescription.trim()) out.set(c.column_name, final);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

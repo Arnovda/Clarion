@@ -488,6 +488,7 @@ function ConnectionCard({
   const config = getConfig(conn);
   const [deleting, setDeleting] = useState(false);
   const [reprofiling, setReprofiling] = useState(false);
+  const [enriching, setEnriching] = useState(false);
   const isSourceConnector = !!conn.connector_type;
   const [syncing, setSyncing] = useState(conn.last_sync_status === 'running' || conn.last_sync_status === 'queued');
   const [syncStatus, setSyncStatus] = useState<string | null>(conn.last_sync_status ?? null);
@@ -738,6 +739,33 @@ function ConnectionCard({
     setReprofiling(true);
     onStartReProfile(conn.id);
     // The ProfilingBanner handles the SSE stream — no direct API call needed here
+  }
+
+  // Opt-in AI enrichment of vendor descriptions (admin-only route). Dry-run
+  // first so the user sees scope before any tokens are spent; results land
+  // as drafts in the AI review queue.
+  async function handleEnrich() {
+    try {
+      setEnriching(true);
+      const dry = await api.post(`/connections/${conn.id}/enrich-descriptions?dryRun=1`);
+      const count = dry.data?.data?.candidates ?? 0;
+      if (count === 0) {
+        alert('No columns are eligible for enrichment yet. Eligible = vendor-documented measures and relationship columns that you haven\'t hand-edited. Run Analyse first if you haven\'t.');
+        return;
+      }
+      if (!window.confirm(
+        `Enrich ${count} vendor-documented column(s) with AI-observed data context?\n\n` +
+        'This spends AI tokens (typically well under a euro) and can take a minute or two. ' +
+        'The vendor text is kept as the base; enriched versions appear in the AI review queue for approval.',
+      )) return;
+      const res = await api.post(`/connections/${conn.id}/enrich-descriptions`);
+      const d = res.data?.data;
+      alert(`Enriched ${d?.enriched ?? 0} of ${d?.candidates ?? 0} column(s) across ${d?.tables ?? 0} table(s). Review them in the AI review queue.`);
+    } catch {
+      alert('Enrichment failed — see backend logs.');
+    } finally {
+      setEnriching(false);
+    }
   }
 
   // ── Derive a single status pill + a contextual "next step" hint from the
@@ -1097,6 +1125,18 @@ function ConnectionCard({
             ? 'Analysing…'
             : (profilingState.status === 'done' || profilingState.status === 'error' ? 'Re-analyse' : 'Analyse')}
         </button>
+        {/* Enrichment only makes sense on an analysed catalog (vendor bases
+            persisted). Admin-only server-side; drafts land in the review
+            queue, vendor text stays the immutable base. */}
+        {profilingState.status === 'done' && (
+          <button
+            onClick={handleEnrich}
+            disabled={enriching}
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50"
+          >
+            {enriching ? 'Enriching…' : 'Enrich descriptions'}
+          </button>
+        )}
         <button
           onClick={() => onEdit(conn)}
           className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"

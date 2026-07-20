@@ -156,6 +156,18 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), valida
     if (typeof body.approval_status === 'string') tablePatch.approval_status = body.approval_status;
     if (body.is_active !== undefined) tablePatch.is_active = !!body.is_active;
     if (Array.isArray(body.domains)) tablePatch.domains = JSON.stringify(body.domains);
+
+    // Human-edit tracking (top rung of the precedence ladder): flag the row
+    // as human-authored ONLY when a semantic field actually CHANGED — a bare
+    // confirm of machine text is approval, not authorship. The profiler
+    // snapshots flagged rows across its wipe-and-reinsert.
+    const current = await db('source_tables').where({ id }).first();
+    if (current) {
+      const changedSemantics =
+        (typeof body.display_name === 'string' && body.display_name !== current.display_name) ||
+        (typeof body.description === 'string' && body.description !== (current.description ?? ''));
+      if (changedSemantics) tablePatch.edited_by_user = true;
+    }
     await db('source_tables').where({ id }).update(tablePatch);
 
     await invalidateSemanticCache();
@@ -222,6 +234,34 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), valid
     if (typeof body.approval_status === 'string') colPatch.approval_status = body.approval_status;
     if (body.is_dimension !== undefined) colPatch.is_dimension = !!body.is_dimension;
     if (body.is_measure !== undefined) colPatch.is_measure = !!body.is_measure;
+
+    // Same human-edit rule as PATCH /tables/:id: authorship = a semantic
+    // field actually changed; a bare confirm never sets the flag.
+    const current = await db('source_columns').where({ id }).first();
+    if (current) {
+      const changedSemantics =
+        (typeof body.display_name === 'string' && body.display_name !== current.display_name) ||
+        (typeof body.description === 'string' && body.description !== (current.description ?? '')) ||
+        (body.is_dimension !== undefined && !!body.is_dimension !== !!current.is_dimension) ||
+        (body.is_measure !== undefined && !!body.is_measure !== !!current.is_measure);
+      if (changedSemantics) colPatch.edited_by_user = true;
+    }
+
+    // Enrichment reject path (semantic-enrichment-plan Phase 3): flagging an
+    // AI-enriched draft restores the immutable vendor text instead of
+    // leaving rejected AI prose in the catalog.
+    if (
+      current?.semantic_source === 'ai_enriched' &&
+      body.approval_status === 'flagged' &&
+      current?.vendor_description
+    ) {
+      colPatch.description = current.vendor_description;
+      colPatch.semantic_source = 'curated';
+      colPatch.approval_status = 'approved';
+      colPatch.ai_draft = false;
+      await graph.updateColumnDescriptionOnly(id, String(current.vendor_description), false);
+    }
+
     await db('source_columns').where({ id }).update(colPatch);
 
     await invalidateSemanticCache();
@@ -444,6 +484,9 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
     const relPatch: Record<string, unknown> = { ai_draft: false };
     if (typeof relationship_type === 'string') relPatch.relationship_type = relationship_type;
     if (typeof description === 'string') relPatch.description = description;
+    // Any PATCH here is a human acting on the relationship (confirm or
+    // edit) — mark it so the profiler preserves it across re-profiles.
+    relPatch.confirmed_by_user = true;
     await db('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
 
     await invalidateSemanticCache();

@@ -205,6 +205,24 @@ export async function runSchemaProfiler(
     for (const c of d.columns) colDocByKey.set(`${d.entityName}.${c.name}`, c);
   }
 
+  // Vendor-docs context for the AI passes: table definitions for Pass B,
+  // documented siblings for Pass C (so custom fields are described in the
+  // vendor's own vocabulary instead of blind). Truncation/caps applied at
+  // prompt-render time.
+  const vendorDocsCtx = connectorDocs.length > 0
+    ? {
+        tableDescriptions: Object.fromEntries(
+          connectorDocs.filter((d) => d.description).map((d) => [d.entityName, d.description!]),
+        ),
+        columnsByTable: Object.fromEntries(
+          connectorDocs.map((d) => [
+            d.entityName,
+            d.columns.filter((c) => c.description).map((c) => ({ name: c.name, description: c.description! })),
+          ]),
+        ),
+      }
+    : undefined;
+
   // ── 1b. Known-from-connector FKs (free signal, no AI tokens) ───────────
   // API-style sources (ExactOnline, NetSuite, …) ship a documented data
   // model — far more reliable than heuristic name-pattern matching on
@@ -398,7 +416,7 @@ export async function runSchemaProfiler(
 
   try {
     tableContext = await generateTableContext(
-      connectorType, conventions, schema.tables, qualityStats, fkLikes,
+      connectorType, conventions, schema.tables, qualityStats, fkLikes, vendorDocsCtx,
     );
     log.info(`Pass B: ${tableContext.tables.length} tables, ${tableContext.relationships.length} relationships`);
     emit({ phase: 'ai_draft', message: `Step 4/7 — Claude described ${tableContext.tables.length} tables and suggested ${tableContext.relationships.length} relationship(s)` });
@@ -537,6 +555,7 @@ export async function runSchemaProfiler(
         (tableNames, batchIndex, totalBatches) => {
           emit({ phase: 'ai_draft', message: `Step 6/7 — Describing ${tableNames.join(', ')} (batch ${batchIndex + 1}/${totalBatches})…`, batchIndex, batchCount: totalBatches });
         },
+        vendorDocsCtx,
       );
       emit({ phase: 'ai_draft', message: `Step 6/7 — Claude described ${columnDescriptions.columns.length} columns` });
     } catch (err) {
@@ -566,8 +585,8 @@ export async function runSchemaProfiler(
   // docs/SOURCE_ONBOARDING.md §1: connector docs > AI; a row whose
   // description came from the connector lands approved (ai_draft=false) with
   // its provenance recorded in semantic_source.
-  type TablePersist = { displayName: string; description: string | null; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null };
-  type ColPersist = { displayName: string; description: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null };
+  type TablePersist = { displayName: string; description: string | null; vendorDescription: string | null; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null; editedByUser: boolean };
+  type ColPersist = { displayName: string; description: string | null; vendorDescription: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null; editedByUser: boolean };
   const tablePersistByName = new Map<string, TablePersist>();
   const colPersistByKey = new Map<string, ColPersist>();
   for (const table of schema.tables) {
@@ -577,6 +596,8 @@ export async function runSchemaProfiler(
     tablePersistByName.set(table.tableName, {
       displayName:    tDoc?.displayName ?? tCtx?.display_name ?? table.tableName,
       description:    tDoc?.description ?? tCtx?.description ?? null,
+      // Immutable curated base for the enrichment layer — vendor text only.
+      vendorDescription: tDoc?.description ?? null,
       // Structural mode never produces AI content, so nothing is an AI
       // draft — undocumented rows are bare structure (semantic_source NULL,
       // approval 'draft') that the review queue must NOT list, because
@@ -584,6 +605,7 @@ export async function runSchemaProfiler(
       aiDraft:        structural ? false : !tableDocumented,
       approvalStatus: tableDocumented ? 'approved' : 'draft',
       semanticSource: tableDocumented ? (tDoc?.provenance ?? 'declared') : (structural ? null : 'ai'),
+      editedByUser:   false,
     });
     for (const srcCol of table.columns) {
       const key = `${table.tableName}.${srcCol.name}`;
@@ -595,13 +617,105 @@ export async function runSchemaProfiler(
         // role hint only fills in when the AI pass didn't cover the column.
         displayName:    cDoc?.displayName ?? colDef?.display_name ?? srcCol.name,
         description:    cDoc?.description ?? colDef?.description ?? null,
+        vendorDescription: cDoc?.description ?? null,
         isDimension:    colDef?.is_dimension ?? (cDoc?.role === 'dimension'),
         isMeasure:      colDef?.is_measure ?? (cDoc?.role === 'measure'),
         aiDraft:        structural ? false : !colDocumented,
         approvalStatus: colDocumented ? 'approved' : 'draft',
         semanticSource: colDocumented ? (tDoc?.provenance ?? 'declared') : (structural ? null : 'ai'),
+        editedByUser:   false,
       });
     }
+  }
+
+  // ── 6b. Human-edit + approved-enrichment snapshots ─────────────────────
+  // The persist step below is wipe-and-reinsert, which historically erased
+  // curator work on every re-profile. Snapshot the rows a human authored
+  // (edited_by_user), the enrichments a human approved, and the
+  // relationships a human confirmed — then merge them into the persist maps
+  // so BOTH Postgres and the Neo4j mirror receive the human values
+  // (precedence: human > connector docs > AI). Rows whose table/column no
+  // longer exists at the source are dropped with a log line — the catalog
+  // must not claim schema that isn't there.
+  type HumanRelSnap = {
+    from_table: string; from_column: string | null;
+    to_table: string; to_column: string | null;
+    relationship_type: string; description: string | null;
+  };
+  let humanRelSnaps: HumanRelSnap[] = [];
+  try {
+    const snaps = await semanticDb.transaction(async (trx) => {
+      if (tenantId != null) await setTenantContext(trx, tenantId);
+      const tableRows = await trx('source_tables')
+        .where({ connection_id: connectionId })
+        .where('edited_by_user', true)
+        .select('table_name', 'display_name', 'description');
+      const colRows = await trx('source_columns as c')
+        .join('source_tables as t', 'c.table_id', 't.id')
+        .where({ 't.connection_id': connectionId })
+        .where(function () {
+          this.where('c.edited_by_user', true)
+            .orWhere(function () {
+              this.where('c.semantic_source', 'ai_enriched').andWhere('c.approval_status', 'approved');
+            });
+        })
+        .select(
+          't.table_name', 'c.column_name', 'c.display_name', 'c.description',
+          'c.is_dimension', 'c.is_measure', 'c.edited_by_user', 'c.semantic_source',
+        );
+      const relRows = await trx('table_relationships as r')
+        .join('source_tables as ft', 'r.from_table_id', 'ft.id')
+        .join('source_tables as tt', 'r.to_table_id', 'tt.id')
+        .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
+        .leftJoin('source_columns as tc', 'r.to_column_id', 'tc.id')
+        .where({ 'ft.connection_id': connectionId })
+        .where('r.confirmed_by_user', true)
+        .select(
+          'ft.table_name as from_table', 'fc.column_name as from_column',
+          'tt.table_name as to_table', 'tc.column_name as to_column',
+          'r.relationship_type', 'r.description',
+        );
+      return { tableRows, colRows, relRows };
+    });
+
+    for (const s of snaps.tableRows) {
+      const tp = tablePersistByName.get(s.table_name);
+      if (!tp) { log.info(`human-edited table ${s.table_name} no longer exists at the source — snapshot dropped`); continue; }
+      tablePersistByName.set(s.table_name, {
+        ...tp,
+        displayName: s.display_name ?? tp.displayName,
+        description: s.description ?? tp.description,
+        aiDraft: false,
+        approvalStatus: 'approved',
+        editedByUser: true,
+      });
+    }
+    for (const s of snaps.colRows) {
+      const key = `${s.table_name}.${s.column_name}`;
+      const cp = colPersistByKey.get(key);
+      if (!cp) { log.info(`human-edited/enriched column ${key} no longer exists at the source — snapshot dropped`); continue; }
+      const isEnrichedOnly = !s.edited_by_user;
+      colPersistByKey.set(key, {
+        ...cp,
+        displayName: s.display_name ?? cp.displayName,
+        description: s.description ?? cp.description,
+        isDimension: !!s.is_dimension,
+        isMeasure: !!s.is_measure,
+        aiDraft: false,
+        approvalStatus: 'approved',
+        semanticSource: isEnrichedOnly ? 'ai_enriched' : cp.semanticSource,
+        editedByUser: !!s.edited_by_user,
+      });
+    }
+    humanRelSnaps = snaps.relRows as HumanRelSnap[];
+    if (snaps.tableRows.length || snaps.colRows.length || humanRelSnaps.length) {
+      log.info(
+        `preserving human curation across re-profile: ${snaps.tableRows.length} table(s), `
+        + `${snaps.colRows.length} column(s), ${humanRelSnaps.length} relationship(s)`,
+      );
+    }
+  } catch (err) {
+    log.warn({ err }, 'human-edit snapshot read failed — re-profile proceeds WITHOUT edit preservation');
   }
 
   // ── 7. Persist to Postgres + Neo4j ─────────────────────────────────────
@@ -720,6 +834,8 @@ export async function runSchemaProfiler(
           ai_draft:        tp.aiDraft,
           semantic_source: tp.semanticSource,
           approval_status: tp.approvalStatus,
+          vendor_description: tp.vendorDescription,
+          edited_by_user:  tp.editedByUser,
         })
         .returning('id');
 
@@ -743,6 +859,8 @@ export async function runSchemaProfiler(
             ai_draft:        cp.aiDraft,
             semantic_source: cp.semanticSource,
             approval_status: cp.approvalStatus,
+            vendor_description: cp.vendorDescription,
+            edited_by_user:  cp.editedByUser,
           })
           .returning('id');
 
@@ -807,6 +925,51 @@ export async function runSchemaProfiler(
         ai_draft:          !isKnown,
       });
       relationshipsInserted++;
+    }
+
+    // 5c. Re-apply human-confirmed relationships. A relationship the
+    // profiler re-derived gets its confirmation restored; one the profiler
+    // did NOT re-derive (e.g. the heuristic changed its mind) is re-inserted
+    // — a human said it's real, and humans outrank the pipeline. Endpoints
+    // whose tables/columns disappeared are dropped with a log line.
+    for (const snap of humanRelSnaps) {
+      const fromTableId = tableIdMap.get(snap.from_table);
+      const toTableId = tableIdMap.get(snap.to_table);
+      if (!fromTableId || !toTableId) {
+        log.info(`confirmed relationship ${snap.from_table}→${snap.to_table} references a table that no longer exists — dropped`);
+        continue;
+      }
+      const fromColId = snap.from_column ? (columnIdMap.get(`${snap.from_table}.${snap.from_column}`) ?? null) : null;
+      const toColId = snap.to_column ? (columnIdMap.get(`${snap.to_table}.${snap.to_column}`) ?? null) : null;
+      if ((snap.from_column && !fromColId) || (snap.to_column && !toColId)) {
+        log.info(`confirmed relationship ${snap.from_table}.${snap.from_column}→${snap.to_table}.${snap.to_column} references a column that no longer exists — dropped`);
+        continue;
+      }
+      const existing = await trx('table_relationships')
+        .where({ from_table_id: fromTableId, to_table_id: toTableId })
+        .where((qb) => { fromColId ? qb.where('from_column_id', fromColId) : qb.whereNull('from_column_id'); })
+        .where((qb) => { toColId ? qb.where('to_column_id', toColId) : qb.whereNull('to_column_id'); })
+        .first();
+      if (existing) {
+        await trx('table_relationships').where({ id: existing.id }).update({
+          ai_draft: false,
+          confirmed_by_user: true,
+          relationship_type: snap.relationship_type,
+          ...(snap.description ? { description: snap.description } : {}),
+        });
+      } else {
+        await trx('table_relationships').insert({
+          from_table_id: fromTableId,
+          from_column_id: fromColId,
+          to_table_id: toTableId,
+          to_column_id: toColId,
+          relationship_type: snap.relationship_type,
+          description: snap.description ?? `${snap.from_table}.${snap.from_column} → ${snap.to_table}.${snap.to_column} [confirmed by user]`,
+          ai_draft: false,
+          confirmed_by_user: true,
+        });
+        relationshipsInserted++;
+      }
     }
 
     // Restore cross_view_tables / cross_view_relationships

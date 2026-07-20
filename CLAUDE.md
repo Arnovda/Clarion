@@ -31,7 +31,48 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-20 (EO semantic-correctness sweep: RLS docs-channel bug, vendor-typed writes, docs-derived relationships)
+**Last updated:** 2026-07-20 (semantic enrichment plan Phases 1-3: sibling context, human-edit tracking, opt-in AI enrichment)
+
+**Semantic enrichment Phases 1-3 (2026-07-20, third session of the day):**
+Implements `docs/backlog/semantic-enrichment-plan.md` in full. Backend
+`npm run check` clean; both lint ratchets green (dynamic-import 92,
+validate-coverage 166); prompt unit tests 3/3; RLS round-trip smoke passed
+(hand-edit + confirmed relationship + approved enrichment survive re-profile,
+pending enrichment wiped back to vendor text, vendor_description persisted).
+- **Phase 1 — vendor sibling context**: `VendorDocsContext` threaded from
+  `SchemaProfiler` (built from the describeEntities harvest) into Pass B
+  (vendor TABLE definitions section) and Pass C (VENDOR-DOCUMENTED SIBLING
+  COLUMNS section — custom fields described in the vendor's vocabulary).
+  Caps: 40 siblings/table, descriptions truncated at 120 chars. New pure
+  test `ai/prompts/schemaContextPrompt.test.ts`.
+- **Phase 2 — human-edit tracking (migration 70)**: `edited_by_user` on
+  source_tables/source_columns (set by PATCH /semantic/{tables,columns}/:id
+  ONLY when a semantic field actually CHANGED — bare confirm ≠ authorship);
+  `confirmed_by_user` on table_relationships (any PATCH). Profiler persist
+  snapshots flagged rows + confirmed rels BEFORE the wipe and merges them
+  into the persist maps (so PG **and** the Neo4j mirror get human values);
+  confirmed rels the pipeline didn't re-derive are re-INSERTED. Missing
+  source columns → snapshot dropped with log line.
+- **Phase 3 — opt-in enrichment (migration 71)**: `vendor_description`
+  (immutable curated base) on source_tables/source_columns, written by the
+  profiler. New `POST /connections/:id/enrich-descriptions` (admin,
+  `?dryRun=1` for scope preview; selection = vendor-documented AND
+  (measure OR FK endpoint) AND NOT edited/enriched; caps 300/run,
+  40/table) → `AIService.enrichColumnDescriptions` (Sonnet, one call per
+  table; server GUARANTEES the vendor sentence leads — prepends it if the
+  model drifted; no-op enrichments skipped). Persist:
+  `semantic_source='ai_enriched'`, `ai_draft=true`,
+  `approval_status='pending'` → existing review queue. Flagging an
+  ai_enriched row in PATCH /semantic/columns/:id RESTORES the vendor text
+  (new targeted `graph.updateColumnDescriptionOnly` — `updateColumn`'s
+  full-SET shape would null other fields). Approved enrichments ride the
+  Phase 2 snapshot (survive re-profile); pending ones don't. Frontend:
+  "Enrich descriptions" button on the sources card (visible when analysed;
+  dry-run count + confirm dialog before spending tokens).
+- **Go-live note**: enrichment needs `vendor_description` populated — run
+  Analyse once after this deploys before the button has candidates.
+
+**Prior last updated:** 2026-07-20 (EO semantic-correctness sweep: RLS docs-channel bug, vendor-typed writes, docs-derived relationships)
 
 **EO semantic-correctness sweep (2026-07-20, second session of the day):**
 User compared Clarion's catalog against ExactOnline's REST reference and found

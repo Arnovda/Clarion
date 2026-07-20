@@ -166,6 +166,29 @@ export interface FkCandidateLike {
   overlapRatio: number | null;
 }
 
+/**
+ * Vendor documentation context for the AI passes (docs/SOURCE_ONBOARDING.md:
+ * "documentation before inference"). Built by the profiler from the
+ * connector's describeEntities channel. The AI never REPLACES vendor text —
+ * documented columns skip Pass C entirely — but when describing the
+ * UNDOCUMENTED remainder (custom fields, post-transcription columns) it
+ * should anchor on the vendor's own vocabulary instead of guessing blind.
+ */
+export interface VendorDocsContext {
+  /** table name → vendor's own table description. */
+  tableDescriptions: Record<string, string>;
+  /** table name → vendor-documented sibling columns (descriptions truncated). */
+  columnsByTable: Record<string, Array<{ name: string; description: string }>>;
+}
+
+/** Caps applied when rendering VendorDocsContext into a prompt. */
+const VENDOR_SIBLINGS_MAX_PER_TABLE = 40;
+const VENDOR_DESC_MAX_CHARS = 120;
+
+function truncateDesc(s: string): string {
+  return s.length > VENDOR_DESC_MAX_CHARS ? `${s.slice(0, VENDOR_DESC_MAX_CHARS - 1)}…` : s;
+}
+
 export function buildTableContextUser(
   sourceSystem: string | null,
   conventions: SchemaConventions | null,
@@ -173,11 +196,21 @@ export function buildTableContextUser(
   qualityStats: TableQualityStat[],
   fkCandidates: FkCandidateLike[],
   glossaryContext = '',
+  vendorDocs?: VendorDocsContext,
 ): string {
   const parts: string[] = [];
 
   if (sourceSystem) {
     parts.push(`Source system: ${sourceSystem}`);
+  }
+
+  // Vendor table definitions — authoritative context for what each entity
+  // IS, which sharpens both descriptions and relationship inference.
+  const vendorTableLines = Object.entries(vendorDocs?.tableDescriptions ?? {})
+    .filter(([name]) => tables.some((t) => t.tableName === name))
+    .map(([name, desc]) => `- ${name}: ${truncateDesc(desc)}`);
+  if (vendorTableLines.length > 0) {
+    parts.push(`VENDOR-DOCUMENTED TABLES (the source system's own definitions — treat as authoritative):\n${vendorTableLines.join('\n')}`);
   }
 
   if (conventions) {
@@ -289,12 +322,66 @@ export interface ColumnDescriptionsOutput {
   }>;
 }
 
+// ─── Enrichment: extend vendor descriptions with observed data context ─────
+// (docs/backlog/semantic-enrichment-plan.md Phase 3). The vendor sentence is
+// the immutable trusted base; the AI may only APPEND business context drawn
+// from the actual data. The caller re-verifies the base is preserved and
+// prepends it if the model drifted.
+
+export const ENRICH_DESCRIPTIONS_SYSTEM = `You are a data-catalog curator. Each column below already has an OFFICIAL vendor description. Extend it with useful business context observed in this tenant's actual data.
+
+RULES — each one is mandatory:
+- The enriched description MUST begin with the vendor description VERBATIM, unchanged.
+- Append at most 2 short sentences of added context. Total under 60 words.
+- Only add context supported by the observed data or the relationships given (typical values, what it links to, whether it is filled).
+- NEVER contradict, correct, or reword the vendor text. If you have nothing useful to add, return the vendor text unchanged.
+- Plain business English. No SQL, no type names, no "this column".
+
+Return JSON only:
+{"columns": [{"column_name": "Division", "enriched_description": "Division code. In this dataset always 712391 — the company's single administration."}]}`;
+
+export interface EnrichmentOutput {
+  columns: Array<{ column_name: string; enriched_description: string }>;
+}
+
+export interface EnrichCandidate {
+  columnName: string;
+  vendorDescription: string;
+  exampleValues: string[] | null;
+  isMeasure: boolean;
+}
+
+export function buildEnrichmentUser(
+  sourceSystem: string | null,
+  tableName: string,
+  tableVendorDescription: string | null,
+  candidates: EnrichCandidate[],
+  relationshipLines: string[],
+  glossaryContext = '',
+): string {
+  const parts: string[] = [];
+  if (sourceSystem) parts.push(`Source system: ${sourceSystem}`);
+  if (glossaryContext) parts.push(glossaryContext);
+  parts.push(`Table: ${tableName}${tableVendorDescription ? ` — ${truncateDesc(tableVendorDescription)}` : ''}`);
+  if (relationshipLines.length > 0) {
+    parts.push(`RELATIONSHIPS (what FK columns link to):\n${relationshipLines.map((l) => `- ${l}`).join('\n')}`);
+  }
+  const colLines = candidates.map((c) => {
+    const samples = c.exampleValues?.length ? ` | observed values: ${JSON.stringify(c.exampleValues.slice(0, 5))}` : '';
+    return `- ${c.columnName}${c.isMeasure ? ' (measure)' : ''}: "${c.vendorDescription}"${samples}`;
+  });
+  parts.push(`COLUMNS TO ENRICH (vendor description in quotes):\n${colLines.join('\n')}`);
+  parts.push('Enrich every column above.');
+  return parts.join('\n\n');
+}
+
 export function buildColumnDescriptionsUser(
   sourceSystem: string | null,
   tableContext: TableContextOutput,
   batch: TableInfo[],
   qualityStats: TableQualityStat[],
   glossaryContext = '',
+  vendorDocs?: VendorDocsContext,
 ): string {
   const parts: string[] = [];
 
@@ -303,6 +390,25 @@ export function buildColumnDescriptionsUser(
 
   // Table context (descriptions, grain) for every table in the batch
   const batchNames = new Set(batch.map((t) => t.tableName));
+
+  // Vendor-documented SIBLING columns of the same tables. The columns being
+  // described here are precisely the ones the vendor did NOT document (custom
+  // fields, new columns) — the siblings anchor the vendor's vocabulary so
+  // e.g. a custom `x_classification_be` gets described in the same terms as
+  // the vendor's own Classification1..8. Capped per table; descriptions
+  // truncated — vocabulary anchoring, not full recall.
+  if (vendorDocs) {
+    const siblingBlocks: string[] = [];
+    for (const t of batch) {
+      const sibs = (vendorDocs.columnsByTable[t.tableName] ?? [])
+        .slice(0, VENDOR_SIBLINGS_MAX_PER_TABLE)
+        .map((c) => `  - ${c.name}: ${truncateDesc(c.description)}`);
+      if (sibs.length > 0) siblingBlocks.push(`${t.tableName}:\n${sibs.join('\n')}`);
+    }
+    if (siblingBlocks.length > 0) {
+      parts.push(`VENDOR-DOCUMENTED SIBLING COLUMNS (same tables — match this vocabulary and domain language; do NOT re-describe these columns):\n${siblingBlocks.join('\n')}`);
+    }
+  }
   const ctxLines = tableContext.tables
     .filter((t) => batchNames.has(t.table_name))
     .map((t) => `- ${t.table_name} — ${t.description} (grain: ${t.grain})`)

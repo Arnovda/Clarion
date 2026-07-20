@@ -25,9 +25,11 @@ import {
 } from '../services/warehouse';
 import { listProductTables } from '../services/tableCatalog';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
+import { enrichColumnDescriptions } from '../ai/AIService';
+import * as graph from '../db/semanticGraph';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
-import { testConnectionSchema, createConnectionSchema, updateConnectionSchema } from '../middleware/schemas';
+import { testConnectionSchema, createConnectionSchema, updateConnectionSchema, connectionIdParam } from '../middleware/schemas';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'connections' });
@@ -691,6 +693,128 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       throw err;
     }
   }
+});
+
+// POST /api/connections/:id/enrich-descriptions — AI enrichment of vendor
+// descriptions (docs/backlog/semantic-enrichment-plan.md Phase 3).
+//
+// Opt-in and explicit: never runs as part of Analyse. Selection rule keeps
+// the token spend deliberate — vendor-DOCUMENTED columns only (the immutable
+// base must exist), not human-edited, not already enriched, and only where
+// enrichment pays off: measures and FK endpoints. Results land as ai_draft
+// rows in the existing review queue; rejecting one restores the vendor text
+// (see PATCH /semantic/columns/:id). `?dryRun=1` returns the candidate count
+// so the UI can show scope + rough cost before the user commits.
+router.post('/:id/enrich-descriptions', requireAuth, requireRole('admin'), validate(connectionIdParam), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const connectionId = Number(req.params.id);
+    const connection = await db('connections').where({ id: connectionId }).first();
+    if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+
+    const MAX_COLUMNS_PER_RUN = 300;
+    const MAX_COLUMNS_PER_TABLE = 40;
+
+    // FK endpoints of this connection's relationships (either side).
+    const relRows = await db('table_relationships as r')
+      .join('source_tables as ft', 'r.from_table_id', 'ft.id')
+      .join('source_tables as tt', 'r.to_table_id', 'tt.id')
+      .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
+      .leftJoin('source_columns as tc', 'r.to_column_id', 'tc.id')
+      .where({ 'ft.connection_id': connectionId })
+      .select(
+        'ft.table_name as from_table', 'fc.id as from_col_id', 'fc.column_name as from_column',
+        'tt.table_name as to_table', 'tc.id as to_col_id', 'tc.column_name as to_column',
+        'r.description',
+      );
+    const fkColumnIds = new Set<number>();
+    for (const r of relRows) {
+      if (r.from_col_id) fkColumnIds.add(Number(r.from_col_id));
+      if (r.to_col_id) fkColumnIds.add(Number(r.to_col_id));
+    }
+
+    const candidates = (await db('source_columns as c')
+      .join('source_tables as t', 'c.table_id', 't.id')
+      .where({ 't.connection_id': connectionId })
+      .whereNotNull('c.vendor_description')
+      .where('c.edited_by_user', false)
+      .whereNot('c.semantic_source', 'ai_enriched')
+      .select(
+        'c.id', 'c.column_name', 'c.vendor_description', 'c.example_values', 'c.is_measure',
+        't.table_name', 't.vendor_description as table_vendor_description',
+      ))
+      .filter((c: { id: number; is_measure: boolean }) => c.is_measure || fkColumnIds.has(Number(c.id)))
+      .slice(0, MAX_COLUMNS_PER_RUN);
+
+    if (req.query.dryRun) {
+      res.json({ ok: true, data: { candidates: candidates.length } });
+      return;
+    }
+    if (candidates.length === 0) {
+      res.json({ ok: true, data: { candidates: 0, enriched: 0, tables: 0 } });
+      return;
+    }
+
+    // Group per table; one AI call per table.
+    const byTable = new Map<string, typeof candidates>();
+    for (const c of candidates) {
+      const list = byTable.get(c.table_name) ?? [];
+      if (list.length < MAX_COLUMNS_PER_TABLE) list.push(c);
+      byTable.set(c.table_name, list);
+    }
+
+    let enriched = 0;
+    for (const [tableName, cols] of byTable) {
+      const relLines = relRows
+        .filter((r) => r.from_table === tableName || r.to_table === tableName)
+        .slice(0, 30)
+        .map((r) => `${r.from_table}.${r.from_column ?? '?'} → ${r.to_table}.${r.to_column ?? '?'}${r.description ? `: ${r.description}` : ''}`);
+      let results: Map<string, string>;
+      try {
+        results = await enrichColumnDescriptions(
+          connection.connector_type ?? connection.type ?? null,
+          tableName,
+          cols[0]?.table_vendor_description ?? null,
+          cols.map((c) => ({
+            columnName: c.column_name,
+            vendorDescription: String(c.vendor_description),
+            exampleValues: c.example_values
+              ? (typeof c.example_values === 'string' ? JSON.parse(c.example_values) : c.example_values)
+              : null,
+            isMeasure: !!c.is_measure,
+          })),
+          relLines,
+        );
+      } catch (err) {
+        log.warn({ err, tableName }, 'enrichment call failed for table — continuing with the rest');
+        continue;
+      }
+      for (const c of cols) {
+        const text = results.get(c.column_name);
+        if (!text) continue;
+        await db('source_columns').where({ id: c.id }).update({
+          description: text,
+          semantic_source: 'ai_enriched',
+          ai_draft: true,
+          approval_status: 'pending',
+        });
+        // Mirror the display text to Neo4j (dual-write contract) — targeted
+        // update; updateColumn's full-SET shape would null the other fields.
+        await graph.updateColumnDescriptionOnly(Number(c.id), text, true).catch((e) =>
+          log.warn({ err: e, columnId: c.id }, 'Neo4j mirror of enriched description failed'),
+        );
+        enriched++;
+      }
+    }
+
+    await recordAudit(req, {
+      action:     'connection.enrich_descriptions',
+      entityType: 'connection',
+      entityId:   connectionId,
+      context:    { candidates: candidates.length, enriched },
+    });
+    res.json({ ok: true, data: { candidates: candidates.length, enriched, tables: byTable.size } });
+  } catch (err) { next(err); }
 });
 
 // GET /api/connections/:id/profile/status — poll profiling progress

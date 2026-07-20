@@ -320,6 +320,31 @@ export async function updateColumn(
   }
 }
 
+/**
+ * Targeted description-only mirror for the enrichment flow. Unlike
+ * `updateColumn` (which SETs every mirrored field and therefore NULLs
+ * whatever the caller omits), this touches ONLY description + aiDraft —
+ * display name, roles and owner are left untouched.
+ */
+export async function updateColumnDescriptionOnly(
+  pgId: number,
+  description: string,
+  aiDraft: boolean,
+): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH (c:SourceColumn {pgId: $pgId})
+       SET c.description = $description,
+           c.aiDraft     = $aiDraft,
+           c.updatedAt   = $now`,
+      { pgId, description, aiDraft, now: new Date().toISOString() },
+    );
+  } finally {
+    await session.close();
+  }
+}
+
 // All columns for a connection with their table_name denormalised — used by query/dashboards context.
 export async function getColumnsByConnection(
   connectionId: number,
