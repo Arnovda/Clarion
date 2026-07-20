@@ -22,9 +22,10 @@ import { join, sep } from 'path';
 
 const SRC = 'backend/src';
 
-// Count as of 2026-07-12 (Phase 3). LOWER this as cycles are untangled;
-// never raise it.
-const BASELINE = 94;
+// Count as of 2026-07-20 (SyncOrchestrator's SchemaProfiler +
+// notificationService imports made static). LOWER this as cycles are
+// untangled; never raise it.
+const BASELINE = 92;
 
 const PATTERN = /await import\(\s*['"]\.\.?\//g;
 

@@ -45,6 +45,8 @@ import {
 } from './JobLauncher';
 import { sourceBasePathV2, ensureWarehouseContainer } from '../services/warehouse';
 import { profilingProgressPct } from '../services/profilingProgress';
+import { runSchemaProfiler } from '../semantic/SchemaProfiler';
+import { notifyAdmins } from '../services/notificationService';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -778,7 +780,6 @@ async function runProfilerInBackground(args: {
     if (existingTables === 0) {
       const connName = String(conn.name ?? `connection ${connectionId}`);
       try {
-        const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
         await semanticDb('connections')
           .where({ id: connectionId, tenant_id: tenantId })
           .update({
@@ -803,7 +804,6 @@ async function runProfilerInBackground(args: {
           'structural catalog registration complete (no AI tokens spent)',
         );
         try {
-          const { notifyAdmins } = await import('../services/notificationService');
           await notifyAdmins(tenantId, 'approval', `${connName}: tables are in the catalog`, {
             message:
               `${result.tablesInserted} tables and ${result.columnsInserted} columns from the first sync are now visible in the catalog. ` +
@@ -913,7 +913,6 @@ async function runProfilerInBackground(args: {
           : `Sync detected structural changes (new or renamed columns). Click Re-profile to refresh AI descriptions. No AI tokens are being spent automatically.`);
 
     try {
-      const { notifyAdmins } = await import('../services/notificationService');
       // Link includes ?schemaChange=<id> when we have one so the
       // /sources page can scroll/expand directly to the diff.
       const link = schemaChangeId != null
@@ -951,7 +950,6 @@ async function runProfilerInBackground(args: {
 
   // Legacy auto-profile path — only reached when AUTO_REPROFILE_ON_SYNC=true.
   // Spends AI tokens to update descriptions whenever drift is detected.
-  const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
   await semanticDb('connections')
     .where({ id: connectionId, tenant_id: tenantId })
     .update({
