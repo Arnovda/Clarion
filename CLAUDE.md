@@ -31,7 +31,51 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-19 (deploy flow streamlined: fixed staging URL, traffic-pinning fix, rollback workflow)
+**Last updated:** 2026-07-20 (first-sync structural catalog registration — tables visible in catalog before AI analysis)
+
+**First-sync structural catalog registration (2026-07-20):** Fixes the
+onboarding gap where "Sync complete" left the Catalog empty (source_tables is
+populated only by the schema profiler, and post-sync auto-profiling is
+default-off for cost reasons). Now a first sync into an empty catalog
+automatically runs a FREE **structural** profiler pass — introspection +
+connector docs channel (describeEntities / getKnownRelationships) only, ZERO
+AI calls — so tables/columns/declared relationships appear in the catalog
+immediately; the AI passes stay behind the explicit "Analyse" click. Backend
+`npm run check` clean; smoke-tested end-to-end against the local dev stack
+(SQLite sample DB → 5 tables / 43 cols / 5 rels registered, no ai_draft/
+quality phases emitted, review queue untouched, Neo4j mirrored).
+- **`SchemaProfiler.ts`**: new `ProfilerOptions { mode: 'full' | 'structural' }`
+  4th param on `runSchemaProfiler`. Structural mode skips AI FK matching,
+  quality profiling, and AI Passes A/B/C + verification; persists tables/
+  columns with vendor docs where available (trusted rung unchanged:
+  approved + declared/curated) and bare structure otherwise —
+  `ai_draft=false, approval_status='draft', semantic_source=NULL` so bare
+  rows stay OUT of the review queue (nothing to review yet). Persist maps
+  now carry `approvalStatus` explicitly (was derived from aiDraft).
+- **`SyncOrchestrator.runProfilerInBackground`**: when `!AUTO_REPROFILE_ON_SYNC`
+  and the connection has ZERO source_tables (first sync), runs the structural
+  pass, sets new terminal `profiling_status='structural'`, persists
+  `schema_hash` (so routine re-syncs short-circuit at the steady-state gate
+  instead of re-registering/re-notifying), and notifies "tables are in the
+  catalog — click Analyse". Failure falls back to the old notify-only path.
+  `profiling_status` values are now: null | running | **structural** | done |
+  error (comment updated in both `shared/contract.ts` copies).
+- **Frontend truth-telling**: `/sources` card badge for synced-but-unanalysed
+  sources is now **"Synced"** (was a misleading "Ready"); hint reads "Tables
+  are loaded and visible in the catalog. Click Analyse…"; the card's action
+  button is **"Analyse"** (ocean-emphasised) until the first AI pass, then
+  "Re-analyse". IconRail Sources badge counts 'structural' as pending action.
+  `SourceRootPanel` (catalog) shows a warn strip when status='structural':
+  "Tables are loaded, but this source hasn't been analysed yet" + link to
+  /sources for curators.
+- **Not changed**: manual Analyse (`POST /connections/:id/profile`) is the
+  unchanged full pipeline; AUTO_REPROFILE_ON_SYNC=true legacy path unchanged;
+  schema-drift notifications for already-registered sources unchanged.
+- **Known cosmetic follow-up**: sources-sidebar caption shows raw `conn.type`
+  ("DUCKDB") with a "?" avatar for connector-framework sources instead of the
+  connector branding.
+
+**Prior last updated:** 2026-07-19 (deploy flow streamlined: fixed staging URL, traffic-pinning fix, rollback workflow)
 
 **Deploy flow streamlined (2026-07-19):** CI/CD-only change (no app code).
 Cuts a typical deploy from ~13 min to ~6 min and makes the test-first model
@@ -69,6 +113,52 @@ actually hold. See `docs/DEV_FLOW.md` (rewritten Loop 2) for the user flow.
   Added `fixWidgetSchema` (`middleware/schemas.ts`) + `validate()` on the
   route; lint back at 166, `tsc` clean (only the pre-existing knexfile
   rootDir warning).
+**Prior last updated:** 2026-07-15 (product assessment — user/feature/business audit vs the "Odoo of SMB analytics" strategy)
+
+**Product assessment (2026-07-15):** New `Clarion-Product-Assessment.docx` at the
+repo root (source: `.archdoc/build-product-assessment.js`, regenerate with
+`node .archdoc/build-product-assessment.js` then Word COM for TOC/PDF). Audits
+the platform against the strategy doc `Clarion-Platform-Strategy.md` (user's
+Downloads; the Odoo-playbook positioning). Evidence: full PROD walkthrough
+(live EO tenant) + 4 parallel code investigations at 4c51a14. Doc only — no
+product code changed this session. **Verdict: the engine matches the strategy;
+the first fifteen minutes don't.** Four launch-killers found, all
+surface/wiring-level (P0 in the doc §6):
+1. **"Prepare my data" re-run duplicates every product** — `busMatrixBuilder.ts:203-254`
+   inserts unconditionally, no retire/replace of the prior generation. Prod
+   tenant has 9 products (Sales ×2, Purchases ×2, Reference ×2, 0 healthy);
+   duplication pollutes Catalog, dashboard picker, Trust list AND the AI schema
+   context (two column-casing conventions coexist).
+2. **Dashboard generation shipped 6/6 broken chart widgets in prod** ("Sales
+   overview" test); `validateAndRepairSpec` is fail-open (`dashboards.ts:236-245`
+   ships unvalidated specs); fix-widget self-heal failed silently; $/€ mismatch
+   between AI insights and KPI cards; ~100s generation vs <30s claim.
+3. **Onboarding wizard is dead code** — register routes to /sources
+   (`register/page.tsx:32`); `/onboarding` is presentation-only, advertises
+   Snowflake/BigQuery/Redshift/CSV (none exist), omits EO/Odoo. Real funnel =
+   ~6 technical decisions (OAuth app creds, entity multi-select w/ no defaults,
+   manual Sync now, "Prepare my data" concept).
+4. **Live thinking stream ungated** — ThinkingBubble/ThinkingPanel stream raw
+   SQL + "star schema" phase strings + confidence to ALL roles incl. viewers
+   (`query/page.tsx:1064-71`, `thinking.tsx:96-105`, backend phase strings
+   `query.ts:1163,1236`). Makes the admin-only Show-SQL gating cosmetic.
+Other key findings: trust signals (confidence/tables-used/provenance) are
+admin-only on SUCCESSFUL answers (`MessageBubble.tsx:1094-99`) — business users
+only see them on refusals; no export-everything / glossary export; GDPR
+purge/erasure routes exist but have NO UI; formatting bugs (year "2.025", raw
+ISO timestamps, alias-cased headers); missing business features ranked: metric
+alerts (promised in `pulseService.ts:6`, unbuilt), Excel/CSV upload connector,
+targets/budget-vs-actual UI, NL/FR i18n (UI is English-only), external sharing,
+weekly digest. Drift watchlist (§5): freeze notebooks (rfc-002 targets
+analysts), demote /pipelines DAG canvas, bury star-schema designer surface,
+DELETE orphaned cross-views (IntegrationsPanel imported nowhere), retire /gaps.
+Strong list worth protecting (§3): repair loop verified end-to-end in prod
+("Corrected after investigation" on a live wrong answer), Workspace/Studio IA,
+Pulse→Morning Brief proactive layer, docs-before-inference profiling +
+star-schema templates, glossary as semantic moat, ~$0.75-2/mo AI cost per
+tenant, security/GDPR hygiene. During the audit a temp admin user was created
+and DELETED in the LOCAL dev DB (tenant 63); prod was walked through read-only
+(one Ask-AI question + one discarded dashboard generation).
 
 **Prior last updated:** 2026-07-14 (source-onboarding playbook §8 COMPLETE: items 1-5 shipped)
 

@@ -51,7 +51,7 @@ interface Connection {
   last_sync_status?: string | null; // 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
   // Profiling progress fields — used by SourceCard to recover state across
   // tab switches / page reloads when profiling is still running.
-  profiling_status?: string | null;   // 'running' | 'done' | 'error' | null
+  profiling_status?: string | null;   // 'running' | 'structural' | 'done' | 'error' | null
   profiling_phase?: string | null;
   profiling_message?: string | null;
   profiling_progress?: number | null;
@@ -611,7 +611,10 @@ function ConnectionCard({
           message: updated.profiling_message ?? null,
           progress: typeof updated.profiling_progress === 'number' ? updated.profiling_progress : null,
         });
-        const terminal = updated.profiling_status === 'done' || updated.profiling_status === 'error';
+        const terminal =
+          updated.profiling_status === 'done' ||
+          updated.profiling_status === 'error' ||
+          updated.profiling_status === 'structural';
         if (terminal || Date.now() - startedAt > 10 * 60_000) {
           setProfilingPolling(false);
         }
@@ -747,7 +750,11 @@ function ConnectionCard({
     if (syncing)                                          return { label: 'Syncing',         tone: 'ai'  };
     if (profilingState.status === 'running')              return { label: 'Analysing',       tone: 'ai'  };
     if (profilingState.status === 'done')                 return { label: 'Ready',           tone: 'ok'  };
-    if (isSourceConnector && conn.last_synced_at)         return { label: 'Ready',           tone: 'ok'  };
+    // Synced but not yet AI-analysed ('structural' = tables registered in
+    // the catalog post-sync, or a pre-feature sync with no profile at all).
+    // Deliberately NOT "Ready" — the AI layer hasn't run, and calling it
+    // Ready hid the remaining step from users.
+    if (isSourceConnector && conn.last_synced_at)         return { label: 'Synced',          tone: 'ok'  };
     if (isSourceConnector)                                return { label: 'Not synced',      tone: 'idle' };
     if (conn.last_ingested_at)                            return { label: 'Ready',           tone: 'ok'  };
     return { label: 'Idle', tone: 'idle' };
@@ -764,8 +771,10 @@ function ConnectionCard({
     if (profilingState.status === 'error')      return 'Analysis failed — try Re-analyse to retry.';
     if (syncing || profilingState.status === 'running') return null;
     if (isSourceConnector && !conn.last_synced_at) return 'Click Sync now to pull data into Clarion.';
+    if (profilingState.status === 'structural')
+      return 'Tables are loaded and visible in the catalog. Click Analyse to add AI descriptions and relationships.';
     if (profilingState.status !== 'done' && isSourceConnector && conn.last_synced_at)
-      return 'Data is in. Click Re-analyse if Claude hasn\'t described the tables yet.';
+      return 'Data is in. Click Analyse to register and describe the tables in the catalog.';
     return 'Open the catalog to review tables, columns and relationships.';
   })();
 
@@ -1072,12 +1081,21 @@ function ConnectionCard({
             {scheduleOpen ? 'Hide schedule' : (schedule ? 'Schedule · on' : 'Schedule')}
           </button>
         )}
+        {/* "Analyse" until the AI pass has run at least once; "Re-analyse"
+            after. Emphasised while the source is synced-but-unanalysed so
+            the remaining step is impossible to miss. */}
         <button
           onClick={handleReProfile}
           disabled={reprofiling}
-          className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50"
+          className={
+            profilingState.status === 'done' || profilingState.status === 'error'
+              ? 'px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors disabled:opacity-50'
+              : 'px-3 py-1.5 text-[12px] bg-ocean text-white border border-ocean rounded-md hover:bg-ocean-hover transition-colors disabled:opacity-50'
+          }
         >
-          {reprofiling ? 'Re-analysing…' : 'Re-analyse'}
+          {reprofiling
+            ? 'Analysing…'
+            : (profilingState.status === 'done' || profilingState.status === 'error' ? 'Re-analyse' : 'Analyse')}
         </button>
         <button
           onClick={() => onEdit(conn)}

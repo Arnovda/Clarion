@@ -183,7 +183,9 @@ export default function IconRail() {
       try {
         const res = await api.get('/connections');
         const conns = (res.data.data ?? []) as Array<{ profiling_status?: string | null }>;
-        const pending = conns.filter((c) => !c.profiling_status || c.profiling_status === 'pending' || c.profiling_status === 'failed').length;
+        // 'structural' = synced, tables in the catalog, but the AI analyse
+        // step is still pending — the user has an action to take there.
+        const pending = conns.filter((c) => !c.profiling_status || c.profiling_status === 'pending' || c.profiling_status === 'failed' || c.profiling_status === 'structural').length;
         if (!cancelled) setSourcesCount(pending);
       } catch { /* noop */ }
     })();

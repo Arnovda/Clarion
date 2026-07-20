@@ -765,6 +765,69 @@ async function runProfilerInBackground(args: {
   const autoReprofile = String(process.env.AUTO_REPROFILE_ON_SYNC ?? '').toLowerCase() === 'true';
 
   if (!autoReprofile) {
+    // ── First sync into an empty catalog → structural registration ───────
+    // Register the synced tables in the catalog immediately using the FREE
+    // half of the profiler (introspection + connector-shipped docs — zero
+    // AI calls), so "Sync complete" is never paired with an empty catalog.
+    // The AI passes (descriptions for undocumented columns, relationship
+    // inference) stay behind the explicit "Analyse" click; profiling_status
+    // 'structural' is the terminal state that tells the UI "tables loaded,
+    // not yet analysed". On success we persist schema_hash so routine
+    // re-syncs short-circuit at the steady-state gate above instead of
+    // re-registering + re-notifying every time.
+    if (existingTables === 0) {
+      const connName = String(conn.name ?? `connection ${connectionId}`);
+      try {
+        const { runSchemaProfiler } = await import('../semantic/SchemaProfiler');
+        await semanticDb('connections')
+          .where({ id: connectionId, tenant_id: tenantId })
+          .update({
+            profiling_status: 'running',
+            profiling_phase: 'schema',
+            profiling_message: 'Registering synced tables in the catalog…',
+            profiling_progress: 0,
+            profiling_started_at: new Date().toISOString(),
+          });
+        const result = await runSchemaProfiler(connectionId, undefined, undefined, { mode: 'structural' });
+        await semanticDb('connections')
+          .where({ id: connectionId, tenant_id: tenantId })
+          .update({
+            profiling_status: 'structural',
+            profiling_phase: 'structural',
+            profiling_message: `${result.tablesInserted} tables loaded into the catalog — run Analyse to add AI descriptions`,
+            profiling_progress: 100,
+            ...(currentHash ? { schema_hash: currentHash } : {}),
+          });
+        log.info(
+          { connectionId, tables: result.tablesInserted, columns: result.columnsInserted, relationships: result.relationshipsInserted },
+          'structural catalog registration complete (no AI tokens spent)',
+        );
+        try {
+          const { notifyAdmins } = await import('../services/notificationService');
+          await notifyAdmins(tenantId, 'approval', `${connName}: tables are in the catalog`, {
+            message:
+              `${result.tablesInserted} tables and ${result.columnsInserted} columns from the first sync are now visible in the catalog. ` +
+              `Click Analyse on the source to add AI descriptions and relationships — no AI tokens are spent until you do.`,
+            entityType: 'connection',
+            entityId: connectionId,
+            link: `/sources?connectionId=${connectionId}`,
+          });
+        } catch (notifyErr) {
+          log.warn({ err: notifyErr, connectionId }, 'structural-registration notification failed (non-fatal)');
+        }
+        return;
+      } catch (err) {
+        // Registration failed — reset the transient 'running' state and fall
+        // through to the legacy notification-only path so the user still
+        // hears about the sync.
+        log.warn({ err, connectionId }, 'structural catalog registration failed — falling back to notification only');
+        await semanticDb('connections')
+          .where({ id: connectionId, tenant_id: tenantId })
+          .update({ profiling_status: null, profiling_phase: null, profiling_message: null, profiling_progress: null })
+          .catch(() => undefined);
+      }
+    }
+
     // Opt-out path: emit a notification, persist nothing. The user can
     // click Re-profile manually to update descriptions; that path is
     // unchanged and DOES update schema_hash on success. We don't update

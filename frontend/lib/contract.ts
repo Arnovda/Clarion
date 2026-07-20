@@ -162,7 +162,7 @@ export interface ConnectionDto {
   last_synced_at?: string | null;
   last_profiled_at?: string | null;
   // Schema-profiling progress (recovers UI state across reloads)
-  profiling_status?: string | null;   // null | 'running' | 'done' | 'error'
+  profiling_status?: string | null;   // null | 'running' | 'structural' | 'done' | 'error'
   profiling_message?: string | null;
   profiling_phase?: string | null;    // 'schema' | 'quality' | 'ai_draft' | 'storing' | 'neo4j' | 'done' | 'error'
   profiling_progress?: number | null; // 0–100

@@ -39,6 +39,21 @@ export interface ProfilerProgress {
   batchCount?: number;
 }
 
+export interface ProfilerOptions {
+  /**
+   * 'full' (default) — the whole pipeline including the AI passes.
+   * 'structural' — FREE registration pass: introspection + connector-shipped
+   * documentation (describeEntities / getKnownRelationships) only. No AI
+   * calls, no quality profiling. Tables/columns land in the catalog with
+   * vendor docs where available and bare structure otherwise
+   * (ai_draft=false, approval_status='draft', semantic_source=NULL — they
+   * are not AI drafts, so they stay out of the review queue). Used by the
+   * sync orchestrator so a first sync surfaces tables in the catalog
+   * immediately; the AI passes stay behind the explicit "Analyse" click.
+   */
+  mode?: 'full' | 'structural';
+}
+
 /**
  * Three-pass schema profiler.
  *
@@ -64,8 +79,10 @@ export async function runSchemaProfiler(
   connectionId: number,
   onProgress?: (p: ProfilerProgress) => void,
   connectorOverride?: BaseConnector,
+  options?: ProfilerOptions,
 ): Promise<ProfilerResult> {
   const emit = onProgress ?? (() => {});
+  const structural = options?.mode === 'structural';
 
   // ── 1. Introspect source schema ────────────────────────────────────────
   emit({ phase: 'schema', message: 'Step 1/7 — Reading database schema…' });
@@ -212,7 +229,7 @@ export async function runSchemaProfiler(
   // ── 1b. AI-assisted FK matching (legacy assist) ────────────────────────
   const unmatched = connector.getUnmatchedKeyColumns(schema.tables, classifications, [...knownFks, ...heuristicMinusKnown]);
   const allFkCandidates = [...knownFks, ...heuristicMinusKnown];
-  if (unmatched.length > 0) {
+  if (!structural && unmatched.length > 0) {
     emit({ phase: 'schema', message: `Step 1/7 — Asking Claude to match ${unmatched.length} unmatched key column(s)…` });
     const dimTables = classifications
       .filter((c) => c.role === 'dimension' || c.role === 'unknown')
@@ -259,8 +276,12 @@ export async function runSchemaProfiler(
   }
 
   // ── 2. Quality profiling ───────────────────────────────────────────────
+  // Skipped in structural mode: no AI tokens are involved, but per-column
+  // distinct/null scans over every table would make the post-sync
+  // registration slow for no user-visible gain — the full Analyse run
+  // re-does it anyway.
   const qualityStats: TableQualityStat[] = [];
-  for (let ti = 0; ti < schema.tables.length; ti++) {
+  for (let ti = 0; !structural && ti < schema.tables.length; ti++) {
     const table = schema.tables[ti];
     emit({ phase: 'quality', message: `Step 2/7 — Profiling ${table.tableName} (${ti + 1}/${schema.tables.length}) — nulls, distincts, value distributions…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
     try {
@@ -293,15 +314,30 @@ export async function runSchemaProfiler(
   }
 
   // ── 3. AI Pass A — detect schema conventions ───────────────────────────
-  emit({ phase: 'ai_draft', message: 'Step 3/7 — Detecting naming conventions (PascalCase / snake_case / camelCase)…' });
-  const conventions = await detectSchemaConventions(connectorType, schema.tables);
-  if (conventions) {
-    log.info(`Conventions: ${conventions.naming_style} (confidence ${conventions.confidence})`);
-    emit({ phase: 'ai_draft', message: `Step 3/7 — Detected ${conventions.naming_style} naming (confidence ${Math.round(conventions.confidence * 100)}%)` });
+  let conventions: Awaited<ReturnType<typeof detectSchemaConventions>> = null;
+  if (!structural) {
+    emit({ phase: 'ai_draft', message: 'Step 3/7 — Detecting naming conventions (PascalCase / snake_case / camelCase)…' });
+    conventions = await detectSchemaConventions(connectorType, schema.tables);
+    if (conventions) {
+      log.info(`Conventions: ${conventions.naming_style} (confidence ${conventions.confidence})`);
+      emit({ phase: 'ai_draft', message: `Step 3/7 — Detected ${conventions.naming_style} naming (confidence ${Math.round(conventions.confidence * 100)}%)` });
+    }
   }
 
   // ── 4. AI Pass B — table descriptions + relationships ──────────────────
   const totalCols = schema.tables.reduce((sum, t) => sum + t.columns.length, 0);
+  let tableContext: TableContextOutput;
+  if (structural) {
+    // Structural mode: no AI table context. Tables carry vendor docs (merged
+    // below) or bare names; relationships come only from the declared /
+    // heuristic candidates persisted in step 5b.
+    tableContext = {
+      tables: schema.tables.map((t) => ({
+        table_name: t.tableName, display_name: t.tableName, description: '', grain: '',
+      })),
+      relationships: [],
+    };
+  } else {
   emit({ phase: 'ai_draft', message: `Step 4/7 — Asking Claude to map your data model (${schema.tables.length} tables, ${totalCols} columns) — this is one large call, ~30-60s…` });
   const fkLikes: FkCandidateLike[] = allFkCandidates.map((fk) => ({
     fromTable: fk.fromTable,
@@ -313,7 +349,6 @@ export async function runSchemaProfiler(
     overlapRatio: fk.overlapRatio ?? null,
   }));
 
-  let tableContext: TableContextOutput;
   try {
     tableContext = await generateTableContext(
       connectorType, conventions, schema.tables, qualityStats, fkLikes,
@@ -328,6 +363,7 @@ export async function runSchemaProfiler(
       })),
       relationships: [],
     };
+  }
   }
 
   // ── 4a. Build a case-insensitive lookup for the AI's `from_table` /
@@ -360,6 +396,8 @@ export async function runSchemaProfiler(
   // Drops anything where the data doesn't actually back the suggestion.
   // Skips relationships that came from a known/declared/value-overlap source
   // (those are already trusted). Only verifies the AI's net-new suggestions.
+  // Structural mode has no AI suggestions to verify.
+  if (!structural) {
   emit({ phase: 'ai_draft', message: `Step 5/7 — Verifying AI-suggested relationships against the data (${tableContext.relationships.length} to check)…` });
   const trustedKeys = new Set(allFkCandidates.map((fk) => `${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`));
   const verifiedAiRels: typeof tableContext.relationships = [];
@@ -418,6 +456,7 @@ export async function runSchemaProfiler(
   if (aiVerified > 0 || aiDropped > 0) {
     emit({ phase: 'ai_draft', message: `Step 5/7 — Verified ${aiVerified} AI-suggested relationship(s)${aiDropped ? `, dropped ${aiDropped}` : ''}` });
   }
+  }
 
   // ── 6. AI Pass C — column descriptions with table+rel context ──────────
   // Connector-documented columns are EXCLUDED from this pass: their vendor
@@ -432,7 +471,10 @@ export async function runSchemaProfiler(
   const coveredCols = totalCols - uncoveredCols;
 
   let columnDescriptions;
-  if (uncoveredCols === 0) {
+  if (structural) {
+    // No AI column pass — vendor docs (merged below) are all we ship.
+    columnDescriptions = { columns: [] };
+  } else if (uncoveredCols === 0) {
     columnDescriptions = { columns: [] };
     emit({ phase: 'ai_draft', message: `Step 6/7 — All ${totalCols} columns are documented by the source system — no AI descriptions needed` });
   } else {
@@ -477,8 +519,8 @@ export async function runSchemaProfiler(
   // docs/SOURCE_ONBOARDING.md §1: connector docs > AI; a row whose
   // description came from the connector lands approved (ai_draft=false) with
   // its provenance recorded in semantic_source.
-  type TablePersist = { displayName: string; description: string | null; aiDraft: boolean; semanticSource: string };
-  type ColPersist = { displayName: string; description: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; semanticSource: string };
+  type TablePersist = { displayName: string; description: string | null; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null };
+  type ColPersist = { displayName: string; description: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null };
   const tablePersistByName = new Map<string, TablePersist>();
   const colPersistByKey = new Map<string, ColPersist>();
   for (const table of schema.tables) {
@@ -488,8 +530,13 @@ export async function runSchemaProfiler(
     tablePersistByName.set(table.tableName, {
       displayName:    tDoc?.displayName ?? tCtx?.display_name ?? table.tableName,
       description:    tDoc?.description ?? tCtx?.description ?? null,
-      aiDraft:        !tableDocumented,
-      semanticSource: tableDocumented ? (tDoc?.provenance ?? 'declared') : 'ai',
+      // Structural mode never produces AI content, so nothing is an AI
+      // draft — undocumented rows are bare structure (semantic_source NULL,
+      // approval 'draft') that the review queue must NOT list, because
+      // there is no draft text to review yet.
+      aiDraft:        structural ? false : !tableDocumented,
+      approvalStatus: tableDocumented ? 'approved' : 'draft',
+      semanticSource: tableDocumented ? (tDoc?.provenance ?? 'declared') : (structural ? null : 'ai'),
     });
     for (const srcCol of table.columns) {
       const key = `${table.tableName}.${srcCol.name}`;
@@ -503,8 +550,9 @@ export async function runSchemaProfiler(
         description:    cDoc?.description ?? colDef?.description ?? null,
         isDimension:    colDef?.is_dimension ?? (cDoc?.role === 'dimension'),
         isMeasure:      colDef?.is_measure ?? (cDoc?.role === 'measure'),
-        aiDraft:        !colDocumented,
-        semanticSource: colDocumented ? (tDoc?.provenance ?? 'declared') : 'ai',
+        aiDraft:        structural ? false : !colDocumented,
+        approvalStatus: colDocumented ? 'approved' : 'draft',
+        semanticSource: colDocumented ? (tDoc?.provenance ?? 'declared') : (structural ? null : 'ai'),
       });
     }
   }
@@ -619,7 +667,7 @@ export async function runSchemaProfiler(
           is_active:       true,
           ai_draft:        tp.aiDraft,
           semantic_source: tp.semanticSource,
-          approval_status: tp.aiDraft ? 'draft' : 'approved',
+          approval_status: tp.approvalStatus,
         })
         .returning('id');
 
@@ -642,7 +690,7 @@ export async function runSchemaProfiler(
             is_measure:      cp.isMeasure,
             ai_draft:        cp.aiDraft,
             semantic_source: cp.semanticSource,
-            approval_status: cp.aiDraft ? 'draft' : 'approved',
+            approval_status: cp.approvalStatus,
           })
           .returning('id');
 

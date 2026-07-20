@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import {
   AlertTriangle, Boxes, ChevronRight, ChevronDown, Code as CodeIcon,
   Database, Eye, FileText, Filter, GitBranch, Loader2, Network, Play,
@@ -197,6 +198,28 @@ export default function SourceRootPanel({ connectionId }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Synced-but-unanalysed strip: tables were registered in the catalog
+          straight after the first sync (structural pass, no AI), so the user
+          can browse structure — but descriptions and inferred relationships
+          only arrive when an admin runs Analyse on the source. */}
+      {conn?.profiling_status === 'structural' && (
+        <div className="border-b border-line bg-warn-soft px-6 py-2.5 shrink-0 flex items-center gap-2.5 flex-wrap">
+          <Sparkles className="w-3.5 h-3.5 text-warn shrink-0" strokeWidth={1.5} />
+          <p className="text-[12.5px] text-ink-2 leading-snug">
+            Tables are loaded, but this source hasn&apos;t been analysed yet — column descriptions and
+            suggested relationships are added when Analyse runs.
+          </p>
+          {curator && (
+            <Link
+              href={`/sources?connectionId=${connectionId}`}
+              className="text-[10.5px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors"
+            >
+              Analyse on Sources →
+            </Link>
+          )}
+        </div>
+      )}
 
       {schema.tables.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16">
