@@ -466,15 +466,40 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       },
     });
 
+    // ── Explicit column schema from OData $metadata ────────────────────
+    // EO's own type declarations (Edm.String / Edm.Guid / Edm.Decimal / …)
+    // mapped to DuckDB types — the same trusted-tier principle as the
+    // docs channel ("documentation before inference"). Without this the
+    // writer auto-detects types from a JSON sample, which:
+    //   • types all-NULL columns as JSON (an Edm.String column that
+    //     happens to be empty in this division surfaced as `json` in the
+    //     catalog — reported by a user 2026-07-20),
+    //   • lets types drift between syncs depending on the sampled rows.
+    // Missing keys in the payload become NULL columns of the right type;
+    // metadata fetch failure degrades to auto_detect (unchanged legacy).
+    const entitySchema = metadata ? lookupEntitySchema(metadata, entity.apiPath) : undefined;
+    const typedColumns = entitySchema?.map((p) => ({
+      name: p.name,
+      sqlType: edmTypeToDuckDb(p.edmType),
+    }));
+    if (!typedColumns?.length) {
+      ctx.log.warn(`no $metadata schema for ${entity.name} — falling back to type auto-detection`);
+    }
+
     // Pass the entity's businessKey to the writer when incremental.
     // Without a mergeKey the writer overwrites — which is wrong for
     // incremental (we'd lose all rows not in this delta). With it, the
     // writer reads existing rows, upserts the delta, writes back.
-    const writeOpts = entity.incrementalCursor && entity.businessKey
-      ? { mergeKey: entity.businessKey }
-      : undefined;
+    const writeOpts = {
+      ...(entity.incrementalCursor && entity.businessKey ? { mergeKey: entity.businessKey } : {}),
+      ...(typedColumns?.length ? { columns: typedColumns } : {}),
+    };
 
-    const result = await ctx.warehouseWriter.writeTable(entity.name, rowIterable, writeOpts);
+    const result = await ctx.warehouseWriter.writeTable(
+      entity.name,
+      rowIterable,
+      Object.keys(writeOpts).length > 0 ? writeOpts : undefined,
+    );
     ctx.log.info(`${entity.name} sync complete`, {
       pages: pagesFetched,
       rows: rowsFetched,
@@ -521,16 +546,35 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     _ctx: ProbeContext,
   ): Promise<EntityDocs[]> {
     this.validateConfig(rawConfig);
+    const selected = new Set(selectedEntities);
     const out: EntityDocs[] = [];
     for (const name of selectedEntities) {
       const entity = ENTITIES_BY_NAME.get(name);
       if (!entity) continue;
       const cols = EXACT_ONLINE_COLUMN_DOCS[name];
+      // Vendor-documented FK targets (docs-page hyperlinks captured by the
+      // transcription) become declared-rung relationships. Filtered to the
+      // user's selected entities so we never point at an unsynced table;
+      // the profiler dedupes these against getKnownRelationships.
+      const relationships: KnownRelationship[] = [];
+      for (const c of cols ?? []) {
+        if (c.references && selected.has(c.references.table)) {
+          relationships.push({
+            fromTable: name,
+            fromColumn: c.name,
+            toTable: c.references.table,
+            toColumn: c.references.column,
+            type: 'many_to_one',
+            description: c.description,
+          });
+        }
+      }
       out.push({
         entityName: name,
         displayName: entity.displayName,
         description: entity.description,
         columns: cols ? [...cols] : [],
+        ...(relationships.length > 0 ? { relationships } : {}),
         provenance: 'curated',
       });
     }

@@ -218,6 +218,22 @@ export interface ColumnDoc {
    * which skip the AI classification pass. Omit when ambiguous.
    */
   role?: 'measure' | 'dimension';
+
+  /**
+   * Vendor-declared type string, verbatim (e.g. OData `Edm.Guid`, Odoo
+   * `many2one`). Informational/curation metadata — warehouse column types
+   * are pinned at WRITE time (explicit `WriteTableOptions.columns`), not
+   * from this field.
+   */
+  dataType?: string;
+
+  /**
+   * Vendor-documented foreign-key target, both sides in `EntityDescriptor`
+   * name space (e.g. EO's docs pages hyperlink every FK property to the
+   * target entity's page). `describeEntities` turns these into declared-rung
+   * relationships, filtered to the entities the user actually selected.
+   */
+  references?: { table: string; column: string };
 }
 
 /** Vendor documentation for one entity, returned by `describeEntities`. */

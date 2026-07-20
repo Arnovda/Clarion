@@ -160,6 +160,53 @@ describe('LocalFileWarehouseWriter', () => {
     }
   });
 
+  it('merge with explicit columns converges legacy mistyped columns to the declared schema', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+
+    // 1. Legacy write via auto-detect: `note` is NULL in every row, which
+    //    auto-detect types as JSON (the CreatorFullName production bug).
+    await writer.writeTable('Accounts', fromArray([
+      { ID: 'a1', note: null, amount: 1 },
+      { ID: 'a2', note: null, amount: 2 },
+    ]), { mergeKey: 'ID' });
+
+    const parquetPath = path.join(root, 'Accounts', 'data.parquet').replace(/'/g, "''");
+    const db1 = await Database.create(':memory:');
+    try {
+      const desc = await db1.all(`DESCRIBE SELECT * FROM read_parquet('${parquetPath}')`) as Array<{ column_name: string; column_type: string }>;
+      expect(desc.find((d) => d.column_name === 'note')?.column_type).toBe('JSON'); // legacy state
+    } finally {
+      await db1.close();
+    }
+
+    // 2. Incremental merge WITH the vendor-declared schema. The existing
+    //    side must be cast to the declared types, so the merged file's
+    //    `note` column comes out VARCHAR — not stuck on JSON forever.
+    const declared = [
+      { name: 'ID', sqlType: 'VARCHAR' },
+      { name: 'note', sqlType: 'VARCHAR' },
+      { name: 'amount', sqlType: 'DOUBLE' },
+    ];
+    await writer.writeTable('Accounts', fromArray([
+      { ID: 'a3', note: 'hello', amount: 3 },
+    ]), { mergeKey: 'ID', columns: declared });
+
+    const db2 = await Database.create(':memory:');
+    try {
+      const desc = await db2.all(`DESCRIBE SELECT * FROM read_parquet('${parquetPath}')`) as Array<{ column_name: string; column_type: string }>;
+      const typeOf = new Map(desc.map((d) => [d.column_name, d.column_type]));
+      expect(typeOf.get('note')).toBe('VARCHAR');
+      expect(typeOf.get('amount')).toBe('DOUBLE');
+      const rows = await db2.all(`SELECT * FROM read_parquet('${parquetPath}') ORDER BY ID`);
+      expect(rows).toHaveLength(3);
+      expect(rows[0].note).toBeNull();          // legacy NULLs survive the cast
+      expect(rows[2].note).toBe('hello');
+    } finally {
+      await db2.close();
+    }
+  });
+
   it('merge mode on first write (no existing file) just writes the delta', async () => {
     const root = await makeTmpRoot();
     const writer = new LocalFileWarehouseWriter(root);

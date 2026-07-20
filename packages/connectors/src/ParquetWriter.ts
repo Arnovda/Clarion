@@ -250,6 +250,39 @@ async function mergeNdjsonIntoExistingParquet(
       );
     }
 
+    // When the connector supplies an explicit schema, project the EXISTING
+    // side through CASTs to those types too. Without this, UNION BY NAME
+    // coerces each column to a common super-type with the legacy file —
+    // so a column mistyped by auto-detect in the past (e.g. JSON for an
+    // all-NULL string column) would keep its wrong type forever, no matter
+    // how many typed deltas merge in. With it, types converge to the
+    // vendor-declared schema on the next incremental sync. CAST (not
+    // TRY_CAST) on purpose: a legacy value that can't convert should fail
+    // this entity's sync loudly, not silently become NULL.
+    let existingExpr = `SELECT * FROM read_parquet('${escEx}')`;
+    if (columns && columns.length > 0) {
+      const typeByName = new Map(
+        columns
+          .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
+          .map((c) => [c.name, c.sqlType] as const),
+      );
+      const existingSchema = await db.all(
+        `DESCRIBE SELECT * FROM read_parquet('${escEx}')`,
+      ) as Array<{ column_name: string; column_type: string }>;
+      const selectList = existingSchema
+        .filter((c) => isSafeColumnName(c.column_name))
+        .map((c) => {
+          const target = typeByName.get(c.column_name);
+          return target && target !== c.column_type
+            ? `CAST("${c.column_name}" AS ${target}) AS "${c.column_name}"`
+            : `"${c.column_name}"`;
+        })
+        .join(', ');
+      if (selectList.length > 0) {
+        existingExpr = `SELECT ${selectList} FROM read_parquet('${escEx}')`;
+      }
+    }
+
     // The CTE pattern below:
     //   - `merged`        : existing rows tagged origin=0, delta rows origin=1
     //   - ROW_NUMBER PARTITION BY <key> ORDER BY origin DESC
@@ -266,7 +299,7 @@ async function mergeNdjsonIntoExistingParquet(
           SELECT * FROM ${deltaExpr}
         ),
         existing AS (
-          SELECT * FROM read_parquet('${escEx}')
+          ${existingExpr}
         ),
         merged AS (
           SELECT *, 0 AS _origin FROM existing

@@ -57,6 +57,42 @@ describe('EXACT_ONLINE_COLUMN_DOCS (transcription data invariants)', () => {
     expect(errs).toEqual([]);
   });
 
+  it('FK references point at catalog entities and their documented key columns', () => {
+    const errs: string[] = [];
+    let refCount = 0;
+    for (const [entity, cols] of Object.entries(EXACT_ONLINE_COLUMN_DOCS)) {
+      for (const c of cols) {
+        if (!c.references) continue;
+        refCount++;
+        const id = `${entity}.${c.name}`;
+        if (!ENTITIES_BY_NAME.has(c.references.table)) {
+          errs.push(`${id}: references unknown entity ${c.references.table}`);
+          continue;
+        }
+        const targetCols = EXACT_ONLINE_COLUMN_DOCS[c.references.table] ?? [];
+        if (!targetCols.some((t) => t.name === c.references!.column)) {
+          errs.push(`${id}: references ${c.references.table}.${c.references.column}, which is not a documented column`);
+        }
+      }
+    }
+    expect(errs).toEqual([]);
+    // The docs pages hyperlink every FK property — well over a hundred
+    // resolve inside our 61-entity catalog. A collapse in this number means
+    // the transcription lost the link capture.
+    expect(refCount).toBeGreaterThanOrEqual(150);
+  });
+
+  it('vendor FK targets match the hand-curated known-relationships catalog on core joins', () => {
+    const get = (entity: string, col: string) =>
+      (EXACT_ONLINE_COLUMN_DOCS[entity] ?? []).find((c) => c.name === col)?.references;
+    expect(get('Accounts', 'Accountant')).toEqual({ table: 'Accounts', column: 'ID' });
+    // EO's sales-invoice header PK is InvoiceID (not ID) — the key-marker
+    // parse must have picked that up for the header↔lines join.
+    expect(get('SalesInvoiceLines', 'InvoiceID')).toEqual({ table: 'SalesInvoices', column: 'InvoiceID' });
+    expect(get('SalesInvoiceLines', 'Item')).toEqual({ table: 'Items', column: 'ID' });
+    expect(get('TransactionLines', 'Account')).toEqual({ table: 'Accounts', column: 'ID' });
+  });
+
   it('core financial columns carry the vendor descriptions', () => {
     // Spot-checks against well-known EO fields — if these drift, the
     // transcription (or EO's data model) changed and needs a re-look.
@@ -86,6 +122,25 @@ describe('ExactOnlineConnector.describeEntities', () => {
       expect(d.displayName).toBeTruthy();
       expect(d.columns.length).toBeGreaterThan(0);
     }
+  });
+
+  it('emits declared relationships from docs FK references, filtered to selected entities', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(config, ['SalesInvoices', 'SalesInvoiceLines'], probeCtx);
+
+    const lines = docs.find((d) => d.entityName === 'SalesInvoiceLines');
+    expect(lines?.relationships?.length).toBeGreaterThan(0);
+    expect(lines?.relationships).toContainEqual(
+      expect.objectContaining({
+        fromTable: 'SalesInvoiceLines',
+        fromColumn: 'InvoiceID',
+        toTable: 'SalesInvoices',
+        toColumn: 'InvoiceID',
+        type: 'many_to_one',
+      }),
+    );
+    // Items is NOT selected → the Item→Items reference must be filtered out.
+    expect(lines?.relationships?.some((r) => r.toTable === 'Items')).toBe(false);
   });
 
   it('returns an entry with empty columns for a catalog entity without transcribed docs', async () => {

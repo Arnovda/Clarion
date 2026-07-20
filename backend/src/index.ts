@@ -224,15 +224,22 @@ app.use('/api/admin/ai-routing', aiRoutingRouter);
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {
   try {
-    const { semanticDb } = await import('./db/knex');
     const { runSchemaProfiler } = await import('./semantic/SchemaProfiler');
-    const connection = await semanticDb('connections').where({ id: req.params.id }).first();
+    const { tenantQuery } = await import('./services/tenantQuery');
+    const tenantId = req.user?.tenantId;
+    // Tenant-scoped fetch + delete: bare pool queries are RLS-filtered to
+    // zero rows in production (silent no-op / docs-channel loss).
+    const connection = await tenantQuery(tenantId, (trx) =>
+      trx('connections').where({ id: req.params.id }).first(),
+    );
     if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
-    await semanticDb('source_tables').where({ connection_id: connection.id }).delete();
+    await tenantQuery(tenantId, (trx) =>
+      trx('source_tables').where({ connection_id: connection.id }).delete(),
+    );
     // SchemaProfiler builds its own connector from the connection record
     // via createConnector() — no filepath parameter needed since we
     // standardised on connector-based introspection for every source type.
-    const result = await runSchemaProfiler(connection.id as number);
+    const result = await runSchemaProfiler(connection.id as number, undefined, undefined, { connection });
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });

@@ -286,13 +286,42 @@ async function mergeNdjsonIntoExistingParquet(
       );
     }
 
+    // Mirror of ParquetWriter's type-convergence projection: with an
+    // explicit schema, CAST the existing side to the declared types so a
+    // column mistyped by auto-detect in the past converges instead of
+    // winning the UNION-BY-NAME coercion forever. CAST (not TRY_CAST) so
+    // an unconvertible legacy value fails this entity loudly.
+    let existingExpr = `SELECT * FROM read_parquet('${escEx}')`;
+    if (columns && columns.length > 0) {
+      const typeByName = new Map(
+        columns
+          .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
+          .map((c) => [c.name, c.sqlType] as const),
+      );
+      const existingSchema = await db.all(
+        `DESCRIBE SELECT * FROM read_parquet('${escEx}')`,
+      ) as Array<{ column_name: string; column_type: string }>;
+      const selectList = existingSchema
+        .filter((c) => isSafeColumnName(c.column_name))
+        .map((c) => {
+          const target = typeByName.get(c.column_name);
+          return target && target !== c.column_type
+            ? `CAST("${c.column_name}" AS ${target}) AS "${c.column_name}"`
+            : `"${c.column_name}"`;
+        })
+        .join(', ');
+      if (selectList.length > 0) {
+        existingExpr = `SELECT ${selectList} FROM read_parquet('${escEx}')`;
+      }
+    }
+
     await db.all(`
       COPY (
         WITH delta AS (
           SELECT * FROM ${deltaExpr}
         ),
         existing AS (
-          SELECT * FROM read_parquet('${escEx}')
+          ${existingExpr}
         ),
         merged AS (
           SELECT *, 0 AS _origin FROM existing

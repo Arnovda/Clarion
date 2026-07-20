@@ -15,6 +15,7 @@ import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
+import { tenantQuery } from '../services/tenantQuery';
 import { trackEvent, trackException } from '../utils/monitoring';
 import { startMaintenanceWorker, stopMaintenanceWorker } from './warehouseMaintenance';
 import { startMorningBriefWorker, stopMorningBriefWorker } from './morningBriefJob';
@@ -39,7 +40,11 @@ async function processSchemaProfilingJob(job: Job<SchemaProfilingJobData>): Prom
 
   await job.updateProgress({ phase: 'starting', message: 'Starting schema profiling…' });
 
-  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  // Tenant-scoped fetch: the raw `SET` above lands on ONE pooled connection;
+  // this query may run on another and come back empty under RLS.
+  const connection = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: connectionId }).first(),
+  );
   if (!connection) throw new Error(`Connection ${connectionId} not found`);
 
   const connector = createSourceConnector(connection);
@@ -52,6 +57,7 @@ async function processSchemaProfilingJob(job: Job<SchemaProfilingJobData>): Prom
         job.updateProgress(p).catch(() => {});
       },
       connector,
+      { connection },
     );
 
     trackEvent('schema_profiling_complete', {

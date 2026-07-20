@@ -47,6 +47,7 @@ import { sourceBasePathV2, ensureWarehouseContainer } from '../services/warehous
 import { profilingProgressPct } from '../services/profilingProgress';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notifyAdmins } from '../services/notificationService';
+import { tenantQuery } from '../services/tenantQuery';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -727,10 +728,12 @@ async function runProfilerInBackground(args: {
 
   // Read the current connection state once. We need its stored
   // schema_hash for drift detection, plus the live row to pass into
-  // introspectAndHash.
-  const conn = await semanticDb('connections')
-    .where({ id: connectionId, tenant_id: tenantId })
-    .first();
+  // introspectAndHash and runSchemaProfiler. Tenant-scoped transaction:
+  // the session-level setTenant above lands on ONE pooled connection and
+  // this query may run on another (RLS would filter it to zero rows).
+  const conn = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: connectionId, tenant_id: tenantId }).first(),
+  );
   if (!conn) {
     log.warn({ connectionId }, 'runProfilerInBackground: connection not found, skipping');
     return;
@@ -789,7 +792,7 @@ async function runProfilerInBackground(args: {
             profiling_progress: 0,
             profiling_started_at: new Date().toISOString(),
           });
-        const result = await runSchemaProfiler(connectionId, undefined, undefined, { mode: 'structural' });
+        const result = await runSchemaProfiler(connectionId, undefined, undefined, { mode: 'structural', connection: conn });
         await semanticDb('connections')
           .where({ id: connectionId, tenant_id: tenantId })
           .update({
@@ -973,7 +976,7 @@ async function runProfilerInBackground(args: {
           profiling_progress: profilingProgressPct(p.phase, p.tableIndex, p.tableCount),
         })
         .catch(() => undefined);
-    });
+    }, undefined, { connection: conn });
 
     // Persist the new schema hash so the next sync can short-circuit if
     // nothing structural changed. Recompute from scratch — the in-memory

@@ -615,7 +615,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
         log.info(`[Profile] Connection ${connectionId}: ${p.phase} — ${p.message}`);
         emit(p);
         persistProgress(p);
-      }, connectorOverride);
+      }, connectorOverride, { connection });
 
       connectorOverride.disconnect();
 
@@ -659,7 +659,7 @@ router.post('/:id/profile', requireAuth, requireRole('admin'), async (req: Reque
       }
       await connectorOverride.connect();
 
-      const result = await runSchemaProfiler(connection.id, (p) => persistProgress(p), connectorOverride);
+      const result = await runSchemaProfiler(connection.id, (p) => persistProgress(p), connectorOverride, { connection });
 
       connectorOverride.disconnect();
 

@@ -18,6 +18,8 @@ import {
   type EntityDocs,
 } from '@databridge/connectors';
 import { decryptCredentials, encryptCredentials } from '../utils/crypto';
+import { tenantScopedWrite } from '../db/tenantScopedWrite';
+import { setTenantContext } from '../db/tenantContext';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'SchemaProfiler' });
@@ -52,6 +54,21 @@ export interface ProfilerOptions {
    * immediately; the AI passes stay behind the explicit "Analyse" click.
    */
   mode?: 'full' | 'structural';
+
+  /**
+   * The `connections` row, pre-fetched by the caller under a correct RLS
+   * tenant context. ALWAYS pass this from request/orchestrator code.
+   *
+   * Why it matters: the profiler's own fallback fetch runs on the raw
+   * `semanticDb` pool. Under RLS (production runs as `databridge_app`) a
+   * pooled connection without `app.current_tenant` set returns ZERO rows —
+   * the row comes back undefined and the connector docs channel +
+   * known-relationships harvest silently degrade to the pure-AI pipeline.
+   * That exact failure shipped AI descriptions for fully-vendor-documented
+   * ExactOnline columns in production (found 2026-07-20). The fallback
+   * fetch is kept only for dev scripts where the pool bypasses RLS.
+   */
+  connection?: Record<string, unknown>;
 }
 
 /**
@@ -91,9 +108,25 @@ export async function runSchemaProfiler(
   let connectorType: string | null = null;
   let selectedEntities: readonly string[] | null = null;
 
-  // Fetched once — connector_type / selected_entities prime the AI prompts,
-  // connector_config_encrypted feeds the describeEntities docs harvest below.
-  const connRow = await semanticDb('connections').where({ id: connectionId }).first();
+  // The connection row primes everything trusted: connector_type /
+  // selected_entities gate the docs + known-relationships harvest, and
+  // connector_config_encrypted feeds describeEntities. Callers pass it
+  // pre-fetched (options.connection) because the fallback fetch below runs
+  // on the raw pool and returns nothing under RLS without tenant context —
+  // see ProfilerOptions.connection for the production incident this caused.
+  const connRow =
+    (options?.connection as Record<string, unknown> | undefined)
+    ?? await semanticDb('connections').where({ id: connectionId }).first();
+  if (!connRow) {
+    // With a connectorOverride we can still profile structurally, but every
+    // trusted-tier channel is dead — say so LOUDLY instead of silently
+    // shipping AI text for vendor-documented columns.
+    log.warn(
+      { connectionId },
+      'connection row unavailable (missing options.connection + RLS-filtered pool fetch?) — '
+      + 'connector docs channel and known-relationships harvest are DISABLED for this run',
+    );
+  }
   if (connectorOverride) {
     connector = connectorOverride;
     shouldDisconnect = false;
@@ -101,10 +134,13 @@ export async function runSchemaProfiler(
     if (!connRow) {
       throw new Error(`Connection ${connectionId} not found`);
     }
-    connector = await createConnector(connRow);
+    connector = await createConnector(connRow as unknown as Parameters<typeof createConnector>[0]);
   }
-  connectorType = connRow?.connector_type ?? null;
-  selectedEntities = (connRow?.selected_entities as string[] | null) ?? null;
+  connectorType = (connRow?.connector_type as string | undefined) ?? null;
+  selectedEntities = (connRow?.selected_entities as string[] | null | undefined) ?? null;
+  const tenantId: number | null = Number.isFinite(Number(connRow?.tenant_id))
+    ? Number(connRow?.tenant_id)
+    : null;
 
   await connector.connect();
   const schema = await connector.introspectSchema();
@@ -129,10 +165,21 @@ export async function runSchemaProfiler(
           log: createAdapterLogger(log),
           // Some sources rotate credentials even on metadata reads — persist
           // the rotation or the next sync would use a dead refresh token.
+          // Tenant-scoped: a bare pool update is RLS-filtered to zero rows
+          // in production, silently losing the rotated token.
           onCredentialRotated: async (newConfig) => {
-            await semanticDb('connections')
-              .where({ id: connectionId })
-              .update({ connector_config_encrypted: encryptCredentials(JSON.stringify(newConfig)) });
+            const encrypted = encryptCredentials(JSON.stringify(newConfig));
+            if (tenantId != null) {
+              await tenantScopedWrite(tenantId, (trx) =>
+                trx('connections')
+                  .where({ id: connectionId })
+                  .update({ connector_config_encrypted: encrypted }),
+              );
+            } else {
+              await semanticDb('connections')
+                .where({ id: connectionId })
+                .update({ connector_config_encrypted: encrypted });
+            }
           },
         });
         const documentedCols = connectorDocs.reduce(
@@ -568,6 +615,11 @@ export async function runSchemaProfiler(
 
   emit({ phase: 'storing', message: `Step 7/7 — Saving ${schema.tables.length} tables, ${totalCols} columns, ${tableContext.relationships.length} relationships to database…` });
   await semanticDb.transaction(async (trx) => {
+    // Pin the RLS tenant context ON THIS transaction. Without it the
+    // transaction's pooled connection may carry no tenant (writes silently
+    // affect 0 rows / inserts get NULL tenant_id) or — worse — a STALE
+    // tenant from an earlier request on the same pooled connection.
+    if (tenantId != null) await setTenantContext(trx, tenantId);
     const existingTables = await trx('source_tables')
       .where({ connection_id: connectionId })
       .select('id', 'table_name');

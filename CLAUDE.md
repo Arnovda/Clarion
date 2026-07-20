@@ -31,7 +31,75 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-20 (first-sync structural catalog registration — tables visible in catalog before AI analysis)
+**Last updated:** 2026-07-20 (EO semantic-correctness sweep: RLS docs-channel bug, vendor-typed writes, docs-derived relationships)
+
+**EO semantic-correctness sweep (2026-07-20, second session of the day):**
+User compared Clarion's catalog against ExactOnline's REST reference and found
+AI descriptions where vendor docs exist, `json` data types for `Edm.String`
+columns, and missing GUID-documented relationships. All three root-caused and
+fixed. Connectors: 116 tests pass, `tsc` clean, dist rebuilt; backend
+`npm run check` clean; dynamic-import ratchet at 92.
+- **Docs channel was DEAD IN PRODUCTION (RLS pool bug).** `SchemaProfiler`
+  re-fetched the connections row on the raw `semanticDb` pool; under the
+  prod `databridge_app` role a pooled connection without `app.current_tenant`
+  returns ZERO rows → `connRow` undefined → connector_type null → the
+  describeEntities docs harvest AND getKnownRelationships silently skipped →
+  pure-AI descriptions for fully-documented EO columns (confirmed in prod
+  Log Analytics: the 2026-07-20 08:56 Re-analyse of connection 17 emitted no
+  describeEntities/known-relationship lines). Dev never reproduced it (owner
+  role bypasses RLS). Fix: `ProfilerOptions.connection` — every caller
+  (routes/connections /profile ×2, SyncOrchestrator ×2, workers, index.ts
+  legacy route) now passes the row it already fetched under correct tenant
+  context; the profiler's fallback fetch warns LOUDLY when it misses; the
+  persist transaction pins `setTenantContext(trx, tenantId)` (kills the
+  stale-pool-var cross-tenant hazard); credential-rotation persist is
+  tenant-scoped. Verified with a throwaway-clone profile run against local
+  Postgres AS `databridge_app` with no ambient tenant var: 455/455 curated
+  columns land verbatim (`curated`/`approved`), 25 confirmed relationships.
+- **Vendor-typed warehouse writes (EO).** EO synced via
+  `read_json(auto_detect)` — all-NULL columns became JSON (user-visible:
+  `CreatorFullName` "json" vs `Edm.String`), types could drift per sync. The
+  connector already fetched OData `$metadata` every sync but only used it for
+  empty tables. Now every entity write passes `columns` (Edm →
+  `edmTypeToDuckDb`) — same explicit-schema path Odoo uses; metadata-fetch
+  failure degrades to auto_detect. PLUS: both writers' merge paths
+  (`ParquetWriter` + `BlobSasWarehouseWriter`) now CAST the EXISTING parquet
+  side to the declared schema when `columns` is supplied, so legacy mistyped
+  columns CONVERGE on the next incremental sync (no manual parquet surgery;
+  CAST not TRY_CAST — unconvertible legacy values fail that entity loudly).
+  Tested: all-NULL Edm.String lands VARCHAR; JSON→VARCHAR convergence merge.
+- **Docs-derived relationships (245 vs 82 hand-curated).** EO's docs pages
+  hyperlink every FK property to its target entity's page; the original
+  transcription discarded the links. New PERMANENT tool
+  `packages/connectors/scripts/generate-eo-docs.ts` (replaces the lost
+  scratchpad script): fetches the resources index (355 endpoint mappings,
+  prefers non-`Read*` entity pages; `SupplierItems`→`LogisticsSupplierItem`
+  and `TimeCostTransactions`→`SyncProjectTimeCostTransactions` overrides) +
+  61 details pages, and regenerates `docs.ts` with — per column —
+  verbatim description, role hint, NEW `dataType` (Edm type) and NEW
+  `references: {table, column}` (hyperlink target resolved to catalog
+  entities; `toColumn` from the target's `data-key="True"` property — catches
+  `SalesInvoices.InvoiceID` as the header PK). Regenerated docs.ts: 61
+  entities, 2,613 documented columns (EXACTLY the original count — parse
+  fidelity), 245 FK references. `ColumnDoc` gained `dataType?`/`references?`;
+  `describeEntities` emits them as declared-rung relationships filtered to
+  selected entities (profiler merges + dedupes vs the known catalog, which
+  stays authoritative for special cases). New tests: reference targets ∈
+  catalog + documented key columns, core-join spot checks, relationship
+  emission + selection filtering.
+- **Go-live runbook (after promote):** on the prod EO connection click
+  Re-analyse → descriptions become verbatim vendor docs + relationships jump
+  to docs coverage. Data types converge on the NEXT sync (typed writes +
+  merge casts); no cursor reset needed unless a CAST failure surfaces
+  (then clear `entity_sync_cursors` for the connection + delete its
+  warehouse blobs to force a clean full pull).
+- **Open (user-requested, not yet built):** AI ENRICHMENT of vendor
+  descriptions (vendor text as base + AI extends with data context, marked
+  ai_draft; do selectively — measures/FK/template columns) and passing
+  documented sibling descriptions as context when AI describes custom
+  fields.
+
+**Prior last updated:** 2026-07-20 (first-sync structural catalog registration — tables visible in catalog before AI analysis)
 
 **First-sync structural catalog registration (2026-07-20):** Fixes the
 onboarding gap where "Sync complete" left the Catalog empty (source_tables is

@@ -261,6 +261,75 @@ describe('ExactOnlineConnector — sync', () => {
     }
   });
 
+  it('writes vendor-declared types from $metadata — all-NULL string columns are VARCHAR, not JSON', async () => {
+    mockTokenRefresh();
+
+    // CSDL $metadata for the Accounts set. CreatorFullName is Edm.String
+    // but every synced row carries NULL for it — the exact production case
+    // where auto-detect typed the column as JSON (reported 2026-07-20).
+    const csdl = `<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx" Version="1.0">
+  <edmx:DataServices>
+    <Schema Namespace="Exact.Web.Api.Models" xmlns="http://schemas.microsoft.com/ado/2009/11/edm">
+      <EntityType Name="Account">
+        <Property Name="ID" Type="Edm.Guid" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="CreatorFullName" Type="Edm.String"/>
+        <Property Name="Created" Type="Edm.DateTime"/>
+        <Property Name="CreditLinePurchase" Type="Edm.Double"/>
+      </EntityType>
+      <EntityContainer Name="Ctx">
+        <EntitySet Name="Accounts" EntityType="Exact.Web.Api.Models.Account"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>`;
+    nock(BASE_URL)
+      .get(`/api/v1/${DIVISION}/$metadata`)
+      .reply(200, csdl, { 'Content-Type': 'application/xml' });
+
+    const guidA = '11111111-2222-3333-4444-555555555555';
+    const guidB = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+    nock(BASE_URL)
+      .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query(true)
+      .reply(200, {
+        d: {
+          results: [
+            // CreatorFullName absent/null in EVERY row; CreditLinePurchase absent too.
+            { ID: guidA, Name: 'Acme NV', Created: '/Date(1700000000000)/', CreatorFullName: null },
+            { ID: guidB, Name: 'Globex' },
+          ],
+        },
+      });
+
+    const root = await makeWarehouse();
+    const ctx = makeCtx(root);
+
+    const c = new ExactOnlineConnector();
+    const result = await c.sync(makeConfig(), { entities: ['Accounts'] }, ctx);
+    expect(result.rowCounts).toEqual({ Accounts: 2 });
+    expect(result.warnings).toEqual([]);
+
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Accounts', 'data.parquet').replace(/'/g, "''");
+      const described = await db.all(`DESCRIBE SELECT * FROM read_parquet('${p}')`) as Array<{ column_name: string; column_type: string }>;
+      const typeOf = new Map(described.map((d) => [d.column_name, d.column_type]));
+      expect(typeOf.get('CreatorFullName')).toBe('VARCHAR');   // NOT JSON
+      expect(typeOf.get('Name')).toBe('VARCHAR');
+      expect(typeOf.get('ID')).toBe('UUID');
+      expect(typeOf.get('Created')).toBe('TIMESTAMP');
+      expect(typeOf.get('CreditLinePurchase')).toBe('DOUBLE'); // present as typed NULL column
+      const rows = await db.all(`SELECT * FROM read_parquet('${p}') ORDER BY Name`);
+      expect(rows).toHaveLength(2);
+      expect(rows[0].CreatorFullName).toBeNull();
+      expect(rows[0].Created instanceof Date || typeof rows[0].Created === 'string').toBe(true);
+    } finally {
+      await db.close();
+    }
+  });
+
   it('appends $filter when an incremental cursor is provided', async () => {
     mockTokenRefresh();
     // We pass a prior cursor for Accounts. The connector should append
