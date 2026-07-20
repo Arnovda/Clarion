@@ -63,6 +63,7 @@ import {
 } from './transport';
 import type { StarSchemaTemplate } from '../starSchema';
 import { ODOO_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
+import { ODOO_COLUMN_DOCS } from './docs';
 
 export class OdooConnector extends BaseSourceConnector implements SourceConnector {
   readonly type = 'odoo';
@@ -400,7 +401,11 @@ export function buildEntityDocs(
     const relationModel = type === 'many2one' ? strAttr(f?.relation) : undefined;
     const relationTable = relationModel ? MODEL_TO_TABLE.get(relationModel) : undefined;
 
+    // Precedence: live instance help text (reflects tenant customisation
+    // and language) > curated core-field docs (ODOO_COLUMN_DOCS — many
+    // standard fields ship without help) > synthesised many2one fallback.
     let description = help;
+    if (!description) description = ODOO_COLUMN_DOCS[entity.model]?.[name];
     if (!description && type === 'many2one' && label) {
       description = `${label} — references ${relationTable ?? relationModel ?? 'another record'}.`;
     }

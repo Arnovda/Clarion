@@ -31,7 +31,21 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-20 (semantic enrichment plan Phases 1-3: sibling context, human-edit tracking, opt-in AI enrichment)
+**Last updated:** 2026-07-20 (Odoo curated core-field docs — Tier-2 fallback beneath the live fields_get harvest)
+
+**Odoo curated core-field docs (2026-07-20, fourth session of the day):**
+Odoo's docs channel is runtime `fields_get`, but many standard fields ship
+without a `help` tooltip and fell through to the AI pipeline. New
+`packages/connectors/src/odoo/docs.ts` (`ODOO_COLUMN_DOCS`): hand-curated
+descriptions for ~242 core fields across ALL 21 allowlisted models (Odoo
+16+ semantics). Precedence in `buildEntityDocs`: live instance help
+(tenant customisation/language) > curated fallback > many2one synthesis >
+AI. Tests: data invariants (models ⊆ allowlist, safe names, non-empty,
+every model covered, ≥240 fields), precedence tests (live help beats
+curated; custom fields still fall to AI). Connectors: 119 tests pass,
+`tsc` clean, dist rebuilt; backend untouched.
+
+**Prior last updated:** 2026-07-20 (semantic enrichment plan Phases 1-3: sibling context, human-edit tracking, opt-in AI enrichment)
 
 **Semantic enrichment Phases 1-3 (2026-07-20, third session of the day):**
 Implements `docs/backlog/semantic-enrichment-plan.md` in full. Backend

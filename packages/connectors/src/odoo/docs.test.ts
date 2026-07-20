@@ -13,7 +13,8 @@ process.env.HTTP_CLIENT_RATE_LIMIT_DISABLED = '1';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import nock from 'nock';
 import { OdooConnector, buildEntityDocs } from './OdooConnector';
-import { ENTITIES_BY_NAME, odooFieldRole } from './entities';
+import { ENTITIES_BY_NAME, ODOO_ALLOWLIST, odooFieldRole } from './entities';
+import { ODOO_COLUMN_DOCS } from './docs';
 import { createNoopLogger } from '../logging';
 import type { ProbeContext } from '../types';
 import type { OdooFieldMeta } from './transport';
@@ -58,6 +59,10 @@ describe('buildEntityDocs', () => {
     user_id:      { type: 'many2one', string: 'Salesperson', relation: 'res.users', help: 'The internal user in charge of this contact.' },
     write_date:   { type: 'datetime', string: 'Last Updated on' },
     line_ids:     { type: 'one2many', string: 'Lines', relation: 'account.move.line' },
+    // Genuinely custom fields — absent from ODOO_COLUMN_DOCS, so they
+    // exercise the "no help + no curated entry" fallbacks.
+    x_custom_note: { type: 'char',     string: 'Custom Note' },
+    x_custom_ref:  { type: 'many2one', string: 'Custom Ref', relation: 'res.users' },
   };
   const selected = new Set(['res_partner', 'res_company']);
 
@@ -69,17 +74,55 @@ describe('buildEntityDocs', () => {
     expect(credit.role).toBe('measure');
   });
 
-  it('treats false/missing help as undocumented so the AI fills the gap', () => {
+  it('falls back to curated core-field docs when the instance has no help text', () => {
     const docs = buildEntityDocs(partner, meta, selected);
+    // res.partner.name ships without help in standard Odoo — the curated
+    // supplement covers it now, so it lands documented (trusted rung).
     const name = docs.columns.find((c) => c.name === 'name')!;
-    expect(name.description).toBeUndefined();
+    expect(name.description).toBe('Name of the person or organisation');
     expect(name.displayName).toBe('Name');
+    // Curated beats the generic many2one synthesis too.
+    const company = docs.columns.find((c) => c.name === 'company_id')!;
+    expect(company.description).toBe('Company (in multi-company setups) this contact belongs to');
   });
 
-  it('synthesises a description for a many2one without help, from label + relation', () => {
+  it('live help text always beats the curated fallback', () => {
+    const withHelp: Record<string, OdooFieldMeta> = {
+      ...meta,
+      name: { type: 'char', string: 'Naam', help: 'Tenant-specific description in Dutch.' },
+    };
+    const docs = buildEntityDocs(partner, withHelp, selected);
+    expect(docs.columns.find((c) => c.name === 'name')!.description).toBe('Tenant-specific description in Dutch.');
+  });
+
+  it('treats custom fields without help or curated entry as undocumented so the AI fills the gap', () => {
     const docs = buildEntityDocs(partner, meta, selected);
-    const company = docs.columns.find((c) => c.name === 'company_id')!;
-    expect(company.description).toBe('Company — references res_company.');
+    const custom = docs.columns.find((c) => c.name === 'x_custom_note')!;
+    expect(custom.description).toBeUndefined();
+    expect(custom.displayName).toBe('Custom Note');
+  });
+
+  it('synthesises a description for an uncurated many2one without help, from label + relation', () => {
+    const docs = buildEntityDocs(partner, meta, selected);
+    const ref = docs.columns.find((c) => c.name === 'x_custom_ref')!;
+    expect(ref.description).toBe('Custom Ref — references res.users.');
+  });
+
+  it('curated docs data invariants: models ⊆ allowlist, safe field names, non-empty descriptions', () => {
+    const models = new Set(ODOO_ALLOWLIST.map((e) => e.model));
+    const errs: string[] = [];
+    for (const [model, fields] of Object.entries(ODOO_COLUMN_DOCS)) {
+      if (!models.has(model)) errs.push(`${model}: not in allowlist`);
+      for (const [field, desc] of Object.entries(fields)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) errs.push(`${model}.${field}: unsafe name`);
+        if (!desc || !desc.trim()) errs.push(`${model}.${field}: empty description`);
+      }
+    }
+    expect(errs).toEqual([]);
+    // Coverage floor: every allowlisted model curated, ≥240 fields total.
+    expect(Object.keys(ODOO_COLUMN_DOCS).length).toBe(models.size);
+    const total = Object.values(ODOO_COLUMN_DOCS).reduce((s, f) => s + Object.keys(f).length, 0);
+    expect(total).toBeGreaterThanOrEqual(240);
   });
 
   it('prefers vendor help on a many2one and falls back to the model name for unallowlisted relations', () => {
