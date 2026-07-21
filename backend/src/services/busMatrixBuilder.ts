@@ -7,7 +7,11 @@
  */
 
 import { semanticDb } from '../db/knex';
+import { deleteProductGraph } from '../db/semanticGraph';
+import { logger as rootLogger } from '../utils/logger';
 import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
+
+const log = rootLogger.child({ mod: 'busMatrixBuilder' });
 
 export interface BuildBusMatrixOptions {
   connectionId: number;
@@ -200,6 +204,10 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
   const { connectionId, tenantId, userEmail, busMatrix, templateVersion } = opts;
   const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
 
+  // Product ids retired by the retire-and-replace sweep below — their Neo4j
+  // product graphs are cleaned up after the transaction commits.
+  const retiredIds: number[] = [];
+
   const products = await semanticDb.transaction(async (trx) => {
     if (tenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(tenantId)}'`);
 
@@ -230,6 +238,33 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
       for (const dimName of dp.owned_dimensions) {
         dimOwnerProduct.set(dimName, dp.name);
       }
+    }
+
+    // ── Retire-and-replace ─────────────────────────────────────────────
+    // Re-running "Prepare my data" must never duplicate products (the
+    // 2026-07-15 assessment's launch-killer #1: unconditional inserts left
+    // prod with Sales ×2 / Purchases ×2 / Reference ×2). Any existing
+    // product on this connection with a name the new build is about to
+    // create is deleted first — the whole tree (star_schemas →
+    // product_tables → product_columns → lineage, plus sources, KPIs,
+    // dependencies and refresh history) cascades from data_products, so
+    // this is a complete retire. This ALSO self-heals already-duplicated
+    // tenants: every same-named copy is swept before the single new row
+    // goes in. Old warehouse parquet under product_<oldId> becomes
+    // orphaned and is simply no longer referenced (same model as the
+    // v1→v2 layout migration); the new build re-materialises fresh.
+    const newNames = sortedProducts.map((p) => p.name);
+    const staleProducts: Array<{ id: number; name: string }> = await trx('data_products')
+      .where({ connection_id: connectionId })
+      .whereIn('name', newNames)
+      .select('id', 'name');
+    if (staleProducts.length > 0) {
+      await trx('data_products').whereIn('id', staleProducts.map((s) => s.id)).del();
+      retiredIds.push(...staleProducts.map((s) => s.id));
+      log.info(
+        { replaced: staleProducts.map((s) => `${s.name}#${s.id}`) },
+        `bus-matrix rebuild: retired ${staleProducts.length} existing product(s) before re-create`,
+      );
     }
 
     for (const dp of sortedProducts) {
@@ -578,6 +613,18 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
 
     return _results;
   });
+
+  // Best-effort Neo4j cleanup of the retired products' graphs — the new
+  // products are synced to Neo4j by the orchestrator after transformations
+  // run; without this sweep the OLD product nodes would linger and pollute
+  // the AI context with duplicate schemas.
+  for (const id of retiredIds) {
+    try {
+      await deleteProductGraph(id);
+    } catch (err) {
+      log.warn({ err, productId: id }, 'Neo4j cleanup of retired product failed (non-fatal)');
+    }
+  }
 
   return { products };
 }
