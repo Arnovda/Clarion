@@ -191,7 +191,7 @@ jobs:
   # ── Deploy changed services as 0%-traffic revisions ───────────────────────
   deploy:
     needs: [changes, build-frontend, build-etl, build-backend, build-worker, migrate-sql]
-    if: ${{ !cancelled() && !failure() && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.etl == 'true') }}
+    if: ${{ !cancelled() && !failure() && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.etl == 'true' || needs.changes.outputs.worker == 'true') }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
@@ -312,9 +312,31 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --image ${{ env.ACR_REGISTRY }}/databridge-etl:${{ steps.tag.outputs.tag }}
 
-      # Sync-worker Job: no update step needed — the Job references
-      # `databridge-sync-worker:<branch>-latest` and pulls the image fresh on
-      # every execution, so the next sync uses the freshly-built worker image.
+      # Sync-worker Job: pin the Job to THIS build's immutable per-commit tag.
+      # The Job used to reference the mutable `:main-latest` tag on the theory
+      # that every execution re-pulls it — but Azure Container Apps serves
+      # job executions from a node-local image cache, so a mutable tag can
+      # keep running STALE worker code indefinitely (this shipped the
+      # 2026-07-20 typed-writes fix into ACR while production syncs kept
+      # executing the old image). An explicit `job update --image <sha-tag>`
+      # changes the job spec, which forces a real pull on the next execution.
+      # The job name follows the same Terraform naming rule as the backend
+      # app: <project>-<env>-backend → <project>-<env>-sync-worker.
+      - name: Pin sync-worker job to this build
+        if: needs.changes.outputs.worker == 'true'
+        env:
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          BACKEND_APP: ${{ secrets.BACKEND_APP_NAME }}
+        run: |
+          set -euo pipefail
+          JOB="${BACKEND_APP%-backend}-sync-worker"
+          az containerapp job update \
+            --name "$JOB" \
+            --resource-group "$RG" \
+            --image ${{ env.ACR_REGISTRY }}/databridge-sync-worker:$TAG
+          echo "### 🔧 Sync-worker pinned to \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "The next sync run pulls exactly this build — no stale-cache risk." >> "$GITHUB_STEP_SUMMARY"
 
   # ── Neo4j constraints (only when neo4j.ts itself changed; idempotent) ─────
   # This job consistently takes ~7 minutes (slow connection to the Neo4j
