@@ -41,7 +41,7 @@ describe('resolveEntityColumns', () => {
     const r = resolveEntityColumns(md, ACCOUNTS);
     expect(r.source).toBe('$metadata');
     const byName = new Map(r.columns!.map((c) => [c.name, c.sqlType]));
-    expect(byName.get('ID')).toBe('UUID');
+    expect(byName.get('ID')).toBe('VARCHAR'); // Guid → VARCHAR by design
     expect(byName.get('Name')).toBe('VARCHAR');
     expect(byName.get('Modified')).toBe('TIMESTAMP');
     expect(byName.get('CreditLinePurchase')).toBe('DOUBLE');

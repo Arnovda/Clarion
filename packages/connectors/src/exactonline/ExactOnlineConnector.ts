@@ -715,7 +715,15 @@ function edmTypeToDuckDb(edm: string): string {
     case 'Edm.DateTime':
     case 'Edm.DateTimeOffset': return 'TIMESTAMP';
     case 'Edm.Date': return 'DATE';
-    case 'Edm.Guid': return 'UUID';
+    // Guid → VARCHAR, deliberately NOT UUID. Two reasons:
+    //   1. Platform convention — the EO star-schema template keeps GUID
+    //      FKs as raw VARCHAR (joins work identically).
+    //   2. UUID is the one strict-format cast in the set: a single
+    //      malformed value would fail the whole entity's write. VARCHAR
+    //      accepts anything; the JSON-columns bug never involved Guids
+    //      (populated Guid columns inferred fine — it's the all-NULL
+    //      columns that landed as JSON).
+    case 'Edm.Guid': return 'VARCHAR';
     case 'Edm.Binary': return 'BLOB';
     case 'Edm.String':
     default: return 'VARCHAR';

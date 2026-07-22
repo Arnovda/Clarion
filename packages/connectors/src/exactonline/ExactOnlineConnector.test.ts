@@ -237,7 +237,10 @@ describe('ExactOnlineConnector — sync', () => {
     const result = await c.sync(makeConfig(), { entities: ['Accounts'] }, ctx);
 
     expect(result.rowCounts).toEqual({ Accounts: 3 });
-    expect(result.warnings).toEqual([]);
+    // $metadata is not mocked in this test: the fetch failure must surface
+    // as a warning (silent degradation is the bug class), while the write
+    // itself succeeds on the vendor-docs type fallback.
+    expect(result.warnings).toEqual([expect.stringMatching(/\$metadata/)]);
 
     // Token rotation persisted before any data fetching.
     expect(ctx.rotated).toBeTruthy();
@@ -250,9 +253,11 @@ describe('ExactOnlineConnector — sync', () => {
       const rows = await db.all(`SELECT * FROM read_parquet('${p}') ORDER BY ID`);
       expect(rows).toHaveLength(3);
       expect(rows[0].Name).toBe('Acme NV'); // trimmed
-      // /Date(...)/ was converted to ISO string
-      expect(typeof rows[1].Created).toBe('string');
-      expect(rows[1].Created).toMatch(/^20\d\d-/);
+      // /Date(...)/ was converted to ISO and, with vendor-typed writes,
+      // now lands as a real TIMESTAMP (a Date over the driver) instead of
+      // the untyped string auto-detect used to produce.
+      expect(rows[1].Created instanceof Date || typeof rows[1].Created === 'string').toBe(true);
+      expect(String(rows[1].Created)).toMatch(/20\d\d/);
       // __metadata + __deferred dropped
       expect(rows[0].__metadata).toBeUndefined();
       expect(rows[2].Linked).toBeUndefined();
@@ -318,7 +323,9 @@ describe('ExactOnlineConnector — sync', () => {
       const typeOf = new Map(described.map((d) => [d.column_name, d.column_type]));
       expect(typeOf.get('CreatorFullName')).toBe('VARCHAR');   // NOT JSON
       expect(typeOf.get('Name')).toBe('VARCHAR');
-      expect(typeOf.get('ID')).toBe('UUID');
+      // Guid maps to VARCHAR by design (star-schema convention; avoids the
+      // strict UUID cast that could fail a whole entity on one bad value).
+      expect(typeOf.get('ID')).toBe('VARCHAR');
       expect(typeOf.get('Created')).toBe('TIMESTAMP');
       expect(typeOf.get('CreditLinePurchase')).toBe('DOUBLE'); // present as typed NULL column
       const rows = await db.all(`SELECT * FROM read_parquet('${p}') ORDER BY Name`);
