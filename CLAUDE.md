@@ -31,7 +31,44 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-20 (Odoo curated core-field docs — Tier-2 fallback beneath the live fields_get harvest)
+**Last updated:** 2026-07-22 (EO typed writes hardened: $metadata → vendor-docs → auto-detect ladder, loud fallback)
+
+**EO JSON-types recurrence fixed for good (2026-07-22):** The 2026-07-20
+vendor-typed-writes fix ($metadata → explicit `columns`) did NOT hold in
+production — a fresh 2026-07-22 sync still produced JSON-typed columns in
+the catalog (all-NULL columns under DuckDB auto-detect), meaning the
+`$metadata` path silently degraded (fetch failure in prod, or stale worker
+image; CI builds for 480b82e all succeeded so the image SHOULD be current).
+Root problem: the fallback to auto-detect was a log line nobody sees.
+- **New `resolveEntityColumns` ladder** (`ExactOnlineConnector.ts`, exported):
+  live `$metadata` → static vendor docs (`EXACT_ONLINE_COLUMN_DOCS.dataType`
+  via `edmTypeToDuckDb`) → auto-detect. The docs rung covers ALL catalog
+  entities (test-enforced), so typed writes can no longer silently degrade;
+  auto-detect can only fire for an entity outside the docs catalog.
+- **Loud, user-visible degradation**: `$metadata` fetch failure and any
+  auto-detect fallback now push SYNC WARNINGS (surface in the sync-run UI)
+  instead of buried `log.warn`s. Empty-entity parquets use the same ladder.
+- **Tests**: `resolveEntityColumns.test.ts` (5, no DuckDB): Edm mapping via
+  real CSDL parse, docs fallback, full catalog coverage, never-JSON
+  invariant. Package `tsc` clean. DuckDB-native suites still CI-only.
+- **Rollout note**: existing EO tables written before this fix keep their
+  JSON types even after an incremental sync (merge unions old+new schema) —
+  a clean re-sync (remove + re-add the connection, or a forced full sync)
+  is needed once. If warnings then still report $metadata failure, that is
+  the real prod signal to chase (auth/timeout on `/api/v1/{division}/$metadata`).
+- **Stale-worker-image root cause closed** (`deploy.yml` + `infra/main.tf`):
+  the sync-worker Job referenced the MUTABLE `:main-latest` tag and relied
+  on "pulls fresh every execution" — but ACA job executions serve from a
+  node image cache, so production syncs kept running pre-2026-07-20 worker
+  code even though every CI build succeeded (the most likely reason the
+  original typed-writes fix never took effect). deploy.yml now runs
+  `az containerapp job update --image <sha-tag>` whenever the worker is
+  built (job name derived: `${BACKEND_APP_NAME%-backend}-sync-worker`), so
+  the job spec always points at an immutable per-commit tag; Terraform's
+  job resource got `lifecycle.ignore_changes` on the image so a later
+  apply can't silently reset it to the stale tag. Terraform edit NOT
+  validated locally (no terraform binary in the sandbox) — syntax is a
+  plain lifecycle block; watch the first apply.
 
 **Odoo curated core-field docs (2026-07-20, fourth session of the day):**
 Odoo's docs channel is runtime `fields_get`, but many standard fields ship

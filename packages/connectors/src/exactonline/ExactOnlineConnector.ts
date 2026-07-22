@@ -312,9 +312,18 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       metadata = await fetchODataMetadata(http, config, ctx.log);
       ctx.log.info(`OData $metadata loaded`, { entitySets: metadata.entities.size });
     } catch (err) {
-      ctx.log.warn('failed to fetch OData $metadata — empty entities will get placeholder schemas', {
-        error: err instanceof Error ? err.message : String(err),
+      const msg = err instanceof Error ? err.message : String(err);
+      ctx.log.warn('failed to fetch OData $metadata — falling back to vendor-docs column types', {
+        error: msg,
       });
+      // Surface this in the sync-run UI: the docs catalog covers the
+      // curated entities, but a persistent $metadata failure is worth a
+      // human look (and any entity outside the docs catalog degrades to
+      // type auto-detection — the JSON-columns bug).
+      warnings.push(
+        `Could not fetch Exact Online $metadata (${msg}). Column types fall back to the built-in ` +
+        `vendor documentation; entities not covered there use type auto-detection.`,
+      );
     }
 
     // ── Sync each selected entity ──────────────────────────────────────
@@ -347,7 +356,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       });
 
       try {
-        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata);
+        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, warnings);
         rowCounts[entity.name] = rowsWritten;
         if (rowsWritten === 0) {
           warnings.push(`Entity '${entity.name}' returned no rows.`);
@@ -386,6 +395,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     ctx: SyncContext,
     priorCursor: { type: string; value: string } | undefined,
     metadata: ODataMetadata | null,
+    warnings: string[],
   ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
     // For entities EO refuses to list without $select, discover the
     // schema first via $top=1 and use the observed field set as
@@ -398,16 +408,12 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       selectFields = await this.discoverSelectFields(http, config, entity, ctx);
       if (!selectFields || selectFields.length === 0) {
         // Empty entity. Rather than skipping it (catalog shows nothing),
-        // write an empty Parquet using the OData $metadata schema so
-        // analysts can see what the table WOULD contain. Falls back to
-        // a single-_placeholder parquet when metadata isn't available
-        // (network failure during the upfront $metadata fetch).
-        ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — writing empty parquet with $metadata schema`);
-        const schema = metadata ? lookupEntitySchema(metadata, entity.apiPath) : undefined;
-        const emptySchema = schema ? schema.map((p) => ({
-          name: p.name,
-          sqlType: edmTypeToDuckDb(p.edmType),
-        })) : undefined;
+        // write an empty Parquet using the resolved schema ($metadata,
+        // else vendor docs) so analysts can see what the table WOULD
+        // contain. Falls back to a single-_placeholder parquet only when
+        // neither source covers the entity.
+        ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — writing empty parquet with resolved schema`);
+        const { columns: emptySchema, source: emptySource } = resolveEntityColumns(metadata, entity);
         const result = await ctx.warehouseWriter.writeTable(
           entity.name,
           emptyAsyncIterable(),
@@ -415,7 +421,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         );
         ctx.log.info(`${entity.name} empty-parquet written`, {
           columns: emptySchema?.length ?? 1,
-          source: emptySchema ? '$metadata' : 'placeholder',
+          source: emptySchema ? emptySource : 'placeholder',
           bytes: result.bytesWritten,
         });
         return { rowsWritten: 0 };
@@ -466,7 +472,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       },
     });
 
-    // ── Explicit column schema from OData $metadata ────────────────────
+    // ── Explicit column schema: $metadata → vendor docs → auto-detect ──
     // EO's own type declarations (Edm.String / Edm.Guid / Edm.Decimal / …)
     // mapped to DuckDB types — the same trusted-tier principle as the
     // docs channel ("documentation before inference"). Without this the
@@ -475,15 +481,19 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     //     happens to be empty in this division surfaced as `json` in the
     //     catalog — reported by a user 2026-07-20),
     //   • lets types drift between syncs depending on the sampled rows.
-    // Missing keys in the payload become NULL columns of the right type;
-    // metadata fetch failure degrades to auto_detect (unchanged legacy).
-    const entitySchema = metadata ? lookupEntitySchema(metadata, entity.apiPath) : undefined;
-    const typedColumns = entitySchema?.map((p) => ({
-      name: p.name,
-      sqlType: edmTypeToDuckDb(p.edmType),
-    }));
-    if (!typedColumns?.length) {
-      ctx.log.warn(`no $metadata schema for ${entity.name} — falling back to type auto-detection`);
+    // Missing keys in the payload become NULL columns of the right type.
+    // When $metadata is unavailable the static vendor docs supply the
+    // types instead, and the last-resort auto-detect fallback is surfaced
+    // as a SYNC WARNING — the 2026-07-22 recurrence of the JSON-types bug
+    // was this fallback firing invisibly, so it must never be silent.
+    const { columns: typedColumns, source: typeSource } = resolveEntityColumns(metadata, entity);
+    ctx.log.info(`${entity.name} column types from ${typeSource}`, { columns: typedColumns?.length ?? 0 });
+    if (typeSource === 'auto-detect') {
+      warnings.push(
+        `Entity '${entity.name}': no vendor type schema available ($metadata unavailable and entity ` +
+        `not in the docs catalog) — column types were inferred from data. Empty columns may show as ` +
+        `JSON in the catalog until a sync runs with the schema available.`,
+      );
     }
 
     // Pass the entity's businessKey to the writer when incremental.
@@ -705,11 +715,58 @@ function edmTypeToDuckDb(edm: string): string {
     case 'Edm.DateTime':
     case 'Edm.DateTimeOffset': return 'TIMESTAMP';
     case 'Edm.Date': return 'DATE';
-    case 'Edm.Guid': return 'UUID';
+    // Guid → VARCHAR, deliberately NOT UUID. Two reasons:
+    //   1. Platform convention — the EO star-schema template keeps GUID
+    //      FKs as raw VARCHAR (joins work identically).
+    //   2. UUID is the one strict-format cast in the set: a single
+    //      malformed value would fail the whole entity's write. VARCHAR
+    //      accepts anything; the JSON-columns bug never involved Guids
+    //      (populated Guid columns inferred fine — it's the all-NULL
+    //      columns that landed as JSON).
+    case 'Edm.Guid': return 'VARCHAR';
     case 'Edm.Binary': return 'BLOB';
     case 'Edm.String':
     default: return 'VARCHAR';
   }
+}
+
+/**
+ * Resolve the explicit DuckDB column schema for an entity write, walking a
+ * deterministic ladder so typed writes never silently degrade:
+ *
+ *   1. Live OData `$metadata` — the instance's own declared types. Primary,
+ *      because it tracks the exact API version the division runs.
+ *   2. Static vendor docs (`EXACT_ONLINE_COLUMN_DOCS` `dataType`) — the
+ *      transcribed REST reference. Kicks in when `$metadata` couldn't be
+ *      fetched or doesn't cover the entity.
+ *   3. `undefined` — caller falls back to DuckDB auto-detect AND must
+ *      surface a sync warning: inference types all-NULL columns as JSON
+ *      and lets types drift between syncs, so it should never happen
+ *      invisibly.
+ *
+ * Exported for tests.
+ */
+export function resolveEntityColumns(
+  metadata: ODataMetadata | null,
+  entity: Pick<ExactOnlineEntity, 'name' | 'apiPath'>,
+): { columns?: ReadonlyArray<{ name: string; sqlType: string }>; source: '$metadata' | 'vendor-docs' | 'auto-detect' } {
+  const live = metadata ? lookupEntitySchema(metadata, entity.apiPath) : undefined;
+  if (live && live.length > 0) {
+    return {
+      columns: live.map((p) => ({ name: p.name, sqlType: edmTypeToDuckDb(p.edmType) })),
+      source: '$metadata',
+    };
+  }
+
+  const docs = EXACT_ONLINE_COLUMN_DOCS[entity.name];
+  if (docs && docs.length > 0) {
+    return {
+      columns: docs.map((d) => ({ name: d.name, sqlType: edmTypeToDuckDb(d.dataType ?? 'Edm.String') })),
+      source: 'vendor-docs',
+    };
+  }
+
+  return { source: 'auto-detect' };
 }
 
 interface ODataResponse {

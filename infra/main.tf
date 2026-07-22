@@ -803,6 +803,11 @@ resource "azurerm_container_app_job" "sync_worker" {
   template {
     container {
       name   = "sync-worker"
+      # Bootstrap value only. CI (deploy.yml) pins the job to an immutable
+      # per-commit tag on every worker build — a mutable :main-latest
+      # reference is NOT reliably re-pulled by ACA job executions (node
+      # image cache), which is how stale worker code kept running after
+      # the 2026-07-20 typed-writes fix landed in ACR.
       image  = "${azurerm_container_registry.main.login_server}/databridge-sync-worker:main-latest"
       cpu    = 0.5
       memory = "1Gi"
@@ -810,6 +815,12 @@ resource "azurerm_container_app_job" "sync_worker" {
       # No env block here — every var is supplied per-execution by the
       # orchestrator's Mgmt API call. Setting them here would shadow that.
     }
+  }
+
+  lifecycle {
+    # CI owns the image reference (see comment above) — don't let a later
+    # `terraform apply` silently reset it to the stale mutable tag.
+    ignore_changes = [template[0].container[0].image]
   }
 }
 
