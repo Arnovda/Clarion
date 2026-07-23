@@ -36,10 +36,51 @@ interface PoolEntry {
   db: Database;
   createdAt: number;
   lastUsed: number;
+  /** In-flight queries currently executing against this shared instance. An
+   *  entry with active > 0 must never be closed — doing so aborts every
+   *  concurrent query on it. */
+  active: number;
+  /** Set when the entry has been removed from the pool (invalidated) while a
+   *  query was still running; its db is closed once `active` returns to 0. */
+  retired?: boolean;
 }
 
 const entries = new Map<string, PoolEntry>();
 const inFlight = new Map<string, Promise<PoolEntry>>();
+// Entries removed from the pool while still executing a query — closed later by
+// endQuery() when their last in-flight query settles.
+const retiring = new Set<PoolEntry>();
+
+/** Mark the start of a query against a pooled entry. Returns the entry (so the
+ *  caller can pass it back to endQuery) or null if the key isn't pooled. */
+export function beginQuery(key: string): PoolEntry | null {
+  const entry = entries.get(key);
+  if (!entry) return null;
+  entry.active += 1;
+  entry.lastUsed = Date.now();
+  return entry;
+}
+
+/** Mark the end of a query. Closes the db if the entry was retired mid-flight
+ *  and this was its last in-flight query. */
+export function endQuery(entry: PoolEntry | null): void {
+  if (!entry) return;
+  entry.active -= 1;
+  if (entry.retired && entry.active <= 0) {
+    retiring.delete(entry);
+    entry.db.close().catch(() => { /* ignore */ });
+  }
+}
+
+/** Close an entry now if idle, or defer the close until its queries finish. */
+function closeOrDefer(entry: PoolEntry): void {
+  if (entry.active > 0) {
+    entry.retired = true;
+    retiring.add(entry);
+  } else {
+    entry.db.close().catch((err) => log.warn({ err }, 'Error closing DuckDB'));
+  }
+}
 
 export type PoolInit = (db: Database) => Promise<void>;
 
@@ -72,6 +113,7 @@ export async function getOrInit(key: string, init: PoolInit): Promise<Database> 
       db,
       createdAt: Date.now(),
       lastUsed: Date.now(),
+      active: 0,
     };
     entries.set(key, entry);
     log.debug({ key, size: entries.size }, 'DuckDB pool entry created');
@@ -99,11 +141,9 @@ export async function invalidateByPrefix(prefix: string): Promise<void> {
     const entry = entries.get(key);
     if (!entry) continue;
     entries.delete(key);
-    try {
-      await entry.db.close();
-    } catch (err) {
-      log.warn({ err, key }, 'Error closing DuckDB during invalidation');
-    }
+    // Remove from the pool immediately so the next query rebuilds fresh views,
+    // but defer closing the db if a query is still running on it.
+    closeOrDefer(entry);
   }
   if (matches.length > 0) {
     log.info({ prefix, evicted: matches.length, remaining: entries.size }, 'DuckDB pool invalidated');
@@ -120,7 +160,10 @@ async function evictOverCap(): Promise<void> {
   let over = entries.size - MAX_POOL_ENTRIES;
   for (const [key, entry] of byLru) {
     if (over <= 0) break;
-    if (inFlight.has(key)) continue;
+    // Never evict an entry that is initialising or executing a query — closing
+    // it would abort every concurrent query on the shared instance. The pool
+    // may briefly exceed the cap when all entries are busy; that's acceptable.
+    if (inFlight.has(key) || entry.active > 0) continue;
     entries.delete(key);
     over -= 1;
     try {
@@ -137,7 +180,9 @@ async function evictIdle(): Promise<void> {
   const cutoff = Date.now() - IDLE_TTL_MS;
   const stale: string[] = [];
   for (const [key, entry] of entries) {
-    if (entry.lastUsed < cutoff) stale.push(key);
+    // Skip entries with a query still running (lastUsed is bumped at query
+    // start, so a long-running query keeps its entry fresh anyway).
+    if (entry.lastUsed < cutoff && entry.active === 0) stale.push(key);
   }
   for (const key of stale) {
     const entry = entries.get(key);

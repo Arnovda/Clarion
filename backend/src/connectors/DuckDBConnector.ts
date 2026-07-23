@@ -2,7 +2,7 @@ import { Database } from 'duckdb-async';
 import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
-import { getOrInit, invalidateByPrefix } from './DuckDBPool';
+import { getOrInit, invalidateByPrefix, beginQuery, endQuery } from './DuckDBPool';
 import {
   isAzurePath,
   setupDuckDBForWarehouse,
@@ -73,6 +73,9 @@ export class DuckDBConnector extends BaseConnector {
   private db: Database | null = null;
   private viewsCreated = false;
   private ownsDb = false;
+  /** Pool cache key for this connector (pooled mode only); lets executeQuery
+   *  register in-flight queries so the pool won't evict a busy instance. */
+  private poolKey: string | null = null;
 
   /**
    * @param warehousePath - Local path or az:// blob URI
@@ -140,6 +143,7 @@ export class DuckDBConnector extends BaseConnector {
 
     // Pooled path — views are pre-registered during init, so executeQuery is immediate.
     const cacheKey = this.cacheKey();
+    this.poolKey = cacheKey;
     this.db = await getOrInit(cacheKey, async (db) => {
       await this.loadExtensions(db);
       await this.createAllViews(db);
@@ -338,22 +342,27 @@ export class DuckDBConnector extends BaseConnector {
       throw err;
     }
 
+    // Register this query with the pool so a busy shared instance is never
+    // evicted / closed mid-flight (no-op for ephemeral instances).
+    const poolEntry = this.poolKey ? beginQuery(this.poolKey) : null;
+
     // Kick off the query, guarding against a synchronous throw (e.g. from
     // capResultRows) leaking the permits we just took.
     let queryPromise: Promise<Record<string, unknown>[]>;
     try {
       queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
     } catch (err) {
+      endQuery(poolEntry);
       releaseGlobal();
       releaseTenant();
       throw err;
     }
-    // Release permits when the query TRULY settles (not when the wall-clock
-    // timeout below fires), so concurrency accounting stays honest even if the
-    // caller has already given up on the result.
+    // Release permits + the pool ref when the query TRULY settles (not when the
+    // wall-clock timeout below fires), so concurrency accounting stays honest
+    // even if the caller has already given up on the result.
     queryPromise.then(
-      () => { releaseGlobal(); releaseTenant(); },
-      () => { releaseGlobal(); releaseTenant(); },
+      () => { endQuery(poolEntry); releaseGlobal(); releaseTenant(); },
+      () => { endQuery(poolEntry); releaseGlobal(); releaseTenant(); },
     );
 
     const rawRows = QUERY_TIMEOUT_MS > 0
@@ -377,6 +386,7 @@ export class DuckDBConnector extends BaseConnector {
     // Pooled mode: just release our reference; the pool owns the DB.
     this.db = null;
     this.viewsCreated = false;
+    this.poolKey = null;
   }
 
   // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filter
 import { reqDb } from '../db/reqDb';
 import { validateWidgetColumns } from '../shared/widgetContracts';
 import { startSSE } from '../services/sse';
-import { assertSafeReadQuery, isSafeReadQuery } from '../utils/sqlGuard';
+import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'dashboards' });
@@ -102,15 +102,25 @@ function fixDuckDbDialect(sql: string): string {
 function resolveWidgetFilters(sql: string, filterValues: Record<string, string>): string {
   let resolved = sql;
   for (const [key, value] of Object.entries(filterValues)) {
-    const replacement = value || (key.endsWith('_from') ? '1900-01-01' : key.endsWith('_to') ? '2099-12-31' : 'all');
+    const raw = value || (key.endsWith('_from') ? '1900-01-01' : key.endsWith('_to') ? '2099-12-31' : 'all');
+    // Escape single quotes so a filter value can't break out of the string
+    // literal it's substituted into (fixes both the O'Brien functional bug and
+    // quote-context SQL injection). Values in numeric context contain no quotes.
+    const replacement = raw.replace(/'/g, "''");
     resolved = resolved.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), replacement);
   }
-  return fixDuckDbDialect(
+  const out = fixDuckDbDialect(
     resolved
       .replace(/\{\{[^}]+_from\}\}/g, '1900-01-01')
       .replace(/\{\{[^}]+_to\}\}/g, '2099-12-31')
       .replace(/\{\{[^}]+\}\}/g, 'all'),
   );
+  // Re-check the FULLY-SUBSTITUTED SQL for external access: escaping stops
+  // string-context breakouts, but a placeholder in numeric/identifier context
+  // (`WHERE id = {{x}}`) could still smuggle a path/URI. The template was
+  // already validated; this catches injection via the substituted value.
+  assertNoExternalAccess(out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +491,8 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       } else {
         resolved = value;
       }
-      resolvedSql = resolvedSql.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), resolved);
+      // Escape single quotes so a value can't break out of its string literal.
+      resolvedSql = resolvedSql.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), resolved.replace(/'/g, "''"));
     }
 
     // Also apply defaults for any remaining unsubstituted placeholders
@@ -492,6 +503,13 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
 
     // Fix any PostgreSQL-only functions that slipped through AI generation
     resolvedSql = fixDuckDbDialect(resolvedSql);
+
+    // Re-check the fully-substituted SQL: a value in numeric/identifier context
+    // could smuggle external access past the template guard above (see sqlGuard).
+    if (!isSafeReadQuery(resolvedSql)) {
+      res.status(400).json({ ok: false, error: 'This query was refused for safety.' });
+      return;
+    }
 
     // Wrap all RLS-dependent queries in a single transaction to guarantee tenant context
     const tenantId = req.user!.tenantId;
@@ -597,7 +615,15 @@ router.post('/batch-execute', requireAuth, validate(batchExecuteSchema), async (
           if (crossFilter && crossFilter.dimension && crossFilter.value !== undefined && id !== crossFilter.sourceWidgetId) {
             withXf = injectCrossFilter(sql, crossFilter.dimension, String(crossFilter.value));
           }
-          const resolvedSql = resolveWidgetFilters(withXf, filterValues ?? {});
+          let resolvedSql: string;
+          try {
+            resolvedSql = resolveWidgetFilters(withXf, filterValues ?? {});
+          } catch {
+            // resolveWidgetFilters throws if a substituted filter value smuggles
+            // external access past the template guard — refuse this widget.
+            results[id] = { error: 'This chart could not load data. Try regenerating the dashboard.' };
+            return;
+          }
 
           const cached = tenantId ? getWidgetCache(tenantId, resolvedSql) : null;
           if (cached) {
@@ -724,11 +750,17 @@ router.post('/batch-execute-stream', requireAuth, validate(batchExecuteSchema), 
       if (crossFilter && crossFilter.dimension && crossFilter.value !== undefined && id !== crossFilter.sourceWidgetId) {
         sqlWithCrossFilter = injectCrossFilter(sql, crossFilter.dimension, String(crossFilter.value));
       }
-      return {
-        id,
-        resolvedSql: resolveWidgetFilters(sqlWithCrossFilter, filterValues ?? {}) as string | null,
-        unsafe: false,
-      };
+      try {
+        return {
+          id,
+          resolvedSql: resolveWidgetFilters(sqlWithCrossFilter, filterValues ?? {}) as string | null,
+          unsafe: false,
+        };
+      } catch {
+        // Substituted filter value smuggled external access past the template
+        // guard — mark the widget unsafe so it's skipped with a clean error.
+        return { id, resolvedSql: null as string | null, unsafe: true };
+      }
     });
 
     // Emit any cache hits IMMEDIATELY. Drop them from the to-fetch list.
@@ -1672,13 +1704,16 @@ function resolveFiltersFromQuery(sql: string, query: Record<string, unknown>): s
   for (const [key, value] of Object.entries(query)) {
     if (key.startsWith('filter_') && typeof value === 'string') {
       const filterId = key.slice(7); // strip 'filter_'
-      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}\\}\\}`, 'g'), value);
-      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_from\\}\\}`, 'g'), value);
-      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_to\\}\\}`, 'g'), value);
+      const safe = value.replace(/'/g, "''");
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}\\}\\}`, 'g'), safe);
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_from\\}\\}`, 'g'), safe);
+      resolved = resolved.replace(new RegExp(`\\{\\{${filterId}_to\\}\\}`, 'g'), safe);
     }
   }
   // Apply defaults for any remaining unsubstituted placeholders
   resolved = applyDefaultFilters(resolved);
+  // Re-check the fully-substituted SQL for external access (see sqlGuard).
+  assertNoExternalAccess(resolved);
   return resolved;
 }
 

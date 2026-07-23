@@ -109,13 +109,36 @@ describe('assertNoExternalAccess', () => {
     }
   });
 
-  it('rejects storage/filesystem URI literals even without a known function', () => {
+  it('rejects object-storage URI literals even without a known function', () => {
     for (const q of [
       "SELECT * FROM foo WHERE path = 'az://warehouse/tenant_2/secret'",
-      "SELECT 'file:///etc/passwd' AS p",
       "SELECT * FROM t WHERE u = 'abfss://c@acct.dfs.core.windows.net/x'",
+      "SELECT * FROM t WHERE u = 's3://bucket/key'",
     ]) {
       expect(() => assertNoExternalAccess(q), q).toThrow(/external path\/URI literal/);
+    }
+  });
+
+  it('rejects bare-path replacement scans in FROM/JOIN position', () => {
+    for (const q of [
+      "SELECT * FROM '/warehouse/tenant_9/conn_1/orders/part-0.parquet'",
+      "SELECT * FROM 'data.parquet'",
+      "SELECT * FROM 'az://warehouse/tenant_9/x.parquet'",
+      "SELECT a.* FROM orders a JOIN '/etc/other.csv' b ON a.id = b.id",
+      "select * from '/proc/self/environ'",
+    ]) {
+      expect(() => assertNoExternalAccess(q), q).toThrow(/replacement scan|external path/);
+    }
+  });
+
+  it('does NOT false-positive on legitimate URL/file data literals (M2)', () => {
+    // http(s)/file are ordinary data — must not be refused when used as values.
+    for (const q of [
+      "SELECT * FROM events WHERE referrer = 'https://example.com'",
+      "SELECT COUNT(*) FROM docs WHERE path LIKE 'file://%'",
+      'SELECT * FROM "my table" WHERE x = 1', // double-quoted identifier, not a path
+    ]) {
+      expect(() => assertNoExternalAccess(q), q).not.toThrow();
     }
   });
 });
