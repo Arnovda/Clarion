@@ -5,7 +5,15 @@
 # the deploy job summary), run this workflow to shift 100% of user traffic to
 # the latest revision — that's the moment it goes live.
 #
-# Run it from the GitHub Actions tab → "Promote to production" → Run workflow.
+# Two ways to run it:
+#   1. GitHub Actions tab → "Promote to production" → Run workflow (choice of
+#      backend / frontend / both).
+#   2. Push any commit to the marker branch `promote-production` — promotes
+#      BOTH apps. This exists because Claude's GitHub integration may not
+#      dispatch workflows via the API (403) but can push branches, so
+#      "Claude, promote" works via `git push origin main:promote-production`.
+#      The branch is just a trigger; its content is irrelevant beyond
+#      containing this workflow file.
 #
 # Reuses the same secrets as deploy.yml (AZURE_CREDENTIALS, *_APP_NAME,
 # AZURE_RESOURCE_GROUP).
@@ -23,6 +31,8 @@ on:
           - 'backend + frontend'
           - 'backend only'
           - 'frontend only'
+  push:
+    branches: [promote-production]
 
 jobs:
   promote:
