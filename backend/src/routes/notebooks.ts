@@ -33,6 +33,7 @@ import {
   createScanView,
 } from '../services/warehouse';
 import { listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
+import { assertSafeReadQuery } from '../utils/sqlGuard';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'notebooks' });
@@ -128,8 +129,13 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
       return;
     }
 
+    // Security guard: notebook SQL runs against a DuckDB session that holds an
+    // account-wide storage secret, so it must be confined to read-only queries
+    // over the registered tenant views — no path/URI table functions, no writes
+    // (see sqlGuard). This closes the arbitrary-SQL cross-tenant read/write hole.
+    const safeSql = assertSafeReadQuery(sqlText);
     db = await buildNamespacedDuckDB(pgDb, connectionId);
-    const rawRows = await db.all(sqlText.trim()) as Record<string, unknown>[];
+    const rawRows = await db.all(safeSql) as Record<string, unknown>[];
     const rows = rawRows.slice(0, 500).map((row) => {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {
@@ -760,8 +766,12 @@ router.post('/cells/:cellId/execute', async (req: Request, res: Response, next: 
     db = await buildNamespacedDuckDB(pgDb, cell.connection_id);
 
     try {
+      // Security guard: confine notebook SQL to safe read-only queries over the
+      // registered tenant views (see sqlGuard / the /query handler above).
+      // Placed inside the try so a rejection is recorded as an error result.
+      const safeSql = assertSafeReadQuery(sqlText);
       const start = Date.now();
-      const rawRows = await db.all(sqlText) as Record<string, unknown>[];
+      const rawRows = await db.all(safeSql) as Record<string, unknown>[];
       const rows = rawRows.slice(0, 500).map((row) => {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(row)) { out[k] = typeof v === 'bigint' ? Number(v) : v; }

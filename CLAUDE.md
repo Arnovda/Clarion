@@ -31,7 +31,73 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
+**Last updated:** 2026-07-23 (P0 compute security-isolation + Fase 0 guards IMPLEMENTED — shipping to prod)
+
+**P0 + Fase 0 + A0 isolation hardening SHIPPED (2026-07-23):** Backend
+`npm run check` clean; 23 new unit tests green (sqlGuard 15 total, semaphore 8).
+Closes the cross-tenant compute-read/write vector found in the security audit,
+plus the runaway-query blast-radius risk. Owner authorised implementation +
+direct prod deploy.
+- **SQL guard extended (`utils/sqlGuard.ts`)** — new `assertNoExternalAccess`
+  (rejects path/URI table functions: `read_parquet`/`read_csv`/`read_json`/
+  `read_text`/`read_blob`/`delta_scan`/`glob`/`parquet_scan`/`postgres_scan`/
+  `mysql_scan`/`sqlite_scan`/… AND storage/fs URI literals `az://`/`s3://`/
+  `file://`/`abfss://`/…), `assertNoExternalAccess` scans URI on RAW sql +
+  functions on literal-stripped sql; `assertSafeReadQuery` = `assertSelectOnly`
+  + `assertNoExternalAccess`; `isSafeReadQuery`. Rationale: legitimate user/AI
+  SQL only names the tenant-scoped VIEWS we register, so any query naming these
+  functions/literals is an attack or bug. This closes the exact
+  `SELECT * FROM read_parquet('az://warehouse/tenant_<OTHER>/...')` case that
+  passed the old SELECT-only guard, and `read_text('/proc/self/environ')`.
+- **Guard applied to EVERY user/AI read surface**: Ask-AI (`query.ts`
+  `shouldBlockQuery` now `isSafeReadQuery`; repair-loop diagnostic/revised SQL
+  `assertSafeReadQuery`); **notebooks `/query` + `/execute` (had NO guard at
+  all — the worst surface)**; dashboards `batch-execute`, `batch-execute-stream`,
+  `execute`, drill-detail, `executeSpecForValidation`, `executeWidgetSql`
+  (exports), investigate; `investigateService`. Widget SQL is guarded on the
+  TEMPLATE (pre-filter-substitution) so legitimate URL data values don't
+  false-positive on the URI check.
+- **DEFERRED defense-in-depth (needs live validation, deliberately NOT shipped
+  blind)**: DuckDB session lockdown (`SET enable_external_access=false` /
+  `allowed_paths` scoped to tenant prefix / `lock_configuration=true`) and the
+  per-tenant-scoped SAS secret replacing `AZURE_STORAGE_CONNECTION_STRING` in
+  read sessions — both can break az:// reads / spill-to-disk and per CLAUDE.md's
+  own lesson must be verified live before shipping. The guard already closes the
+  vector; these are additional layers.
+- **Fase 0 compute guards**: `utils/semaphore.ts` (`Semaphore` + `KeyedSemaphore`,
+  unit-tested); `DuckDBConnector.executeQuery` now acquires a GLOBAL
+  (`DUCKDB_MAX_CONCURRENT_QUERIES`=6) + PER-TENANT
+  (`DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`=2, keyed on the `tenant_<id>`
+  prefix in warehousePath) permit and runs under a wall-clock timeout
+  (`DUCKDB_QUERY_TIMEOUT_MS`=45000; permit released on REAL settle, not on
+  timeout, so concurrency stays honest — true per-query kill is the later
+  child-process runner). `DuckDBPool` gained an LRU cap (`DUCKDB_POOL_MAX`=12,
+  `evictOverCap`). `computeLimiter` (90/min/IP) added to `/dashboards`,
+  `/notebooks`, `/quality` (previously only the global 200/min). Batch-execute's
+  uncapped `Promise.all` is now bounded by the executeQuery semaphore.
+- **A0 pre-flip fixes**: `assertValidContainerName` (3–63 chars, lowercase,
+  single interior hyphens) in `warehouseContainer()`; `getProductWarehousePath`
+  now tenant-aware (`warehouseRoot(tenantId)` derived from the connection row —
+  no more shared-root cache key in per-tenant mode).
+- **New env vars** (`.env.example`): `DUCKDB_MAX_CONCURRENT_QUERIES`,
+  `DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`, `DUCKDB_QUERY_TIMEOUT_MS`,
+  `DUCKDB_POOL_MAX`.
+- **Behaviour note for notebooks**: notebook SQL is now SELECT-only + no external
+  access (was arbitrary SQL incl. DDL). Analyst read workflows unaffected; DDL/
+  writes in notebooks are intentionally refused.
+- **Files changed**: `backend/src/utils/sqlGuard.ts`, `utils/semaphore.ts` (new),
+  `connectors/DuckDBConnector.ts`, `connectors/DuckDBPool.ts`, `routes/query.ts`,
+  `routes/notebooks.ts`, `routes/dashboards.ts`, `services/investigateService.ts`,
+  `services/warehouse/paths.ts`, `services/productContext.ts`, `index.ts`,
+  `tests/sqlGuard.test.ts`, `tests/semaphore.test.ts` (new), `.env.example`,
+  `docs/backlog/storage-compute-isolation-plan.md`.
+- **Remaining phases** (next increments, see plan §5): Fase 1 per-tenant
+  container flip (validate → default), Fase 2 jobs-worker split (ROLE flag +
+  Redis pub/sub + AOF + KEDA), Fase 3 child-process runner pool + sizing, Fase 4
+  legacy migration + auth untangling + the deferred DuckDB SET-lockdown /
+  per-tenant SAS secret.
+
+**Prior last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
 
 **Compute security-isolation finding (2026-07-23, added to the plan §3bis):**
 A dedicated security audit of the query-execution paths found compute is NOT

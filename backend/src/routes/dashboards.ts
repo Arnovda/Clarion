@@ -15,6 +15,7 @@ import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filter
 import { reqDb } from '../db/reqDb';
 import { validateWidgetColumns } from '../shared/widgetContracts';
 import { startSSE } from '../services/sse';
+import { assertSafeReadQuery, isSafeReadQuery } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'dashboards' });
@@ -140,6 +141,16 @@ async function executeSpecForValidation(
   try {
     const results = await Promise.all(
       spec.widgets.map(async (widget) => {
+        if (!isSafeReadQuery(widget.sql)) {
+          return {
+            id: widget.id,
+            title: widget.title,
+            type: widget.type,
+            rowCount: 0,
+            error: 'Widget SQL refused for safety',
+            sampleRows: [],
+          } satisfies WidgetExecutionResult;
+        }
         const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
         try {
           const result = await connector.executeQuery(resolvedSql);
@@ -448,6 +459,13 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
       dataLayer?: 'product' | 'source';
     };
 
+    // Security guard: validate the client-supplied template SQL as a safe
+    // read-only query before substitution (see sqlGuard).
+    if (!isSafeReadQuery(sql)) {
+      res.status(400).json({ ok: false, error: 'This query was refused for safety.' });
+      return;
+    }
+
     // Substitute {{key}} placeholders with filter values
     let resolvedSql = sql;
     for (const [key, value] of Object.entries(filterValues)) {
@@ -563,6 +581,14 @@ router.post('/batch-execute', requireAuth, validate(batchExecuteSchema), async (
 
       await Promise.all(
         widgets.map(async ({ id, sql, filterValues }) => {
+          // Security guard: widget SQL is client-supplied here. Validate the
+          // TEMPLATE (before filter-value substitution, so legitimate data
+          // values that look like URLs don't false-positive) as a safe
+          // read-only query with no path/URI table functions. See sqlGuard.
+          if (!isSafeReadQuery(sql)) {
+            results[id] = { error: 'This chart could not load data. Try regenerating the dashboard.' };
+            return;
+          }
           // Apply declarative cross-filter (Phase 3) to non-source
           // widgets BEFORE filter-placeholder substitution. Source
           // widget keeps its SQL untouched so the user can keep
@@ -690,24 +716,33 @@ router.post('/batch-execute-stream', requireAuth, validate(batchExecuteSchema), 
     // the user clicked) so its chart keeps showing all bars and they
     // can pick another or click again to clear.
     const resolved = widgets.map(({ id, sql, filterValues }) => {
+      // Security guard on the client-supplied template (see sqlGuard).
+      if (!isSafeReadQuery(sql)) {
+        return { id, resolvedSql: null as string | null, unsafe: true };
+      }
       let sqlWithCrossFilter = sql;
       if (crossFilter && crossFilter.dimension && crossFilter.value !== undefined && id !== crossFilter.sourceWidgetId) {
         sqlWithCrossFilter = injectCrossFilter(sql, crossFilter.dimension, String(crossFilter.value));
       }
       return {
         id,
-        resolvedSql: resolveWidgetFilters(sqlWithCrossFilter, filterValues ?? {}),
+        resolvedSql: resolveWidgetFilters(sqlWithCrossFilter, filterValues ?? {}) as string | null,
+        unsafe: false,
       };
     });
 
     // Emit any cache hits IMMEDIATELY. Drop them from the to-fetch list.
     const remaining: Array<{ id: string; resolvedSql: string }> = [];
     for (const w of resolved) {
+      if (w.unsafe || w.resolvedSql === null) {
+        emit({ type: 'widget', id: w.id, error: 'This chart could not load data. Try regenerating the dashboard.' });
+        continue;
+      }
       const cached = tenantId ? getWidgetCache(tenantId, w.resolvedSql) : null;
       if (cached) {
         emit({ type: 'widget', id: w.id, rows: cached, cached: true });
       } else {
-        remaining.push(w);
+        remaining.push({ id: w.id, resolvedSql: w.resolvedSql });
       }
     }
 
@@ -929,6 +964,12 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
 
     if (!connectionId || !widgetSql || !crossFilterKey || value === undefined || value === null) {
       res.status(400).json({ ok: false, error: 'connectionId, widgetSql, crossFilterKey, and value are required' });
+      return;
+    }
+
+    // Security guard on the client-supplied widget SQL (see sqlGuard).
+    if (!isSafeReadQuery(widgetSql)) {
+      res.status(400).json({ ok: false, error: 'This query was refused for safety.' });
       return;
     }
 
@@ -1661,6 +1702,8 @@ async function executeWidgetSql(
   }
 
   const widget = spec.widgets[widgetIndex];
+  // Security guard on the stored template SQL (see sqlGuard).
+  assertSafeReadQuery(widget.sql);
   const resolvedSql = resolveFiltersFromQuery(widget.sql, query);
 
   const { connection, productPath } = await semanticDb.transaction(async (trx) => {
@@ -1901,6 +1944,8 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
           plan.queries.map(async ({ label, sql }) => {
             emit({ type: 'querying', label });
             try {
+              // Security guard on the AI-planned diagnostic SQL (see sqlGuard).
+              assertSafeReadQuery(sql);
               const resolved = resolveWidgetFilters(sql, filterValues ?? {});
               const result = await connector.executeQuery(resolved);
               const rows = (result.rows as Record<string, unknown>[]).slice(0, 20);

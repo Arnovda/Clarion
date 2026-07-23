@@ -302,6 +302,41 @@ S7 (kostenattributie) en latere fair-use-limieten per prijsplan.
 
 ## 5. Fasering, effort, afhankelijkheden
 
+**Status 2026-07-23 — P0 + Fase 0 + A0 GEÏMPLEMENTEERD** (backend `npm run check`
+schoon, 23 nieuwe unit-tests groen):
+- **P0 cross-tenant lek gedicht via de SQL-guard** (`sqlGuard.ts`):
+  `assertNoExternalAccess` weigert path/URI-table-functions (`read_parquet`,
+  `delta_scan`, `read_text`, `glob`, `postgres_scan`, …) en storage/filesystem-URI-
+  literalen (`az://`, `s3://`, `file://`, …); `assertSafeReadQuery` = SELECT-only +
+  no-external-access. Toegepast op ALLE user/AI-facing read-surfaces: Ask-AI
+  (`query.ts` shouldBlockQuery + repair-loop), notebooks (`/query` + `/execute` —
+  hadden geen guard), dashboards (batch-execute, batch-execute-stream, execute,
+  drill, validatie, export-helper, investigate), en `investigateService`. Omdat
+  legitieme user-SQL alleen geregistreerde view-namen benoemt, is dit een strakke,
+  volledige afsluiting van de lees-/schrijf-vector — getest incl. het exacte
+  `read_parquet('az://.../tenant_OTHER/...')`-aanval-geval dat SELECT-only passeerde.
+  *Nog als defense-in-depth open (aparte follow-up, vereist live-validatie):
+  DuckDB SET-lockdown (`enable_external_access`/`allowed_paths`/`lock_configuration`)
+  en het per-tenant-gescopede SAS-secret i.p.v. de account-connection-string — beide
+  bewust NIET blind meegeship omdat ze az-reads/spill kunnen breken (CLAUDE.md's
+  eigen les over DuckDB-changes die headless slagen maar live falen).*
+- **Fase 0 compute-guards**: per-query timeout + globale én per-tenant concurrency-
+  semaphore in `DuckDBConnector.executeQuery` (`utils/semaphore.ts`); LRU-cap op
+  `DuckDBPool`; `computeLimiter` (90/min) op `/dashboards`, `/notebooks`, `/quality`.
+  Batch-execute wordt nu automatisch begrensd door de executeQuery-semaphore. Exports
+  al begrensd door de bestaande `DUCKDB_MAX_RESULT_ROWS`-cap. *Nog open: quality-
+  profiling van synchrone HTTP-handler naar de queue (grotere change, Fase 2-territorium).*
+- **A0 pre-flip fixes**: `assertValidContainerName` in `warehouseContainer()`;
+  `getProductWarehousePath` nu tenant-aware (geen shared-root-cachekey meer in
+  per-tenant mode).
+- **Nieuwe env-vars** (`.env.example`): `DUCKDB_MAX_CONCURRENT_QUERIES`,
+  `DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`, `DUCKDB_QUERY_TIMEOUT_MS`,
+  `DUCKDB_POOL_MAX`.
+
+Nog te doen (volgende increments, in volgorde): Fase 1 (container-flip validatie +
+default), Fase 2 (jobs-worker split + Redis pub/sub + AOF + KEDA), Fase 3
+(child-proces runnerpool + sizing), Fase 4 (legacy-migratie + auth-ontvlechting).
+
 | Fase | Inhoud | Effort | Dekt | Afhankelijkheid |
 |---|---|---|---|---|
 | **P0** | §3bis security-lockdown: DuckDB `enable_external_access`/`allowed_paths`/`lock_configuration` op elke sessie, per-tenant-scoped SAS-secret i.p.v. account-string, SQL-guard uitbreiden (table-functions/pad-literals + SELECT-only op notebooks/dashboards + widget-SQL her-valideren) | dagen | **cross-tenant datalek (lezen+schrijven)** — hoogste prioriteit | geen |

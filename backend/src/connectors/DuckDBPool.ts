@@ -25,6 +25,12 @@ const log = logger.child({ module: 'duckdb-pool' });
 
 const IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// Cap the number of live pooled DuckDB instances. Each instance holds an
+// in-memory DuckDB with registered views and can claim up to `memory_limit`;
+// without a cap the map grows one entry per distinct (warehouse × table-set)
+// combo until idle eviction, which on a 1 GiB replica is a memory hazard. When
+// exceeded we evict the least-recently-used entries. Overridable via env.
+const MAX_POOL_ENTRIES = Math.max(2, Number(process.env.DUCKDB_POOL_MAX) || 12);
 
 interface PoolEntry {
   db: Database;
@@ -69,6 +75,8 @@ export async function getOrInit(key: string, init: PoolInit): Promise<Database> 
     };
     entries.set(key, entry);
     log.debug({ key, size: entries.size }, 'DuckDB pool entry created');
+    // Enforce the LRU cap (fire-and-forget close of evicted instances).
+    void evictOverCap();
     return entry;
   })();
 
@@ -100,6 +108,28 @@ export async function invalidateByPrefix(prefix: string): Promise<void> {
   if (matches.length > 0) {
     log.info({ prefix, evicted: matches.length, remaining: entries.size }, 'DuckDB pool invalidated');
   }
+}
+
+/**
+ * Evict least-recently-used entries while the pool exceeds MAX_POOL_ENTRIES.
+ * Never evicts an entry that is currently the target of an in-flight init.
+ */
+async function evictOverCap(): Promise<void> {
+  if (entries.size <= MAX_POOL_ENTRIES) return;
+  const byLru = Array.from(entries.entries()).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+  let over = entries.size - MAX_POOL_ENTRIES;
+  for (const [key, entry] of byLru) {
+    if (over <= 0) break;
+    if (inFlight.has(key)) continue;
+    entries.delete(key);
+    over -= 1;
+    try {
+      await entry.db.close();
+    } catch (err) {
+      log.warn({ err, key }, 'Error closing DuckDB during LRU eviction');
+    }
+  }
+  log.debug({ size: entries.size, cap: MAX_POOL_ENTRIES }, 'DuckDB pool LRU-capped');
 }
 
 /** Close and remove idle entries. Called periodically. */

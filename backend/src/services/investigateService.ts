@@ -28,6 +28,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+import { assertSafeReadQuery } from '../utils/sqlGuard';
 import {
   type InvestigateAgentContext,
 } from '../ai/prompts/investigateAgentPrompt';
@@ -209,6 +210,8 @@ async function runAgentLoop(
       let errorMsg: string | null = null;
 
       try {
+        // Security guard on the agent-authored SQL (see sqlGuard).
+        assertSafeReadQuery(decision.query_sql);
         const safeSql = withRowLimit(decision.query_sql);
         const result = await connector.executeQuery(safeSql);
         rowCount = result.rows.length;

@@ -38,6 +38,36 @@ const FORBIDDEN = [
 ];
 const FORBIDDEN_RE = new RegExp(`\\b(${FORBIDDEN.join('|')})\\b`, 'i');
 
+// DuckDB table/scalar functions that read from an ARBITRARY path or URI rather
+// than a registered view. These are the cross-tenant reachability primitive:
+// user/AI SQL only ever needs the tenant-scoped VIEW NAMES we register for it,
+// so a query that names one of these functions is either an attack
+// (`read_parquet('az://warehouse/tenant_<other>/...')`,
+// `read_text('/proc/self/environ')`) or a mistake — both must be refused. This
+// is checked on the read surfaces (Ask-AI, dashboards, notebooks) in addition
+// to the SELECT-only guard above; the transformation writer does NOT use it
+// (it legitimately reads source paths server-side).
+const EXTERNAL_FNS = [
+  'read_parquet', 'parquet_scan', 'parquet_metadata', 'parquet_schema',
+  'read_csv', 'read_csv_auto', 'sniff_csv',
+  'read_json', 'read_json_auto', 'read_json_objects', 'read_json_objects_auto',
+  'read_ndjson', 'read_ndjson_auto', 'read_ndjson_objects',
+  'read_text', 'read_blob',
+  'delta_scan',
+  'iceberg_scan', 'iceberg_metadata', 'iceberg_snapshots',
+  'read_arrow', 'scan_arrow',
+  'postgres_scan', 'postgres_query', 'mysql_scan', 'mysql_query', 'sqlite_scan',
+  'glob',
+];
+// Match `fn(` allowing whitespace, on literal-stripped SQL (so a string that
+// merely contains the word is ignored, but an actual call is caught).
+const EXTERNAL_FN_RE = new RegExp(`\\b(${EXTERNAL_FNS.join('|')})\\s*\\(`, 'i');
+
+// Remote / local filesystem URI schemes that must never appear as a path
+// literal in a read query. Scanned on the RAW sql (the path lives inside a
+// quote, so it survives literal-stripping only here).
+const URI_SCHEME_RE = /\b(az|azure|abfss?|s3a?|gs|gcs|r2|https?|file|hf|memory|duckdb)\s*:\/\//i;
+
 /**
  * Strip SQL comments, single-quoted string literals, dollar-quoted strings,
  * and double-quoted identifiers so that keyword/`;` scanning can't be fooled
@@ -90,6 +120,53 @@ export function assertSelectOnly(sql: string): string {
 export function isSelectOnly(sql: string): boolean {
   try {
     assertSelectOnly(sql);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Throw `UnsafeSqlError` if `sql` reaches outside the registered views — i.e.
+ * calls a path/URI-reading table function or embeds a storage/filesystem URI
+ * literal. Legitimate read SQL references only the tenant-scoped view names we
+ * register, so this never fires on a well-formed query. It is the guard that
+ * closes the cross-tenant blob-read and local-file-read vectors that
+ * SELECT-only alone does not (a `SELECT` from `read_parquet('az://...')` is
+ * still a SELECT).
+ */
+export function assertNoExternalAccess(sql: string): void {
+  if (typeof sql !== 'string') return;
+  // URI literals: scan the raw SQL (the path lives inside a quote).
+  const uri = URI_SCHEME_RE.exec(sql);
+  if (uri) {
+    throw new UnsafeSqlError(`external path/URI literal "${uri[1].toLowerCase()}://"`);
+  }
+  // Table/scalar functions that read arbitrary paths: scan literal-stripped SQL
+  // so a string merely containing the word is ignored but a real call is caught.
+  const stripped = stripLiterals(sql);
+  const fn = EXTERNAL_FN_RE.exec(stripped);
+  if (fn) {
+    throw new UnsafeSqlError(`external-access function "${fn[1].toLowerCase()}()"`);
+  }
+}
+
+/**
+ * Full read-surface guard: a single read-only SELECT/WITH that does NOT reach
+ * outside its registered views. Use on every surface that executes
+ * user- or AI-authored SQL against a tenant warehouse (Ask-AI, dashboards,
+ * notebooks). Returns the cleaned SQL on success.
+ */
+export function assertSafeReadQuery(sql: string): string {
+  const cleaned = assertSelectOnly(sql);
+  assertNoExternalAccess(sql);
+  return cleaned;
+}
+
+/** Boolean variant of {@link assertSafeReadQuery}. */
+export function isSafeReadQuery(sql: string): boolean {
+  try {
+    assertSafeReadQuery(sql);
     return true;
   } catch {
     return false;
