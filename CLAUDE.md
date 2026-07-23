@@ -31,7 +31,29 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-22 (EO typed writes hardened: $metadata → vendor-docs → auto-detect ladder, loud fallback)
+**Last updated:** 2026-07-23 (storage competitive analysis — doc only, no code changes)
+
+**Storage & compute competitive analysis (2026-07-23):** New
+`docs/storage-competitive-analysis.md` (research doc, Dutch — no product code
+changed). Compares Clarion's warehouse architecture against Peliqan
+(Postgres+Trino on AWS Frankfurt), Definite (DuckDB+DuckLake on GCP — closest
+architectural cousin), MotherDuck, Keboola, Mozart Data, Weld, Y42, 5X, plus
+Microsoft's official multitenant-storage guidance. Key conclusions: (1) the
+DuckDB+Parquet/Delta-on-vendor-owned-blob choice is right and market-validated;
+one storage account suffices for hundreds of SMB tenants (containers unlimited,
+5 PiB / 20k req/s per account); (2) production still runs the WEAKEST isolation
+model (shared container + path prefix, container-wide worker SAS) while the
+better per-tenant-container mode is built but default-off — validate in staging
+and flip to default; (3) the bigger multi-tenant risk is COMPUTE, not storage:
+all tenants share one in-process DuckDB in a 0.5 vCPU/1 GiB backend — route
+heavy queries (transforms/Analyse/exports) through the existing job-worker
+machinery; (4) prefix-scoped user-delegation SAS went GA April 2026 and can
+harden legacy shared-container data without moving blobs; (5) Azure is not a
+disadvantage vs Peliqan's AWS-Frankfurt story — EU residency is the argument,
+not the cloud vendor; SOC 2/ISO 27001 is their real sales edge. Prioritised
+action list in the doc §5.
+
+**Prior last updated:** 2026-07-22 (EO typed writes hardened: $metadata → vendor-docs → auto-detect ladder, loud fallback)
 
 **EO JSON-types recurrence fixed for good (2026-07-22):** The 2026-07-20
 vendor-typed-writes fix ($metadata → explicit `columns`) did NOT hold in
