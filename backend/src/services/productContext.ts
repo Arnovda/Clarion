@@ -359,5 +359,11 @@ export async function getProductWarehousePath(connectionId: number, trx?: Knex |
     .first();
 
   if (!hasAny) return null;
-  return warehouseRoot();
+
+  // Tenant-aware root so per-tenant-container mode resolves to the tenant's own
+  // container (and so the connector cache key can't collide across tenants).
+  // RLS already scopes `db`, so this row is the current tenant's connection.
+  const conn = await db('connections').where({ id: connectionId }).select('tenant_id').first();
+  const tenantId = conn?.tenant_id != null ? Number(conn.tenant_id) : undefined;
+  return warehouseRoot(tenantId);
 }

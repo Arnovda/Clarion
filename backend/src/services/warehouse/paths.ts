@@ -77,9 +77,28 @@ export function warehouseContainer(tenantId?: number): string {
   const shared = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
   if (warehouseContainerMode() === 'per-tenant' && tenantId != null) {
     const prefix = process.env.AZURE_WAREHOUSE_CONTAINER_PREFIX ?? 'tenant-';
-    return `${prefix}${tenantId}`;
+    const name = `${prefix}${tenantId}`;
+    assertValidContainerName(name);
+    return name;
   }
   return shared;
+}
+
+/**
+ * Azure Blob container names must be 3–63 chars, lowercase alphanumeric with
+ * single (non-leading/trailing) hyphens. `tenant-<int>` satisfies this for any
+ * realistic tenant id, but a custom `AZURE_WAREHOUSE_CONTAINER_PREFIX` (or an
+ * unexpected id) could produce an invalid name that only fails deep inside the
+ * Azure SDK. Validate up front so the error is clear and local.
+ */
+export function assertValidContainerName(name: string): void {
+  const ok = /^[a-z0-9]([a-z0-9-]{1,61}[a-z0-9])$/.test(name) && !name.includes('--');
+  if (!ok) {
+    throw new Error(
+      `Invalid Azure container name "${name}" — must be 3–63 chars, lowercase ` +
+      `alphanumeric with single interior hyphens. Check AZURE_WAREHOUSE_CONTAINER_PREFIX.`,
+    );
+  }
 }
 
 /**

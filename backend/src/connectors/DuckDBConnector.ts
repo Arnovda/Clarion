@@ -10,8 +10,24 @@ import {
   capResultRows,
 } from '../services/warehouse';
 import { logger as rootLogger } from '../utils/logger';
+import { Semaphore, KeyedSemaphore } from '../utils/semaphore';
 
 const log = rootLogger.child({ mod: 'DuckDBConnector' });
+
+// Bound concurrent DuckDB query execution inside the shared backend process.
+// Global cap bounds total in-flight analytical work (blast-radius / OOM
+// protection); per-tenant cap adds fairness so one tenant can't take every
+// permit. Overridable via env for larger replicas.
+const GLOBAL_QUERY_CONCURRENCY = Math.max(1, Number(process.env.DUCKDB_MAX_CONCURRENT_QUERIES) || 6);
+const PER_TENANT_QUERY_CONCURRENCY = Math.max(1, Number(process.env.DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT) || 2);
+// Per-query wall-clock timeout. Frees the caller from a runaway query; note it
+// does not interrupt the underlying DuckDB call (duckdb-async has no cancel),
+// so the permit is held until the real query settles — true per-query kill is
+// the child-process runner pool in a later phase. 0 disables the timeout.
+const QUERY_TIMEOUT_MS = Number(process.env.DUCKDB_QUERY_TIMEOUT_MS ?? 45000);
+
+const globalQuerySem = new Semaphore(GLOBAL_QUERY_CONCURRENCY);
+const tenantQuerySem = new KeyedSemaphore(PER_TENANT_QUERY_CONCURRENCY);
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -290,6 +306,14 @@ export class DuckDBConnector extends BaseConnector {
     }
   }
 
+  /** Stable per-tenant key for concurrency fairness. In the v2 warehouse
+   *  layout the warehouse path is tenant-prefixed (`.../tenant_<id>/...`), so we
+   *  key on that prefix; otherwise fall back to the full warehouse path. */
+  private tenantKey(): string {
+    const m = /tenant[_-]\d+/i.exec(this.warehousePath);
+    return m ? m[0].toLowerCase() : this.warehousePath;
+  }
+
   async executeQuery(sql: string): Promise<QueryResult> {
     const db = this.requireDb();
     // For ephemeral instances, views are created lazily on first executeQuery.
@@ -299,7 +323,23 @@ export class DuckDBConnector extends BaseConnector {
       this.viewsCreated = true;
     }
 
-    const rawRows = await db.all(capResultRows(sql)) as Record<string, unknown>[];
+    // Bound concurrency (global + per-tenant) before running the query.
+    const releaseGlobal = await globalQuerySem.acquire();
+    const releaseTenant = await tenantQuerySem.acquire(this.tenantKey());
+
+    // Real query promise. The permit is released when it truly settles (not
+    // when the wall-clock timeout below fires), so concurrency stays honest
+    // even if the caller has already given up.
+    const queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
+    queryPromise.then(
+      () => { releaseTenant(); releaseGlobal(); },
+      () => { releaseTenant(); releaseGlobal(); },
+    );
+
+    const rawRows = QUERY_TIMEOUT_MS > 0
+      ? await withTimeout(queryPromise, QUERY_TIMEOUT_MS, 'DuckDB query')
+      : await queryPromise;
+
     const rows = rawRows.map((row) => {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(row)) {

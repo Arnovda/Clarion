@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { assertSelectOnly, isSelectOnly, UnsafeSqlError } from '../utils/sqlGuard';
+import {
+  assertSelectOnly,
+  isSelectOnly,
+  assertNoExternalAccess,
+  assertSafeReadQuery,
+  isSafeReadQuery,
+  UnsafeSqlError,
+} from '../utils/sqlGuard';
 
 describe('assertSelectOnly', () => {
   it('accepts a plain SELECT', () => {
@@ -76,5 +83,62 @@ describe('assertSelectOnly', () => {
     // A denylist keyword reachable past the start-check (data-modifying CTE).
     expect(() => assertSelectOnly('WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x'))
       .toThrow(/forbidden keyword "DELETE"/);
+  });
+});
+
+describe('assertNoExternalAccess', () => {
+  it('accepts plain queries over registered views', () => {
+    expect(() => assertNoExternalAccess('SELECT * FROM orders')).not.toThrow();
+    expect(() => assertNoExternalAccess('WITH t AS (SELECT 1 AS n) SELECT n FROM t')).not.toThrow();
+    // A column/alias merely containing "read" or "glob" is fine.
+    expect(() => assertNoExternalAccess('SELECT read_count, global_id FROM t')).not.toThrow();
+  });
+
+  it('rejects path/URI-reading table functions', () => {
+    for (const q of [
+      "SELECT * FROM read_parquet('az://warehouse/tenant_99/conn_1/orders/data.parquet')",
+      "SELECT * FROM read_csv('/etc/passwd')",
+      "SELECT read_text('/proc/self/environ')",
+      "SELECT * FROM delta_scan('az://warehouse/tenant_99/x')",
+      "SELECT * FROM glob('/app/**')",
+      "SELECT * FROM parquet_scan('x.parquet')",
+      "SELECT * FROM read_json('s3://bucket/x.json')",
+      "SELECT * FROM postgres_scan('host=x', 'public', 't')",
+    ]) {
+      expect(() => assertNoExternalAccess(q), q).toThrow(UnsafeSqlError);
+    }
+  });
+
+  it('rejects storage/filesystem URI literals even without a known function', () => {
+    for (const q of [
+      "SELECT * FROM foo WHERE path = 'az://warehouse/tenant_2/secret'",
+      "SELECT 'file:///etc/passwd' AS p",
+      "SELECT * FROM t WHERE u = 'abfss://c@acct.dfs.core.windows.net/x'",
+    ]) {
+      expect(() => assertNoExternalAccess(q), q).toThrow(/external path\/URI literal/);
+    }
+  });
+});
+
+describe('assertSafeReadQuery / isSafeReadQuery', () => {
+  it('accepts a safe read-only query over views', () => {
+    expect(isSafeReadQuery('SELECT a, SUM(b) FROM fact_sales GROUP BY a')).toBe(true);
+    expect(assertSafeReadQuery('SELECT 1 ;')).toBe('SELECT 1');
+  });
+
+  it('rejects the cross-tenant read vector that SELECT-only alone misses', () => {
+    // This IS a single SELECT — the old guard passed it; the new one must not.
+    const attack = "SELECT * FROM read_parquet('az://warehouse/tenant_OTHER/conn_1/orders/data.parquet')";
+    expect(isSelectOnly(attack)).toBe(true);
+    expect(isSafeReadQuery(attack)).toBe(false);
+  });
+
+  it('rejects the local-file exfiltration vector', () => {
+    expect(isSafeReadQuery("SELECT read_text('/proc/self/environ') AS env")).toBe(false);
+  });
+
+  it('still rejects writes / DDL / side-channels', () => {
+    expect(isSafeReadQuery("COPY (SELECT 1) TO 'az://warehouse/tenant_x/leak.parquet'")).toBe(false);
+    expect(isSafeReadQuery('DROP TABLE t')).toBe(false);
   });
 });

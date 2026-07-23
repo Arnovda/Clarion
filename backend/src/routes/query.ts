@@ -63,7 +63,7 @@ function resolveDataLayer(requested: unknown, hasProduct: boolean): DataLayer {
 // Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
 import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
 import { buildCacheKey, getCachedSql, putCachedSql } from '../services/queryCache';
-import { assertSelectOnly, isSelectOnly } from '../utils/sqlGuard';
+import { isSafeReadQuery, assertSafeReadQuery } from '../utils/sqlGuard';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -75,8 +75,8 @@ function shouldBlockQuery(r: NlToSqlOutput): { blocked: boolean; reason: string 
   // mutation (or a DuckDB side-channel like COPY/ATTACH) is refused before it
   // can touch a warehouse or a read-write source DB. Handled like any other
   // block — friendly message + logged as a gap.
-  if (!isSelectOnly(r.sql))
-    return { blocked: true, reason: 'Generated SQL was not a read-only query — refused for safety' };
+  if (!isSafeReadQuery(r.sql))
+    return { blocked: true, reason: 'Generated SQL was not a safe read-only query — refused for safety' };
   if (r.confidence < 0.7)
     return { blocked: true, reason: `Low overall confidence (${r.confidence})` };
   if (r.schema_confidence < 0.5)
@@ -1744,7 +1744,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
         send('data_query', { sql: action.sql });
 
         try {
-          const result = await sqliteConnector!.executeQuery(assertSelectOnly(action.sql));
+          const result = await sqliteConnector!.executeQuery(assertSafeReadQuery(action.sql));
           send('query_result', { rows: result.rows.slice(0, 20), rowCount: result.rows.length });
           messages = [
             ...messages,
@@ -1769,7 +1769,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
         let result: { rows: Record<string, unknown>[] };
         try {
-          result = await sqliteConnector!.executeQuery(assertSelectOnly(action.sql));
+          result = await sqliteConnector!.executeQuery(assertSafeReadQuery(action.sql));
         } catch (execErr: unknown) {
           const msg = execErr instanceof Error ? execErr.message : String(execErr);
           send('thinking', { text: `⚠ Revised query failed to execute: ${msg}. Adding this to the context and retrying…` });

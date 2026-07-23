@@ -173,6 +173,20 @@ const aiLimiter = rateLimit({
   message: { ok: false, error: 'AI rate limit reached, please try again shortly' },
 });
 
+// Compute-intensive endpoints that run DuckDB queries (dashboards batch-execute,
+// notebooks, quality profiling). Looser than aiLimiter (these fire several
+// widget queries per dashboard load) but still bounds a single IP from
+// saturating the shared query engine. Separate store so it doesn't share the
+// AI budget.
+const computeLimiter = rateLimit({
+  windowMs:  60 * 1000,
+  max:       90,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  skip:      skipRateLimit,
+  message: { ok: false, error: 'Too many requests, please slow down for a moment' },
+});
+
 // ---------------------------------------------------------------------------
 // Auth routes (register, login, forgot-password, reset-password, refresh, me)
 // ---------------------------------------------------------------------------
@@ -193,9 +207,9 @@ app.use('/api/connections',  connectionsRouter);
 app.use('/api/semantic',     semanticRouter);
 app.use('/api/query',        aiLimiter, queryRouter);
 app.use('/api/reports',      reportsRouter);
-app.use('/api/dashboards',   dashboardsRouter);
+app.use('/api/dashboards',   computeLimiter, dashboardsRouter);
 app.use('/api/cross-views',  crossViewsRouter);
-app.use('/api/quality',      qualityRouter);
+app.use('/api/quality',      computeLimiter, qualityRouter);
 app.use('/api/ingestion',    ingestionRouter);
 app.use('/api/products',     productsRouter);
 app.use('/api/pipelines',    pipelinesRouter);
@@ -203,7 +217,7 @@ app.use('/api/jobs',         jobsRouter);
 app.use('/api/schedules',   schedulesRouter);
 app.use('/api/users',       usersRouter);
 app.use('/api/conversations', conversationsRouter);
-app.use('/api/notebooks',     notebooksRouter);
+app.use('/api/notebooks',     computeLimiter, notebooksRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/policies',        policiesRouter);
 app.use('/api/settings',        settingsRouter);

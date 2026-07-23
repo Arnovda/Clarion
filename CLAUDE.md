@@ -31,7 +31,158 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-22 (EO typed writes hardened: $metadata → vendor-docs → auto-detect ladder, loud fallback)
+**Last updated:** 2026-07-23 (P0 compute security-isolation + Fase 0 guards IMPLEMENTED — shipping to prod)
+
+**P0 + Fase 0 + A0 isolation hardening SHIPPED (2026-07-23):** Backend
+`npm run check` clean; 23 new unit tests green (sqlGuard 15 total, semaphore 8).
+Closes the cross-tenant compute-read/write vector found in the security audit,
+plus the runaway-query blast-radius risk. Owner authorised implementation +
+direct prod deploy.
+- **SQL guard extended (`utils/sqlGuard.ts`)** — new `assertNoExternalAccess`
+  (rejects path/URI table functions: `read_parquet`/`read_csv`/`read_json`/
+  `read_text`/`read_blob`/`delta_scan`/`glob`/`parquet_scan`/`postgres_scan`/
+  `mysql_scan`/`sqlite_scan`/… AND storage/fs URI literals `az://`/`s3://`/
+  `file://`/`abfss://`/…), `assertNoExternalAccess` scans URI on RAW sql +
+  functions on literal-stripped sql; `assertSafeReadQuery` = `assertSelectOnly`
+  + `assertNoExternalAccess`; `isSafeReadQuery`. Rationale: legitimate user/AI
+  SQL only names the tenant-scoped VIEWS we register, so any query naming these
+  functions/literals is an attack or bug. This closes the exact
+  `SELECT * FROM read_parquet('az://warehouse/tenant_<OTHER>/...')` case that
+  passed the old SELECT-only guard, and `read_text('/proc/self/environ')`.
+- **Guard applied to EVERY user/AI read surface**: Ask-AI (`query.ts`
+  `shouldBlockQuery` now `isSafeReadQuery`; repair-loop diagnostic/revised SQL
+  `assertSafeReadQuery`); **notebooks `/query` + `/execute` (had NO guard at
+  all — the worst surface)**; dashboards `batch-execute`, `batch-execute-stream`,
+  `execute`, drill-detail, `executeSpecForValidation`, `executeWidgetSql`
+  (exports), investigate; `investigateService`. Widget SQL is guarded on the
+  TEMPLATE (pre-filter-substitution) so legitimate URL data values don't
+  false-positive on the URI check.
+- **DEFERRED defense-in-depth (needs live validation, deliberately NOT shipped
+  blind)**: DuckDB session lockdown (`SET enable_external_access=false` /
+  `allowed_paths` scoped to tenant prefix / `lock_configuration=true`) and the
+  per-tenant-scoped SAS secret replacing `AZURE_STORAGE_CONNECTION_STRING` in
+  read sessions — both can break az:// reads / spill-to-disk and per CLAUDE.md's
+  own lesson must be verified live before shipping. The guard already closes the
+  vector; these are additional layers.
+- **Fase 0 compute guards**: `utils/semaphore.ts` (`Semaphore` + `KeyedSemaphore`,
+  unit-tested); `DuckDBConnector.executeQuery` now acquires a GLOBAL
+  (`DUCKDB_MAX_CONCURRENT_QUERIES`=6) + PER-TENANT
+  (`DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`=2, keyed on the `tenant_<id>`
+  prefix in warehousePath) permit and runs under a wall-clock timeout
+  (`DUCKDB_QUERY_TIMEOUT_MS`=45000; permit released on REAL settle, not on
+  timeout, so concurrency stays honest — true per-query kill is the later
+  child-process runner). `DuckDBPool` gained an LRU cap (`DUCKDB_POOL_MAX`=12,
+  `evictOverCap`). `computeLimiter` (90/min/IP) added to `/dashboards`,
+  `/notebooks`, `/quality` (previously only the global 200/min). Batch-execute's
+  uncapped `Promise.all` is now bounded by the executeQuery semaphore.
+- **A0 pre-flip fixes**: `assertValidContainerName` (3–63 chars, lowercase,
+  single interior hyphens) in `warehouseContainer()`; `getProductWarehousePath`
+  now tenant-aware (`warehouseRoot(tenantId)` derived from the connection row —
+  no more shared-root cache key in per-tenant mode).
+- **New env vars** (`.env.example`): `DUCKDB_MAX_CONCURRENT_QUERIES`,
+  `DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`, `DUCKDB_QUERY_TIMEOUT_MS`,
+  `DUCKDB_POOL_MAX`.
+- **Behaviour note for notebooks**: notebook SQL is now SELECT-only + no external
+  access (was arbitrary SQL incl. DDL). Analyst read workflows unaffected; DDL/
+  writes in notebooks are intentionally refused.
+- **Files changed**: `backend/src/utils/sqlGuard.ts`, `utils/semaphore.ts` (new),
+  `connectors/DuckDBConnector.ts`, `connectors/DuckDBPool.ts`, `routes/query.ts`,
+  `routes/notebooks.ts`, `routes/dashboards.ts`, `services/investigateService.ts`,
+  `services/warehouse/paths.ts`, `services/productContext.ts`, `index.ts`,
+  `tests/sqlGuard.test.ts`, `tests/semaphore.test.ts` (new), `.env.example`,
+  `docs/backlog/storage-compute-isolation-plan.md`.
+- **Remaining phases** (next increments, see plan §5): Fase 1 per-tenant
+  container flip (validate → default), Fase 2 jobs-worker split (ROLE flag +
+  Redis pub/sub + AOF + KEDA), Fase 3 child-process runner pool + sizing, Fase 4
+  legacy migration + auth untangling + the deferred DuckDB SET-lockdown /
+  per-tenant SAS secret.
+
+**Prior last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
+
+**Compute security-isolation finding (2026-07-23, added to the plan §3bis):**
+A dedicated security audit of the query-execution paths found compute is NOT
+security-isolated between tenants today — more serious than the noisy-neighbor
+story and it re-prioritises the plan. DuckDB sessions are un-sandboxed and hold
+an ACCOUNT-WIDE Azure secret (`AZURE_STORAGE_CONNECTION_STRING`); no session
+sets `enable_external_access=false`/`allowed_paths`/`lock_configuration` (repo
+grep = 0 hits). The only SQL guard (`sqlGuard.ts`) blocks non-SELECT keywords
+but NOT table functions / path literals, so `SELECT * FROM read_parquet(
+'az://warehouse/tenant_<OTHER>/...')` passes. Verdict per surface: notebooks
+(`routes/notebooks.ts:132,764` — no guard, arbitrary SQL, read+write any
+tenant blob, `read_text('/proc/self/environ')` dumps the conn string) and
+dashboards (`routes/dashboards.ts:522-630` — widget SQL raw from request body,
+no re-validation) are the worst; Ask-AI is SELECT-only but a steered
+`read_parquet('az://...other...')` still reads cross-tenant; transformations
+run `CREATE TABLE AS ${sql}` with the account secret. Postgres RLS scopes which
+connectionId/productId a user may NAME but does NOT stop the in-SQL path-literal
+vector. Market context: Peliqan's compute isolation (shared Trino + shared
+Postgres, logical DB per workspace, soft limits) is almost certainly NO stronger
+than ours — their edge is SOC 2/ISO 27001 certification, not hard compute
+isolation; DuckDB's own docs say its settings are defense-in-depth, "not a
+substitute for proper sandboxing" (precedents: ChaosDB, SynLapse — both
+cross-tenant leaks via shared compute, both fixed with per-execution isolation).
+P0 mitigations now lead the phasing: DuckDB lockdown (external-access off /
+allowed_paths scoped to tenant prefix / lock_configuration) + per-tenant-scoped
+SAS secret instead of the account string + extend the SQL guard (deny table
+functions/path literals, SELECT-only on notebooks+dashboards, re-validate widget
+SQL). Plan doc updated with §3bis + P0 row in §5.
+
+**Prior last updated:** 2026-07-23 (storage/compute isolation PLAN added — doc only, awaiting owner sign-off)
+
+**Storage & compute isolation plan (2026-07-23, same session as the analysis):**
+New `docs/backlog/storage-compute-isolation-plan.md` (Dutch, proposal status —
+NO code changed yet). Grounded in two deep code audits (all DuckDB execution
+paths; all WAREHOUSE_CONTAINER_MODE call sites). Load-bearing audit facts:
+- EVERYTHING except source syncs runs in the one backend Express process —
+  `startWorkers()` is called inside `app.listen`, so all BullMQ workers
+  (transformation/bus-matrix/profiling/email/brief) share the API process.
+  There is NO per-query timeout or cancel anywhere (no `interrupt()`, no
+  Express timeout); dashboard batch-execute is an uncapped `Promise.all`;
+  DuckDBPool is unbounded and `memory_limit 70%` is per-instance not global.
+- The per-tenant-container flip is safer than assumed: read paths NEVER
+  recompute Azure URIs from env (stored `warehouse_path`/`delta_path` read
+  verbatim); offboarding (`deleteTenantWarehouseContainer`) is already wired
+  into `purgeTenant`. Residual gaps: no staging infra exists (deploy "staging"
+  = 0%-traffic revision on prod resources); container creation + DuckDB secret
+  + Python sidecar ALL run on the account key (nothing uses managed identity /
+  DefaultAzureCredential — disabling shared key today breaks three things);
+  `getProductWarehousePath` still returns the shared root in per-tenant mode
+  (cache-key only); prefix-scoped SAS (sr=d/sdd) is NOT generatable with the
+  pinned @azure/storage-blob — would need @azure/storage-file-datalake.
+- Plan: Track A (activate per-tenant containers: pre-flip fixes → validation
+  via test tenant on 0%-traffic staging revision → terraform default flip →
+  incremental legacy migration; NO prefix-SAS detour) + Track B three-tier
+  compute (L1 interactive stays in-process hardened with timeouts/semaphores/
+  p-limit/pool-cap then a child-process query-runner pool; L2 all BullMQ work
+  to a separate `jobs-worker` ACA app via a ROLE env flag on the backend
+  image, KEDA-scaled on Redis queue depth, requires Redis AOF + events/
+  cancellation moved to Redis pub/sub FIRST or SSE build logs break; L3 syncs
+  unchanged). Phasing 0-4 with efforts, owner decision points (cost ~€60-100/mo
+  idle, validation approach, legacy migration, start) in plan §6.
+
+**Prior last updated:** 2026-07-23 (storage competitive analysis — doc only, no code changes)
+
+**Storage & compute competitive analysis (2026-07-23):** New
+`docs/storage-competitive-analysis.md` (research doc, Dutch — no product code
+changed). Compares Clarion's warehouse architecture against Peliqan
+(Postgres+Trino on AWS Frankfurt), Definite (DuckDB+DuckLake on GCP — closest
+architectural cousin), MotherDuck, Keboola, Mozart Data, Weld, Y42, 5X, plus
+Microsoft's official multitenant-storage guidance. Key conclusions: (1) the
+DuckDB+Parquet/Delta-on-vendor-owned-blob choice is right and market-validated;
+one storage account suffices for hundreds of SMB tenants (containers unlimited,
+5 PiB / 20k req/s per account); (2) production still runs the WEAKEST isolation
+model (shared container + path prefix, container-wide worker SAS) while the
+better per-tenant-container mode is built but default-off — validate in staging
+and flip to default; (3) the bigger multi-tenant risk is COMPUTE, not storage:
+all tenants share one in-process DuckDB in a 0.5 vCPU/1 GiB backend — route
+heavy queries (transforms/Analyse/exports) through the existing job-worker
+machinery; (4) prefix-scoped user-delegation SAS went GA April 2026 and can
+harden legacy shared-container data without moving blobs; (5) Azure is not a
+disadvantage vs Peliqan's AWS-Frankfurt story — EU residency is the argument,
+not the cloud vendor; SOC 2/ISO 27001 is their real sales edge. Prioritised
+action list in the doc §5.
+
+**Prior last updated:** 2026-07-22 (EO typed writes hardened: $metadata → vendor-docs → auto-detect ladder, loud fallback)
 
 **EO JSON-types recurrence fixed for good (2026-07-22):** The 2026-07-20
 vendor-typed-writes fix ($metadata → explicit `columns`) did NOT hold in
