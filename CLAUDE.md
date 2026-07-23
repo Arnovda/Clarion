@@ -31,7 +31,40 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-23 (storage competitive analysis — doc only, no code changes)
+**Last updated:** 2026-07-23 (storage/compute isolation PLAN added — doc only, awaiting owner sign-off)
+
+**Storage & compute isolation plan (2026-07-23, same session as the analysis):**
+New `docs/backlog/storage-compute-isolation-plan.md` (Dutch, proposal status —
+NO code changed yet). Grounded in two deep code audits (all DuckDB execution
+paths; all WAREHOUSE_CONTAINER_MODE call sites). Load-bearing audit facts:
+- EVERYTHING except source syncs runs in the one backend Express process —
+  `startWorkers()` is called inside `app.listen`, so all BullMQ workers
+  (transformation/bus-matrix/profiling/email/brief) share the API process.
+  There is NO per-query timeout or cancel anywhere (no `interrupt()`, no
+  Express timeout); dashboard batch-execute is an uncapped `Promise.all`;
+  DuckDBPool is unbounded and `memory_limit 70%` is per-instance not global.
+- The per-tenant-container flip is safer than assumed: read paths NEVER
+  recompute Azure URIs from env (stored `warehouse_path`/`delta_path` read
+  verbatim); offboarding (`deleteTenantWarehouseContainer`) is already wired
+  into `purgeTenant`. Residual gaps: no staging infra exists (deploy "staging"
+  = 0%-traffic revision on prod resources); container creation + DuckDB secret
+  + Python sidecar ALL run on the account key (nothing uses managed identity /
+  DefaultAzureCredential — disabling shared key today breaks three things);
+  `getProductWarehousePath` still returns the shared root in per-tenant mode
+  (cache-key only); prefix-scoped SAS (sr=d/sdd) is NOT generatable with the
+  pinned @azure/storage-blob — would need @azure/storage-file-datalake.
+- Plan: Track A (activate per-tenant containers: pre-flip fixes → validation
+  via test tenant on 0%-traffic staging revision → terraform default flip →
+  incremental legacy migration; NO prefix-SAS detour) + Track B three-tier
+  compute (L1 interactive stays in-process hardened with timeouts/semaphores/
+  p-limit/pool-cap then a child-process query-runner pool; L2 all BullMQ work
+  to a separate `jobs-worker` ACA app via a ROLE env flag on the backend
+  image, KEDA-scaled on Redis queue depth, requires Redis AOF + events/
+  cancellation moved to Redis pub/sub FIRST or SSE build logs break; L3 syncs
+  unchanged). Phasing 0-4 with efforts, owner decision points (cost ~€60-100/mo
+  idle, validation approach, legacy migration, start) in plan §6.
+
+**Prior last updated:** 2026-07-23 (storage competitive analysis — doc only, no code changes)
 
 **Storage & compute competitive analysis (2026-07-23):** New
 `docs/storage-competitive-analysis.md` (research doc, Dutch — no product code
