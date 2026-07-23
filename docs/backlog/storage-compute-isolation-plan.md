@@ -153,6 +153,72 @@ per-container-isolatie aan de compute-kant deels tenietdoet.
 
 ---
 
+## 3bis. KRITIEK — compute-security-isolatie (nieuwe bevinding 2026-07-23)
+
+Een aparte security-audit van de query-executiepaden legde bloot dat compute vandaag
+**niet security-geïsoleerd is tussen tenants** — dit is ernstiger dan het
+performance-verhaal en verschuift de prioriteit. Kern:
+
+- **De DuckDB-sessies zijn niet gesandboxed en dragen een account-breed storage-secret.**
+  `setupDuckDBForWarehouse`/`applyResourceGuardrails` (`duckdb.ts:26-156`) zetten alleen
+  resource-settings; nergens `SET enable_external_access=false`, `allowed_paths`,
+  `disabled_filesystems` of `lock_configuration=true` (repo-brede grep = 0 hits). Het
+  secret komt uit `AZURE_STORAGE_CONNECTION_STRING` → toegang tot het **hele** account,
+  dus elke tenant-prefix.
+- **De enige SQL-guard (`sqlGuard.ts`) blokkeert alleen niet-SELECT-keywords, geen
+  table-functions of pad-literals.** `read_parquet`, `delta_scan`, `read_text`,
+  `read_csv`, `glob`, `COPY` binnen een SELECT staan niet op de FORBIDDEN-lijst. Dus
+  `SELECT * FROM read_parquet('az://warehouse/tenant_<ANDER>/...')` passeert de guard.
+- **Reikwijdte per surface (verdict uit de audit):**
+  - **Notebooks** (`routes/notebooks.ts:132,764`): **geen guard, willekeurige SQL** —
+    lezen én schrijven van elke tenant-blob, `read_text('/proc/self/environ')` (dumpt de
+    connection string zelf → volledige account-escalatie), `COPY TO 'az://...'`. Zwaarste
+    surface.
+  - **Dashboards** (`routes/dashboards.ts:522-630`): widget-SQL komt **rauw uit de
+    request body**, geen SELECT-only-guard, geen her-validatie tegen de opgeslagen spec —
+    lezen én schrijven, zelfde reik als notebooks.
+  - **Ask-AI** (`routes/query.ts`): SELECT-only afgedwongen (schrijven geblokkeerd), maar
+    een gestuurd/prompt-geïnjecteerd `read_parquet('az://...ander...')` passeert de guard
+    en leest cross-tenant.
+  - **Transformaties**: `CREATE TABLE AS ${sql}` met account-secret, geen guard
+    (moet schrijven) — zelfde reik server-side.
+- **Wat vandaag WEL houdt:** Postgres-RLS bepaalt welke `connectionId`/`productId` een
+  gebruiker mag benoemen (dus je kunt de connector niet op andermans warehouse richten) —
+  maar dat sluit de in-SQL `read_parquet('az://...')`-vector niet, want die omzeilt de
+  connector/catalog volledig.
+- **Marktcontext:** DuckDB's eigen docs zeggen expliciet dat deze settings
+  *defense-in-depth* zijn en "geen vervanging voor echte sandboxing" bij untrusted SQL —
+  een gedeeld proces met meerdere tenants' SQL is geen security-grens. De citeerbare
+  precedenten dat cross-tenant-lekken juist via de gedeelde compute-laag gebeuren zijn
+  **ChaosDB** (Azure Cosmos DB, 2021 — via de gedeelde notebook-compute) en **SynLapse**
+  (Azure Synapse, CVE-2022-29972 — gedeelde integration runtime); Microsoft's fix in
+  beide gevallen was per-executie compute-isolatie.
+
+**Mitigaties (P0 — vóór de rest):**
+1. **DuckDB-lockdown op elke sessie:** `SET enable_external_access=false` waar mogelijk;
+   waar externe blob-reads nodig zijn (dat is het normale pad) `allowed_paths`/
+   `allowed_directories` scopen op de **eigen tenant-prefix/-container** +
+   `lock_configuration=true` als sluitstuk. Dit maakt padliteralen naar andere tenants
+   fysiek onbereikbaar, zelfs met account-secret.
+2. **Per-tenant-scoped storage-secret i.p.v. account-connection-string:** de DuckDB-sessie
+   krijgt een SAS gescoped op de tenant-container (bestaande `BlobSasTokenIssuer`) i.p.v.
+   `AZURE_STORAGE_CONNECTION_STRING`. Sluit A4 (auth-ontvlechting) en dit samen.
+3. **SQL-guard uitbreiden:** table-functions + pad-literals (`read_*`, `delta_scan`,
+   `glob`, `az://`, absolute paden) op een deny-lijst; SELECT-only ook op notebooks en
+   dashboards afdwingen; dashboard-widget-SQL her-valideren tegen de opgeslagen spec i.p.v.
+   rauw uit de request uitvoeren.
+4. **Per-tenant containers (Spoor A)** maken lockdown+SAS pas echt hard: dan is er
+   überhaupt geen ander tenant-pad in dezelfde container te benoemen.
+
+**Belangrijk kader:** onze audit maakt aannemelijk dat Peliqan's compute-isolatie
+(gedeeld Trino + gedeeld Postgres, logische DB per workspace, soft limits) **niet sterker**
+is dan de onze — hun echte voorsprong is certificering (SOC 2/ISO 27001), niet harde
+compute-isolatie. Dat betekent niet dat wij dit mogen laten liggen: security-isolatie is op
+elk prijsniveau een must-have (een lek is onvergeeflijk), en de sandbox-mitigaties hierboven
+zijn goedkoop en brengen ons meteen op norm.
+
+---
+
 ## 4. Spoor B — compute: drie lagen
 
 ### Laag 1 — interactieve serving (C1/C2/C3/C5-licht) blijft in de backend, gehard
@@ -238,18 +304,22 @@ S7 (kostenattributie) en latere fair-use-limieten per prijsplan.
 
 | Fase | Inhoud | Effort | Dekt | Afhankelijkheid |
 |---|---|---|---|---|
-| **0** | B1.1 quick wins: timeouts, semaphores, p-limit, rate limits, pool-cap, quality→queue, export-cap + A0 pre-flip fixes | dagen | I2 I3 I4 (acuutste risico: runaway query = API down) | geen |
-| **1** | Spoor A: validatie-checklist op staging-revisie → flip default → runbook | dagen (validatie is het meeste werk) | S1 S3 | A0 |
+| **P0** | §3bis security-lockdown: DuckDB `enable_external_access`/`allowed_paths`/`lock_configuration` op elke sessie, per-tenant-scoped SAS-secret i.p.v. account-string, SQL-guard uitbreiden (table-functions/pad-literals + SELECT-only op notebooks/dashboards + widget-SQL her-valideren) | dagen | **cross-tenant datalek (lezen+schrijven)** — hoogste prioriteit | geen |
+| **0** | B1.1 quick wins: timeouts, semaphores, p-limit, rate limits, pool-cap, quality→queue, export-cap + A0 pre-flip fixes | dagen | I2 I3 I4 (runaway query = API down) | geen (samen met P0) |
+| **1** | Spoor A: validatie-checklist op staging-revisie → flip default → runbook | dagen (validatie is het meeste werk) | S1 S3 (+ maakt P0-lockdown hard) | A0 |
 | **2** | Spoor B L2: ROLE-flag, jobs-worker-app, Redis-AOF, events/cancellation via Redis, KEDA, terraform | 1–2 weken | I1(batch) I6 I9, halve S5 | Fase 0 |
-| **3** | B1.2 runnerpool interactief + B1.3 sizing | ~1 week | I1(interactief) I3 hard | Fase 2 (leert ons de patronen) |
+| **3** | B1.2 runnerpool interactief + B1.3 sizing | ~1 week | I1(interactief) I3 hard (proces-per-executie = ook security-diepteverdediging) | Fase 2 (leert ons de patronen) |
 | **4** | A3 legacy-migratie afronden + A4 auth-ontvlechting + shared key uit | dagen–week | S5 S9 | Fase 1+2 |
 | later | Groeipad L3, premium-tier, staging-omgeving als infra | — | — | vraag-gedreven |
 
-Volgorde-argument: Fase 0 eerst omdat het dágen kost en het gevaarlijkste faalscenario
-(één query legt de API voor iedereen plat) direct dempt. Fase 1 parallel/aansluitend
-omdat de flip klein en onafhankelijk is. Fase 2 vóór Fase 3: zodra batch weg is uit het
+Volgorde-argument: **P0 gaat vóór alles** — het is de enige zwakte die een echt
+cross-tenant datalek toelaat (notebooks/dashboards kunnen vandaag andermans blobs lezen
+én schrijven), kost slechts dagen, en is onafhankelijk van de rest. Fase 0 loopt parallel
+(dempt het runaway-query-scenario). Fase 1 sluit aan omdat per-tenant containers de
+P0-lockdown pas fysiek hard maken. Fase 2 vóór Fase 3: zodra batch weg is uit het
 API-proces is de resterende interactieve werklast klein en voorspelbaar, wat de
-runnerpool-dimensionering eenvoudig maakt.
+runnerpool-dimensionering eenvoudig maakt; die runnerpool geeft bovendien proces-per-executie,
+de door DuckDB's eigen docs aanbevolen echte sandbox-grens.
 
 ---
 

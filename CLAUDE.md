@@ -31,7 +31,37 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-23 (storage/compute isolation PLAN added — doc only, awaiting owner sign-off)
+**Last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
+
+**Compute security-isolation finding (2026-07-23, added to the plan §3bis):**
+A dedicated security audit of the query-execution paths found compute is NOT
+security-isolated between tenants today — more serious than the noisy-neighbor
+story and it re-prioritises the plan. DuckDB sessions are un-sandboxed and hold
+an ACCOUNT-WIDE Azure secret (`AZURE_STORAGE_CONNECTION_STRING`); no session
+sets `enable_external_access=false`/`allowed_paths`/`lock_configuration` (repo
+grep = 0 hits). The only SQL guard (`sqlGuard.ts`) blocks non-SELECT keywords
+but NOT table functions / path literals, so `SELECT * FROM read_parquet(
+'az://warehouse/tenant_<OTHER>/...')` passes. Verdict per surface: notebooks
+(`routes/notebooks.ts:132,764` — no guard, arbitrary SQL, read+write any
+tenant blob, `read_text('/proc/self/environ')` dumps the conn string) and
+dashboards (`routes/dashboards.ts:522-630` — widget SQL raw from request body,
+no re-validation) are the worst; Ask-AI is SELECT-only but a steered
+`read_parquet('az://...other...')` still reads cross-tenant; transformations
+run `CREATE TABLE AS ${sql}` with the account secret. Postgres RLS scopes which
+connectionId/productId a user may NAME but does NOT stop the in-SQL path-literal
+vector. Market context: Peliqan's compute isolation (shared Trino + shared
+Postgres, logical DB per workspace, soft limits) is almost certainly NO stronger
+than ours — their edge is SOC 2/ISO 27001 certification, not hard compute
+isolation; DuckDB's own docs say its settings are defense-in-depth, "not a
+substitute for proper sandboxing" (precedents: ChaosDB, SynLapse — both
+cross-tenant leaks via shared compute, both fixed with per-execution isolation).
+P0 mitigations now lead the phasing: DuckDB lockdown (external-access off /
+allowed_paths scoped to tenant prefix / lock_configuration) + per-tenant-scoped
+SAS secret instead of the account string + extend the SQL guard (deny table
+functions/path literals, SELECT-only on notebooks+dashboards, re-validate widget
+SQL). Plan doc updated with §3bis + P0 row in §5.
+
+**Prior last updated:** 2026-07-23 (storage/compute isolation PLAN added — doc only, awaiting owner sign-off)
 
 **Storage & compute isolation plan (2026-07-23, same session as the analysis):**
 New `docs/backlog/storage-compute-isolation-plan.md` (Dutch, proposal status —
