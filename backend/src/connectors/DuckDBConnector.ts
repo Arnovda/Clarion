@@ -323,17 +323,37 @@ export class DuckDBConnector extends BaseConnector {
       this.viewsCreated = true;
     }
 
-    // Bound concurrency (global + per-tenant) before running the query.
-    const releaseGlobal = await globalQuerySem.acquire();
+    // Bound concurrency before running the query. Acquire the PER-TENANT
+    // permit FIRST, then the global one: a caller queued on its own per-tenant
+    // limit must not hold a global permit while it waits, or one busy tenant
+    // could occupy every global permit and starve the others (priority
+    // inversion). This way a tenant only consumes a global permit once it has
+    // cleared its own gate.
     const releaseTenant = await tenantQuerySem.acquire(this.tenantKey());
+    let releaseGlobal: () => void;
+    try {
+      releaseGlobal = await globalQuerySem.acquire();
+    } catch (err) {
+      releaseTenant();
+      throw err;
+    }
 
-    // Real query promise. The permit is released when it truly settles (not
-    // when the wall-clock timeout below fires), so concurrency stays honest
-    // even if the caller has already given up.
-    const queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
+    // Kick off the query, guarding against a synchronous throw (e.g. from
+    // capResultRows) leaking the permits we just took.
+    let queryPromise: Promise<Record<string, unknown>[]>;
+    try {
+      queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
+    } catch (err) {
+      releaseGlobal();
+      releaseTenant();
+      throw err;
+    }
+    // Release permits when the query TRULY settles (not when the wall-clock
+    // timeout below fires), so concurrency accounting stays honest even if the
+    // caller has already given up on the result.
     queryPromise.then(
-      () => { releaseTenant(); releaseGlobal(); },
-      () => { releaseTenant(); releaseGlobal(); },
+      () => { releaseGlobal(); releaseTenant(); },
+      () => { releaseGlobal(); releaseTenant(); },
     );
 
     const rawRows = QUERY_TIMEOUT_MS > 0

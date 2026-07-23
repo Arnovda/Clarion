@@ -17,6 +17,7 @@ import {
   productBasePathV2,
   sourceBasePathV2,
   sourceWorkerPathPrefix,
+  assertValidContainerName,
 } from './paths';
 import { capResultRows } from './duckdb';
 
@@ -83,6 +84,13 @@ describe('warehouse container mode', () => {
       expect(warehouseContainer(42)).toBe('clarion-wh-42');
     });
 
+    it('rejects a container name made invalid by a bad prefix', () => {
+      // Uppercase is illegal in an Azure container name — must fail loudly and
+      // locally, not deep inside the Azure SDK.
+      process.env.AZURE_WAREHOUSE_CONTAINER_PREFIX = 'Tenant_';
+      expect(() => warehouseContainer(42)).toThrow(/Invalid Azure container name/);
+    });
+
     it('falls back to shared container when tenant id is missing', () => {
       // Legacy call-sites that don't thread a tenant id must not crash.
       expect(warehouseContainer(undefined)).toBe('warehouse');
@@ -116,6 +124,29 @@ describe('warehouse container mode', () => {
       expect(src.replace(/\\/g, '/')).toMatch(/warehouse\/tenant_1\/conn_4$/);
       expect(prod.replace(/\\/g, '/')).toMatch(/warehouse\/tenant_1\/product_3$/);
     });
+  });
+});
+
+describe('assertValidContainerName', () => {
+  it('accepts valid Azure container names', () => {
+    for (const n of ['warehouse', 'tenant-42', 'clarion-wh-1', 'abc', 'a1b2c3']) {
+      expect(() => assertValidContainerName(n), n).not.toThrow();
+    }
+  });
+
+  it('rejects invalid names', () => {
+    for (const n of [
+      'ab',                 // too short (<3)
+      'a'.repeat(64),       // too long (>63)
+      'Tenant-1',           // uppercase
+      'tenant_1',           // underscore
+      'tenant--1',          // double hyphen
+      '-tenant1',           // leading hyphen
+      'tenant1-',           // trailing hyphen
+      'tenant 1',           // space
+    ]) {
+      expect(() => assertValidContainerName(n), n).toThrow(/Invalid Azure container name/);
+    }
   });
 });
 
