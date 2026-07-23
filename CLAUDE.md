@@ -119,6 +119,20 @@ child-process runner. Semaphore itself reviewed clean (no leak/double-release/
 deadlock). Backend `npm run check` clean; 47 unit tests green (sqlGuard 21,
 semaphore 8, paths 22... i.e. guard + container-name coverage added).
 
+**Fase 1 (per-tenant container flip) prep (2026-07-23, same session):** Container-
+lifecycle test coverage added (`services/warehouse/container.test.ts`, mocked
+@azure/storage-blob: shared-mode no-op + offboarding refuse, per-tenant
+create-once-memoised + delete, graceful degradation without a connection string;
+51 unit tests green total). Ops runbook written:
+`docs/runbooks/per-tenant-container-flip.md` (validate on the 0%-traffic staging
+revision with a throwaway test tenant → flip via terraform/az → incremental legacy
+migration → rollback). The terraform default stays `shared` on purpose (flipping it
+without applying would let a later unrelated `terraform apply` flip prod
+unexpectedly); the flip is a deliberate, reversible ops action — code is ready, the
+apply requires terraform/az CLI. Read-path compatibility + container lifecycle were
+verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
+secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
+
 **Prior last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
 
 **Compute security-isolation finding (2026-07-23, added to the plan §3bis):**

@@ -333,8 +333,18 @@ schoon, 23 nieuwe unit-tests groen):
   `DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`, `DUCKDB_QUERY_TIMEOUT_MS`,
   `DUCKDB_POOL_MAX`.
 
-Nog te doen (volgende increments, in volgorde): Fase 1 (container-flip validatie +
-default), Fase 2 (jobs-worker split + Redis pub/sub + AOF + KEDA), Fase 3
+**Fase 1 (per-tenant container flip) — CODE-KLAAR** (2026-07-23): container-
+lifecycle test-coverage toegevoegd (`container.test.ts`, gemockte Azure-SDK: shared=
+no-op + offboarding-refuse, per-tenant create-once-memoised + delete, degradatie
+zonder conn-string) en de A0-fixes zijn al live. De daadwerkelijke flip is een
+gevalideerde ops-actie (vereist terraform/az CLI) — volledig runbook in
+`docs/runbooks/per-tenant-container-flip.md` (validatie op de 0%-traffic staging-
+revisie met een testtenant → flip → incrementele legacy-migratie → rollback). De
+terraform-default blijft bewust `shared` tot na validatie (anders flipt een latere
+ongerelateerde apply onbedoeld).
+
+Nog te doen (volgende increments, in volgorde): Fase 1 UITVOEREN (ops: valideren +
+flippen per runbook), Fase 2 (jobs-worker split + Redis pub/sub + AOF + KEDA), Fase 3
 (child-proces runnerpool + sizing), Fase 4 (legacy-migratie + auth-ontvlechting).
 
 | Fase | Inhoud | Effort | Dekt | Afhankelijkheid |
