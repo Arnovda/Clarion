@@ -2,7 +2,7 @@ import { Database } from 'duckdb-async';
 import path from 'path';
 import fs from 'fs';
 import { BaseConnector, SchemaResult, QueryResult, TableInfo, ColumnInfo } from './BaseConnector';
-import { getOrInit, invalidateByPrefix } from './DuckDBPool';
+import { getOrInit, invalidateByPrefix, beginQuery, endQuery } from './DuckDBPool';
 import {
   isAzurePath,
   setupDuckDBForWarehouse,
@@ -73,6 +73,9 @@ export class DuckDBConnector extends BaseConnector {
   private db: Database | null = null;
   private viewsCreated = false;
   private ownsDb = false;
+  /** Pool cache key for this connector (pooled mode only); lets executeQuery
+   *  register in-flight queries so the pool won't evict a busy instance. */
+  private poolKey: string | null = null;
 
   /**
    * @param warehousePath - Local path or az:// blob URI
@@ -140,6 +143,7 @@ export class DuckDBConnector extends BaseConnector {
 
     // Pooled path — views are pre-registered during init, so executeQuery is immediate.
     const cacheKey = this.cacheKey();
+    this.poolKey = cacheKey;
     this.db = await getOrInit(cacheKey, async (db) => {
       await this.loadExtensions(db);
       await this.createAllViews(db);
@@ -323,17 +327,42 @@ export class DuckDBConnector extends BaseConnector {
       this.viewsCreated = true;
     }
 
-    // Bound concurrency (global + per-tenant) before running the query.
-    const releaseGlobal = await globalQuerySem.acquire();
+    // Bound concurrency before running the query. Acquire the PER-TENANT
+    // permit FIRST, then the global one: a caller queued on its own per-tenant
+    // limit must not hold a global permit while it waits, or one busy tenant
+    // could occupy every global permit and starve the others (priority
+    // inversion). This way a tenant only consumes a global permit once it has
+    // cleared its own gate.
     const releaseTenant = await tenantQuerySem.acquire(this.tenantKey());
+    let releaseGlobal: () => void;
+    try {
+      releaseGlobal = await globalQuerySem.acquire();
+    } catch (err) {
+      releaseTenant();
+      throw err;
+    }
 
-    // Real query promise. The permit is released when it truly settles (not
-    // when the wall-clock timeout below fires), so concurrency stays honest
-    // even if the caller has already given up.
-    const queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
+    // Register this query with the pool so a busy shared instance is never
+    // evicted / closed mid-flight (no-op for ephemeral instances).
+    const poolEntry = this.poolKey ? beginQuery(this.poolKey) : null;
+
+    // Kick off the query, guarding against a synchronous throw (e.g. from
+    // capResultRows) leaking the permits we just took.
+    let queryPromise: Promise<Record<string, unknown>[]>;
+    try {
+      queryPromise = db.all(capResultRows(sql)) as Promise<Record<string, unknown>[]>;
+    } catch (err) {
+      endQuery(poolEntry);
+      releaseGlobal();
+      releaseTenant();
+      throw err;
+    }
+    // Release permits + the pool ref when the query TRULY settles (not when the
+    // wall-clock timeout below fires), so concurrency accounting stays honest
+    // even if the caller has already given up on the result.
     queryPromise.then(
-      () => { releaseTenant(); releaseGlobal(); },
-      () => { releaseTenant(); releaseGlobal(); },
+      () => { endQuery(poolEntry); releaseGlobal(); releaseTenant(); },
+      () => { endQuery(poolEntry); releaseGlobal(); releaseTenant(); },
     );
 
     const rawRows = QUERY_TIMEOUT_MS > 0
@@ -357,6 +386,7 @@ export class DuckDBConnector extends BaseConnector {
     // Pooled mode: just release our reference; the pool owns the DB.
     this.db = null;
     this.viewsCreated = false;
+    this.poolKey = null;
   }
 
   // ---------------------------------------------------------------------------

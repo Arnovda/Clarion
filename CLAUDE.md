@@ -97,6 +97,28 @@ direct prod deploy.
   legacy migration + auth untangling + the deferred DuckDB SET-lockdown /
   per-tenant SAS secret.
 
+**Post-review hardening (2026-07-23, same session):** An independent adversarial
+review of the compute changes found and we FIXED: (H1) the guard missed DuckDB's
+BARE-PATH replacement scan — `SELECT * FROM '/warehouse/tenant_<other>/x.parquet'`
+reads a file with no `read_*` function and (local paths) no URI scheme; added
+`markLiterals` + `FROM_LITERAL_RE` so a string literal in FROM/JOIN position is
+refused (`assertNoExternalAccess`). (H2) `DuckDBPool` eviction (evictOverCap /
+evictIdle / invalidateByPrefix) could close a shared instance mid-query, aborting
+every concurrent query on it; added an `active` in-flight counter
+(`beginQuery`/`endQuery`, wired through `DuckDBConnector.executeQuery`) — busy
+entries are skipped by eviction and invalidation defers the close until the last
+query settles. (M2) narrowed `URI_SCHEME_RE` to object-storage schemes only
+(dropped http/https/file) so legitimate URL/file *data* literals no longer
+false-positive. (M3) `resolveWidgetFilters` / `resolveFiltersFromQuery` / the
+`/execute` inline substitution now escape single quotes AND re-validate the
+FULLY-SUBSTITUTED SQL with `assertNoExternalAccess` — closes injection via a
+filter value in numeric/identifier context. (M1, acknowledged/deferred) the
+45s query timeout frees the caller but not the permit — a runaway query holds
+its permit for its real duration; true per-query kill is the Fase 3
+child-process runner. Semaphore itself reviewed clean (no leak/double-release/
+deadlock). Backend `npm run check` clean; 47 unit tests green (sqlGuard 21,
+semaphore 8, paths 22... i.e. guard + container-name coverage added).
+
 **Prior last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
 
 **Compute security-isolation finding (2026-07-23, added to the plan §3bis):**

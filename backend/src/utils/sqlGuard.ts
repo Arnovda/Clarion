@@ -63,10 +63,14 @@ const EXTERNAL_FNS = [
 // merely contains the word is ignored, but an actual call is caught).
 const EXTERNAL_FN_RE = new RegExp(`\\b(${EXTERNAL_FNS.join('|')})\\s*\\(`, 'i');
 
-// Remote / local filesystem URI schemes that must never appear as a path
-// literal in a read query. Scanned on the RAW sql (the path lives inside a
-// quote, so it survives literal-stripping only here).
-const URI_SCHEME_RE = /\b(az|azure|abfss?|s3a?|gs|gcs|r2|https?|file|hf|memory|duckdb)\s*:\/\//i;
+// Object-storage URI schemes that must never appear as a literal in a read
+// query — these virtually never occur as legitimate column data, so flagging
+// them is high-signal. Deliberately EXCLUDES http(s)/file/memory: those show up
+// as ordinary data (a `referrer` URL, a `file://` path column) and would
+// false-positive; the file/http *read* vectors are instead caught by the
+// function denylist above and the FROM-literal check below. Scanned on RAW sql
+// (the path lives inside a quote).
+const URI_SCHEME_RE = /\b(az|azure|abfss?|s3a?|gs|gcs|r2|hdfs)\s*:\/\//i;
 
 /**
  * Strip SQL comments, single-quoted string literals, dollar-quoted strings,
@@ -82,6 +86,29 @@ function stripLiterals(sql: string): string {
   s = s.replace(/"(?:[^"]|"")*"/g, ' ');    // double-quoted identifiers
   return s;
 }
+
+/**
+ * Like `stripLiterals` but replaces string literals with a distinct sentinel
+ * (`@STRLIT@`) and double-quoted identifiers with `@IDENT@`, so we can tell
+ * WHERE a string literal sat in the statement. Used to catch DuckDB's bare
+ * replacement scan — `FROM '/path/file.parquet'` / `FROM 'az://...'` — which
+ * reads a file with no `read_*` function and (for local paths) no URI scheme.
+ */
+function markLiterals(sql: string): string {
+  let s = sql;
+  s = s.replace(/--[^\n]*/g, ' ');
+  s = s.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  s = s.replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, ' @STRLIT@ ');
+  s = s.replace(/'(?:[^']|'')*'/g, ' @STRLIT@ ');
+  s = s.replace(/"(?:[^"]|"")*"/g, ' @IDENT@ ');
+  return s;
+}
+
+// A single-quoted string literal sitting in table position (directly after
+// FROM or JOIN) is never a real table reference — tables are identifiers,
+// subqueries, or function calls. It IS DuckDB's replacement-scan syntax for
+// reading a file/URI by path. Zero false positives on legitimate SQL.
+const FROM_LITERAL_RE = /\b(from|join)\s+@STRLIT@/i;
 
 /**
  * Throw `UnsafeSqlError` unless `sql` is a single read-only SELECT/WITH query.
@@ -137,10 +164,16 @@ export function isSelectOnly(sql: string): boolean {
  */
 export function assertNoExternalAccess(sql: string): void {
   if (typeof sql !== 'string') return;
-  // URI literals: scan the raw SQL (the path lives inside a quote).
+  // Object-storage URI literals: scan the raw SQL (the path lives inside a quote).
   const uri = URI_SCHEME_RE.exec(sql);
   if (uri) {
     throw new UnsafeSqlError(`external path/URI literal "${uri[1].toLowerCase()}://"`);
+  }
+  // Bare replacement scan: a string literal in FROM/JOIN position reads a file
+  // by path (catches local paths + any scheme, e.g. `FROM '/warehouse/tenant_x/…'`).
+  const marked = markLiterals(sql);
+  if (FROM_LITERAL_RE.test(marked)) {
+    throw new UnsafeSqlError('path literal in FROM/JOIN position (replacement scan)');
   }
   // Table/scalar functions that read arbitrary paths: scan literal-stripped SQL
   // so a string merely containing the word is ignored but a real call is caught.
