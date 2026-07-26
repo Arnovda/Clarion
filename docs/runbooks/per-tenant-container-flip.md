@@ -3,9 +3,10 @@
 **Doel:** `WAREHOUSE_CONTAINER_MODE` van `shared` (padprefix-isolatie in code) naar
 `per-tenant` (één Azure Blob-container per tenant = harde storage-grens + één-klik
 offboarding).
-**Status:** code-klaar. De daadwerkelijke flip is een bewuste ops-actie (vereist
-`terraform`/`az` CLI) omdat het per-tenant write-pad nog nooit tegen echte
-per-tenant containers is uitgevoerd — daarom eerst valideren, dan flippen.
+**Status:** code-klaar én **`per-tenant` is nu de Terraform-default**
+(`infra/variables.tf`). Er is nog één actie nodig om het in de draaiende app te
+activeren: Terraform/az moet de env-var op de Container App zetten (CI draait geen
+terraform) — zie **Stap 2**. `shared` blijft bestaan als rollback-pad.
 **Omkeerbaar:** ja. De flip verandert alléén waar NIEUWE writes landen; bestaande
 data blijft leesbaar (absolute URI's, verbatim gelezen). Flag terug = nieuwe writes
 weer shared.
@@ -15,7 +16,7 @@ weer shared.
 ## Wat al klaar is (code, gedeployed)
 
 - `WAREHOUSE_CONTAINER_MODE=per-tenant` schakelt het pad om (`services/warehouse/paths.ts`,
-  `container.ts`). Default staat nog op `shared`.
+  `container.ts`). **Terraform-default staat sinds 2026-07-23 op `per-tenant`.**
 - **A0 pre-flip fixes** (live): `assertValidContainerName` (3–63 chars, lowercase,
   enkele interne hyphens) in `warehouseContainer()`; `getProductWarehousePath` is
   tenant-aware (geen shared-root-cachekey meer in per-tenant mode).
@@ -80,27 +81,36 @@ az containerapp update -n "$APP" -g "$RG" \
 Als iets faalt: rol de staging-revisie terug (`--set-env-vars WAREHOUSE_CONTAINER_MODE=shared`)
 en fix vóór de echte flip.
 
-## Stap 2 — de flip naar productie
+## Stap 2 — activeren in productie (de enige nog vereiste actie)
 
-**Bron van waarheid is Terraform** (`infra/variables.tf` → `main.tf:683` zet de env).
-`deploy.yml` draait GEEN terraform, dus de env verandert alleen via een expliciete apply.
+De Terraform-default zegt al `per-tenant`, maar **een merge alleen verandert de
+draaiende app niet**: `deploy.yml` draait geen terraform, dus de env-var
+`WAREHOUSE_CONTAINER_MODE` op de Container App moet één keer worden gezet.
 
-Optie A — Terraform (persistent, aanbevolen):
+Optie A — Terraform (persistent, aanbevolen; default is al per-tenant):
 ```bash
 cd infra
-terraform apply -var="warehouse_container_mode=per-tenant"
-# of: zet default = "per-tenant" in variables.tf en `terraform apply`
+terraform apply          # zet WAREHOUSE_CONTAINER_MODE=per-tenant op de backend app
 ```
 
-Optie B — snelle env-override (neem daarna Optie A over, anders reset de volgende
-`terraform apply` het weer naar shared):
+Optie B — direct via az (snelst; Terraform-default zegt hetzelfde, dus geen drift):
 ```bash
+RG=<AZURE_RESOURCE_GROUP>
+APP=<backend app name>        # az containerapp list -g "$RG" --query "[].name" -o tsv
+
 az containerapp update -n "$APP" -g "$RG" \
   --set-env-vars WAREHOUSE_CONTAINER_MODE=per-tenant
-# promote deze revisie naar 100% traffic (Promote-workflow of):
+
+# De nieuwe revisie landt op 0% traffic (test-first model). Live zetten:
 REV=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)
 az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$REV=100"
 ```
+Of, gelijkwaardig: draai de **Promote to production**-workflow (backend) nadat de
+env-var is gezet — die schuift het verkeer naar de nieuwste revisie.
+
+**Verifieer daarna** in de backend-logs bij de eerste sync: container
+`tenant-<id>` wordt aangemaakt en `connections.warehouse_path` persist als
+`az://tenant-<id>/conn_<cid>`.
 
 Na de flip: monitor de eerste echte syncs (container-creatie + writes) en de eerste
 transformatie (sidecar). Gemengde staat is normaal en ontworpen: oude data shared,
@@ -118,7 +128,10 @@ voor een bron pijnlijk zijn.
 
 ```bash
 az containerapp update -n "$APP" -g "$RG" --set-env-vars WAREHOUSE_CONTAINER_MODE=shared
-# en Terraform terug naar default "shared" bij de volgende apply.
+REV=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)
+az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$REV=100"
 ```
+Zet daarnaast `warehouse_container_mode = "shared"` (of `-var=`) zodat een latere
+`terraform apply` de rollback niet terugdraait.
 Nieuwe writes gaan weer naar de shared container; per-tenant containers die al data
 bevatten blijven leesbaar (absolute URI's in de DB). Geen dataverlies.

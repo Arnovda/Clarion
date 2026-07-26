@@ -106,8 +106,8 @@ variable "custom_domain" {
 
 variable "warehouse_container_mode" {
   type        = string
-  default     = "shared"
-  description = "Warehouse tenant-isolation mode. 'shared' = one Blob container, tenants separated by tenant_<id>/ prefix (code-enforced). 'per-tenant' = one Blob container per tenant (hard storage boundary + one-call offboarding). Behaviour-preserving default; flip only after staging validation."
+  default     = "per-tenant"
+  description = "Warehouse tenant-isolation mode. 'per-tenant' (DEFAULT since 2026-07-23) = one Blob container per tenant: a hard storage boundary (a worker SAS scoped to tenant-42 physically cannot touch tenant-43) plus one-call GDPR offboarding. 'shared' = one Blob container with tenants separated by a tenant_<id>/ prefix enforced only in application code — the legacy mode, kept as the rollback path. Switching modes is safe in both directions: it only changes where NEW writes land; existing data keeps reading because warehouse_path/delta_path are stored as absolute URIs. See docs/runbooks/per-tenant-container-flip.md."
   validation {
     condition     = contains(["shared", "per-tenant"], var.warehouse_container_mode)
     error_message = "warehouse_container_mode must be 'shared' or 'per-tenant'."
