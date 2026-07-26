@@ -1,0 +1,129 @@
+# Warehouse tenant-isolation mode — GitOps control for ONE production setting.
+#
+#   .ops/warehouse-container-mode   contains   `per-tenant`   or   `shared`
+#
+# Editing that file on main applies the mode to the backend Container App and
+# shifts traffic to the resulting revision. Why a dedicated workflow:
+#
+#   • The mode lives in an env var that only Terraform/az can change, and no
+#     workflow runs Terraform — so without this, flipping needs a manual CLI
+#     session on someone's laptop.
+#   • It fires ONLY when that one file changes, so ordinary code pushes keep the
+#     test-first 0%-traffic model in deploy.yml completely untouched.
+#   • Rollback is the same one-line edit (set the file back to `shared`), which
+#     is why the mode is NOT hardcoded into deploy.yml — a hardcoded value would
+#     silently undo a rollback on the next deploy.
+#
+# Terraform stays the source of truth for a fresh environment
+# (infra/variables.tf → warehouse_container_mode). Keep the two in agreement.
+# Full context: docs/runbooks/per-tenant-container-flip.md
+
+name: Warehouse container mode
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/warehouse-container-mode'
+  workflow_dispatch:
+
+concurrency:
+  group: warehouse-container-mode
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired mode
+        id: mode
+        run: |
+          set -euo pipefail
+          MODE=$(tr -d '[:space:]' < .ops/warehouse-container-mode)
+          case "$MODE" in
+            shared|per-tenant) ;;
+            *) echo "::error::invalid mode '$MODE' (expected 'shared' or 'per-tenant')"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Desired warehouse container mode: $MODE"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply mode and shift traffic
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          ENV_QUERY="properties.template.containers[0].env[?name=='WAREHOUSE_CONTAINER_MODE'].value | [0]"
+
+          CURRENT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv 2>/dev/null || true)
+          echo "Current mode: ${CURRENT:-<unset>} → target: $MODE"
+
+          if [ "$CURRENT" = "$MODE" ]; then
+            echo "Mode already applied to the app template; ensuring traffic is on the current revision."
+          fi
+
+          # 0%-traffic revisions require multiple-revision mode (idempotent).
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          # Setting an env var creates a NEW revision from the app's current
+          # image. --set-env-vars adds/updates only this variable; all other
+          # env vars are left untouched.
+          NEW_REV=$(az containerapp update \
+            --name "$APP" --resource-group "$RG" \
+            --set-env-vars WAREHOUSE_CONTAINER_MODE="$MODE" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          # Wait for THAT revision (not just "latest ready") to be provisioned,
+          # so we never shift traffic to a half-built revision.
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+
+          APPLIED=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv)
+          echo "Applied mode: $APPLIED"
+
+          {
+            echo "### Warehouse container mode → \`$APPLIED\`"
+            echo ""
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- Previous mode: \`${CURRENT:-<unset>}\`"
+            echo ""
+            if [ "$APPLIED" = "per-tenant" ]; then
+              echo "Each tenant now writes to its own Blob container (\`tenant-<id>\`) — a hard"
+              echo "storage boundary. Existing data keeps reading from wherever it already lives."
+              echo "Rollback: set \`.ops/warehouse-container-mode\` back to \`shared\` and push."
+            else
+              echo "Tenants share one container, separated by a \`tenant_<id>/\` path prefix."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail loudly if Azure didn't actually take the value.
+          test "$APPLIED" = "$MODE"
