@@ -133,6 +133,20 @@ apply requires terraform/az CLI. Read-path compatibility + container lifecycle w
 verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
 secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
 
+**✅ PER-TENANT CONTAINERS ARE LIVE IN PRODUCTION (verified 2026-07-26).** Workflow
+run "Warehouse container mode" #1 (`30205852430`) succeeded: revision `…--0000322`
+created and `Provisioned`, traffic table shows it at **weight 100** (previous
+revision 0), and the workflow's read-back reported **`Applied mode: per-tenant`**
+with the `test "$APPLIED" = "$MODE"` assertion passing — so this is confirmed from
+Azure, not inferred. The revision runs the newest backend image (`main-79cd750`, the
+last backend build = everything through the review fixes), so the **P0 security guard
++ Fase 0 compute guards went live in the same traffic shift**. NOT yet validated (the
+deliberately skipped staging run): the per-tenant WRITE path end-to-end — first real
+sync creating `tenant-<id>` and the Delta sidecar writing a product table. Watch the
+first sync/transformation per tenant; a `ContainerNotFound` on a transformation is the
+signature to look for. Rollback = set `.ops/warehouse-container-mode` to `shared` and
+push.
+
 **FLIP EXECUTED VIA NEW GITOPS CONTROL (2026-07-23, owner: "ik wil dat jij alles
 doet"):** Since no CLI/credentials exist in the session sandbox and
 `workflow_dispatch` is 403 for the integration token, the only automation vehicle
