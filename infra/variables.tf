@@ -135,6 +135,16 @@ variable "backend_min_replicas" {
   description = "Minimum backend replicas. Kept at 0 (scale-to-zero) on purpose: once BullMQ workers move to the jobs-worker app, nothing in the backend needs to be always-on, so scaling to zero costs only a cold start on the first request instead of ~EUR 65/month of idle compute. Set to 1 if cold starts for business users are unacceptable."
 }
 
+variable "backend_role" {
+  type        = string
+  default     = "api"
+  description = "ROLE env var for the backend app. 'api' = HTTP only, background jobs are the jobs-worker's responsibility (the split). 'all' = the legacy single-process behaviour where the API also hosts every BullMQ worker — set this to roll the split back without deleting the worker app."
+  validation {
+    condition     = contains(["api", "all"], var.backend_role)
+    error_message = "backend_role must be 'api' or 'all'."
+  }
+}
+
 variable "jobs_worker_cpu" {
   type        = number
   default     = 1.0

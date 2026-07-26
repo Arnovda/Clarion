@@ -133,6 +133,54 @@ apply requires terraform/az CLI. Read-path compatibility + container lifecycle w
 verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
 secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
 
+**Fase 2 jobs-worker split — CODE + INFRA WRITTEN, awaiting `terraform apply`
+(2026-07-26).** A plumbing audit corrected the plan: **SSE job progress already
+works cross-process** (`job.log()` → Redis → the stream route polls `getJobLogs`),
+so no pub/sub was needed there. What genuinely broke is now fixed:
+- **`jobs/cancellation.ts`** — Redis is the authoritative channel (`cancelJob`
+  SETs a key, `isJobCancelled` is now async — the orchestrator's `isCancelled`
+  hook already allowed `Promise<boolean>`); `watchForCancellation` polls so the
+  worker can `abort()` an in-flight AI stream, which no checkpoint can interrupt.
+- **`SyncOrchestrator.requestCancellation`** — a SECOND, undocumented registry
+  with the same flaw (a pipeline-started sync registers its handle in the worker
+  while the cancel route runs in the API → 404 on a live run). Now async and
+  proves tenant ownership against `source_sync_runs` when the handle is remote.
+- **`jobs/cacheBus.ts` (the silent one)** — widgetCache / filterOptionsCache /
+  DuckDBPool are invalidated from ONE block in `transformationRunner`; after the
+  split that clears the *worker's* unused caches while the API serves
+  pre-refresh rows, stale filter dropdowns and pooled DuckDB sessions whose
+  registered VIEWS point at the old file set — no error, up to 5/30/30 min. That
+  block now also publishes on a Redis pub/sub channel every process subscribes
+  to (`subscribeToInvalidations()` in both roles).
+- **`ROLE` flag** in `index.ts`: `api` | `worker` | unset(=both, today's
+  behaviour, so local dev is unchanged). Everything behind the guard — workers,
+  schedule loaders, crash recovery, the 5-min reaper — is owned by exactly one
+  process: those reapers mark rows stale on AGE ALONE with no owner/heartbeat,
+  so two containers running them would mis-reap each other's healthy in-flight
+  work.
+- **Terraform**: `azurerm_container_app.jobs_worker` (same image, `ROLE=worker`,
+  no ingress, own sizing + blob/job/ACS role assignments), `backend_role`
+  (default `api`; set `all` to roll the split back), parameterised backend
+  sizing (now 1 vCPU / 2Gi; `backend_min_replicas` deliberately stays 0 — once
+  workers move out nothing needs to be always-on). **`jobs_worker_min_replicas`
+  MUST be ≥1**: BullMQ delayed/repeatable jobs are promoted by a *running*
+  worker, so at 0 replicas scheduled work never fires — which is also why KEDA
+  queue-depth scaling can't be the wake-up mechanism (a delayed job isn't queue
+  depth yet). This is the split's one always-on cost (~EUR 65/mo at 1 vCPU/2Gi).
+- **`deploy.yml`** gained a jobs-worker step pinning the immutable per-commit tag
+  (same lesson as the sync-worker `:main-latest` cache bug); it skips silently
+  until the app exists, so merging before the apply is safe.
+- **Redis AOF deliberately NOT enabled** — Postgres is the source of truth for
+  schedules and `jobs/scheduleReconciler.ts` re-registers repeatables on a Redis
+  reconnect (the loaders already ran at boot). AOF on a Container App's ephemeral
+  filesystem would persist nothing anyway.
+- **Also opt-in, default OFF**: `applySessionLockdown` (`DUCKDB_SESSION_LOCKDOWN=1`)
+  blocks DuckDB's LocalFileSystem on Azure sessions. `enable_external_access=false`
+  is NOT usable — it would kill the `az://` reads the platform depends on.
+- **NOT validated here**: no `terraform` binary in the sandbox, so the new HCL is
+  brace-balanced and hand-checked but never `terraform validate`d/`plan`ned. The
+  apply is manual, so plan is the gate.
+
 **✅ PER-TENANT CONTAINERS ARE LIVE IN PRODUCTION (verified 2026-07-26).** Workflow
 run "Warehouse container mode" #1 (`30205852430`) succeeded: revision `…--0000322`
 created and `Provisioned`, traffic table shows it at **weight 100** (previous

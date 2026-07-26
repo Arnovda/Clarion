@@ -343,9 +343,41 @@ revisie met een testtenant → flip → incrementele legacy-migratie → rollbac
 terraform-default blijft bewust `shared` tot na validatie (anders flipt een latere
 ongerelateerde apply onbedoeld).
 
-Nog te doen (volgende increments, in volgorde): Fase 1 UITVOEREN (ops: valideren +
-flippen per runbook), Fase 2 (jobs-worker split + Redis pub/sub + AOF + KEDA), Fase 3
-(child-proces runnerpool + sizing), Fase 4 (legacy-migratie + auth-ontvlechting).
+**Fase 2 (jobs-worker split) — CODE + INFRA GESCHREVEN, wacht op `terraform apply`**
+(2026-07-26). Een plumbing-audit corrigeerde één aanname uit dit plan: **SSE-progress
+werkt al cross-process** — `job.log()` schrijft naar Redis en de stream-route poll't
+dat via `getJobLogs`, dus daar was niets aan te doen. Wat wél brak is verwerkt:
+- `jobs/cancellation.ts` — Redis is nu het gezaghebbende kanaal; `isJobCancelled` is
+  async (de `isCancelled`-hook stond dat al toe) en `watchForCancellation` laat de
+  worker een lopende AI-stream aborten, wat geen checkpoint kan.
+- `SyncOrchestrator.requestCancellation` — tweede, niet-gedocumenteerd registry met
+  hetzelfde probleem (een pipeline-sync registreert zijn handle in de worker terwijl
+  de cancel-route in de API draait → 404 op een lopende run). Eigenaarschap wordt nu
+  tegen de database bewezen als de handle elders zit.
+- `jobs/cacheBus.ts` — **het stille risico**: widgetCache / filterOptionsCache /
+  DuckDBPool worden vanuit één plek in `transformationRunner` geleegd; na de split
+  leegt dat de caches van de wórker en serveert de API pre-refresh data zonder
+  enige foutmelding. Die plek publiceert nu op een Redis pub/sub-kanaal waar elk
+  proces op subscribet.
+- `ROLE`-flag in `index.ts` (`api` | `worker` | leeg = beide). Alles achter de guard
+  — workers, schedules, crash-recovery, reapers — hoort bij precies één proces: die
+  reapers markeren rijen op leeftijd zonder owner/heartbeat, dus in twee containers
+  zouden ze elkaars gezonde werk als vastgelopen wegschrijven.
+- Terraform: `azurerm_container_app.jobs_worker` (zelfde image, `ROLE=worker`, geen
+  ingress, eigen sizing + rol-toewijzingen), `backend_role` (default `api`,
+  terugdraaien met `all`), en een deploy-stap die de worker hetzelfde per-commit
+  image geeft (skipt zolang de app niet bestaat).
+- **Niet gebruikt: KEDA queue-depth scaling.** BullMQ's delayed jobs worden door een
+  *lopende* worker gepromoveerd, dus op 0 replicas vuurt er niets en is er ook geen
+  queue-diepte om op te schalen. `jobs_worker_min_replicas = 1` is daarom een eis,
+  geen voorkeur — en de enige structurele always-on kost van de split.
+- **Redis AOF: bewust niet gedaan.** Zie §Fase 0-notitie: Postgres is bron van
+  waarheid en `scheduleReconciler` herstelt na een Redis-reconnect. AOF op een
+  ephemeral Container App-filesystem levert niets op.
+
+Nog te doen: Fase 2 `terraform apply` (creëert de worker-app), Fase 3 (child-proces
+runnerpool — de enige echte per-query-kill), Fase 4 (legacy-migratie +
+auth-ontvlechting + de opt-in DuckDB-lockdown live valideren).
 
 | Fase | Inhoud | Effort | Dekt | Afhankelijkheid |
 |---|---|---|---|---|

@@ -259,6 +259,35 @@ jobs:
             echo "When it works → Actions tab → **Promote to production** → Run workflow.";
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The jobs-worker runs the SAME image as the backend with ROLE=worker.
+      # It has no ingress and no traffic split, so there is nothing to promote —
+      # it just takes the new image directly. Skipped silently until the app
+      # exists (it is created by `terraform apply`, which is a manual step), so
+      # this is safe to merge before the infra lands.
+      #
+      # Pinning the immutable per-commit tag matters here for the same reason it
+      # does for the sync-worker job: a mutable :main-latest tag can be served
+      # from a cached image, leaving background work running old code while
+      # every build reports success.
+      - name: Deploy jobs-worker
+        if: needs.changes.outputs.backend == 'true'
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          WORKER_APP="${APP%-backend}-jobs-worker"
+          if ! az containerapp show --name "$WORKER_APP" --resource-group "$RG" >/dev/null 2>&1; then
+            echo "::notice::$WORKER_APP does not exist yet (run terraform apply to create it) — skipping."
+            exit 0
+          fi
+          az containerapp update \
+            --name "$WORKER_APP" \
+            --resource-group "$RG" \
+            --image ${{ env.ACR_REGISTRY }}/databridge-backend:$TAG
+          echo "### ⚙️ jobs-worker updated to \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Deploy frontend (test revision, 0% traffic)
         if: needs.changes.outputs.frontend == 'true'
         env:
