@@ -72,6 +72,7 @@ import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
 import { loadPipelineSchedules } from './jobs/pipelineScheduler';
 import { startScheduleReconciler } from './jobs/scheduleReconciler';
+import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
@@ -304,6 +305,11 @@ if (!process.env.VITEST) {
     // truth. If Redis restarts without the API restarting, the repeatables are
     // gone and cron work stops silently — this re-registers them on reconnect.
     startScheduleReconciler();
+    // Listen for cache invalidations published by other processes. Without
+    // this, a transformation running in the jobs-worker container clears only
+    // its own caches and this process keeps serving pre-refresh widget rows,
+    // stale filter options, and pooled DuckDB views over the old file set.
+    subscribeToInvalidations();
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
@@ -490,6 +496,7 @@ if (!process.env.VITEST) {
     await stopWorkers();
     await closeScheduler();
     await closeQueues();
+    await closeCacheBus();
     await closeRedis();
     await closeDriver();
   }

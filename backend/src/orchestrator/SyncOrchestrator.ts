@@ -48,6 +48,7 @@ import { profilingProgressPct } from '../services/profilingProgress';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notifyAdmins } from '../services/notificationService';
 import { tenantQuery } from '../services/tenantQuery';
+import { getRedisConnection } from '../jobs/redis';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -430,6 +431,9 @@ async function runSyncInBackground(args: {
 
     // Register cancellation handle so requestCancellation(syncRunId) can hit it.
     cancellationHandles.set(syncRunId, { handle, tenantId });
+    // …and watch for a request raised in another process (the cancel endpoint
+    // runs in the API container; this sync may have been started by a worker).
+    const stopSyncCancelWatch = watchSyncCancellation(syncRunId, handle);
 
     // Wall-clock guard. If the worker exceeds the ceiling, cancel it (the
     // launcher escalates SIGTERM → SIGKILL). `handle.done` still resolves
@@ -446,6 +450,7 @@ async function runSyncInBackground(args: {
       ({ exitCode } = await handle.done);
     } finally {
       clearTimeout(timeoutTimer);
+      stopSyncCancelWatch();
     }
     cancellationHandles.delete(syncRunId);
     if (timedOut && exitCode !== EXIT_OK) {
@@ -694,12 +699,66 @@ const cancellationHandles = new Map<number, CancellationEntry>();
  *   • `'forbidden'` — handle found but tenant doesn't match (HTTP 404 from
  *     the route layer to avoid leaking existence)
  */
-export function requestCancellation(syncRunId: number, tenantId: number): 'cancelled' | 'not_found' | 'forbidden' {
+const SYNC_CANCEL_TTL_SECONDS = 6 * 60 * 60;
+
+function syncCancelKey(syncRunId: number): string {
+  return `sync-cancel:${syncRunId}`;
+}
+
+export async function requestCancellation(
+  syncRunId: number,
+  tenantId: number,
+): Promise<'cancelled' | 'requested' | 'not_found' | 'forbidden'> {
   const entry = cancellationHandles.get(syncRunId);
-  if (!entry) return 'not_found';
-  if (entry.tenantId !== tenantId) return 'forbidden';
-  entry.handle.cancel();
-  return 'cancelled';
+  if (entry) {
+    if (entry.tenantId !== tenantId) return 'forbidden';
+    entry.handle.cancel();
+    return 'cancelled';
+  }
+
+  // Not running in THIS process. A sync started by a pipeline or product
+  // refresh runs in the jobs-worker container, so its handle lives there and
+  // the in-memory lookup above always misses — without this the cancel
+  // endpoint would 404 on a perfectly valid, actively-running sync.
+  const redis = getRedisConnection();
+  if (!redis) return 'not_found';
+
+  // The in-memory path proves ownership via the registry; here we must prove it
+  // against the database instead, so one tenant can't cancel another's run.
+  const row = await semanticDb('source_sync_runs')
+    .where({ id: syncRunId, tenant_id: tenantId })
+    .first();
+  if (!row) return 'not_found';
+  if (row.status !== 'queued' && row.status !== 'running') return 'not_found';
+
+  try {
+    await redis.set(syncCancelKey(syncRunId), '1', 'EX', SYNC_CANCEL_TTL_SECONDS);
+  } catch (err) {
+    log.error({ err, syncRunId }, 'Failed to record sync cancellation intent');
+    return 'not_found';
+  }
+  return 'requested';
+}
+
+/**
+ * Poll for a cancellation request raised in another process and cancel the
+ * local worker handle when one arrives. Returns a stop function.
+ */
+function watchSyncCancellation(syncRunId: number, handle: JobHandle, intervalMs = 5000): () => void {
+  const redis = getRedisConnection();
+  if (!redis) return () => { /* nothing to watch */ };
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        if (await redis.get(syncCancelKey(syncRunId))) {
+          log.info({ syncRunId }, 'Sync cancellation requested elsewhere — cancelling worker');
+          handle.cancel();
+        }
+      } catch { /* transient — retry next tick */ }
+    })();
+  }, intervalMs);
+  if (timer.unref) timer.unref();
+  return () => clearInterval(timer);
 }
 
 // ─── Schema profiling trigger ────────────────────────────────────────────

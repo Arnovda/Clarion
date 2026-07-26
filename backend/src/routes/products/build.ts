@@ -402,11 +402,15 @@ router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), asyn
         jobId,
         priorState: state,
         aborted,
+        // `aborted` is true only when the running job happens to live in THIS
+        // process. With Redis configured the request is also recorded there, so
+        // a worker in another container picks it up at its next checkpoint or
+        // cancellation poll — the message must not imply nothing happened.
         message: aborted
           ? 'Cancellation signal sent — the worker will stop at the next safe checkpoint.'
           : (state === 'waiting' || state === 'delayed')
             ? 'Job removed from the queue before it started.'
-            : 'Cancellation flag set; worker is not currently active in this process.',
+            : 'Cancellation requested — the worker will stop at its next checkpoint.',
       },
     });
   } catch (err) {

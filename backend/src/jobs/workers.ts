@@ -10,7 +10,7 @@
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
 import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData } from './queues';
-import { registerJobAbortController, unregisterJob, isJobCancelled } from './cancellation';
+import { registerJobAbortController, unregisterJob, isJobCancelled, watchForCancellation } from './cancellation';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
@@ -167,10 +167,15 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
   const controller = new AbortController();
   registerJobAbortController(jobId, controller);
 
-  if (isJobCancelled(jobId)) {
+  if (await isJobCancelled(jobId)) {
     unregisterJob(jobId);
     throw new Error('Cancelled before start');
   }
+
+  // Cancellation may be requested from the API process, which cannot reach this
+  // controller. Checkpoints catch it between steps; this poll is what aborts an
+  // in-flight AI stream. No-op without Redis (single-process dev).
+  const stopCancelWatch = watchForCancellation(jobId);
 
   // Shared event emitter — both refresh + design orchestrators use the same
   // OrchestratorEvent union, so the type is imported at the top of the file.
@@ -251,6 +256,7 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
 
     return { products: result.products.length, allOk: result.allOk };
   } finally {
+    stopCancelWatch();
     unregisterJob(jobId);
   }
 }

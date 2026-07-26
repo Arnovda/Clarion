@@ -16,6 +16,7 @@ import { syncProductToNeo4j } from './productGraphSync';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { invalidateWidgetCache } from './widgetCache';
 import { invalidateFilterOptionsCache } from './filterOptionsCache';
+import { publishInvalidation } from '../jobs/cacheBus';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import {
   publishProductTable,
@@ -899,6 +900,13 @@ export async function runProductTransformation(
       invalidateWidgetCache(tenantId);
       invalidateFilterOptionsCache(tenantId);
     }
+
+    // Broadcast the same invalidation to other processes. When this runs in the
+    // jobs-worker container the three clears above only affect the worker's own
+    // (unused) caches — the API container would keep serving pre-refresh widget
+    // rows, stale filter dropdowns, and pooled DuckDB sessions whose registered
+    // views still point at the old file set. No-op without Redis.
+    publishInvalidation({ tenantId: tenantId ?? undefined, warehousePath });
   }
 
   const successCount = results.filter((r) => r.status === 'success').length;

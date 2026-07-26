@@ -385,7 +385,7 @@ router.post(
     try {
       const syncRunId = Number(req.params.syncRunId);
       // Pass tenantId — registry validates the run belongs to this tenant.
-      const result = requestCancellation(syncRunId, req.user!.tenantId);
+      const result = await requestCancellation(syncRunId, req.user!.tenantId);
       if (result === 'forbidden' || result === 'not_found') {
         // Treat both the same to avoid leaking which sync_run_ids exist
         // for other tenants.
