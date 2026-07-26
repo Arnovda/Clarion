@@ -71,6 +71,7 @@ import { loadSchedules, closeScheduler } from './jobs/scheduler';
 import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
 import { loadPipelineSchedules } from './jobs/pipelineScheduler';
+import { startScheduleReconciler } from './jobs/scheduleReconciler';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
@@ -299,6 +300,10 @@ if (!process.env.VITEST) {
     // triggers are evaluated in-process in SyncOrchestrator; nothing to
     // pre-load for those.
     loadPipelineSchedules().catch(err => logger.error({ err }, 'Pipeline schedule loading error'));
+    // Redis holds the repeatable-job registrations but Postgres is the source of
+    // truth. If Redis restarts without the API restarting, the repeatables are
+    // gone and cron work stops silently — this re-registers them on reconnect.
+    startScheduleReconciler();
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {

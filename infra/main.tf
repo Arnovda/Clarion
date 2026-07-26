@@ -543,14 +543,14 @@ resource "azurerm_container_app" "backend" {
   }
 
   template {
-    min_replicas = 0
+    min_replicas = var.backend_min_replicas
     max_replicas = 3
 
     container {
       name   = "backend"
       image  = "${azurerm_container_registry.main.login_server}/databridge-backend:main-latest"
-      cpu    = 0.5
-      memory = "1Gi"
+      cpu    = var.backend_cpu
+      memory = var.backend_memory
 
       env {
         name  = "PORT"
