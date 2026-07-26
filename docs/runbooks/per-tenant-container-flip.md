@@ -81,13 +81,21 @@ az containerapp update -n "$APP" -g "$RG" \
 Als iets faalt: rol de staging-revisie terug (`--set-env-vars WAREHOUSE_CONTAINER_MODE=shared`)
 en fix vóór de echte flip.
 
-## Stap 2 — activeren in productie (de enige nog vereiste actie)
+## Stap 2 — activeren in productie
 
 De Terraform-default zegt al `per-tenant`, maar **een merge alleen verandert de
 draaiende app niet**: `deploy.yml` draait geen terraform, dus de env-var
-`WAREHOUSE_CONTAINER_MODE` op de Container App moet één keer worden gezet.
+`WAREHOUSE_CONTAINER_MODE` op de Container App moet gezet worden.
 
-Optie A — Terraform (persistent, aanbevolen; default is al per-tenant):
+**Optie 0 — de GitOps-control (nu het standaardpad):**
+Zet `.ops/warehouse-container-mode` op `per-tenant` (of `shared`) en push naar
+`main`. De workflow **Warehouse container mode**
+(`.github/workflows/warehouse-container-mode.yml`) zet de env-var, wacht tot de
+nieuwe revisie is geprovisioneerd en schuift 100% traffic ernaartoe. Werkt in
+beide richtingen, dus dit is ook het rollback-pad. Firet alleen op dat ene
+bestand, dus code-deploys houden hun 0%-traffic test-first-model.
+
+Optie A — Terraform (bron van waarheid voor een verse omgeving):
 ```bash
 cd infra
 terraform apply          # zet WAREHOUSE_CONTAINER_MODE=per-tenant op de backend app
@@ -126,12 +134,16 @@ voor een bron pijnlijk zijn.
 
 ## Rollback
 
+Snelste pad — zet `.ops/warehouse-container-mode` op `shared` en push naar `main`;
+de workflow draait de flip terug (env-var + traffic shift).
+
+Handmatig equivalent:
 ```bash
 az containerapp update -n "$APP" -g "$RG" --set-env-vars WAREHOUSE_CONTAINER_MODE=shared
 REV=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestReadyRevisionName -o tsv)
 az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$REV=100"
 ```
-Zet daarnaast `warehouse_container_mode = "shared"` (of `-var=`) zodat een latere
-`terraform apply` de rollback niet terugdraait.
+Zet daarnaast `warehouse_container_mode = "shared"` in `infra/variables.tf` zodat een
+latere `terraform apply` de rollback niet terugdraait.
 Nieuwe writes gaan weer naar de shared container; per-tenant containers die al data
 bevatten blijven leesbaar (absolute URI's in de DB). Geen dataverlies.
