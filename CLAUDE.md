@@ -133,6 +133,23 @@ apply requires terraform/az CLI. Read-path compatibility + container lifecycle w
 verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
 secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
 
+**FLIP DONE IN CONFIG (2026-07-23, owner asked for per-tenant to be live NOW):**
+`infra/variables.tf` `warehouse_container_mode` default is now **`per-tenant`**
+(was `shared`); `shared` remains the documented rollback path. IMPORTANT
+OPERATIONAL FACT: merging this changes NOTHING at runtime — no workflow runs
+terraform (`grep terraform .github/workflows` = 0 hits), so the Container App keeps
+whatever `WAREHOUSE_CONTAINER_MODE` its last apply set until someone runs
+`terraform apply` (infra/) or `az containerapp update --set-env-vars
+WAREHOUSE_CONTAINER_MODE=per-tenant` + a traffic shift. Both commands are in
+`docs/runbooks/per-tenant-container-flip.md` §Stap 2. This session could not execute
+either: no terraform/az binaries in the sandbox and no Azure credentials (they are
+GitHub secrets), and `workflow_dispatch` returns 403 "Resource not accessible by
+integration" for the integration token, so Promote/rollback workflows can't be
+triggered from here either. Flipping without the staging validation run means the
+per-tenant WRITE path (esp. the Delta sidecar, which needs the container to
+pre-exist — `ensureWarehouseContainer` covers it) goes live unvalidated; reads and
+legacy data are safe (absolute URIs), and rollback is one env var.
+
 **Prior last updated:** 2026-07-23 (compute security-isolation audit added to the plan — doc only, awaiting owner sign-off)
 
 **Compute security-isolation finding (2026-07-23, added to the plan §3bis):**
