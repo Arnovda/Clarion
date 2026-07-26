@@ -543,15 +543,22 @@ resource "azurerm_container_app" "backend" {
   }
 
   template {
-    min_replicas = 0
+    min_replicas = var.backend_min_replicas
     max_replicas = 3
 
     container {
       name   = "backend"
       image  = "${azurerm_container_registry.main.login_server}/databridge-backend:main-latest"
-      cpu    = 0.5
-      memory = "1Gi"
+      cpu    = var.backend_cpu
+      memory = var.backend_memory
 
+      # 'api' = this process serves HTTP only; BullMQ workers, schedules,
+      # crash recovery and the reapers belong to the jobs-worker app. Set
+      # backend_role = "all" to roll the split back into one process.
+      env {
+        name  = "ROLE"
+        value = var.backend_role
+      }
       env {
         name  = "PORT"
         value = "3001"
@@ -765,6 +772,241 @@ resource "azurerm_container_app" "backend" {
 # warehouse SAS, heartbeat SAS). Container exits cleanly after the sync;
 # memory dies with it. No DataBridge DB credentials, no shared state.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Container App — jobs-worker  (background work only, no ingress)
+# ─────────────────────────────────────────────────────────────────────────────
+# Runs the SAME image as the backend with ROLE=worker, so there is no second
+# build. The backend then runs with ROLE=api and stops hosting BullMQ workers.
+#
+# Why a separate app at all: today every transformation, schema profile, email
+# report and morning brief executes inside the API process, so one tenant's
+# heavy transformation competes for the same CPU and memory that serves every
+# other tenant's dashboards — and a DuckDB OOM or native crash takes the whole
+# API down with it. Splitting gives background work its own memory budget and
+# its own blast radius.
+#
+# min_replicas MUST stay >= 1 (see var.jobs_worker_min_replicas): BullMQ's
+# delayed/repeatable jobs are promoted by a RUNNING worker, so at zero replicas
+# scheduled syncs, transformations and email reports never fire at all. That
+# also rules out KEDA queue-depth scaling as the wake-up mechanism — a delayed
+# job is not yet queue depth.
+#
+# No ingress: nothing routes traffic here. The process still listens on 3001 so
+# the health probes below have something to talk to.
+resource "azurerm_container_app" "jobs_worker" {
+  name                         = "${var.project_name}-${var.environment}-jobs-worker"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = azurerm_resource_group.main.name
+  revision_mode                = "Single"
+  tags                         = var.tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  registry {
+    server               = azurerm_container_registry.main.login_server
+    username             = azurerm_container_registry.main.admin_username
+    password_secret_name = "acr-password"
+  }
+
+  secret {
+    name  = "acr-password"
+    value = azurerm_container_registry.main.admin_password
+  }
+
+  secret {
+    name  = "database-url"
+    value = "postgresql://${var.pg_admin_user}:${var.pg_admin_password}@${azurerm_postgresql_flexible_server.main.fqdn}:5432/databridge?sslmode=require"
+  }
+
+  secret {
+    name  = "jwt-secret"
+    value = var.jwt_secret
+  }
+
+  secret {
+    name  = "anthropic-api-key"
+    value = var.anthropic_api_key
+  }
+
+  secret {
+    name  = "credentials-encryption-key"
+    value = var.credentials_encryption_key
+  }
+
+  secret {
+    name  = "storage-connection-string"
+    value = azurerm_storage_account.warehouse.primary_connection_string
+  }
+
+  secret {
+    name  = "neo4j-password"
+    value = var.neo4j_password
+  }
+
+  template {
+    min_replicas = var.jobs_worker_min_replicas
+    max_replicas = var.jobs_worker_max_replicas
+
+    container {
+      name   = "jobs-worker"
+      image  = "${azurerm_container_registry.main.login_server}/databridge-backend:main-latest"
+      cpu    = var.jobs_worker_cpu
+      memory = var.jobs_worker_memory
+
+      # The one line that makes this a worker rather than a second API.
+      env {
+        name  = "ROLE"
+        value = "worker"
+      }
+      env {
+        name  = "PORT"
+        value = "3001"
+      }
+      env {
+        name  = "NODE_ENV"
+        value = "production"
+      }
+      env {
+        name        = "DATABASE_URL"
+        secret_name = "database-url"
+      }
+      env {
+        name        = "JWT_SECRET"
+        secret_name = "jwt-secret"
+      }
+      env {
+        name  = "JWT_EXPIRES_IN"
+        value = "8h"
+      }
+      env {
+        name        = "ANTHROPIC_API_KEY"
+        secret_name = "anthropic-api-key"
+      }
+      env {
+        name  = "CLAUDE_MODEL"
+        value = "claude-sonnet-4-6"
+      }
+      env {
+        name        = "CREDENTIALS_ENCRYPTION_KEY"
+        secret_name = "credentials-encryption-key"
+      }
+      env {
+        name        = "AZURE_STORAGE_CONNECTION_STRING"
+        secret_name = "storage-connection-string"
+      }
+      env {
+        name  = "AZURE_KEY_VAULT_URL"
+        value = azurerm_key_vault.main.vault_uri
+      }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      env {
+        name  = "CORS_ORIGIN"
+        value = var.frontend_url
+      }
+      env {
+        name  = "NEO4J_URI"
+        value = "bolt://${azurerm_container_app.neo4j.name}:7687"
+      }
+      env {
+        name  = "NEO4J_USER"
+        value = "neo4j"
+      }
+      env {
+        name        = "NEO4J_PASSWORD"
+        secret_name = "neo4j-password"
+      }
+      env {
+        name  = "NEO4J_DATABASE"
+        value = "neo4j"
+      }
+      env {
+        name  = "ETL_URL"
+        value = "http://${azurerm_container_app.etl.name}"
+      }
+      env {
+        name  = "AZURE_STORAGE_CONTAINER"
+        value = "warehouse"
+      }
+      env {
+        name  = "AZURE_SUBSCRIPTION_ID"
+        value = data.azurerm_client_config.current.subscription_id
+      }
+      env {
+        name  = "AZURE_RESOURCE_GROUP"
+        value = azurerm_resource_group.main.name
+      }
+      env {
+        name  = "AZURE_CONTAINER_APPS_JOB_NAME"
+        value = azurerm_container_app_job.sync_worker.name
+      }
+      env {
+        name  = "AZURE_WAREHOUSE_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.warehouse.name
+      }
+      env {
+        name  = "AZURE_WAREHOUSE_CONTAINER"
+        value = azurerm_storage_container.warehouse.name
+      }
+      # Must match the backend — both read and write the same warehouse.
+      env {
+        name  = "WAREHOUSE_CONTAINER_MODE"
+        value = var.warehouse_container_mode
+      }
+      env {
+        name  = "DUCKDB_MEMORY_LIMIT"
+        value = var.duckdb_memory_limit
+      }
+      env {
+        name  = "DUCKDB_THREADS"
+        value = tostring(var.duckdb_threads)
+      }
+      env {
+        name  = "AZURE_HEARTBEAT_STORAGE_ACCOUNT"
+        value = azurerm_storage_account.warehouse.name
+      }
+      env {
+        name  = "AZURE_HEARTBEAT_CONTAINER"
+        value = azurerm_storage_container.sync_heartbeat.name
+      }
+      # Redis is what makes the split work: queues, cross-process cancellation
+      # and the cache-invalidation channel all ride on it.
+      env {
+        name  = "REDIS_URL"
+        value = "redis://${azurerm_container_app.redis.name}:6379"
+      }
+      env {
+        name  = "OAUTH_REDIRECT_BASE_URL"
+        value = "https://${var.project_name}-${var.environment}-backend.${azurerm_container_app_environment.main.default_domain}"
+      }
+      env {
+        name  = "FRONTEND_BASE_URL"
+        value = "https://${var.project_name}-${var.environment}-frontend.${azurerm_container_app_environment.main.default_domain}"
+      }
+      env {
+        name  = "ACS_ENDPOINT"
+        value = "https://${azurerm_communication_service.main.name}.communication.azure.com"
+      }
+      env {
+        name  = "ACS_SENDER_ADDRESS"
+        value = "donotreply@${azurerm_email_communication_service_domain.azuremanaged.from_sender_domain}"
+      }
+
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/api/ping"
+        port                    = 3001
+        interval_seconds        = 30
+        failure_count_threshold = 10
+      }
+    }
+  }
+}
+
 resource "azurerm_storage_container" "sync_heartbeat" {
   name                  = "sync-heartbeat"
   storage_account_name  = azurerm_storage_account.warehouse.name
@@ -935,6 +1177,27 @@ resource "azurerm_role_assignment" "backend_job_operator" {
   scope                = azurerm_container_app_job.sync_worker.id
   role_definition_name = "Contributor"
   principal_id         = azurerm_container_app.backend.identity[0].principal_id
+}
+
+# The jobs-worker runs the same code paths as the backend for background work,
+# so it needs the same two grants: mint warehouse/heartbeat SAS, and start
+# sync-worker job executions (pipelines and product refreshes trigger syncs).
+resource "azurerm_role_assignment" "jobs_worker_blob_contributor" {
+  scope                = azurerm_storage_account.warehouse.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = azurerm_container_app.jobs_worker.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "jobs_worker_job_operator" {
+  scope                = azurerm_container_app_job.sync_worker.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_container_app.jobs_worker.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "jobs_worker_acs_sender" {
+  scope                = azurerm_communication_service.main.id
+  role_definition_name = "Contributor"
+  principal_id         = azurerm_container_app.jobs_worker.identity[0].principal_id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

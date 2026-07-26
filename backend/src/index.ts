@@ -71,6 +71,8 @@ import { loadSchedules, closeScheduler } from './jobs/scheduler';
 import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
 import { loadPipelineSchedules } from './jobs/pipelineScheduler';
+import { startScheduleReconciler } from './jobs/scheduleReconciler';
+import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 
@@ -287,6 +289,33 @@ if (!process.env.VITEST) {
     logger.info({ port: PORT }, 'Clarion backend running');
     // Start Neo4j constraint setup in the background — non-blocking.
     ensureNeo4jConstraints().catch(err => logger.error({ err }, 'Neo4j constraint setup error'));
+
+    // Listen for cache invalidations published by other processes. BOTH roles
+    // need this: the API applies invalidations raised by the worker (otherwise
+    // it serves pre-refresh widget rows, stale filter options and pooled DuckDB
+    // views over the old file set), and the worker stays consistent too.
+    subscribeToInvalidations();
+
+    // ROLE splits this image into two deployments without a second build:
+    //   ROLE=api     → HTTP only. No workers, schedules, recovery or reapers.
+    //   ROLE=worker  → background work only (it still listens, but nothing
+    //                  routes traffic to it — that just gives it a health port).
+    //   unset        → both, i.e. today's single-process behaviour. Local dev
+    //                  and any deployment that hasn't split yet are unchanged.
+    //
+    // Everything below this guard is owned by exactly ONE process on purpose.
+    // The crash-recovery block and the 5-minute reaper mark rows stuck in
+    // 'running' as failed using only an age test — no owner or heartbeat. If
+    // both containers ran them they would race, and an API restart would mark a
+    // healthy worker's in-flight work as failed. The worker owns them because
+    // it owns the work they clean up after.
+    const role = (process.env.ROLE ?? '').trim().toLowerCase();
+    const runsJobs = role !== 'api';
+    if (!runsJobs) {
+      logger.info({ role }, 'ROLE=api — background jobs, schedules and reapers are handled by the jobs-worker');
+      return;
+    }
+
     // Start BullMQ workers (no-op if Redis not configured)
     startWorkers();
     // Load scheduled transformations from DB into BullMQ
@@ -299,6 +328,10 @@ if (!process.env.VITEST) {
     // triggers are evaluated in-process in SyncOrchestrator; nothing to
     // pre-load for those.
     loadPipelineSchedules().catch(err => logger.error({ err }, 'Pipeline schedule loading error'));
+    // Redis holds the repeatable-job registrations but Postgres is the source of
+    // truth. If Redis restarts without the API restarting, the repeatables are
+    // gone and cron work stops silently — this re-registers them on reconnect.
+    startScheduleReconciler();
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
@@ -485,6 +518,7 @@ if (!process.env.VITEST) {
     await stopWorkers();
     await closeScheduler();
     await closeQueues();
+    await closeCacheBus();
     await closeRedis();
     await closeDriver();
   }

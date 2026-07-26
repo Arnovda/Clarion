@@ -114,6 +114,61 @@ variable "warehouse_container_mode" {
   }
 }
 
+# Container Apps (consumption profile) requires memory in GiB = 2 × vCPU.
+# Valid pairs: 0.25/0.5Gi, 0.5/1Gi, 0.75/1.5Gi, 1/2Gi, 1.25/2.5Gi, …
+
+variable "backend_cpu" {
+  type        = number
+  default     = 1.0
+  description = "vCPU for the backend Container App. Raised from 0.5 to 1.0 (2026-07): the backend runs DuckDB in-process for every interactive query, and 0.5 vCPU / 1 GiB was the tightest analytical-serving tier of any comparable platform."
+}
+
+variable "backend_memory" {
+  type        = string
+  default     = "2Gi"
+  description = "Memory for the backend Container App. Must be 2 × backend_cpu GiB. 2Gi gives DuckDB real headroom (its memory_limit is a percentage of this) instead of spilling or OOM-ing on concurrent scans."
+}
+
+variable "backend_min_replicas" {
+  type        = number
+  default     = 0
+  description = "Minimum backend replicas. Kept at 0 (scale-to-zero) on purpose: once BullMQ workers move to the jobs-worker app, nothing in the backend needs to be always-on, so scaling to zero costs only a cold start on the first request instead of ~EUR 65/month of idle compute. Set to 1 if cold starts for business users are unacceptable."
+}
+
+variable "backend_role" {
+  type        = string
+  default     = "api"
+  description = "ROLE env var for the backend app. 'api' = HTTP only, background jobs are the jobs-worker's responsibility (the split). 'all' = the legacy single-process behaviour where the API also hosts every BullMQ worker — set this to roll the split back without deleting the worker app."
+  validation {
+    condition     = contains(["api", "all"], var.backend_role)
+    error_message = "backend_role must be 'api' or 'all'."
+  }
+}
+
+variable "jobs_worker_cpu" {
+  type        = number
+  default     = 1.0
+  description = "vCPU for the jobs-worker Container App (transformations, profiling, email/brief jobs). Transformations are the heaviest workload on the platform and currently share the API's 0.5 vCPU."
+}
+
+variable "jobs_worker_memory" {
+  type        = string
+  default     = "2Gi"
+  description = "Memory for the jobs-worker Container App. Must be 2 × jobs_worker_cpu GiB."
+}
+
+variable "jobs_worker_min_replicas" {
+  type        = number
+  default     = 1
+  description = "Minimum jobs-worker replicas. MUST be >= 1: BullMQ delayed/repeatable jobs are promoted by a running worker, so with 0 replicas scheduled syncs, transformations and email reports simply never fire (KEDA queue-depth scaling can't help — a delayed job isn't queue depth yet). This is the one always-on cost the split introduces."
+}
+
+variable "jobs_worker_max_replicas" {
+  type        = number
+  default     = 2
+  description = "Maximum jobs-worker replicas. Keep low: BullMQ per-queue concurrency already bounds parallelism, and each replica runs its own DuckDB."
+}
+
 variable "duckdb_memory_limit" {
   type        = string
   default     = "70%"

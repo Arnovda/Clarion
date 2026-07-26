@@ -43,6 +43,52 @@ export async function applyResourceGuardrails(db: Database): Promise<void> {
 }
 
 /**
+ * OPT-IN defence-in-depth: block DuckDB's local filesystem for a blob-backed
+ * read session, so a query can't touch the container's disk even if it somehow
+ * gets past `sqlGuard` (which already refuses path/URI table functions and
+ * FROM-literal replacement scans). Kills `read_text('/proc/self/environ')` and
+ * `FROM '/warehouse/tenant_other/x.parquet'` at the filesystem layer.
+ *
+ * Why NOT `enable_external_access=false`: that switch disables ALL external
+ * access — including the `az://` blob reads that are our entire read path. It
+ * is unusable here, so `disabled_filesystems` is the closest real control.
+ *
+ * Why OPT-IN (`DUCKDB_SESSION_LOCKDOWN=1`, default off):
+ *   • `temp_directory` spill-to-disk very likely stops working, turning a
+ *     graceful spill into a failed query on large scans.
+ *   • It only makes sense in Azure mode; in local mode the warehouse IS the
+ *     local filesystem, so it would break everything.
+ * Both need verifying against a real warehouse before this becomes the default
+ * — per this repo's own lesson that DuckDB changes which pass headless can
+ * still fail in production.
+ *
+ * `DUCKDB_LOCK_CONFIGURATION=1` additionally freezes the session config so a
+ * later `SET` can't undo it (user SQL can't issue `SET` anyway — the guard
+ * forbids it — so this is a third layer).
+ */
+export async function applySessionLockdown(db: Database, needAzure: boolean): Promise<void> {
+  if (process.env.DUCKDB_SESSION_LOCKDOWN !== '1') return;
+  if (!needAzure) {
+    // Local warehouse == local filesystem; locking it down would break reads.
+    return;
+  }
+  try {
+    await db.exec("SET disabled_filesystems='LocalFileSystem';");
+    log.info('DuckDB session lockdown: LocalFileSystem disabled');
+  } catch (err) {
+    log.warn({ err }, 'DuckDB session lockdown requested but disabled_filesystems is unavailable');
+    return;
+  }
+  if (process.env.DUCKDB_LOCK_CONFIGURATION === '1') {
+    try {
+      await db.exec('SET lock_configuration=true;');
+    } catch (err) {
+      log.warn({ err }, 'lock_configuration unavailable on this DuckDB build');
+    }
+  }
+}
+
+/**
  * Default cap on rows a single query may materialise into Node memory.
  * `memory_limit` bounds DuckDB's own memory (and spills to disk); this bounds
  * the *Node* heap against `db.all()` inflating a multi-million-row result into
@@ -153,4 +199,8 @@ export async function setupDuckDBForWarehouse(
       CONNECTION_STRING '${escaped}'
     );
   `);
+
+  // LAST: opt-in lockdown. Runs after extensions + secret are in place, since
+  // it can freeze the session config.
+  await applySessionLockdown(db, needAzure);
 }
