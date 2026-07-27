@@ -298,7 +298,13 @@ resource "azurerm_container_app" "redis" {
       # bullmq doesn't depend on durability for repeatable jobs.
       # Wrap the empty-string arg in `sh -c` because the azurerm provider
       # can't represent empty strings in the `command` array.
-      command = ["sh", "-c", "exec redis-server --save '' --appendonly no"]
+      # `maxmemory-policy noeviction` is not optional: BullMQ's own production
+      # guide states it is "the only setting that guarantees the correct
+      # behavior of the queues" — under any eviction policy Redis may drop a job
+      # hash or a lock key and jobs silently vanish or stall. Redis defaults to
+      # noeviction when no maxmemory is set, but we set it explicitly so the
+      # guarantee survives someone later capping memory.
+      command = ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory-policy noeviction"]
     }
   }
 
@@ -479,6 +485,11 @@ resource "azurerm_container_app" "etl" {
       latest_revision = true
       percentage      = 100
     }
+  }
+
+  # CI deploys the immutable per-commit tag; don't reset it to :main-latest.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
   }
 }
 
@@ -762,6 +773,27 @@ resource "azurerm_container_app" "backend" {
       percentage      = 100
     }
   }
+
+  # CI owns both of these at runtime; Terraform must not fight it.
+  #
+  #  • image — deploy.yml deploys an immutable per-commit tag. Letting Terraform
+  #    reset it to the mutable :main-latest tag risks serving a cached, stale
+  #    image (the exact bug that made sync-worker run old code for weeks).
+  #
+  #  • traffic_weight — the block above says latest_revision = true, which makes
+  #    Azure send 100% of traffic to every new revision the moment it deploys.
+  #    That silently destroys the test-first model: deploy.yml deliberately
+  #    lands new revisions at 0% traffic and pins traffic to the live revision
+  #    BY NAME, so nothing goes live until someone promotes it. An apply that
+  #    reasserted latest_revision would put the next push straight into
+  #    production. Terraform still needs the block to create the app initially,
+  #    so we ignore drift instead of removing it.
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -996,14 +1028,25 @@ resource "azurerm_container_app" "jobs_worker" {
         value = "donotreply@${azurerm_email_communication_service_domain.azuremanaged.from_sender_domain}"
       }
 
+      # Long interval on purpose. Container Apps bills a min-replica app at the
+      # much cheaper IDLE rate only while the replica stays under 0.01 vCPU and
+      # under 1000 B/s of traffic; platform probes are excluded from that
+      # traffic count, but there is no reason to poll a background process every
+      # 30s either. This still restarts a hung worker, just less chattily.
       liveness_probe {
         transport               = "HTTP"
         path                    = "/api/ping"
         port                    = 3001
-        interval_seconds        = 30
-        failure_count_threshold = 10
+        interval_seconds        = 60
+        failure_count_threshold = 5
       }
     }
+  }
+
+  # deploy.yml updates this app to the immutable per-commit backend tag on every
+  # backend build; Terraform must not reset it to :main-latest.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
   }
 }
 
@@ -1248,6 +1291,15 @@ resource "azurerm_container_app" "frontend" {
       latest_revision = true
       percentage      = 100
     }
+  }
+
+  # Same reasoning as the backend app: CI owns the image tag and the traffic
+  # split at runtime, so an apply must not reset either.
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
   }
 }
 

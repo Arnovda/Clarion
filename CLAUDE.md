@@ -133,6 +133,61 @@ apply requires terraform/az CLI. Read-path compatibility + container lifecycle w
 verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
 secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
 
+**Fase 3 (child-process query runner) — BUILT, opt-in, default OFF (2026-07-27).**
+Closes the M1 gap: in-process, `DUCKDB_QUERY_TIMEOUT_MS` only frees the caller —
+the query keeps burning CPU and holds its concurrency permit for its real
+duration. New `services/warehouse/queryRunnerChild.ts` (child entrypoint: builds
+the same views via `setupDuckDBForWarehouse` + `createScanView`, runs one query
+at a time, converts BigInt before IPC) and `queryRunnerPool.ts` (parent: warm
+runners pooled on the SAME key as `DuckDBPool` so the ~500ms view registration
+is paid once; SIGKILL on timeout; unexpected exit = crash containment, one runner
+dies instead of the API). Wired invisibly behind `DuckDBConnector.executeQuery`
+(48 call sites unchanged) — on timeout the permits are released immediately
+because the work has genuinely stopped; on any OTHER runner failure it falls back
+to in-process WITH the permits still held. `invalidateWarehouse` also rebuilds
+runners so they can't serve pre-refresh views. Enable with `DUCKDB_RUNNER=child`;
+it self-disables (logged) when the compiled child script isn't present, e.g. TS
+dev mode — tested. New env: `DUCKDB_RUNNER`, `DUCKDB_RUNNER_MAX`,
+`DUCKDB_RUNNER_IDLE_MS`, `DUCKDB_RUNNER_INIT_TIMEOUT_MS`. Deliberately one
+in-flight query per child: multiplexing would reintroduce the head-of-line
+blocking this exists to remove (you can't kill one query without killing its
+neighbours). NOT yet validated against a live warehouse — flip the flag on the
+0%-traffic staging revision first. 55 unit tests green; `npm run check` clean.
+Industry note: this is Dagster's `DefaultRunLauncher` shape (process per run
+inside a long-lived server), the recognised middle step before per-run
+containers.
+
+**Terraform drift protection added (2026-07-27):** an apply would have (a) reset
+every app's image to the mutable `:main-latest` — the same cached-stale-image bug
+that had sync-worker running weeks-old code — and (b) reasserted
+`traffic_weight { latest_revision = true }` on backend/frontend, silently undoing
+deploy.yml's 0%-traffic test-first model and sending the next push straight to
+production. Added `lifecycle.ignore_changes` for the image (backend, frontend,
+etl, jobs-worker) and for `ingress[0].traffic_weight` (backend, frontend). Also
+`docs/runbooks/jobs-worker-apply.md` — apply guide that LEADS with the
+state-file check, because the remote backend is commented out and `*.tfstate` is
+gitignored, so state lives only on the machine that last applied.
+
+**✅ FASE 2 CODE IS LIVE AT 100% TRAFFIC (verified 2026-07-27).** Workflow run
+"Warehouse container mode" #2 (`30287449982`) succeeded: revision
+`…--main-2b66d79` reached `Provisioned`, the traffic table shows it as the sole
+entry at **weight 100**, and the read-back reported `Applied mode: per-tenant`
+with the assertion passing. The revision reaching `Provisioned` is also the
+smoke test that could not be run in the sandbox (no Postgres/Redis there): the
+API booted healthy WITH the new Redis pub/sub subscriber and the async
+cancellation path, and traffic only shifted after that. Now live: cross-process
+cancellation, the cache-invalidation bus, the schedule reconciler, the ROLE flag
+and the opt-in DuckDB lockdown.
+**Still inert on purpose:** `ROLE` is set nowhere, so the backend still runs API
++ workers in one process exactly as before. The actual split needs
+`terraform apply` (creates `jobs-worker`, sets `backend_role=api`, applies the
+1 vCPU/2Gi sizing) — no workflow runs terraform, and the sandbox has no
+terraform/az binaries or Azure credentials.
+Note: the promote vehicle was a re-apply of the container-mode control, since
+`workflow_dispatch` is 403 for the integration token. The control file now
+accepts `#` comment lines so a re-apply documents itself instead of needing a
+whitespace-only diff.
+
 **Fase 2 jobs-worker split — CODE + INFRA WRITTEN, awaiting `terraform apply`
 (2026-07-26).** A plumbing audit corrected the plan: **SSE job progress already
 works cross-process** (`job.log()` → Redis → the stream route polls `getJobLogs`),

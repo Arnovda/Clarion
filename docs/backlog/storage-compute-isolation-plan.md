@@ -379,6 +379,52 @@ Nog te doen: Fase 2 `terraform apply` (creëert de worker-app), Fase 3 (child-pr
 runnerpool — de enige echte per-query-kill), Fase 4 (legacy-migratie +
 auth-ontvlechting + de opt-in DuckDB-lockdown live valideren).
 
+### Externe validatie van dit ontwerp (2026-07-27)
+
+Drie onafhankelijke onderzoeken (Azure-docs, BullMQ-broncode, industriepraktijk)
+bevestigen de architectuur en corrigeren twee dingen.
+
+**Bevestigd — de split is standaard, en hier zelfs verplicht.** Naast de generieke
+argumenten (12-Factor, Heroku's web/worker-dyno's, Azure Architecture Center) gelden
+drie werklast-specifieke redenen:
+1. **DuckDB kan het proces OOM-killen** — DuckDB's eigen docs: sommige operaties
+   omzeilen `memory_limit`; advies is 50-60% van RAM. In een gedeeld proces neemt
+   dat de API voor álle tenants mee.
+2. **BullMQ's lock-renewal breekt bij CPU-zwaar werk in hetzelfde proces** → jobs
+   worden ten onrechte als "stalled" gemarkeerd en opnieuw uitgevoerd. Dit is
+   precies waarom BullMQ *sandboxed processors* heeft. Dit argument kenden we niet
+   en is sterker dan de argumenten die we hadden.
+3. **Lange jobs botsen met API-deploys** — elke herstart doodt lopende transformaties.
+
+**Bevestigd — `min_replicas ≥ 1` is een eigenschap van BullMQ, geen luiheid.**
+Broncode-niveau bewijs: alleen `Worker.moveToActive` promoveert delayed jobs.
+KEDA kan dit structureel niet oplossen (zie de variabele-beschrijving in
+`infra/variables.tf`). Officiële BullMQ-doc: *"If there are no workers running,
+repeatable jobs will not accumulate next time a worker is online."*
+
+**CORRECTIE 1 — de kostenschatting.** Eerder in deze sessie is ~EUR 10-12/mnd
+genoemd op basis van het idle-tarief. Dat is te optimistisch gepresenteerd: het
+idle-tarief geldt alleen onder 0,01 vCPU **en** onder 1000 bytes/sec ontvangen, en
+een BullMQ-worker die 11 queues poll't haalt die drempel mogelijk niet. Reken op
+**EUR 35/mnd (0,5 vCPU/1 GiB, actief tarief)** als bovengrens en meet daarna in
+Cost Analysis of het idle-tarief wordt toegepast.
+
+**CORRECTIE 2 — niet het model van Keboola/Fivetran/dbt Cloud kopiëren.** Die
+draaien een container per job omdat ze *willekeurige code van derden* uitvoeren
+(marketplace-images, klant-dbt-projecten). Clarion draait eigen code tegen eigen
+DuckDB — dat is een ander dreigingsmodel, en per-job containers zouden hier alleen
+cold starts, connectie-churn en verlies van warme caches (DuckDBPool, widgetCache)
+opleveren zonder de isolatie die zij nodig hebben.
+
+**Het bevestigde eindmodel** is dat van Airflow's `CeleryKubernetesExecutor` /
+Airbyte's Launcher / Dagster's run launcher: **standaard een warme pool, en alleen
+de zware uitzonderingen naar een eigen container.** Onze fasering volgt dat exact —
+Fase 2 (pool) → Fase 3 (proces-per-run binnen de worker, = Dagster's
+`DefaultRunLauncher`) → optioneel later ACA Jobs vanuit de worker voor de zwaarste
+staart. Google's Cloud Run *worker pools* (2025, ~40% goedkoper dan Jobs voor
+langlopend achtergrondwerk) bevestigen dat de markt voor queue-werk juist naar
+pools beweegt, niet ervan weg.
+
 | Fase | Inhoud | Effort | Dekt | Afhankelijkheid |
 |---|---|---|---|---|
 | **P0** | §3bis security-lockdown: DuckDB `enable_external_access`/`allowed_paths`/`lock_configuration` op elke sessie, per-tenant-scoped SAS-secret i.p.v. account-string, SQL-guard uitbreiden (table-functions/pad-literals + SELECT-only op notebooks/dashboards + widget-SQL her-valideren) | dagen | **cross-tenant datalek (lezen+schrijven)** — hoogste prioriteit | geen |

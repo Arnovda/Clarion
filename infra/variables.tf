@@ -147,26 +147,26 @@ variable "backend_role" {
 
 variable "jobs_worker_cpu" {
   type        = number
-  default     = 1.0
-  description = "vCPU for the jobs-worker Container App (transformations, profiling, email/brief jobs). Transformations are the heaviest workload on the platform and currently share the API's 0.5 vCPU."
+  default     = 0.5
+  description = "vCPU for the jobs-worker Container App (transformations, profiling, email/brief jobs). 0.5 already beats today's situation, where transformations share the API's 0.5 vCPU with every dashboard query instead of having it to themselves. Raise to 1.0 only if transformations actually prove memory- or CPU-bound — at Consumption rates that doubles the bill (~$39 → ~$79/month at the active rate)."
 }
 
 variable "jobs_worker_memory" {
   type        = string
-  default     = "2Gi"
+  default     = "1Gi"
   description = "Memory for the jobs-worker Container App. Must be 2 × jobs_worker_cpu GiB."
 }
 
 variable "jobs_worker_min_replicas" {
   type        = number
   default     = 1
-  description = "Minimum jobs-worker replicas. MUST be >= 1: BullMQ delayed/repeatable jobs are promoted by a running worker, so with 0 replicas scheduled syncs, transformations and email reports simply never fire (KEDA queue-depth scaling can't help — a delayed job isn't queue depth yet). This is the one always-on cost the split introduces."
+  description = "Minimum jobs-worker replicas. MUST be >= 1: BullMQ delayed/repeatable jobs are promoted by a running worker (verified in BullMQ's own moveToActive Lua script), so with 0 replicas scheduled syncs, transformations and email reports simply never fire. KEDA cannot rescue this: scaling on the 'wait' list deadlocks because only a worker fills it, and scaling on the 'delayed' set never scales back down because an active Job Scheduler permanently keeps one job there. COST NOTE: Container Apps bills a min-replica app at the cheap idle rate only while it stays under 0.01 vCPU AND under 1000 bytes/sec received. A BullMQ worker polling Redis across 11 queues may well exceed that and bill at the ACTIVE rate around the clock — measure it in Cost Analysis rather than assuming the low figure."
 }
 
 variable "jobs_worker_max_replicas" {
   type        = number
-  default     = 2
-  description = "Maximum jobs-worker replicas. Keep low: BullMQ per-queue concurrency already bounds parallelism, and each replica runs its own DuckDB."
+  default     = 1
+  description = "Maximum jobs-worker replicas. MUST stay 1 until crash recovery and the 5-minute reaper are behind a leader election. Both run on startup / on a timer in EVERY worker process and reset rows stuck in 'running' using an age test with no owner or heartbeat — so a second replica starting up would mark the first replica's legitimately in-flight transformations as failed. BullMQ per-queue concurrency already provides parallelism inside one replica; scaling out is a follow-up that needs a Redis leader lock first."
 }
 
 variable "duckdb_memory_limit" {

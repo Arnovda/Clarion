@@ -1,0 +1,115 @@
+# Infra preflight — READ-ONLY probe of what CI is actually allowed to do.
+#
+# Provisioning the jobs-worker without anyone touching a laptop depends on three
+# unknowns. Guessing them and running a half-working apply against production is
+# exactly the wrong move, so this workflow just looks and reports:
+#
+#   1. Which roles the deploy service principal holds. Creating a role
+#      assignment needs "Owner" or "User Access Administrator" — plain
+#      "Contributor" cannot, which would break any path that gives the new app
+#      its own managed identity.
+#   2. Whether the existing backend app's SECRET VALUES are readable. If they
+#      are, a new app can be created with identical configuration without any
+#      human re-entering passwords. Values are NEVER printed — only names and a
+#      readable/not-readable verdict.
+#   3. Whether Terraform state exists anywhere in the subscription. If it does
+#      not, `terraform apply` must not be run at all: it would try to recreate
+#      live infrastructure.
+#
+# Changes nothing. Safe to run at any time.
+
+name: Infra preflight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/infra-preflight'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Probe
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -uo pipefail   # deliberately NOT -e: a denied probe is a result
+
+          echo "## Infra preflight" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          # ── 1. Identity + roles ────────────────────────────────────────────
+          CLIENT_ID=$(az account show --query user.name -o tsv 2>/dev/null || echo "")
+          SUB_ID=$(az account show --query id -o tsv 2>/dev/null || echo "")
+          echo "### 1. Deploy identity" >> "$GITHUB_STEP_SUMMARY"
+          echo "- client id: \`${CLIENT_ID:-unknown}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          ROLES=$(az role assignment list --assignee "$CLIENT_ID" --all \
+                    --query "[].roleDefinitionName" -o tsv 2>/dev/null | sort -u | tr '\n' ' ')
+          if [ -z "$ROLES" ]; then
+            echo "- roles: **could not read** (the SP may lack directory read permission)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- roles: \`$ROLES\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if echo "$ROLES" | grep -qiE 'owner|user access administrator'; then
+            echo "- can create role assignments: **yes**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- can create role assignments: **NO** — a new app cannot be granted its own permissions; it must reuse connection-string auth instead of a managed identity." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # ── 2. Can we clone the backend app's configuration? ───────────────
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 2. Backend app configuration" >> "$GITHUB_STEP_SUMMARY"
+
+          ENV_COUNT=$(az containerapp show -n "$APP" -g "$RG" \
+                        --query "length(properties.template.containers[0].env)" -o tsv 2>/dev/null || echo "")
+          echo "- env vars readable: \`${ENV_COUNT:-none}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # Names only. Values are never emitted.
+          SECRET_NAMES=$(az containerapp secret list -n "$APP" -g "$RG" \
+                           --query "[].name" -o tsv 2>/dev/null | tr '\n' ' ')
+          echo "- secret names: \`${SECRET_NAMES:-none}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          # Probe readability of ONE value without revealing it: fetch it and
+          # report only whether it came back non-empty.
+          if az containerapp secret show -n "$APP" -g "$RG" --secret-name jwt-secret \
+               --query value -o tsv >/dev/null 2>&1; then
+            echo "- secret VALUES readable: **yes** — a new app can be created with identical config, no human input needed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- secret VALUES readable: **NO** — the secrets would have to be supplied another way" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # ── 3. Terraform state ─────────────────────────────────────────────
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 3. Terraform state" >> "$GITHUB_STEP_SUMMARY"
+          TFSTATE_SA=$(az storage account list --query "[?contains(name,'tfstate')].name" -o tsv 2>/dev/null | tr '\n' ' ')
+          if [ -n "$TFSTATE_SA" ]; then
+            echo "- state storage account found: \`$TFSTATE_SA\` — terraform may be usable" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **no state storage account found** — Terraform state is local to someone's machine. Do NOT run \`terraform apply\` from CI; provision with \`az\` instead and reconcile Terraform later." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # ── 4. Does the worker already exist? ─────────────────────────────
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 4. Current state" >> "$GITHUB_STEP_SUMMARY"
+          WORKER_APP="${APP%-backend}-jobs-worker"
+          if az containerapp show -n "$WORKER_APP" -g "$RG" >/dev/null 2>&1; then
+            echo "- \`$WORKER_APP\`: **exists**" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- \`$WORKER_APP\`: does not exist yet" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          CUR_ROLE=$(az containerapp show -n "$APP" -g "$RG" \
+                       --query "properties.template.containers[0].env[?name=='ROLE'].value | [0]" -o tsv 2>/dev/null || echo "")
+          echo "- backend ROLE: \`${CUR_ROLE:-<unset, runs API + workers>}\`" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Preflight complete."
