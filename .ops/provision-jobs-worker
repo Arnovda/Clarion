@@ -1,0 +1,6 @@
+create
+
+# create = provision the jobs-worker (adaptive: tries for the full split,
+#          falls back to the phased one if permissions are denied)
+# delete = remove it and hand every queue back to the API
+# noop   = do nothing

@@ -11,6 +11,7 @@ import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
 import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData } from './queues';
 import { registerJobAbortController, unregisterJob, isJobCancelled, watchForCancellation } from './cancellation';
+import { shouldRunQueue } from './queueRoles';
 import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
@@ -265,6 +266,25 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
 // Start all workers
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a worker only if this process is meant to run that queue (see
+ * `queueRoles`). Returns null when the queue belongs to the other container, so
+ * call sites use `worker?.on(...)`. Registers the worker for shutdown.
+ */
+function makeWorker<T = unknown>(
+  name: string,
+  processor: ConstructorParameters<typeof Worker<T>>[1],
+  opts: ConstructorParameters<typeof Worker<T>>[2],
+): Worker<T> | null {
+  if (!shouldRunQueue(name)) {
+    log.info({ queue: name }, 'Queue not assigned to this process — worker not started');
+    return null;
+  }
+  const w = new Worker<T>(name, processor, opts);
+  workers.push(w as Worker);
+  return w;
+}
+
 export function startWorkers(): void {
   const conn = getRedisConnection();
   if (!conn) {
@@ -280,43 +300,40 @@ export function startWorkers(): void {
   };
 
   // Schema profiling worker
-  const schemaWorker = new Worker<SchemaProfilingJobData>(
+  const schemaWorker = makeWorker<SchemaProfilingJobData>(
     'schema-profiling',
     async (job) => withTenantAiContext(job.data.tenantId, () => processSchemaProfilingJob(job)),
     { ...defaultOpts, concurrency: 1 }, // AI calls are expensive, limit to 1
   );
-  schemaWorker.on('failed', (job, err) => {
+  schemaWorker?.on('failed', (job, err) => {
     log.error({ err }, `schema-profiling job ${job?.id} failed`);
     trackException(err, { queue: 'schema-profiling', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(schemaWorker);
 
   // Ingestion worker
-  const ingestionWorker = new Worker<IngestionJobData>(
+  const ingestionWorker = makeWorker<IngestionJobData>(
     'ingestion',
     async (job) => withTenantAiContext(job.data.tenantId, () => processIngestionJob(job)),
     defaultOpts,
   );
-  ingestionWorker.on('failed', (job, err) => {
+  ingestionWorker?.on('failed', (job, err) => {
     log.error({ err }, `ingestion job ${job?.id} failed`);
     trackException(err, { queue: 'ingestion', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(ingestionWorker);
 
   // Transformation worker
-  const transformationWorker = new Worker<TransformationJobData>(
+  const transformationWorker = makeWorker<TransformationJobData>(
     'transformation',
     async (job) => withTenantAiContext(job.data.tenantId, () => processTransformationJob(job)),
     defaultOpts,
   );
-  transformationWorker.on('failed', (job, err) => {
+  transformationWorker?.on('failed', (job, err) => {
     log.error({ err }, `transformation job ${job?.id} failed`);
     trackException(err, { queue: 'transformation', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(transformationWorker);
 
   // Scheduled transformation worker (same logic, separate queue for repeatable jobs)
-  const scheduledTransWorker = new Worker<TransformationJobData>(
+  const scheduledTransWorker = makeWorker<TransformationJobData>(
     'scheduled-transformation',
     async (job) => withTenantAiContext(job.data.tenantId, async () => {
       // Record run start
@@ -388,16 +405,15 @@ export function startWorkers(): void {
     }),
     { ...defaultOpts, concurrency: 1 },
   );
-  scheduledTransWorker.on('failed', (job, err) => {
+  scheduledTransWorker?.on('failed', (job, err) => {
     log.error({ err }, `scheduled-transformation job ${job?.id} failed`);
     trackException(err, { queue: 'scheduled-transformation', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(scheduledTransWorker);
 
   // Bus matrix worker — long-running (AI design + DB build + transformations).
   // Concurrency 1: AI calls are expensive and the transformation phase already
   // serialises product builds; running multiple in parallel offers no win.
-  const busMatrixWorker = new Worker<BusMatrixJobData>(
+  const busMatrixWorker = makeWorker<BusMatrixJobData>(
     'bus-matrix',
     async (job) => withTenantAiContext(job.data.tenantId, () => processBusMatrixJob(job)),
     {
@@ -410,14 +426,13 @@ export function startWorkers(): void {
       stalledInterval: 60 * 1000,
     },
   );
-  busMatrixWorker.on('failed', (job, err) => {
+  busMatrixWorker?.on('failed', (job, err) => {
     log.error({ err }, `bus-matrix job ${job?.id} failed`);
     trackException(err, { queue: 'bus-matrix', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(busMatrixWorker);
 
   // Email report worker
-  const emailReportWorker = new Worker<EmailReportJobData>(
+  const emailReportWorker = makeWorker<EmailReportJobData>(
     'email-report',
     async (job) => {
       const { scheduleId } = job.data;
@@ -426,17 +441,16 @@ export function startWorkers(): void {
     },
     { ...defaultOpts, concurrency: 3 },
   );
-  emailReportWorker.on('failed', (job, err) => {
+  emailReportWorker?.on('failed', (job, err) => {
     log.error({ err }, `email-report job ${job?.id} failed`);
     trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(emailReportWorker);
 
   // Connection sync schedule worker — fires `triggerSync` for each
   // connection_sync_schedules cron tick. The orchestrator's schema-hash
   // gate makes scheduled refreshes near-zero-cost when the schema is
   // stable (no LLM call), so hourly schedules are economically viable.
-  const connSyncWorker = new Worker<ConnectionSyncScheduleJobData>(
+  const connSyncWorker = makeWorker<ConnectionSyncScheduleJobData>(
     'connection-sync-schedule',
     async (job) => {
       const { connectionId, tenantId } = job.data;
@@ -450,16 +464,15 @@ export function startWorkers(): void {
     },
     { connection: conn, concurrency: 4 },
   );
-  connSyncWorker.on('failed', (job, err) => {
+  connSyncWorker?.on('failed', (job, err) => {
     trackException(err, { queue: 'connection-sync-schedule', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(connSyncWorker);
 
   // pipeline-schedule worker — drains cron-fired pipeline triggers.
   // Each fire enqueues a `pipeline-run` on the bus-matrix queue (same
   // path as the manual /run-pipeline endpoint), so SSE attach + cancel
   // + active-job all keep working without changes.
-  const pipelineSchedWorker = new Worker<PipelineScheduleJobData>(
+  const pipelineSchedWorker = makeWorker<PipelineScheduleJobData>(
     'pipeline-schedule',
     async (job) => {
       const { pipelineId, tenantId } = job.data;
@@ -473,27 +486,24 @@ export function startWorkers(): void {
     },
     { connection: conn, concurrency: 4 },
   );
-  pipelineSchedWorker.on('failed', (job, err) => {
+  pipelineSchedWorker?.on('failed', (job, err) => {
     trackException(err, { queue: 'pipeline-schedule', jobId: job?.id ?? 'unknown' });
   });
-  workers.push(pipelineSchedWorker);
 
   // Warehouse maintenance — weekly OPTIMIZE + VACUUM
   const maintenanceWorker = startMaintenanceWorker();
   if (maintenanceWorker) {
-    maintenanceWorker.on('failed', (job, err) => {
+    maintenanceWorker?.on('failed', (job, err) => {
       trackException(err, { queue: 'warehouse-maintenance', jobId: job?.id ?? 'unknown' });
     });
-    workers.push(maintenanceWorker);
   }
 
   // Morning brief — daily snapshot + narration. Telemetry on failure.
   const briefWorker = startMorningBriefWorker();
   if (briefWorker) {
-    briefWorker.on('failed', (job, err) => {
+    briefWorker?.on('failed', (job, err) => {
       trackException(err, { queue: 'morning-brief', jobId: job?.id ?? 'unknown' });
     });
-    workers.push(briefWorker);
   }
 
   // Security maintenance — daily cleanup of expired refresh tokens etc.
@@ -501,10 +511,9 @@ export function startWorkers(): void {
   // non-critical if it skips a day.
   const secWorker = startSecurityMaintenanceWorker();
   if (secWorker) {
-    secWorker.on('failed', (job, err) => {
+    secWorker?.on('failed', (job, err) => {
       trackException(err, { queue: 'security-maintenance', jobId: job?.id ?? 'unknown' });
     });
-    workers.push(secWorker);
   }
 
   log.info(`Started ${workers.length} workers`);

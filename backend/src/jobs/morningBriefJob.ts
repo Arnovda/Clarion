@@ -13,6 +13,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
+import { shouldRunQueue } from './queueRoles';
 import { runDailyBriefs } from '../services/morningBriefService';
 import { logger } from '../utils/logger';
 
@@ -37,6 +38,8 @@ function getQueue(): Queue<BriefJobData> | null {
 }
 
 export function startMorningBriefWorker(): Worker | null {
+  // This queue may belong to the other container — see queueRoles.
+  if (!shouldRunQueue('morning-brief')) return null;
   if (briefWorker) return briefWorker;
   const conn = getRedisConnection();
   if (!conn) {

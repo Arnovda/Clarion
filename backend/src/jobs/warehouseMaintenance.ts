@@ -16,6 +16,7 @@
 import axios from 'axios';
 import { Queue, Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
+import { shouldRunQueue } from './queueRoles';
 import { semanticDb } from '../db/knex';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import { logger } from '../utils/logger';
@@ -146,6 +147,8 @@ export async function runMaintenance(opts: {
  * inline `runMaintenance()` and there's no scheduled cadence.
  */
 export function startMaintenanceWorker(): Worker | null {
+  // This queue may belong to the other container — see queueRoles.
+  if (!shouldRunQueue('warehouse-maintenance')) return null;
   if (maintenanceWorker) return maintenanceWorker;
   const conn = getRedisConnection();
   if (!conn) {
