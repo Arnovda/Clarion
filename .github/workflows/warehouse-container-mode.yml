@@ -42,7 +42,11 @@ jobs:
         id: mode
         run: |
           set -euo pipefail
-          MODE=$(tr -d '[:space:]' < .ops/warehouse-container-mode)
+          # First non-empty, non-comment line is the mode. Comment lines let an
+          # operator record WHY a mode was (re-)applied, and give a re-apply a
+          # meaningful diff — re-applying is how you roll the current image to
+          # 100% traffic without a separate promote.
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/warehouse-container-mode | head -1 | tr -d '[:space:]')
           case "$MODE" in
             shared|per-tenant) ;;
             *) echo "::error::invalid mode '$MODE' (expected 'shared' or 'per-tenant')"; exit 1 ;;

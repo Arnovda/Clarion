@@ -1,1 +1,7 @@
 per-tenant
+
+# Re-applied 2026-07-26: rolls the current backend image (main-2b66d79) to 100%
+# traffic. That image carries the cross-process cancellation registry, the Redis
+# cache-invalidation bus, the schedule reconciler and the ROLE flag. The mode
+# itself is unchanged — re-applying is simply how a new revision gets created
+# and promoted from here.
