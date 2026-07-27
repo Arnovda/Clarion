@@ -996,12 +996,17 @@ resource "azurerm_container_app" "jobs_worker" {
         value = "donotreply@${azurerm_email_communication_service_domain.azuremanaged.from_sender_domain}"
       }
 
+      # Long interval on purpose. Container Apps bills a min-replica app at the
+      # much cheaper IDLE rate only while the replica stays under 0.01 vCPU and
+      # under 1000 B/s of traffic; platform probes are excluded from that
+      # traffic count, but there is no reason to poll a background process every
+      # 30s either. This still restarts a hung worker, just less chattily.
       liveness_probe {
         transport               = "HTTP"
         path                    = "/api/ping"
         port                    = 3001
-        interval_seconds        = 30
-        failure_count_threshold = 10
+        interval_seconds        = 60
+        failure_count_threshold = 5
       }
     }
   }
