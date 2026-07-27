@@ -486,6 +486,11 @@ resource "azurerm_container_app" "etl" {
       percentage      = 100
     }
   }
+
+  # CI deploys the immutable per-commit tag; don't reset it to :main-latest.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -768,6 +773,27 @@ resource "azurerm_container_app" "backend" {
       percentage      = 100
     }
   }
+
+  # CI owns both of these at runtime; Terraform must not fight it.
+  #
+  #  • image — deploy.yml deploys an immutable per-commit tag. Letting Terraform
+  #    reset it to the mutable :main-latest tag risks serving a cached, stale
+  #    image (the exact bug that made sync-worker run old code for weeks).
+  #
+  #  • traffic_weight — the block above says latest_revision = true, which makes
+  #    Azure send 100% of traffic to every new revision the moment it deploys.
+  #    That silently destroys the test-first model: deploy.yml deliberately
+  #    lands new revisions at 0% traffic and pins traffic to the live revision
+  #    BY NAME, so nothing goes live until someone promotes it. An apply that
+  #    reasserted latest_revision would put the next push straight into
+  #    production. Terraform still needs the block to create the app initially,
+  #    so we ignore drift instead of removing it.
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1016,6 +1042,12 @@ resource "azurerm_container_app" "jobs_worker" {
       }
     }
   }
+
+  # deploy.yml updates this app to the immutable per-commit backend tag on every
+  # backend build; Terraform must not reset it to :main-latest.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 }
 
 resource "azurerm_storage_container" "sync_heartbeat" {
@@ -1259,6 +1291,15 @@ resource "azurerm_container_app" "frontend" {
       latest_revision = true
       percentage      = 100
     }
+  }
+
+  # Same reasoning as the backend app: CI owns the image tag and the traffic
+  # split at runtime, so an apply must not reset either.
+  lifecycle {
+    ignore_changes = [
+      template[0].container[0].image,
+      ingress[0].traffic_weight,
+    ]
   }
 }
 
