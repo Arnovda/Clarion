@@ -1,1 +1,1 @@
-run
+run 2 — findings now echoed to stdout so they are readable via the logs API
