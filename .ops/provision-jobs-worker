@@ -4,3 +4,6 @@ create
 #          falls back to the phased one if permissions are denied)
 # delete = remove it and hand every queue back to the API
 # noop   = do nothing
+#
+# re-run 2026-07-27: re-sync the worker to the backing build and promote the
+# API revision that actually understands WORKER_QUEUES.
