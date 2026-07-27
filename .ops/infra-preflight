@@ -1,1 +1,1 @@
-run 2 — findings now echoed to stdout so they are readable via the logs API
+run 3 — verify worker health and image after provisioning
