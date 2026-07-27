@@ -1,1 +1,1 @@
-run 3 — verify worker health and image after provisioning
+run 4 — confirm the promoted revision and the split after re-provisioning

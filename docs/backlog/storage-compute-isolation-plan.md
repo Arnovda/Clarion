@@ -375,8 +375,39 @@ dat via `getJobLogs`, dus daar was niets aan te doen. Wat wél brak is verwerkt:
   waarheid en `scheduleReconciler` herstelt na een Redis-reconnect. AOF op een
   ephemeral Container App-filesystem levert niets op.
 
-Nog te doen: Fase 2 `terraform apply` (creëert de worker-app), Fase 3 (child-proces
-runnerpool — de enige echte per-query-kill), Fase 4 (legacy-migratie +
+**Fase 2 — LIVE IN PRODUCTIE (2026-07-27), zónder terraform.** De preflight-probe
+(`.ops/infra-preflight`) legde drie feiten vast die het pad veranderden: de
+deploy-identiteit heeft alleen **`Contributor`** (kan dus géén rol-toewijzingen
+maken), de secrets van de backend-app zijn **leesbaar** (een nieuwe app kan
+identiek gekloond worden zonder dat iemand iets intypt), en er is **geen
+terraform-state storage account** in de subscription — state staat op een laptop,
+dus een `terraform apply` vanuit CI zou live infrastructuur willen herbouwen.
+Daarom is de worker met `az` aangemaakt (`.ops/provision-jobs-worker`,
+idempotent). Terraform kent de app niet: reconciliëren met
+`terraform import azurerm_container_app.jobs_worker <resource-id>`; `infra/main.tf`
+beschrijft hem al, alleen de state-entry ontbreekt.
+
+Omdat de worker geen eigen identiteit kan krijgen is de split **gefaseerd**
+(`jobs/queueRoles.ts`): queues die tegen Azure AD authenticeren blijven in de API
+(`bus-matrix`, `connection-sync-schedule`, `pipeline-schedule`, `email-report`,
+`morning-brief`); de worker krijgt wat met de storage-connectionstring werkt en
+waar het de split om te doen was (`transformation`, `scheduled-transformation`,
+`warehouse-maintenance`, `security-maintenance`). Selectie via `WORKER_QUEUES`
+(leeg = alles, dus lokaal ongewijzigd). `RUN_SCHEDULERS=false` op de worker houdt
+schedulers, crash-recovery en de reaper bij precies één proces. De volledige split
+komt vrij zodra iemand met Owner-rechten de deploy-SP "User Access Administrator"
+geeft — het provisioning-script probeert de grants elke run opnieuw en schakelt
+zichzelf dan automatisch om.
+
+**Fase 3 — geshipt, opt-in (`DUCKDB_RUNNER=child`).**
+`services/warehouse/queryRunnerChild.ts` + `queryRunnerPool.ts`: de parent SIGKILLt
+het kind bij time-out, wat de echte per-query-kill geeft die de wall-clock time-out
+niet kon (M1 uit de review). Warm gepoold op dezelfde sleutel als `DuckDBPool`,
+schakelt zichzelf uit als het gecompileerde script ontbreekt, en valt bij een
+spawn-fout terug op in-process — mét vastgehouden permits, zodat de begrensde weg
+niet te omzeilen is. Aanzetten pas na live validatie.
+
+Nog te doen: Fase 3 live aanzetten en valideren, Fase 4 (legacy-migratie +
 auth-ontvlechting + de opt-in DuckDB-lockdown live valideren).
 
 ### Externe validatie van dit ontwerp (2026-07-27)
