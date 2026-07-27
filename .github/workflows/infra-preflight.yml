@@ -121,7 +121,23 @@ jobs:
           # matching backend build finished, the worker can be running code that
           # predates the queue-role support it depends on.
           B_IMG=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].image" -o tsv 2>/dev/null | sed 's#.*/##')
-          say "- backend image: \`${B_IMG:-unknown}\`"
+          say "- backend image (template): \`${B_IMG:-unknown}\`"
+
+          # The template is NOT what users hit. Deploys deliberately create the
+          # new revision at 0% traffic, so the revision actually serving requests
+          # can be an older build until it is promoted.
+          LIVE_REV=$(az containerapp show -n "$APP" -g "$RG" \
+                       --query "properties.configuration.ingress.traffic[?weight>\`0\`].revisionName | [0]" -o tsv 2>/dev/null || echo "")
+          if [ -z "$LIVE_REV" ] || [ "$LIVE_REV" = "None" ]; then
+            # A traffic entry with no name means "whatever is latest".
+            LIVE_REV=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestRevisionName -o tsv 2>/dev/null || echo "")
+          fi
+          LIVE_IMG=$(az containerapp revision show -n "$APP" -g "$RG" --revision "$LIVE_REV" \
+                       --query "properties.template.containers[0].image" -o tsv 2>/dev/null | sed 's#.*/##')
+          say "- backend revision serving traffic: \`${LIVE_REV:-unknown}\` running \`${LIVE_IMG:-unknown}\`"
+          if [ -n "$LIVE_IMG" ] && [ "$LIVE_IMG" != "$B_IMG" ]; then
+            say "- ⚠️ **not promoted** — users are on an older build than the template; the queue split is not in effect yet"
+          fi
           B_Q=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].env[?name=='WORKER_QUEUES'].value | [0]" -o tsv 2>/dev/null || echo "")
           say "- backend WORKER_QUEUES: \`${B_Q:-<unset = all>}\`"
           if az containerapp show -n "$WORKER_APP" -g "$RG" >/dev/null 2>&1; then

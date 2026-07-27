@@ -26,3 +26,28 @@ for a **fresh** environment — keep the two in agreement, since a
 `terraform apply` would otherwise reassert the Terraform value.
 
 Details and the validation checklist: `docs/runbooks/per-tenant-container-flip.md`.
+
+## `provision-jobs-worker`
+
+Contains exactly one word: `create`, `delete` or `noop`.
+
+| Value | Meaning |
+|---|---|
+| `create` | Create (or re-sync) the `…-jobs-worker` Container App: same image and configuration as the backend, no ingress, 1 replica. Heavy DuckDB transformations move there so they stop competing with dashboard queries. |
+| `delete` | Remove the worker and hand every queue back to the API. The rollback. |
+| `noop` | Do nothing. |
+
+`create` is **idempotent** — running it again updates the existing worker to the
+backend's current image and re-applies the queue split. That is the supported way
+to move the worker onto a newer build: the worker clones the backend's image at
+run time, so re-running it after a deploy brings the two back in step.
+
+Any edit to the file re-triggers the workflow, including a comment line — the
+value is read from the first non-comment line.
+
+## `infra-preflight`
+
+Free-text. Editing it runs a **read-only** probe that reports which roles the
+deploy identity holds, whether the backend's configuration can be cloned, whether
+Terraform state exists in the subscription, and the image + health of both apps.
+It changes nothing; use it to check the state of production at any time.
