@@ -131,6 +131,7 @@ jobs:
               --registry-server "$REGISTRY" \
               --registry-username "$REG_USER" \
               --registry-password "secretref:acr-password" \
+              --system-assigned \
               --min-replicas 1 --max-replicas 1 \
               --cpu 0.5 --memory 1Gi \
               --secrets "${SECRET_ARGS[@]}" \
@@ -138,12 +139,58 @@ jobs:
             say "Created \`$WORKER\` (0.5 vCPU / 1Gi, 1 replica, no ingress)"
           fi
 
+          # ── Try to give the worker its own permissions ────────────────────
+          # The deploy identity is only Contributor, which cannot create role
+          # assignments — so this is EXPECTED to fail. Attempting it is the
+          # definitive test, and it costs nothing: a denied request changes
+          # nothing. If it succeeds, the worker can own every queue instead of
+          # just the compute ones.
+          PRINCIPAL=$(az containerapp show -n "$WORKER" -g "$RG" --query identity.principalId -o tsv)
+          SUB=$(az account show --query id -o tsv)
+          SA=$(az containerapp show -n "$APP" -g "$RG" \
+                 --query "properties.template.containers[0].env[?name=='AZURE_WAREHOUSE_STORAGE_ACCOUNT'].value | [0]" -o tsv)
+          SYNC_JOB=$(az containerapp show -n "$APP" -g "$RG" \
+                 --query "properties.template.containers[0].env[?name=='AZURE_CONTAINER_APPS_JOB_NAME'].value | [0]" -o tsv)
+
+          GRANTS_OK=0
+          GRANTS_TRIED=0
+          try_grant() {
+            GRANTS_TRIED=$((GRANTS_TRIED+1))
+            if az role assignment create --assignee-object-id "$PRINCIPAL" \
+                 --assignee-principal-type ServicePrincipal \
+                 --role "$1" --scope "$2" >/dev/null 2>&1; then
+              GRANTS_OK=$((GRANTS_OK+1))
+            fi
+          }
+          [ -n "${SA:-}" ] && try_grant "Storage Blob Data Contributor" \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$SA"
+          [ -n "${SYNC_JOB:-}" ] && try_grant "Contributor" \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.App/jobs/$SYNC_JOB"
+
+          if [ "$GRANTS_TRIED" -gt 0 ] && [ "$GRANTS_OK" -eq "$GRANTS_TRIED" ]; then
+            say "Granted the worker its own Azure permissions ($GRANTS_OK/$GRANTS_TRIED) — **full split possible**"
+            FULL_SPLIT=1
+          else
+            say "Could not grant the worker its own permissions ($GRANTS_OK/$GRANTS_TRIED) — the deploy identity lacks role-assignment rights, as expected. Continuing with the **phased split**."
+            FULL_SPLIT=0
+          fi
+
+          if [ "$FULL_SPLIT" = "1" ]; then
+            # The worker can authenticate to Azure AD, so it can own everything.
+            az containerapp update -n "$WORKER" -g "$RG" \
+              --set-env-vars WORKER_QUEUES="" RUN_SCHEDULERS=true >/dev/null
+            az containerapp update -n "$APP" -g "$RG" --set-env-vars ROLE=api >/dev/null
+            say "Worker owns every queue; API serves HTTP only"
+          fi
+
           # ── Hand the compute queues over: the API stops running them ──────
-          az containerapp update -n "$APP" -g "$RG" \
-            --set-env-vars \
-              WORKER_QUEUES=bus-matrix,connection-sync-schedule,pipeline-schedule,email-report,morning-brief \
-            >/dev/null
-          say "API now runs only the identity-requiring queues"
+          if [ "$FULL_SPLIT" != "1" ]; then
+            az containerapp update -n "$APP" -g "$RG" \
+              --set-env-vars \
+                WORKER_QUEUES=bus-matrix,connection-sync-schedule,pipeline-schedule,email-report,morning-brief \
+              >/dev/null
+            say "API now runs only the identity-requiring queues"
+          fi
 
           # Traffic must stay on the live revision — the env change above creates
           # a new one, and this app is in multiple-revision mode.

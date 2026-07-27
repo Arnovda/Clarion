@@ -1,4 +1,6 @@
-noop
+create
 
-# Set to `create` and push to provision the jobs-worker.
-# Set to `delete` to remove it and hand every queue back to the API.
+# create = provision the jobs-worker (adaptive: tries for the full split,
+#          falls back to the phased one if permissions are denied)
+# delete = remove it and hand every queue back to the API
+# noop   = do nothing
