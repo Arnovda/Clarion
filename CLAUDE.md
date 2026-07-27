@@ -31,7 +31,82 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-23 (P0 compute security-isolation + Fase 0 guards IMPLEMENTED — shipping to prod)
+**Last updated:** 2026-07-27 (Fase 2 jobs-worker LIVE in production + Fase 3 child-process query runner shipped opt-in)
+
+**JOBS-WORKER IS LIVE (2026-07-27).** The compute split from Fase 2 is no longer
+"awaiting terraform apply" — it runs in production as a second Container App,
+provisioned entirely from CI because the sandbox has no `az`/`terraform` binary
+and no Azure credentials. Verified from Azure by the preflight probe:
+`databridge-prod-jobs-worker` **exists**, `runningStatus: Running`, image
+`databridge-backend:main-a17a71a` (same build as the backend), 0.5 vCPU / 1 GiB,
+1 replica, no ingress.
+- **How it got there without terraform**: the preflight probe
+  (`.github/workflows/infra-preflight.yml` + `.ops/infra-preflight`, read-only)
+  established three facts that changed the plan: the deploy identity holds only
+  **`Contributor`** (so it CANNOT create role assignments), the backend app's
+  **secret VALUES are readable** (so a new app can be cloned with identical
+  config, no human input), and there is **no Terraform state storage account** in
+  the subscription — state lives on someone's laptop, so `terraform apply` from
+  CI would try to RECREATE live infrastructure. Hence provisioning with `az`
+  (`.github/workflows/provision-jobs-worker.yml` + `.ops/provision-jobs-worker`,
+  values `create`|`delete`|`noop`, idempotent). **Terraform does not know this app
+  exists** — reconcile later with
+  `terraform import azurerm_container_app.jobs_worker <resource-id>`;
+  `infra/main.tf` already describes it so the definitions agree.
+- **PHASED split, on purpose** (`backend/src/jobs/queueRoles.ts`): because the
+  worker cannot be granted its own managed identity, queues that authenticate to
+  Azure AD stay in the API — `bus-matrix`, `connection-sync-schedule`,
+  `pipeline-schedule` (start sync-worker job executions through ARM),
+  `email-report`, `morning-brief` (Communication Services). The worker owns the
+  queues that authenticate with the storage connection string and are the actual
+  reason for the split: `transformation`, `scheduled-transformation`,
+  `warehouse-maintenance`, `security-maintenance`. Selection is by
+  `WORKER_QUEUES` (comma-separated; **unset = run everything**, so local dev and
+  any un-split deployment are unchanged); `workers.ts` routes every
+  `new Worker` through `makeWorker()` which returns undefined for a queue this
+  process doesn't own. The provisioning workflow ATTEMPTS the role grants first
+  and upgrades itself to the full split if they succeed — they returned 0/2, as
+  predicted. To unlock the full split someone with Owner rights runs
+  `az role assignment create … "User Access Administrator"` for the deploy SP and
+  re-pushes `.ops/provision-jobs-worker`.
+- **Exactly one process owns the schedulers**: `RUN_SCHEDULERS=false` on the
+  worker. Schedule loaders, crash recovery and the 5-min reaper stay in the API.
+  This is not cosmetic — those reapers mark `source_sync_runs` stale on AGE ALONE
+  with no owner/heartbeat, so two processes running them would fail each other's
+  healthy in-flight work.
+- **Fase 3 — child-process query runner** (`services/warehouse/queryRunnerChild.ts`
+  + `queryRunnerPool.ts`), **opt-in, default OFF** (`DUCKDB_RUNNER=child`). Gives
+  the real per-query kill the 45s wall-clock timeout could not: the parent
+  SIGKILLs the child, so a runaway query stops burning CPU instead of merely
+  freeing its caller. Warm-pooled on the same key as `DuckDBPool`; self-disables
+  when the compiled script is absent; falls back in-process on any spawn error
+  (permits are deliberately still held during the fallback so the bounded path
+  can't be bypassed). M1 from the earlier review is now closable once this is
+  flipped on and validated live.
+- **Also shipped**: `jobs/cacheBus.ts` (Redis pub/sub cache invalidation — after
+  a split the transformation runner would otherwise clear only the *worker's*
+  caches while the API serves stale filter dropdowns and pooled DuckDB views for
+  up to 30 min), `jobs/scheduleReconciler.ts` (re-registers repeatables on a Redis
+  reconnect; replaces the AOF idea, which persists nothing on a Container App's
+  ephemeral filesystem and is unnecessary because Postgres is the source of
+  truth), Redis started with `--maxmemory-policy noeviction` (BullMQ's documented
+  requirement), `lifecycle.ignore_changes` on the container images and
+  `ingress[0].traffic_weight` (a later `terraform apply` must not reset images to
+  the mutable `:main-latest` tag nor undo the 0%-traffic test-first model),
+  `jobs_worker` max_replicas pinned to **1** (see the reaper note above).
+- **Cost**: ~EUR 35/month working figure for the always-on worker. It cannot be
+  scaled to zero: BullMQ delayed/repeatable jobs are promoted by a **running**
+  worker, so at 0 replicas scheduled work never fires — which is also why KEDA
+  queue-depth scaling cannot be the wake-up mechanism (a delayed job is not queue
+  depth yet).
+- **Operating the platform without a laptop**: three GitOps controls now exist in
+  `.ops/` (documented in `.ops/README.md`) — `warehouse-container-mode`,
+  `provision-jobs-worker`, `infra-preflight`. Each is a one-word/free-text file
+  whose edit on `main` triggers a paths-scoped workflow. This is the only
+  automation vehicle available: `workflow_dispatch` returns 403 for the
+  integration token, push-triggered runs work.
+
+**Prior last updated:** 2026-07-23 (P0 compute security-isolation + Fase 0 guards IMPLEMENTED — shipping to prod)
 
 **P0 + Fase 0 + A0 isolation hardening SHIPPED (2026-07-23):** Backend
 `npm run check` clean; 23 new unit tests green (sqlGuard 15 total, semaphore 8).
