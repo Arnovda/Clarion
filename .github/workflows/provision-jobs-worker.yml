@@ -81,6 +81,12 @@ jobs:
           IMAGE=$(az containerapp show -n "$APP" -g "$RG" \
                     --query "properties.template.containers[0].image" -o tsv)
           REGISTRY="${IMAGE%%/*}"
+          # Registry auth must mirror the backend: admin username + the
+          # acr-password secret we copy below. Identity-based ACR pull would
+          # need an AcrPull role assignment, which this deploy identity cannot
+          # create — the image pull would fail and the app would never start.
+          REG_USER=$(az containerapp show -n "$APP" -g "$RG" \
+                       --query "properties.configuration.registries[0].username" -o tsv)
           say "Cloning configuration from \`$APP\` (image \`${IMAGE##*/}\`)"
 
           # Secrets: copy by value, inside Azure. Never echoed.
@@ -123,7 +129,8 @@ jobs:
               --environment "$ENV_ID" \
               --image "$IMAGE" \
               --registry-server "$REGISTRY" \
-              --registry-identity system \
+              --registry-username "$REG_USER" \
+              --registry-password "secretref:acr-password" \
               --min-replicas 1 --max-replicas 1 \
               --cpu 0.5 --memory 1Gi \
               --secrets "${SECRET_ARGS[@]}" \
