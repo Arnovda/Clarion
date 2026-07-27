@@ -116,4 +116,24 @@ jobs:
                        --query "properties.template.containers[0].env[?name=='ROLE'].value | [0]" -o tsv 2>/dev/null || echo "")
           say "- backend ROLE: \`${CUR_ROLE:-<unset, runs API + workers>}\`"
 
+          # Image + health of both apps. The worker inherits the backend's
+          # TEMPLATE image at creation time, so if provisioning ran before the
+          # matching backend build finished, the worker can be running code that
+          # predates the queue-role support it depends on.
+          B_IMG=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].image" -o tsv 2>/dev/null | sed 's#.*/##')
+          say "- backend image: \`${B_IMG:-unknown}\`"
+          B_Q=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].env[?name=='WORKER_QUEUES'].value | [0]" -o tsv 2>/dev/null || echo "")
+          say "- backend WORKER_QUEUES: \`${B_Q:-<unset = all>}\`"
+          if az containerapp show -n "$WORKER_APP" -g "$RG" >/dev/null 2>&1; then
+            W_IMG=$(az containerapp show -n "$WORKER_APP" -g "$RG" --query "properties.template.containers[0].image" -o tsv 2>/dev/null | sed 's#.*/##')
+            W_RUN=$(az containerapp show -n "$WORKER_APP" -g "$RG" --query properties.runningStatus -o tsv 2>/dev/null || echo "")
+            W_Q=$(az containerapp show -n "$WORKER_APP" -g "$RG" --query "properties.template.containers[0].env[?name=='WORKER_QUEUES'].value | [0]" -o tsv 2>/dev/null || echo "")
+            say "- worker image: \`${W_IMG:-unknown}\`"
+            say "- worker runningStatus: \`${W_RUN:-unknown}\`"
+            say "- worker WORKER_QUEUES: \`${W_Q:-<unset = all>}\`"
+            if [ "$B_IMG" != "$W_IMG" ]; then
+              say "- ⚠️ **image mismatch** — worker is not on the same build as the backend"
+            fi
+          fi
+
           echo "Preflight complete."
