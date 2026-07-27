@@ -160,7 +160,7 @@ variable "jobs_worker_memory" {
 variable "jobs_worker_min_replicas" {
   type        = number
   default     = 1
-  description = "Minimum jobs-worker replicas. MUST be >= 1: BullMQ delayed/repeatable jobs are promoted by a running worker, so with 0 replicas scheduled syncs, transformations and email reports simply never fire (KEDA queue-depth scaling can't help — a delayed job isn't queue depth yet). This is the one always-on cost the split introduces."
+  description = "Minimum jobs-worker replicas. MUST be >= 1: BullMQ delayed/repeatable jobs are promoted by a running worker (verified in BullMQ's own moveToActive Lua script), so with 0 replicas scheduled syncs, transformations and email reports simply never fire. KEDA cannot rescue this: scaling on the 'wait' list deadlocks because only a worker fills it, and scaling on the 'delayed' set never scales back down because an active Job Scheduler permanently keeps one job there. COST NOTE: Container Apps bills a min-replica app at the cheap idle rate only while it stays under 0.01 vCPU AND under 1000 bytes/sec received. A BullMQ worker polling Redis across 11 queues may well exceed that and bill at the ACTIVE rate around the clock — measure it in Cost Analysis rather than assuming the low figure."
 }
 
 variable "jobs_worker_max_replicas" {
