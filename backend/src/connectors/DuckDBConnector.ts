@@ -11,6 +11,13 @@ import {
 } from '../services/warehouse';
 import { logger as rootLogger } from '../utils/logger';
 import { Semaphore, KeyedSemaphore } from '../utils/semaphore';
+import {
+  runnerEnabled,
+  runQuery,
+  QueryTimeoutError,
+  invalidateRunnersByPrefix,
+} from '../services/warehouse/queryRunnerPool';
+import type { RunnerSpec } from '../services/warehouse/queryRunnerChild';
 
 const log = rootLogger.child({ mod: 'DuckDBConnector' });
 
@@ -127,6 +134,10 @@ export class DuckDBConnector extends BaseConnector {
       ? warehousePath
       : path.resolve(warehousePath);
     await invalidateByPrefix(`duckdb:${normalised}`);
+    // Child runners hold their own registered views over the pre-refresh file
+    // set, so they must be rebuilt too — otherwise they'd serve stale data or
+    // fail on a schema change.
+    invalidateRunnersByPrefix(`duckdb:${normalised}`);
   }
 
   async connect(): Promise<void> {
@@ -310,6 +321,21 @@ export class DuckDBConnector extends BaseConnector {
     }
   }
 
+  /** Everything the child runner needs to rebuild this session's views. Paths
+   *  are resolved here so the child never reimplements path logic and can't
+   *  disagree with the in-process view registration. */
+  private runnerSpec(): RunnerSpec {
+    const tablePaths: Array<[string, string]> = this.getTableNames().map(
+      (name) => [name, this.tablePath(name)] as [string, string],
+    );
+    return {
+      warehousePath: this.warehousePath,
+      isAzure: this.isAzure,
+      tablePaths,
+      tableSchemas: [...this.tableSchemas.entries()],
+    };
+  }
+
   /** Stable per-tenant key for concurrency fairness. In the v2 warehouse
    *  layout the warehouse path is tenant-prefixed (`.../tenant_<id>/...`), so we
    *  key on that prefix; otherwise fall back to the full warehouse path. */
@@ -340,6 +366,32 @@ export class DuckDBConnector extends BaseConnector {
     } catch (err) {
       releaseTenant();
       throw err;
+    }
+
+    // Preferred path: run the query in a child process so the timeout below can
+    // actually KILL it. In-process, a timeout only frees the caller — the query
+    // keeps running, holding CPU and its concurrency permit. Opt-in; falls back
+    // silently when unavailable.
+    if (this.poolKey && runnerEnabled()) {
+      try {
+        const rows = await runQuery(this.poolKey, this.runnerSpec(), sql, QUERY_TIMEOUT_MS);
+        releaseGlobal();
+        releaseTenant();
+        return { rows, rowCount: rows.length };
+      } catch (err) {
+        if (err instanceof QueryTimeoutError) {
+          // The child was killed, so the work really has stopped — release the
+          // permits immediately. This is the whole point of the runner: with the
+          // in-process path the permit stays held for the query's real duration.
+          releaseGlobal();
+          releaseTenant();
+          throw err;
+        }
+        // Any other failure (spawn problem, IPC hiccup) degrades to in-process
+        // rather than failing a user's query over an infrastructure detail.
+        // Permits are deliberately still held — the fallback query needs them.
+        log.warn({ err }, 'Child-process runner failed — falling back to in-process execution');
+      }
     }
 
     // Register this query with the pool so a busy shared instance is never

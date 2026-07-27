@@ -75,6 +75,7 @@ import { startScheduleReconciler } from './jobs/scheduleReconciler';
 import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
+import { drainRunners } from './services/warehouse/queryRunnerPool';
 
 const app = express();
 app.set('trust proxy', 1); // trust Azure Container Apps / load balancer X-Forwarded-For
@@ -515,6 +516,7 @@ if (!process.env.VITEST) {
     server.close();
     await drainPool();
     await drainDuckDBPool();
+    drainRunners();
     await stopWorkers();
     await closeScheduler();
     await closeQueues();
