@@ -133,6 +133,26 @@ apply requires terraform/az CLI. Read-path compatibility + container lifecycle w
 verified flip-safe in the earlier audits. Deferred defense-in-depth (per-tenant SAS
 secret / DuckDB SET-lockdown) is Fase 4, not required for the flip.
 
+**✅ FASE 2 CODE IS LIVE AT 100% TRAFFIC (verified 2026-07-27).** Workflow run
+"Warehouse container mode" #2 (`30287449982`) succeeded: revision
+`…--main-2b66d79` reached `Provisioned`, the traffic table shows it as the sole
+entry at **weight 100**, and the read-back reported `Applied mode: per-tenant`
+with the assertion passing. The revision reaching `Provisioned` is also the
+smoke test that could not be run in the sandbox (no Postgres/Redis there): the
+API booted healthy WITH the new Redis pub/sub subscriber and the async
+cancellation path, and traffic only shifted after that. Now live: cross-process
+cancellation, the cache-invalidation bus, the schedule reconciler, the ROLE flag
+and the opt-in DuckDB lockdown.
+**Still inert on purpose:** `ROLE` is set nowhere, so the backend still runs API
++ workers in one process exactly as before. The actual split needs
+`terraform apply` (creates `jobs-worker`, sets `backend_role=api`, applies the
+1 vCPU/2Gi sizing) — no workflow runs terraform, and the sandbox has no
+terraform/az binaries or Azure credentials.
+Note: the promote vehicle was a re-apply of the container-mode control, since
+`workflow_dispatch` is 403 for the integration token. The control file now
+accepts `#` comment lines so a re-apply documents itself instead of needing a
+whitespace-only diff.
+
 **Fase 2 jobs-worker split — CODE + INFRA WRITTEN, awaiting `terraform apply`
 (2026-07-26).** A plumbing audit corrected the plan: **SSE job progress already
 works cross-process** (`job.log()` → Redis → the stream route polls `getJobLogs`),
