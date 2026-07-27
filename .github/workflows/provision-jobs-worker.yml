@@ -1,0 +1,158 @@
+# Provision the jobs-worker Container App.
+#
+# Why `az` and not Terraform: the preflight probe found no Terraform state
+# storage account, which means state lives on one person's laptop. Running
+# `terraform apply` from CI would see an empty state and try to recreate live
+# infrastructure. So this creates the one app directly.
+#
+#   TRADE-OFF, ON PURPOSE: Terraform will not know this app exists. A future
+#   `terraform apply` will try to create it and fail on the name. Reconcile with
+#   `terraform import azurerm_container_app.jobs_worker <resource-id>` once state
+#   is sorted out. infra/main.tf already describes this app so the definitions
+#   agree — only the state entry is missing.
+#
+# Why a PHASED split: the deploy identity is only `Contributor` and cannot
+# create role assignments, so this new app cannot be granted its own managed
+# identity. Queues that authenticate to Azure AD (starting sync jobs, sending
+# mail) therefore stay in the API; the worker takes the heavy DuckDB work, which
+# authenticates with the storage connection string. See jobs/queueRoles.ts.
+#
+# Secrets are copied from the existing backend app inside Azure. They are never
+# printed and never leave the subscription.
+
+name: Provision jobs-worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/provision-jobs-worker'
+  workflow_dispatch:
+
+concurrency:
+  group: provision-jobs-worker
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired action
+        id: action
+        run: |
+          set -euo pipefail
+          ACTION=$(grep -vE '^[[:space:]]*(#|$)' .ops/provision-jobs-worker | head -1 | tr -d '[:space:]')
+          case "$ACTION" in
+            create|delete|noop) ;;
+            *) echo "::error::invalid action '$ACTION' (expected create, delete or noop)"; exit 1 ;;
+          esac
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          echo "Requested action: $ACTION"
+
+      - name: Log in to Azure
+        if: steps.action.outputs.action != 'noop'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Provision
+        if: steps.action.outputs.action != 'noop'
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          ACTION: ${{ steps.action.outputs.action }}
+        run: |
+          set -euo pipefail
+          WORKER="${APP%-backend}-jobs-worker"
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          if [ "$ACTION" = "delete" ]; then
+            az containerapp delete -n "$WORKER" -g "$RG" --yes || true
+            az containerapp update -n "$APP" -g "$RG" --set-env-vars ROLE=all WORKER_QUEUES="" >/dev/null
+            say "### jobs-worker removed — the API runs every queue again"
+            exit 0
+          fi
+
+          # ── Gather the backend's current configuration ────────────────────
+          ENV_ID=$(az containerapp show -n "$APP" -g "$RG" --query properties.environmentId -o tsv)
+          IMAGE=$(az containerapp show -n "$APP" -g "$RG" \
+                    --query "properties.template.containers[0].image" -o tsv)
+          REGISTRY="${IMAGE%%/*}"
+          say "Cloning configuration from \`$APP\` (image \`${IMAGE##*/}\`)"
+
+          # Secrets: copy by value, inside Azure. Never echoed.
+          SECRET_ARGS=()
+          for NAME in $(az containerapp secret list -n "$APP" -g "$RG" --query "[].name" -o tsv); do
+            VALUE=$(az containerapp secret show -n "$APP" -g "$RG" --secret-name "$NAME" --query value -o tsv)
+            SECRET_ARGS+=("$NAME=$VALUE")
+          done
+          say "Copied ${#SECRET_ARGS[@]} secrets (values not shown)"
+
+          # Env vars: reuse the backend's, but drop the two we override and skip
+          # PORT (the worker serves no traffic beyond its health probe).
+          ENV_ARGS=()
+          while IFS=$'\t' read -r NAME VALUE SECREF; do
+            case "$NAME" in ROLE|WORKER_QUEUES|RUN_SCHEDULERS) continue ;; esac
+            if [ -n "${SECREF:-}" ] && [ "$SECREF" != "None" ]; then
+              ENV_ARGS+=("$NAME=secretref:$SECREF")
+            elif [ -n "${VALUE:-}" ] && [ "$VALUE" != "None" ]; then
+              ENV_ARGS+=("$NAME=$VALUE")
+            fi
+          done < <(az containerapp show -n "$APP" -g "$RG" \
+                     --query "properties.template.containers[0].env[].[name,value,secretRef]" -o tsv)
+
+          # The worker's own role. Queues listed here need no Azure AD identity.
+          ENV_ARGS+=("ROLE=worker")
+          ENV_ARGS+=("WORKER_QUEUES=transformation,scheduled-transformation,warehouse-maintenance,security-maintenance")
+          ENV_ARGS+=("RUN_SCHEDULERS=false")
+          say "Prepared ${#ENV_ARGS[@]} environment variables"
+
+          # ── Create (or update) the worker app ─────────────────────────────
+          if az containerapp show -n "$WORKER" -g "$RG" >/dev/null 2>&1; then
+            say "\`$WORKER\` already exists — updating it"
+            az containerapp update -n "$WORKER" -g "$RG" \
+              --image "$IMAGE" \
+              --min-replicas 1 --max-replicas 1 \
+              --cpu 0.5 --memory 1Gi \
+              --set-env-vars "${ENV_ARGS[@]}" >/dev/null
+          else
+            az containerapp create -n "$WORKER" -g "$RG" \
+              --environment "$ENV_ID" \
+              --image "$IMAGE" \
+              --registry-server "$REGISTRY" \
+              --registry-identity system \
+              --min-replicas 1 --max-replicas 1 \
+              --cpu 0.5 --memory 1Gi \
+              --secrets "${SECRET_ARGS[@]}" \
+              --env-vars "${ENV_ARGS[@]}" >/dev/null
+            say "Created \`$WORKER\` (0.5 vCPU / 1Gi, 1 replica, no ingress)"
+          fi
+
+          # ── Hand the compute queues over: the API stops running them ──────
+          az containerapp update -n "$APP" -g "$RG" \
+            --set-env-vars \
+              WORKER_QUEUES=bus-matrix,connection-sync-schedule,pipeline-schedule,email-report,morning-brief \
+            >/dev/null
+          say "API now runs only the identity-requiring queues"
+
+          # Traffic must stay on the live revision — the env change above creates
+          # a new one, and this app is in multiple-revision mode.
+          NEW_REV=$(az containerapp show -n "$APP" -g "$RG" --query properties.latestRevisionName -o tsv)
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show -n "$APP" -g "$RG" --revision "$NEW_REV" \
+                      --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            [ "$STATE" = "Provisioned" ] && break
+            [ "$STATE" = "Failed" ] && { echo "::error::API revision failed to provision"; exit 1; }
+            sleep 10
+          done
+          az containerapp ingress traffic set -n "$APP" -g "$RG" --revision-weight "$NEW_REV=100" >/dev/null
+          say "API revision \`$NEW_REV\` live at 100% traffic"
+
+          say ""
+          say "**Split active (phased).** Heavy transformations now run in the worker."
+          say "Sync-triggering, pipelines and email stay in the API because the deploy"
+          say "identity cannot grant the worker its own Azure permissions."
+          say "Rollback: set \`.ops/provision-jobs-worker\` to \`delete\` and push."

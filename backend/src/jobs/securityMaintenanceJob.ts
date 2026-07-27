@@ -17,6 +17,7 @@
 
 import { Queue, Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
+import { shouldRunQueue } from './queueRoles';
 import { logger } from '../utils/logger';
 import { cleanupExpiredAndRevoked } from '../services/refreshTokenService';
 
@@ -41,6 +42,8 @@ function getQueue(): Queue<JobData> | null {
 }
 
 export function startSecurityMaintenanceWorker(): Worker | null {
+  // This queue may belong to the other container — see queueRoles.
+  if (!shouldRunQueue('security-maintenance')) return null;
   if (worker) return worker;
   const conn = getRedisConnection();
   if (!conn) {

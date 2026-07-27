@@ -1,0 +1,4 @@
+noop
+
+# Set to `create` and push to provision the jobs-worker.
+# Set to `delete` to remove it and hand every queue back to the API.

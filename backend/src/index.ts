@@ -317,8 +317,24 @@ if (!process.env.VITEST) {
       return;
     }
 
-    // Start BullMQ workers (no-op if Redis not configured)
+    // Which queues this process runs is controlled separately by WORKER_QUEUES
+    // (see jobs/queueRoles). Starting the workers is therefore always safe here
+    // — the filter decides what actually gets picked up.
     startWorkers();
+
+    // Schedule registration, crash recovery and the reapers must happen in
+    // EXACTLY ONE process, independently of which queues that process serves.
+    // In the phased split the API keeps them, because it owns the queues whose
+    // schedules these are (sync, pipeline, email) and it is the container with
+    // the Azure identity those jobs need. `RUN_SCHEDULERS=false` on the worker
+    // keeps it from re-registering the same repeatables or, worse, running the
+    // reaper — which marks rows stale on age alone with no owner check and
+    // would condemn the other container's healthy in-flight work.
+    if ((process.env.RUN_SCHEDULERS ?? '').trim().toLowerCase() === 'false') {
+      logger.info('RUN_SCHEDULERS=false — schedules, crash recovery and reapers are owned by the other process');
+      return;
+    }
+
     // Load scheduled transformations from DB into BullMQ
     loadSchedules().catch(err => logger.error({ err }, 'Schedule loading error'));
     // Load email report schedules from DB into BullMQ
