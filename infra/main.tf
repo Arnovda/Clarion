@@ -298,7 +298,13 @@ resource "azurerm_container_app" "redis" {
       # bullmq doesn't depend on durability for repeatable jobs.
       # Wrap the empty-string arg in `sh -c` because the azurerm provider
       # can't represent empty strings in the `command` array.
-      command = ["sh", "-c", "exec redis-server --save '' --appendonly no"]
+      # `maxmemory-policy noeviction` is not optional: BullMQ's own production
+      # guide states it is "the only setting that guarantees the correct
+      # behavior of the queues" — under any eviction policy Redis may drop a job
+      # hash or a lock key and jobs silently vanish or stall. Redis defaults to
+      # noeviction when no maxmemory is set, but we set it explicitly so the
+      # guarantee survives someone later capping memory.
+      command = ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory-policy noeviction"]
     }
   }
 
