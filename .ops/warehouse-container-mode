@@ -1,23 +1,12 @@
 per-tenant
 
-# Re-applied 2026-07-28: rolls the current backend image (main-1f860ad) to 100%
-# traffic. That image closes the cross-tenant read/write path into the semantic
-# graph — every id-taking endpoint in semantic/catalog/cross-views now proves
-# tenant ownership in Postgres before touching Neo4j. It also carries the
-# per-runner memory-budget fix, so DUCKDB_RUNNER=child is safe to enable later.
+# Re-applied 2026-07-28 (second): rolls backend image main-5d2b327 to 100%
+# traffic. That image carries the per-connection cache invalidation, the
+# transaction-local tenant context in the BullMQ workers (the last fail-open
+# cross-tenant hazard), and the fail-closed fix to the relationship ownership
+# fallback that CI caught turning refusals into 500s.
 #
-# Used as the promote vehicle deliberately: this workflow waits for the NEW
-# revision to reach Provisioned and fails loudly if it doesn't, whereas
-# promote.yml shifts traffic to latestReadyRevisionName — which silently
-# promotes the PREVIOUS revision if the new one failed to boot. The mode itself
-# is unchanged.
-#
-# Watch after promoting: a burst of "ownership check refused" warnings means the
-# new gate is rejecting legitimate traffic (a graph entity whose Postgres mirror
-# row is missing), not that someone is probing. Rollback is the Rollback
-# production workflow, or set this file to `shared` only if the CONTAINER MODE
-# is what you want to revert — it will not undo the code.
-
-# Re-applied 2026-07-26: rolled the backend image (main-2b66d79) to 100%
-# traffic. That image carries the cross-process cancellation registry, the Redis
-# cache-invalidation bus, the schedule reconciler and the ROLE flag.
+# Promote vehicle on purpose: this workflow waits for the NEW revision to reach
+# Provisioned and fails loudly otherwise. deploy.yml never waits, and
+# promote.yml shifts to latestReadyRevisionName -- which silently promotes the
+# PREVIOUS revision if the new one failed to boot.
