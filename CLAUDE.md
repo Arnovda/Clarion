@@ -33,6 +33,25 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
 
+**✅ THE FIX IS LIVE AT 100% TRAFFIC (verified 2026-07-28).** PR #60 merged
+(`1f860ad`), backend image built, and "Warehouse container mode" run #3
+(`30354021361`) promoted it: revision `…--main-1f860ad` reached `Provisioned`,
+the traffic table shows it as the sole entry at **weight 100**, and the read-back
+reported `Applied mode: per-tenant` with the assertion passing. The revision
+reaching `Provisioned` is the boot smoke test — the API came up healthy WITH the
+ownership gate before any traffic moved.
+**The container-mode control was used as the promote vehicle on purpose**, not
+`promote.yml`: `deploy.yml` never waits for the new revision to boot, and
+`promote.yml` shifts traffic to `latestReadyRevisionName`, which silently
+promotes the PREVIOUS revision if the new one failed — it would have reported
+success either way. Only this control waits for the specific new revision and
+fails loudly.
+**Watch for**: a burst of `ownership check refused` warnings means the gate is
+rejecting legitimate traffic (a graph entity whose Postgres mirror row is
+missing), not that someone is probing. Rollback = the "Rollback production"
+workflow. NOT yet observed: no log access from the sandbox, so nobody has
+confirmed the absence of those warnings against real traffic.
+
 **CROSS-TENANT LEAK IN THE SEMANTIC LAYER — FOUND AND CLOSED (2026-07-28).**
 A full storage+compute isolation audit found that **Neo4j has no tenant scoping
 at all** (`db/semanticGraph.ts`: 94 `MATCH` clauses, 0 tenant references — every
@@ -78,7 +97,14 @@ passed a request-supplied id straight into unscoped Cypher.
   (`services/warehouse/duckdb.ts:197`), making the `sqlGuard` denylist the only
   barrier on the read path (Fase 4's per-tenant SAS is the real fix); all 9
   `invalidateSemanticCache()` calls are no-arg → a Redis `SCAN` that wipes
-  **every** tenant's cached AI context on any semantic edit; `tenantKey()`
+  **every** tenant's cached AI context on any semantic edit. NOTE: this is NOT
+  the one-line fix it looks like. The function takes a `connectionId` and the key
+  is `semantic:*:<connectionId>*`, but 7 of the 9 call sites only have an entity
+  id, and each entity type needs a different lookup to reach a connection:
+  `source_tables`/`kpi_definitions` have `connection_id` directly,
+  `source_columns` joins via `table_id`, `table_relationships` has no
+  `connection_id` at all (via `from_table_id`), and product tables/columns go
+  through `data_products`. Budget a small resolver, not a one-liner; `tenantKey()`
   regex-derives the fairness key from the warehouse path and falls back to the
   whole path, so legacy layouts let one tenant hold several semaphore slots;
   `warehouseContainer(tenantId?)` silently returns the SHARED container when the
