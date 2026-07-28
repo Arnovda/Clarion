@@ -4,8 +4,14 @@
 # connectors) — no database, no native builds, no full test suite. ~1–2 min.
 # This is the green/red signal you glance at before clicking "Promote to
 # production". It does NOT block deploy (deploy.yml lands a 0%-traffic revision
-# regardless). Backend types are covered by its Docker build (tsconfig.build.json);
-# the heavier vitest suite stays in test.yml (manual until it's green again).
+# regardless).
+#
+# The backend is NOT covered here — it is covered by test.yml, which runs on
+# every PR and push to main with a Postgres service container and does both
+# `Type-check backend (strict)` and the full vitest suite. (An earlier version
+# of this comment said the vitest suite was "manual until it's green again";
+# that has been untrue since 2026-07-11 and it misled a later reviewer into
+# believing the backend had no CI coverage. Check test.yml before repeating it.)
 
 name: Check
 
