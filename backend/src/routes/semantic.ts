@@ -8,6 +8,9 @@ import {
 } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { owns, ownedIds } from '../db/tenantOwnership';
+import type { OwnedTable } from '../db/tenantOwnership';
+import { connectionIdForEntity } from '../db/semanticCacheScope';
+import type { ScopedEntity } from '../db/semanticCacheScope';
 import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -51,7 +54,8 @@ async function denyUnlessOwned(
  * (/revert, /approve). Maps the type to its mirror table and applies the same
  * check; an unknown type is refused rather than waved through.
  */
-const ENTITY_TABLE: Record<string, Parameters<typeof owns>[1]> = {
+// Values must be valid for BOTH the ownership gate and the cache scope resolver.
+const ENTITY_TABLE: Record<string, OwnedTable & ScopedEntity> = {
   table:          'source_tables',
   column:         'source_columns',
   kpi:            'kpi_definitions',
@@ -74,6 +78,21 @@ async function denyUnlessOwnedEntity(
 }
 
 /**
+ * Cache scope for the entityType-dispatching routes. `undefined` means "could
+ * not determine", which makes invalidateSemanticCache fall back to the global
+ * wipe — slow, but never stale.
+ */
+async function scopeForEntity(
+  db: ReturnType<typeof reqDb>,
+  entityType: string,
+  entityId: unknown,
+): Promise<number | undefined> {
+  const table = ENTITY_TABLE[entityType];
+  if (!table) return undefined;
+  return (await connectionIdForEntity(db, table, entityId)) ?? undefined;
+}
+
+/**
  * Same gate for relationships, which need one extra step.
  *
  * Relationships created before the Postgres dual-write existed have no mirror
@@ -91,9 +110,18 @@ async function denyUnlessOwnedRelationship(
   const tenantId = req.user?.tenantId;
   if (await owns(db, 'table_relationships', id, tenantId)) return true;
 
-  const connectionId = Number.isInteger(id) && id > 0
-    ? await graph.getRelationshipConnectionId(id)
-    : null;
+  // The graph lookup is a best-effort SECOND CHANCE, never a gate of its own.
+  // It runs on the refusal path, so a Neo4j outage would otherwise turn every
+  // "denied" into a 500 — an unavailable graph is not permission to proceed,
+  // and the caller must not be able to tell the two apart. Refuse on any error.
+  let connectionId: number | null = null;
+  if (Number.isInteger(id) && id > 0) {
+    try {
+      connectionId = await graph.getRelationshipConnectionId(id);
+    } catch (err) {
+      log.warn({ err, id }, 'relationship ownership fallback unavailable — refusing');
+    }
+  }
   if (connectionId !== null && await owns(db, 'connections', connectionId, tenantId)) return true;
 
   res.status(404).json({ ok: false, error: 'Not found' });
@@ -249,7 +277,7 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), valida
     }
     await db('source_tables').where({ id }).update(tablePatch);
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await connectionIdForEntity(db, 'source_tables', id) ?? undefined);
 
     // Record version + audit
     const changes = computeChanges(oldSnapshot, body);
@@ -348,7 +376,7 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), valid
 
     await db('source_columns').where({ id }).update(colPatch);
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await connectionIdForEntity(db, 'source_columns', id) ?? undefined);
 
     const changes = computeChanges(oldSnapshot, body);
     await recordVersion(db, req.user!.tenantId, 'column', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
@@ -591,7 +619,9 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
     relPatch.confirmed_by_user = true;
     await db('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(
+      await connectionIdForEntity(db, 'table_relationships', req.params.id) ?? undefined,
+    );
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -606,12 +636,15 @@ router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst')
     const db = reqDb(req);
     const id = Number(req.params.id);
     if (!await denyUnlessOwnedRelationship(req, res, id)) return;
+    // Resolve the cache scope BEFORE the row is deleted — afterwards there is
+    // nothing left to join through and we would fall back to a global wipe.
+    const relConnectionId = await connectionIdForEntity(db, 'table_relationships', id);
     await graph.deleteRelationship(id);
     // Mirror delete to Postgres so Home's relationship counts decrement.
     // No-op if the row doesn't exist (e.g. legacy Neo4j-only rels created
     // before the dual-write was added).
     await db('table_relationships').where({ id }).delete();
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(relConnectionId ?? undefined);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });
@@ -833,7 +866,7 @@ router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
     await graph.updateKpi(id, body);
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await connectionIdForEntity(db, 'kpi_definitions', id) ?? undefined);
 
     const changes = computeChanges(oldSnapshot, body);
     await recordVersion(db, req.user!.tenantId, 'kpi', id, { ...oldSnapshot, ...body }, changes, req.user!.sub);
@@ -1117,7 +1150,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       } catch { /* kpi_definitions table optional in Phase 7 */ }
     }
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await scopeForEntity(db, entityType, entityId));
 
     // Record a new version entry for the revert
     const changes = computeChanges(currentSnapshot, snapshot);
@@ -1304,7 +1337,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       log.error({ err: e }, '[semantic POST /approve] postgres mirror failed');
     }
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await scopeForEntity(db, entityType, entityId));
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, action, entityType, entityId, null, { reason });
 
     // Notify tenant about the approval/rejection
@@ -1743,7 +1776,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
       domains:      body.domains,
     });
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await connectionIdForEntity(db, 'product_tables', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
 
     res.json({ ok: true });
@@ -1766,7 +1799,7 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
       column_role:  body.column_role,
     });
 
-    await invalidateSemanticCache();
+    await invalidateSemanticCache(await connectionIdForEntity(db, 'product_columns', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);
 
     res.json({ ok: true });

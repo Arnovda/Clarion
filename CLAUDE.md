@@ -33,6 +33,86 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
 
+**✅ THE FIX IS LIVE AT 100% TRAFFIC (verified 2026-07-28).** PR #60 merged
+(`1f860ad`), backend image built, and "Warehouse container mode" run #3
+(`30354021361`) promoted it: revision `…--main-1f860ad` reached `Provisioned`,
+the traffic table shows it as the sole entry at **weight 100**, and the read-back
+reported `Applied mode: per-tenant` with the assertion passing. The revision
+reaching `Provisioned` is the boot smoke test — the API came up healthy WITH the
+ownership gate before any traffic moved.
+**The container-mode control was used as the promote vehicle on purpose**, not
+`promote.yml`: `deploy.yml` never waits for the new revision to boot, and
+`promote.yml` shifts traffic to `latestReadyRevisionName`, which silently
+promotes the PREVIOUS revision if the new one failed — it would have reported
+success either way. Only this control waits for the specific new revision and
+fails loudly.
+**Watch for**: a burst of `ownership check refused` warnings means the gate is
+rejecting legitimate traffic (a graph entity whose Postgres mirror row is
+missing), not that someone is probing. Rollback = the "Rollback production"
+workflow. NOT yet observed: no log access from the sandbox, so nobody has
+confirmed the absence of those warnings against real traffic.
+
+**Worker tenant context is transaction-local (2026-07-28, branch only).** Every
+job opened with a session-level `SET app.current_tenant` on the shared pool while
+BullMQ runs workers at concurrency 2–4, so jobs from different tenants
+interleave: job A sets its tenant on connection X, job B on Y, and A's next query
+can be handed Y — still carrying B's tenant. RLS then filters to the WRONG tenant
+and the job reads/writes someone else's rows. **Fail-open**, and the jobs-worker
+split made it sharper by concentrating all multi-tenant batch work in one process.
+Seven dependent queries (ingestion's connection lookup, transformation's product
++ table loads, scheduled-transformation's schedule + run tracking) now go through
+`tenantQuery()`. All seven ambient `SET`s are gone; the long-running work is
+deliberately NOT one big transaction (that would pin a pool connection per job).
+
+**Route-level test coverage for the ownership gate (2026-07-28, CI green).**
+`tests/semantic-graph-isolation.test.ts` — the gate had shipped to production in
+front of ~30 endpoints with no test touching any of them.
+- Asserts BOTH directions. The allow direction matters as much as the refusal:
+  **a gate that refuses everything would pass any test that only checked the
+  attacker**, while breaking the catalog for every legitimate user.
+- The allow direction is asserted at the ownership oracle, not through routes —
+  a successful request continues to Neo4j and CI runs `NEO4J_URI=""`. Refusals
+  never reach the graph, so those are checked end-to-end over HTTP, including
+  that a refused write leaves the Postgres row untouched.
+- The cache-scope tests validate the join chains against the REAL schema; the
+  mocked ones only assert query shape and cannot catch a non-existent column.
+- **The test immediately earned its keep**: it caught that
+  `denyUnlessOwnedRelationship`'s legacy graph fallback ran on the REFUSAL path,
+  so with Neo4j down every denial became a **500 instead of 404**. An
+  unavailable graph is not permission to proceed, and a caller must not be able
+  to distinguish "denied" from "graph is down". Now refuses on any error.
+- **Two traps for the next session**: `npm run check` uses
+  `tsconfig.build.json`, which EXCLUDES `src/**/*.test.ts` — no local type-check
+  ever parses a test file (a syntax error in one sailed through and only CI
+  caught it). Run `npx vitest run <file>` instead: without Postgres it fails on
+  `ECONNREFUSED`, which distinguishes "does not compile" from "cannot reach the
+  DB". And `check.yml` is NOT the backend gate — `test.yml` is, and it runs on
+  every PR and push to main.
+
+**Semantic cache invalidation is now per-connection (2026-07-28).** All 9
+`invalidateSemanticCache()` calls in `routes/semantic.ts` were no-arg, i.e.
+`cacheInvalidate('semantic:*')` — a Redis `SCAN` over the whole keyspace plus a
+`DEL` of everything found. Any tenant editing any definition therefore dropped
+the cached AI context of EVERY tenant. Invisible at a handful of tenants;
+at hundreds it means the context cache is permanently cold and every edit costs
+an O(keyspace) scan.
+- **Not the one-liner it looked like**: only `source_tables`, `kpi_definitions`
+  and `data_products` carry `connection_id`. `source_columns` joins via
+  `table_id`, **`table_relationships` has no `connection_id` column at all**
+  (resolve via `from_table_id`), and the product side is three joins away
+  (`product_columns` → `product_tables` → `star_schemas` → `data_products`).
+  Hence `db/semanticCacheScope.ts` (`connectionIdForEntity`).
+- **Fail-safe by design**: null means "scope unknown" and the caller falls back
+  to the global wipe. Under-invalidating would serve stale semantic context for
+  the whole TTL — a correctness bug; a needless global wipe is merely slow.
+- **`DELETE /relationships/:id` resolves the scope BEFORE deleting the row** —
+  afterwards there is nothing left to join through.
+- 8 tests (`semanticCacheScope.test.ts`) assert the join chains and, more
+  importantly, that a null/0/NaN FK yields null rather than being coerced into a
+  wrong connection id. 88 unit tests green; `npm run check` clean.
+- **NOT deployed** — this landed after the traffic shift below, so it is on the
+  branch only.
+
 **CROSS-TENANT LEAK IN THE SEMANTIC LAYER — FOUND AND CLOSED (2026-07-28).**
 A full storage+compute isolation audit found that **Neo4j has no tenant scoping
 at all** (`db/semanticGraph.ts`: 94 `MATCH` clauses, 0 tenant references — every
@@ -77,8 +157,8 @@ passed a request-supplied id straight into unscoped Cypher.
   carries the **account-wide** `AZURE_STORAGE_CONNECTION_STRING`
   (`services/warehouse/duckdb.ts:197`), making the `sqlGuard` denylist the only
   barrier on the read path (Fase 4's per-tenant SAS is the real fix); all 9
-  `invalidateSemanticCache()` calls are no-arg → a Redis `SCAN` that wipes
-  **every** tenant's cached AI context on any semantic edit; `tenantKey()`
+  **[FIXED 2026-07-28]** the semantic cache invalidation was a
+  global wipe; `tenantKey()`
   regex-derives the fairness key from the warehouse path and falls back to the
   whole path, so legacy layouts let one tenant hold several semaphore slots;
   `warehouseContainer(tenantId?)` silently returns the SHARED container when the
