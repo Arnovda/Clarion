@@ -151,5 +151,66 @@ jobs:
               say "- ⚠️ **image mismatch** — worker is not on the same build as the backend"
             fi
           fi
+          B_RUNNER=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].env[?name=='DUCKDB_RUNNER'].value | [0]" -o tsv 2>/dev/null || echo "")
+          say "- backend DUCKDB_RUNNER: \`${B_RUNNER:-<unset = in-process>}\`"
+
+          # ── 5. Warehouse storage reality ───────────────────────────────────
+          #
+          # The per-tenant container flip was applied without validating the
+          # WRITE path against real data, so the open question is factual: has a
+          # `tenant-<id>` container actually been created, and did anything get
+          # written into it? A container that exists but is EMPTY while its
+          # tenant has synced is the signature of the failure mode to look for
+          # (the read path is safe either way — stored URIs are absolute).
+          #
+          # Read-only: listing containers/blobs, never reading blob contents.
+          say ""
+          say "### 5. Warehouse storage"
+          MODE=$(az containerapp show -n "$APP" -g "$RG" \
+                   --query "properties.template.containers[0].env[?name=='WAREHOUSE_CONTAINER_MODE'].value | [0]" -o tsv 2>/dev/null || echo "")
+          say "- backend WAREHOUSE_CONTAINER_MODE: \`${MODE:-<unset = shared>}\`"
+
+          # Pick the warehouse account: the storage accounts in the RG minus any
+          # terraform-state one. If that is ambiguous, say so instead of guessing.
+          SA_LIST=$(az storage account list -g "$RG" --query "[?!contains(name,'tfstate')].name" -o tsv 2>/dev/null | tr '\n' ' ')
+          SA_COUNT=$(echo "$SA_LIST" | wc -w | tr -d ' ')
+          if [ "$SA_COUNT" != "1" ]; then
+            say "- storage accounts in the group: \`${SA_LIST:-none}\` — cannot identify the warehouse account unambiguously, skipping container inspection"
+          else
+            SA=$(echo "$SA_LIST" | tr -d ' ')
+            say "- storage account: \`$SA\`"
+            # Contributor can read account keys even without a data-plane role.
+            # Captured into a variable and never echoed.
+            KEY=$(az storage account keys list -g "$RG" -n "$SA" --query "[0].value" -o tsv 2>/dev/null || echo "")
+            if [ -z "$KEY" ]; then
+              say "- ⚠️ could not read an account key — no data-plane access from this identity, skipping container inspection"
+            else
+              CONTAINERS=$(az storage container list --account-name "$SA" --account-key "$KEY" \
+                             --auth-mode key --query "[].name" -o tsv 2>/dev/null || echo "")
+              TENANT_CONTAINERS=$(echo "$CONTAINERS" | grep -E '^tenant-' || true)
+              N_TENANT=$(echo "$TENANT_CONTAINERS" | grep -c . || true)
+              say "- per-tenant containers: **${N_TENANT}**"
+              if [ "$N_TENANT" = "0" ]; then
+                if [ "$MODE" = "per-tenant" ]; then
+                  say "- ⚠️ mode is \`per-tenant\` but no \`tenant-*\` container exists yet — no tenant has written since the flip. Expected until the first sync/transformation runs."
+                fi
+              else
+                # Per container: is there anything in it? An empty container
+                # means creation succeeded but no write landed.
+                for C in $TENANT_CONTAINERS; do
+                  FIRST=$(az storage blob list --container-name "$C" --account-name "$SA" --account-key "$KEY" \
+                            --auth-mode key --num-results 1 --query "[0].name" -o tsv 2>/dev/null || echo "")
+                  if [ -n "$FIRST" ] && [ "$FIRST" != "None" ]; then
+                    say "  - \`$C\`: has data (e.g. \`$FIRST\`) — the per-tenant WRITE path works for this tenant ✅"
+                  else
+                    say "  - \`$C\`: **empty** — container created but nothing written yet"
+                  fi
+                done
+              fi
+              if echo "$CONTAINERS" | grep -qx 'warehouse'; then
+                say "- legacy shared \`warehouse\` container still present (expected — existing data reads from absolute URIs; Fase 4 migrates it)"
+              fi
+            fi
+          fi
 
           echo "Preflight complete."

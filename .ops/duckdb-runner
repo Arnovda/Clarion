@@ -1,0 +1,15 @@
+off
+
+# child = run every warehouse query in its own child process, so the 45s
+#         DUCKDB_QUERY_TIMEOUT_MS can actually KILL a runaway query (in-process
+#         it only frees the waiting user; the query keeps burning CPU and holds
+#         its concurrency permit for its real duration). Also contains a DuckDB
+#         OOM or native crash to one runner instead of the whole API.
+# off   = in-process execution (today's behaviour).
+#
+# Applies to the BACKEND app only — see the workflow header for why the
+# jobs-worker is deliberately left in-process.
+#
+# Validate after flipping to `child`: look for the log line
+# "Child-process query runner ACTIVE". Its absence means the runner silently
+# degraded to in-process and the flip achieved nothing.
