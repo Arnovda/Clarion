@@ -52,6 +52,43 @@ missing), not that someone is probing. Rollback = the "Rollback production"
 workflow. NOT yet observed: no log access from the sandbox, so nobody has
 confirmed the absence of those warnings against real traffic.
 
+**Worker tenant context is transaction-local (2026-07-28, branch only).** Every
+job opened with a session-level `SET app.current_tenant` on the shared pool while
+BullMQ runs workers at concurrency 2–4, so jobs from different tenants
+interleave: job A sets its tenant on connection X, job B on Y, and A's next query
+can be handed Y — still carrying B's tenant. RLS then filters to the WRONG tenant
+and the job reads/writes someone else's rows. **Fail-open**, and the jobs-worker
+split made it sharper by concentrating all multi-tenant batch work in one process.
+Seven dependent queries (ingestion's connection lookup, transformation's product
++ table loads, scheduled-transformation's schedule + run tracking) now go through
+`tenantQuery()`. All seven ambient `SET`s are gone; the long-running work is
+deliberately NOT one big transaction (that would pin a pool connection per job).
+
+**Route-level test coverage for the ownership gate (2026-07-28, CI green).**
+`tests/semantic-graph-isolation.test.ts` — the gate had shipped to production in
+front of ~30 endpoints with no test touching any of them.
+- Asserts BOTH directions. The allow direction matters as much as the refusal:
+  **a gate that refuses everything would pass any test that only checked the
+  attacker**, while breaking the catalog for every legitimate user.
+- The allow direction is asserted at the ownership oracle, not through routes —
+  a successful request continues to Neo4j and CI runs `NEO4J_URI=""`. Refusals
+  never reach the graph, so those are checked end-to-end over HTTP, including
+  that a refused write leaves the Postgres row untouched.
+- The cache-scope tests validate the join chains against the REAL schema; the
+  mocked ones only assert query shape and cannot catch a non-existent column.
+- **The test immediately earned its keep**: it caught that
+  `denyUnlessOwnedRelationship`'s legacy graph fallback ran on the REFUSAL path,
+  so with Neo4j down every denial became a **500 instead of 404**. An
+  unavailable graph is not permission to proceed, and a caller must not be able
+  to distinguish "denied" from "graph is down". Now refuses on any error.
+- **Two traps for the next session**: `npm run check` uses
+  `tsconfig.build.json`, which EXCLUDES `src/**/*.test.ts` — no local type-check
+  ever parses a test file (a syntax error in one sailed through and only CI
+  caught it). Run `npx vitest run <file>` instead: without Postgres it fails on
+  `ECONNREFUSED`, which distinguishes "does not compile" from "cannot reach the
+  DB". And `check.yml` is NOT the backend gate — `test.yml` is, and it runs on
+  every PR and push to main.
+
 **Semantic cache invalidation is now per-connection (2026-07-28).** All 9
 `invalidateSemanticCache()` calls in `routes/semantic.ts` were no-arg, i.e.
 `cacheInvalidate('semantic:*')` — a Redis `SCAN` over the whole keyspace plus a
