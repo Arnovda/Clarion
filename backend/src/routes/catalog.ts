@@ -14,6 +14,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
+import { owns } from '../db/tenantOwnership';
 import * as graph from '../db/semanticGraph';
 import { toSlugWithId, parseIdFromSlug } from '../utils/slug';
 
@@ -398,6 +399,21 @@ router.get('/:catalog/:schema/:table', requireAuth, async (req: Request, res: Re
     }
     const tableId = Number(req.params.table);
     if (!Number.isFinite(tableId)) {
+      return res.status(404).json({ ok: false, error: 'Unknown table' });
+    }
+
+    // `tableId` comes straight from the URL and the graph lookups below have no
+    // tenant predicate (see db/tenantOwnership.ts), so authorise it against the
+    // Postgres mirror first — otherwise this endpoint returns another tenant's
+    // column catalog to any authenticated user.
+    const db = reqDb(req);
+    const ownsTable = await owns(
+      db,
+      catalog === 'sources' ? 'source_tables' : 'product_tables',
+      tableId,
+      req.user?.tenantId,
+    );
+    if (!ownsTable) {
       return res.status(404).json({ ok: false, error: 'Unknown table' });
     }
 

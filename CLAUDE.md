@@ -31,7 +31,147 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-27 (Fase 2 jobs-worker LIVE in production + Fase 3 child-process query runner shipped opt-in)
+**Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
+
+**CROSS-TENANT LEAK IN THE SEMANTIC LAYER — FOUND AND CLOSED (2026-07-28).**
+A full storage+compute isolation audit found that **Neo4j has no tenant scoping
+at all** (`db/semanticGraph.ts`: 94 `MATCH` clauses, 0 tenant references — every
+node is matched by a globally-unique, enumerable `pgId`). Postgres RLS protects
+the mirror rows, so the hole was invisible from the Postgres side. ~30 endpoints
+passed a request-supplied id straight into unscoped Cypher.
+- **Confirmed READ leak** (worst): `GET /semantic/columns?tableId=` returned
+  another tenant's full column catalog — names, descriptions, sample-derived
+  stats — to **any authenticated user, viewer included** (`requireAuth` only).
+  Same shape on `GET /semantic/tables|relationships|kpis|domains|paths`,
+  `GET /catalog/:catalog/:schema/:table`, and all of `/cross-views`.
+  `GET /semantic/product-tree` took **no parameter at all** and returned every
+  tenant's products and star schemas.
+- **Confirmed WRITE/DELETE**: `PATCH /semantic/tables|columns|relationships/:id`
+  and `DELETE /semantic/relationships/:id` mutated the graph before any
+  ownership check. The Postgres mirror underneath is RLS-scoped and silently
+  updated 0 rows, so the two stores diverged while the damage landed in the
+  store that feeds AI context and the catalog UI.
+- **Fix**: new `db/tenantOwnership.ts` (`owns()` / `ownedIds()`) + a
+  `denyUnlessOwned` gate applied to every id-taking endpoint in
+  `routes/semantic.ts`, `routes/catalog.ts`, `routes/cross-views.ts`. It matches
+  `tenant_id` EXPLICITLY rather than relying on RLS, so it also survives the
+  session-level `SET app.current_tenant` pool race. Refuses with 404, never 403.
+  Legacy graph-only relationships stay deletable via a new
+  `graph.getRelationshipConnectionId()` → authorise through the owning
+  connection, so rejecting old AI drafts still works.
+- **Drive-by**: `PATCH /semantic/tables/:id` was making two pointless Neo4j round
+  trips per request (`getTablesByConnection(0)` into an unused variable, plus a
+  `getColumnsByTablePgId(0)` inside a comma-expression). Removed.
+- **Tests**: `db/tenantOwnership.test.ts` (8) asserts the gate refuses by default
+  AND that `tenant_id` is in the WHERE clause — a mock that only faked
+  found/not-found would still pass if the tenant filter were dropped, which is
+  the regression worth catching. 80 unit tests green; `npm run check` clean.
+- **The durable rule is in the "Dual-write contract" section below — read it
+  before adding any `graph.*` call.** The structural fix (put `tenantId` on the
+  nodes and into the Cypher) is still open; the gate is an application-layer
+  control in front of an unscoped store.
+- **Audit findings NOT yet fixed** (ranked, with evidence): worker tenant context
+  is still the racy session-level `SET` while BullMQ workers run at concurrency
+  2–4 (`jobs/workers.ts:40,86,137,166`) — the split concentrated multi-tenant
+  work in one process, so this got *more* important; every DuckDB session still
+  carries the **account-wide** `AZURE_STORAGE_CONNECTION_STRING`
+  (`services/warehouse/duckdb.ts:197`), making the `sqlGuard` denylist the only
+  barrier on the read path (Fase 4's per-tenant SAS is the real fix); all 9
+  `invalidateSemanticCache()` calls are no-arg → a Redis `SCAN` that wipes
+  **every** tenant's cached AI context on any semantic edit; `tenantKey()`
+  regex-derives the fairness key from the warehouse path and falls back to the
+  whole path, so legacy layouts let one tenant hold several semaphore slots;
+  `warehouseContainer(tenantId?)` silently returns the SHARED container when the
+  id is omitted (all 5 call sites pass it today — latent, not live).
+
+**Prior last updated:** 2026-07-28 (Fase 3 made SAFE to enable — per-runner memory budget bug fixed; flip control + storage validation probe added)
+
+**FASE 3 WAS NOT SAFE TO TURN ON — FIXED (2026-07-28).** Preparing the
+`DUCKDB_RUNNER=child` flip surfaced a bug that would have made enabling it a
+REGRESSION, not an improvement: `queryRunnerPool.spawnRunner` forked children
+with `env: process.env`, so every child inherited the **undivided**
+`DUCKDB_MEMORY_LIMIT`. The child runs the same `setupDuckDBForWarehouse` →
+`applyResourceGuardrails`, so each runner set `memory_limit='70%'` — at
+`DUCKDB_RUNNER_MAX=4` that is **280% of container memory** and 4×2=8 threads on
+a 1 vCPU replica. A few concurrent heavy queries would get the whole API
+OOM-killed by the platform: precisely the blast radius Fase 3 exists to remove.
+- **Fix**: new exported `runnerEnv()` / `dividedMemoryLimit()` /
+  `dividedThreads()` in `queryRunnerPool.ts` — the process-wide budget is
+  DIVIDED across the runner slots so the AGGREGATE footprint equals what one
+  in-process session was allowed (70% / 4 = 17% each; absolute values divided in
+  MB with a 128MB floor; threads never below 1). Percentages stay percentages on
+  purpose: no knowledge of replica size needed, and it is cgroup-safe. A
+  malformed value passes through untouched rather than being silently replaced
+  (`applyResourceGuardrails` rejects it either way; substituting would hide the
+  typo). Raising `DUCKDB_RUNNER_MAX` now makes each runner smaller instead of
+  raising the replica's total footprint.
+- **The divisor is NOT `DUCKDB_RUNNER_MAX`** — that was the second half of the
+  same bug. When the keyed runner is busy `runQuery` spawns an extra process,
+  and `evictIfNeeded` can only reap IDLE runners, so the real ceiling on live
+  processes is `DUCKDB_MAX_CONCURRENT_QUERIES` (DuckDBConnector's global
+  semaphore), which **defaults higher than the runner cap: 6 vs 4**. Dividing by
+  4 while 6 processes can exist puts the aggregate back over budget (6×17% =
+  102%). `BUDGET_DIVISOR = max(MAX_RUNNERS, MAX_CONCURRENT_QUERIES)` → 70%/6 =
+  11% each, 66% total. Exposed as `_budgetDivisor()` for tests.
+- **Invalidation no longer kills in-flight queries** (`invalidateRunnersByPrefix`):
+  it used to SIGKILL busy runners, so the moment a transformation finished, the
+  cache-invalidation bus would abort any concurrent dashboard query with an
+  infrastructure error — reintroducing, and worsening, the mid-query-close
+  failure that review finding **H2** explicitly fixed for the in-process
+  `DuckDBPool`. A busy runner is now marked `stale` instead: it serves no further
+  queries (its views point at the pre-refresh file set, so reuse would return
+  silently stale rows) and is destroyed the moment the in-flight query settles.
+  Without this fix, flipping the runner on would have produced intermittent
+  dashboard errors right after every data refresh — exactly when users look.
+- **Two smaller fixes in the same file**: `childScriptPath()` is now memoised —
+  it was doing an `existsSync` **and** a `log.warn` on EVERY query whenever the
+  flag was on without a compiled script (log flood + a syscall per query); and a
+  one-time `Child-process query runner ACTIVE` info log was added, because
+  without a positive signal a silent fall back to in-process is
+  indistinguishable from success.
+- **Tests**: `services/warehouse/queryRunnerPool.test.ts` grew from 4 to **21**
+  (17 new: the division rule, the budget divisor vs the concurrency cap, env
+  inheritance, no-parent-mutation). 72 tests green across the warehouse + guard
+  suites; `npm run check` clean. The stale-invalidation path is NOT unit-tested —
+  it needs real child processes, and DuckDB's native binding still can't build in
+  this sandbox (the documented Node-22 limitation).
+- **Verified, not assumed**: `tsc --project tsconfig.build.json` really does emit
+  `dist/services/warehouse/queryRunnerChild.js` next to `queryRunnerPool.js`,
+  i.e. exactly where `childScriptPath()` looks. The `import type` of the child is
+  erased, so nothing in the module graph forces its emission — it is the
+  `include: ["src/**/*"]` glob that does. Confirmed by building to a temp outDir.
+  So the runner will not silently self-disable in the production image.
+- **Flip vehicle**: `.ops/duckdb-runner` (`child` | `off`) +
+  `.github/workflows/duckdb-runner-mode.yml` — same shape as the container-mode
+  control (paths-scoped so ordinary pushes keep deploy.yml's 0%-traffic model;
+  waits for the revision to reach `Provisioned`, which doubles as the boot smoke
+  test, then shifts 100% traffic and reads the value back). **BACKEND ONLY, on
+  purpose**: the runner is wired into `DuckDBConnector.executeQuery`, i.e. the
+  READ path (dashboards, Ask-AI, notebooks, quality profiling — all in the API);
+  the worker's heavy DuckDB work is `transformationRunner`'s WRITE path, which
+  does not go through executeQuery, so runners there would take memory from the
+  transformation itself for no benefit. Don't "fix" this by adding the worker
+  unless a read path moves there first.
+  **Unlike the container-mode control, this one is NOT a promote vehicle**: it
+  exits without touching anything when the value is already applied. Re-applying
+  would create a revision from the app's current TEMPLATE image and shift 100%
+  traffic to it, silently promoting a possibly untested build. That guard is also
+  what makes merging the new `.ops/duckdb-runner` file (value `off`) a true
+  no-op, even though adding it triggers the workflow.
+- **Storage validation is now a measurement, not a vigil**: the read-only
+  preflight probe gained **section 5** — it identifies the warehouse storage
+  account, lists `tenant-*` containers and reports per container whether
+  anything has been WRITTEN into it. An empty container for a tenant that has
+  synced is the failure signature to look for; data in it proves the per-tenant
+  write path works for that tenant. Uses account keys, which `Contributor` can
+  read, so no new permissions are needed. Also reports `DUCKDB_RUNNER`.
+- **NOT done (needs the flip to actually run)**: `.ops/duckdb-runner` is still
+  `off`. Flipping it is a one-line edit + push; then confirm the `ACTIVE` log
+  line and run a real dashboard query. Terraform does not set `DUCKDB_RUNNER` at
+  all (matching the `off` default) — if the control is left on `child`, add it to
+  `infra/main.tf` or a later apply reverts it.
+
+**Prior last updated:** 2026-07-27 (Fase 2 jobs-worker LIVE in production + Fase 3 child-process query runner shipped opt-in)
 
 **JOBS-WORKER IS LIVE (2026-07-27).** The compute split from Fase 2 is no longer
 "awaiting terraform apply" — it runs in production as a second Container App,
@@ -2247,6 +2387,32 @@ write to those three tables.
 - `POST /semantic/revert` — revert-to-version writes Neo4j only.
 - `POST /semantic/approve` — generic approval flow writes Neo4j only.
 - `POST /semantic/import` — bulk CSV import writes Neo4j only.
+
+**MANDATORY: Neo4j has NO tenant scoping — gate every request-supplied id.**
+`db/semanticGraph.ts` matches nodes and edges by their globally-unique `pgId`
+(or `connectionId`) with **no tenant predicate anywhere** — 90+ `MATCH` clauses,
+zero tenant references. Postgres RLS protects the mirror rows but not the graph,
+so any route that hands a request-supplied id to a `graph.*` call reaches
+whichever tenant owns that id, and ids come from a shared sequence (trivially
+enumerable). A 2026-07-28 audit found this live on ~30 endpoints across
+`routes/semantic.ts`, `routes/catalog.ts` and `routes/cross-views.ts`, including
+`GET /semantic/columns?tableId=` returning another tenant's column catalog to any
+authenticated user, and `DELETE /semantic/relationships/:id` deleting another
+tenant's relationship.
+
+The rule, no exceptions: **before an id from a path param, query string or body
+reaches a `graph.*` call, authorise it with `owns()` / `ownedIds()` from
+`db/tenantOwnership.ts`** (in routes: the local `denyUnlessOwned` helpers).
+Those match `tenant_id` EXPLICITLY rather than relying on RLS, because `reqDb()`
+falls back to the global pool whose session-level `SET app.current_tenant` has a
+documented race — an authorisation check must not depend on which side of that
+race it lands. Refuse with **404, never 403**: a 403 confirms the id exists and
+belongs to someone else.
+
+Two things this does not cover, both tracked: entities that exist ONLY in the
+graph (pre-dual-write relationships) authorise via
+`graph.getRelationshipConnectionId()` → the owning connection; and the real fix
+is putting `tenantId` on the nodes and into the Cypher, which retires this rule.
 
 **If you add a new write to any of those three tables, you have two options:**
 1. Mirror it (preferred — follow the pattern in `PATCH /semantic/tables/:id`).

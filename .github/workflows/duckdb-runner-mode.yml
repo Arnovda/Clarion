@@ -1,0 +1,177 @@
+# DuckDB query-runner mode — GitOps control for ONE production setting.
+#
+#   .ops/duckdb-runner   contains   `child`   or   `off`
+#
+# Editing that file on main applies DUCKDB_RUNNER to the backend Container App
+# and shifts traffic to the resulting revision.
+#
+# WHY this switch exists (Fase 3 of docs/backlog/storage-compute-isolation-plan.md):
+# in-process, DUCKDB_QUERY_TIMEOUT_MS only frees the waiting caller — the query
+# keeps burning CPU and holds its concurrency permit for its real duration. Only
+# a separate process can be SIGKILLed, which is what `child` buys.
+#
+# WHY the BACKEND ONLY, and not the jobs-worker: the runner is wired into
+# `DuckDBConnector.executeQuery`, i.e. the READ path — dashboards, Ask-AI,
+# notebooks, quality profiling, all of which run in the API container. The
+# worker's heavy DuckDB work is `transformationRunner`'s WRITE path, which does
+# not go through executeQuery, so runners there would consume memory the
+# transformation itself needs on a 1 GiB replica and buy nothing. Do not "fix"
+# this by adding the worker without first moving a read path into it.
+#
+# Same shape as .github/workflows/warehouse-container-mode.yml: paths-scoped to
+# one file so ordinary code pushes keep deploy.yml's 0%-traffic test-first model,
+# and rollback is the same one-line edit. The value is deliberately NOT
+# hardcoded in deploy.yml — that would silently undo a rollback on the next push.
+#
+# Terraform stays the source of truth for a fresh environment. `infra/main.tf`
+# does not set DUCKDB_RUNNER at all, which matches the default (`off`); if this
+# control is left on `child`, add it there too or a later apply reverts it.
+
+name: DuckDB runner mode
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/duckdb-runner'
+  workflow_dispatch:
+
+concurrency:
+  group: duckdb-runner-mode
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired runner mode
+        id: mode
+        run: |
+          set -euo pipefail
+          # First non-empty, non-comment line is the value. Comment lines let an
+          # operator record WHY a mode was (re-)applied and give a re-apply a
+          # meaningful diff.
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/duckdb-runner | head -1 | tr -d '[:space:]')
+          case "$MODE" in
+            child|off) ;;
+            *) echo "::error::invalid value '$MODE' (expected 'child' or 'off')"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Desired DuckDB runner mode: $MODE"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply runner mode and shift traffic
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          ENV_QUERY="properties.template.containers[0].env[?name=='DUCKDB_RUNNER'].value | [0]"
+
+          CURRENT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv 2>/dev/null || true)
+          echo "Current runner mode: ${CURRENT:-<unset>} → target: $MODE"
+
+          # Already applied → do NOTHING. Deliberately different from the
+          # container-mode control, which re-applies in order to double as a
+          # promote vehicle. Here a needless re-apply would create a revision from
+          # the app's CURRENT TEMPLATE image and shift 100% traffic to it — which
+          # would silently promote an untested build and bypass deploy.yml's
+          # 0%-traffic test-first model. That matters most for the very first run:
+          # adding this file to the repo triggers the workflow, and the value is
+          # `off`, which is what production already does.
+          if [ "$MODE" = "$CURRENT" ]; then
+            echo "Already set to '$MODE' — nothing to do."
+            {
+              echo "### DuckDB runner mode — no change"
+              echo ""
+              echo "Already \`$MODE\`. No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # `off` with the variable unset is the same behaviour (any value other
+          # than 'child' disables the runner), so that is not worth a revision.
+          if [ "$MODE" = "off" ] && { [ -z "$CURRENT" ] || [ "$CURRENT" = "None" ]; }; then
+            echo "DUCKDB_RUNNER is unset, which already means in-process — nothing to do."
+            {
+              echo "### DuckDB runner mode — no change"
+              echo ""
+              echo "Target \`off\` and the variable is unset, which is the same behaviour."
+              echo "No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 0%-traffic revisions require multiple-revision mode (idempotent).
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          # `off` is written as a literal value rather than removing the variable:
+          # any value other than 'child' disables the runner in code, and an
+          # explicit 'off' is visible in the portal and lets the read-back below
+          # assert what was applied instead of asserting an absence.
+          NEW_REV=$(az containerapp update \
+            --name "$APP" --resource-group "$RG" \
+            --set-env-vars DUCKDB_RUNNER="$MODE" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          # Wait for THAT revision (not just "latest ready") to be provisioned, so
+          # traffic never shifts to a half-built revision. The revision reaching
+          # Provisioned is also the boot smoke test: the API came up healthy with
+          # this setting before any user traffic reached it.
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+
+          APPLIED=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv)
+          echo "Applied runner mode: $APPLIED"
+
+          {
+            echo "### DuckDB runner mode → \`$APPLIED\`"
+            echo ""
+            echo "- App: \`$APP\` (backend only — the worker stays in-process by design)"
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- Previous value: \`${CURRENT:-<unset>}\`"
+            echo ""
+            if [ "$APPLIED" = "child" ]; then
+              echo "Warehouse queries now run in child processes, so the query timeout can"
+              echo "SIGKILL a runaway query instead of merely freeing its caller."
+              echo ""
+              echo "**Validate:** find the log line \`Child-process query runner ACTIVE\` (emitted"
+              echo "once, on the first query after boot). If it is absent and you instead see"
+              echo "\`the compiled runner script was not found\`, the runner silently degraded to"
+              echo "in-process and this flip achieved nothing."
+              echo ""
+              echo "Rollback: set \`.ops/duckdb-runner\` to \`off\` and push."
+            else
+              echo "Queries run in-process. A timeout frees the caller but cannot stop the query."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail loudly if Azure didn't actually take the value.
+          test "$APPLIED" = "$MODE"

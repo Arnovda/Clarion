@@ -407,7 +407,83 @@ schakelt zichzelf uit als het gecompileerde script ontbreekt, en valt bij een
 spawn-fout terug op in-process — mét vastgehouden permits, zodat de begrensde weg
 niet te omzeilen is. Aanzetten pas na live validatie.
 
-Nog te doen: Fase 3 live aanzetten en valideren, Fase 4 (legacy-migratie +
+**Fase 3 — blokkerende bug gevonden en gefixt vóór het aanzetten (2026-07-28).**
+Bij het klaarzetten van de flip bleek de runner in deze vorm de container te
+kúnnen OOM-killen, dus was aanzetten een verslechtering geweest:
+`fork(script, [], { env: process.env })` gaf elk kindproces de ONGEDEELDE
+`DUCKDB_MEMORY_LIMIT` mee. Het kind roept dezelfde `setupDuckDBForWarehouse` →
+`applyResourceGuardrails` aan, dus zette élke runner `memory_limit='70%'`: bij
+`DUCKDB_RUNNER_MAX=4` samen 280% van het containergeheugen, plus 4×2 = 8 threads
+op 1 vCPU. Een paar gelijktijdige zware queries → platform-OOM-kill van de hele
+API, precies de blast radius die deze fase moet wegnemen.
+Gefixt met `runnerEnv()` (`queryRunnerPool.ts`): het budget wordt over de
+runner-slots VERDEELD, zodat het totaal gelijk blijft aan wat één in-process
+sessie mocht (70% / 4 = 17% elk; absolute waarden in MB gedeeld met een vloer van
+128MB; threads minimaal 1). Percentages blijven percentages — dan is geen kennis
+van de replica-grootte nodig, en dat is ook cgroup-veilig.
+
+De deler is bewust NIET `DUCKDB_RUNNER_MAX`, en dat was de tweede helft van
+dezelfde bug: als de runner voor een sleutel bezig is spawnt `runQuery` een
+extra proces, en `evictIfNeeded` kan alleen IDLE runners opruimen. Het echte
+plafond op levende processen is dus `DUCKDB_MAX_CONCURRENT_QUERIES` (de globale
+semaphore in `DuckDBConnector`) — en die staat standaard HOGER dan de runner-cap:
+6 tegen 4. Delen door 4 terwijl er 6 kunnen bestaan zet het totaal weer boven
+budget (6 × 17% = 102%). Vandaar
+`BUDGET_DIVISOR = max(MAX_RUNNERS, MAX_CONCURRENT_QUERIES)` → 70%/6 = 11% per
+runner, 66% totaal.
+
+**Derde vondst: invalidatie schoot lopende queries af.**
+`invalidateRunnersByPrefix` SIGKILLde ook BEZIGE runners. Gevolg: zodra een
+transformatie klaar was, brak de cache-invalidatiebus elke gelijktijdige
+dashboardquery af met een infrastructuurfout — precies de mid-query-close-fout
+die review-bevinding **H2** voor de in-process `DuckDBPool` al had gedicht, hier
+zelfs erger omdat SIGKILL de query geen kans geeft af te ronden. Een bezige
+runner wordt nu `stale` gemarkeerd: hij krijgt geen nieuwe query meer (zijn views
+wijzen naar de pre-refresh bestandsset, dus hergebruik zou stille oude rijen
+opleveren) en wordt opgeruimd zodra de lopende query klaar is. Zonder deze fix
+had aanzetten zichtbare, intermitterende dashboardfouten gegeven na élke refresh.
+
+21 unit-tests in `queryRunnerPool.test.ts` (17 nieuw); 72 groen over de
+warehouse- + guard-suites; `npm run check` schoon. De stale-invalidatieweg is
+NIET unit-getest — daarvoor zijn echte kindprocessen nodig en DuckDB's native
+binding bouwt nog steeds niet in deze sandbox (de gedocumenteerde Node-22-
+beperking).
+
+**Geverifieerd in plaats van aangenomen:** `tsc -p tsconfig.build.json` emit
+`dist/services/warehouse/queryRunnerChild.js` daadwerkelijk náást
+`queryRunnerPool.js`, dus exact waar `childScriptPath()` kijkt. De `import type`
+van het kind wordt geëlimineerd, dus niets in de module-graaf dwingt die emissie
+af — de `include: ["src/**/*"]`-glob doet dat. Nagebouwd naar een tijdelijke
+outDir en gecontroleerd. De runner zal zich in het productie-image dus niet stil
+uitschakelen.
+Twee kleinere zaken in dezelfde hoek meegenomen: `childScriptPath()` is
+gememoïseerd (was een `existsSync` + een `log.warn` PER QUERY zodra de vlag aan
+stond zonder gecompileerd script — logspam plus een syscall per query), en er is
+één positief signaal bijgekomen, `Child-process query runner ACTIVE`. Dat laatste
+is de validatie-eis: zonder zo'n regel is stil terugvallen op in-process niet te
+onderscheiden van succes.
+
+**Vehikel om te flippen:** `.ops/duckdb-runner` (`child` | `off`) +
+`.github/workflows/duckdb-runner-mode.yml`, zelfde vorm als de
+container-mode-control (paths-scoped, wacht tot de revisie `Provisioned` is —
+dat is tevens de boot-smoketest — schuift dan 100% verkeer, en leest de waarde
+terug). **Alleen de backend**, bewust: de runner hangt aan de LEESweg
+(`DuckDBConnector.executeQuery` — dashboards, Ask-AI, notebooks,
+quality-profiling, allemaal in de API), terwijl het zware DuckDB-werk van de
+worker de SCHRIJFweg van `transformationRunner` is en daar niet langs komt. Vier
+kindprocessen op de worker zouden dus geheugen afsnoepen van de transformatie
+zelf, zonder opbrengst.
+
+**Storage-validatie meetbaar gemaakt.** De open vraag uit Fase 1 ("is de
+per-tenant SCHRIJFweg ooit met echte data gevalideerd?") was tot nu toe een
+waarschuwing om op te letten. De preflight-probe (read-only) rapporteert nu
+sectie 5: welke `tenant-*` containers bestaan en of er iets IN staat. Leeg
+terwijl de tenant wel gesynct heeft = het faalsignaal; data erin = de schrijfweg
+werkt voor die tenant. Account-keys zijn leesbaar voor `Contributor`, dus dit
+werkt met de bestaande rechten.
+
+Nog te doen: Fase 3 daadwerkelijk aanzetten (`.ops/duckdb-runner` → `child`) en
+het ACTIVE-signaal + een echte query verifiëren, Fase 4 (legacy-migratie +
 auth-ontvlechting + de opt-in DuckDB-lockdown live valideren).
 
 ### Externe validatie van dit ontwerp (2026-07-27)

@@ -7,6 +7,7 @@ import {
   createKpiSchema, createGlossarySchema, updateGlossarySchema,
 } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
+import { owns, ownedIds } from '../db/tenantOwnership';
 import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
 import { SqliteConnector } from '../connectors/SqliteConnector';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -23,6 +24,81 @@ import { logger as rootLogger } from '../utils/logger';
 const log = rootLogger.child({ mod: 'semantic' });
 
 const router = Router();
+
+/**
+ * Refuse a request whose target id belongs to another tenant.
+ *
+ * Every `graph.*` call is unscoped (see db/tenantOwnership.ts), so an id that
+ * arrives in a path param, query string or body must be authorised against
+ * Postgres BEFORE it reaches Neo4j. Returns true when the caller may proceed;
+ * when it returns false it has already sent 404 and the handler must return.
+ *
+ * 404 rather than 403 on purpose: a 403 confirms the id exists somewhere else.
+ */
+async function denyUnlessOwned(
+  req: Request,
+  res: Response,
+  table: Parameters<typeof owns>[1],
+  id: unknown,
+): Promise<boolean> {
+  if (await owns(reqDb(req), table, id, req.user?.tenantId)) return true;
+  res.status(404).json({ ok: false, error: 'Not found' });
+  return false;
+}
+
+/**
+ * Gate for the routes that dispatch on an entityType from the body
+ * (/revert, /approve). Maps the type to its mirror table and applies the same
+ * check; an unknown type is refused rather than waved through.
+ */
+const ENTITY_TABLE: Record<string, Parameters<typeof owns>[1]> = {
+  table:          'source_tables',
+  column:         'source_columns',
+  kpi:            'kpi_definitions',
+  product_table:  'product_tables',
+  product_column: 'product_columns',
+};
+
+async function denyUnlessOwnedEntity(
+  req: Request,
+  res: Response,
+  entityType: string,
+  entityId: unknown,
+): Promise<boolean> {
+  const table = ENTITY_TABLE[entityType];
+  if (!table) {
+    res.status(400).json({ ok: false, error: 'Invalid entityType' });
+    return false;
+  }
+  return denyUnlessOwned(req, res, table, entityId);
+}
+
+/**
+ * Same gate for relationships, which need one extra step.
+ *
+ * Relationships created before the Postgres dual-write existed have no mirror
+ * row, so the plain `table_relationships` check would 404 them and users could
+ * no longer reject old AI drafts from the review queue. For those, authorise via
+ * the connection that owns the relationship in the graph — still a real tenant
+ * check, just resolved through a different path.
+ */
+async function denyUnlessOwnedRelationship(
+  req: Request,
+  res: Response,
+  id: number,
+): Promise<boolean> {
+  const db = reqDb(req);
+  const tenantId = req.user?.tenantId;
+  if (await owns(db, 'table_relationships', id, tenantId)) return true;
+
+  const connectionId = Number.isInteger(id) && id > 0
+    ? await graph.getRelationshipConnectionId(id)
+    : null;
+  if (connectionId !== null && await owns(db, 'connections', connectionId, tenantId)) return true;
+
+  res.status(404).json({ ok: false, error: 'Not found' });
+  return false;
+}
 
 /**
  * Any successful write to the semantic layer (PATCH/POST/DELETE on a
@@ -121,8 +197,8 @@ function computeChanges(oldObj: Record<string, unknown>, newObj: Record<string, 
 // GET /api/semantic/tables?connectionId=1
 router.get('/tables', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const rows = await graph.getTablesByConnection(connectionId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -135,12 +211,15 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), valida
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
+    // graph.updateTable matches on pgId with no tenant predicate, so authorise
+    // BEFORE touching Neo4j. The Postgres mirror below is tenant-scoped and
+    // would silently update 0 rows, leaving the two stores divergent.
+    if (!await denyUnlessOwned(req, res, 'source_tables', id)) return;
+
     // Capture old state for diff
-    const oldRows = await graph.getTablesByConnection(0); // need by pgId
-    const old = (await graph.getColumnsByTablePgId(0).catch(() => null), // fallback
-      await db('definition_versions')
-        .where({ entity_type: 'table', entity_id: id })
-        .orderBy('version', 'desc').first());
+    const old = await db('definition_versions')
+      .where({ entity_type: 'table', entity_id: id })
+      .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
     await graph.updateTable(id, body);
@@ -186,6 +265,7 @@ router.get('/domains', requireAuth, async (req: Request, res: Response, next: Ne
   try {
     const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const [conn, tableDomains] = await Promise.all([
       db('connections').where({ id: connectionId }).first(),
       graph.getTableDomains(connectionId),
@@ -206,8 +286,9 @@ router.get('/domains', requireAuth, async (req: Request, res: Response, next: Ne
 // GET /api/semantic/columns?tableId=1
 router.get('/columns', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = reqDb(req);
-    const rows = await graph.getColumnsByTablePgId(Number(req.query.tableId));
+    const tableId = Number(req.query.tableId);
+    if (!await denyUnlessOwned(req, res, 'source_tables', tableId)) return;
+    const rows = await graph.getColumnsByTablePgId(tableId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -218,6 +299,9 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), valid
     const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
+
+    // Unscoped graph write — authorise first. See PATCH /tables/:id.
+    if (!await denyUnlessOwned(req, res, 'source_columns', id)) return;
 
     const old = await db('definition_versions')
       .where({ entity_type: 'column', entity_id: id })
@@ -362,7 +446,6 @@ router.post('/columns/:id/improve-description', requireAuth, requireRole('admin'
 // GET /api/semantic/paths?connectionId=1&fromTableId=2&toTableId=3
 router.get('/paths', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = reqDb(req);
     const connectionId = Number(req.query.connectionId);
     const fromTableId  = Number(req.query.fromTableId);
     const toTableId    = Number(req.query.toTableId);
@@ -370,6 +453,10 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
       res.status(400).json({ ok: false, error: 'connectionId, fromTableId and toTableId required' });
       return;
     }
+    // All three ids are attacker-controlled and all three reach unscoped Cypher.
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', fromTableId)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', toTableId)) return;
     const result = await graph.findAllShortestPaths(connectionId, fromTableId, toTableId);
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
@@ -394,8 +481,9 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
 // GET /api/semantic/relationships?connectionId=1
 router.get('/relationships', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = reqDb(req);
-    const rows = await graph.getRelationshipsForConnection(Number(req.query.connectionId));
+    const connectionId = Number(req.query.connectionId);
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
+    const rows = await graph.getRelationshipsForConnection(connectionId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -406,6 +494,14 @@ router.post('/relationships', requireAuth, requireRole('admin'), validate(create
     const db = reqDb(req);
     const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description } =
       req.body as Record<string, unknown>;
+
+    // Every id here is body-supplied and every graph call below is unscoped.
+    // Unauthorised, this both READS another tenant's column names and plants a
+    // relationship between their tables.
+    if (!await denyUnlessOwned(req, res, 'source_tables', from_table_id)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', to_table_id)) return;
+    if (from_column_id && !await denyUnlessOwned(req, res, 'source_columns', from_column_id)) return;
+    if (to_column_id && !await denyUnlessOwned(req, res, 'source_columns', to_column_id)) return;
 
     // Look up column names if column IDs were provided
     const [fromCol, toCol] = await Promise.all([
@@ -465,6 +561,12 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
     const { relationship_type, description, from_column_id, to_column_id } =
       req.body as Record<string, unknown>;
 
+    if (!await denyUnlessOwnedRelationship(req, res, Number(req.params.id))) return;
+    if (from_column_id !== undefined && from_column_id
+        && !await denyUnlessOwned(req, res, 'source_columns', from_column_id)) return;
+    if (to_column_id !== undefined && to_column_id
+        && !await denyUnlessOwned(req, res, 'source_columns', to_column_id)) return;
+
     const [fromCol, toCol] = await Promise.all([
       from_column_id !== undefined ? graph.getColumnByPgId(Number(from_column_id)) : Promise.resolve(undefined),
       to_column_id   !== undefined ? graph.getColumnByPgId(Number(to_column_id))   : Promise.resolve(undefined),
@@ -503,6 +605,7 @@ router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst')
   try {
     const db = reqDb(req);
     const id = Number(req.params.id);
+    if (!await denyUnlessOwnedRelationship(req, res, id)) return;
     await graph.deleteRelationship(id);
     // Mirror delete to Postgres so Home's relationship counts decrement.
     // No-op if the row doesn't exist (e.g. legacy Neo4j-only rels created
@@ -518,6 +621,10 @@ router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst')
 router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   const connectionId = Number(req.query.connectionId);
   if (!connectionId) return res.status(400).json({ ok: false, error: 'connectionId required' });
+
+  // Before any SSE stream opens: this route reads the connection's whole
+  // semantic context AND wipes its AI-draft relationships, both unscoped.
+  if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
 
   const wantsStream = req.headers.accept?.includes('text/event-stream');
 
@@ -676,8 +783,9 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 // GET /api/semantic/kpis?connectionId=1
 router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const db = reqDb(req);
-    const rows = await graph.getKpisByConnection(Number(req.query.connectionId));
+    const connectionId = Number(req.query.connectionId);
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
+    const rows = await graph.getKpisByConnection(connectionId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -688,6 +796,8 @@ router.post('/kpis', requireAuth, requireRole('admin'), validate(createKpiSchema
     const db = reqDb(req);
     const { connection_id, name, description, formula_plain_text, formula_sql, owner_name } =
       req.body as Record<string, unknown>;
+    // connection_id is body-supplied and becomes the KPI's owner in the graph.
+    if (!await denyUnlessOwned(req, res, 'connections', connection_id)) return;
     const pgId = await graph.nextPgId();
     await graph.createKpi({
       pgId,
@@ -714,6 +824,8 @@ router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request
     const db = reqDb(req);
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
+
+    if (!await denyUnlessOwned(req, res, 'kpi_definitions', id)) return;
 
     const old = await db('definition_versions')
       .where({ entity_type: 'kpi', entity_id: id })
@@ -913,6 +1025,9 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       res.status(400).json({ ok: false, error: 'entityType must be table, column, or kpi' });
       return;
     }
+
+    // entityId is body-supplied and reaches unscoped graph writes below.
+    if (!await denyUnlessOwnedEntity(req, res, entityType, entityId)) return;
 
     // Look up the target version
     const targetVersion = await db('definition_versions')
@@ -1135,6 +1250,9 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       return;
     }
 
+    // entityId is body-supplied and reaches an unscoped graph write below.
+    if (!await denyUnlessOwnedEntity(req, res, entityType, entityId)) return;
+
     const statusMap: Record<string, string> = {
       approve: 'approved',
       reject: 'rejected',
@@ -1231,6 +1349,9 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
       res.status(400).json({ ok: false, error: 'connectionId and definitions[] required' });
       return;
     }
+    // Table/column ids below are resolved from this connection, so authorising
+    // the connection authorises the whole batch.
+    if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
 
     let updated = 0;
     let skipped = 0;
@@ -1524,7 +1645,14 @@ router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next
 router.get('/product-tree', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { products } = await graph.getProductTree();
+    const { products: allProducts } = await graph.getProductTree();
+
+    // getProductTree() is unscoped — it returns EVERY tenant's products, and the
+    // enrichment below tolerates a missing Postgres row ("Product <id>"), so
+    // without this filter another tenant's star schemas and table lists were
+    // returned verbatim to any authenticated caller. Keep only what we own.
+    const owned = await ownedIds(db, 'data_products', allProducts.map((p) => p.dataProductId), req.user?.tenantId);
+    const products = allProducts.filter((p) => owned.has(Number(p.dataProductId)));
 
     // Enrich with product/schema names from Postgres
     const allProductIds = products.map((p) => p.dataProductId);
@@ -1578,6 +1706,7 @@ router.get('/product-tables', requireAuth, async (req: Request, res: Response, n
       res.status(400).json({ ok: false, error: 'dataProductId required' });
       return;
     }
+    if (!await denyUnlessOwned(req, res, 'data_products', dataProductId)) return;
     const rows = await graph.getProductTablesByProduct(dataProductId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -1592,6 +1721,7 @@ router.get('/product-columns', requireAuth, async (req: Request, res: Response, 
       res.status(400).json({ ok: false, error: 'tablePgId required' });
       return;
     }
+    if (!await denyUnlessOwned(req, res, 'product_tables', tablePgId)) return;
     const rows = await graph.getProductColumnsByTablePgId(tablePgId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
@@ -1603,6 +1733,8 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
     const db = reqDb(req);
     const pgId = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
+
+    if (!await denyUnlessOwned(req, res, 'product_tables', pgId)) return;
 
     await graph.updateProductTable(pgId, {
       display_name: body.display_name,
@@ -1624,6 +1756,8 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
     const db = reqDb(req);
     const pgId = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
+
+    if (!await denyUnlessOwned(req, res, 'product_columns', pgId)) return;
 
     await graph.updateProductColumn(pgId, {
       display_name: body.display_name,
