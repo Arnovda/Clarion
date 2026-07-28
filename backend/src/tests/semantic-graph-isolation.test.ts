@@ -217,7 +217,7 @@ describe('semantic routes refuse another tenant', () => {
     expect(rel).toBeTruthy();
   });
 
-  it('does not leak another tenant's products via the unparameterised product tree', async () => {
+  it('does not leak another tenants products via the unparameterised product tree', async () => {
     const res = await (await request())
       .get('/api/semantic/product-tree')
       .set('Authorization', `Bearer ${tenantB.token}`);
