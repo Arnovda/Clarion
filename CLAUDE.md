@@ -52,6 +52,30 @@ missing), not that someone is probing. Rollback = the "Rollback production"
 workflow. NOT yet observed: no log access from the sandbox, so nobody has
 confirmed the absence of those warnings against real traffic.
 
+**Semantic cache invalidation is now per-connection (2026-07-28).** All 9
+`invalidateSemanticCache()` calls in `routes/semantic.ts` were no-arg, i.e.
+`cacheInvalidate('semantic:*')` — a Redis `SCAN` over the whole keyspace plus a
+`DEL` of everything found. Any tenant editing any definition therefore dropped
+the cached AI context of EVERY tenant. Invisible at a handful of tenants;
+at hundreds it means the context cache is permanently cold and every edit costs
+an O(keyspace) scan.
+- **Not the one-liner it looked like**: only `source_tables`, `kpi_definitions`
+  and `data_products` carry `connection_id`. `source_columns` joins via
+  `table_id`, **`table_relationships` has no `connection_id` column at all**
+  (resolve via `from_table_id`), and the product side is three joins away
+  (`product_columns` → `product_tables` → `star_schemas` → `data_products`).
+  Hence `db/semanticCacheScope.ts` (`connectionIdForEntity`).
+- **Fail-safe by design**: null means "scope unknown" and the caller falls back
+  to the global wipe. Under-invalidating would serve stale semantic context for
+  the whole TTL — a correctness bug; a needless global wipe is merely slow.
+- **`DELETE /relationships/:id` resolves the scope BEFORE deleting the row** —
+  afterwards there is nothing left to join through.
+- 8 tests (`semanticCacheScope.test.ts`) assert the join chains and, more
+  importantly, that a null/0/NaN FK yields null rather than being coerced into a
+  wrong connection id. 88 unit tests green; `npm run check` clean.
+- **NOT deployed** — this landed after the traffic shift below, so it is on the
+  branch only.
+
 **CROSS-TENANT LEAK IN THE SEMANTIC LAYER — FOUND AND CLOSED (2026-07-28).**
 A full storage+compute isolation audit found that **Neo4j has no tenant scoping
 at all** (`db/semanticGraph.ts`: 94 `MATCH` clauses, 0 tenant references — every
@@ -96,15 +120,8 @@ passed a request-supplied id straight into unscoped Cypher.
   carries the **account-wide** `AZURE_STORAGE_CONNECTION_STRING`
   (`services/warehouse/duckdb.ts:197`), making the `sqlGuard` denylist the only
   barrier on the read path (Fase 4's per-tenant SAS is the real fix); all 9
-  `invalidateSemanticCache()` calls are no-arg → a Redis `SCAN` that wipes
-  **every** tenant's cached AI context on any semantic edit. NOTE: this is NOT
-  the one-line fix it looks like. The function takes a `connectionId` and the key
-  is `semantic:*:<connectionId>*`, but 7 of the 9 call sites only have an entity
-  id, and each entity type needs a different lookup to reach a connection:
-  `source_tables`/`kpi_definitions` have `connection_id` directly,
-  `source_columns` joins via `table_id`, `table_relationships` has no
-  `connection_id` at all (via `from_table_id`), and product tables/columns go
-  through `data_products`. Budget a small resolver, not a one-liner; `tenantKey()`
+  **[FIXED 2026-07-28]** the semantic cache invalidation was a
+  global wipe; `tenantKey()`
   regex-derives the fairness key from the warehouse path and falls back to the
   whole path, so legacy layouts let one tenant hold several semaphore slots;
   `warehouseContainer(tenantId?)` silently returns the SHARED container when the
