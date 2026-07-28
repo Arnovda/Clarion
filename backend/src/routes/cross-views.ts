@@ -1,8 +1,31 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import * as graph from '../db/semanticGraph';
+import { reqDb } from '../db/reqDb';
+import { owns, ownedIds } from '../db/tenantOwnership';
 
 const router = Router();
+
+/**
+ * Ownership gate — see db/tenantOwnership.ts.
+ *
+ * Every `graph.*` call in this file matches on a bare pgId with no tenant
+ * predicate, and `requireRole('admin')` only proves the caller is an admin of
+ * SOME tenant. Without this, an admin of one tenant could read and edit another
+ * tenant's cross-source views, tables and relationships by id.
+ *
+ * Returns true when the caller may proceed; when false it has already sent 404.
+ */
+async function denyUnlessOwned(
+  req: Request,
+  res: Response,
+  table: Parameters<typeof owns>[1],
+  id: unknown,
+): Promise<boolean> {
+  if (await owns(reqDb(req), table, id, req.user?.tenantId)) return true;
+  res.status(404).json({ ok: false, error: 'Not found' });
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/cross-views — list all views (optionally filter by connectionId)
@@ -10,8 +33,12 @@ const router = Router();
 router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
+    if (connectionId !== undefined && !await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const views = await graph.getCrossSourceViews(connectionId);
-    res.json({ ok: true, data: views });
+    // Without a connectionId the graph query returns EVERY tenant's views, so
+    // narrow to the ones we own rather than trusting the filter argument.
+    const mine = await ownedIds(reqDb(req), 'cross_source_views', views.map((v) => v.id), req.user?.tenantId);
+    res.json({ ok: true, data: views.filter((v) => mine.has(Number(v.id))) });
   } catch (err) { next(err); }
 });
 
@@ -21,6 +48,7 @@ router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Res
 router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description, connectionId } = req.body as { name: string; description?: string; connectionId?: number };
+    if (connectionId != null && !await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const pgId = await graph.nextPgId();
     await graph.createCrossSourceView({ pgId, name, description: description ?? null, connectionId: connectionId ?? null, userId: req.user!.sub });
     res.status(201).json({ ok: true, data: { id: pgId } });
@@ -32,6 +60,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
 // ---------------------------------------------------------------------------
 router.get('/related-tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!await denyUnlessOwned(req, res, 'source_tables', req.params.tableId)) return;
     const data = await graph.getRelatedTables(Number(req.params.tableId));
     res.json({ ok: true, data });
   } catch (err) { next(err); }
@@ -42,6 +71,7 @@ router.get('/related-tables/:tableId', requireAuth, requireRole('admin'), async 
 // ---------------------------------------------------------------------------
 router.get('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     const detail = await graph.getCrossSourceViewDetail(Number(req.params.id));
     if (!detail) { res.status(404).json({ ok: false, error: 'View not found' }); return; }
     res.json({ ok: true, data: detail });
@@ -54,6 +84,7 @@ router.get('/:id', requireAuth, requireRole('admin'), async (req: Request, res: 
 router.patch('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, description } = req.body as { name?: string; description?: string };
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     await graph.updateCrossSourceView(Number(req.params.id), { name, description });
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -64,6 +95,7 @@ router.patch('/:id', requireAuth, requireRole('admin'), async (req: Request, res
 // ---------------------------------------------------------------------------
 router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     await graph.deleteCrossSourceView(Number(req.params.id));
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -77,6 +109,8 @@ router.post('/:id/tables', requireAuth, requireRole('admin'), async (req: Reques
     const viewPgId  = Number(req.params.id);
     const { tableId, posX = 80, posY = 80 } = req.body as { tableId: number; posX?: number; posY?: number };
     const tablePgId = Number(tableId);
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', viewPgId)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', tablePgId)) return;
 
     await graph.addTableToView(viewPgId, tablePgId, posX, posY);
 
@@ -120,6 +154,7 @@ router.post('/:id/tables', requireAuth, requireRole('admin'), async (req: Reques
 // ---------------------------------------------------------------------------
 router.delete('/:id/tables/:tableId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     await graph.removeTableFromView(Number(req.params.id), Number(req.params.tableId));
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -131,6 +166,7 @@ router.delete('/:id/tables/:tableId', requireAuth, requireRole('admin'), async (
 router.patch('/:id/tables/:tableId/position', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { posX, posY } = req.body as { posX: number; posY: number };
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     await graph.updateTablePositionInView(Number(req.params.id), Number(req.params.tableId), posX, posY);
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -144,6 +180,12 @@ router.post('/:id/relationships', requireAuth, requireRole('admin'), async (req:
     const viewPgId = Number(req.params.id);
     const { fromTableId, fromColumnId, toTableId, toColumnId, relationshipType = 'many_to_one', label } =
       req.body as { fromTableId: number; fromColumnId?: number; toTableId: number; toColumnId?: number; relationshipType?: string; label?: string };
+
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', viewPgId)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', fromTableId)) return;
+    if (!await denyUnlessOwned(req, res, 'source_tables', toTableId)) return;
+    if (fromColumnId && !await denyUnlessOwned(req, res, 'source_columns', fromColumnId)) return;
+    if (toColumnId && !await denyUnlessOwned(req, res, 'source_columns', toColumnId)) return;
 
     const [fromCol, toCol] = await Promise.all([
       fromColumnId ? graph.getColumnByPgId(Number(fromColumnId)) : Promise.resolve(null),
@@ -172,6 +214,7 @@ router.post('/:id/relationships', requireAuth, requireRole('admin'), async (req:
 // ---------------------------------------------------------------------------
 router.delete('/:id/relationships/:relId', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (!await denyUnlessOwned(req, res, 'cross_source_views', req.params.id)) return;
     await graph.deleteCrossViewRelationship(Number(req.params.relId));
     res.json({ ok: true });
   } catch (err) { next(err); }

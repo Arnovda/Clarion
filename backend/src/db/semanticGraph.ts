@@ -546,6 +546,32 @@ export async function updateRelationship(
   }
 }
 
+/**
+ * The connectionId that owns a relationship, or null if it doesn't exist.
+ *
+ * Used by the ownership gate for relationships that exist ONLY in the graph:
+ * relationships created before the Postgres dual-write was added have no mirror
+ * row, so `owns(db, 'table_relationships', id)` would refuse them and users
+ * could no longer reject old AI drafts. Resolving the owning connection lets the
+ * caller authorise those against `connections` (which IS tenant-scoped) instead
+ * of falling back to trusting the id.
+ */
+export async function getRelationshipConnectionId(pgId: number): Promise<number | null> {
+  const session = getSession();
+  try {
+    const result = await session.run(
+      `MATCH (ft:SourceTable)-[r:RELATES_TO {pgId: $pgId}]->()
+       RETURN ft.connectionId AS cid LIMIT 1`,
+      { pgId },
+    );
+    if (!result.records.length) return null;
+    const cid = toNum(result.records[0].get('cid'));
+    return Number.isInteger(cid) && cid > 0 ? cid : null;
+  } finally {
+    await session.close();
+  }
+}
+
 export async function deleteRelationship(pgId: number): Promise<void> {
   const session = getSession();
   try {

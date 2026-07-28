@@ -31,7 +31,60 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-28 (Fase 3 made SAFE to enable — per-runner memory budget bug fixed; flip control + storage validation probe added)
+**Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
+
+**CROSS-TENANT LEAK IN THE SEMANTIC LAYER — FOUND AND CLOSED (2026-07-28).**
+A full storage+compute isolation audit found that **Neo4j has no tenant scoping
+at all** (`db/semanticGraph.ts`: 94 `MATCH` clauses, 0 tenant references — every
+node is matched by a globally-unique, enumerable `pgId`). Postgres RLS protects
+the mirror rows, so the hole was invisible from the Postgres side. ~30 endpoints
+passed a request-supplied id straight into unscoped Cypher.
+- **Confirmed READ leak** (worst): `GET /semantic/columns?tableId=` returned
+  another tenant's full column catalog — names, descriptions, sample-derived
+  stats — to **any authenticated user, viewer included** (`requireAuth` only).
+  Same shape on `GET /semantic/tables|relationships|kpis|domains|paths`,
+  `GET /catalog/:catalog/:schema/:table`, and all of `/cross-views`.
+  `GET /semantic/product-tree` took **no parameter at all** and returned every
+  tenant's products and star schemas.
+- **Confirmed WRITE/DELETE**: `PATCH /semantic/tables|columns|relationships/:id`
+  and `DELETE /semantic/relationships/:id` mutated the graph before any
+  ownership check. The Postgres mirror underneath is RLS-scoped and silently
+  updated 0 rows, so the two stores diverged while the damage landed in the
+  store that feeds AI context and the catalog UI.
+- **Fix**: new `db/tenantOwnership.ts` (`owns()` / `ownedIds()`) + a
+  `denyUnlessOwned` gate applied to every id-taking endpoint in
+  `routes/semantic.ts`, `routes/catalog.ts`, `routes/cross-views.ts`. It matches
+  `tenant_id` EXPLICITLY rather than relying on RLS, so it also survives the
+  session-level `SET app.current_tenant` pool race. Refuses with 404, never 403.
+  Legacy graph-only relationships stay deletable via a new
+  `graph.getRelationshipConnectionId()` → authorise through the owning
+  connection, so rejecting old AI drafts still works.
+- **Drive-by**: `PATCH /semantic/tables/:id` was making two pointless Neo4j round
+  trips per request (`getTablesByConnection(0)` into an unused variable, plus a
+  `getColumnsByTablePgId(0)` inside a comma-expression). Removed.
+- **Tests**: `db/tenantOwnership.test.ts` (8) asserts the gate refuses by default
+  AND that `tenant_id` is in the WHERE clause — a mock that only faked
+  found/not-found would still pass if the tenant filter were dropped, which is
+  the regression worth catching. 80 unit tests green; `npm run check` clean.
+- **The durable rule is in the "Dual-write contract" section below — read it
+  before adding any `graph.*` call.** The structural fix (put `tenantId` on the
+  nodes and into the Cypher) is still open; the gate is an application-layer
+  control in front of an unscoped store.
+- **Audit findings NOT yet fixed** (ranked, with evidence): worker tenant context
+  is still the racy session-level `SET` while BullMQ workers run at concurrency
+  2–4 (`jobs/workers.ts:40,86,137,166`) — the split concentrated multi-tenant
+  work in one process, so this got *more* important; every DuckDB session still
+  carries the **account-wide** `AZURE_STORAGE_CONNECTION_STRING`
+  (`services/warehouse/duckdb.ts:197`), making the `sqlGuard` denylist the only
+  barrier on the read path (Fase 4's per-tenant SAS is the real fix); all 9
+  `invalidateSemanticCache()` calls are no-arg → a Redis `SCAN` that wipes
+  **every** tenant's cached AI context on any semantic edit; `tenantKey()`
+  regex-derives the fairness key from the warehouse path and falls back to the
+  whole path, so legacy layouts let one tenant hold several semaphore slots;
+  `warehouseContainer(tenantId?)` silently returns the SHARED container when the
+  id is omitted (all 5 call sites pass it today — latent, not live).
+
+**Prior last updated:** 2026-07-28 (Fase 3 made SAFE to enable — per-runner memory budget bug fixed; flip control + storage validation probe added)
 
 **FASE 3 WAS NOT SAFE TO TURN ON — FIXED (2026-07-28).** Preparing the
 `DUCKDB_RUNNER=child` flip surfaced a bug that would have made enabling it a
@@ -2334,6 +2387,32 @@ write to those three tables.
 - `POST /semantic/revert` — revert-to-version writes Neo4j only.
 - `POST /semantic/approve` — generic approval flow writes Neo4j only.
 - `POST /semantic/import` — bulk CSV import writes Neo4j only.
+
+**MANDATORY: Neo4j has NO tenant scoping — gate every request-supplied id.**
+`db/semanticGraph.ts` matches nodes and edges by their globally-unique `pgId`
+(or `connectionId`) with **no tenant predicate anywhere** — 90+ `MATCH` clauses,
+zero tenant references. Postgres RLS protects the mirror rows but not the graph,
+so any route that hands a request-supplied id to a `graph.*` call reaches
+whichever tenant owns that id, and ids come from a shared sequence (trivially
+enumerable). A 2026-07-28 audit found this live on ~30 endpoints across
+`routes/semantic.ts`, `routes/catalog.ts` and `routes/cross-views.ts`, including
+`GET /semantic/columns?tableId=` returning another tenant's column catalog to any
+authenticated user, and `DELETE /semantic/relationships/:id` deleting another
+tenant's relationship.
+
+The rule, no exceptions: **before an id from a path param, query string or body
+reaches a `graph.*` call, authorise it with `owns()` / `ownedIds()` from
+`db/tenantOwnership.ts`** (in routes: the local `denyUnlessOwned` helpers).
+Those match `tenant_id` EXPLICITLY rather than relying on RLS, because `reqDb()`
+falls back to the global pool whose session-level `SET app.current_tenant` has a
+documented race — an authorisation check must not depend on which side of that
+race it lands. Refuse with **404, never 403**: a 403 confirms the id exists and
+belongs to someone else.
+
+Two things this does not cover, both tracked: entities that exist ONLY in the
+graph (pre-dual-write relationships) authorise via
+`graph.getRelationshipConnectionId()` → the owning connection; and the real fix
+is putting `tenantId` on the nodes and into the Cypher, which retires this rule.
 
 **If you add a new write to any of those three tables, you have two options:**
 1. Mirror it (preferred — follow the pattern in `PATCH /semantic/tables/:id`).
