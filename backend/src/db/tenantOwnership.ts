@@ -31,6 +31,9 @@
  */
 
 import type { Knex } from 'knex';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'tenant-ownership' });
 
 /**
  * Tables that mirror a semantic graph entity and carry `tenant_id`.
@@ -64,8 +67,19 @@ export async function owns(
   tenantId: number | undefined,
 ): Promise<boolean> {
   const numericId = Number(id);
-  if (!tenantId || !Number.isInteger(numericId) || numericId <= 0) return false;
+  if (!tenantId || !Number.isInteger(numericId) || numericId <= 0) {
+    log.warn({ table, id, tenantId }, 'ownership check refused: missing tenant or malformed id');
+    return false;
+  }
   const row = await db(table).where({ id: numericId, tenant_id: tenantId }).first('id');
+  if (!row) {
+    // Every refusal is logged, because this gate sits in front of ~30 endpoints
+    // and a false refusal is indistinguishable from "not found" to the user. A
+    // burst of these after a deploy means the gate is rejecting legitimate
+    // traffic (e.g. a graph entity whose Postgres mirror row is missing), not
+    // that someone is probing another tenant.
+    log.warn({ table, id: numericId, tenantId }, 'ownership check refused: no such row for this tenant');
+  }
   return !!row;
 }
 
