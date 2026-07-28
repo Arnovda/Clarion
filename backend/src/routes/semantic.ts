@@ -110,9 +110,18 @@ async function denyUnlessOwnedRelationship(
   const tenantId = req.user?.tenantId;
   if (await owns(db, 'table_relationships', id, tenantId)) return true;
 
-  const connectionId = Number.isInteger(id) && id > 0
-    ? await graph.getRelationshipConnectionId(id)
-    : null;
+  // The graph lookup is a best-effort SECOND CHANCE, never a gate of its own.
+  // It runs on the refusal path, so a Neo4j outage would otherwise turn every
+  // "denied" into a 500 — an unavailable graph is not permission to proceed,
+  // and the caller must not be able to tell the two apart. Refuse on any error.
+  let connectionId: number | null = null;
+  if (Number.isInteger(id) && id > 0) {
+    try {
+      connectionId = await graph.getRelationshipConnectionId(id);
+    } catch (err) {
+      log.warn({ err, id }, 'relationship ownership fallback unavailable — refusing');
+    }
+  }
   if (connectionId !== null && await owns(db, 'connections', connectionId, tenantId)) return true;
 
   res.status(404).json({ ok: false, error: 'Not found' });
