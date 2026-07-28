@@ -482,9 +482,50 @@ terwijl de tenant wel gesynct heeft = het faalsignaal; data erin = de schrijfweg
 werkt voor die tenant. Account-keys zijn leesbaar voor `Contributor`, dus dit
 werkt met de bestaande rechten.
 
-Nog te doen: Fase 3 daadwerkelijk aanzetten (`.ops/duckdb-runner` → `child`) en
-het ACTIVE-signaal + een echte query verifiëren, Fase 4 (legacy-migratie +
-auth-ontvlechting + de opt-in DuckDB-lockdown live valideren).
+### Stand 2026-07-28 (einde dag) — wat live staat en wat er nog tussen zit
+
+**Live in productie** (`main-4bf2610`, 100% verkeer, revisie `Provisioned` vóór
+de shift): de ownership-poort op de semantic graph, per-connectie
+cache-invalidatie, transactie-lokale tenantcontext in de BullMQ-workers, en de
+fail-closed fix van de relatie-fallback. Plus alles van eerder: containers per
+tenant, jobs-worker-split, SQL-guard, Fase 0-guards.
+
+**De twee dingen die "afgeschermd" scheiden van "begrensd":**
+
+**1. `tenantId` in Neo4j — MOET GEFASEERD.** De graph kent geen tenants; wat er
+live staat is een applicatiepoort ervoor (`db/tenantOwnership.ts`). De
+structurele fix is vier stappen en de volgorde is niet optioneel:
+1. `tenantId` meeschrijven op elke node-write;
+2. backfill van bestaande nodes uit Postgres (`id → tenant_id`);
+3. **verifiëren** dat er geen nodes zonder `tenantId` over zijn — vereist een
+   live Neo4j;
+4. pas dán het predicaat in de ~94 `MATCH`-clauses, achter een vlag.
+
+Stap 4 vóór een complete stap 2 betekent dat geen enkele query nog matcht: de
+catalogus is dan voor **iedere** tenant leeg. Dit is bewust niet blind gebouwd —
+de bottleneck is validatie, niet het schrijven van de Cypher.
+
+**2. Per-tenant SAS — GEBLOKKEERD DOOR DE LEGACY-MIGRATIE, niet door de SDK.**
+Eerdere notitie zei dat prefix-gescopede SAS een ander pakket vereist; dat is
+achterhaald. Met containers per tenant volstaat een **container**-gescopede SAS,
+en die maakt de gepinde `@azure/storage-blob` al (de sync-worker doet het).
+De echte blokkade: `delta_path` / `warehouse_path` zijn absolute URI's en alle
+data van vóór 26/07 staat nog in de gedeelde `warehouse`-container. Een SAS
+gescoped op `tenant-<id>` kan die container fysiek niet lezen, dus het vervangen
+van de account-sleutel zou élke tenant de toegang tot zijn oudere data ontnemen.
+**Eerst migreren, dan de sleutel vervangen.** Andersom is het een storing, geen
+hardening.
+
+**Kleiner, gesloten op 2026-07-28**: `warehouseContainer()` viel in per-tenant
+mode stil terug op de gedeelde container als de `tenantId` ontbrak — dat plaatst
+data van één tenant waar iedereen bij kan, precies de grens die de modus moet
+maken. Werpt nu een fout. De oude test codeerde die terugval expliciet ("moet
+niet crashen"); die afweging is omgedraaid, want misplaatste data is de ergere
+fout.
+
+Nog te doen: Fase 3 aanzetten (`.ops/duckdb-runner` → `child`) en het
+ACTIVE-signaal + een echte query verifiëren; de legacy-migratie; daarna de
+per-tenant SAS; `tenantId` in Neo4j; de opt-in DuckDB-lockdown live valideren.
 
 ### Externe validatie van dit ontwerp (2026-07-27)
 
