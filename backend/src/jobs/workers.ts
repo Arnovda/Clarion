@@ -5,6 +5,25 @@
  * reports progress via BullMQ's built-in job.updateProgress().
  *
  * Workers are started from index.ts via startWorkers().
+ *
+ * TENANT CONTEXT — never use a session-level `SET app.current_tenant` here.
+ *
+ * Every job used to open with `semanticDb.raw("SET app.current_tenant = …")`.
+ * That is a SESSION-level setting on a POOLED connection, and BullMQ runs these
+ * workers at concurrency 2–4, so jobs from different tenants interleave: job A
+ * sets its tenant on connection X, job B sets its own on connection Y, and A's
+ * next query can be handed Y — which still carries B's tenant. RLS then filters
+ * to the WRONG tenant and the job silently reads and writes someone else's rows.
+ * It is fail-OPEN, which is the dangerous direction.
+ *
+ * The jobs-worker split made this sharper, not softer: it concentrated all the
+ * multi-tenant batch work into one process.
+ *
+ * Every query is therefore wrapped in `tenantQuery(tenantId, …)`, which opens a
+ * short transaction and uses `set_config('app.current_tenant', …, true)` —
+ * transaction-local, so it cannot leak to another job or outlive its connection.
+ * Long-running work is NOT wrapped in one transaction (that would pin a pool
+ * connection for the whole job); each query gets its own.
  */
 
 import { Worker, Job } from 'bullmq';
@@ -12,7 +31,6 @@ import { getRedisConnection } from './redis';
 import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData } from './queues';
 import { registerJobAbortController, unregisterJob, isJobCancelled, watchForCancellation } from './cancellation';
 import { shouldRunQueue } from './queueRoles';
-import { semanticDb } from '../db/knex';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notify } from '../services/notificationService';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
@@ -36,13 +54,10 @@ const workers: Worker[] = [];
 async function processSchemaProfilingJob(job: Job<SchemaProfilingJobData>): Promise<{ tablesInserted: number; columnsInserted: number; relationshipsInserted: number }> {
   const { connectionId, tenantId } = job.data;
 
-  // Set tenant context for this worker's DB operations
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-
   await job.updateProgress({ phase: 'starting', message: 'Starting schema profiling…' });
 
-  // Tenant-scoped fetch: the raw `SET` above lands on ONE pooled connection;
-  // this query may run on another and come back empty under RLS.
+  // Every DB read in a worker is tenant-scoped through a short transaction —
+  // see the note on startWorkers() for why the session-level SET is gone.
   const connection = await tenantQuery(tenantId, (trx) =>
     trx('connections').where({ id: connectionId }).first(),
   );
@@ -83,14 +98,15 @@ async function processSchemaProfilingJob(job: Job<SchemaProfilingJobData>): Prom
 async function processIngestionJob(job: Job<IngestionJobData>): Promise<{ ingested: number }> {
   const { connectionId, tenantId, tables } = job.data;
 
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
   await job.updateProgress({ phase: 'starting', message: `Ingesting ${tables.length} tables…` });
 
   // Ingestion calls the ETL service — reuse the existing route logic
   const axios = (await import('axios')).default;
   const etlUrl = process.env.ETL_URL ?? 'http://localhost:8000';
 
-  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  const connection = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: connectionId }).first(),
+  );
   if (!connection) throw new Error(`Connection ${connectionId} not found`);
 
   const config = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
@@ -134,16 +150,19 @@ async function processIngestionJob(job: Job<IngestionJobData>): Promise<{ ingest
 async function processTransformationJob(job: Job<TransformationJobData>): Promise<{ tablesTransformed: number }> {
   const { productId, tenantId } = job.data;
 
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
   await job.updateProgress({ phase: 'starting', message: 'Running transformations…' });
 
   // Dynamic import to avoid circular deps
   const { runProductTransformation } = await import('../services/transformationRunner');
 
   // Load product + tables from DB
-  const product = await semanticDb('data_products').where({ id: productId }).first();
+  const product = await tenantQuery(tenantId, (trx) =>
+    trx('data_products').where({ id: productId }).first(),
+  );
   if (!product) throw new Error(`Product ${productId} not found`);
-  const tables = await semanticDb('product_tables').where({ product_id: productId });
+  const tables = await tenantQuery(tenantId, (trx) =>
+    trx('product_tables').where({ product_id: productId }),
+  );
 
   const results = await runProductTransformation(product, tables, tenantId);
 
@@ -162,8 +181,6 @@ async function processTransformationJob(job: Job<TransformationJobData>): Promis
 async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ products: number; allOk: boolean }> {
   const { connectionId, tenantId, triggeredBy, mode, productId, syncSource } = job.data;
   const jobId = String(job.id);
-
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
   const controller = new AbortController();
   registerJobAbortController(jobId, controller);
@@ -338,27 +355,29 @@ export function startWorkers(): void {
     async (job) => withTenantAiContext(job.data.tenantId, async () => {
       // Record run start
       const { productId, tenantId } = job.data;
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
-      const schedule = await semanticDb('transformation_schedules')
-        .where({ product_id: productId }).first();
-
-      const [runRow] = await semanticDb('transformation_runs').insert({
-        product_id: productId,
-        schedule_id: schedule?.id ?? null,
-        triggered_by: 'schedule',
-        status: 'running',
-      }).returning('id');
+      const [runRow] = await tenantQuery(tenantId, async (trx) => {
+        const schedule = await trx('transformation_schedules')
+          .where({ product_id: productId }).first();
+        return trx('transformation_runs').insert({
+          product_id: productId,
+          schedule_id: schedule?.id ?? null,
+          triggered_by: 'schedule',
+          status: 'running',
+        }).returning('id');
+      });
       const runId = typeof runRow === 'object' ? (runRow as { id: number }).id : runRow;
 
       try {
         const result = await processTransformationJob(job);
 
-        await semanticDb('transformation_runs').where({ id: runId }).update({
-          status: 'completed',
-          tables_transformed: result.tablesTransformed,
-          finished_at: new Date(),
-        });
+        await tenantQuery(tenantId, (trx) =>
+          trx('transformation_runs').where({ id: runId }).update({
+            status: 'completed',
+            tables_transformed: result.tablesTransformed,
+            finished_at: new Date(),
+          }),
+        );
 
         // Notify the user who triggered the job
         if (tenantId && job.data.triggeredBy) {
@@ -374,11 +393,13 @@ export function startWorkers(): void {
 
         return result;
       } catch (err) {
-        await semanticDb('transformation_runs').where({ id: runId }).update({
-          status: 'failed',
-          error_message: err instanceof Error ? err.message : 'Unknown error',
-          finished_at: new Date(),
-        });
+        await tenantQuery(tenantId, (trx) =>
+          trx('transformation_runs').where({ id: runId }).update({
+            status: 'failed',
+            error_message: err instanceof Error ? err.message : 'Unknown error',
+            finished_at: new Date(),
+          }),
+        );
 
         // Notify on failure
         if (tenantId && job.data.triggeredBy) {
@@ -454,7 +475,6 @@ export function startWorkers(): void {
     'connection-sync-schedule',
     async (job) => {
       const { connectionId, tenantId } = job.data;
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
       const { triggerSync } = await import('../orchestrator/SyncOrchestrator');
       const result = await triggerSync({ connectionId, tenantId });
       // triggerSync is fire-and-forget — the BullMQ job completes once
@@ -476,7 +496,6 @@ export function startWorkers(): void {
     'pipeline-schedule',
     async (job) => {
       const { pipelineId, tenantId } = job.data;
-      await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
       const { enqueueSavedPipelineRun } = await import('../services/pipelineService');
       const result = await enqueueSavedPipelineRun({ pipelineId, tenantId, triggeredBy: 'cron' });
       // null result means the pipeline was disabled, scope was empty, or
