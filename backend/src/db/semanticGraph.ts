@@ -1799,6 +1799,14 @@ export async function upsertConnectionGraph(
   tables: UpsertTableInput[],
   columns: UpsertColumnInput[],
   relationships: UpsertRelationshipInput[],
+  /**
+   * Stamped onto every node this writes. The graph has no tenant scoping of its
+   * own (see db/tenantOwnership.ts); this is the property the future MATCH
+   * predicates will filter on, and the indexes for it already exist in
+   * db/neo4j.ts. Null only for callers that genuinely have no tenant context —
+   * those nodes stay invisible to a tenant-scoped read, which is the safe side.
+   */
+  tenantId?: number | null,
 ): Promise<void> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1809,6 +1817,7 @@ export async function upsertConnectionGraph(
         `MERGE (tbl:SourceTable {connectionId: $cid, tableName: $tn})
          ON CREATE SET
            tbl.pgId           = $pgId,
+           tbl.tenantId       = $tenantId,
            tbl.displayName    = $displayName,
            tbl.description    = $description,
            tbl.grain          = $grain,
@@ -1820,13 +1829,14 @@ export async function upsertConnectionGraph(
            tbl.updatedAt      = $now
          ON MATCH SET
            tbl.pgId           = $pgId,
+           tbl.tenantId       = $tenantId,
            tbl.displayName    = $displayName,
            tbl.description    = $description,
            tbl.grain          = $grain,
            tbl.semanticSource = $semanticSource,
            tbl.aiDraft        = CASE WHEN $aiDraft THEN tbl.aiDraft ELSE false END,
            tbl.updatedAt      = $now`,
-        { pgId: t.pgId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, aiDraft: t.aiDraft ?? true, semanticSource: t.semanticSource ?? null, now },
+        { pgId: t.pgId, tenantId: tenantId ?? null, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, aiDraft: t.aiDraft ?? true, semanticSource: t.semanticSource ?? null, now },
       );
     }
 
@@ -1834,10 +1844,27 @@ export async function upsertConnectionGraph(
     // even when Postgres IDs change (delete + re-insert gives new PKs).
     for (const c of columns) {
       await session.run(
+        // MERGE KEY MUST IDENTIFY THE OWNING TABLE.
+        //
+        // This used to merge on (tableName, columnName) alone. Table names are
+        // not unique across connections — two tenants on the same connector have
+        // IDENTICAL table names for every table — so both tenants' `invoices.id`
+        // merged onto ONE node. The second tenant to run Analyse silently
+        // overwrote the first's description, semantics and `pgId`, and
+        // `MERGE (tbl)-[:HAS_COLUMN]->(col)` then attached that single shared
+        // node to both tenants' tables. That is a cross-tenant collision in the
+        // store that feeds AI context and the catalog, and it also breaks the
+        // ownership gate, whose `pgId` would point at the other tenant's row.
+        //
+        // `tablePgId` is globally unique (a Postgres serial), so keying on it
+        // scopes the node to exactly one table — the same shape ProductColumn
+        // already used correctly.
         `MATCH (tbl:SourceTable {pgId: $tpid})
-         MERGE (col:SourceColumn {tableName: $tn, columnName: $cn})
+         MERGE (col:SourceColumn {tablePgId: $tpid, columnName: $cn})
          ON CREATE SET
            col.pgId           = $pgId,
+           col.tenantId       = $tenantId,
+           col.tableName      = $tn,
            col.tablePgId      = $tpid,
            col.dataType       = $dataType,
            col.displayName    = $displayName,
@@ -1851,6 +1878,8 @@ export async function upsertConnectionGraph(
            col.updatedAt      = $now
          ON MATCH SET
            col.pgId           = $pgId,
+           col.tenantId       = $tenantId,
+           col.tableName      = $tn,
            col.tablePgId      = $tpid,
            col.dataType       = $dataType,
            col.displayName    = $displayName,
@@ -1862,6 +1891,7 @@ export async function upsertConnectionGraph(
          MERGE (tbl)-[:HAS_COLUMN]->(col)`,
         {
           pgId:           c.pgId,
+          tenantId:       tenantId ?? null,
           tpid:           c.tablePgId,
           tn:             c.tableName,
           cn:             c.columnName,
