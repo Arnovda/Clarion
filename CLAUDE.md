@@ -33,6 +33,19 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
 
+**MEASURED 2026-07-29 (preflight run 5) — the per-tenant WRITE path has never
+run.** `per-tenant containers: 0`. The mode has been `per-tenant` since 26/07,
+but no `tenant-*` container exists, so nothing has been written since the flip;
+all data still sits in the legacy shared `warehouse` container. Live revision
+`…--main-5d2b327` (that IS the PR #62 code — PR #63 changed only a `.ops` file,
+so no new image was built). `DUCKDB_RUNNER` unset. Queue split confirmed
+non-overlapping: API holds the identity queues, worker the compute queues.
+**This changes Fase 4.** With no customer tenants onboarded, there is no
+migration worth writing: the cheapest correct path is a **re-sync**, which lands
+data in per-tenant containers by itself, after which the shared container can be
+dropped and the per-tenant SAS becomes trivially safe. Migrating blobs would be
+work done to preserve data nobody depends on.
+
 **✅ THE FIX IS LIVE AT 100% TRAFFIC (verified 2026-07-28).** PR #60 merged
 (`1f860ad`), backend image built, and "Warehouse container mode" run #3
 (`30354021361`) promoted it: revision `…--main-1f860ad` reached `Provisioned`,
