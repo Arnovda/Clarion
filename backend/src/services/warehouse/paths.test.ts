@@ -91,9 +91,14 @@ describe('warehouse container mode', () => {
       expect(() => warehouseContainer(42)).toThrow(/Invalid Azure container name/);
     });
 
-    it('falls back to shared container when tenant id is missing', () => {
-      // Legacy call-sites that don't thread a tenant id must not crash.
-      expect(warehouseContainer(undefined)).toBe('warehouse');
+    it('refuses to fall back to the shared container when the tenant id is missing', () => {
+      // This used to return the shared container so legacy call-sites would not
+      // crash. That trade is wrong in per-tenant mode: it silently places one
+      // tenant's data where every tenant can reach it, defeating the boundary
+      // this mode exists to create, and nothing downstream reports it.
+      // Crashing is the lesser failure — a missing tenant id here is a bug at
+      // the call site.
+      expect(() => warehouseContainer(undefined)).toThrow(/tenantId is required in per-tenant mode/);
     });
 
     it('drops the redundant tenant path segment (container encodes the tenant)', () => {

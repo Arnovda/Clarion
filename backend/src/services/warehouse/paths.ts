@@ -75,7 +75,17 @@ export function warehouseContainerMode(): WarehouseContainerMode {
  */
 export function warehouseContainer(tenantId?: number): string {
   const shared = process.env.AZURE_WAREHOUSE_CONTAINER ?? 'warehouse';
-  if (warehouseContainerMode() === 'per-tenant' && tenantId != null) {
+  if (warehouseContainerMode() === 'per-tenant') {
+    // Fail CLOSED. Falling back to the shared container here would silently
+    // place one tenant's data where every tenant can reach it — the exact
+    // boundary per-tenant mode exists to create — and nothing downstream would
+    // report it. A missing tenant id in this mode is a bug at the call site, so
+    // say so loudly rather than writing to the wrong place.
+    if (tenantId == null) {
+      throw new Error(
+        'warehouseContainer: tenantId is required in per-tenant mode — refusing to fall back to the shared container',
+      );
+    }
     const prefix = process.env.AZURE_WAREHOUSE_CONTAINER_PREFIX ?? 'tenant-';
     const name = `${prefix}${tenantId}`;
     assertValidContainerName(name);
