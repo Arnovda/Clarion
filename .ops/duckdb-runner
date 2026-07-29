@@ -1,15 +1,17 @@
-off
+child
 
-# child = run every warehouse query in its own child process, so the 45s
-#         DUCKDB_QUERY_TIMEOUT_MS can actually KILL a runaway query (in-process
-#         it only frees the waiting user; the query keeps burning CPU and holds
-#         its concurrency permit for its real duration). Also contains a DuckDB
-#         OOM or native crash to one runner instead of the whole API.
-# off   = in-process execution (today's behaviour).
+# Enabled 2026-07-29. Every warehouse query now runs in its own child process,
+# so DUCKDB_QUERY_TIMEOUT_MS can actually SIGKILL a runaway query — in-process it
+# only freed the waiting user while the query kept burning CPU and holding its
+# concurrency permit. Also contains a DuckDB OOM or native crash to one runner
+# instead of the whole API.
 #
-# Applies to the BACKEND app only — see the workflow header for why the
-# jobs-worker is deliberately left in-process.
+# Safe to enable since the per-runner budget fix: DUCKDB_MEMORY_LIMIT and
+# DUCKDB_THREADS are divided across max(DUCKDB_RUNNER_MAX,
+# DUCKDB_MAX_CONCURRENT_QUERIES) slots, so all runners together stay inside what
+# one in-process session was allowed. Before that fix each runner claimed 70%.
 #
-# Validate after flipping to `child`: look for the log line
-# "Child-process query runner ACTIVE". Its absence means the runner silently
-# degraded to in-process and the flip achieved nothing.
+# VALIDATE: look for the one-time log line "Child-process query runner ACTIVE".
+# If it is absent and you see "the compiled runner script was not found"
+# instead, the runner silently degraded to in-process and this flip did nothing.
+# Rollback: set this back to `off` and push.
