@@ -1,1 +1,1 @@
-run 4 — confirm the promoted revision and the split after re-provisioning
+run 5 — establish what data exists before the Neo4j tenant migration: which tenant-* containers hold data, and the DUCKDB_RUNNER state
