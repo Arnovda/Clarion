@@ -1088,7 +1088,7 @@ export async function runSchemaProfiler(
       description:   r.description ?? null,
     }));
 
-    await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels);
+    await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels, tenantId);
 
     if (allFkCandidates.length > 0) {
       await graph.saveFkCandidates(
