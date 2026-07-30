@@ -1,15 +1,16 @@
 per-tenant
 
-# Re-applied 2026-07-30: rolls the current backend image to 100% traffic. That
-# image carries the CORRECTED SourceColumn merge key — a pattern merge on the
-# table node, which is both tenant-scoped and stable across re-profiles. The
-# previous key, (tablePgId, columnName), fixed the cross-tenant collision but
-# would have accumulated duplicate columns on every Analyse, because the profiler
-# rebuilds its Postgres rows so source_tables.id changes each run.
+# Re-applied 2026-07-30 (second): the previous application raced its own build.
+# The corrected merge key and the promote landed in ONE commit, so this workflow
+# fired while deploy.yml was still building the image — creating a revision from
+# the app's THEN-current template, i.e. the OLD build. This re-application runs
+# after the build and picks up the image that actually contains the fix.
 #
-# This must be live BEFORE the next sync/Analyse, or the duplicates start.
+# LESSON: merge the code first, wait for deploy.yml to finish, THEN touch this
+# file. This control promotes whatever the app template points at RIGHT NOW; it
+# does not wait for a build.
 #
-# Promote vehicle on purpose: this workflow waits for the NEW revision to reach
-# Provisioned and fails loudly otherwise. deploy.yml never waits at all, and
-# promote.yml shifts to latestReadyRevisionName, which silently promotes the
-# PREVIOUS revision if the new one failed to boot. The mode itself is unchanged.
+# The mode itself is unchanged. This workflow waits for the NEW revision to reach
+# Provisioned and fails loudly otherwise, which deploy.yml never does and
+# promote.yml cannot (it shifts to latestReadyRevisionName, silently promoting
+# the previous revision if the new one failed to boot).
