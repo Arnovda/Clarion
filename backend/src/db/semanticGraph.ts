@@ -1844,23 +1844,32 @@ export async function upsertConnectionGraph(
     // even when Postgres IDs change (delete + re-insert gives new PKs).
     for (const c of columns) {
       await session.run(
-        // MERGE KEY MUST IDENTIFY THE OWNING TABLE.
+        // MERGE ON THE TABLE NODE, NOT ON NAMES OR ON pgId.
         //
-        // This used to merge on (tableName, columnName) alone. Table names are
-        // not unique across connections — two tenants on the same connector have
-        // IDENTICAL table names for every table — so both tenants' `invoices.id`
-        // merged onto ONE node. The second tenant to run Analyse silently
-        // overwrote the first's description, semantics and `pgId`, and
-        // `MERGE (tbl)-[:HAS_COLUMN]->(col)` then attached that single shared
-        // node to both tenants' tables. That is a cross-tenant collision in the
-        // store that feeds AI context and the catalog, and it also breaks the
-        // ownership gate, whose `pgId` would point at the other tenant's row.
+        // Two failure modes had to be avoided at once, and only the pattern
+        // MERGE below avoids both:
         //
-        // `tablePgId` is globally unique (a Postgres serial), so keying on it
-        // scopes the node to exactly one table — the same shape ProductColumn
-        // already used correctly.
+        //   • Keying on (tableName, columnName) COLLIDES ACROSS TENANTS. Table
+        //     names are not unique between connections — two tenants on the same
+        //     connector have identical table names for every table — so both
+        //     tenants' `invoices.id` merged onto ONE node, and whoever ran
+        //     Analyse second overwrote the other's semantics and `pgId`. That
+        //     also breaks the ownership gate, whose `pgId` would then point at
+        //     the other tenant's Postgres row.
+        //
+        //   • Keying on (tablePgId, columnName) DUPLICATES ACROSS RE-PROFILES.
+        //     The profiler rebuilds its Postgres rows, so `source_tables.id`
+        //     changes on every run; the previous node would stop matching, a new
+        //     one would be created, and the stale node would stay attached to the
+        //     same table via HAS_COLUMN — surfacing as duplicate columns in the
+        //     catalog. Nothing wipes the graph, so they would accumulate.
+        //
+        // Merging the PATTERN identifies the column as "the column of this name
+        // hanging off THIS table node". The table node is itself merged on
+        // (connectionId, tableName), which is both tenant-scoped and stable
+        // across re-profiles, so the column inherits both properties.
         `MATCH (tbl:SourceTable {pgId: $tpid})
-         MERGE (col:SourceColumn {tablePgId: $tpid, columnName: $cn})
+         MERGE (tbl)-[:HAS_COLUMN]->(col:SourceColumn {columnName: $cn})
          ON CREATE SET
            col.pgId           = $pgId,
            col.tenantId       = $tenantId,
@@ -1887,8 +1896,7 @@ export async function upsertConnectionGraph(
            col.exampleValues  = $exampleValues,
            col.semanticSource = $semanticSource,
            col.aiDraft        = CASE WHEN $aiDraft THEN col.aiDraft ELSE false END,
-           col.updatedAt      = $now
-         MERGE (tbl)-[:HAS_COLUMN]->(col)`,
+           col.updatedAt      = $now`,
         {
           pgId:           c.pgId,
           tenantId:       tenantId ?? null,
