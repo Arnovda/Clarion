@@ -1,12 +1,15 @@
 per-tenant
 
-# Re-applied 2026-07-28 (second): rolls backend image main-5d2b327 to 100%
-# traffic. That image carries the per-connection cache invalidation, the
-# transaction-local tenant context in the BullMQ workers (the last fail-open
-# cross-tenant hazard), and the fail-closed fix to the relationship ownership
-# fallback that CI caught turning refusals into 500s.
+# Re-applied 2026-07-29: rolls the current backend image to 100% traffic. That
+# image carries the SourceColumn merge-key fix — the key was (tableName,
+# columnName), so two tenants on the same connector merged their columns onto ONE
+# node and whoever ran Analyse second overwrote the other's semantics and pgId —
+# plus tenantId now being stamped on SourceTable and SourceColumn writes.
 #
 # Promote vehicle on purpose: this workflow waits for the NEW revision to reach
-# Provisioned and fails loudly otherwise. deploy.yml never waits, and
-# promote.yml shifts to latestReadyRevisionName -- which silently promotes the
-# PREVIOUS revision if the new one failed to boot.
+# Provisioned and fails loudly otherwise. deploy.yml never waits at all, and
+# promote.yml shifts to latestReadyRevisionName, which silently promotes the
+# PREVIOUS revision if the new one failed to boot. The mode itself is unchanged.
+#
+# NEXT: a re-profile / sync rewrites the graph nodes WITH tenantId. Only after
+# that is it safe to put a tenant predicate into the MATCH clauses.
