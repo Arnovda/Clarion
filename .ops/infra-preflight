@@ -1,1 +1,1 @@
-run 5 — establish what data exists before the Neo4j tenant migration: which tenant-* containers hold data, and the DUCKDB_RUNNER state
+run 6 — confirm live image, DUCKDB_RUNNER=child, and container state after promoting the graph merge-key fix
