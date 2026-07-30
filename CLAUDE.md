@@ -31,7 +31,52 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
+**Last updated:** 2026-07-30 (all isolation work LIVE; graph merge-key corrected twice — read this before touching semanticGraph)
+
+**LIVE IN PRODUCTION (probe run 6, image `main-89c7cdd`, verified from Azure):**
+serving revision == template (so genuinely promoted), worker on the same image,
+`DUCKDB_RUNNER: child`, `WAREHOUSE_CONTAINER_MODE: per-tenant`, queue split
+non-overlapping. Everything from the isolation work is live: the ownership gate,
+per-connection cache invalidation, transaction-local worker tenant context, the
+child-process query runner, and the graph merge-key fix.
+**Still `per-tenant containers: 0`** — the per-tenant WRITE path has never run.
+
+**SOURCECOLUMN MERGE KEY — got it wrong twice, read this before changing it.**
+The key must avoid TWO failure modes at once:
+- `(tableName, columnName)` — the original — **collides across tenants**. Table
+  names are not unique between connections; two tenants on the same connector
+  have identical table names for every table, so both tenants' `invoices.id`
+  merged onto ONE node and whoever ran Analyse second overwrote the other's
+  semantics and `pgId`. That also breaks the ownership gate, whose `pgId` would
+  then point at the other tenant's Postgres row.
+- `(tablePgId, columnName)` — my first fix — **duplicates across re-profiles**.
+  The profiler rebuilds its Postgres rows, so `source_tables.id` changes every
+  run; the old node stops matching, a new one is created, and the stale node
+  stays attached via `HAS_COLUMN`. Nothing wipes the graph, so duplicate columns
+  accumulate in the catalog on every Analyse.
+- **The answer is a PATTERN merge**: `MERGE (tbl)-[:HAS_COLUMN]->(col:SourceColumn
+  {columnName: $cn})`. The column is "the column of this name hanging off THIS
+  table node", and the table node is merged on `(connectionId, tableName)` —
+  tenant-scoped AND stable across re-profiles, so the column inherits both.
+
+`tenantId` is now stamped on `SourceTable` and `SourceColumn` writes. The indexes
+already existed in `db/neo4j.ts`; nothing had ever written the property. The
+tenant predicate in the ~94 `MATCH` clauses is still NOT added — it must not land
+before existing nodes carry `tenantId`, or every catalog reads empty. A
+re-profile after this build rewrites them.
+
+**Open, and NOT verified by anyone:** the two log lines that prove today's work
+behaves under real traffic — `Child-process query runner ACTIVE` (absent = the
+runner silently fell back to in-process) and `ownership check refused` (a burst =
+the gate is rejecting legitimate traffic). No log access from the sandbox.
+Also unverified: which Postgres ROLE production connects as. `FORCE ROW LEVEL
+SECURITY` is applied on 27 migrations, so RLS binds even the table owner — but a
+role with `BYPASSRLS` still bypasses everything, and
+`docs/runbooks/db-role-flip.md` describes the cutover to `databridge_app` as
+"the last step of Sprint 1 hardening" with no record of it having run.
+Good news, checked: Neo4j has `external_enabled = false` — internal ingress only.
+
+**Prior last updated:** 2026-07-28 (tenant-isolation audit: cross-tenant Neo4j read/write CLOSED; Fase 3 made safe to enable)
 
 **MEASURED 2026-07-29 (preflight run 5) — the per-tenant WRITE path has never
 run.** `per-tenant containers: 0`. The mode has been `per-tenant` since 26/07,

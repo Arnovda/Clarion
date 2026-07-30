@@ -1,15 +1,15 @@
 per-tenant
 
-# Re-applied 2026-07-29: rolls the current backend image to 100% traffic. That
-# image carries the SourceColumn merge-key fix — the key was (tableName,
-# columnName), so two tenants on the same connector merged their columns onto ONE
-# node and whoever ran Analyse second overwrote the other's semantics and pgId —
-# plus tenantId now being stamped on SourceTable and SourceColumn writes.
+# Re-applied 2026-07-30: rolls the current backend image to 100% traffic. That
+# image carries the CORRECTED SourceColumn merge key — a pattern merge on the
+# table node, which is both tenant-scoped and stable across re-profiles. The
+# previous key, (tablePgId, columnName), fixed the cross-tenant collision but
+# would have accumulated duplicate columns on every Analyse, because the profiler
+# rebuilds its Postgres rows so source_tables.id changes each run.
+#
+# This must be live BEFORE the next sync/Analyse, or the duplicates start.
 #
 # Promote vehicle on purpose: this workflow waits for the NEW revision to reach
 # Provisioned and fails loudly otherwise. deploy.yml never waits at all, and
 # promote.yml shifts to latestReadyRevisionName, which silently promotes the
 # PREVIOUS revision if the new one failed to boot. The mode itself is unchanged.
-#
-# NEXT: a re-profile / sync rewrites the graph nodes WITH tenantId. Only after
-# that is it safe to put a tenant predicate into the MATCH clauses.
