@@ -41,6 +41,22 @@ export interface ProfilerProgress {
   batchCount?: number;
 }
 
+/**
+ * Foreign-key verification thresholds.
+ *
+ * FK_SAMPLE_SIZE is deliberately larger than the old 500: the sample bounds how
+ * many distinct source values are checked, and a bigger one makes containment a
+ * better estimate. It does NOT, on its own, stop a small-domain false positive —
+ * that is what FK_MIN_DISTINCT is for.
+ */
+const FK_SAMPLE_SIZE = Number(process.env.FK_SAMPLE_SIZE) || 1000;
+/** Below this many distinct source values, agreement is not evidence. */
+const FK_MIN_DISTINCT = Number(process.env.FK_MIN_DISTINCT) || 8;
+/** A key is near-unique in its own table; measured, not guessed from its name. */
+const FK_TARGET_UNIQUENESS = Number(process.env.FK_TARGET_UNIQUENESS) || 0.99;
+/** A real FK's values are a near-subset of the parent's keys. */
+const FK_MIN_CONTAINMENT = Number(process.env.FK_MIN_CONTAINMENT) || 0.85;
+
 export interface ProfilerOptions {
   /**
    * 'full' (default) — the whole pipeline including the AI passes.
@@ -312,15 +328,48 @@ export async function runSchemaProfiler(
         const key = `${s.from_table}.${s.from_column}→${s.to_table}.${s.to_column}`;
         if (allFkCandidates.some((c) => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}` === key)) continue;
         try {
+          // CONTAINMENT, not overlap — and measured like-for-like.
+          //
+          // The previous query counted `matched` over a 500-value SAMPLE but
+          // `total` over the FULL column, so a column with 5,000 distinct values
+          // of which every one matched scored ≤ 0.10 and was rejected. That is a
+          // systematic false NEGATIVE on exactly the wide FKs worth having.
+          // Both sides now come from the same sample.
+          //
+          // Three guards decide a foreign key, none of which raw overlap can:
+          //   • the target must be a KEY — near-unique in its own table. This is
+          //     measured, not pattern-matched on the column name, because some
+          //     source systems legitimately key on a natural/name column.
+          //   • the source must have enough distinct values that agreement is not
+          //     coincidence. A line counter with 40 values that all happen to
+          //     exist in some code table scores 100% at any sample size.
+          //   • containment must be high. A real FK's values are a near-subset of
+          //     its parent's keys; 50% agreement never described one.
           const result = await connector.executeQuery(
-            `SELECT COUNT(DISTINCT f.v) as matched,
-                    (SELECT COUNT(DISTINCT "${s.from_column}") FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL) as total
-             FROM (SELECT DISTINCT "${s.from_column}" as v FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL ORDER BY "${s.from_column}" LIMIT 500) f
-             INNER JOIN "${s.to_table}" t ON CAST(f.v AS TEXT) = CAST(t."${s.to_column}" AS TEXT)`,
+            `WITH src AS (
+               SELECT DISTINCT "${s.from_column}" AS v
+               FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL LIMIT ${FK_SAMPLE_SIZE}
+             )
+             SELECT (SELECT COUNT(*) FROM src) AS sampled,
+                    (SELECT COUNT(*) FROM src x
+                       WHERE EXISTS (SELECT 1 FROM "${s.to_table}" t
+                                     WHERE CAST(t."${s.to_column}" AS TEXT) = CAST(x.v AS TEXT))) AS matched,
+                    (SELECT COUNT(*) FROM "${s.to_table}" WHERE "${s.to_column}" IS NOT NULL) AS target_rows,
+                    (SELECT COUNT(DISTINCT "${s.to_column}") FROM "${s.to_table}" WHERE "${s.to_column}" IS NOT NULL) AS target_distinct`,
           );
-          const row = result.rows[0] as { matched: number; total: number } | undefined;
-          const ratio = row && row.total > 0 ? row.matched / row.total : 0;
-          if (ratio >= 0.5) {
+          const row = result.rows[0] as
+            { sampled: number; matched: number; target_rows: number; target_distinct: number } | undefined;
+          const sampled  = Number(row?.sampled ?? 0);
+          const ratio    = sampled > 0 ? Number(row?.matched ?? 0) / sampled : 0;
+          const tRows    = Number(row?.target_rows ?? 0);
+          const tDistinct = Number(row?.target_distinct ?? 0);
+          const targetIsKey = tRows > 0 && tDistinct / tRows >= FK_TARGET_UNIQUENESS;
+
+          if (sampled < FK_MIN_DISTINCT) {
+            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: only ${sampled} distinct source values (min ${FK_MIN_DISTINCT})`);
+          } else if (!targetIsKey) {
+            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: target not unique (${tDistinct}/${tRows} distinct)`);
+          } else if (ratio >= FK_MIN_CONTAINMENT) {
             log.info(`[FK AI] verified: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
             allFkCandidates.push({
               fromTable: s.from_table, fromColumn: s.from_column,
@@ -912,6 +961,19 @@ export async function runSchemaProfiler(
 
       const fromColId = columnIdMap.get(`${fk.fromTable}.${fk.fromColumn}`) ?? null;
       const toColId   = columnIdMap.get(`${fk.toTable}.${fk.toColumn}`) ?? null;
+
+      // A relationship missing either endpoint column cannot express a JOIN, so
+      // it is not a relationship — it is a half-formed row that shows up in the
+      // catalog as `Table.? → Other.ID` and can never be used or repaired. The
+      // columns were resolved from this same profiling run, so a miss means the
+      // candidate named a column that does not exist. Drop it, loudly.
+      if (!fromColId || !toColId) {
+        log.warn(
+          { fk: relKey, source: fk.source },
+          'relationship dropped: endpoint column did not resolve',
+        );
+        continue;
+      }
 
       insertedRelKeys.add(relKey);
       const isKnown = knownKeys.has(relKey);
