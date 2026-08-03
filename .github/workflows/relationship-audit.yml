@@ -1,0 +1,109 @@
+# Relationship audit — READ-ONLY inventory of a tenant's semantic layer.
+#
+#   .ops/relationship-audit   contains the tenant id (e.g. `9`)
+#
+# Prints, per connection: how many tables and columns were registered, and every
+# relationship with its provenance. Nothing is written; this exists to answer
+# "did relationship detection actually work against real data", which cannot be
+# judged from the code alone.
+#
+# Column and table NAMES are schema metadata, not business data — no row values
+# are read.
+
+name: Relationship audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/relationship-audit'
+  workflow_dispatch:
+
+concurrency:
+  group: relationship-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read tenant id
+        id: t
+        run: |
+          set -euo pipefail
+          TID=$(grep -vE '^[[:space:]]*(#|$)' .ops/relationship-audit | head -1 | tr -d '[:space:]')
+          case "$TID" in
+            ''|*[!0-9]*) echo "::error::'.ops/relationship-audit' must contain a numeric tenant id"; exit 1 ;;
+          esac
+          echo "tid=$TID" >> "$GITHUB_OUTPUT"
+
+      - name: Install pg
+        run: npm install pg@8 --no-save --no-audit --no-fund
+
+      - name: Audit
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TID: ${{ steps.t.outputs.tid }}
+        run: |
+          node -e "
+          const { Client } = require('pg');
+          const tid = Number(process.env.TID);
+          const url = process.env.DATABASE_URL;
+          const say = (s) => { console.log(s); require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY, s + '\n'); };
+
+          (async () => {
+            const c = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+            await c.connect();
+
+            // Which role are we? FORCE RLS binds even the table owner, but a role
+            // with BYPASSRLS would silently see everything — worth knowing.
+            const who = await c.query('SELECT current_user AS u, (SELECT rolbypassrls FROM pg_roles WHERE rolname = current_user) AS bypass');
+            say('## Relationship audit — tenant ' + tid);
+            say('');
+            say('- connected as: \`' + who.rows[0].u + '\` (BYPASSRLS: ' + who.rows[0].bypass + ')');
+
+            // RLS is FORCEd, so set the tenant explicitly for this session.
+            await c.query(\"SELECT set_config('app.current_tenant', \$1, false)\", [String(tid)]);
+
+            const conns = await c.query('SELECT id, name, type FROM connections WHERE tenant_id = \$1 ORDER BY id', [tid]);
+            say('- connections: ' + conns.rows.length);
+
+            for (const conn of conns.rows) {
+              say('');
+              say('### connection ' + conn.id + ' — ' + conn.name + ' (' + conn.type + ')');
+
+              const t = await c.query('SELECT COUNT(*)::int n FROM source_tables WHERE connection_id = \$1', [conn.id]);
+              const col = await c.query('SELECT COUNT(*)::int n FROM source_columns sc JOIN source_tables st ON st.id = sc.table_id WHERE st.connection_id = \$1', [conn.id]);
+              say('- tables: **' + t.rows[0].n + '**, columns: **' + col.rows[0].n + '**');
+
+              const tables = await c.query('SELECT table_name FROM source_tables WHERE connection_id = \$1 ORDER BY table_name', [conn.id]);
+              say('- table names: ' + tables.rows.map(r => '\`' + r.table_name + '\`').join(', '));
+
+              const rels = await c.query(
+                'SELECT ft.table_name fromt, fc.column_name fromc, tt.table_name tot, tc.column_name toc,' +
+                ' r.relationship_type rt, r.ai_draft, r.confirmed_by_user' +
+                ' FROM table_relationships r' +
+                ' JOIN source_tables ft ON ft.id = r.from_table_id' +
+                ' LEFT JOIN source_columns fc ON fc.id = r.from_column_id' +
+                ' JOIN source_tables tt ON tt.id = r.to_table_id' +
+                ' LEFT JOIN source_columns tc ON tc.id = r.to_column_id' +
+                ' WHERE ft.connection_id = \$1 ORDER BY ft.table_name, fc.column_name', [conn.id]);
+
+              say('- relationships: **' + rels.rows.length + '**');
+              say('');
+              say('| from | to | type | ai_draft | confirmed |');
+              say('|---|---|---|---|---|');
+              for (const r of rels.rows) {
+                say('| \`' + r.fromt + '.' + (r.fromc || '?') + '\` | \`' + r.tot + '.' + (r.toc || '?') + '\` | ' + r.rt + ' | ' + r.ai_draft + ' | ' + r.confirmed_by_user + ' |');
+              }
+            }
+
+            await c.end();
+          })().catch(e => { console.error('audit failed:', e.message); process.exit(1); });
+          "
