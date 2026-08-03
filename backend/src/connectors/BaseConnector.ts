@@ -446,11 +446,20 @@ export abstract class BaseConnector {
             try {
               const result = await Promise.race([
                 this.executeQuery(
-                  `SELECT COUNT(DISTINCT f.v) as matched,
-                          (SELECT COUNT(DISTINCT "${fromCol.name}") FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL) as total,
-                          (SELECT COUNT(*) FROM "${dimClass.tableName}") as target_rows
-                   FROM (SELECT DISTINCT "${fromCol.name}" as v FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL ORDER BY "${fromCol.name}" LIMIT 500) f
-                   INNER JOIN "${dimClass.tableName}" t ON CAST(f.v AS TEXT) = CAST(t."${toCol.name}" AS TEXT)`,
+                  // `matched` and `total` must come from the SAME sample. The
+                  // previous form counted matches over a 500-value sample but the
+                  // total over the whole column, so any FK with more than 500
+                  // distinct values could never score above 500/total and was
+                  // rejected — a systematic false negative on wide keys.
+                  `WITH src AS (
+                     SELECT DISTINCT "${fromCol.name}" AS v
+                     FROM "${factClass.tableName}" WHERE "${fromCol.name}" IS NOT NULL LIMIT 1000
+                   )
+                   SELECT (SELECT COUNT(*) FROM src x
+                             WHERE EXISTS (SELECT 1 FROM "${dimClass.tableName}" t
+                                           WHERE CAST(t."${toCol.name}" AS TEXT) = CAST(x.v AS TEXT))) as matched,
+                          (SELECT COUNT(*) FROM src) as total,
+                          (SELECT COUNT(*) FROM "${dimClass.tableName}") as target_rows`,
                 ),
                 new Promise<never>((_, rej) => setTimeout(() => rej(new Error('FK query timeout')), FK_QUERY_TIMEOUT)),
               ]);
