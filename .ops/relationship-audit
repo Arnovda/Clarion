@@ -1,3 +1,7 @@
 9
 
+# re-run 3 (2026-08-03, after main-d752d5a): first measurement of the rebuilt FK
+# rules against real data. Baseline to beat, from run 1:
+#   170 relationships / UNRESOLVED 8 / TARGET-NOT-KEY 10 / MULTI-TARGET 14
+#
 # re-run 2: summary printed LAST so a log tail always captures it
