@@ -28,6 +28,9 @@
 
 import { getRedisConnection } from './redis';
 import { logger as rootLogger } from '../utils/logger';
+import { invalidateWidgetCache } from '../services/widgetCache';
+import { invalidateFilterOptionsCache } from '../services/filterOptionsCache';
+import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import type IORedis from 'ioredis';
 
 const log = rootLogger.child({ mod: 'cache-bus' });
@@ -84,16 +87,11 @@ export function subscribeToInvalidations(): void {
         return;
       }
       try {
-        // Imported lazily so this module stays dependency-light and avoids a
-        // cycle with the connector layer.
         if (msg.tenantId != null) {
-          const { invalidateWidgetCache } = await import('../services/widgetCache');
-          const { invalidateFilterOptionsCache } = await import('../services/filterOptionsCache');
           invalidateWidgetCache(msg.tenantId);
           invalidateFilterOptionsCache(msg.tenantId);
         }
         if (msg.warehousePath) {
-          const { DuckDBConnector } = await import('../connectors/DuckDBConnector');
           await DuckDBConnector.invalidateWarehouse(msg.warehousePath);
         }
         log.debug({ msg }, 'Applied remote cache invalidation');
