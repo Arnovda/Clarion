@@ -1,5 +1,3 @@
 9
 
-# Tenant id to audit. Read-only: reports table/column counts and every
-# relationship with its provenance, so relationship detection can be judged
-# against real synced data rather than from the code alone.
+# re-run 2: summary printed LAST so a log tail always captures it

@@ -102,6 +102,27 @@ jobs:
               for (const r of rels.rows) {
                 say('| \`' + r.fromt + '.' + (r.fromc || '?') + '\` | \`' + r.tot + '.' + (r.toc || '?') + '\` | ' + r.rt + ' | ' + r.ai_draft + ' | ' + r.confirmed_by_user + ' |');
               }
+
+              // ── SUMMARY LAST, so a log tail always captures it ───────────
+              // The defect shapes are flagged here rather than left to whoever
+              // reads the table by eye.
+              const unresolved = rels.rows.filter(r => !r.fromc || !r.toc);
+              const toNonKey   = rels.rows.filter(r => r.toc && !/ID$|^Code$|Number$/.test(r.toc));
+              const dupFrom    = Object.entries(
+                rels.rows.reduce((m, r) => { const k = r.fromt + '.' + r.fromc; (m[k] = m[k] || []).push(r.tot + '.' + r.toc); return m; }, {})
+              ).filter(function (e) { return e[1].length > 1; });
+              const noRels = tables.rows.map(r => r.table_name)
+                .filter(n => !rels.rows.some(r => r.fromt === n || r.tot === n));
+
+              say('');
+              say('#### SUMMARY connection ' + conn.id);
+              say('- tables ' + t.rows[0].n + ' / columns ' + col.rows[0].n + ' / relationships ' + rels.rows.length);
+              say('- trusted(ai_draft=false) ' + rels.rows.filter(r => !r.ai_draft).length + ' / ai drafts ' + rels.rows.filter(r => r.ai_draft).length);
+              say('- UNRESOLVED endpoint ' + unresolved.length + ': ' + unresolved.map(r => r.fromt + '.' + (r.fromc||'?') + '->' + r.tot + '.' + (r.toc||'?')).join(' '));
+              say('- TARGET-NOT-KEY ' + toNonKey.length + ': ' + toNonKey.map(r => r.fromt + '.' + r.fromc + '->' + r.tot + '.' + r.toc).join(' '));
+              say('- MULTI-TARGET ' + dupFrom.length + ': ' + dupFrom.map(function (e) { return e[0] + '->' + e[1].join('|'); }).join(' '));
+              say('- TABLES WITHOUT RELATIONSHIPS ' + noRels.length + ': ' + noRels.join(', '));
+              say('- ALL TABLES: ' + tables.rows.map(r => r.table_name).join(', '));
             }
 
             await c.end();
