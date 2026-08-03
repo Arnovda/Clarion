@@ -480,6 +480,35 @@ export async function runSchemaProfiler(
   }
   }
 
+  // ── 4a0. The model's JSON is parsed with a CAST, not a schema, so every
+  //         field below is `string` by assertion only. One relationship
+  //         missing `from_table` used to reach `.toLowerCase()` and abort the
+  //         ENTIRE profiling run with "Cannot read properties of undefined" —
+  //         no descriptions, no relationships, nothing persisted, for one bad
+  //         element out of a couple of hundred. A malformed element is not a
+  //         reason to lose the other 99%: drop it and name it.
+  const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+  {
+    const badTables = tableContext.tables.filter((t) => !isStr(t?.table_name));
+    if (badTables.length > 0) {
+      log.warn({ count: badTables.length }, 'Dropped AI table entries with no table_name');
+      tableContext.tables = tableContext.tables.filter((t) => isStr(t?.table_name));
+    }
+    // Both endpoints AND both columns are required — a relationship missing
+    // any of the four cannot express a JOIN even if it survives the lookup.
+    const wellFormed = tableContext.relationships.filter(
+      (r) => isStr(r?.from_table) && isStr(r?.to_table) && isStr(r?.via_column) && isStr(r?.to_column),
+    );
+    if (wellFormed.length !== tableContext.relationships.length) {
+      const dropped = tableContext.relationships.length - wellFormed.length;
+      log.warn(
+        { dropped, kept: wellFormed.length },
+        'Dropped malformed AI relationship(s) — missing table or column name',
+      );
+      tableContext.relationships = wellFormed;
+    }
+  }
+
   // ── 4a. Build a case-insensitive lookup for the AI's `from_table` /
   //        `to_table` strings. Without this, EO `salesinvoicelines` would
   //        silently fail to match `SalesInvoiceLines` in the schema and the
@@ -930,6 +959,17 @@ export async function runSchemaProfiler(
       const toColId = columnIdMap.get(`${rel.to_table}.${rel.to_column}`) ?? null;
 
       const relKey = `${rel.from_table}.${rel.via_column}→${rel.to_table}.${rel.to_column}`;
+
+      // Same rule as the programmatic loop below: a relationship missing either
+      // endpoint column cannot express a JOIN. It renders in the catalog as
+      // `Table.? → Other.ID` and can never be used or repaired, so it is not a
+      // relationship. The columns were resolved from this same run, so a miss
+      // means the model named a column that does not exist.
+      if (!fromColId || !toColId) {
+        log.warn({ rel: relKey, source: 'ai_table_context' }, 'relationship dropped: endpoint column did not resolve');
+        continue;
+      }
+
       if (insertedRelKeys.has(relKey)) continue;
       insertedRelKeys.add(relKey);
 
