@@ -1,0 +1,5 @@
+9
+
+# Tenant id to audit. Read-only: reports table/column counts and every
+# relationship with its provenance, so relationship detection can be judged
+# against real synced data rather than from the code alone.
