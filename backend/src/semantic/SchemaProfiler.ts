@@ -57,6 +57,81 @@ const FK_TARGET_UNIQUENESS = Number(process.env.FK_TARGET_UNIQUENESS) || 0.99;
 /** A real FK's values are a near-subset of the parent's keys. */
 const FK_MIN_CONTAINMENT = Number(process.env.FK_MIN_CONTAINMENT) || 0.85;
 
+export interface FkVerdict {
+  ok: boolean;
+  reason: 'ok' | 'too-few-distinct' | 'target-not-key' | 'low-containment';
+  containment: number;
+  sampled: number;
+  targetRows: number;
+  targetDistinct: number;
+}
+
+/** Human-readable rejection reason, for the log line. */
+export function describeFkVerdict(v: FkVerdict): string {
+  switch (v.reason) {
+    case 'ok':               return `containment ${Math.round(v.containment * 100)}%`;
+    case 'too-few-distinct': return `only ${v.sampled} distinct source values (min ${FK_MIN_DISTINCT})`;
+    case 'target-not-key':   return `target not unique (${v.targetDistinct}/${v.targetRows} distinct)`;
+    case 'low-containment':  return `containment ${Math.round(v.containment * 100)}% (min ${Math.round(FK_MIN_CONTAINMENT * 100)}%)`;
+  }
+}
+
+/**
+ * Decide whether the DATA backs a foreign-key candidate.
+ *
+ * There are three places a candidate can be proposed — the connector's
+ * heuristic scan, Claude's unmatched-key matching (Pass A), and Claude's
+ * data-model pass (Pass B) — and every one of them needs the SAME test.
+ * They used to have three separate copies of it, which is how the Pass B copy
+ * kept inventing `→ GLClassifications.Name` for a whole production sync after
+ * the other two were fixed. One implementation, one rule.
+ *
+ * Three guards, none of which raw value-overlap can express:
+ *   • the target must be a KEY — near-unique in its own table. MEASURED, not
+ *     pattern-matched on the column name: some source systems legitimately key
+ *     on a natural or name column.
+ *   • the source must have enough distinct values that agreement is not
+ *     coincidence. A line counter with 40 values that all happen to exist in
+ *     some code table scores 100% at ANY sample size.
+ *   • containment must be high. A foreign key's values are a near-subset of
+ *     its parent's keys; 50% agreement never described one.
+ *
+ * `matched` and `sampled` come from the SAME sample. Counting matches over a
+ * sample but the total over the whole column understates wide keys by the
+ * sampling ratio and rejects exactly the ones worth having.
+ */
+export async function verifyFkCandidate(
+  connector: { executeQuery(sql: string): Promise<{ rows: unknown[] }> },
+  fromTable: string, fromColumn: string, toTable: string, toColumn: string,
+): Promise<FkVerdict> {
+  const result = await connector.executeQuery(
+    `WITH src AS (
+       SELECT DISTINCT "${fromColumn}" AS v
+       FROM "${fromTable}" WHERE "${fromColumn}" IS NOT NULL LIMIT ${FK_SAMPLE_SIZE}
+     )
+     SELECT (SELECT COUNT(*) FROM src) AS sampled,
+            (SELECT COUNT(*) FROM src x
+               WHERE EXISTS (SELECT 1 FROM "${toTable}" t
+                             WHERE CAST(t."${toColumn}" AS TEXT) = CAST(x.v AS TEXT))) AS matched,
+            (SELECT COUNT(*) FROM "${toTable}" WHERE "${toColumn}" IS NOT NULL) AS target_rows,
+            (SELECT COUNT(DISTINCT "${toColumn}") FROM "${toTable}" WHERE "${toColumn}" IS NOT NULL) AS target_distinct`,
+  );
+  const row = result.rows[0] as
+    { sampled: number; matched: number; target_rows: number; target_distinct: number } | undefined;
+  const sampled       = Number(row?.sampled ?? 0);
+  const containment   = sampled > 0 ? Number(row?.matched ?? 0) / sampled : 0;
+  const targetRows    = Number(row?.target_rows ?? 0);
+  const targetDistinct = Number(row?.target_distinct ?? 0);
+  const base = { containment, sampled, targetRows, targetDistinct };
+
+  if (sampled < FK_MIN_DISTINCT) return { ok: false, reason: 'too-few-distinct', ...base };
+  if (!(targetRows > 0 && targetDistinct / targetRows >= FK_TARGET_UNIQUENESS)) {
+    return { ok: false, reason: 'target-not-key', ...base };
+  }
+  if (containment < FK_MIN_CONTAINMENT) return { ok: false, reason: 'low-containment', ...base };
+  return { ok: true, reason: 'ok', ...base };
+}
+
 export interface ProfilerOptions {
   /**
    * 'full' (default) — the whole pipeline including the AI passes.
@@ -328,57 +403,18 @@ export async function runSchemaProfiler(
         const key = `${s.from_table}.${s.from_column}→${s.to_table}.${s.to_column}`;
         if (allFkCandidates.some((c) => `${c.fromTable}.${c.fromColumn}→${c.toTable}.${c.toColumn}` === key)) continue;
         try {
-          // CONTAINMENT, not overlap — and measured like-for-like.
-          //
-          // The previous query counted `matched` over a 500-value SAMPLE but
-          // `total` over the FULL column, so a column with 5,000 distinct values
-          // of which every one matched scored ≤ 0.10 and was rejected. That is a
-          // systematic false NEGATIVE on exactly the wide FKs worth having.
-          // Both sides now come from the same sample.
-          //
-          // Three guards decide a foreign key, none of which raw overlap can:
-          //   • the target must be a KEY — near-unique in its own table. This is
-          //     measured, not pattern-matched on the column name, because some
-          //     source systems legitimately key on a natural/name column.
-          //   • the source must have enough distinct values that agreement is not
-          //     coincidence. A line counter with 40 values that all happen to
-          //     exist in some code table scores 100% at any sample size.
-          //   • containment must be high. A real FK's values are a near-subset of
-          //     its parent's keys; 50% agreement never described one.
-          const result = await connector.executeQuery(
-            `WITH src AS (
-               SELECT DISTINCT "${s.from_column}" AS v
-               FROM "${s.from_table}" WHERE "${s.from_column}" IS NOT NULL LIMIT ${FK_SAMPLE_SIZE}
-             )
-             SELECT (SELECT COUNT(*) FROM src) AS sampled,
-                    (SELECT COUNT(*) FROM src x
-                       WHERE EXISTS (SELECT 1 FROM "${s.to_table}" t
-                                     WHERE CAST(t."${s.to_column}" AS TEXT) = CAST(x.v AS TEXT))) AS matched,
-                    (SELECT COUNT(*) FROM "${s.to_table}" WHERE "${s.to_column}" IS NOT NULL) AS target_rows,
-                    (SELECT COUNT(DISTINCT "${s.to_column}") FROM "${s.to_table}" WHERE "${s.to_column}" IS NOT NULL) AS target_distinct`,
-          );
-          const row = result.rows[0] as
-            { sampled: number; matched: number; target_rows: number; target_distinct: number } | undefined;
-          const sampled  = Number(row?.sampled ?? 0);
-          const ratio    = sampled > 0 ? Number(row?.matched ?? 0) / sampled : 0;
-          const tRows    = Number(row?.target_rows ?? 0);
-          const tDistinct = Number(row?.target_distinct ?? 0);
-          const targetIsKey = tRows > 0 && tDistinct / tRows >= FK_TARGET_UNIQUENESS;
-
-          if (sampled < FK_MIN_DISTINCT) {
-            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: only ${sampled} distinct source values (min ${FK_MIN_DISTINCT})`);
-          } else if (!targetIsKey) {
-            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: target not unique (${tDistinct}/${tRows} distinct)`);
-          } else if (ratio >= FK_MIN_CONTAINMENT) {
-            log.info(`[FK AI] verified: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+          const v = await verifyFkCandidate(connector, s.from_table, s.from_column, s.to_table, s.to_column);
+          const label = `${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}`;
+          if (v.ok) {
+            log.info(`[FK AI] verified: ${label}: ${describeFkVerdict(v)}`);
             allFkCandidates.push({
               fromTable: s.from_table, fromColumn: s.from_column,
               toTable: s.to_table, toColumn: s.to_column,
-              source: 'ai_suggested', confidence: ratio >= 0.9 ? 0.9 : 0.75,
-              overlapRatio: ratio,
+              source: 'ai_suggested', confidence: v.containment >= 0.9 ? 0.9 : 0.75,
+              overlapRatio: v.containment,
             });
           } else {
-            log.info(`[FK AI] rejected: ${s.from_table}.${s.from_column} → ${s.to_table}.${s.to_column}: overlap ${Math.round(ratio * 100)}%`);
+            log.info(`[FK AI] rejected: ${label}: ${describeFkVerdict(v)}`);
           }
         } catch { /* verification query failed — skip */ }
       }
@@ -535,18 +571,30 @@ export async function runSchemaProfiler(
     (r) => tableNameByLower.has(r.from_table.toLowerCase()) && tableNameByLower.has(r.to_table.toLowerCase()),
   );
 
-  // ── 5. Verify AI-suggested relationships via value-overlap ─────────────
-  // Drops anything where the data doesn't actually back the suggestion.
-  // Skips relationships that came from a known/declared/value-overlap source
-  // (those are already trusted). Only verifies the AI's net-new suggestions.
+  // ── 5. Verify Pass B's relationships against the data ──────────────────
+  // Drops anything the data doesn't actually back. Skips relationships that
+  // came from a known/declared/already-verified source (those are trusted).
   // Structural mode has no AI suggestions to verify.
+  //
+  // This used to carry its OWN copy of the check — 500-value sample against a
+  // whole-column total, `overlap >= 0.5`, no uniqueness test on the target.
+  // When the other two candidate paths were fixed, this one was missed, and it
+  // is the path that produced every `→ GLClassifications.Name` row in the
+  // production audit: `Name` is not unique, so a target-uniqueness test kills
+  // them, and there was none here. It now calls the same verifyFkCandidate()
+  // as the others.
   if (!structural) {
   emit({ phase: 'ai_draft', message: `Step 5/7 — Verifying AI-suggested relationships against the data (${tableContext.relationships.length} to check)…` });
   const trustedKeys = new Set(allFkCandidates.map((fk) => `${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`));
   const verifiedAiRels: typeof tableContext.relationships = [];
-  let aiVerified = 0, aiDropped = 0;
+  let aiVerified = 0, aiDropped = 0, aiUnverified = 0;
   const VERIFY_TIMEOUT = 8_000;
-  const VERIFY_BUDGET  = 60_000;
+  // Bounds how long Analyse spends here. At ~170 candidates the old 60s could
+  // run out before the last ones were checked, and every remaining candidate
+  // was then kept UNVERIFIED and counted in neither number below — so the
+  // summary read as if everything had been checked. Raised, configurable, and
+  // exhaustion is now reported rather than absorbed.
+  const VERIFY_BUDGET  = Number(process.env.FK_VERIFY_BUDGET_MS) || 180_000;
   const verifyStart = Date.now();
   for (const rel of tableContext.relationships) {
     const key = `${rel.from_table}.${rel.via_column}→${rel.to_table}.${rel.to_column}`;
@@ -555,49 +603,55 @@ export async function runSchemaProfiler(
       continue;
     }
     if (Date.now() - verifyStart > VERIFY_BUDGET) {
-      // Budget exhausted — keep remaining AI rels as-is (ai_draft = true,
-      // user can confirm/flag in the review queue).
+      // Budget exhausted — keep remaining AI rels as-is (ai_draft = true, so
+      // the user can confirm/flag them in the review queue). Counted, because
+      // "kept without being checked" must not look like "verified".
+      aiUnverified++;
       verifiedAiRels.push(rel);
       continue;
     }
     try {
-      const verifyResult = await Promise.race([
-        connector.executeQuery(
-          `SELECT COUNT(DISTINCT f.v) as matched,
-                  (SELECT COUNT(DISTINCT "${rel.via_column}") FROM "${rel.from_table}" WHERE "${rel.via_column}" IS NOT NULL) as total
-           FROM (SELECT DISTINCT "${rel.via_column}" as v FROM "${rel.from_table}" WHERE "${rel.via_column}" IS NOT NULL ORDER BY "${rel.via_column}" LIMIT 500) f
-           INNER JOIN "${rel.to_table}" t ON CAST(f.v AS TEXT) = CAST(t."${rel.to_column}" AS TEXT)`,
-        ),
+      const v = await Promise.race([
+        verifyFkCandidate(connector, rel.from_table, rel.via_column, rel.to_table, rel.to_column),
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error('verify timeout')), VERIFY_TIMEOUT)),
       ]);
-      const row = verifyResult.rows[0] as { matched: number; total: number } | undefined;
-      const ratio = row && row.total > 0 ? row.matched / row.total : 0;
-      if (ratio >= 0.5) {
+      if (v.ok) {
         verifiedAiRels.push(rel);
         // Also add to allFkCandidates so it's persisted with overlap info.
         allFkCandidates.push({
           fromTable: rel.from_table, fromColumn: rel.via_column,
           toTable: rel.to_table, toColumn: rel.to_column,
           source: 'ai_suggested',
-          confidence: ratio >= 0.9 ? 0.9 : 0.75,
-          overlapRatio: ratio,
+          confidence: v.containment >= 0.9 ? 0.9 : 0.75,
+          overlapRatio: v.containment,
         });
         aiVerified++;
-        log.info(`AI rel verified: ${key} (overlap ${Math.round(ratio * 100)}%)`);
+        log.info(`AI rel verified: ${key} (${describeFkVerdict(v)})`);
       } else {
         aiDropped++;
-        log.info(`AI rel rejected: ${key} (overlap ${Math.round(ratio * 100)}%)`);
+        log.info(`AI rel rejected: ${key} (${describeFkVerdict(v)})`);
       }
     } catch {
-      // Verification failed (timeout / type mismatch) — keep the rel
-      // anyway as ai_draft so the user can review. Better than silently
-      // dropping a potentially-good relationship.
+      // Verification failed (timeout / type mismatch) — keep the rel anyway as
+      // ai_draft so the user can review it. Better than silently dropping a
+      // potentially-good relationship on an infrastructure hiccup.
       verifiedAiRels.push(rel);
     }
   }
   tableContext.relationships = verifiedAiRels;
-  if (aiVerified > 0 || aiDropped > 0) {
-    emit({ phase: 'ai_draft', message: `Step 5/7 — Verified ${aiVerified} AI-suggested relationship(s)${aiDropped ? `, dropped ${aiDropped}` : ''}` });
+  if (aiUnverified > 0) {
+    log.warn(
+      { unverified: aiUnverified, budgetMs: VERIFY_BUDGET },
+      'relationship verification budget exhausted — remaining candidates kept unchecked as drafts',
+    );
+  }
+  if (aiVerified > 0 || aiDropped > 0 || aiUnverified > 0) {
+    emit({
+      phase: 'ai_draft',
+      message: `Step 5/7 — Verified ${aiVerified} AI-suggested relationship(s)`
+        + (aiDropped ? `, dropped ${aiDropped}` : '')
+        + (aiUnverified ? `, ${aiUnverified} left unchecked (time budget)` : ''),
+    });
   }
   }
 
