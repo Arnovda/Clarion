@@ -31,7 +31,58 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-07-30 (all isolation work LIVE; graph merge-key corrected twice — read this before touching semanticGraph)
+**Last updated:** 2026-08-03 (FK detection measured against a real production sync and rebuilt — read the FK section before touching relationship detection)
+
+**RELATIONSHIP DETECTION WAS INVENTING FOREIGN KEYS — MEASURED IN PRODUCTION,
+THEN FIXED (2026-08-03).** New read-only control `.ops/relationship-audit`
+(+ `.github/workflows/relationship-audit.yml`) takes a tenant id and dumps that
+tenant's semantic layer: role + BYPASSRLS, per-connection table/column counts,
+every relationship with provenance, and a SUMMARY LAST (so a log tail always
+catches it) flagging four defect shapes. Only schema metadata is read — no row
+values. Run 1 against the live ExactOnline tenant (9) measured **170
+relationships**, of which **8** had an endpoint column that did not resolve and
+**10** pointed at `GLClassifications.Name`. None of the source columns involved
+— `AccountCode`, `LineNumber`, `VATCode`, `SalesVATCode`, `JournalCode` — has a
+documented reference in the vendor docs, and the curated catalogue claims none of
+them. They were invented by value-overlap verification. Three defects, all in how
+a candidate was judged (`SchemaProfiler.ts`, same fix in `BaseConnector.ts`):
+- **The ratio was computed from mismatched sets.** `matched` came from a 500-value
+  SAMPLE while `total` came from the WHOLE column, so a key with 5,000 distinct
+  values of which every one matched scored 0.10 and was rejected — a systematic
+  false NEGATIVE on exactly the wide keys worth having. Both sides now come from
+  the same `WITH src AS (… LIMIT n)` sample.
+- **Overlap was the wrong measure.** A foreign key's values are a near-subset of
+  its parent's keys, so the test is CONTAINMENT, and the parent must actually BE
+  a key. Target uniqueness (`distinct/rows`) is **measured, not pattern-matched
+  on the column name** — some source systems legitimately key on a natural or
+  name column, so rejecting `→ *.Name` outright would be wrong for them.
+  `GLClassifications.Name` fails on its own merits: it is not unique.
+- **Small domains agree by coincidence.** A line counter with 40 distinct values
+  that all appear in some code table scores 100% containment at ANY sample size.
+  A minimum distinct-value count is required before agreement counts as evidence
+  — raising the sample improves the estimate but cannot fix this.
+- **Separately**, the persist loop wrote relationships whose endpoint column did
+  not resolve, producing catalog rows reading `Table.? → Other.ID` that can never
+  express a JOIN. Dropped now, with a warning naming the candidate.
+New env (in `.env.example`): `FK_SAMPLE_SIZE` (1000), `FK_MIN_DISTINCT` (8),
+`FK_TARGET_UNIQUENESS` (0.99), `FK_MIN_CONTAINMENT` (0.85).
+**NOT yet measured**: detection quality is only observable against real data.
+After this deploys, re-Analyse the EO connection and re-run
+`.ops/relationship-audit`; the baseline to beat is `UNRESOLVED 8 /
+TARGET-NOT-KEY 10 / MULTI-TARGET 14` out of 170.
+**MULTI-TARGET is deliberately NOT special-cased** — dedup is by the full
+`from.col→to.col` key, so one source column can still carry several targets. The
+uniqueness + containment guards should collapse most of them; suppressing the
+rest by rule would risk dropping legitimate ones. Measure first.
+
+**The dynamic-import ratchet had been red on main at 95 vs baseline 92** since
+the cache bus shipped, and was fixed in the same PR: `jobs/cacheBus.ts`'s three
+lazy imports claimed to avoid "a cycle with the connector layer", but there is
+none (widgetCache/filterOptionsCache import nothing internal; DuckDBConnector
+never reaches back), and nothing was deferred either — ConnectorFactory,
+routes/quality and routes/ingestion already import DuckDBConnector statically on
+index.ts's static graph. Now static; ratchet back at exactly 92. Note this job
+(`check.yml`) is NOT the backend merge gate — `test.yml` is.
 
 **LIVE IN PRODUCTION (probe run 6, image `main-89c7cdd`, verified from Azure):**
 serving revision == template (so genuinely promoted), worker on the same image,
