@@ -75,6 +75,30 @@ TARGET-NOT-KEY 10 / MULTI-TARGET 14` out of 170.
 uniqueness + containment guards should collapse most of them; suppressing the
 rest by rule would risk dropping legitimate ones. Measure first.
 
+**ONE MALFORMED AI RELATIONSHIP USED TO ABORT THE WHOLE PROFILING RUN
+(2026-08-03, found from the production UI, fixed in `main-d752d5a`).** The user's
+Analyse showed `Profiling failed — Cannot read properties of undefined (reading
+'toLowerCase')`. Pass B's JSON comes back through
+`parseJson<TableContextOutput>(raw)` — a **CAST, not a schema** — so every field
+on the returned relationships is `string` by assertion only. One element missing
+`from_table` reached `rel.from_table.toLowerCase()` in the canonicalisation block
+and threw OUT of the profiler uncaught: `profiling_status='error'` and **nothing
+persisted at all** — no descriptions, no relationships — for one bad element out
+of a couple of hundred. Relationships are now validated before canonicalisation
+and dropped with a count; **all four names are required, not just the two
+tables**, because a relationship without both columns cannot express a JOIN even
+when its endpoints resolve. Table entries with no `table_name` go the same way.
+*Inference, not stack-confirmed* (no log access from the sandbox) — but it is the
+only `.toLowerCase()` on the profiling path that can receive `undefined`: the
+connector-introspected names are always defined and the vendor-docs channel has
+its own try/catch that degrades to AI descriptions.
+**The endpoint-column guard also had to be applied TWICE.** There are two
+relationship persist loops — the AI table-context loop and the programmatic
+candidate loop. The FK PR guarded only the second, so the first kept writing
+rows with a null `from_column_id`/`to_column_id`. That is where some of the eight
+`Table.? → Other.ID` rows in the audit came from. If you touch either loop, check
+the other.
+
 **The dynamic-import ratchet had been red on main at 95 vs baseline 92** since
 the cache bus shipped, and was fixed in the same PR: `jobs/cacheBus.ts`'s three
 lazy imports claimed to avoid "a cycle with the connector layer", but there is
