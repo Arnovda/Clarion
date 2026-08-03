@@ -1,5 +1,9 @@
 per-tenant
 
+# Re-applied 2026-08-03 (third): promotes image main-9523ffb -- all three FK
+# candidate paths now share one verification implementation. Applied AFTER
+# deploy.yml reported success on that commit.
+#
 # Re-applied 2026-08-03 (second): promotes image main-d752d5a -- one malformed
 # relationship from the model no longer aborts the whole profiling run. Applied
 # AFTER deploy.yml reported success on that commit.
