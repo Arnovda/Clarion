@@ -1,0 +1,28 @@
+admin
+
+# Which PostgreSQL role the backend connects as.
+#
+#   admin  →  databridge       (superuser; BYPASSES row-level security)
+#   app    →  databridge_app   (NOBYPASSRLS; RLS is actually enforced)
+#
+# Current value is `admin`, which is what production has always run. That means
+# row-level security enforces NOTHING today: a superuser bypasses RLS
+# unconditionally, and FORCE ROW LEVEL SECURITY binds the table owner, not a
+# superuser. Tenant isolation currently rests entirely on the application's own
+# tenant filters and the denyUnlessOwned gates.
+#
+# BEFORE setting this to `app`, run the preflight against production:
+#
+#   cd backend
+#   DATABASE_URL='<admin url>' npx tsx scripts/preflight-role-flip.ts
+#
+# It exits 0 only when every tenant-scoped table has a policy and the role holds
+# every grant it needs. The flip workflow runs it again itself and refuses to
+# proceed on a NO-GO, so this is a courtesy check, not the only one.
+#
+# The flip requires the DATABASE_URL_APP GitHub secret to be set to the
+# databridge_app connection string. The workflow fails with a clear message if
+# it is missing rather than deploying a broken revision.
+#
+# Rollback is this same one-line edit back to `admin`, and the workflow also
+# rolls back on its own if the new revision cannot read the database.

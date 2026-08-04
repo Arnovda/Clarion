@@ -1,0 +1,202 @@
+# Database role — GitOps control for the one setting that turns row-level
+# security on.
+#
+#   .ops/db-role   contains   `admin`   or   `app`
+#
+# Production has always connected as the superuser `databridge`, which bypasses
+# RLS unconditionally. Switching to `databridge_app` (NOBYPASSRLS) is what makes
+# every tenant_isolation policy actually apply. docs/runbooks/db-role-flip.md
+# has described that switch as "the last step of Sprint 1 hardening" since May
+# and nobody has taken it — reasonably, because performed as written it would
+# have taken the platform down: several tenant-scoped tables had RLS enabled
+# with no policy, which denies every row to a non-bypassing role.
+#
+# This workflow exists to make the step verifiable instead of brave:
+#
+#   1. it refuses to run if the preflight reports a blocker
+#   2. it shifts traffic only after the new revision provisions
+#   3. it then proves the new role can READ A REAL TABLE, and rolls traffic back
+#      by itself if it cannot
+#
+# The connection string is a Container App secret, so the value cannot live in
+# the repo. The workflow maps `admin`/`app` onto two GitHub secrets and never
+# prints either.
+#
+# Rollback: set .ops/db-role back to `admin` and push.
+
+name: Database role
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/db-role'
+  workflow_dispatch:
+
+concurrency:
+  group: db-role
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read desired role
+        id: role
+        run: |
+          set -euo pipefail
+          ROLE=$(grep -vE '^[[:space:]]*(#|$)' .ops/db-role | head -1 | tr -d '[:space:]')
+          case "$ROLE" in
+            admin|app) ;;
+            *) echo "::error::invalid role '$ROLE' (expected 'admin' or 'app')"; exit 1 ;;
+          esac
+          echo "role=$ROLE" >> "$GITHUB_OUTPUT"
+          echo "Desired database role: $ROLE"
+
+      - name: Check the target secret exists
+        env:
+          APP_URL: ${{ secrets.DATABASE_URL_APP }}
+          ROLE: ${{ steps.role.outputs.role }}
+        run: |
+          set -euo pipefail
+          if [ "$ROLE" = "app" ] && [ -z "${APP_URL}" ]; then
+            echo "::error::DATABASE_URL_APP is not set. Add it as a repository secret"
+            echo "::error::(the databridge_app connection string) before flipping to 'app'."
+            exit 1
+          fi
+
+      # The preflight reads the catalog, so it needs the ADMIN url — asking the
+      # app role whether it has permission is the very thing that may be broken.
+      - name: Preflight — can the app role actually work?
+        if: steps.role.outputs.role == 'app'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npx tsx scripts/preflight-role-flip.ts
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply role, shift traffic, verify, roll back on failure
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          ROLE: ${{ steps.role.outputs.role }}
+          ADMIN_URL: ${{ secrets.DATABASE_URL }}
+          APP_URL: ${{ secrets.DATABASE_URL_APP }}
+        run: |
+          set -euo pipefail
+
+          if [ "$ROLE" = "app" ]; then TARGET_URL="$APP_URL"; else TARGET_URL="$ADMIN_URL"; fi
+
+          # Revision serving traffic right now — the rollback target.
+          PREV_REV=$(az containerapp ingress traffic show --name "$APP" --resource-group "$RG" \
+            --query "[?weight>\`0\`] | [0].revisionName" -o tsv)
+          echo "Currently serving: ${PREV_REV:-<none>}"
+
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          # Update the secret the DATABASE_URL env var references, then create a
+          # revision that picks it up. The value is never echoed.
+          az containerapp secret set --name "$APP" --resource-group "$RG" \
+            --secrets "database-url=$TARGET_URL" >/dev/null
+          echo "Secret database-url updated for role '$ROLE'."
+
+          NEW_REV=$(az containerapp update --name "$APP" --resource-group "$RG" \
+            --set-env-vars "CLARION_DB_ROLE=$ROLE" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+          echo "Traffic shifted to $NEW_REV."
+
+          FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+
+          # ── Verification ────────────────────────────────────────────────────
+          # /api/health only runs SELECT 1, which needs no table privileges — it
+          # proves the connection, not the grants. The canary is a login attempt
+          # with a nonsense address: it READS the users table, the exact table
+          # that was unreadable before migration 74/75, and distinguishes
+          # "can read" (401) from "cannot" (500). No account is created and no
+          # credentials are needed.
+          ok=1
+          for attempt in $(seq 1 12); do
+            HEALTH=$(curl -s -o /dev/null -w '%{http_code}' "https://$FQDN/api/health" || echo 000)
+            LOGIN=$(curl -s -o /dev/null -w '%{http_code}' -X POST "https://$FQDN/api/auth/login" \
+              -H 'Content-Type: application/json' \
+              -d '{"email":"rls-canary@invalid.test","password":"not-a-real-password"}' || echo 000)
+            echo "  attempt $attempt: health=$HEALTH login=$LOGIN"
+            if [ "$HEALTH" = "200" ] && [ "$LOGIN" = "401" ]; then ok=0; break; fi
+            sleep 10
+          done
+
+          if [ "$ok" -ne 0 ]; then
+            echo "::error::verification failed (health=$HEALTH login=$LOGIN) — rolling back"
+            if [ -n "${PREV_REV:-}" ]; then
+              az containerapp secret set --name "$APP" --resource-group "$RG" \
+                --secrets "database-url=$ADMIN_URL" >/dev/null
+              az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+                --revision-weight "$PREV_REV=100"
+              echo "::error::traffic returned to $PREV_REV and the secret restored to the admin role."
+            else
+              echo "::error::no previous revision recorded — roll back manually."
+            fi
+            {
+              echo "### Database role flip FAILED — rolled back"
+              echo ""
+              echo "Verification against \`$NEW_REV\` did not pass (health=\`$HEALTH\`, login=\`$LOGIN\`)."
+              echo "A 500 on login means the role cannot read \`users\` — check grants and policies"
+              echo "with \`backend/scripts/preflight-role-flip.ts\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          {
+            echo "### Database role → \`$ROLE\`"
+            echo ""
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- Previous revision: \`${PREV_REV:-<none>}\`"
+            echo "- Verified: \`/api/health\` 200, live \`users\` read returns 401 as expected"
+            echo ""
+            if [ "$ROLE" = "app" ]; then
+              echo "Row-level security is now **enforced** — the backend connects as"
+              echo "\`databridge_app\` (NOBYPASSRLS), so every tenant_isolation policy applies."
+              echo "Watch for 42501 (insufficient_privilege) in logs: that is a missing grant"
+              echo "on a table no code path had touched yet."
+            else
+              echo "The backend connects as the superuser, which **bypasses** row-level"
+              echo "security. Isolation rests on the application's own tenant filters."
+            fi
+            echo ""
+            echo "Rollback: set \`.ops/db-role\` back to \`admin\` and push."
+          } >> "$GITHUB_STEP_SUMMARY"

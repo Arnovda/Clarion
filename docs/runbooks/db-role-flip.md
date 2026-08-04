@@ -1,19 +1,54 @@
 # Runbook: switch production backend to `databridge_app` DB role
 
-> **Goal:** make the production backend connect to Postgres as the
-> RLS-enforced `databridge_app` role instead of the admin `databridge`
-> role. This is the last step of the Sprint 1 hardening; FORCE RLS
-> already protects us if a single migration was missed, but explicit
-> role separation is the defense-in-depth that auditors expect.
+> **Read this box before the rest of the document. Two of its original claims
+> were wrong, and acting on them would have taken production down.**
 >
-> **Risk:** if `databridge_app` lacks GRANT on any table the backend
-> queries, that query fails with `permission denied`. The migrations
-> grant SELECT/INSERT/UPDATE/DELETE on every tenant table to
-> `databridge_app` consistently, but verify before flipping.
+> **Goal:** make the production backend connect as the RLS-enforced
+> `databridge_app` role instead of the admin `databridge` role. This is not
+> defence-in-depth polish — it is the step that makes row-level security do
+> anything at all. A superuser bypasses RLS unconditionally, and
+> `FORCE ROW LEVEL SECURITY` binds the table OWNER, not a superuser. Until this
+> flip happens, every `tenant_isolation` policy in the database is inert and
+> isolation rests entirely on the application's own tenant filters.
 >
-> **Reversibility:** trivial — flip the env var back and redeploy.
+> **Corrected — "FORCE RLS already protects us if a single migration was
+> missed".** It does not, against the role production actually uses. See above.
 >
-> **ETA:** 30 minutes including verification.
+> **Corrected — "the migrations grant … on every tenant table consistently".**
+> They did not. Migrations granted per-table only from `20260502000041`
+> onwards; the entire original schema — `users`, `tenants`, `connections`,
+> `dashboards` — was granted by hand, out of band, by whoever last followed
+> this document. Worse, `20260512000056` enabled RLS on every table with a
+> `tenant_id` column while only the 27 tables in `20260403000020` ever got a
+> policy, and **a table with RLS enabled and no policy denies every row**.
+> `users` was one of them. Performing this runbook as originally written would
+> have failed every login and every registration.
+>
+> Both gaps are closed by migrations `20260804000074` (policies) and
+> `20260804000075` (grants, including `ALTER DEFAULT PRIVILEGES` so a future
+> table cannot reopen it). Apply them before flipping.
+>
+> **Do not perform the manual steps below.** They are kept as reference for
+> understanding and for diagnosing a specific failure. The flip itself is now:
+>
+> 1. `cd backend && DATABASE_URL='<admin url>' npx tsx scripts/preflight-role-flip.ts`
+>    — read-only; exits 0 only when every table has a policy and every grant is
+>    present, and names the blockers when it does not.
+> 2. Set the `DATABASE_URL_APP` repository secret to the `databridge_app`
+>    connection string.
+> 3. Set `.ops/db-role` to `app` and push.
+>
+> The workflow re-runs the preflight, shifts traffic only after the new
+> revision provisions, then proves the new role can read a real table — a login
+> attempt with a nonsense address must return 401, not 500 — and **returns
+> traffic to the previous revision by itself** if it cannot.
+>
+> **Reversibility:** set `.ops/db-role` back to `admin` and push. The workflow
+> also rolls back on its own on a failed verification.
+>
+> **What to watch after a successful flip:** `42501 insufficient_privilege` in
+> the logs. That is a missing grant on a table no code path had touched during
+> verification.
 
 ---
 
