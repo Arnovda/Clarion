@@ -7,11 +7,9 @@
  * and dimensions with clear grain, relationships, and KPI definitions.
  */
 
-import fs from 'fs';
-import path from 'path';
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
-import { isAzurePath, warehouseRoot } from './warehouse';
+import { warehouseRoot, rollupViewName } from './warehouse';
 
 interface ProductTableRow {
   id: number;
@@ -21,6 +19,9 @@ interface ProductTableRow {
   table_role: string;
   star_schema_name: string;
   grain: string | null;
+  /** Set by `publishRollup` when this fact has a monthly pre-aggregation. */
+  rollup_path: string | null;
+  rollup_row_count: number | string | null;
 }
 
 interface ProductColumnRow {
@@ -61,21 +62,13 @@ export interface ProductSemanticContext {
   catalog: { tableName: string; displayName: string; columnNames: string[] }[];
 }
 
-/**
- * Scan a local product warehouse directory for pre-aggregated rollup tables.
- * Rollups are written by the transformation runner to `rollup_monthly_<fact_table>/`.
- * Returns an empty array for Azure paths or missing directories.
- */
-function detectRollupTables(productDir: string): { name: string; factTable: string }[] {
-  if (!productDir || isAzurePath(productDir) || !fs.existsSync(productDir)) return [];
-  try {
-    return fs.readdirSync(productDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name.startsWith('rollup_monthly_'))
-      .map((e) => ({ name: e.name, factTable: e.name.replace('rollup_monthly_', '') }));
-  } catch {
-    return [];
-  }
-}
+// Rollups used to be discovered by scanning the filesystem here. That scan
+// bailed on `az://` paths and looked in the v1 local `./warehouse/product/<slug>`
+// layout, while the default layout is v2 and production is Azure — so it
+// returned empty in production for its entire life and the model never learned
+// that a pre-aggregation existed. The location is now recorded on the
+// product_tables row by `publishRollup` at write time and read back below.
+// Do not reintroduce a path-derivation here.
 
 /**
  * Check if a connection has a product layer (data product with successfully
@@ -158,6 +151,8 @@ export async function buildProductSemanticContext(
       'product_tables.display_name',
       'product_tables.description',
       'product_tables.table_role',
+      'product_tables.rollup_path',
+      'product_tables.rollup_row_count',
       'star_schemas.name as star_schema_name',
       'star_schemas.grain',
     );
@@ -189,6 +184,8 @@ export async function buildProductSemanticContext(
         'product_tables.display_name',
         'product_tables.description',
         'product_tables.table_role',
+        'product_tables.rollup_path',
+        'product_tables.rollup_row_count',
         'star_schemas.name as star_schema_name',
         'star_schemas.grain',
       );
@@ -294,21 +291,17 @@ export async function buildProductSemanticContext(
         .join('\n\n')
     : 'No KPIs defined yet.';
 
-  // --- Detect pre-aggregated rollup tables (local warehouse only) ---
-  const productSlugs = products.map(
-    (p: { name: string }) => p.name.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
-  );
-  const rollupLines: string[] = [];
-  for (const slug of productSlugs) {
-    const productDir = path.resolve('./warehouse/product', slug);
-    for (const rollup of detectRollupTables(productDir)) {
-      rollupLines.push(
-        `- ${rollup.name}: monthly pre-aggregation of ${rollup.factTable}. ` +
+  // --- Pre-aggregated rollup tables, as recorded at write time ---
+  const rollupLines: string[] = tables
+    .filter((t) => t.rollup_path)
+    .map((t) => {
+      const rollupName = rollupViewName(t.table_name);
+      const rows = Number(t.rollup_row_count);
+      const size = Number.isFinite(rows) && rows > 0 ? ` ~${rows.toLocaleString('en-GB')} rows.` : '';
+      return `- ${rollupName}: monthly pre-aggregation of ${t.table_name}.${size} ` +
         `Contains: month (TIMESTAMP, first day of month), all dimension columns, SUM of all measures, _row_count. ` +
-        `USE THIS table instead of ${rollup.factTable} for any monthly/quarterly/yearly time-series query.`,
-      );
-    }
-  }
+        `USE THIS table instead of ${t.table_name} for any monthly/quarterly/yearly time-series query.`;
+    });
   const rollupSection = rollupLines.length > 0
     ? `\n\n## ROLLUP TABLES — always prefer for aggregate time-series queries\n${rollupLines.join('\n')}`
     : '';

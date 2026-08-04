@@ -7,6 +7,7 @@ import { MssqlConnector, MssqlConnectionConfig } from './MssqlConnector';
 import { decryptCredentials, isEncrypted } from '../utils/crypto';
 import { assertSafeDbHost } from '../utils/netGuard';
 import { semanticDb } from '../db/knex';
+import { rollupViewName } from '../services/warehouse';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'ConnectorFactory' });
@@ -175,6 +176,21 @@ export async function createProductConnector(productWarehousePath: string, conne
     tablePaths.set(t.tableName, t.uri);
     if (t.productName) tableSchemas.set(t.tableName, t.productName);
     tableNames.push(t.tableName);
+
+    // Register the monthly pre-aggregation alongside its fact. `productContext`
+    // advertises `rollup_monthly_<table>` to the model and the dashboard prompt
+    // tells it to PREFER that table for time-series queries — so the view has to
+    // exist. It never did: rollups were written to disk but only ever registered
+    // by a filesystem fallback that this surface never reaches (tablePaths is
+    // always populated here). The advertisement was equally broken, which is the
+    // only reason it never surfaced as "table does not exist". Fix both or
+    // neither.
+    if (t.rollupUri) {
+      const rollupName = rollupViewName(t.tableName);
+      tablePaths.set(rollupName, t.rollupUri);
+      if (t.productName) tableSchemas.set(rollupName, t.productName);
+      tableNames.push(rollupName);
+    }
   }
 
   const productCount = new Set(productTables.map((t) => t.productName)).size;

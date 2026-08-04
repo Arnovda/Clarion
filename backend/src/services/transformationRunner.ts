@@ -20,6 +20,7 @@ import { publishInvalidation } from '../jobs/cacheBus';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import {
   publishProductTable,
+  publishRollup,
   publishStubFromUpstream,
   markProductTableRunning,
   markProductTableFailed,
@@ -31,6 +32,7 @@ import {
   productBasePathV2,
   productTablePath,
   productSlug,
+  rollupViewName,
   sqlEscapePath,
   warehouseLayoutVersion,
   setupDuckDBForWarehouse,
@@ -248,7 +250,7 @@ async function generateMonthlyRollup(
   productDir: string,
   useAzure: boolean,
   tenantId?: number,
-): Promise<{ rollupName: string; rowCount: number } | null> {
+): Promise<{ rollupName: string; rowCount: number; rollupPath: string } | null> {
   const safeAlias = tableName.replace(/[^a-zA-Z0-9_]/g, '_');
   const descView = `__rd_${safeAlias}`;
   const escaped = parquetPath.replace(/'/g, "''");
@@ -297,7 +299,7 @@ async function generateMonthlyRollup(
       !measures.find((m) => m.column_name === c.column_name),
   );
 
-  const rollupName = `rollup_monthly_${tableName}`;
+  const rollupName = rollupViewName(tableName);
   const rollupDir = useAzure ? null : path.join(productDir, rollupName);
   if (rollupDir) fs.mkdirSync(rollupDir, { recursive: true });
 
@@ -324,7 +326,7 @@ async function generateMonthlyRollup(
   const cnt = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${escapedRollup}');`);
   const rowCount = Number((cnt[0] as { n: unknown }).n ?? 0);
 
-  return { rollupName, rowCount };
+  return { rollupName, rowCount, rollupPath };
 }
 
 /**
@@ -849,12 +851,17 @@ export async function runProductTransformation(
 
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
 
-        // Generate monthly rollup for fact tables — best-effort, non-fatal
+        // Generate monthly rollup for fact tables — best-effort, non-fatal.
+        // The location is RECORDED, not just logged: productContext reads it
+        // back to tell the model a pre-aggregation exists. Cleared when this
+        // refresh produced none, so a table that stops qualifying (date column
+        // dropped, measures removed) does not keep advertising a stale rollup.
         if (table.table_role === 'fact') {
           try {
             const rollup = await generateMonthlyRollup(db, table.id, table.table_name, parquetPath, productDir, useAzure, tenantId);
+            await publishRollup(tenantId, table.id, rollup && { uri: rollup.rollupPath, rowCount: rollup.rowCount });
             if (rollup) {
-              log.info(`Rollup: ${rollup.rollupName} (${rollup.rowCount} rows)`);
+              log.info(`Rollup: ${rollup.rollupName} (${rollup.rowCount} rows) at ${rollup.rollupPath}`);
             }
           } catch (rollupErr) {
             log.warn({ err: rollupErr }, `Rollup generation skipped for ${table.table_name}`);

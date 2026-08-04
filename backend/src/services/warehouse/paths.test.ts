@@ -18,6 +18,7 @@ import {
   sourceBasePathV2,
   sourceWorkerPathPrefix,
   assertValidContainerName,
+  rollupViewName,
 } from './paths';
 import { capResultRows } from './duckdb';
 
@@ -184,5 +185,39 @@ describe('capResultRows', () => {
 
   it('is a no-op when the cap is 0 / disabled', () => {
     expect(capResultRows('SELECT * FROM t', 0)).toBe('SELECT * FROM t');
+  });
+});
+
+/**
+ * The rollup view name is the contract between four surfaces that never see
+ * each other: the transformation runner writes the directory, `tableCatalog`
+ * records the URI, `ConnectorFactory` registers the DuckDB view under this
+ * name, and `productContext` tells the model a table by this name exists.
+ *
+ * They used to build the string independently, and the two READ surfaces were
+ * both broken in a way that cancelled out: `productContext` scanned a local v1
+ * path that does not exist under the v2/Azure default, so it never advertised
+ * anything — which is the only reason nobody noticed that `ConnectorFactory`
+ * never registered the view either. Had only one been fixed, every
+ * time-series query would have failed with "table does not exist".
+ *
+ * Pinning the name here is cheap; the expensive part was finding out it had
+ * silently disagreed with itself since Sprint 1.2.
+ */
+describe('rollupViewName', () => {
+  it('derives the view name from the fact table', () => {
+    expect(rollupViewName('fact_sales_invoice_lines')).toBe('rollup_monthly_fact_sales_invoice_lines');
+  });
+
+  it('is a pure prefix — callers may reverse it to recover the fact table', () => {
+    const fact = 'fact_transaction_lines';
+    expect(rollupViewName(fact).replace('rollup_monthly_', '')).toBe(fact);
+  });
+
+  it('does not mangle names it is given', () => {
+    // The runner already restricts table names; this asserts the helper adds
+    // nothing of its own (no casing, no slugging) so the four surfaces agree
+    // byte-for-byte.
+    expect(rollupViewName('Fact_Mixed_Case')).toBe('rollup_monthly_Fact_Mixed_Case');
   });
 });

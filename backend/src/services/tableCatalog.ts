@@ -75,6 +75,14 @@ export interface ResolvedProductTable extends ResolvedTable {
   tableRole: string;
   /** True when this row is a downstream stub pointing at an upstream owner. */
   isStub: boolean;
+  /**
+   * URI of this fact's monthly pre-aggregation, when one was written. Callers
+   * that register query views MUST register it as `rollup_monthly_<tableName>`
+   * — the semantic context tells the model that table exists, and a name the
+   * model is told to prefer but that resolves to no view is a guaranteed query
+   * failure.
+   */
+  rollupUri: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,7 @@ export async function resolveProductTableById(
         'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
+        'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name',
       )
       .first(),
@@ -173,6 +182,7 @@ export async function resolveProductTable(
         'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
+        'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name',
       )
       .first(),
@@ -241,6 +251,7 @@ export async function listProductTables(
         'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
+        'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name',
       ),
   );
@@ -267,6 +278,7 @@ export async function listProductTablesByConnection(
         'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
+        'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name',
       ),
   );
@@ -305,6 +317,34 @@ export async function publishProductTable(
     return;
   }
   await tenantQuery(tenantId, work);
+}
+
+/**
+ * Record where a fact table's monthly pre-aggregation landed — or that it has
+ * none. Pass `null` to clear.
+ *
+ * Rollups used to be written and only logged, so the sole way to find one was
+ * an `fs.readdirSync` of the v1 local layout that returned nothing on Azure.
+ * The result: the pre-aggregation the dashboard prompt tells the model to
+ * prefer was invisible in production for its entire life. Paths belong in the
+ * catalog for exactly this reason — a reader must never re-derive a location
+ * from environment plus layout version.
+ *
+ * Always called after a successful refresh of a fact table, including with
+ * `null`, so a table that stops qualifying does not keep advertising a stale
+ * rollup.
+ */
+export async function publishRollup(
+  tenantId: number | undefined,
+  productTableId: number,
+  rollup: { uri: string; rowCount: number } | null,
+): Promise<void> {
+  await tenantQuery(tenantId, (q) =>
+    q('product_tables').where({ id: productTableId }).update({
+      rollup_path: rollup?.uri ?? null,
+      rollup_row_count: rollup?.rowCount ?? null,
+    }),
+  );
 }
 
 /**
@@ -422,6 +462,7 @@ function mapProductRow(row: Record<string, unknown>): ResolvedProductTable {
     productName: String(row.product_name),
     tableRole: String(row.table_role ?? 'unknown'),
     isStub: row.is_shared_dimension === true,
+    rollupUri: row.rollup_path ? String(row.rollup_path) : null,
   };
 }
 
