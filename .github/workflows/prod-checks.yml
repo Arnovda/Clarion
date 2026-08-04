@@ -118,6 +118,18 @@ jobs:
             if [ "$BACKFILL" = "success" ]; then
               echo "**CLEAN** — every graph entity carries \`tenantId\`. This is the precondition"
               echo "for adding a tenant predicate to the reads in \`db/semanticGraph.ts\`."
+            elif grep -q 'EAI_AGAIN\|ENOTFOUND\|Failed to connect to server' /tmp/graph.txt 2>/dev/null; then
+              # Distinguish "could not look" from "looked and found gaps". The
+              # Neo4j Container App runs with external_enabled = false, so a
+              # GitHub runner cannot resolve it — correct security posture, and
+              # it means this check needs a runner inside the environment. Left
+              # as a known limitation rather than dressed up as a data finding.
+              echo "**COULD NOT RUN** — Neo4j is not reachable from a GitHub runner."
+              echo ""
+              echo "The Neo4j Container App has \`external_enabled = false\` (internal ingress"
+              echo "only), which is the right posture — this check simply needs to run inside"
+              echo "the Container Apps environment. It reports nothing about the data either"
+              echo "way, so do **not** read this as \"clean\"."
             else
               echo "**INCOMPLETE** — entities still unstamped. A tenant predicate must NOT be"
               echo "added to the read path yet; these would vanish from their owner's catalog."
