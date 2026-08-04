@@ -31,7 +31,111 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-03 (FK detection measured against a real production sync and rebuilt — read the FK section before touching relationship detection)
+**Last updated:** 2026-08-04 (platform analysis; SQL-leak to viewers closed, RLS gate wired into CI, dependency audit made blocking)
+
+**RAW SQL WAS STREAMING TO EVERY ROLE, INCLUDING VIEWERS (2026-08-04).** The
+admin-only "show query" toggle on `MessageBubble` was cosmetic: while a query
+ran, `<ThinkingBubble>` rendered the generated SQL and `<ThinkingPanel>`
+rendered the repair loop's diagnostic SQL, its revised SQL and a raw JSON dump
+of diagnostic rows — none of them gated. Both violate the non-negotiable
+"never show raw SQL to a business user" and the role table's viewer: NO on the
+show-query toggle. Flagged in the 2026-07-15 product assessment (§P0 item 4)
+and still live a year later.
+- **Fixed by construction, not by discipline**: both components now take a
+  **REQUIRED** `canSeeSql: boolean`. Required rather than
+  optional-defaulting-to-false so a future call site cannot inherit a default
+  nobody reads — TypeScript makes the decision mandatory. Read the SQL
+  VISIBILITY note at the top of `frontend/app/query/thinking.tsx` before
+  adding a prop or a call site there.
+- **What stays visible to everyone**: phase, streamed reasoning text, row
+  COUNTS, clarifying questions. That is the part that makes the wait legible
+  and it carries no query text. Hidden: all three SQL blocks + the raw row
+  dump.
+- Gated on `isAdmin`, matching `MessageBubble` exactly. **Note the
+  discrepancy**: CLAUDE.md's role table grants the SQL toggle to admin AND
+  analyst, but both surfaces implement admin-only. The implementation is
+  STRICTER than the documented policy, so this change does not widen
+  anything — but the two should be reconciled deliberately, in one place.
+
+**THE RLS ISOLATION SUITE NOW RUNS IN CI — AND THREE OF ITS FOUR TESTS WERE
+DEAD (2026-08-04).** `e2e/rls.spec.ts` existed since the RLS work but no
+workflow ever invoked it (only `widgets.spec.ts` ran). Wiring it in first
+required repairing it: three tests guarded their assertions behind conditions
+that were always false, so they passed green while checking nothing.
+- `connections`: read `data.id` where the route returns `data.connectionId`,
+  and sent `config.filename` where the SQLite connector reads
+  `config.filepath` — so `if (connId)` never fired.
+- `query log`: called `/definitions/gaps`, which is not a mounted route (it is
+  `/reports/gaps`) — so `if (status === 200)` never fired.
+- All conditional guards removed. **Do not reintroduce them**: a skipped
+  isolation test reports safety it never checked, which is worse than no test.
+- The connections test now creates a real connection against a reachable
+  Postgres (the route tests the connection before storing the row) — that is
+  the most sensitive tenant-owned row in the schema, it holds AES-encrypted
+  source credentials.
+- Both dashboards and connections now also assert the **allow** direction (the
+  owning tenant still gets 200). A gate that refuses everybody would otherwise
+  pass every refusal assertion in the file while breaking the product.
+- **New `rls-isolation` job in `test.yml`. THE ROLE MATTERS**: the backend is
+  started as `databridge_app` (NOBYPASSRLS), not the `databridge` superuser
+  used for migrations. A superuser bypasses RLS unconditionally, so pointing
+  the API at it would make every assertion pass without RLS being enforced at
+  all. Keep the two DATABASE_URLs distinct.
+- `e2e/smoke.spec.ts` was also stale — it waited for `/(setup|dashboards|
+  semantic)` while `register/page.tsx` pushes `/sources`, so it could only
+  ever time out. Fixed; still not in CI (needs frontend + backend together).
+
+**DEPENDENCY AUDIT IS NOW A GATE (2026-08-04).** Both audit steps in
+`test.yml` were `continue-on-error: true` with a comment promising to
+re-tighten "once the backlog is triaged". The backlog had grown to **58
+advisories in backend (2 critical, 19 high) and 13 in frontend (10 high)**.
+- **Runtime-exposed advisories fixed**: `axios` 1.14→1.19 (NO_PROXY bypass →
+  SSRF, plus prototype-pollution auth bypass — axios is the transport for
+  every connector, so this sits exactly in the threat model `egressAllowList`
+  exists for); `nodemailer` 8→9 (CRLF header injection; the usage surface is
+  `createTransport`/`Transporter`/`sendMail`, unchanged in v9, and
+  `@types/nodemailer` stays at 8.x because v9 ships no types — backend `tsc`
+  is clean); `protobufjs` →7.6.5 (CRITICAL, code execution);
+  `applicationinsights` →3.15.1 (clears the @grpc/@opentelemetry cluster);
+  `form-data`, `lodash`, `fast-xml-builder`, `fast-uri`, `js-yaml`, `postcss`
+  via overrides — **each held inside its current major** so no package gets an
+  API it wasn't written against.
+- Result: backend **58 → 31** (critical 2 → 1), frontend **13 → 7** (critical
+  0), connectors 18 → 16. **Every remaining high/critical is build-chain
+  (duckdb → node-gyp: tar, cacache, make-fetch-happen, ip-address,
+  brace-expansion) or dev-only (vite/postcss/vitest).** Nothing
+  runtime-exposed remains.
+- **New `scripts/audit-gate.mjs`**, run per workspace in the job that already
+  installed it. Fails on any high/critical NOT in its allowlist; every
+  allowlist entry carries its reason. Plain `npm audit --audit-level=high`
+  cannot be used — the duckdb toolchain has unfixable advisories that would
+  keep it permanently red, which is exactly how it came to be ignored. The
+  gate also reports STALE allowlist entries (a fix shipped → remove the
+  entry). Verified it actually fails: removing one entry produced exit 1.
+- **`next` is deliberately allowlisted, not fixed.** The only published fix is
+  next@16 — two majors above the pinned 14.2.35, and 14.x has no patch. The
+  advisory is a DoS in the Image Optimizer driven by `remotePatterns`; this
+  app configures no `remotePatterns` and imports `next/image` **nowhere**, so
+  the path is unreachable. That is a claim about TODAY's config — re-check it
+  when a new next advisory lands. The upgrade wants its own piece of work.
+- Same for `vitest` in packages/connectors (2 majors; backend already runs
+  v4) — do it where the DuckDB-native suites can actually be run against it.
+
+**A FRONTEND TYPE ERROR CAN STILL REACH PRODUCTION (2026-08-04, found, NOT
+fixed).** `frontend/next.config.mjs` sets `typescript.ignoreBuildErrors: true`
+under a comment claiming "type checking is done in CI (test.yml)". That is
+false: test.yml type-checks the backend and connectors, not the frontend. The
+frontend's `tsc --noEmit` is in `check.yml`, whose own header says it does not
+block deploy — and `deploy.yml` triggers straight off `push: [main, staging]`
+with no `needs:` on any test workflow. So a frontend type error compiles into
+the production image and lands as a 0%-traffic revision ready to promote. The
+misleading comment is corrected in place; the flag is left ON deliberately
+(turning it off changes what `next build` does in the Docker image and in the
+widget-render gate — a deploy-behaviour change wanting its own review). **The
+durable fix is to make deploy.yml depend on the type-check**, not to have the
+image build re-do it.
+
+**Prior last updated:** 2026-08-03 (FK detection measured against a real production sync and rebuilt — read the FK section before touching relationship detection)
 
 **RELATIONSHIP DETECTION WAS INVENTING FOREIGN KEYS — MEASURED IN PRODUCTION,
 THEN FIXED (2026-08-03).** New read-only control `.ops/relationship-audit`

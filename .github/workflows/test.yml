@@ -73,19 +73,19 @@ jobs:
         working-directory: backend
         run: npx knex --knexfile knexfile.ts migrate:latest
 
-      # Security audits are advisory, not gating: the known dependency backlog
-      # (tracked as audit item B3) would otherwise fail every run. They surface
-      # in the log; they don't block the test gate. Re-tighten to gating once
-      # the backlog is triaged.
-      - name: Security audit (backend)
-        working-directory: backend
-        run: npm audit --audit-level=high
-        continue-on-error: true
-
-      - name: Security audit (frontend)
-        working-directory: frontend
-        run: npm audit --audit-level=high
-        continue-on-error: true
+      # Security audits now GATE. They were advisory (`continue-on-error`)
+      # while a dependency backlog was triaged; the backlog reached 58
+      # advisories instead, so the promise to re-tighten is kept here.
+      #
+      # The gate fails on any high/critical that is not explicitly exempted
+      # in scripts/audit-gate.mjs, where every exemption carries its reason.
+      # Plain `npm audit --audit-level=high` cannot be used directly: the
+      # duckdb native-build toolchain has unfixable advisories that would
+      # keep it permanently red, which is how it ended up ignored before.
+      # Each workspace is gated in the job that already installed it —
+      # frontend in widget-render-gate, connectors in connector-tests.
+      - name: Security audit gate (backend)
+        run: node scripts/audit-gate.mjs backend
 
       # Strict type-check gate so a broken build doesn't slip past PR review.
       # tsconfig.build.json is what the prod Docker image compiles with —
@@ -97,6 +97,108 @@ jobs:
       - name: Run tests
         working-directory: backend
         run: npx vitest run
+
+  # Tenant-isolation gate. `e2e/rls.spec.ts` registers two tenants over the
+  # real API and asserts that neither can see the other's rows — the property
+  # the whole multi-tenant model rests on.
+  #
+  # This spec existed since the RLS work but was never wired into CI, so it
+  # had rotted: three of its four tests guarded their assertions behind
+  # conditions that were always false and passed green while checking nothing
+  # (see the note at the top of the spec). Both were fixed together — running
+  # a dead suite would have been worse than not running it.
+  #
+  # THE ROLE MATTERS. The backend connects as `databridge_app`
+  # (NOBYPASSRLS) here, NOT the `databridge` superuser used for migrations:
+  # a superuser bypasses row-level security unconditionally, so pointing the
+  # API at it would make every assertion below pass without RLS being
+  # enforced at all. Keep these two URLs distinct.
+  rls-isolation:
+    name: Tenant Isolation (RLS)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: databridge
+          POSTGRES_PASSWORD: databridge
+          POSTGRES_DB: databridge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Same reason as the api-tests job: the backend resolves
+      # @databridge/connectors from a gitignored dist/.
+      - name: Build connectors package
+        working-directory: packages/connectors
+        run: npm ci && npm run build
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Create RLS app role
+        env:
+          PGPASSWORD: databridge
+        run: |
+          psql -h localhost -U databridge -d databridge_test -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='databridge_app') THEN CREATE ROLE databridge_app WITH LOGIN PASSWORD 'databridge' NOBYPASSRLS; END IF; END \$\$;"
+
+      # Migrations run as the superuser; they also GRANT to databridge_app.
+      - name: Run migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://databridge:databridge@localhost:5432/databridge_test
+        run: npx knex --knexfile knexfile.ts migrate:latest
+
+      - name: Start backend as the RLS-bound role
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://databridge_app:databridge@localhost:5432/databridge_test
+          JWT_SECRET: ci-rls-secret
+          CREDENTIALS_ENCRYPTION_KEY: ci-rls-encryption-key
+          # NODE_ENV=test disables the rate limiters — the spec registers two
+          # tenants back to back and would otherwise trip the auth limiter.
+          NODE_ENV: test
+          NEO4J_URI: ""
+          RUN_SCHEDULERS: "false"
+          PORT: "3001"
+        run: |
+          npm run dev > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3001/api/health >/dev/null && exit 0
+            sleep 2
+          done
+          echo "backend did not become ready" >&2
+          cat /tmp/backend.log >&2
+          exit 1
+
+      - name: Install Playwright
+        run: npm ci
+
+      # The spec drives the API through Playwright's `request` fixture and
+      # never opens a page, so no browser download is needed.
+      - name: Run RLS isolation tests
+        env:
+          RLS_SOURCE_PGDATABASE: databridge_test
+          RLS_SOURCE_PGUSER: databridge
+          RLS_SOURCE_PGPASSWORD: databridge
+        run: npx playwright test e2e/rls.spec.ts
+
+      - name: Backend log on failure
+        if: failure()
+        run: cat /tmp/backend.log
 
   # Connector-framework unit tests (no database needed). Includes the
   # DuckDB-backed Parquet round-trip tests, which run fine on Linux CI.
@@ -116,6 +218,8 @@ jobs:
       - name: Type-check connectors
         working-directory: packages/connectors
         run: npm run check
+      - name: Security audit gate (connectors)
+        run: node scripts/audit-gate.mjs packages/connectors
       - name: Run connector tests
         working-directory: packages/connectors
         run: npx vitest run
@@ -139,6 +243,8 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Security audit gate (frontend)
+        run: node scripts/audit-gate.mjs frontend
       - name: Build frontend (production)
         working-directory: frontend
         run: npx next build

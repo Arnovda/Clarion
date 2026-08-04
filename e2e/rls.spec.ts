@@ -6,11 +6,37 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
  * Each test registers two independent tenants via the API and verifies that
  * resources created by Tenant A are never visible to Tenant B.
  *
- * Requires backend running on port 3001.
+ * Requires backend running on port 3001. Runs in CI (test.yml, `rls-isolation`
+ * job) against the same Postgres service container the API tests use.
+ *
+ * A NOTE ON CONDITIONAL ASSERTIONS — do not reintroduce them.
+ * Until 2026-08-04 three of the four tests here were dead: they guarded their
+ * assertions behind `if (id)` / `if (status === 200)`, and every one of those
+ * guards was false. The connections test read `data.id` where the route
+ * returns `data.connectionId`, and sent `config.filename` where the SQLite
+ * connector reads `config.filepath`; the query-log test called
+ * `/definitions/gaps`, which is not a mounted route (it is `/reports/gaps`).
+ * All three passed green while asserting nothing. A skipped isolation test is
+ * worse than a missing one — it reports safety it never checked. Assert
+ * unconditionally, and let a setup failure fail the test.
  */
 
 const BACKEND = 'http://localhost:3001/api';
 const ts = Date.now();
+
+/**
+ * A source database the backend can genuinely reach — `POST /connections`
+ * tests the connection before it stores the row, so an unreachable config
+ * never produces a connection to isolate. In CI this is the Postgres service
+ * container; locally it is the docker-compose dev database.
+ */
+const SOURCE_DB = {
+  host:     process.env.RLS_SOURCE_PGHOST ?? 'localhost',
+  port:     Number(process.env.RLS_SOURCE_PGPORT ?? 5432),
+  database: process.env.RLS_SOURCE_PGDATABASE ?? 'databridge_test',
+  user:     process.env.RLS_SOURCE_PGUSER ?? 'databridge',
+  password: process.env.RLS_SOURCE_PGPASSWORD ?? 'databridge',
+};
 
 interface Credentials {
   email: string;
@@ -87,77 +113,86 @@ test.describe('RLS isolation', () => {
     // Tenant B directly fetching Tenant A's dashboard must fail (403 or 404)
     const fetchRes = await authedGet(request, tokenB, `/dashboards/${dashboardId}`);
     expect([403, 404]).toContain(fetchRes.status());
+
+    // ...and Tenant A must still see their own. Asserting only the refusal
+    // would let a gate that denies everybody pass this whole file.
+    const ownRes = await authedGet(request, tokenA, `/dashboards/${dashboardId}`);
+    expect(ownRes.status()).toBe(200);
   });
 
   test('connections: Tenant B cannot see connections created by Tenant A', async ({ request }) => {
-    // Tenant A creates a connection (SQLite — no real file needed for DB row to exist)
+    // Connections are the most sensitive tenant-owned row in the schema — they
+    // carry AES-encrypted source credentials — so this is the isolation
+    // assertion worth having.
     const createRes = await authedPost(request, tokenA, '/connections', {
       name: `Private Connection ${ts}`,
-      type: 'sqlite',
-      config: { filename: `/tmp/rls_test_${ts}.db` },
+      type: 'postgres',
+      config: SOURCE_DB,
     });
-    // Accept 200 (created) or 400/500 (file missing) — we only care the row is scoped to A
+    expect(
+      createRes.status(),
+      `connection setup failed: ${await createRes.text()}`,
+    ).toBe(201);
+
     const created = await createRes.json();
-    const connId: number | undefined = created.data?.id;
+    const connId: number = created.data?.connectionId;
+    expect(connId).toBeTruthy();
 
-    if (connId) {
-      // Tenant B listing connections must not include Tenant A's connection
-      const listRes = await authedGet(request, tokenB, '/connections');
-      expect(listRes.status()).toBe(200);
-      const list = await listRes.json();
-      const ids: number[] = (list.data ?? []).map((c: { id: number }) => c.id);
-      expect(ids).not.toContain(connId);
+    // Tenant B listing connections must not include Tenant A's connection
+    const listRes = await authedGet(request, tokenB, '/connections');
+    expect(listRes.status()).toBe(200);
+    const list = await listRes.json();
+    const ids: number[] = (list.data ?? []).map((c: { id: number }) => c.id);
+    expect(ids).not.toContain(connId);
 
-      // Tenant B directly fetching Tenant A's connection must fail
-      const fetchRes = await authedGet(request, tokenB, `/connections/${connId}`);
-      expect([403, 404]).toContain(fetchRes.status());
-    }
+    // Tenant B directly fetching Tenant A's connection must be refused
+    const fetchRes = await authedGet(request, tokenB, `/connections/${connId}`);
+    expect([403, 404]).toContain(fetchRes.status());
+
+    // ...and Tenant A must still see their own — a gate that refuses everyone
+    // would pass every assertion above while breaking the product.
+    const ownRes = await authedGet(request, tokenA, `/connections/${connId}`);
+    expect(ownRes.status()).toBe(200);
   });
 
-  test('query log: Tenant B cannot see queries run by Tenant A', async ({ request }) => {
-    // Tenant B's query log must be empty or contain only Tenant B's own entries.
-    // We verify by fetching gaps/query log for each tenant and checking no cross-contamination.
-    const resA = await authedGet(request, tokenA, '/definitions/gaps?limit=100');
-    const resB = await authedGet(request, tokenB, '/definitions/gaps?limit=100');
+  test('definition gaps: neither tenant sees the other\'s rows', async ({ request }) => {
+    // The route is /reports/gaps (admin-only; both registrants are the admin
+    // of their own tenant). Gaps are written by low-confidence queries, which
+    // need a live AI call — so on a fresh CI database both sets are usually
+    // empty and this is a weaker check than the two above. It still catches
+    // the regression that matters: a gaps query that forgets its tenant
+    // predicate and returns the whole table.
+    const resA = await authedGet(request, tokenA, '/reports/gaps?limit=100');
+    const resB = await authedGet(request, tokenB, '/reports/gaps?limit=100');
 
-    if (resA.status() === 200 && resB.status() === 200) {
-      const gapsA = await resA.json();
-      const gapsB = await resB.json();
+    expect(resA.status()).toBe(200);
+    expect(resB.status()).toBe(200);
 
-      // Extract tenant_ids from each result set
-      const tenantIdsInA = new Set(
-        (gapsA.data ?? []).map((g: { tenant_id: number }) => g.tenant_id)
-      );
-      const tenantIdsInB = new Set(
-        (gapsB.data ?? []).map((g: { tenant_id: number }) => g.tenant_id)
-      );
+    const gapsA = await resA.json();
+    const gapsB = await resB.json();
 
-      // Each result set must contain at most one distinct tenant_id (their own)
-      expect(tenantIdsInA.size).toBeLessThanOrEqual(1);
-      expect(tenantIdsInB.size).toBeLessThanOrEqual(1);
+    const idsA = new Set<number>((gapsA.data ?? []).map((g: { id: number }) => g.id));
+    const idsB = new Set<number>((gapsB.data ?? []).map((g: { id: number }) => g.id));
 
-      // If both have data, they must not share tenant IDs
-      if (tenantIdsInA.size > 0 && tenantIdsInB.size > 0) {
-        const overlap = [...tenantIdsInA].filter((id) => tenantIdsInB.has(id));
-        expect(overlap).toHaveLength(0);
-      }
-    }
+    const overlap = [...idsA].filter((id) => idsB.has(id));
+    expect(overlap).toHaveLength(0);
   });
 
   test('notifications: Tenant B receives no notifications from Tenant A', async ({ request }) => {
     const resA = await authedGet(request, tokenA, '/notifications');
     const resB = await authedGet(request, tokenB, '/notifications');
 
-    if (resA.status() === 200 && resB.status() === 200) {
-      const notifsA = await resA.json();
-      const notifsB = await resB.json();
+    expect(resA.status()).toBe(200);
+    expect(resB.status()).toBe(200);
 
-      const idsA = new Set((notifsA.data ?? []).map((n: { id: number }) => n.id));
-      const idsB = new Set((notifsB.data ?? []).map((n: { id: number }) => n.id));
+    const notifsA = await resA.json();
+    const notifsB = await resB.json();
 
-      // No notification ID should appear in both tenants' results
-      const overlap = [...idsA].filter((id) => idsB.has(id));
-      expect(overlap).toHaveLength(0);
-    }
+    const idsA = new Set<number>((notifsA.data ?? []).map((n: { id: number }) => n.id));
+    const idsB = new Set<number>((notifsB.data ?? []).map((n: { id: number }) => n.id));
+
+    // No notification ID should appear in both tenants' results
+    const overlap = [...idsA].filter((id) => idsB.has(id));
+    expect(overlap).toHaveLength(0);
   });
 });

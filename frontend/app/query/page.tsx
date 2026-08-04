@@ -1056,7 +1056,7 @@ function QueryPageInner() {
                     <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} onReplayInvestigation={handleReplayInvestigation} />
                     {repairState?.forMessageId === m.id && (
                       <div className="mt-3">
-                        <ThinkingPanel repair={repairState} onClarify={handleClarify} />
+                        <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={isAdmin} />
                       </div>
                     )}
                   </div>
@@ -1067,6 +1067,7 @@ function QueryPageInner() {
                     liveText={thinkingText}
                     sql={thinkingSql}
                     confidence={thinkingConf}
+                    canSeeSql={isAdmin}
                   />
                 )}
                 <div ref={bottomRef} />

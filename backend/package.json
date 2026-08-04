@@ -27,8 +27,8 @@
     "@databridge/connectors": "file:../packages/connectors",
     "@simplewebauthn/server": "^13.3.0",
     "@types/nodemailer": "^8.0.0",
-    "applicationinsights": "^3.14.0",
-    "axios": "^1.14.0",
+    "applicationinsights": "^3.15.1",
+    "axios": "^1.19.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "latest",
     "bullmq": "^5.73.0",
@@ -46,7 +46,7 @@
     "mssql": "^12.2.1",
     "mysql2": "^3.20.0",
     "neo4j-driver": "^5.27.0",
-    "nodemailer": "^8.0.5",
+    "nodemailer": "^9.0.3",
     "otplib": "^12.0.1",
     "pg": "^8.11.3",
     "pino": "^10.3.1",
@@ -72,5 +72,25 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
     "vitest": "^4.1.2"
+  },
+  "//overrides": [
+    "Transitive advisories we cannot reach by bumping a direct dependency.",
+    "Each entry is the lowest version that clears the advisory, so the",
+    "resolution stays as close to what the parent package tested against as",
+    "the fix allows.",
+    "  protobufjs  <=7.6.4  CRITICAL  code execution via bytes-field defaults",
+    "                                (applicationinsights -> @grpc/proto-loader)",
+    "  form-data   4.0.0-4.0.5 HIGH   CRLF injection in multipart field names",
+    "  lodash      <=4.17.23  HIGH    prototype pollution / _.template injection",
+    "                                (knex's only vulnerable dependency)",
+    "Drop an entry once the parent ships a release that pulls the fixed",
+    "version itself — an override that no longer changes anything is a lie",
+    "about which versions were reviewed."
+  ],
+  "overrides": {
+    "protobufjs": "^7.6.5",
+    "form-data": "^4.0.6",
+    "lodash": "^4.18.1",
+    "fast-xml-builder": "^1.2.0"
   }
 }
