@@ -249,20 +249,24 @@ async function validateAndRepairSpec(
         || (r.type === 'pie_chart' && r.rowCount > 3),
     );
     if (hasIssues) {
-      return await validateAndFixDashboardSpec(
+      const repaired = await validateAndFixDashboardSpec(
         spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext,
       );
+      // The pass ran, so clear any stale marker carried in from a previous
+      // generation (refine-spec re-validates an existing spec).
+      delete repaired.validation;
+      return repaired;
     }
+    delete spec.validation;
     return spec;
   } catch (validationErr) {
-    // Validation is best-effort — never block the response if it fails.
-    // But a swallowed failure means the spec ships UNVALIDATED, so log it
-    // loudly instead of hiding it.
-    log.warn(
-      { err: validationErr instanceof Error ? validationErr.message : String(validationErr) },
-      'dashboard validation pass failed — returning unvalidated spec',
-    );
-    return spec;
+    // Still best-effort: a transient warehouse timeout must not throw away a
+    // dashboard that is probably fine. But it no longer passes silently — the
+    // spec is MARKED unvalidated so the UI can say so. Returning an unchecked
+    // spec that looks exactly like a checked one is the part that was wrong.
+    const reason = validationErr instanceof Error ? validationErr.message : String(validationErr);
+    log.warn({ err: reason }, 'dashboard validation pass failed — returning spec marked unvalidated');
+    return { ...spec, validation: { ok: false, reason } };
   }
 }
 

@@ -129,6 +129,24 @@ export interface DashboardSpec {
    * so subsequent re-executions hit the same connector. Default = 'product'.
    */
   dataLayer?: 'product' | 'source';
+  /**
+   * Set ONLY when the post-generation validation pass could not run to
+   * completion — the widgets were never executed, column-contract checked or
+   * repaired, so this spec is the model's raw output.
+   *
+   * The pass is deliberately best-effort: a transient warehouse timeout should
+   * not throw away a dashboard that is probably fine. But it used to return the
+   * unvalidated spec indistinguishably from a validated one, which left the
+   * user unable to tell "checked and good" from "never checked". For a
+   * generated artefact that silence is the wrong default — an unverified
+   * dashboard has to say so.
+   *
+   * Absent means the pass ran. It does not mean every widget is correct.
+   */
+  validation?: {
+    ok: false;
+    reason: string;
+  };
 }
 
 // ─── Connection DTO ───────────────────────────────────────────────────────────

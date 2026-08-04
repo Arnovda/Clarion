@@ -2021,6 +2021,23 @@ export default function DashboardsPage() {
                 </div>
               </div>
 
+              {/* Unverified-generation notice. The post-generation validation
+                  pass executes every widget, checks its column contract and
+                  repairs what it can; when it cannot run, the spec is the
+                  model's raw output. That used to be indistinguishable from a
+                  checked dashboard — say so instead. */}
+              {currentSpec.validation?.ok === false && (
+                <div className="mx-6 mt-3 flex items-start gap-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2">
+                  <span className="text-warn text-[13px] leading-5">⚠</span>
+                  <p className="text-[12px] leading-5 text-ink-2">
+                    <span className="font-medium">These widgets could not be verified.</span>{' '}
+                    The usual post-generation check (running each widget and repairing
+                    what it can) did not complete, so treat the numbers as unconfirmed
+                    until you have spot-checked them.
+                  </p>
+                </div>
+              )}
+
               {/* Filter bar */}
               <FilterBar
                 filters={currentSpec.filters}
