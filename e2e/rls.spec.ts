@@ -94,11 +94,17 @@ test.describe('RLS isolation', () => {
   test('dashboards: Tenant B cannot see dashboards created by Tenant A', async ({ request }) => {
     // Tenant A creates a dashboard (saved spec)
     const createRes = await authedPost(request, tokenA, '/dashboards', {
+      // connectionId is required by createDashboardSchema (nullable, but the
+      // key must be present) — omitting it is a 400, not a dashboard.
+      connectionId: null,
       title: `Private Dashboard ${ts}`,
       description: 'Should not be visible to Tenant B',
       spec: { filters: [], widgets: [] },
     });
-    expect(createRes.status()).toBe(200);
+    expect(
+      createRes.status(),
+      `dashboard setup failed: ${await createRes.text()}`,
+    ).toBe(200);
     const created = await createRes.json();
     const dashboardId: number = created.data?.id;
     expect(dashboardId).toBeTruthy();
@@ -138,21 +144,23 @@ test.describe('RLS isolation', () => {
     const connId: number = created.data?.connectionId;
     expect(connId).toBeTruthy();
 
-    // Tenant B listing connections must not include Tenant A's connection
-    const listRes = await authedGet(request, tokenB, '/connections');
-    expect(listRes.status()).toBe(200);
-    const list = await listRes.json();
-    const ids: number[] = (list.data ?? []).map((c: { id: number }) => c.id);
-    expect(ids).not.toContain(connId);
+    // Isolation is asserted through the LIST endpoint in both directions.
+    //
+    // An earlier version also fetched /connections/:id and expected 403/404 for
+    // Tenant B. That assertion proved nothing: there is no GET /connections/:id
+    // route, so it 404s for everybody — including the owner. It passed for the
+    // wrong reason, and it was the paired allow-direction check that exposed
+    // it. Keep both directions on every isolation assertion; that is what makes
+    // the refusal meaningful.
+    const listB = await authedGet(request, tokenB, '/connections');
+    expect(listB.status()).toBe(200);
+    const idsB: number[] = ((await listB.json()).data ?? []).map((c: { id: number }) => c.id);
+    expect(idsB).not.toContain(connId);
 
-    // Tenant B directly fetching Tenant A's connection must be refused
-    const fetchRes = await authedGet(request, tokenB, `/connections/${connId}`);
-    expect([403, 404]).toContain(fetchRes.status());
-
-    // ...and Tenant A must still see their own — a gate that refuses everyone
-    // would pass every assertion above while breaking the product.
-    const ownRes = await authedGet(request, tokenA, `/connections/${connId}`);
-    expect(ownRes.status()).toBe(200);
+    const listA = await authedGet(request, tokenA, '/connections');
+    expect(listA.status()).toBe(200);
+    const idsA: number[] = ((await listA.json()).data ?? []).map((c: { id: number }) => c.id);
+    expect(idsA).toContain(connId);
   });
 
   test('definition gaps: neither tenant sees the other\'s rows', async ({ request }) => {
