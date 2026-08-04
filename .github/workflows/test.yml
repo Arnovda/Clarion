@@ -161,12 +161,33 @@ jobs:
           psql -h localhost -U databridge -d databridge_test -v ON_ERROR_STOP=1 -c \
             "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='databridge_app') THEN CREATE ROLE databridge_app WITH LOGIN PASSWORD 'databridge' NOBYPASSRLS; END IF; END \$\$;"
 
-      # Migrations run as the superuser; they also GRANT to databridge_app.
+      # Migrations run as the superuser. They GRANT to databridge_app, but only
+      # for tables created from migration 41 onward — everything older (users,
+      # tenants, connections, dashboards, …) is granted out-of-band per
+      # docs/runbooks/db-role-flip.md. A database provisioned purely from
+      # migrations therefore leaves the app role unable to read `users`, which
+      # is what this job first surfaced: registration 500'd with
+      # "permission denied for table users".
       - name: Run migrations
         working-directory: backend
         env:
           DATABASE_URL: postgresql://databridge:databridge@localhost:5432/databridge_test
         run: npx knex --knexfile knexfile.ts migrate:latest
+
+      # Reproduce the out-of-band grants so CI matches a real deployment.
+      # Deliberately NOT NOCREATEROLE/BYPASSRLS — the role stays NOBYPASSRLS,
+      # which is the whole point of this job. Grants and RLS are orthogonal:
+      # this lets the role reach the tables, RLS still decides which rows.
+      - name: Grant the app role its table privileges
+        env:
+          PGPASSWORD: databridge
+        run: |
+          psql -h localhost -U databridge -d databridge_test -v ON_ERROR_STOP=1 <<'SQL'
+          GRANT CONNECT ON DATABASE databridge_test TO databridge_app;
+          GRANT USAGE ON SCHEMA public TO databridge_app;
+          GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO databridge_app;
+          GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO databridge_app;
+          SQL
 
       - name: Start backend as the RLS-bound role
         working-directory: backend
