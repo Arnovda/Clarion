@@ -1,0 +1,135 @@
+# Production checks — the two verifications that gate the tenant-isolation work.
+#
+#   .ops/prod-checks   contains   `report`   or   `backfill-graph-tenant`
+#
+# Both checks need production credentials, which live here as GitHub secrets and
+# nowhere else. Running them from a laptop would mean handing those secrets to a
+# person; running them here means the answer is a workflow log anyone on the
+# team can read. That is the whole reason this exists rather than a runbook
+# paragraph telling someone to connect to production and run a script.
+#
+# `report` writes nothing and is safe to run at any time.
+# `backfill-graph-tenant` is the one write, and it is idempotent.
+#
+# Neither check reads business data: the preflight inspects the PostgreSQL
+# catalog, and the backfill reads tenant ids from mirror rows to stamp graph
+# nodes. No row values, no column contents.
+
+name: Production checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/prod-checks'
+  workflow_dispatch:
+
+concurrency:
+  group: prod-checks
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read mode
+        id: mode
+        run: |
+          set -euo pipefail
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/prod-checks | head -1 | tr -d '[:space:]')
+          case "$MODE" in
+            report|backfill-graph-tenant) ;;
+            *) echo "::error::invalid mode '$MODE' (expected 'report' or 'backfill-graph-tenant')"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Mode: $MODE"
+
+      # The backend package is what both scripts import (knex, pg, neo4j-driver).
+      # --ignore-scripts skips the duckdb native build, which neither needs.
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci --ignore-scripts
+
+      # ── Check 1 — is the database role flip safe? ────────────────────────────
+      # Runs with the ADMIN url on purpose: it inspects the catalog, and asking
+      # the app role whether it has permission is the very thing that may be
+      # broken. Never fails the job — a NO-GO is a finding to read, not a broken
+      # build, and check 2 still needs to run.
+      - name: Role-flip preflight
+        id: preflight
+        continue-on-error: true
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/preflight-role-flip.ts 2>&1 | tee /tmp/preflight.txt
+
+      # ── Check 2 — do existing graph nodes carry tenantId? ────────────────────
+      - name: Graph tenant backfill
+        id: backfill
+        continue-on-error: true
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEO4J_URI: ${{ secrets.NEO4J_URI }}
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          NEO4J_DATABASE: neo4j
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -o pipefail
+          if [ "$MODE" = "backfill-graph-tenant" ]; then
+            npx tsx scripts/backfill-graph-tenant.ts --apply 2>&1 | tee /tmp/graph.txt
+          else
+            npx tsx scripts/backfill-graph-tenant.ts 2>&1 | tee /tmp/graph.txt
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          PREFLIGHT: ${{ steps.preflight.outcome }}
+          BACKFILL: ${{ steps.backfill.outcome }}
+        run: |
+          {
+            echo "## Production checks — \`$MODE\`"
+            echo ""
+            echo "### 1. Role-flip preflight"
+            if [ "$PREFLIGHT" = "success" ]; then
+              echo "**GO** — the backend can run as \`databridge_app\` with row-level security enforced."
+              echo ""
+              echo "To flip: set \`.ops/db-role\` to \`app\` and push (needs the \`DATABASE_URL_APP\` secret)."
+            else
+              echo "**NO-GO** — blockers below. Do not flip \`.ops/db-role\`."
+            fi
+            echo ""
+            echo '```'
+            cat /tmp/preflight.txt 2>/dev/null || echo "(did not run)"
+            echo '```'
+            echo ""
+            echo "### 2. Graph tenant stamping"
+            if [ "$BACKFILL" = "success" ]; then
+              echo "**CLEAN** — every graph entity carries \`tenantId\`. This is the precondition"
+              echo "for adding a tenant predicate to the reads in \`db/semanticGraph.ts\`."
+            else
+              echo "**INCOMPLETE** — entities still unstamped. A tenant predicate must NOT be"
+              echo "added to the read path yet; these would vanish from their owner's catalog."
+              if [ "$MODE" = "report" ]; then
+                echo ""
+                echo "Set \`.ops/prod-checks\` to \`backfill-graph-tenant\` to stamp them."
+              fi
+            fi
+            echo ""
+            echo '```'
+            cat /tmp/graph.txt 2>/dev/null || echo "(did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "preflight=$PREFLIGHT backfill=$BACKFILL"

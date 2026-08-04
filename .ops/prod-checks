@@ -1,0 +1,38 @@
+report
+
+# run 1 (2026-08-04): first execution. Answers the two questions blocking the
+# tenant-isolation work — is the database role flip safe, and do existing graph
+# nodes carry tenantId.
+
+# Production checks — edit this file and push to run them.
+#
+# MODE (first non-empty, non-comment line):
+#
+#   report                   READ-ONLY. Runs both checks and prints the result.
+#                            Writes nothing. Safe to run at any time, as often
+#                            as you like.
+#
+#   backfill-graph-tenant    WRITES. Stamps tenantId onto graph nodes that
+#                            predate the write paths doing it, attributing each
+#                            one from its Postgres mirror row. Idempotent, and
+#                            it refuses to guess an owner for anything whose
+#                            mirror row is gone. Re-reports afterwards.
+#
+# The two checks:
+#
+#   1. Role-flip preflight — can the backend run as `databridge_app` with
+#      row-level security actually enforced? Today it runs as a superuser,
+#      which bypasses RLS entirely, so every tenant_isolation policy in the
+#      database is inert. The preflight reports GO only when every RLS-enabled
+#      table has a policy and the role holds every grant it needs.
+#      See docs/runbooks/db-role-flip.md.
+#
+#   2. Graph tenant backfill (report mode) — how many Neo4j nodes still lack
+#      `tenantId`. Every write path stamps it now, but nodes written before
+#      that do not carry it. A tenant predicate must NOT be added to the read
+#      queries until this reports zero: an unstamped node does not leak once
+#      predicates exist, it silently disappears from its owner's catalog.
+#
+# Both read the same production secrets deploy.yml already uses. Neither
+# touches business data — the preflight reads the catalog, the backfill reads
+# tenant ids from mirror rows.
