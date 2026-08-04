@@ -118,7 +118,15 @@ router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analy
       data: { previewable: true, rows, columns, targetColumn: plan.targetColumn ?? null, rowCount: rows.length },
     });
   } catch (err) {
-    res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'Preview failed' });
+    // The SQL error itself is the point of a preview — an analyst refining a
+    // transformation needs to see "column X does not exist". But this catch is
+    // blanket, so it also forwards infrastructure failures whose messages carry
+    // warehouse URIs and filesystem paths. Strip those; keep the diagnostic.
+    const raw = err instanceof Error ? err.message : 'Preview failed';
+    const safe = raw
+      .replace(/\b(?:az|abfss?|s3|gs|file):\/\/\S+/gi, '<storage path>')
+      .replace(/(?:\/[\w.-]+){2,}\/?/g, '<path>');
+    res.status(400).json({ ok: false, error: safe });
   } finally {
     if (duckDb) try { await duckDb.close(); } catch { /* ignore */ }
   }

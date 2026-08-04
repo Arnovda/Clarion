@@ -67,8 +67,15 @@ changes.
 - **Dashboard validation fails open** — `validateAndRepairSpec` catches, logs
   and returns the unvalidated spec. Silent pass-through is the wrong default
   for a generated artefact.
-- **Raw error messages to the client** — 16 route sites return `err.message`,
-  leaking hosts and paths. Contradicts the stated non-negotiable.
+- **Raw error messages to the client** — CORRECTED, and much smaller than the
+  review first claimed. A grep found 16 sites returning `err.message`, but 15
+  of them are narrowly typed domain errors (`ConfigValidationError`,
+  `OwnerResolveError`, `Unknown connector type`, OAuth-session checks) whose
+  message is deliberately user-facing. Those are correct as written. Exactly
+  one was a blanket catch: the transformation-preview route, admin/analyst
+  only, where the SQL error IS the point but infrastructure failures would
+  also have forwarded warehouse URIs and paths. Those are now stripped and the
+  diagnostic kept. There is no systemic error-leak problem.
 - **FK re-measurement** — BLOCKED on a production Re-analyse of the EO
   connection; the audit reads what is stored, so running it first would
   re-measure the old baseline. Beat `UNRESOLVED 8 / TARGET-NOT-KEY 10 /
