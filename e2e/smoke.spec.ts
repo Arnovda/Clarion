@@ -28,12 +28,14 @@ test.describe('Smoke test', () => {
     await page.fill('input[name="password"], input[type="password"]', TEST_PASSWORD);
     await page.click('button[type="submit"]');
 
-    // Should redirect to setup or dashboard
-    await page.waitForURL(/\/(setup|dashboards|semantic)/, { timeout: 15_000 });
+    // Registration lands on the sources page (register/page.tsx pushes
+    // '/sources'). `setup`/`dashboards` stay in the pattern so the test keeps
+    // passing if that landing target is changed back.
+    await page.waitForURL(/\/(sources|setup|dashboards|home)/, { timeout: 15_000 });
 
-    // Navigate to semantic page
-    await page.goto('/semantic');
-    await expect(page.locator('body')).toContainText(/semantic|definition|table/i, { timeout: 10_000 });
+    // Navigate to the catalog (entity browse surface)
+    await page.goto('/catalog');
+    await expect(page.locator('body')).toContainText(/catalog|definition|table|source/i, { timeout: 10_000 });
 
     // Navigate to query page
     await page.goto('/query');

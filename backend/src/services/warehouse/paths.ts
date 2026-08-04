@@ -258,6 +258,20 @@ export function productSlug(productName: string): string {
 }
 
 /**
+ * Name of the monthly pre-aggregation belonging to a fact table.
+ *
+ * Centralised because this one string has to agree across four surfaces that
+ * never see each other: the transformation runner writes the directory,
+ * `tableCatalog` records the URI, `ConnectorFactory` registers the DuckDB view,
+ * and `productContext` tells the model the table exists. Any drift between the
+ * last two means the model is told to prefer a table that resolves to nothing —
+ * a guaranteed query failure rather than a silent one.
+ */
+export function rollupViewName(factTableName: string): string {
+  return `rollup_monthly_${factTableName}`;
+}
+
+/**
  * Normalise an arbitrary path string for use in DuckDB SQL. Forward
  * slashes only; single quotes escaped. Azure URIs pass through unchanged.
  */

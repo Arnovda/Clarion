@@ -8,6 +8,21 @@
  *                     clarifying questions) and the clarification input.
  *
  * Both consume ephemeral state that is never persisted to the conversation.
+ *
+ * SQL VISIBILITY — read before adding a prop or a call site.
+ * These panels stream the generated SQL, the repair loop's diagnostic SQL and
+ * its revised SQL. CLAUDE.md's non-negotiable is "never show raw SQL to a
+ * business user", and the role table puts the show-query toggle out of a
+ * viewer's reach. Both components therefore take a REQUIRED `canSeeSql` flag
+ * and hide every SQL block when it is false. It is required rather than
+ * optional-defaulting-to-false on purpose: a new call site must make the
+ * decision explicitly instead of inheriting a default nobody reads. Without
+ * it these panels silently made the admin-only toggle on `MessageBubble`
+ * cosmetic, because the same SQL streamed past every role while the query ran.
+ *
+ * The progress narrative (phase, reasoning text, row COUNTS, clarifying
+ * questions) stays visible to everyone — it is what makes the wait legible,
+ * and it carries no query text.
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -18,12 +33,14 @@ import type { RepairState } from './types';
 // ─── Live thinking bubble ────────────────────────────────────────────────────
 
 export function ThinkingBubble({
-  phase, liveText, sql, confidence,
+  phase, liveText, sql, confidence, canSeeSql,
 }: {
   phase:      string;
   liveText:   string;
   sql:        string | null;
   confidence: number | null;
+  /** See the SQL VISIBILITY note at the top of this file. */
+  canSeeSql:  boolean;
 }) {
   // Word-by-word display of live reasoning — ~220 ms/word (readable pace)
   const [displayed, setDisplayed] = useState('');
@@ -89,8 +106,8 @@ export function ThinkingBubble({
           </div>
         )}
 
-        {/* SQL preview once generated */}
-        {sql && (
+        {/* SQL preview once generated — privileged roles only */}
+        {canSeeSql && sql && (
           <div className="px-4 py-2.5 border-t border-line bg-ink space-y-1">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-white/60">Generated SQL</span>
@@ -113,10 +130,12 @@ export function ThinkingBubble({
 // ─── Repair-loop thinking panel — Observatory-styled ─────────────────────────
 
 export function ThinkingPanel({
-  repair, onClarify,
+  repair, onClarify, canSeeSql,
 }: {
   repair: RepairState;
   onClarify: (answer: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) => void;
+  /** See the SQL VISIBILITY note at the top of this file. */
+  canSeeSql: boolean;
 }) {
   const [clarifyInput, setClarifyInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -163,9 +182,11 @@ export function ThinkingPanel({
                     <span className="text-ocean flex-shrink-0">🔍</span>
                     <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ocean">Running diagnostic</span>
                   </div>
-                  <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                    {formatSql(ev.sql)}
-                  </pre>
+                  {canSeeSql && (
+                    <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                      {formatSql(ev.sql)}
+                    </pre>
+                  )}
                 </div>
               );
 
@@ -174,7 +195,9 @@ export function ThinkingPanel({
                   <p className="text-muted text-[10px] font-mono tracking-[0.06em] uppercase">
                     → {ev.rowCount} row{ev.rowCount !== 1 ? 's' : ''} returned
                   </p>
-                  {ev.rows.length > 0 && (
+                  {/* Raw diagnostic rows are internal reasoning, not the answer —
+                      the row count above is the part that makes the wait legible. */}
+                  {canSeeSql && ev.rows.length > 0 && (
                     <pre className="text-ink-3 font-mono text-[10px] bg-softer border border-line rounded-md px-3 py-2 overflow-x-auto max-h-28 leading-relaxed">
                       {JSON.stringify(ev.rows.slice(0, 6), null, 2)}
                     </pre>
@@ -188,9 +211,11 @@ export function ThinkingPanel({
                     <span className="text-warn flex-shrink-0">✏️</span>
                     <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn">Revised query</span>
                   </div>
-                  <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                    {formatSql(ev.sql)}
-                  </pre>
+                  {canSeeSql && (
+                    <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                      {formatSql(ev.sql)}
+                    </pre>
+                  )}
                 </div>
               );
 

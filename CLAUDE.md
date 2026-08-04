@@ -31,7 +31,174 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-03 (FK detection measured against a real production sync and rebuilt — read the FK section before touching relationship detection)
+**Last updated:** 2026-08-04 (improvement plan adopted; Phase 0 done, Phase 1a done — graph writes now stamp tenantId)
+
+**THE PLAN OF RECORD IS `docs/backlog/platform-improvement-plan.md`.** Read it
+before starting platform work. It reduces the review's findings to two causes —
+correctness resting on discipline where construction was possible, and no
+feedback loop from production — and sequences the work by what unblocks what.
+It also lists what NOT to do, which is the part most likely to be ignored.
+
+**THE MONTHLY ROLLUP HAD NEVER WORKED (2026-08-04, fixed).** Sprint 1.2 writes
+`rollup_monthly_<fact>` next to every qualifying fact table and the dashboard
+prompt tells the model to PREFER it. Two halves were broken and they cancelled
+out, which is why nobody saw it:
+- `productContext.detectRollupTables` scanned `./warehouse/product/<slug>` — the
+  **v1 local** layout — and returned early on `az://`. The default is v2 and
+  production is Azure, so it always returned empty.
+- `ConnectorFactory.createProductConnector` only registered views for
+  `product_tables` rows, and rollups are not rows, so the view never existed
+  either. **Fixing only the advertisement would have turned a silent no-op into
+  "table does not exist" on every time-series widget.**
+- The location is now RECORDED at write time (`product_tables.rollup_path`,
+  migration 72) instead of re-derived at read time — the same reason
+  `delta_path` holds an absolute URI. `publishRollup` is called after every
+  fact refresh **including with null**, so a table that stops qualifying does
+  not keep advertising a stale rollup.
+- The name lives in `rollupViewName()` because it is the contract between four
+  surfaces that never see each other: runner, catalog, view registration,
+  semantic context. Pinned by test.
+
+**GRAPH WRITES NOW STAMP `tenantId` — STEP 1 OF 3 (2026-08-04).** The route to
+tenant-scoping Neo4j is: (1) every write stamps, (2) backfill existing nodes,
+(3) add read predicates. **Step 3 must not land before step 2 reports clean** —
+an unstamped node does not leak once predicates exist, it silently vanishes
+from its owner's catalog, which is its own outage.
+- Only `SourceTable`/`SourceColumn` carried it. Now also `ProductTable`,
+  `ProductColumn`, `KpiDefinition`, `QualityRule`, `CrossSourceView` and the
+  `RELATES_TO` edge, on both ON CREATE and ON MATCH. The tenant comes from the
+  mirror row the caller already holds — no new parameters threaded around.
+- **`scripts/lint-graph-tenant-stamp.ts`, in the merge gate.** A write path that
+  forgets `tenantId` fails no test; it just creates an invisible node. Verified
+  to fail: removing one stamp exits 1.
+- **`scripts/backfill-graph-tenant.ts`** does step 2. Report-only unless
+  `--apply`, idempotent, attributes from Postgres, and **refuses to guess** an
+  owner for entities whose mirror row is gone (a `CrossSourceView` with no
+  `connectionId` cannot be attributed). Exits non-zero while anything remains —
+  that exit code is the gate on step 3.
+- **NOT RUN ANYWHERE YET.** Run it against production before step 3.
+
+**A DASHBOARD THAT WAS NEVER VERIFIED NOW SAYS SO (2026-08-04).**
+`validateAndRepairSpec` caught, logged and returned the model's raw output,
+indistinguishable from a spec that passed. Still best-effort — a transient
+warehouse timeout must not throw away a good dashboard — but the spec now
+carries `validation: { ok: false, reason }` and the UI shows an unverified
+notice. Cleared whenever the pass does run, so refine-spec cannot leave a stale
+warning behind.
+
+**CORRECTION — the "16 error leaks" finding was overstated.** A grep found 16
+sites returning `err.message`; checked individually, 15 are narrowly typed
+domain errors (`ConfigValidationError`, `OwnerResolveError`, "Unknown connector
+type", OAuth-session checks) whose message is deliberately user-facing and
+correct as written. One was real — the transformation-preview route's blanket
+catch — and now strips storage URIs and paths while keeping the SQL diagnostic,
+which is the point of a preview. **There is no systemic error-leak problem.**
+
+**Prior last updated:** 2026-08-04 (platform analysis; SQL-leak to viewers closed, RLS gate wired into CI, dependency audit made blocking)
+
+**RAW SQL WAS STREAMING TO EVERY ROLE, INCLUDING VIEWERS (2026-08-04).** The
+admin-only "show query" toggle on `MessageBubble` was cosmetic: while a query
+ran, `<ThinkingBubble>` rendered the generated SQL and `<ThinkingPanel>`
+rendered the repair loop's diagnostic SQL, its revised SQL and a raw JSON dump
+of diagnostic rows — none of them gated. Both violate the non-negotiable
+"never show raw SQL to a business user" and the role table's viewer: NO on the
+show-query toggle. Flagged in the 2026-07-15 product assessment (§P0 item 4)
+and still live three weeks later.
+- **Fixed by construction, not by discipline**: both components now take a
+  **REQUIRED** `canSeeSql: boolean`. Required rather than
+  optional-defaulting-to-false so a future call site cannot inherit a default
+  nobody reads — TypeScript makes the decision mandatory. Read the SQL
+  VISIBILITY note at the top of `frontend/app/query/thinking.tsx` before
+  adding a prop or a call site there.
+- **What stays visible to everyone**: phase, streamed reasoning text, row
+  COUNTS, clarifying questions. That is the part that makes the wait legible
+  and it carries no query text. Hidden: all three SQL blocks + the raw row
+  dump.
+- Gated on `isAdmin`, matching `MessageBubble` exactly. **Note the
+  discrepancy**: CLAUDE.md's role table grants the SQL toggle to admin AND
+  analyst, but both surfaces implement admin-only. The implementation is
+  STRICTER than the documented policy, so this change does not widen
+  anything — but the two should be reconciled deliberately, in one place.
+
+**THE RLS ISOLATION SUITE NOW RUNS IN CI — AND THREE OF ITS FOUR TESTS WERE
+DEAD (2026-08-04).** `e2e/rls.spec.ts` existed since the RLS work but no
+workflow ever invoked it (only `widgets.spec.ts` ran). Wiring it in first
+required repairing it: three tests guarded their assertions behind conditions
+that were always false, so they passed green while checking nothing.
+- `connections`: read `data.id` where the route returns `data.connectionId`,
+  and sent `config.filename` where the SQLite connector reads
+  `config.filepath` — so `if (connId)` never fired.
+- `query log`: called `/definitions/gaps`, which is not a mounted route (it is
+  `/reports/gaps`) — so `if (status === 200)` never fired.
+- All conditional guards removed. **Do not reintroduce them**: a skipped
+  isolation test reports safety it never checked, which is worse than no test.
+- The connections test now creates a real connection against a reachable
+  Postgres (the route tests the connection before storing the row) — that is
+  the most sensitive tenant-owned row in the schema, it holds AES-encrypted
+  source credentials.
+- Both dashboards and connections now also assert the **allow** direction (the
+  owning tenant still gets 200). A gate that refuses everybody would otherwise
+  pass every refusal assertion in the file while breaking the product.
+- **New `rls-isolation` job in `test.yml`. THE ROLE MATTERS**: the backend is
+  started as `databridge_app` (NOBYPASSRLS), not the `databridge` superuser
+  used for migrations. A superuser bypasses RLS unconditionally, so pointing
+  the API at it would make every assertion pass without RLS being enforced at
+  all. Keep the two DATABASE_URLs distinct.
+- `e2e/smoke.spec.ts` was also stale — it waited for `/(setup|dashboards|
+  semantic)` while `register/page.tsx` pushes `/sources`, so it could only
+  ever time out. Fixed; still not in CI (needs frontend + backend together).
+
+**DEPENDENCY AUDIT IS NOW A GATE (2026-08-04).** Both audit steps in
+`test.yml` were `continue-on-error: true` with a comment promising to
+re-tighten "once the backlog is triaged". The backlog had grown to **58
+advisories in backend (2 critical, 19 high) and 13 in frontend (10 high)**.
+- **Runtime-exposed advisories fixed**: `axios` 1.14→1.19 (NO_PROXY bypass →
+  SSRF, plus prototype-pollution auth bypass — axios is the transport for
+  every connector, so this sits exactly in the threat model `egressAllowList`
+  exists for); `nodemailer` 8→9 (CRLF header injection; the usage surface is
+  `createTransport`/`Transporter`/`sendMail`, unchanged in v9, and
+  `@types/nodemailer` stays at 8.x because v9 ships no types — backend `tsc`
+  is clean); `protobufjs` →7.6.5 (CRITICAL, code execution);
+  `applicationinsights` →3.15.1 (clears the @grpc/@opentelemetry cluster);
+  `form-data`, `lodash`, `fast-xml-builder`, `fast-uri`, `js-yaml`, `postcss`
+  via overrides — **each held inside its current major** so no package gets an
+  API it wasn't written against.
+- Result: backend **58 → 31** (critical 2 → 1), frontend **13 → 7** (critical
+  0), connectors 18 → 16. **Every remaining high/critical is build-chain
+  (duckdb → node-gyp: tar, cacache, make-fetch-happen, ip-address,
+  brace-expansion) or dev-only (vite/postcss/vitest).** Nothing
+  runtime-exposed remains.
+- **New `scripts/audit-gate.mjs`**, run per workspace in the job that already
+  installed it. Fails on any high/critical NOT in its allowlist; every
+  allowlist entry carries its reason. Plain `npm audit --audit-level=high`
+  cannot be used — the duckdb toolchain has unfixable advisories that would
+  keep it permanently red, which is exactly how it came to be ignored. The
+  gate also reports STALE allowlist entries (a fix shipped → remove the
+  entry). Verified it actually fails: removing one entry produced exit 1.
+- **`next` is deliberately allowlisted, not fixed.** The only published fix is
+  next@16 — two majors above the pinned 14.2.35, and 14.x has no patch. The
+  advisory is a DoS in the Image Optimizer driven by `remotePatterns`; this
+  app configures no `remotePatterns` and imports `next/image` **nowhere**, so
+  the path is unreachable. That is a claim about TODAY's config — re-check it
+  when a new next advisory lands. The upgrade wants its own piece of work.
+- Same for `vitest` in packages/connectors (2 majors; backend already runs
+  v4) — do it where the DuckDB-native suites can actually be run against it.
+
+**A FRONTEND TYPE ERROR CAN STILL REACH PRODUCTION (2026-08-04, found, NOT
+fixed).** `frontend/next.config.mjs` sets `typescript.ignoreBuildErrors: true`
+under a comment claiming "type checking is done in CI (test.yml)". That is
+false: test.yml type-checks the backend and connectors, not the frontend. The
+frontend's `tsc --noEmit` is in `check.yml`, whose own header says it does not
+block deploy — and `deploy.yml` triggers straight off `push: [main, staging]`
+with no `needs:` on any test workflow. So a frontend type error compiles into
+the production image and lands as a 0%-traffic revision ready to promote. The
+misleading comment is corrected in place; the flag is left ON deliberately
+(turning it off changes what `next build` does in the Docker image and in the
+widget-render gate — a deploy-behaviour change wanting its own review). **The
+durable fix is to make deploy.yml depend on the type-check**, not to have the
+image build re-do it.
+
+**Prior last updated:** 2026-08-03 (FK detection measured against a real production sync and rebuilt — read the FK section before touching relationship detection)
 
 **RELATIONSHIP DETECTION WAS INVENTING FOREIGN KEYS — MEASURED IN PRODUCTION,
 THEN FIXED (2026-08-03).** New read-only control `.ops/relationship-audit`

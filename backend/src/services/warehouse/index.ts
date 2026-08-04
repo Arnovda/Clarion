@@ -29,6 +29,7 @@ export {
   sourceWorkerPathPrefix,
   productTablePath,
   productSlug,
+  rollupViewName,
   sqlEscapePath,
 } from './paths';
 export type { WarehouseLayoutVersion, WarehouseContainerMode } from './paths';

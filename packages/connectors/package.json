@@ -17,7 +17,7 @@
     "@azure/storage-blob": "^12.31.0",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
-    "axios": "^1.7.7",
+    "axios": "^1.19.0",
     "duckdb-async": "^1.4.2",
     "fast-xml-parser": "^4.5.0"
   },
@@ -27,5 +27,23 @@
     "nock": "^13.5.5",
     "typescript": "^5.6.2",
     "vitest": "^2.1.1"
+  },
+  "//overrides": [
+    "Transitive advisories on the connector runtime, each cleared inside the",
+    "dependency's current major.",
+    "  fast-xml-builder <=1.1.6  HIGH  quote-bypass in attribute values",
+    "                                  (@azure/storage-blob -> fast-xml-parser)",
+    "  fast-uri         <=3.1.4  HIGH  ReDoS (ajv, used to compile the",
+    "                                  connector config JSON Schemas)",
+    "",
+    "NOT overridden: vitest (<=3.2.5, dev-only) — the fix is vitest@4, a two-",
+    "major bump of the test runner. The backend already runs vitest 4, so",
+    "aligning this package is worth doing as its own change where the full",
+    "suite (including the DuckDB-native tests, which need a working native",
+    "build) can actually be run against it."
+  ],
+  "overrides": {
+    "fast-xml-builder": "^1.2.0",
+    "fast-uri": "^3.1.5"
   }
 }
