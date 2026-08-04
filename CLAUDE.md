@@ -40,7 +40,7 @@ rendered the repair loop's diagnostic SQL, its revised SQL and a raw JSON dump
 of diagnostic rows — none of them gated. Both violate the non-negotiable
 "never show raw SQL to a business user" and the role table's viewer: NO on the
 show-query toggle. Flagged in the 2026-07-15 product assessment (§P0 item 4)
-and still live a year later.
+and still live three weeks later.
 - **Fixed by construction, not by discipline**: both components now take a
   **REQUIRED** `canSeeSql: boolean`. Required rather than
   optional-defaulting-to-false so a future call site cannot inherit a default
