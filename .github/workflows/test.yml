@@ -189,6 +189,16 @@ jobs:
           GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO databridge_app;
           SQL
 
+      # Proves the preflight itself works, against a database that has the role,
+      # the policies and the grants. It is the gate the production role flip
+      # runs before it will touch anything, so it must not be the one thing in
+      # that path that has never executed.
+      - name: Role-flip preflight (must report GO)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://databridge:databridge@localhost:5432/databridge_test
+        run: npx tsx scripts/preflight-role-flip.ts
+
       - name: Start backend as the RLS-bound role
         working-directory: backend
         env:
