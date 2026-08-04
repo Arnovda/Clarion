@@ -31,7 +31,70 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-04 (platform analysis; SQL-leak to viewers closed, RLS gate wired into CI, dependency audit made blocking)
+**Last updated:** 2026-08-04 (improvement plan adopted; Phase 0 done, Phase 1a done — graph writes now stamp tenantId)
+
+**THE PLAN OF RECORD IS `docs/backlog/platform-improvement-plan.md`.** Read it
+before starting platform work. It reduces the review's findings to two causes —
+correctness resting on discipline where construction was possible, and no
+feedback loop from production — and sequences the work by what unblocks what.
+It also lists what NOT to do, which is the part most likely to be ignored.
+
+**THE MONTHLY ROLLUP HAD NEVER WORKED (2026-08-04, fixed).** Sprint 1.2 writes
+`rollup_monthly_<fact>` next to every qualifying fact table and the dashboard
+prompt tells the model to PREFER it. Two halves were broken and they cancelled
+out, which is why nobody saw it:
+- `productContext.detectRollupTables` scanned `./warehouse/product/<slug>` — the
+  **v1 local** layout — and returned early on `az://`. The default is v2 and
+  production is Azure, so it always returned empty.
+- `ConnectorFactory.createProductConnector` only registered views for
+  `product_tables` rows, and rollups are not rows, so the view never existed
+  either. **Fixing only the advertisement would have turned a silent no-op into
+  "table does not exist" on every time-series widget.**
+- The location is now RECORDED at write time (`product_tables.rollup_path`,
+  migration 72) instead of re-derived at read time — the same reason
+  `delta_path` holds an absolute URI. `publishRollup` is called after every
+  fact refresh **including with null**, so a table that stops qualifying does
+  not keep advertising a stale rollup.
+- The name lives in `rollupViewName()` because it is the contract between four
+  surfaces that never see each other: runner, catalog, view registration,
+  semantic context. Pinned by test.
+
+**GRAPH WRITES NOW STAMP `tenantId` — STEP 1 OF 3 (2026-08-04).** The route to
+tenant-scoping Neo4j is: (1) every write stamps, (2) backfill existing nodes,
+(3) add read predicates. **Step 3 must not land before step 2 reports clean** —
+an unstamped node does not leak once predicates exist, it silently vanishes
+from its owner's catalog, which is its own outage.
+- Only `SourceTable`/`SourceColumn` carried it. Now also `ProductTable`,
+  `ProductColumn`, `KpiDefinition`, `QualityRule`, `CrossSourceView` and the
+  `RELATES_TO` edge, on both ON CREATE and ON MATCH. The tenant comes from the
+  mirror row the caller already holds — no new parameters threaded around.
+- **`scripts/lint-graph-tenant-stamp.ts`, in the merge gate.** A write path that
+  forgets `tenantId` fails no test; it just creates an invisible node. Verified
+  to fail: removing one stamp exits 1.
+- **`scripts/backfill-graph-tenant.ts`** does step 2. Report-only unless
+  `--apply`, idempotent, attributes from Postgres, and **refuses to guess** an
+  owner for entities whose mirror row is gone (a `CrossSourceView` with no
+  `connectionId` cannot be attributed). Exits non-zero while anything remains —
+  that exit code is the gate on step 3.
+- **NOT RUN ANYWHERE YET.** Run it against production before step 3.
+
+**A DASHBOARD THAT WAS NEVER VERIFIED NOW SAYS SO (2026-08-04).**
+`validateAndRepairSpec` caught, logged and returned the model's raw output,
+indistinguishable from a spec that passed. Still best-effort — a transient
+warehouse timeout must not throw away a good dashboard — but the spec now
+carries `validation: { ok: false, reason }` and the UI shows an unverified
+notice. Cleared whenever the pass does run, so refine-spec cannot leave a stale
+warning behind.
+
+**CORRECTION — the "16 error leaks" finding was overstated.** A grep found 16
+sites returning `err.message`; checked individually, 15 are narrowly typed
+domain errors (`ConfigValidationError`, `OwnerResolveError`, "Unknown connector
+type", OAuth-session checks) whose message is deliberately user-facing and
+correct as written. One was real — the transformation-preview route's blanket
+catch — and now strips storage URIs and paths while keeping the SQL diagnostic,
+which is the point of a preview. **There is no systemic error-leak problem.**
+
+**Prior last updated:** 2026-08-04 (platform analysis; SQL-leak to viewers closed, RLS gate wired into CI, dependency audit made blocking)
 
 **RAW SQL WAS STREAMING TO EVERY ROLE, INCLUDING VIEWERS (2026-08-04).** The
 admin-only "show query" toggle on `MessageBubble` was cosmetic: while a query
