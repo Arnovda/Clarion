@@ -473,6 +473,9 @@ export async function createRelationship(params: {
   description: string | null;
   aiDraft: boolean;
   pgId: number;
+  /** Stamped onto the node/edge so a tenant-scoped read can find it. See
+   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
+  tenantId?: number | null;
 }): Promise<number> {
   const session = getSession();
   try {
@@ -480,6 +483,7 @@ export async function createRelationship(params: {
       `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
        CREATE (ft)-[r:RELATES_TO {
          pgId:        $pgId,
+         tenantId:    $tenantId,
          fromColPgId: $fromColPgId,
          fromColName: $fromColName,
          toColPgId:   $toColPgId,
@@ -490,6 +494,7 @@ export async function createRelationship(params: {
        }]->(tt)`,
       {
         pgId:        params.pgId,
+        tenantId:    params.tenantId ?? null,
         fromTPgId:   params.fromTablePgId,
         toTPgId:     params.toTablePgId,
         fromColPgId: params.fromColumnPgId ?? null,
@@ -783,6 +788,9 @@ export async function createKpi(params: {
   formulaSql?: string | null;
   ownerName?: string | null;
   aiDraft: boolean;
+  /** Stamped onto the node/edge so a tenant-scoped read can find it. See
+   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
+  tenantId?: number | null;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -792,6 +800,7 @@ export async function createKpi(params: {
        WITH t LIMIT 1
        CREATE (k:KpiDefinition {
          pgId:             $pgId,
+         tenantId:         $tenantId,
          connectionId:     $cid,
          name:             $name,
          description:      $description,
@@ -805,6 +814,7 @@ export async function createKpi(params: {
        CREATE (t)-[:DEFINES_KPI]->(k)`,
       {
         pgId:             params.pgId,
+        tenantId:         params.tenantId ?? null,
         cid:              params.connectionId,
         name:             params.name,
         description:      params.description      ?? null,
@@ -1291,6 +1301,9 @@ export async function createCrossSourceView(params: {
   description?: string | null;
   connectionId?: number | null;
   userId: string | number;
+  /** Stamped onto the node so a tenant-scoped read can find it. See
+   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
+  tenantId?: number | null;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1298,6 +1311,7 @@ export async function createCrossSourceView(params: {
     await session.run(
       `CREATE (v:CrossSourceView {
          pgId:         $pgId,
+         tenantId:     $tenantId,
          name:         $name,
          description:  $description,
          connectionId: $connectionId,
@@ -1305,7 +1319,7 @@ export async function createCrossSourceView(params: {
          createdAt:    $now,
          updatedAt:    $now
        })`,
-      { pgId: params.pgId, name: params.name, description: params.description ?? null, connectionId: params.connectionId ?? null, userId: params.userId, now },
+      { pgId: params.pgId, tenantId: params.tenantId ?? null, name: params.name, description: params.description ?? null, connectionId: params.connectionId ?? null, userId: params.userId, now },
     );
     return params.pgId;
   } finally {
@@ -1589,6 +1603,9 @@ export async function createQualityRule(params: {
   ruleConfig?: Record<string, unknown>;
   passThreshold?: number;
   ownerName?: string | null;
+  /** Stamped onto the node so a tenant-scoped read can find it. See
+   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
+  tenantId?: number | null;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1597,6 +1614,7 @@ export async function createQualityRule(params: {
       `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
        CREATE (q:QualityRule {
          pgId:          $pgId,
+         tenantId:      $tenantId,
          connectionId:  $cid,
          tableName:     $tn,
          ruleName:      $ruleName,
@@ -1613,6 +1631,7 @@ export async function createQualityRule(params: {
        CREATE (q)-[:APPLIES_TO]->(t)`,
       {
         pgId:          params.pgId,
+        tenantId:      params.tenantId ?? null,
         cid:           params.connectionId,
         tn:            params.tableName,
         ruleName:      params.ruleName,
@@ -1930,6 +1949,7 @@ export async function upsertConnectionGraph(
         `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
          CREATE (ft)-[r:RELATES_TO {
            pgId:        $pgId,
+           tenantId:    $tenantId,
            fromColPgId: $fromColPgId,
            fromColName: $fromColName,
            toColPgId:   $toColPgId,
@@ -1940,6 +1960,7 @@ export async function upsertConnectionGraph(
          }]->(tt)`,
         {
           pgId:        rel.pgId,
+          tenantId:    tenantId ?? null,
           fromTPgId:   rel.fromTablePgId,
           toTPgId:     rel.toTablePgId,
           fromColPgId: rel.fromColPgId ?? null,
@@ -2332,6 +2353,14 @@ export async function upsertProductGraph(
     sortOrder: number;
     aiDraft: boolean;
   }>,
+  /**
+   * Stamped onto every node this writes. Neo4j has no tenant scoping of its
+   * own — nodes are matched by a globally-unique, enumerable `pgId` — so the
+   * property has to be on the node before any read predicate can use it.
+   * Optional only so the two legacy call sites can be migrated one at a time;
+   * a null here leaves a node that a future tenant-scoped read will not see.
+   */
+  tenantId?: number | null,
 ): Promise<void> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -2342,6 +2371,7 @@ export async function upsertProductGraph(
         `MERGE (tbl:ProductTable {dataProductId: $dpid, tableName: $tn})
          ON CREATE SET
            tbl.pgId                  = $pgId,
+           tbl.tenantId              = $tenantId,
            tbl.starSchemaId          = $ssid,
            tbl.displayName           = $displayName,
            tbl.description           = $description,
@@ -2357,6 +2387,7 @@ export async function upsertProductGraph(
            tbl.updatedAt             = $now
          ON MATCH SET
            tbl.pgId                  = $pgId,
+           tbl.tenantId              = $tenantId,
            tbl.starSchemaId          = $ssid,
            tbl.displayName           = COALESCE(CASE WHEN tbl.aiDraft = false THEN tbl.displayName ELSE $displayName END, $displayName),
            tbl.description           = COALESCE(CASE WHEN tbl.aiDraft = false THEN tbl.description ELSE $description END, $description),
@@ -2368,6 +2399,7 @@ export async function upsertProductGraph(
            tbl.updatedAt             = $now`,
         {
           pgId:        t.pgId,
+          tenantId:    tenantId ?? null,
           dpid:        dataProductId,
           ssid:        t.starSchemaId,
           tn:          t.tableName,
@@ -2391,6 +2423,7 @@ export async function upsertProductGraph(
          MERGE (col:ProductColumn {tablePgId: $tpid, columnName: $cn})
          ON CREATE SET
            col.pgId                      = $pgId,
+           col.tenantId                  = $tenantId,
            col.tableName                 = $tn,
            col.dataType                  = $dataType,
            col.displayName               = $displayName,
@@ -2408,6 +2441,7 @@ export async function upsertProductGraph(
            col.updatedAt                 = $now
          ON MATCH SET
            col.pgId                      = $pgId,
+           col.tenantId                  = $tenantId,
            col.tableName                 = $tn,
            col.dataType                  = $dataType,
            col.displayName               = COALESCE(CASE WHEN col.aiDraft = false THEN col.displayName ELSE $displayName END, $displayName),
@@ -2423,6 +2457,7 @@ export async function upsertProductGraph(
          MERGE (tbl)-[:HAS_COLUMN]->(col)`,
         {
           pgId:          c.pgId,
+          tenantId:      tenantId ?? null,
           tpid:          c.tablePgId,
           tn:            c.tableName,
           cn:            c.columnName,

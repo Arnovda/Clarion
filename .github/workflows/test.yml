@@ -94,6 +94,12 @@ jobs:
         working-directory: backend
         run: npx tsc --project tsconfig.build.json --noEmit
 
+      # Holds the precondition for tenant-scoping the graph: a node that is
+      # written without tenantId is invisible to a tenant-scoped read, which
+      # fails as an empty catalog rather than an error. No test would catch it.
+      - name: Graph tenant-stamp lint
+        run: npx tsx backend/scripts/lint-graph-tenant-stamp.ts
+
       - name: Run tests
         working-directory: backend
         run: npx vitest run

@@ -50,7 +50,7 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
     const { name, description, connectionId } = req.body as { name: string; description?: string; connectionId?: number };
     if (connectionId != null && !await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const pgId = await graph.nextPgId();
-    await graph.createCrossSourceView({ pgId, name, description: description ?? null, connectionId: connectionId ?? null, userId: req.user!.sub });
+    await graph.createCrossSourceView({ pgId, name, description: description ?? null, connectionId: connectionId ?? null, userId: req.user!.sub, tenantId: req.user!.tenantId });
     res.status(201).json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
 });

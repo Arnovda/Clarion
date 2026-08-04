@@ -101,7 +101,16 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
       };
     });
 
-    await graph.upsertProductGraph(productId, mappedTables, mappedColumns);
+    // The product row carries the tenant, so the graph nodes can be stamped
+    // without threading a parameter through every caller. Neo4j has no tenant
+    // scoping of its own; the property must be on the node before any read
+    // predicate can rely on it.
+    await graph.upsertProductGraph(
+      productId,
+      mappedTables,
+      mappedColumns,
+      (product.tenant_id as number | null) ?? null,
+    );
   } catch (err) {
     // Non-fatal: log and continue — Neo4j sync failure shouldn't block product operations
     log.error({ err }, `Failed to sync product ${productId} to Neo4j`);

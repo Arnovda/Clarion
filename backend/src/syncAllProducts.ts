@@ -24,7 +24,7 @@ async function main() {
   console.log('Ensuring Neo4j constraints…');
   await ensureNeo4jConstraints();
 
-  const products = await adminDb('data_products').select('id', 'name', 'status');
+  const products = await adminDb('data_products').select('id', 'name', 'status', 'tenant_id');
   console.log(`Found ${products.length} data product(s).`);
 
   for (const p of products) {
@@ -102,7 +102,8 @@ async function main() {
       };
     });
 
-    await upsertProductGraph(p.id, mappedTables, mappedColumns);
+    // Stamp the tenant so this backfill produces nodes a tenant-scoped read can see.
+    await upsertProductGraph(p.id, mappedTables, mappedColumns, p.tenant_id ?? null);
 
     console.log(`    ✓ ${tables.length} tables, ${columns.length} columns synced`);
   }

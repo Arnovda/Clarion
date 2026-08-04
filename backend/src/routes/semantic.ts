@@ -549,6 +549,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), validate(create
       relationshipType: String(relationship_type ?? ''),
       description:     description ? String(description) : null,
       aiDraft:         false,
+      tenantId:        req.user!.tenantId,
     });
     // Mirror to Postgres `table_relationships` so Home's "relationships
     // approved / total" counts reflect the new row. Insert with explicit
@@ -773,6 +774,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
         relationshipType: rel.type,
         description:    rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
         aiDraft:        true,
+        tenantId:       req.user!.tenantId,
       });
       // Mirror each new draft into Postgres with explicit id = Neo4j pgId.
       await db('table_relationships')
@@ -841,6 +843,7 @@ router.post('/kpis', requireAuth, requireRole('admin'), validate(createKpiSchema
       formulaSql:      formula_sql     ? String(formula_sql)     : null,
       ownerName:       owner_name      ? String(owner_name)      : null,
       aiDraft:         false,
+      tenantId:        req.user!.tenantId,
     });
 
     const snapshot = { connection_id, name, description, formula_plain_text, formula_sql, owner_name };
