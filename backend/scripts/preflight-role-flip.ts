@@ -149,13 +149,21 @@ async function main(): Promise<void> {
         blockers.push({ kind: 'grant', detail: `${g.table_name}: missing ${g.missing}` });
       }
 
+      // AS MATERIALIZED is load-bearing. Without it the planner is free to
+      // evaluate has_sequence_privilege() before the relkind filter, and it
+      // then errors on the first index it meets — `"knex_migrations_pkey" is
+      // not a sequence`. The CTE forces the filter to run first.
       const seqs = await client.query<{ sequence_name: string }>(`
-        SELECT c.relname AS sequence_name
-          FROM pg_class c
-          JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE n.nspname = 'public' AND c.relkind = 'S'
-           AND NOT has_sequence_privilege($1, c.oid, 'USAGE')
-         ORDER BY c.relname
+        WITH seqs AS MATERIALIZED (
+          SELECT c.oid, c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'public' AND c.relkind = 'S'
+        )
+        SELECT relname AS sequence_name
+          FROM seqs
+         WHERE NOT has_sequence_privilege($1, oid, 'USAGE')
+         ORDER BY relname
       `, [APP_ROLE]);
 
       out(`  sequence grants ... ${seqs.rows.length === 0 ? 'complete' : `${seqs.rows.length} missing USAGE`}`);
