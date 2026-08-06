@@ -108,22 +108,39 @@ Details: `docs/runbooks/db-role-flip.md`.
 
 ## `prod-checks`
 
-Contains one word: `report` or `backfill-graph-tenant`.
+Contains one word: `report`.
 
-Runs the two verifications that gate the tenant-isolation work: the database
-role-flip preflight (read-only), and whether every Neo4j node carries a
-`tenantId`. `report` writes nothing; `backfill-graph-tenant` performs the one
-write, and is idempotent.
+Read-only. Runs the database role-flip preflight against production and reports
+**GO** or **NO-GO** with the blockers named. It reads the PostgreSQL catalog
+only — no business data.
 
-The graph half **cannot currently run from a GitHub runner** — Neo4j has
-`external_enabled = false`, which is the correct posture and means this check
-needs a runner inside the Container Apps environment. The workflow distinguishes
-"could not look" from "looked and found gaps" precisely so an unreachable Neo4j
-is never mistaken for a clean result.
+## `graph-backfill`
 
-Until it reports clean, a tenant predicate must **not** be added to the reads in
-`db/semanticGraph.ts`: an unstamped node does not leak once predicates exist, it
-silently vanishes from its owner's catalog.
+Contains one word: `report`, `apply` or `noop`.
+
+Stamps `tenantId` onto Neo4j nodes written before the write paths started
+setting it — step 2 of 3 towards tenant-scoping the semantic graph:
+
+1. every write stamps `tenantId` — done, held by `lint-graph-tenant-stamp`
+2. existing nodes are backfilled — **this**
+3. reads gain a tenant predicate — only after 2 reports zero remaining
+
+`report` counts and changes nothing; `apply` writes, and is idempotent, so
+re-running the report is the check. Until it comes back clean, a tenant
+predicate must **not** be added to the reads in `db/semanticGraph.ts`: an
+unstamped node does not leak once predicates exist, it silently vanishes from
+its owner's catalog — a quieter outage and a harder one to attribute.
+
+**Why it has its own control instead of living in `prod-checks`:** Neo4j runs
+with `external_enabled = false`, so no GitHub runner can reach it. That check
+sat in `prod-checks` for two days reporting "COULD NOT RUN" on every invocation
+— a check that can neither pass nor fail is not a check. Rather than weaken the
+ingress posture for a maintenance script, the work now runs as a one-shot
+Container Apps **Job** inside the environment, built from the backend's own
+image and configuration, with its output pulled back out of Log Analytics.
+
+The script refuses to guess: an entity whose Postgres mirror row is gone (a
+`CrossSourceView` with no `connectionId`) is reported, never attributed.
 
 ## `relationship-audit`
 

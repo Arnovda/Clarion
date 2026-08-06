@@ -1,0 +1,218 @@
+# Graph tenant backfill — run the one maintenance task that cannot run from CI.
+#
+#   .ops/graph-backfill   contains   `report`, `apply` or `noop`
+#
+# Neo4j runs with `external_enabled = false`: internal ingress only. That is the
+# right posture, and it means a GitHub runner cannot reach it — `prod-checks`
+# has been reporting "COULD NOT RUN" for this check since the day it was added.
+# The fix is not to open Neo4j up. It is to run the work where it belongs: a
+# one-shot Container Apps Job inside the environment, built from the backend's
+# own image, with the backend's own configuration.
+#
+# The job is created on demand and re-imaged to the backend's current build on
+# every run. It is left in place afterwards because re-running the report is
+# exactly how step 3 of the tenant-scoping work gets its go-ahead — a Manual
+# job costs nothing while idle.
+#
+# Configuration is cloned from the backend app the same way
+# provision-jobs-worker.yml clones it: secrets copied by value inside Azure and
+# never echoed, env vars carried across with their secretrefs intact.
+
+name: Graph tenant backfill
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/graph-backfill'
+  workflow_dispatch:
+
+concurrency:
+  group: graph-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read mode
+        id: mode
+        run: |
+          set -euo pipefail
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/graph-backfill | head -1 | tr -d '[:space:]')
+          case "$MODE" in
+            report|apply|noop) ;;
+            *) echo "::error::invalid mode '$MODE' (expected 'report', 'apply' or 'noop')"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Mode: $MODE"
+
+      - name: Log in to Azure
+        if: steps.mode.outputs.mode != 'noop'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Run inside the environment
+        if: steps.mode.outputs.mode != 'noop'
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -uo pipefail
+
+          say() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          JOB="${APP%-backend}-graph-backfill"
+          say "## Graph tenant backfill — \`$MODE\`"
+          say ""
+
+          # ── Clone the backend's configuration ──────────────────────────────
+          ENV_ID=$(az containerapp show -n "$APP" -g "$RG" --query properties.environmentId -o tsv)
+          IMAGE=$(az containerapp show -n "$APP" -g "$RG" \
+                    --query "properties.template.containers[0].image" -o tsv)
+          REGISTRY="${IMAGE%%/*}"
+          # Registry auth mirrors the backend: admin username plus the
+          # acr-password secret copied below. Identity-based pull would need an
+          # AcrPull role assignment the deploy identity cannot create.
+          REG_USER=$(az containerapp show -n "$APP" -g "$RG" \
+                       --query "properties.configuration.registries[0].username" -o tsv)
+          if [ -z "$IMAGE" ] || [ -z "$ENV_ID" ]; then
+            echo "::error::could not read the backend app's image or environment"; exit 1
+          fi
+          say "Image: \`${IMAGE##*/}\`"
+
+          SECRET_ARGS=()
+          for NAME in $(az containerapp secret list -n "$APP" -g "$RG" --query "[].name" -o tsv); do
+            VALUE=$(az containerapp secret show -n "$APP" -g "$RG" --secret-name "$NAME" --query value -o tsv)
+            SECRET_ARGS+=("$NAME=$VALUE")
+          done
+
+          # Carry every env var across, including DATABASE_URL and the NEO4J_*
+          # set — the script needs both stores: Postgres to learn who owns what,
+          # Neo4j to stamp it. ROLE is forced to a value that starts no workers;
+          # this container must run one script and exit.
+          ENV_ARGS=()
+          while IFS=$'\t' read -r NAME VALUE SECREF; do
+            case "$NAME" in ROLE|WORKER_QUEUES|RUN_SCHEDULERS|PORT) continue ;; esac
+            if [ -n "${SECREF:-}" ] && [ "$SECREF" != "None" ]; then
+              ENV_ARGS+=("$NAME=secretref:$SECREF")
+            elif [ -n "${VALUE:-}" ] && [ "$VALUE" != "None" ]; then
+              ENV_ARGS+=("$NAME=$VALUE")
+            fi
+          done < <(az containerapp show -n "$APP" -g "$RG" \
+                     --query "properties.template.containers[0].env[].[name,value,secretRef]" -o tsv)
+          ENV_ARGS+=("RUN_SCHEDULERS=false")
+
+          # ── Create or refresh the job ──────────────────────────────────────
+          ARGS=("dist/scripts/backfillGraphTenant.js")
+          if [ "$MODE" = "apply" ]; then ARGS+=("--apply"); fi
+
+          if az containerapp job show -n "$JOB" -g "$RG" >/dev/null 2>&1; then
+            say "Refreshing \`$JOB\` to the backend's current image"
+            az containerapp job update -n "$JOB" -g "$RG" \
+              --image "$IMAGE" \
+              --command "node" --args "${ARGS[@]}" \
+              --replace-env-vars "${ENV_ARGS[@]}" >/dev/null || {
+                echo "::error::could not update the job"; exit 1; }
+          else
+            say "Creating \`$JOB\` (manual trigger, one execution, no ingress)"
+            az containerapp job create -n "$JOB" -g "$RG" \
+              --environment "$ENV_ID" \
+              --trigger-type Manual \
+              --replica-timeout 1800 \
+              --replica-retry-limit 0 \
+              --parallelism 1 \
+              --replica-completion-count 1 \
+              --image "$IMAGE" \
+              --registry-server "$REGISTRY" \
+              --registry-username "$REG_USER" \
+              --registry-password "secretref:acr-password" \
+              --cpu 0.5 --memory 1Gi \
+              --secrets "${SECRET_ARGS[@]}" \
+              --env-vars "${ENV_ARGS[@]}" \
+              --command "node" --args "${ARGS[@]}" >/dev/null || {
+                echo "::error::could not create the job"; exit 1; }
+          fi
+
+          # ── Run it ─────────────────────────────────────────────────────────
+          EXEC=$(az containerapp job start -n "$JOB" -g "$RG" --query name -o tsv)
+          if [ -z "$EXEC" ]; then echo "::error::job did not start"; exit 1; fi
+          say "Execution: \`$EXEC\`"
+          say ""
+
+          STATUS=""
+          for _ in $(seq 1 60); do
+            STATUS=$(az containerapp job execution show -n "$JOB" -g "$RG" \
+                       --job-execution-name "$EXEC" --query properties.status -o tsv 2>/dev/null || echo "")
+            echo "  status=$STATUS"
+            case "$STATUS" in Succeeded|Failed|Degraded|Stopped) break ;; esac
+            sleep 15
+          done
+
+          # ── Read what it said ──────────────────────────────────────────────
+          # The script's whole value is its report, and the report only exists in
+          # the container's stdout. Log Analytics ingestion lags by a minute or
+          # two, so poll rather than read once and conclude it printed nothing.
+          az extension add --name log-analytics --only-show-errors >/dev/null 2>&1 || true
+          WS=$(az monitor log-analytics workspace list --resource-group "$RG" \
+                 --query "[0].customerId" -o tsv 2>/dev/null || echo "")
+
+          LOGS=""
+          if [ -n "$WS" ]; then
+            Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago(1h) | where ContainerGroupName_s startswith '$EXEC' | project TimeGenerated, Log_s | order by TimeGenerated asc | limit 500"
+            for _ in $(seq 1 10); do
+              if az monitor log-analytics query --workspace "$WS" --analytics-query "$Q" -o json > /tmp/logs.json 2>/dev/null; then
+                if [ "$(jq 'length' /tmp/logs.json)" != "0" ]; then
+                  LOGS=$(jq -r '.[].Log_s' /tmp/logs.json)
+                  break
+                fi
+              fi
+              sleep 20
+            done
+          fi
+
+          say "### Output"
+          say ""
+          say '```'
+          if [ -n "$LOGS" ]; then
+            printf '%s\n' "$LOGS" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            say "(no log lines retrieved — the execution status below is the only signal)"
+          fi
+          say '```'
+          say ""
+
+          case "$STATUS" in
+            Succeeded)
+              say "**CLEAN** — every graph entity carries \`tenantId\`."
+              say ""
+              say "This is the precondition for step 3: adding a tenant predicate to the reads"
+              say "in \`db/semanticGraph.ts\`. It is now met."
+              ;;
+            Failed)
+              # The script exits non-zero while anything remains unstamped, which
+              # is a finding, not a broken pipeline. Do not fail the workflow on
+              # it — that would make the honest answer look like an outage.
+              say "**INCOMPLETE** — entities remain unstamped (or the run errored; read the output above)."
+              say ""
+              if [ "$MODE" = "report" ]; then
+                say "Set \`.ops/graph-backfill\` to \`apply\` to stamp them."
+              else
+                say "A remaining entity whose Postgres mirror row is gone cannot be attributed to"
+                say "a tenant, and the script refuses to guess. Those have to be resolved by hand."
+              fi
+              say ""
+              say "A tenant predicate must **NOT** be added to the read path yet: these entities"
+              say "would vanish from their owner's catalog."
+              ;;
+            *)
+              say "**UNKNOWN** — execution ended in state \`${STATUS:-unreported}\`."
+              say ""
+              say "Read this as unknown, not as clean."
+              ;;
+          esac

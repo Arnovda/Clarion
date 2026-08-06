@@ -1,0 +1,29 @@
+report
+
+# Stamp `tenantId` onto Neo4j nodes written before the write paths started
+# setting it. Step 2 of 3 towards tenant-scoping the semantic graph:
+#
+#   1. every write stamps tenantId     — done, held by lint-graph-tenant-stamp
+#   2. existing nodes are backfilled   — THIS
+#   3. reads gain a tenant predicate   — only after 2 reports zero remaining
+#
+# Step 3 must not land before this reports clean. An unstamped node does not
+# leak once predicates exist; it silently disappears from its owner's catalog,
+# which is a quieter outage and a harder one to attribute.
+#
+#   report   count what is unstamped and change nothing
+#   apply    stamp it. Idempotent — re-running IS the check
+#   noop     do nothing
+#
+# Why this needs its own control rather than living in `prod-checks`: Neo4j runs
+# with `external_enabled = false`, so no GitHub runner can reach it. That is the
+# correct posture and not worth weakening for a maintenance script. Instead the
+# work runs where it belongs — a one-shot Container Apps Job inside the
+# environment, from the backend's own image. The job is created on demand,
+# re-imaged to the backend's current build on every run, and left in place
+# because re-running is how step 3 gets its go-ahead.
+#
+# The script reads tenant ownership from the Postgres mirror rows and REFUSES TO
+# GUESS: an entity whose mirror row is gone (a CrossSourceView with no
+# connectionId) is reported, never attributed. It exits non-zero while anything
+# remains unstamped, and that exit code is the gate on step 3.

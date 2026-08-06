@@ -147,12 +147,23 @@ from its owner's catalog, which is its own outage.
 - **`scripts/lint-graph-tenant-stamp.ts`, in the merge gate.** A write path that
   forgets `tenantId` fails no test; it just creates an invisible node. Verified
   to fail: removing one stamp exits 1.
-- **`scripts/backfill-graph-tenant.ts`** does step 2. Report-only unless
+- **`src/scripts/backfillGraphTenant.ts`** does step 2. Report-only unless
   `--apply`, idempotent, attributes from Postgres, and **refuses to guess** an
   owner for entities whose mirror row is gone (a `CrossSourceView` with no
   `connectionId` cannot be attributed). Exits non-zero while anything remains —
   that exit code is the gate on step 3.
-- **NOT RUN ANYWHERE YET.** Run it against production before step 3.
+- **It lives under `src/`, not `scripts/`, and that is the whole point.** Only
+  `src/` is compiled into the production image, and Neo4j has
+  `external_enabled = false` — so a script under `scripts/` can be run against a
+  laptop and against nothing else. Verified by building to a temp `outDir`:
+  `dist/scripts/backfillGraphTenant.js` is emitted, which is the path the job
+  invokes. `src/syncAllProducts.ts` is here for the same reason.
+- **Run it with `.ops/graph-backfill`** (`report` | `apply` | `noop`), which
+  creates a one-shot Container Apps Job from the backend's current image and
+  configuration, runs it inside the environment, and pulls its stdout back out
+  of Log Analytics. The equivalent step in `.ops/prod-checks` was **removed**:
+  it reported "COULD NOT RUN" on every invocation for lack of network reach, and
+  a check that can neither pass nor fail is not a check.
 
 **A DASHBOARD THAT WAS NEVER VERIFIED NOW SAYS SO (2026-08-04).**
 `validateAndRepairSpec` caught, logged and returned the model's raw output,
