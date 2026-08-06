@@ -1,0 +1,182 @@
+# Production logs — read the signals the platform has been promising to watch.
+#
+#   .ops/prod-logs   contains a lookback window: `24h`, `7d`, …
+#
+# CLAUDE.md is full of sentences of the form "watch for X in the logs", every
+# one of them followed by "NOT yet observed: no log access from the sandbox".
+# Those are not observations, they are intentions, and this platform's recurring
+# failure mode is precisely the change that shipped, was believed to work, and
+# was inert for weeks. A signal nobody can read is not a feedback loop.
+#
+# So this workflow does the reading. It is a Log Analytics query and nothing
+# else: no writes, no configuration, no traffic. It never fails the build — the
+# FINDING is the output, and a query that could not run is reported as "could
+# not run" rather than quietly counted as clean.
+#
+# Log Analytics keeps 30 days.
+
+name: Production logs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/prod-logs'
+  workflow_dispatch:
+
+concurrency:
+  group: prod-logs
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read lookback window
+        id: window
+        run: |
+          set -euo pipefail
+          W=$(grep -vE '^[[:space:]]*(#|$)' .ops/prod-logs | head -1 | tr -d '[:space:]')
+          if ! echo "$W" | grep -qE '^[0-9]+[hd]$'; then
+            echo "::error::invalid window '$W' (expected e.g. 24h or 7d)"; exit 1
+          fi
+          echo "window=$W" >> "$GITHUB_OUTPUT"
+          echo "Looking back: $W"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Query
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          WINDOW: ${{ steps.window.outputs.window }}
+        run: |
+          # Deliberately not -e: a denied or empty query is a result to report,
+          # not a broken build.
+          set -uo pipefail
+
+          # Write findings to BOTH stdout and the job summary — only stdout is
+          # retrievable through the logs API, only the summary is pleasant to read.
+          # printf, not echo: a log excerpt beginning with "-" would otherwise be
+          # eaten as an option, and the one line worth reading is the one that
+          # disappears.
+          say() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          say "## Production logs — last \`$WINDOW\`"
+          say ""
+
+          az extension add --name log-analytics --only-show-errors >/dev/null 2>&1 || true
+
+          WS=$(az monitor log-analytics workspace list --resource-group "$RG" \
+                 --query "[0].customerId" -o tsv 2>/dev/null || echo "")
+          if [ -z "$WS" ]; then
+            say "**COULD NOT RUN** — no Log Analytics workspace readable in the resource group."
+            say ""
+            say "That says nothing about the logs: either the workspace lives elsewhere, or the"
+            say "deploy identity cannot list it. Do not read this as clean."
+            exit 0
+          fi
+
+          # Both apps run the same image and the same code paths, so a missing
+          # grant can surface in either. The worker name follows the derivation
+          # deploy.yml already uses for the sync worker.
+          WORKER="${APP%-backend}-jobs-worker"
+
+          # ── Volume first ────────────────────────────────────────────────────
+          # A report with no findings is meaningless if nothing was running.
+          # Print the denominator before the numerators.
+          VOL_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') | summarize lines = count() by app = ContainerAppName_s | order by lines desc"
+
+          if ! az monitor log-analytics query --workspace "$WS" \
+                 --analytics-query "$VOL_Q" -o json > /tmp/vol.json 2>/tmp/qerr; then
+            say "**COULD NOT RUN** — the log query failed."
+            say ""
+            say '```'
+            head -c 2000 /tmp/qerr 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
+            say '```'
+            say ""
+            say "Read this as *unknown*, not as clean."
+            exit 0
+          fi
+
+          say "### Volume"
+          say ""
+          say '```'
+          if [ "$(jq 'length' /tmp/vol.json)" = "0" ]; then
+            say "no log lines at all in this window"
+          else
+            jq -r '.[] | "\(.app)  \(.lines) lines"' /tmp/vol.json | while read -r line; do
+              say "$line"
+            done
+          fi
+          say '```'
+          say ""
+
+          # ── Signatures ──────────────────────────────────────────────────────
+          # One round trip, bucketed server-side. `contains` rather than `has`
+          # because several of these phrases carry punctuation that token-based
+          # matching would split.
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+
+          say "### Signatures"
+          say ""
+
+          if ! az monitor log-analytics query --workspace "$WS" \
+                 --analytics-query "$SIG_Q" -o json > /tmp/sig.json 2>/tmp/qerr; then
+            say "**COULD NOT RUN** — the signature query failed."
+            say '```'
+            head -c 2000 /tmp/qerr 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
+            say '```'
+            exit 0
+          fi
+
+          COUNT=$(jq 'length' /tmp/sig.json)
+          if [ "$COUNT" = "0" ]; then
+            say "No signature matched. Read that against the volume above: in a quiet window"
+            say "it means nothing was exercised, not that nothing is wrong."
+            say ""
+          fi
+
+          jq -r '.[] | [.sig, (.n|tostring), .firstSeen, .lastSeen, (.example // "" | gsub("[\r\n]"; " ") | .[0:400])] | @tsv' /tmp/sig.json \
+          | while IFS=$'\t' read -r SIG N FIRST LAST EXAMPLE; do
+              case "$SIG" in
+                grant-missing)
+                  MEANING="BAD — the app role is missing a GRANT on some table. This is the residual risk of the database role flip: verification exercised login, not every code path. Fix it with a migration that grants the table, not by reverting the role." ;;
+                rls-write-denied)
+                  MEANING="BAD — a row-level security policy refused a write. Fail-closed, which is the right direction, but a user hit a wall. Check that the policy covers the writing tenant context." ;;
+                ownership-refused)
+                  MEANING="INVESTIGATE — the tenant ownership gate turned traffic away. A burst means it is refusing legitimate requests (a graph entity whose Postgres mirror row is gone), not that someone is probing." ;;
+                runner-active)
+                  MEANING="GOOD — the child-process query runner announced itself. This is the positive signal whose ABSENCE means it silently fell back to in-process execution." ;;
+                runner-degraded)
+                  MEANING="BAD — the runner could not find its compiled script and fell back in-process. DUCKDB_RUNNER=child is achieving nothing." ;;
+                *)
+                  MEANING="no interpretation recorded" ;;
+              esac
+              say "**\`$SIG\`** — $N occurrence(s)"
+              say ""
+              say "- first \`$FIRST\`, last \`$LAST\`"
+              say "- $MEANING"
+              say ""
+              say '```'
+              say "$EXAMPLE"
+              say '```'
+              say ""
+            done
+
+          # Absence is a finding for the POSITIVE signal only. Announcing "no
+          # grant-missing, therefore clean" would repeat the exact mistake this
+          # workflow exists to stop.
+          if ! jq -e '.[] | select(.sig | startswith("runner-"))' /tmp/sig.json >/dev/null 2>&1; then
+            say "**\`runner-active\` never appeared.** With \`.ops/duckdb-runner\` set to \`child\`,"
+            say "that line is emitted once on the first query after boot. Its absence means"
+            say "either no warehouse query ran in this window, or the runner is not active and"
+            say "every query is running in-process."
+            say ""
+          fi

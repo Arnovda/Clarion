@@ -1,0 +1,37 @@
+24h
+
+# How far back to look in production logs.
+#
+#   <number>h  or  <number>d   — e.g. 24h, 7d. Log Analytics keeps 30 days.
+#
+# Editing this file runs a READ-ONLY query against the Log Analytics workspace
+# and reports whether a short list of known failure signatures appeared. It
+# changes nothing, so re-run it as often as you like — the point is that it is
+# cheap enough to actually be used.
+#
+# Every one of these signatures is something CLAUDE.md already tells the next
+# person to "watch for", and none of them has ever been looked at, because
+# looking meant having Azure credentials on a laptop. That is the gap this
+# closes: the signal a change was supposed to produce is now readable from a
+# workflow log by anyone on the team.
+#
+# What it looks for:
+#
+#   grant-missing     42501 / insufficient_privilege / permission denied for
+#                     — a table the app role was never granted. THE residual
+#                     risk of the database role flip: verification exercised
+#                     login, not every code path.
+#   rls-write-denied  a policy refusing an INSERT/UPDATE. Fail-closed, which is
+#                     the right direction, but it means a user hit a wall.
+#   ownership-refused the tenant ownership gate turning away traffic. A burst
+#                     means it is rejecting legitimate requests — a graph entity
+#                     whose Postgres mirror row is missing — not that someone is
+#                     probing.
+#   runner-active     POSITIVE signal. The child-process query runner announcing
+#                     itself once per boot. Its absence, with DUCKDB_RUNNER set
+#                     to `child`, means it silently fell back in-process.
+#   runner-degraded   the runner saying so explicitly.
+#
+# A clean report is only as good as the traffic behind it: no `grant-missing`
+# in a window where nobody used the product proves nothing. The report prints
+# the total log volume for exactly that reason — read it first.
