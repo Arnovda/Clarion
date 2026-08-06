@@ -104,6 +104,11 @@ mode**, the same URL with `?manage=1`.
   `seedQuestion`, which only pre-fills): the topic page promises that clicking
   a question ANSWERS it, and landing on a filled-in box breaks that. Fires at
   most once per (question, product).
+- **The handoff itself is committed at `docs/handoffs/topic-first-data/`** —
+  README (the binding spec, including the "explicitly removed — do not carry
+  over" list), both screen PNGs, and the interactive prototype. Read it before
+  changing anything on these two screens; the copy and the token values in it
+  are final, and several of the removals are load-bearing rather than taste.
 - Tests: `src/tests/products-topic.test.ts` — tenant isolation (404 not 403),
   the measure/lookup count split, that no `dim_`/snake_case name can reach the
   break-down sentence, the KPI-name fallback, and the whitespace case above.
