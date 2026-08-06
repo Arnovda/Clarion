@@ -25,11 +25,18 @@
  * Read-only against Postgres; writes only `tenantId`, only where it is missing.
  * Idempotent — safe to re-run, and re-running is the check.
  *
- *   npx tsx backend/scripts/backfill-graph-tenant.ts          # report only
- *   npx tsx backend/scripts/backfill-graph-tenant.ts --apply  # write
+ *   npx tsx backend/src/scripts/backfillGraphTenant.ts          # report only
+ *   npx tsx backend/src/scripts/backfillGraphTenant.ts --apply  # write
+ *
+ * It lives under src/, not scripts/, for one reason: Neo4j runs with
+ * `external_enabled = false`, so nothing outside the Container Apps environment
+ * can reach it — correctly. Only src/ is compiled into the production image, so
+ * this is the difference between a script that can be run against production
+ * and one that can only be run against a laptop. `src/syncAllProducts.ts` is
+ * here for the same reason.
  */
-import { semanticDb } from '../src/db/knex';
-import { getSession, closeDriver } from '../src/db/neo4j';
+import { semanticDb } from '../db/knex';
+import { getSession, closeDriver } from '../db/neo4j';
 
 const APPLY = process.argv.includes('--apply');
 
