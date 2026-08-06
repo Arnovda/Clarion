@@ -376,6 +376,8 @@ async function checkReferentialIntegrity(
   const totalResult = await db.all(`SELECT COUNT(*) AS cnt FROM ${tempTable}`);
   const totalRows = Number(totalResult[0]?.cnt ?? 0);
   const failures: Record<string, unknown>[] = [];
+  /** FKs whose target dimension could not be read at all — see below. */
+  const unreadable: Record<string, unknown>[] = [];
 
   for (const fk of fkColumns) {
     if (!fk.fk_target_table || !fk.fk_target_column) continue;
@@ -418,9 +420,41 @@ async function checkReferentialIntegrity(
           sample_orphans: samples.map((s) => s.orphan_value),
         });
       }
-    } catch {
-      // Target table may not exist in DuckDB — skip this FK
+    } catch (err) {
+      // The target dimension could not be read — it was never materialised,
+      // or it is owned by another product that isn't loaded into this session.
+      //
+      // This used to be swallowed, which meant a dimension that failed to load
+      // reported the same as a dimension whose every key matched: PASS. The
+      // check that exists to prove the star joins up was, in exactly the case
+      // where it doesn't, silent. Record it instead — it must not read as
+      // clean, and it must name the dimension so the fix is obvious.
+      unreadable.push({
+        fk_column: fk.column_name,
+        target_table: targetTableName,
+        target_column: fk.fk_target_column,
+        reason: err instanceof Error ? err.message : 'target dimension not readable',
+      });
     }
+  }
+
+  // Reported as `error`, not `fail`: nothing is known to be wrong with the
+  // DATA, we were unable to look. Distinguishing the two matters — "unverified"
+  // and "verified broken" call for different responses. Checks are advisory
+  // and never abort a build, so this changes what is reported, not what ships.
+  if (unreadable.length > 0 && failures.length === 0) {
+    return {
+      check_type: 'ref_integrity',
+      status: 'error',
+      bk_columns: [],
+      total_rows: totalRows,
+      distinct_bk_rows: 0,
+      duplicate_count: 0,
+      sample_duplicates: unreadable,
+      message: `Referential integrity NOT VERIFIED — could not read ${unreadable.length} target dimension(s): `
+        + `${unreadable.map((u) => u.target_table).join(', ')}. The dimension may not be materialised, `
+        + `or may be owned by a product this one does not depend on.`,
+    };
   }
 
   if (failures.length === 0) {
@@ -437,6 +471,9 @@ async function checkReferentialIntegrity(
   }
 
   const totalOrphans = failures.reduce((sum, f) => sum + (f.orphan_count as number), 0);
+  const unverified = unreadable.length > 0
+    ? ` ${unreadable.length} further column(s) could not be verified at all (${unreadable.map((u) => u.target_table).join(', ')}).`
+    : '';
   return {
     check_type: 'ref_integrity',
     status: 'fail',
@@ -444,8 +481,8 @@ async function checkReferentialIntegrity(
     total_rows: totalRows,
     distinct_bk_rows: 0,
     duplicate_count: totalOrphans,
-    sample_duplicates: failures,
-    message: `Referential integrity FAILED — ${totalOrphans} orphaned FK value(s) across ${failures.length} column(s).`,
+    sample_duplicates: [...failures, ...unreadable],
+    message: `Referential integrity FAILED — ${totalOrphans} orphaned FK value(s) across ${failures.length} column(s).${unverified}`,
   };
 }
 

@@ -8,6 +8,9 @@
  * designed with full richness.
  *
  * Recommended thinking budget: 8000 tokens (more tables to reason about).
+ *
+ * Modelling doctrine (shared with the connector templates and the
+ * star-schema prompt): docs/DIMENSIONAL_MODEL.md.
  */
 
 import { ColumnDesign } from './starSchemaPrompt';
@@ -152,12 +155,21 @@ The bus matrix identifies:
 ━━━ KIMBALL METHODOLOGY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **Dimensions:**
-- Surrogate keys: every dim gets {entity}_key as INTEGER via ROW_NUMBER(). Keep natural key too.
+- **KEYS: key every dim on the SOURCE SYSTEM'S OWN id, aliased {entity}_id.
+  NEVER generate one with ROW_NUMBER().** Product tables are overwritten in
+  full on every refresh, so a position-based key is renumbered each time and a
+  dimension rebuilt on its own silently re-points every fact into it — no
+  error, no failed check, just wrong answers. The source id is durable; use it.
+  (dim_date is the one exception: its key is derived from the date itself.)
+- **Every dim MUST carry an unknown member**: one extra row keyed -1 (or '-1'
+  for text keys) labelled 'Unknown', appended with UNION ALL. Facts COALESCE
+  their FKs onto it, so a dim without one turns every such fact row into an
+  orphan.
 - Denormalize lookups: fold classification/lookup tables INTO their parent dimension
   (customer_groups → dim_customer, product_categories → dim_product, btw_tarieven → dim_article).
   Only separate if the lookup has its own independent facts.
 - Flatten hierarchies: no snowflaking — one flat dimension table per entity.
-- SCD: default Type 1 (overwrite). Only Type 2 if history tracking is confirmed needed.
+- SCD: Type 1 (overwrite). Type 2 is not supported by this platform's writer — do not design for it.
 - Include ALL descriptive attributes — dimensions should be RICH, not just IDs.
 
 **Facts:**
@@ -165,11 +177,14 @@ The bus matrix identifies:
 - Fact table types: transaction, periodic_snapshot, accumulating_snapshot, factless.
 - Measures: classify as additive, semi-additive, or non-additive.
   For ratios: store numerator + denominator as additive columns.
-- FKs in facts: named to match target dim's surrogate key. Use COALESCE(dim_key, -1) for unknowns.
+- FKs in facts: same NAME and same VALUE as the target dim's key column, always
+  COALESCE'd onto the unknown member — COALESCE(source_id, -1). A NULL FK
+  disappears from an inner join, which is how a fact quietly stops adding up.
 - Degenerate dims: transaction/document numbers stay in the fact as plain columns.
 - Never place text attributes in fact tables — move them to dimensions.
-- Role-playing dims: when one dim appears multiple times (order_date, ship_date),
-  create separate FK aliases all pointing to dim_date.
+- Role-playing dates: when a fact has several dates (order_date, ship_date),
+  emit one {role}_date_key per role, all pointing at dim_date. That is what
+  makes "ordered in March" and "shipped in March" different questions.
 
 **Data Products (groupings):**
 - Product names: plain business nouns (Sales, Purchases, Inventory, Articles, HR).
@@ -185,7 +200,10 @@ The bus matrix identifies:
 Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables are pre-loaded as views.
 
 - Dimensions execute FIRST; facts execute SECOND (after dims are materialized as views)
-- Fact SQL can JOIN to materialized dims to resolve natural keys → surrogate keys
+- Facts do NOT need to JOIN dims: the fact carries the same durable id the dim
+  is keyed on, so the join is available at query time without one at build
+  time. Avoiding the build-time join is what lets a dropped dimension leave a
+  surviving fact intact.
 - ALWAYS use TRY_CAST (not CAST) for type conversions — source data has 'None', 'null', '', 'N/A'
 - Use NULLIF(TRIM(CAST(col AS VARCHAR)), '') before TRY_CAST for string→number conversions
 - strftime(value, format) — DuckDB arg order (not format, value)
@@ -224,7 +242,7 @@ casualty of a token-budget overrun. Budget aggressively:
 - Keep transformation_sql concise: use short table aliases (a, b, c), no comments in SQL.
 - Keep column descriptions to one short sentence (< 12 words).
 - OMIT the lineage[] field unless the column transformation is non-trivial.
-  Surrogate keys, direct passthrough columns, and simple CASTs do NOT need lineage.
+  Key columns, direct passthrough columns, and simple CASTs do NOT need lineage.
 - Do NOT add extra whitespace or pretty-print. Compact JSON is fine.
 - If you find yourself approaching 20 tables, MERGE rather than ADD. A complete
   16-table design beats a truncated 24-table one.
@@ -238,19 +256,19 @@ casualty of a token-budget overrun. Budget aggressively:
       "table_name": "dim_article",
       "display_name": "Article",
       "description": "Conformed article dimension with product hierarchy and pricing",
-      "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY a.artikel_id) AS article_key, a.artikel_id, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ...",
+      "transformation_sql": "SELECT a.artikel_id AS article_id, a.naam AS article_name, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ... UNION ALL SELECT CAST(-1 AS BIGINT), CAST('Unknown' AS VARCHAR), ...",
       "source_tables": ["artikelen", "artikelgroepen", "btw_tarieven"],
       "columns": [
         {
-          "column_name": "article_key",
-          "data_type": "INTEGER",
-          "display_name": "Article Key",
-          "description": "Surrogate key",
-          "column_role": "surrogate_key",
-          "transformation_expression": "ROW_NUMBER() OVER (ORDER BY a.artikel_id)",
+          "column_name": "article_id",
+          "data_type": "BIGINT",
+          "display_name": "Article ID",
+          "description": "Source article id",
+          "column_role": "natural_key",
+          "transformation_expression": "a.artikel_id",
           "scd_type": 1,
           "sort_order": 0,
-          "lineage": [{"source_table_name": "artikelen", "source_column_name": "artikel_id", "transformation_description": "Surrogate from natural key"}]
+          "lineage": []
         }
       ]
     }
@@ -262,14 +280,15 @@ casualty of a token-budget overrun. Budget aggressively:
       "description": "One row per sales order line item",
       "grain": "One row per sales order line",
       "fact_table_type": "transaction",
-      "transformation_sql": "SELECT COALESCE(da.article_key, -1) AS article_key, ... FROM verkooporder_regels r LEFT JOIN dim_article da ON ...",
+      "transformation_sql": "SELECT COALESCE(r.artikel_id, -1) AS article_id, COALESCE(TRY_CAST(strftime(TRY_CAST(o.datum AS DATE), '%Y%m%d') AS INTEGER), -1) AS order_date_key, ... FROM verkooporder_regels r JOIN verkooporders o ON ...",
       "source_tables": ["verkooporders", "verkooporder_regels"],
       "dimensions_used": ["dim_article", "dim_customer", "dim_date"],
       "columns": [...]
     }
   ],
   "relationships": [
-    {"from_table_name": "fact_sales_order_lines", "from_column_name": "article_key", "to_table_name": "dim_article", "to_column_name": "article_key", "relationship_type": "fact_to_dim"}
+    {"from_table_name": "fact_sales_order_lines", "from_column_name": "article_id", "to_table_name": "dim_article", "to_column_name": "article_id", "relationship_type": "fact_to_dim"},
+    {"from_table_name": "fact_sales_order_lines", "from_column_name": "order_date_key", "to_table_name": "dim_date", "to_column_name": "date_key", "relationship_type": "fact_to_dim"}
   ],
   "data_products": [
     {

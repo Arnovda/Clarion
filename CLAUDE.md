@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-06 (TOPIC-FIRST DATA EXPERIENCE — `/topics/[id]` replaces `/products` as the front door)
+**Last updated:** 2026-08-06 (ONE DIMENSIONAL-MODELLING DOCTRINE — `docs/DIMENSIONAL_MODEL.md`)
+
+**CLARION HAD TWO CONTRADICTORY STAR-SCHEMA DOCTRINES (2026-08-06, fixed).**
+Which one a customer got depended on whether a connector template matched.
+The templates built a **natural-key star**; `starSchemaPrompt.ts` and
+`busMatrixPrompt.ts` instructed the model to generate **`ROW_NUMBER()`
+surrogate keys**. Nobody had written down which was correct, so neither could
+be wrong. **`docs/DIMENSIONAL_MODEL.md` is now the single contract — read it
+before touching a template, either prompt, or the transformation checks.**
+- **The templates were right and the AI prompt was dangerous.** A positional
+  key is regenerated on every refresh (`commit_table.py` writes
+  `mode="overwrite"`), and facts/dims can be refreshed independently (Manage
+  mode has a per-table Run). So a dimension rebuilt on its own **silently
+  re-points every fact into it** — no error, no failed check, just revenue
+  against the wrong customer. The classical reasons for surrogate keys don't
+  apply here yet: SCD2 isn't built, DuckDB dictionary-encodes strings, and
+  GUIDs/Odoo ids are stable. **When SCD2 lands the key must be DURABLE** (a
+  hash, or a persisted mapping) — never positional.
+- **`dim_date` was orphaned in BOTH templates.** All twelve facts declared it
+  in `dimensionsUsed`; **not one had a relationship to it**, and no fact had a
+  date key. The calendar showed up in the product, the catalog and the topic
+  page's break-down line while the query layer had no idea how to reach it —
+  and the whole conformance suite passed. Facts now emit one
+  `{role}_date_key` (`dateKeyExpr`, YYYYMMDD) **per date role**, which is also
+  what makes "invoiced in March" and "due in March" different questions.
+- **`validateStarSchemaTemplate` now checks JOINABILITY both ways** — every
+  `dimensionsUsed` entry must have a relationship, and every relationship must
+  be declared. That is the gate that was blind to the bug above. It also
+  refuses a `surrogate_key` column and a dim without an unknown member.
+  Pinned by 6 tests that each fail when the invariant is broken.
+- **Every dim now carries an UNKNOWN MEMBER** (`withUnknownMember`, keyed
+  `-1`/`'-1'`, labelled Unknown) and **every fact FK is COALESCE'd onto it**.
+  A NULL FK disappears from an inner join, which is how a fact table quietly
+  stops adding up; EO leaves optional references as empty GUIDs and Odoo
+  leaves many2one fields NULL, so this was live. **`DIM_DATE_SQL` gained one
+  too** — mandatory now that facts COALESCE dates to `-1`.
+  **dim→dim references are deliberately NOT coalesced**: on a dimension a null
+  usually means *genuinely none* (a partner with no parent), and collapsing
+  that into Unknown would invent a hierarchy edge.
+- **The calendar range widened to 2000-01-01 … +5y.** Facts now carry real
+  date keys, so a date outside the generated range is an ORPHAN, not the
+  unknown member (only NULL/unparseable becomes -1). A day costs one row.
+- **`checkReferentialIntegrity` no longer fails open.** An unreadable target
+  dimension was swallowed by a bare `catch {}` and the FK skipped — so a dim
+  that failed to load reported the same as one whose every key matched: PASS.
+  It now reports `error` ("NOT VERIFIED") naming the dimension. Deliberately
+  `error` not `fail`: nothing is known to be wrong with the data, we were
+  unable to look, and "unverified" vs "verified broken" want different
+  responses. Checks are advisory and never abort a build, so this changes
+  what is reported, not what ships.
+- **Both template versions bumped to 2.** Existing materialised products keep
+  version 1 until an explicit re-design — the upgrade flow is still the open
+  item it was.
+- Verified: connectors 130/130 (incl. the DuckDB-execution suites that assert
+  DESCRIBE equality — which is what proves the UNION ALL literal types and
+  column order are right), backend 217 passed / 4 skipped, both typechecks
+  clean, all eight lint ratchets at baseline.
+
+**Prior last updated:** 2026-08-06 (TOPIC-FIRST DATA EXPERIENCE — `/topics/[id]` replaces `/products` as the front door)
 
 **THE FRONT DOOR IS NOW A TOPIC, NOT A DATA PRODUCT (2026-08-06).** Implements
 the `design_handoff_topic_first_data` handoff. `/products` served the admin who

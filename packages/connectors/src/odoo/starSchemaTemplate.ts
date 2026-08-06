@@ -21,16 +21,28 @@
  *   • Every table's SQL reads ONLY the entities in its `sourceEntities`
  *     (validated by the template test suite, executed against synthetic
  *     tables in DuckDB).
+ *   • Every dim carries an UNKNOWN MEMBER keyed -1 and every fact FK is
+ *     COALESCE'd onto it — Odoo leaves optional many2one fields false/NULL,
+ *     and a NULL FK silently drops the row from an inner join.
+ *   • Every fact date also emits a `<role>_date_key` (YYYYMMDD) into the
+ *     platform's `dim_date`; the raw DATE column stays for exact filtering.
+ *
+ * Doctrine: docs/DIMENSIONAL_MODEL.md.
  *
  * Versioning: bump `version` on any shape change; already-materialised
  * customers stay on their version until an explicit re-design.
  */
 
-import type {
-  StarSchemaTemplate,
-  TemplateColumn,
-  TemplateDimension,
-  TemplateFact,
+import {
+  dateKeyColumn,
+  dateKeyExpr,
+  withUnknownMember,
+  UNKNOWN_KEY_NUMERIC,
+  type StarSchemaTemplate,
+  type TemplateColumn,
+  type TemplateDimension,
+  type TemplateFact,
+  type UnknownMemberSpec,
 } from '../starSchema';
 
 // ─── Column helpers (concise builders — this file is 90% data) ─────────────
@@ -66,16 +78,21 @@ const measure = (
 
 const MONEY = 'DECIMAL(18,4)';
 
+/** Odoo keys are integers, so the sentinel is numeric. */
+const unknown = (keyColumn: string, labelColumn: string): UnknownMemberSpec => ({
+  keyColumn, keyLiteral: String(UNKNOWN_KEY_NUMERIC), labelColumn, label: 'Unknown',
+});
+
 // ─── Conformed dimensions ───────────────────────────────────────────────────
 
-const DIMENSIONS: TemplateDimension[] = [
+const BASE_DIMENSIONS: TemplateDimension[] = [
   {
     tableName: 'dim_partner',
     displayName: 'Partners',
     description: 'Customers, vendors and contacts — one row per Odoo partner.',
     sourceEntities: ['res_partner'],
     sql: `SELECT
-  id         AS partner_id,
+  id AS partner_id,
   name       AS partner_name,
   email,
   phone,
@@ -170,7 +187,7 @@ FROM account_account`,
     description: 'Accounting journals (sales, purchases, bank, cash, miscellaneous).',
     sourceEntities: ['account_journal'],
     sql: `SELECT
-  id          AS journal_id,
+  id AS journal_id,
   name        AS journal_name,
   code        AS journal_code,
   type        AS journal_type,
@@ -192,7 +209,7 @@ FROM account_journal`,
     description: 'Internal legal entities configured in Odoo.',
     sourceEntities: ['res_company'],
     sql: `SELECT
-  id   AS company_id,
+  id AS company_id,
   name AS company_name,
   currency_id
 FROM res_company`,
@@ -208,7 +225,7 @@ FROM res_company`,
     description: 'Currencies referenced by journals, orders and invoices.',
     sourceEntities: ['res_currency'],
     sql: `SELECT
-  id     AS currency_id,
+  id AS currency_id,
   name   AS currency_code,
   symbol AS currency_symbol,
   active
@@ -226,7 +243,7 @@ FROM res_currency`,
     description: 'Payment terms applied to invoices and orders (e.g. 30 days net).',
     sourceEntities: ['account_payment_term'],
     sql: `SELECT
-  id   AS payment_term_id,
+  id AS payment_term_id,
   name AS payment_term_name
 FROM account_payment_term`,
     columns: [
@@ -250,6 +267,28 @@ FROM uom_uom`,
   },
 ];
 
+/**
+ * Apply the unknown member to every dimension. Keyed by table name and
+ * throwing on a miss, so a dimension added later cannot ship without one.
+ */
+const UNKNOWN_MEMBERS: Record<string, UnknownMemberSpec> = {
+  dim_partner:          unknown('partner_id', 'partner_name'),
+  dim_product:          unknown('product_id', 'product_name'),
+  dim_product_category: unknown('category_id', 'category_name'),
+  dim_account:          unknown('account_id', 'account_code'),
+  dim_journal:          unknown('journal_id', 'journal_name'),
+  dim_company:          unknown('company_id', 'company_name'),
+  dim_currency:         unknown('currency_id', 'currency_code'),
+  dim_payment_term:     unknown('payment_term_id', 'payment_term_name'),
+  dim_uom:              unknown('uom_id', 'uom_name'),
+};
+
+const DIMENSIONS: TemplateDimension[] = BASE_DIMENSIONS.map((d) => {
+  const spec = UNKNOWN_MEMBERS[d.tableName];
+  if (!spec) throw new Error(`Odoo template: dim '${d.tableName}' has no unknown-member spec`);
+  return { ...d, sql: withUnknownMember(d.sql, d.columns, spec) };
+});
+
 // ─── Facts ──────────────────────────────────────────────────────────────────
 
 const FACTS: TemplateFact[] = [
@@ -268,14 +307,16 @@ const FACTS: TemplateFact[] = [
   am.move_type                           AS move_type,
   am.state                               AS state,
   TRY_CAST(am.invoice_date AS DATE)      AS invoice_date,
+  ${dateKeyExpr('am.invoice_date')} AS invoice_date_key,
   TRY_CAST(am.invoice_date_due AS DATE)  AS invoice_due_date,
-  am.partner_id                          AS partner_id,
-  aml.product_id                         AS product_id,
-  aml.account_id                         AS account_id,
-  am.journal_id                          AS journal_id,
-  am.company_id                          AS company_id,
-  am.currency_id                         AS currency_id,
-  am.invoice_payment_term_id             AS payment_term_id,
+  ${dateKeyExpr('am.invoice_date_due')} AS invoice_due_date_key,
+  COALESCE(am.partner_id, -1)                          AS partner_id,
+  COALESCE(aml.product_id, -1)                         AS product_id,
+  COALESCE(aml.account_id, -1)                         AS account_id,
+  COALESCE(am.journal_id, -1)                          AS journal_id,
+  COALESCE(am.company_id, -1)                          AS company_id,
+  COALESCE(am.currency_id, -1)                         AS currency_id,
+  COALESCE(am.invoice_payment_term_id, -1)             AS payment_term_id,
   aml.quantity                           AS quantity,
   aml.price_unit                         AS price_unit,
   aml.price_subtotal                     AS amount_untaxed,
@@ -292,7 +333,9 @@ WHERE am.move_type IN ('out_invoice', 'out_refund', 'in_invoice', 'in_refund')
       col('move_type', 'VARCHAR', 'Document type', 'out_invoice, out_refund (customer side), in_invoice, in_refund (vendor side).', { sourceEntity: 'account_move', sourceColumn: 'move_type' }),
       col('state', 'VARCHAR', 'Status', 'draft, posted or cancel.', { sourceEntity: 'account_move', sourceColumn: 'state' }),
       col('invoice_date', 'DATE', 'Invoice date', 'Date of the invoice.', { sourceEntity: 'account_move', sourceColumn: 'invoice_date' }),
+      dateKeyColumn('invoice_date_key', 'Invoice date key', 'Calendar key of the invoice date.', { sourceEntity: 'account_move', sourceColumn: 'invoice_date' }),
       col('invoice_due_date', 'DATE', 'Due date', 'Payment due date.', { sourceEntity: 'account_move', sourceColumn: 'invoice_date_due' }),
+      dateKeyColumn('invoice_due_date_key', 'Due date key', 'Calendar key of the due date.', { sourceEntity: 'account_move', sourceColumn: 'invoice_date_due' }),
       fk('partner_id', 'Customer / vendor', 'Partner billed or billing.', 'dim_partner', 'partner_id', { sourceEntity: 'account_move', sourceColumn: 'partner_id' }),
       fk('product_id', 'Product', 'Product on the line (when set).', 'dim_product', 'product_id', { sourceEntity: 'account_move_line', sourceColumn: 'product_id' }),
       fk('account_id', 'GL account', 'GL account the line posts to.', 'dim_account', 'account_id', { sourceEntity: 'account_move_line', sourceColumn: 'account_id' }),
@@ -320,13 +363,14 @@ WHERE am.move_type IN ('out_invoice', 'out_refund', 'in_invoice', 'in_refund')
   aml.move_id                 AS entry_id,
   am.name                     AS entry_number,
   TRY_CAST(aml.date AS DATE)  AS entry_date,
+  ${dateKeyExpr('aml.date')} AS entry_date_key,
   am.state                    AS state,
   am.move_type                AS move_type,
-  aml.account_id              AS account_id,
-  aml.partner_id              AS partner_id,
-  aml.journal_id              AS journal_id,
-  aml.company_id              AS company_id,
-  aml.currency_id             AS currency_id,
+  COALESCE(aml.account_id, -1)              AS account_id,
+  COALESCE(aml.partner_id, -1)              AS partner_id,
+  COALESCE(aml.journal_id, -1)              AS journal_id,
+  COALESCE(aml.company_id, -1)              AS company_id,
+  COALESCE(aml.currency_id, -1)             AS currency_id,
   aml.debit                   AS debit,
   aml.credit                  AS credit,
   aml.balance                 AS balance
@@ -337,6 +381,7 @@ JOIN account_move am ON aml.move_id = am.id`,
       col('entry_id', 'BIGINT', 'Entry ID', 'Odoo id of the journal entry header.', { isTechnical: true, sourceEntity: 'account_move_line', sourceColumn: 'move_id' }),
       col('entry_number', 'VARCHAR', 'Entry number', 'Journal entry number.', { role: 'degenerate_dimension', sourceEntity: 'account_move', sourceColumn: 'name' }),
       col('entry_date', 'DATE', 'Entry date', 'Accounting date of the line.', { sourceEntity: 'account_move_line', sourceColumn: 'date' }),
+      dateKeyColumn('entry_date_key', 'Entry date key', 'Calendar key of the accounting date.', { sourceEntity: 'account_move_line', sourceColumn: 'date' }),
       col('state', 'VARCHAR', 'Status', 'draft, posted or cancel.', { sourceEntity: 'account_move', sourceColumn: 'state' }),
       col('move_type', 'VARCHAR', 'Document type', 'entry, out_invoice, in_invoice, … — what kind of document produced this line.', { sourceEntity: 'account_move', sourceColumn: 'move_type' }),
       fk('account_id', 'GL account', 'GL account the line posts to.', 'dim_account', 'account_id', { sourceEntity: 'account_move_line', sourceColumn: 'account_id' }),
@@ -362,11 +407,12 @@ JOIN account_move am ON aml.move_id = am.id`,
   sol.order_id                     AS order_id,
   so.name                          AS order_reference,
   TRY_CAST(so.date_order AS DATE)  AS order_date,
+  ${dateKeyExpr('so.date_order')} AS order_date_key,
   so.state                         AS state,
-  so.partner_id                    AS partner_id,
-  sol.product_id                   AS product_id,
-  so.company_id                    AS company_id,
-  so.currency_id                   AS currency_id,
+  COALESCE(so.partner_id, -1)                    AS partner_id,
+  COALESCE(sol.product_id, -1)                   AS product_id,
+  COALESCE(so.company_id, -1)                    AS company_id,
+  COALESCE(so.currency_id, -1)                   AS currency_id,
   sol.product_uom_qty              AS quantity_ordered,
   sol.qty_delivered                AS quantity_delivered,
   sol.qty_invoiced                 AS quantity_invoiced,
@@ -381,6 +427,7 @@ JOIN sale_order so ON sol.order_id = so.id`,
       col('order_id', 'BIGINT', 'Order ID', 'Odoo id of the sales order header.', { isTechnical: true, sourceEntity: 'sale_order_line', sourceColumn: 'order_id' }),
       col('order_reference', 'VARCHAR', 'Order reference', 'Sales order number (e.g. S00042).', { role: 'degenerate_dimension', sourceEntity: 'sale_order', sourceColumn: 'name' }),
       col('order_date', 'DATE', 'Order date', 'Date the order was placed.', { sourceEntity: 'sale_order', sourceColumn: 'date_order' }),
+      dateKeyColumn('order_date_key', 'Order date key', 'Calendar key of the order date.', { sourceEntity: 'sale_order', sourceColumn: 'date_order' }),
       col('state', 'VARCHAR', 'Status', 'draft (quotation), sent, sale (confirmed), done or cancel.', { sourceEntity: 'sale_order', sourceColumn: 'state' }),
       fk('partner_id', 'Customer', 'Customer on the order.', 'dim_partner', 'partner_id', { sourceEntity: 'sale_order', sourceColumn: 'partner_id' }),
       fk('product_id', 'Product', 'Product on the line.', 'dim_product', 'product_id', { sourceEntity: 'sale_order_line', sourceColumn: 'product_id' }),
@@ -408,11 +455,12 @@ JOIN sale_order so ON sol.order_id = so.id`,
   pol.order_id                     AS order_id,
   po.name                          AS order_reference,
   TRY_CAST(po.date_order AS DATE)  AS order_date,
+  ${dateKeyExpr('po.date_order')} AS order_date_key,
   po.state                         AS state,
-  po.partner_id                    AS vendor_id,
-  pol.product_id                   AS product_id,
-  po.company_id                    AS company_id,
-  po.currency_id                   AS currency_id,
+  COALESCE(po.partner_id, -1)                    AS vendor_id,
+  COALESCE(pol.product_id, -1)                   AS product_id,
+  COALESCE(po.company_id, -1)                    AS company_id,
+  COALESCE(po.currency_id, -1)                   AS currency_id,
   pol.product_qty                  AS quantity_ordered,
   pol.qty_received                 AS quantity_received,
   pol.qty_invoiced                 AS quantity_invoiced,
@@ -426,6 +474,7 @@ JOIN purchase_order po ON pol.order_id = po.id`,
       col('order_id', 'BIGINT', 'Order ID', 'Odoo id of the purchase order header.', { isTechnical: true, sourceEntity: 'purchase_order_line', sourceColumn: 'order_id' }),
       col('order_reference', 'VARCHAR', 'Order reference', 'Purchase order number (e.g. P00042).', { role: 'degenerate_dimension', sourceEntity: 'purchase_order', sourceColumn: 'name' }),
       col('order_date', 'DATE', 'Order date', 'Date the order was confirmed / created.', { sourceEntity: 'purchase_order', sourceColumn: 'date_order' }),
+      dateKeyColumn('order_date_key', 'Order date key', 'Calendar key of the order date.', { sourceEntity: 'purchase_order', sourceColumn: 'date_order' }),
       col('state', 'VARCHAR', 'Status', 'draft, sent, purchase (confirmed), done or cancel.', { sourceEntity: 'purchase_order', sourceColumn: 'state' }),
       fk('vendor_id', 'Vendor', 'Vendor the order was placed with.', 'dim_partner', 'partner_id', { sourceEntity: 'purchase_order', sourceColumn: 'partner_id' }),
       fk('product_id', 'Product', 'Product on the line.', 'dim_product', 'product_id', { sourceEntity: 'purchase_order_line', sourceColumn: 'product_id' }),
@@ -450,19 +499,21 @@ JOIN purchase_order po ON pol.order_id = po.id`,
     sql: `SELECT
   ap.id                        AS payment_id,
   TRY_CAST(ap.date AS DATE)    AS payment_date,
+  ${dateKeyExpr('ap.date')} AS payment_date_key,
   ap.payment_type              AS payment_type,
   ap.partner_type              AS partner_type,
   ap.state                     AS state,
-  ap.partner_id                AS partner_id,
-  ap.journal_id                AS journal_id,
-  ap.company_id                AS company_id,
-  ap.currency_id               AS currency_id,
+  COALESCE(ap.partner_id, -1)                AS partner_id,
+  COALESCE(ap.journal_id, -1)                AS journal_id,
+  COALESCE(ap.company_id, -1)                AS company_id,
+  COALESCE(ap.currency_id, -1)               AS currency_id,
   ap.amount                    AS amount,
   CASE WHEN ap.payment_type = 'inbound' THEN ap.amount ELSE -ap.amount END AS amount_signed
 FROM account_payment ap`,
     columns: [
       key('payment_id', 'Payment ID', 'Odoo payment id (primary key).', 'account_payment'),
       col('payment_date', 'DATE', 'Payment date', 'Date of the payment.', { sourceEntity: 'account_payment', sourceColumn: 'date' }),
+      dateKeyColumn('payment_date_key', 'Payment date key', 'Calendar key of the payment date.', { sourceEntity: 'account_payment', sourceColumn: 'date' }),
       col('payment_type', 'VARCHAR', 'Direction', 'inbound (money received) or outbound (money sent).', { sourceEntity: 'account_payment', sourceColumn: 'payment_type' }),
       col('partner_type', 'VARCHAR', 'Partner type', 'customer or supplier.', { sourceEntity: 'account_payment', sourceColumn: 'partner_type' }),
       col('state', 'VARCHAR', 'Status', 'Payment lifecycle state.', { sourceEntity: 'account_payment', sourceColumn: 'state' }),
@@ -485,15 +536,17 @@ FROM account_payment ap`,
     sql: `SELECT
   sm.id                        AS stock_move_id,
   TRY_CAST(sm.date AS DATE)    AS move_date,
+  ${dateKeyExpr('sm.date')} AS move_date_key,
   sm.state                     AS state,
   sm.reference                 AS reference,
-  sm.product_id                AS product_id,
-  sm.company_id                AS company_id,
+  COALESCE(sm.product_id, -1)                AS product_id,
+  COALESCE(sm.company_id, -1)                AS company_id,
   sm.product_uom_qty           AS quantity
 FROM stock_move sm`,
     columns: [
       key('stock_move_id', 'Stock move ID', 'Odoo stock move id (primary key).', 'stock_move'),
       col('move_date', 'DATE', 'Move date', 'Date the move was (or is scheduled to be) done.', { sourceEntity: 'stock_move', sourceColumn: 'date' }),
+      dateKeyColumn('move_date_key', 'Move date key', 'Calendar key of the movement date.', { sourceEntity: 'stock_move', sourceColumn: 'date' }),
       col('state', 'VARCHAR', 'Status', 'draft, waiting, confirmed, assigned, done or cancel.', { sourceEntity: 'stock_move', sourceColumn: 'state' }),
       col('reference', 'VARCHAR', 'Reference', 'Picking / document reference of the move.', { role: 'degenerate_dimension', sourceEntity: 'stock_move', sourceColumn: 'reference' }),
       fk('product_id', 'Product', 'Product being moved.', 'dim_product', 'product_id', { sourceEntity: 'stock_move', sourceColumn: 'product_id' }),
@@ -506,7 +559,7 @@ FROM stock_move sm`,
 // ─── The template ───────────────────────────────────────────────────────────
 
 export const ODOO_STAR_SCHEMA_TEMPLATE: StarSchemaTemplate = {
-  version: 1,
+  version: 2,
   dimensions: DIMENSIONS,
   facts: FACTS,
   products: [
@@ -579,6 +632,17 @@ export const ODOO_STAR_SCHEMA_TEMPLATE: StarSchemaTemplate = {
     // fact_stock_moves
     { fromTable: 'fact_stock_moves', fromColumn: 'product_id', toTable: 'dim_product', toColumn: 'product_id', type: 'fact_to_dim' },
     { fromTable: 'fact_stock_moves', fromColumn: 'company_id', toTable: 'dim_company', toColumn: 'company_id', type: 'fact_to_dim' },
+    // fact → dim_date. One relationship per DATE ROLE, all pointing at the same
+    // calendar — what makes "invoiced in March" and "due in March" two
+    // different questions rather than one ambiguous one.
+    { fromTable: 'fact_invoice_lines', fromColumn: 'invoice_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_invoice_lines', fromColumn: 'invoice_due_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_journal_items', fromColumn: 'entry_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_sales_order_lines', fromColumn: 'order_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_purchase_order_lines', fromColumn: 'order_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_payments', fromColumn: 'payment_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_stock_moves', fromColumn: 'move_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+
     // dim_to_dim
     { fromTable: 'dim_partner', fromColumn: 'parent_id', toTable: 'dim_partner', toColumn: 'partner_id', type: 'dim_to_dim' },
     { fromTable: 'dim_partner', fromColumn: 'company_id', toTable: 'dim_company', toColumn: 'company_id', type: 'dim_to_dim' },

@@ -20,13 +20,28 @@
  *     epochs at sync time) — TRY_CAST(... AS DATE) normalises them.
  *   • Facts never JOIN dims (only their own header entity), so a dropped
  *     dim can't break a surviving fact.
+ *   • Every dim carries an UNKNOWN MEMBER keyed '-1', and every fact FK is
+ *     COALESCE'd onto it. EO leaves optional references as empty GUIDs, so
+ *     without this a transaction line with no account vanishes from any
+ *     inner join — silently, and only for some rows.
+ *   • Every date on a fact also emits a `<role>_date_key` (YYYYMMDD) into the
+ *     platform's `dim_date`. The raw DATE column stays for exact-date
+ *     filtering; the key is what the star joins on, and it is what makes a
+ *     role-playing date ("invoiced in March" vs "due in March") expressible.
+ *
+ * Doctrine: docs/DIMENSIONAL_MODEL.md.
  */
 
-import type {
-  StarSchemaTemplate,
-  TemplateColumn,
-  TemplateDimension,
-  TemplateFact,
+import {
+  dateKeyColumn,
+  dateKeyExpr,
+  withUnknownMember,
+  UNKNOWN_KEY_TEXT,
+  type StarSchemaTemplate,
+  type TemplateColumn,
+  type TemplateDimension,
+  type TemplateFact,
+  type UnknownMemberSpec,
 } from '../starSchema';
 
 // ─── Column helpers ─────────────────────────────────────────────────────────
@@ -61,9 +76,14 @@ const measure = (
 ): TemplateColumn =>
   col(name, 'DOUBLE', displayName, description, { role: 'measure', additivity, ...extra });
 
+/** Every EO dim keys on a VARCHAR (GUID or code), so one sentinel shape fits all. */
+const unknown = (keyColumn: string, labelColumn: string): UnknownMemberSpec => ({
+  keyColumn, keyLiteral: `'${UNKNOWN_KEY_TEXT}'`, labelColumn, label: 'Unknown',
+});
+
 // ─── Conformed dimensions ───────────────────────────────────────────────────
 
-const DIMENSIONS: TemplateDimension[] = [
+const BASE_DIMENSIONS: TemplateDimension[] = [
   {
     tableName: 'dim_account',
     displayName: 'Accounts',
@@ -196,6 +216,27 @@ FROM PaymentConditions`,
   },
 ];
 
+/**
+ * Apply the unknown member to every dimension.
+ *
+ * Keyed by table name and throwing on a miss, so a dimension added later
+ * cannot ship without one — the check is construction, not a review habit.
+ */
+const UNKNOWN_MEMBERS: Record<string, UnknownMemberSpec> = {
+  dim_account:           unknown('account_id', 'account_name'),
+  dim_item:              unknown('item_id', 'item_description'),
+  dim_item_group:        unknown('item_group_id', 'item_group_description'),
+  dim_gl_account:        unknown('gl_account_id', 'gl_account_name'),
+  dim_journal:           unknown('journal_code', 'journal_name'),
+  dim_payment_condition: unknown('payment_condition_code', 'payment_condition_name'),
+};
+
+const DIMENSIONS: TemplateDimension[] = BASE_DIMENSIONS.map((d) => {
+  const spec = UNKNOWN_MEMBERS[d.tableName];
+  if (!spec) throw new Error(`ExactOnline template: dim '${d.tableName}' has no unknown-member spec`);
+  return { ...d, sql: withUnknownMember(d.sql, d.columns, spec) };
+});
+
 // ─── Facts ──────────────────────────────────────────────────────────────────
 
 const FACTS: TemplateFact[] = [
@@ -212,15 +253,17 @@ const FACTS: TemplateFact[] = [
   sil.InvoiceID                       AS invoice_id,
   si.InvoiceNumber                    AS invoice_number,
   TRY_CAST(si.InvoiceDate AS DATE)    AS invoice_date,
+  ${dateKeyExpr('si.InvoiceDate')} AS invoice_date_key,
   TRY_CAST(si.DueDate AS DATE)        AS due_date,
+  ${dateKeyExpr('si.DueDate')} AS due_date_key,
   si.StatusDescription                AS status,
   si.TypeDescription                  AS document_type,
-  si.InvoiceTo                        AS invoice_to_id,
-  si.OrderedBy                        AS ordered_by_id,
-  sil.Item                            AS item_id,
-  sil.GLAccount                       AS gl_account_id,
-  si.Journal                          AS journal_code,
-  si.PaymentCondition                 AS payment_condition_code,
+  COALESCE(si.InvoiceTo, '-1')        AS invoice_to_id,
+  COALESCE(si.OrderedBy, '-1')        AS ordered_by_id,
+  COALESCE(sil.Item, '-1')            AS item_id,
+  COALESCE(sil.GLAccount, '-1')       AS gl_account_id,
+  COALESCE(si.Journal, '-1')          AS journal_code,
+  COALESCE(si.PaymentCondition, '-1') AS payment_condition_code,
   si.Currency                         AS currency,
   sil.Description                     AS line_description,
   sil.Quantity                        AS quantity,
@@ -235,7 +278,9 @@ JOIN SalesInvoices si ON sil.InvoiceID = si.InvoiceID`,
       col('invoice_id', 'VARCHAR', 'Invoice ID', 'GUID of the invoice header.', { isTechnical: true, sourceEntity: 'SalesInvoiceLines', sourceColumn: 'InvoiceID' }),
       col('invoice_number', 'BIGINT', 'Invoice number', 'Human-readable invoice number.', { role: 'degenerate_dimension', sourceEntity: 'SalesInvoices', sourceColumn: 'InvoiceNumber' }),
       col('invoice_date', 'DATE', 'Invoice date', 'Date of the invoice.', { sourceEntity: 'SalesInvoices', sourceColumn: 'InvoiceDate' }),
+      dateKeyColumn('invoice_date_key', 'Invoice date key', 'Calendar key of the invoice date.', { sourceEntity: 'SalesInvoices', sourceColumn: 'InvoiceDate' }),
       col('due_date', 'DATE', 'Due date', 'Payment due date.', { sourceEntity: 'SalesInvoices', sourceColumn: 'DueDate' }),
+      dateKeyColumn('due_date_key', 'Due date key', 'Calendar key of the due date.', { sourceEntity: 'SalesInvoices', sourceColumn: 'DueDate' }),
       col('status', 'VARCHAR', 'Status', 'Invoice status (open, processed, …).', { sourceEntity: 'SalesInvoices', sourceColumn: 'StatusDescription' }),
       col('document_type', 'VARCHAR', 'Document type', 'Sales invoice or credit note.', { sourceEntity: 'SalesInvoices', sourceColumn: 'TypeDescription' }),
       fk('invoice_to_id', 'Invoiced customer', 'Customer being billed.', 'dim_account', 'account_id', { sourceEntity: 'SalesInvoices', sourceColumn: 'InvoiceTo' }),
@@ -265,12 +310,13 @@ JOIN SalesInvoices si ON sil.InvoiceID = si.InvoiceID`,
   ID                            AS transaction_line_id,
   EntryNumber                   AS entry_number,
   TRY_CAST(Date AS DATE)        AS entry_date,
+  ${dateKeyExpr('Date')} AS entry_date_key,
   FinancialYear                 AS financial_year,
   FinancialPeriod               AS financial_period,
-  JournalCode                   AS journal_code,
-  GLAccount                     AS gl_account_id,
-  Account                       AS account_id,
-  Item                          AS item_id,
+  COALESCE(JournalCode, '-1')   AS journal_code,
+  COALESCE(GLAccount, '-1')     AS gl_account_id,
+  COALESCE(Account, '-1')       AS account_id,
+  COALESCE(Item, '-1')          AS item_id,
   InvoiceNumber                 AS invoice_number,
   Description                   AS description,
   Currency                      AS currency,
@@ -283,6 +329,7 @@ FROM TransactionLines`,
       guidKey('transaction_line_id', 'Transaction line ID', 'ExactOnline transaction line GUID (primary key).', 'TransactionLines'),
       col('entry_number', 'BIGINT', 'Entry number', 'Journal entry number.', { role: 'degenerate_dimension', sourceEntity: 'TransactionLines', sourceColumn: 'EntryNumber' }),
       col('entry_date', 'DATE', 'Entry date', 'Accounting date of the line.', { sourceEntity: 'TransactionLines', sourceColumn: 'Date' }),
+      dateKeyColumn('entry_date_key', 'Entry date key', 'Calendar key of the accounting date.', { sourceEntity: 'TransactionLines', sourceColumn: 'Date' }),
       col('financial_year', 'BIGINT', 'Financial year', 'Fiscal year the line posts to.', { sourceEntity: 'TransactionLines', sourceColumn: 'FinancialYear' }),
       col('financial_period', 'BIGINT', 'Financial period', 'Fiscal period the line posts to.', { sourceEntity: 'TransactionLines', sourceColumn: 'FinancialPeriod' }),
       fk('journal_code', 'Journal', 'Journal the line is booked in.', 'dim_journal', 'journal_code', { sourceEntity: 'TransactionLines', sourceColumn: 'JournalCode' }),
@@ -311,10 +358,11 @@ FROM TransactionLines`,
   sol.OrderID                       AS order_id,
   so.OrderNumber                    AS order_number,
   TRY_CAST(so.OrderDate AS DATE)    AS order_date,
+  ${dateKeyExpr('so.OrderDate')} AS order_date_key,
   so.StatusDescription              AS status,
-  so.OrderedBy                      AS ordered_by_id,
-  so.InvoiceTo                      AS invoice_to_id,
-  sol.Item                          AS item_id,
+  COALESCE(so.OrderedBy, '-1')      AS ordered_by_id,
+  COALESCE(so.InvoiceTo, '-1')      AS invoice_to_id,
+  COALESCE(sol.Item, '-1')          AS item_id,
   so.Currency                       AS currency,
   sol.Description                   AS line_description,
   sol.Quantity                      AS quantity,
@@ -330,6 +378,7 @@ JOIN SalesOrders so ON sol.OrderID = so.OrderID`,
       col('order_id', 'VARCHAR', 'Order ID', 'GUID of the order header.', { isTechnical: true, sourceEntity: 'SalesOrderLines', sourceColumn: 'OrderID' }),
       col('order_number', 'BIGINT', 'Order number', 'Human-readable order number.', { role: 'degenerate_dimension', sourceEntity: 'SalesOrders', sourceColumn: 'OrderNumber' }),
       col('order_date', 'DATE', 'Order date', 'Date the order was placed.', { sourceEntity: 'SalesOrders', sourceColumn: 'OrderDate' }),
+      dateKeyColumn('order_date_key', 'Order date key', 'Calendar key of the order date.', { sourceEntity: 'SalesOrders', sourceColumn: 'OrderDate' }),
       col('status', 'VARCHAR', 'Status', 'Order status (open, partial, complete, cancelled).', { sourceEntity: 'SalesOrders', sourceColumn: 'StatusDescription' }),
       fk('ordered_by_id', 'Ordering customer', 'Customer who placed the order.', 'dim_account', 'account_id', { sourceEntity: 'SalesOrders', sourceColumn: 'OrderedBy' }),
       fk('invoice_to_id', 'Invoiced customer', 'Customer who will be billed.', 'dim_account', 'account_id', { sourceEntity: 'SalesOrders', sourceColumn: 'InvoiceTo' }),
@@ -357,8 +406,9 @@ JOIN SalesOrders so ON sol.OrderID = so.OrderID`,
   pol.PurchaseOrderID               AS order_id,
   po.OrderNumber                    AS order_number,
   TRY_CAST(po.OrderDate AS DATE)    AS order_date,
-  po.Supplier                       AS supplier_id,
-  pol.Item                          AS item_id,
+  ${dateKeyExpr('po.OrderDate')} AS order_date_key,
+  COALESCE(po.Supplier, '-1')       AS supplier_id,
+  COALESCE(pol.Item, '-1')          AS item_id,
   po.Currency                       AS currency,
   pol.Description                   AS line_description,
   pol.Quantity                      AS quantity,
@@ -373,6 +423,7 @@ JOIN PurchaseOrders po ON pol.PurchaseOrderID = po.PurchaseOrderID`,
       col('order_id', 'VARCHAR', 'Order ID', 'GUID of the purchase order header.', { isTechnical: true, sourceEntity: 'PurchaseOrderLines', sourceColumn: 'PurchaseOrderID' }),
       col('order_number', 'BIGINT', 'Order number', 'Human-readable purchase order number.', { role: 'degenerate_dimension', sourceEntity: 'PurchaseOrders', sourceColumn: 'OrderNumber' }),
       col('order_date', 'DATE', 'Order date', 'Date of the purchase order.', { sourceEntity: 'PurchaseOrders', sourceColumn: 'OrderDate' }),
+      dateKeyColumn('order_date_key', 'Order date key', 'Calendar key of the order date.', { sourceEntity: 'PurchaseOrders', sourceColumn: 'OrderDate' }),
       fk('supplier_id', 'Supplier', 'Supplier the order was placed with.', 'dim_account', 'account_id', { sourceEntity: 'PurchaseOrders', sourceColumn: 'Supplier' }),
       fk('item_id', 'Item', 'Item on the line.', 'dim_item', 'item_id', { sourceEntity: 'PurchaseOrderLines', sourceColumn: 'Item' }),
       col('currency', 'VARCHAR', 'Currency', 'Document currency code.', { sourceEntity: 'PurchaseOrders', sourceColumn: 'Currency' }),
@@ -395,13 +446,16 @@ JOIN PurchaseOrders po ON pol.PurchaseOrderID = po.PurchaseOrderID`,
     sql: `SELECT
   ID                                  AS receivable_id,
   TRY_CAST(InvoiceDate AS DATE)       AS invoice_date,
+  ${dateKeyExpr('InvoiceDate')} AS invoice_date_key,
   TRY_CAST(DueDate AS DATE)           AS due_date,
+  ${dateKeyExpr('DueDate')} AS due_date_key,
   TRY_CAST(LastPaymentDate AS DATE)   AS last_payment_date,
+  ${dateKeyExpr('LastPaymentDate')} AS last_payment_date_key,
   InvoiceNumber                       AS invoice_number,
-  Account                             AS account_id,
-  GLAccount                           AS gl_account_id,
-  Journal                             AS journal_code,
-  PaymentCondition                    AS payment_condition_code,
+  COALESCE(Account, '-1')             AS account_id,
+  COALESCE(GLAccount, '-1')           AS gl_account_id,
+  COALESCE(Journal, '-1')             AS journal_code,
+  COALESCE(PaymentCondition, '-1')    AS payment_condition_code,
   Currency                            AS currency,
   Description                         AS description,
   IsFullyPaid                         AS is_fully_paid,
@@ -411,8 +465,11 @@ FROM Receivables`,
     columns: [
       guidKey('receivable_id', 'Receivable ID', 'ExactOnline receivable GUID (primary key).', 'Receivables'),
       col('invoice_date', 'DATE', 'Invoice date', 'Date of the underlying invoice.', { sourceEntity: 'Receivables', sourceColumn: 'InvoiceDate' }),
+      dateKeyColumn('invoice_date_key', 'Invoice date key', 'Calendar key of the invoice date.', { sourceEntity: 'Receivables', sourceColumn: 'InvoiceDate' }),
       col('due_date', 'DATE', 'Due date', 'Payment due date.', { sourceEntity: 'Receivables', sourceColumn: 'DueDate' }),
+      dateKeyColumn('due_date_key', 'Due date key', 'Calendar key of the due date.', { sourceEntity: 'Receivables', sourceColumn: 'DueDate' }),
       col('last_payment_date', 'DATE', 'Last payment date', 'Date of the most recent payment against this item.', { sourceEntity: 'Receivables', sourceColumn: 'LastPaymentDate' }),
+      dateKeyColumn('last_payment_date_key', 'Last payment date key', 'Calendar key of the most recent payment.', { sourceEntity: 'Receivables', sourceColumn: 'LastPaymentDate' }),
       col('invoice_number', 'BIGINT', 'Invoice number', 'Invoice number of the receivable.', { role: 'degenerate_dimension', sourceEntity: 'Receivables', sourceColumn: 'InvoiceNumber' }),
       fk('account_id', 'Customer', 'Customer who owes the amount.', 'dim_account', 'account_id', { sourceEntity: 'Receivables', sourceColumn: 'Account' }),
       fk('gl_account_id', 'GL account', 'Receivable GL account.', 'dim_gl_account', 'gl_account_id', { sourceEntity: 'Receivables', sourceColumn: 'GLAccount' }),
@@ -436,11 +493,13 @@ FROM Receivables`,
     sql: `SELECT
   ID                                  AS payable_id,
   TRY_CAST(InvoiceDate AS DATE)       AS invoice_date,
+  ${dateKeyExpr('InvoiceDate')} AS invoice_date_key,
   TRY_CAST(DueDate AS DATE)           AS due_date,
+  ${dateKeyExpr('DueDate')} AS due_date_key,
   InvoiceNumber                       AS invoice_number,
-  Account                             AS account_id,
-  GLAccount                           AS gl_account_id,
-  Journal                             AS journal_code,
+  COALESCE(Account, '-1')             AS account_id,
+  COALESCE(GLAccount, '-1')           AS gl_account_id,
+  COALESCE(Journal, '-1')             AS journal_code,
   Currency                            AS currency,
   Description                         AS description,
   AmountDC                            AS amount_dc,
@@ -449,7 +508,9 @@ FROM Payments`,
     columns: [
       guidKey('payable_id', 'Payable ID', 'ExactOnline payment obligation GUID (primary key).', 'Payments'),
       col('invoice_date', 'DATE', 'Invoice date', 'Date of the underlying supplier invoice.', { sourceEntity: 'Payments', sourceColumn: 'InvoiceDate' }),
+      dateKeyColumn('invoice_date_key', 'Invoice date key', 'Calendar key of the invoice date.', { sourceEntity: 'Payments', sourceColumn: 'InvoiceDate' }),
       col('due_date', 'DATE', 'Due date', 'Payment due date.', { sourceEntity: 'Payments', sourceColumn: 'DueDate' }),
+      dateKeyColumn('due_date_key', 'Due date key', 'Calendar key of the due date.', { sourceEntity: 'Payments', sourceColumn: 'DueDate' }),
       col('invoice_number', 'BIGINT', 'Invoice number', 'Invoice number of the payable.', { role: 'degenerate_dimension', sourceEntity: 'Payments', sourceColumn: 'InvoiceNumber' }),
       fk('account_id', 'Supplier', 'Supplier the amount is owed to.', 'dim_account', 'account_id', { sourceEntity: 'Payments', sourceColumn: 'Account' }),
       fk('gl_account_id', 'GL account', 'Payable GL account.', 'dim_gl_account', 'gl_account_id', { sourceEntity: 'Payments', sourceColumn: 'GLAccount' }),
@@ -465,7 +526,7 @@ FROM Payments`,
 // ─── The template ───────────────────────────────────────────────────────────
 
 export const EXACT_ONLINE_STAR_SCHEMA_TEMPLATE: StarSchemaTemplate = {
-  version: 1,
+  version: 2,
   dimensions: DIMENSIONS,
   facts: FACTS,
   products: [
@@ -527,6 +588,20 @@ export const EXACT_ONLINE_STAR_SCHEMA_TEMPLATE: StarSchemaTemplate = {
     { fromTable: 'fact_payables', fromColumn: 'account_id', toTable: 'dim_account', toColumn: 'account_id', type: 'fact_to_dim' },
     { fromTable: 'fact_payables', fromColumn: 'gl_account_id', toTable: 'dim_gl_account', toColumn: 'gl_account_id', type: 'fact_to_dim' },
     { fromTable: 'fact_payables', fromColumn: 'journal_code', toTable: 'dim_journal', toColumn: 'journal_code', type: 'fact_to_dim' },
+    // fact → dim_date. One relationship per DATE ROLE, all pointing at the same
+    // calendar: that is what makes "invoiced in March" and "due in March"
+    // different questions rather than one ambiguous one.
+    { fromTable: 'fact_sales_invoice_lines', fromColumn: 'invoice_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_sales_invoice_lines', fromColumn: 'due_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_transaction_lines', fromColumn: 'entry_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_sales_order_lines', fromColumn: 'order_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_purchase_order_lines', fromColumn: 'order_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_receivables', fromColumn: 'invoice_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_receivables', fromColumn: 'due_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_receivables', fromColumn: 'last_payment_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_payables', fromColumn: 'invoice_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+    { fromTable: 'fact_payables', fromColumn: 'due_date_key', toTable: 'dim_date', toColumn: 'date_key', type: 'fact_to_dim' },
+
     // dim_to_dim
     { fromTable: 'dim_account', fromColumn: 'parent_id', toTable: 'dim_account', toColumn: 'account_id', type: 'dim_to_dim' },
     { fromTable: 'dim_item', fromColumn: 'item_group_id', toTable: 'dim_item_group', toColumn: 'item_group_id', type: 'dim_to_dim' },

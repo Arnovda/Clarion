@@ -4,6 +4,12 @@
  * Optimized for token efficiency: one call produces schema, columns, AND
  * transformation SQL. dim_date is auto-injected by the runner (never AI-generated).
  *
+ * The modelling rules these prompts state — durable keys rather than
+ * ROW_NUMBER() surrogates, the unknown member, one calendar key per date role
+ * — are the SAME contract the deterministic connector templates obey. The
+ * reasoning is in docs/DIMENSIONAL_MODEL.md; change both paths together or
+ * they drift apart again.
+ *
  * Recommended thinking budget: 4000 tokens.
  */
 
@@ -33,7 +39,7 @@ export interface ColumnDesign {
    * AI should set TRUE for:
    *   - UUID/GUID-shaped FK columns (account_id from a source like EO,
    *     where the user knows accounts by name, not by GUID)
-   *   - Surrogate FK keys (`customer_key`, `account_key`) in facts
+   *   - Every FK on a fact, including the `{role}_date_key` calendar keys
    *   - Internal infrastructure (`_row_hash`, etc.)
    *
    * AI should set FALSE for:
@@ -176,19 +182,33 @@ DO:
    For ratios: store numerator + denominator as additive columns; derive ratio in BI layer.
 
 **Key rules:**
-- Surrogate keys: every dim gets {entity}_key as INTEGER via ROW_NUMBER(). Keep natural key too.
-- FKs in facts: named to match target dim's surrogate key. Use COALESCE(dim_key, -1) for unknowns.
+- **KEYS: use the source system's own id. NEVER generate a surrogate key with
+  ROW_NUMBER().** A dimension keyed by row position is renumbered from scratch
+  on every refresh — this platform overwrites product tables in full — so a
+  dimension rebuilt on its own silently re-points every fact that references
+  it. No error, no failed check, just wrong answers. The source id (integer,
+  GUID or stable code) is durable; key the dim on it, aliased {entity}_id, and
+  put the same value on the fact.
+- The calendar is the ONE exception: dim_date.date_key is derived from the
+  date itself (YYYYMMDD), so it is stable by construction.
+- FKs in facts: same name and same value as the target dim's key column.
+- **Every dimension MUST carry an "unknown member"** — one extra row keyed -1
+  (or '-1' for text keys) with 'Unknown' as its label, appended with UNION ALL.
+  **Every fact FK must be COALESCE'd onto it**: COALESCE(source_id, -1).
+  A NULL FK disappears from an inner join, which is how a fact table quietly
+  stops adding up.
 - Denormalize lookups: fold classification/lookup tables into their parent dimension (customer_groups → dim_customer, product_categories → dim_product). Only separate if the lookup has its own independent facts.
 - Flatten hierarchies: no snowflaking — one flat dimension table per entity.
-- SCD: default Type 1 (overwrite). Only use Type 2 if there's a confirmed need for history.
-- Role-playing dims: when one dim appears multiple times (order_date, ship_date), create FK aliases all pointing to dim_date.
+- SCD: Type 1 (overwrite). Type 2 is not supported by this platform's writer —
+  do not design for it.
+- Role-playing dims: when one date appears in several roles (order_date,
+  ship_date), emit one {role}_date_key per role, all pointing at dim_date.
 - Bridge tables: only for true many-to-many relationships.
 - Never place text attributes in fact tables — move them to dimensions.
-- Never leave NULL FKs in facts — use surrogate -1.
 
 **Naming:**
 - Tables: fact_{process}, dim_{entity}, dim_{fact}_junk, bridge_{rel}
-- Surrogate keys: {entity}_key
+- Dimension keys: {entity}_id (the source's own id — not a generated key)
 - FKs: match the target dimension's key name exactly
 
 ━━━ HEADER / DETAIL (PARENT / CHILD) MODELING ━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -308,8 +328,11 @@ Your audience is a business owner, not a data engineer. All display_name and des
 Each table needs a standalone SELECT statement (no CREATE TABLE).
 
 - Dimensions (dag_order=0) execute FIRST; facts (dag_order=1) execute SECOND
-- Dimension SQL: ROW_NUMBER() OVER (ORDER BY natural_key) AS {entity}_key, then attributes
-- Fact SQL: JOIN to materialized dims to resolve natural keys → surrogate keys
+- Dimension SQL: the source's own id AS {entity}_id, then attributes, then a
+  UNION ALL row for the unknown member (key -1, label 'Unknown', rest NULL)
+- Fact SQL: carry the SAME id the dim is keyed on, COALESCE'd to -1. Facts do
+  NOT need to JOIN dims — the join is available at query time without one at
+  build time, which is what keeps a fact intact when a dim is dropped
 - ALWAYS use TRY_CAST (not CAST) for type conversions — source data has 'None', 'null', '', 'N/A'
 - Use NULLIF(TRIM(col), '') before TRY_CAST for string columns
 - strftime(value, format) — DuckDB arg order
@@ -366,17 +389,17 @@ always put the alias immediately after \`}}\`:
         "description": "Your customers — everyone who has placed an order.",
         "table_role": "dimension",
         "dag_order": 0,
-        "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY c.customer_id) AS customer_key, c.customer_id, c.name, g.group_name FROM {{ source('source_layer', 'customers') }} c LEFT JOIN {{ source('source_layer', 'customer_groups') }} g ON c.group_id = g.id",
+        "transformation_sql": "SELECT c.customer_id, c.name, g.group_name FROM {{ source('source_layer', 'customers') }} c LEFT JOIN {{ source('source_layer', 'customer_groups') }} g ON c.group_id = g.id UNION ALL SELECT CAST(-1 AS BIGINT), CAST('Unknown' AS VARCHAR), CAST(NULL AS VARCHAR)",
         "columns": [{
-          "column_name": "customer_key",
-          "data_type": "INTEGER",
-          "display_name": "Customer Key",
+          "column_name": "customer_id",
+          "data_type": "BIGINT",
+          "display_name": "Customer ID",
           "description": "Unique identifier for each customer",
-          "column_role": "surrogate_key",
+          "column_role": "natural_key",
           "fk_target_table": null,
           "fk_target_column": null,
           "is_technical": true,
-          "transformation_expression": "ROW_NUMBER() OVER (ORDER BY ...)",
+          "transformation_expression": "c.customer_id",
           "additivity": null,
           "scd_type": 1,
           "sort_order": 0,
@@ -468,7 +491,23 @@ export const DIM_DATE_SQL = (start: string, end: string) => `SELECT
   CASE WHEN extract(isodow FROM d) IN (6,7) THEN true ELSE false END AS is_weekend,
   extract(year FROM d)::INTEGER AS fiscal_year,
   extract(quarter FROM d)::INTEGER AS fiscal_quarter
-FROM generate_series(DATE '${start}', DATE '${end}', INTERVAL '1 day') AS t(d)`;
+FROM generate_series(DATE '${start}', DATE '${end}', INTERVAL '1 day') AS t(d)
+UNION ALL
+-- Unknown member. Facts resolve a missing or unparseable date to -1 rather
+-- than NULL, so this row MUST exist: without it every such fact row is an
+-- orphan, and an inner join to the calendar drops it from the total silently.
+SELECT
+  -1 AS date_key,
+  CAST(NULL AS DATE) AS full_date,
+  CAST(NULL AS INTEGER) AS year,
+  CAST(NULL AS INTEGER) AS quarter,
+  CAST(NULL AS INTEGER) AS month,
+  CAST('Unknown' AS VARCHAR) AS month_name,
+  CAST(NULL AS INTEGER) AS day_of_week,
+  CAST('Unknown' AS VARCHAR) AS day_name,
+  CAST(NULL AS BOOLEAN) AS is_weekend,
+  CAST(NULL AS INTEGER) AS fiscal_year,
+  CAST(NULL AS INTEGER) AS fiscal_quarter`;
 
 export const DIM_DATE_COLUMNS: ColumnDesign[] = [
   { column_name: 'date_key', data_type: 'INTEGER', display_name: 'Date Key', description: 'Surrogate key (YYYYMMDD)', column_role: 'surrogate_key', transformation_expression: "TRY_CAST(strftime(d, '%Y%m%d') AS INTEGER)", scd_type: 1, sort_order: 0, lineage: [{ source_table_name: 'generated', source_column_name: 'calendar_spine', transformation_description: 'Generated — calendar spine' }] },

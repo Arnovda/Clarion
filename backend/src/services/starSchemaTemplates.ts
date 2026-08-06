@@ -101,9 +101,13 @@ function toBusMatrix(t: StarSchemaTemplate, connectorType: string): BusMatrixOut
       additivity: k.additivity,
       product_name: k.productName,
     })),
-    // Templates can't know the customer's data range; a generous default is
-    // fine — dim_date is cheap and facts join it by date value.
-    dim_date_range: { start: '2015-01-01', end: `${year + 2}-12-31` },
+    // Templates can't know the customer's data range, and the calendar has to
+    // COVER it: facts now carry real date keys, so a date outside this range
+    // resolves to a key with no row — an orphan, not the unknown member (only
+    // a NULL or unparseable date becomes -1). A day costs one row, so the
+    // range is deliberately wider than any SMB ledger: an opening balance
+    // booked in 2003 or a contract running to 2031 still joins.
+    dim_date_range: { start: '2000-01-01', end: `${year + 5}-12-31` },
   };
 }
 
