@@ -1,15 +1,19 @@
-admin
+app
+
+# flipped 2026-08-06: preflight reported GO against production — every
+# RLS-enabled tenant table has a policy, and databridge_app holds every grant.
+# Row-level security is now actually enforced rather than bypassed.
 
 # Which PostgreSQL role the backend connects as.
 #
 #   admin  →  databridge       (superuser; BYPASSES row-level security)
 #   app    →  databridge_app   (NOBYPASSRLS; RLS is actually enforced)
 #
-# Current value is `admin`, which is what production has always run. That means
-# row-level security enforces NOTHING today: a superuser bypasses RLS
-# unconditionally, and FORCE ROW LEVEL SECURITY binds the table owner, not a
-# superuser. Tenant isolation currently rests entirely on the application's own
-# tenant filters and the denyUnlessOwned gates.
+# `admin` is what production ran from the beginning, and it meant row-level
+# security enforced NOTHING: a superuser bypasses RLS unconditionally, and
+# FORCE ROW LEVEL SECURITY binds the table owner, not a superuser. Isolation
+# rested entirely on the application's own tenant filters and the
+# denyUnlessOwned gates. Setting this to `app` is what makes the policies real.
 #
 # BEFORE setting this to `app`, run the preflight against production:
 #
