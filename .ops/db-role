@@ -1,5 +1,10 @@
 app
 
+# re-run 2026-08-06 (6th): run 7 got past every database check and collided
+# with the deploy.yml triggered by its own merge —
+# ContainerAppOperationInProgress. The secret set FAILED, so production kept
+# the admin connection string. The workflow now waits for the app to be idle.
+#
 # re-run 2026-08-06 (5th): run 6 set an EMPTY password — a deleted GitHub
 # secret arrives as '', and `??` only falls back on null/undefined, so the
 # "generated one" message was a lie. Normalised now. Still no revision created.
