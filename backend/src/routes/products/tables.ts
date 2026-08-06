@@ -55,7 +55,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 router.patch('/tables/:tableId', requireAuth, requireRole('admin'), validate(updateProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const allowed = ['description', 'display_name'];
+    const allowed = ['description', 'display_name', 'plain_summary'];
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

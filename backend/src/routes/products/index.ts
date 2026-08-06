@@ -13,6 +13,7 @@
  *
  * Module map (mounting order = original registration order):
  *   catalog.ts    — GET / list, catalog-by-source, /tables/:tableId/used-by
+ *   topic.ts      — GET /:id/topic (the topic page's single read model)
  *   core.ts       — POST /, dependency-graph, by-source-table,
  *                   GET/PUT/DELETE /:id, GET /:id/sources
  *   design.ts     — /:id/design-stream, /:id/design, /:id/run
@@ -30,6 +31,7 @@
  */
 import { Router } from 'express';
 import catalogRouter from './catalog';
+import topicRouter from './topic';
 import coreRouter from './core';
 import designRouter from './design';
 import tablesRouter from './tables';
@@ -42,6 +44,10 @@ import cellsRouter from './cells';
 const router = Router();
 
 router.use(catalogRouter);
+// GET /:id/topic — deeper than /:id, so it cannot be captured by core's
+// /:id handler regardless of order; mounted here to keep the read-model
+// routes adjacent.
+router.use(topicRouter);
 router.use(coreRouter);
 router.use(designRouter);
 router.use(tablesRouter);

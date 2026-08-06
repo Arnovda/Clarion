@@ -963,6 +963,28 @@ function QueryPageInner() {
     send(input);
   }
 
+  // Auto-submit deep link — `?q=…&autoSubmit=1`, used by the topic page's
+  // "Try asking" rows. Distinct from `seedQuestion`, which only pre-fills:
+  // the topic page promises that clicking a question ANSWERS it, and landing
+  // on a filled-in box the user still has to submit breaks that promise.
+  //
+  // Waits for the source list so the question runs against the right layer,
+  // and fires at most once per (q, product) pair — `autoSentRef` is what
+  // stops a re-render or a state change from asking twice.
+  const autoQuestion = searchParams.get('q');
+  const autoSubmit = searchParams.get('autoSubmit');
+  const autoSentRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoQuestion || autoSubmit !== '1') return;
+    if (!selectedSource) return;           // sources still loading
+    if (urlProductId && !productContext) return; // product context still loading
+    const key = `${urlProductId ?? ''}:${autoQuestion}`;
+    if (autoSentRef.current === key) return;
+    autoSentRef.current = key;
+    send(autoQuestion);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoQuestion, autoSubmit, selectedSource, productContext, urlProductId]);
+
   // ── Render ──
 
   const sidebarContent = (

@@ -31,7 +31,86 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-06 (ROW-LEVEL SECURITY IS NOW ACTUALLY ENFORCED IN PRODUCTION)
+**Last updated:** 2026-08-06 (TOPIC-FIRST DATA EXPERIENCE — `/topics/[id]` replaces `/products` as the front door)
+
+**THE FRONT DOOR IS NOW A TOPIC, NOT A DATA PRODUCT (2026-08-06).** Implements
+the `design_handoff_topic_first_data` handoff. `/products` served the admin who
+builds the warehouse, not the SMB owner who uses it; the business user's world
+is now **topics** (Finance, Sales) reachable straight from the rail, and
+everything technical lives behind one door — *Manage this data* → **Manage
+mode**, the same URL with `?manage=1`.
+- **New route `/topics/[productId]`** — two layers, one URL. The topic layer
+  answers four things in order (what can I ask, what can I find out, is it
+  current, can I trust it) and is **forbidden** SQL, row/table counts, and the
+  words fact/dimension/star schema/data product. The manage layer (analyst+)
+  carries Tables · How it fits together · Where it comes from · Metrics ·
+  Quality · Activity, reusing `StarSchemaFlow`, `LineageFlow`, `KpiManager`,
+  `QualityTab`, `RefineChat`, `RefreshHistoryChart` unchanged behind
+  plain-language labels.
+- **`?manage=1` rather than a second route** on purpose: the back button and a
+  pasted link both work, and the switch is a cross-fade in place (260ms
+  opacity / 320ms transform, `--ease`), so the user keeps their place. The
+  manage layer is mounted a frame BEFORE it animates and unmounted a beat
+  after — a layer that mounts at its final state cannot animate in.
+  `prefers-reduced-motion` swaps instantly. **A viewer who lands on `?manage=1`
+  gets the topic page**, not an error — the mode does not exist for them.
+- **`GET /products/:id/topic` (new, `routes/products/topic.ts`)** is the topic
+  page's ONE fetch. Deliberately not "`GET /:id` and throw 95% away": that
+  returns every column of every table with lineage — kilobytes of warehouse
+  vocabulary for a screen that must never say those words. Viewer-readable.
+  Returns questions, lens labels, counts, freshness, a quality COUNT and
+  `pendingChanges`. The heavy `GET /:id` payload is fetched only when Manage
+  mode actually opens.
+- **Migration 76 adds two nullable columns.** `product_kpis.question_text` —
+  the KPI phrased as a first-person question ("Outstanding receivables" → "Who
+  owes me money right now?"), STORED not derived, so the sentence a business
+  user reads is one a curator chose; editable in Manage mode → Metrics, and it
+  also feeds the "Answers …" sub-line in the table list. Falls back to the KPI
+  name. `product_tables.plain_summary` — the plain-language paragraph that
+  LEADS the "How it's built" card, with SQL demoted to a collapsed appendix.
+  `description` already holds the one-line grain, hence a second column rather
+  than overloading it.
+- **The provenance trail is read off the SQL** (`lib/sqlProvenance.ts`), not
+  from `product_relationships`: relationship rows are curated metadata that can
+  lag the SQL, and a trail that describes something other than what the table
+  actually reads is worse than no trail. Comments and string literals are
+  stripped first; CTE names are dropped (an alias, not a relation). When
+  `plain_summary` is empty the card falls back to a real sentence derived from
+  that trail — **not** a "not documented yet" stub.
+- **`pendingChanges` is whitespace-insensitive.** A deploy cell that differs
+  from the deployed SQL only by reformatting must not read as "2 changes not
+  deployed"; a permanently-wrong badge trains people to ignore it. Pinned by
+  test.
+- **Nav (`IconRail`)**: workspace is now exactly Home · Ask AI · Dashboards,
+  then a **YOUR DATA** group holding one row per `kind='analytics'` product
+  (fetched at runtime, curated glyph via `iconForAnalytics`), then Studio.
+  `Data products` and `Catalog` are **removed from the rail**; new **Shared
+  data** (`/shared-data`) holds the conformed lookups that used to be the
+  "Core dimensions" pseudo-product — owned there, read-only pills everywhere
+  else, which is what makes the ownership legible.
+- **DEVIATION FROM THE HANDOFF, deliberate: `/products` is NOT redirected.**
+  The handoff says retire it, but product CREATION (the bus-matrix "Prepare my
+  data" flow) exists only on that page — redirecting it would strand the only
+  way to make a new topic. It is removed from the nav (which is the substance
+  of the ask) and stays reachable via Manage mode → overflow → "Open the build
+  workshop". `/products/[id]` is likewise untouched: it is the only surface for
+  the per-table notebook cells that "Deploy changes" deploys, so removing it
+  while keeping the Deploy button would be incoherent.
+- **NOT done from the handoff**, and it is the one gap: the plain-language
+  summary is stored and editable but nothing AI-writes it yet, so today it is
+  hand-written or the derived provenance sentence. Same for "Draft questions
+  with AI" on an empty topic — `question_text` is editable, not generated.
+- `POST /query` gained `?q=…&autoSubmit=1` (distinct from the existing
+  `seedQuestion`, which only pre-fills): the topic page promises that clicking
+  a question ANSWERS it, and landing on a filled-in box breaks that. Fires at
+  most once per (question, product).
+- Tests: `src/tests/products-topic.test.ts` — tenant isolation (404 not 403),
+  the measure/lookup count split, that no `dim_`/snake_case name can reach the
+  break-down sentence, the KPI-name fallback, and the whitespace case above.
+  Frontend `tsc --noEmit` clean and `next build` green (`/topics/[productId]`
+  203 kB, `/shared-data` 124 kB).
+
+**Prior last updated:** 2026-08-06 (ROW-LEVEL SECURITY IS NOW ACTUALLY ENFORCED IN PRODUCTION)
 
 **THE ROLE FLIP IS DONE — RLS ENFORCES FOR THE FIRST TIME (2026-08-06).** The
 backend connects as `databridge_app` (NOBYPASSRLS) instead of the superuser
@@ -2474,7 +2553,9 @@ clarion/                              ← on disk: databridge/
 │       │   ├── cross-views.ts        ← admin-only cross-source views (Neo4j graph)
 │       │   ├── quality.ts            ← quality profiling; alerts; trends
 │       │   ├── ingestion.ts          ← trigger ETL ingestion to Delta Lake warehouse
-│       │   ├── products.ts           ← CRUD data products (star schema definitions)
+│       │   ├── products/            ← CRUD data products, split 10 ways (see products/index.ts)
+│       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
+│       │   │   └── …                ← catalog, core, design, tables, refine, kpis, build, refineChat, cells
 │       │   ├── jobs.ts               ← check background job status
 │       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
 │       │   ├── users.ts              ← admin-only user management; invites; role updates
@@ -2542,7 +2623,14 @@ clarion/                              ← on disk: databridge/
     │   ├── onboarding/page.tsx       ← new-user onboarding wizard
     │   ├── setup/page.tsx            ← admin: connect sources, trigger AI schema profiling (RequireRole)
     │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/glossary tabs (KPIs moved to /products)
-    │   ├── products/                 ← admin-only data products (star schemas, lineage)
+    │   ├── topics/                   ← TOPIC-FIRST FRONT DOOR (business user's home)
+    │   │   ├── layout.tsx            ← ShellLayout wrap
+    │   │   ├── types.ts              ← Topic, TopicQuestion, ManageTab, TableSubTab, DeployState
+    │   │   └── [productId]/page.tsx  ← topic layer + manage layer (?manage=1) + cross-fade
+    │   ├── shared-data/              ← conformed lookups (was the "Core dimensions" product)
+    │   │   ├── layout.tsx
+    │   │   └── page.tsx
+    │   ├── products/                 ← build workshop — off the nav, deep-link only
     │   │   ├── page.tsx              ← orchestrator + tabs (overview, bus-matrix, schema, lineage, kpis)
     │   │   ├── types.ts              ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab
     │   │   ├── helpers.ts            ← statusBorderColor, productIcon, cleanTopicName
@@ -2610,6 +2698,10 @@ clarion/                              ← on disk: databridge/
     │   │   ├── ContextPanel.tsx      ← optional left context panel (sits between IconRail and main)
     │   │   ├── CommandPalette.tsx    ← Cmd+K palette (nav + actions)
     │   │   └── PillNav.tsx           ← pill-style tab switcher
+    │   ├── topics/
+    │   │   ├── TopicLayer.tsx        ← screen 1 — no SQL, no counts, no warehouse vocabulary
+    │   │   ├── ManageLayer.tsx       ← screen 2 — mode bar + header + 6 tabs (analyst+)
+    │   │   └── ManageTables.tsx      ← Tables tab: measures / shared lookups / "How it's built"
     │   ├── products/
     │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram (Observatory palette)
     │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
@@ -2639,7 +2731,8 @@ clarion/                              ← on disk: databridge/
         ├── api.ts                   ← Axios client; JWT interceptor; 401 → redirect to /
         ├── auth.ts                  ← JWT storage, getTokenPayload, isAdmin, setToken
         ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)
-        ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeShort (en-GB)
+        ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
+        ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
         ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
         ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
         └── hooks/

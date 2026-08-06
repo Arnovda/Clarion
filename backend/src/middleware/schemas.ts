@@ -414,6 +414,9 @@ export const updateProductTableSchema = z.object({
   body: z.object({
     description: nullableOptionalString,
     display_name: nullableOptionalString,
+    // Plain-language paragraph shown first on Manage mode's "How it's built"
+    // card, above the provenance trail and the (collapsed) SQL.
+    plain_summary: nullableOptionalString,
   }).passthrough(),
 });
 
@@ -450,6 +453,8 @@ export const createProductKpiSchema = z.object({
     formulaPlainText: nullableOptionalString,
     formulaSql: nullableOptionalString,
     ownerName: nullableOptionalString,
+    // First-person phrasing shown on the topic page's "Try asking" rows.
+    questionText: nullableOptionalString,
   }).passthrough(),
 });
 
@@ -461,6 +466,7 @@ export const updateProductKpiSchema = z.object({
     formula_plain_text: nullableOptionalString,
     formula_sql: nullableOptionalString,
     owner_name: nullableOptionalString,
+    question_text: nullableOptionalString,
     ai_draft: z.boolean().optional(),
   }).passthrough(),
 });
