@@ -63,7 +63,12 @@ function generatePassword(): string {
 
 async function main(): Promise<void> {
   const adminUrl = process.env.DATABASE_URL;
-  const supplied = process.env.DB_APP_PASSWORD;
+  // An unset GitHub secret arrives as the EMPTY STRING, not undefined, so `??`
+  // would keep '' and go on to set an empty password — which ALTER ROLE
+  // accepts, and which then fails at connect time with the unhelpful
+  // "client password must be a string". Normalise to undefined here so
+  // "not supplied" has exactly one representation.
+  const supplied = process.env.DB_APP_PASSWORD?.trim() || undefined;
   const out = (s = '') => process.stdout.write(s + '\n');
 
   if (!adminUrl) throw new Error('DATABASE_URL not set');
@@ -82,6 +87,12 @@ async function main(): Promise<void> {
   }
 
   const password = supplied ?? generatePassword();
+  if (typeof password !== 'string' || password.length === 0) {
+    // Unreachable given the normalisation above, but an empty password is
+    // accepted by ALTER ROLE and only fails much later at connect time, so
+    // assert it here where the message can still be useful.
+    throw new Error('refusing to set an empty password on ' + APP_ROLE);
+  }
   out(supplied ? '  using the supplied DB_APP_PASSWORD' : '  no DB_APP_PASSWORD set — generated one');
 
   // ── 1. Set the password ───────────────────────────────────────────────────
