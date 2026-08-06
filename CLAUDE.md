@@ -31,7 +31,58 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-04 (improvement plan adopted; Phase 0 done, Phase 1a done — graph writes now stamp tenantId)
+**Last updated:** 2026-08-06 (ROW-LEVEL SECURITY IS NOW ACTUALLY ENFORCED IN PRODUCTION)
+
+**THE ROLE FLIP IS DONE — RLS ENFORCES FOR THE FIRST TIME (2026-08-06).** The
+backend connects as `databridge_app` (NOBYPASSRLS) instead of the superuser
+`databridge`. Until now a superuser bypassed RLS unconditionally — FORCE ROW
+LEVEL SECURITY binds the table OWNER, not a superuser — so every
+`tenant_isolation` policy in the database was inert and isolation rested
+entirely on the application's own tenant filters and the `denyUnlessOwned`
+gates. Live revision `…--0000326` at 100% traffic; verified with
+`health=200 login=401` on the first attempt, meaning the app read `users`
+under RLS and correctly refused bad credentials.
+- **Two migrations had to land first, and they are the reason the runbook was
+  dangerous.** `20260403000020` created the policy on a hand-written list of 27
+  tables; `20260512000056` then enabled + FORCEd RLS on EVERY table with a
+  `tenant_id` column — 66 of them. **A table with RLS enabled and no policy
+  denies every row.** `users` was one. Performing the runbook as written would
+  have failed every login. Migration 74 backfills the policies, 75 the grants
+  (plus `ALTER DEFAULT PRIVILEGES`, so a new table cannot reopen the gap).
+- **Rollback is one line**: set `.ops/db-role` back to `admin` and push. The
+  workflow also rolls back on its own if verification fails.
+- **WATCH FOR `42501 insufficient_privilege`.** That is a missing grant on a
+  table no code path touched during verification. It is the one residual risk
+  and the reason to look at logs over the next day.
+- **`ai_model_config` has RLS enabled but NOT FORCEd** — the only table outside
+  the FORCE audit. Harmless now that the backend is a non-owner, but it should
+  be brought in line.
+- **Eight runs, seven of which stopped before touching production.** They found:
+  an unusable supplied password, a deleted-GitHub-secret-arrives-as-empty-string
+  bug (`??` does not fall back on `''`), a credential-splicing regex that would
+  have corrupted the Container App secret whenever the ADMIN password contained
+  a URL-special character, and a race with the `deploy.yml` triggered by the
+  merge itself. Only the third could have caused an outage, and it never
+  reached Azure. **The order — verify the database, then touch production — is
+  what made seven failures free.**
+
+**`.ops/prod-checks` RUNS THE PRODUCTION VERIFICATIONS FROM CI (2026-08-06).**
+Both checks that gated this work needed production credentials, which live in
+GitHub Actions and nowhere else, so leaving them as "the owner runs a script
+against production" meant handing over secrets and losing the answer in
+someone's terminal. `report` is read-only and safe any time.
+- The **role-flip preflight** measured, against production:
+  66 tenant tables / 66 RLS enabled / 66 with a policy / 67-of-67 table grants
+  / all sequence grants. Re-run it before any future role change.
+- The **graph tenant backfill CANNOT run from a GitHub runner** — Neo4j has
+  `external_enabled = false`, so `getaddrinfo EAI_AGAIN`. Correct posture; it
+  needs a runner inside the Container Apps environment, and `backend/scripts/`
+  is not in the production image (only `dist/`). **Step 2 of the graph
+  tenant-scoping is therefore still not done, and step 3 (read predicates) must
+  not land until it is.** Likely path: move the entry point under `src/` the
+  way `syncAllProducts.ts` already is.
+
+**Prior last updated:** 2026-08-04 (improvement plan adopted; Phase 0 done, Phase 1a done — graph writes now stamp tenantId)
 
 **THE PLAN OF RECORD IS `docs/backlog/platform-improvement-plan.md`.** Read it
 before starting platform work. It reduces the review's findings to two causes —
