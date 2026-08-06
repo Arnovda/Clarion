@@ -1,5 +1,10 @@
 app
 
+# re-run 2026-08-06 (3rd): DB_APP_PASSWORD secret removed, so the workflow now
+# generates the app role's password itself. Runs 3 and 4 both stopped at
+# password validation BEFORE touching production — no revision was created and
+# no traffic moved.
+#
 # re-run 2026-08-06: first attempt stopped safely at password validation before
 # touching production. The password requirement is gone — one is generated now.
 #
