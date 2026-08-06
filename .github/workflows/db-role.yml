@@ -102,21 +102,23 @@ jobs:
           RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
           ROLE: ${{ steps.role.outputs.role }}
           ADMIN_URL: ${{ secrets.DATABASE_URL }}
-          APP_PW: ${{ steps.pw.outputs.password }}
+          APP_URL: ${{ steps.pw.outputs.url }}
         run: |
           set -euo pipefail
 
-          # The app connection string is DERIVED from the admin one — same host,
-          # port, database and options, different credentials. Asking a human to
-          # assemble a second URL by hand is an unnecessary way to get a subtly
-          # wrong one into production. The password was registered with the
-          # runner via ::add-mask:: before it got here, so it stays redacted.
+          # The app connection string comes from the previous step already
+          # assembled and correctly encoded — same host, port, database and
+          # options as the admin one, different credentials. It is NOT built
+          # here: splicing credentials into a URL with a regex quietly produces
+          # a malformed string whenever the admin password contains a
+          # URL-special character, and that string would go straight into the
+          # Container App secret. It was registered via ::add-mask:: before it
+          # reached this step, so it stays redacted in the log.
           if [ "$ROLE" = "app" ]; then
-            TARGET_URL=$(printf '%s' "$ADMIN_URL" | sed -E "s|://[^@]*@|://databridge_app:${APP_PW}@|")
-            case "$TARGET_URL" in
-              *databridge_app:*) ;;
-              *) echo "::error::could not derive the app connection string from DATABASE_URL"; exit 1 ;;
-            esac
+            TARGET_URL="$APP_URL"
+            if [ -z "$TARGET_URL" ]; then
+              echo "::error::no app connection string produced by the password step"; exit 1
+            fi
           else
             TARGET_URL="$ADMIN_URL"
           fi

@@ -103,8 +103,21 @@ async function main(): Promise<void> {
   }
 
   // ── 2. Prove the role can log in AND read ─────────────────────────────────
-  const appUrl = adminUrl.replace(/:\/\/[^@]*@/, `://${APP_ROLE}:${encodeURIComponent(password)}@`);
-  const app = new Client({ connectionString: appUrl, ssl: ssl(appUrl) });
+  // Connect with DISCRETE FIELDS rather than a spliced connection string.
+  // Building a URL here failed with "SASL: client password must be a string" —
+  // pg did not recover the password from the string we handed it. Rather than
+  // work out which character tripped the parser, take the parser out of the
+  // path entirely: there is no reason to serialise credentials into a URL only
+  // for the driver to pull them apart again.
+  const admin2 = new URL(adminUrl);
+  const app = new Client({
+    host: admin2.hostname,
+    port: admin2.port ? Number(admin2.port) : 5432,
+    database: admin2.pathname.replace(/^\//, ''),
+    user: APP_ROLE,
+    password,
+    ssl: ssl(adminUrl),
+  });
 
   try {
     await app.connect();
@@ -134,14 +147,22 @@ async function main(): Promise<void> {
     await app.end();
   }
 
-  // Hand the password to the workflow so it can build the connection string,
-  // without it ever appearing in a log. ::add-mask:: registers the value with
-  // the runner first, so any later accidental echo is redacted; GITHUB_OUTPUT
-  // itself is not printed.
+  // Hand the FINISHED connection string to the workflow rather than the
+  // password, so nothing downstream has to splice credentials into a URL.
+  // The caller previously did that with a regex, which silently produces a
+  // malformed string if the ADMIN password happens to contain a URL-special
+  // character — and that string would go straight into the Container App
+  // secret. The URL setters below encode correctly by construction.
+  const appConn = new URL(adminUrl);
+  appConn.username = APP_ROLE;
+  appConn.password = password;
+
   const outFile = process.env.GITHUB_OUTPUT;
   if (outFile) {
+    // Register both with the runner before either can be echoed anywhere.
     process.stdout.write(`::add-mask::${password}\n`);
-    appendFileSync(outFile, `password=${password}\n`);
+    process.stdout.write(`::add-mask::${appConn.toString()}\n`);
+    appendFileSync(outFile, `url=${appConn.toString()}\n`);
   }
 
   out('');
