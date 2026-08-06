@@ -105,7 +105,7 @@ jobs:
             if [ "$PREFLIGHT" = "success" ]; then
               echo "**GO** — the backend can run as \`databridge_app\` with row-level security enforced."
               echo ""
-              echo "To flip: set \`.ops/db-role\` to \`app\` and push (needs the \`DATABASE_URL_APP\` secret)."
+              echo "To flip: set \`.ops/db-role\` to \`app\` and push (needs the \`DB_APP_PASSWORD\` secret)."
             else
               echo "**NO-GO** — blockers below. Do not flip \`.ops/db-role\`."
             fi

@@ -60,17 +60,23 @@ jobs:
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
           echo "Desired database role: $ROLE"
 
-      - name: Check the target secret exists
+      - name: Check the password secret exists
         env:
-          APP_URL: ${{ secrets.DATABASE_URL_APP }}
+          PW: ${{ secrets.DB_APP_PASSWORD }}
           ROLE: ${{ steps.role.outputs.role }}
         run: |
           set -euo pipefail
-          if [ "$ROLE" = "app" ] && [ -z "${APP_URL}" ]; then
-            echo "::error::DATABASE_URL_APP is not set. Add it as a repository secret"
-            echo "::error::(the databridge_app connection string) before flipping to 'app'."
+          if [ "$ROLE" = "app" ] && [ -z "${PW}" ]; then
+            echo "::error::DB_APP_PASSWORD is not set. Add it as a repository secret"
+            echo "::error::(a password you choose) before flipping to 'app'."
+            echo "::error::See docs/runbooks/db-role-flip.md."
             exit 1
           fi
+
+      - name: Install backend dependencies
+        if: steps.role.outputs.role == 'app'
+        working-directory: backend
+        run: npm ci --ignore-scripts
 
       # The preflight reads the catalog, so it needs the ADMIN url — asking the
       # app role whether it has permission is the very thing that may be broken.
@@ -79,10 +85,18 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          set -euo pipefail
-          npm ci --ignore-scripts
-          npx tsx scripts/preflight-role-flip.ts
+        run: npx tsx scripts/preflight-role-flip.ts
+
+      # Sets the password and then proves the role can READ, not merely log in.
+      # Both happen before anything touches the Container App, so a role that
+      # authenticates but is denied every row never reaches production.
+      - name: Set the app role's password and verify it can read
+        if: steps.role.outputs.role == 'app'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
+        run: npx tsx scripts/set-app-role-password.ts
 
       - name: Log in to Azure
         uses: azure/login@v2
@@ -95,11 +109,24 @@ jobs:
           RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
           ROLE: ${{ steps.role.outputs.role }}
           ADMIN_URL: ${{ secrets.DATABASE_URL }}
-          APP_URL: ${{ secrets.DATABASE_URL_APP }}
+          APP_PW: ${{ secrets.DB_APP_PASSWORD }}
         run: |
           set -euo pipefail
 
-          if [ "$ROLE" = "app" ]; then TARGET_URL="$APP_URL"; else TARGET_URL="$ADMIN_URL"; fi
+          # The app connection string is DERIVED from the admin one — same host,
+          # port, database and options, different credentials. Asking a human to
+          # assemble a second URL by hand is an unnecessary way to get a subtly
+          # wrong one into production. DB_APP_PASSWORD is a registered secret so
+          # GitHub masks it wherever it appears.
+          if [ "$ROLE" = "app" ]; then
+            TARGET_URL=$(printf '%s' "$ADMIN_URL" | sed -E "s|://[^@]*@|://databridge_app:${APP_PW}@|")
+            case "$TARGET_URL" in
+              *databridge_app:*) ;;
+              *) echo "::error::could not derive the app connection string from DATABASE_URL"; exit 1 ;;
+            esac
+          else
+            TARGET_URL="$ADMIN_URL"
+          fi
 
           # Revision serving traffic right now — the rollback target.
           PREV_REV=$(az containerapp ingress traffic show --name "$APP" --resource-group "$RG" \

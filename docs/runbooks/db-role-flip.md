@@ -34,8 +34,11 @@
 > 1. `cd backend && DATABASE_URL='<admin url>' npx tsx scripts/preflight-role-flip.ts`
 >    — read-only; exits 0 only when every table has a policy and every grant is
 >    present, and names the blockers when it does not.
-> 2. Set the `DATABASE_URL_APP` repository secret to the `databridge_app`
->    connection string.
+> 2. Add a `DB_APP_PASSWORD` repository secret — a password you choose
+>    (16+ chars, letters/digits/`-_.~` only). The workflow sets it on the role
+>    and derives the connection string itself; nobody assembles a URL by hand.
+>    The role's original password was never recorded anywhere, and setting a
+>    new one is safe because nothing connects with it today.
 > 3. Set `.ops/db-role` to `app` and push.
 >
 > The workflow re-runs the preflight, shifts traffic only after the new

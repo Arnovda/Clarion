@@ -20,9 +20,10 @@ admin
 # every grant it needs. The flip workflow runs it again itself and refuses to
 # proceed on a NO-GO, so this is a courtesy check, not the only one.
 #
-# The flip requires the DATABASE_URL_APP GitHub secret to be set to the
-# databridge_app connection string. The workflow fails with a clear message if
-# it is missing rather than deploying a broken revision.
+# The flip requires ONE GitHub secret: DB_APP_PASSWORD, a password you choose.
+# The workflow sets it on the role, proves the role can read real tables, and
+# derives the connection string from the admin one. It fails with a clear
+# message if the secret is missing rather than deploying a broken revision.
 #
 # Rollback is this same one-line edit back to `admin`, and the workflow also
 # rolls back on its own if the new revision cannot read the database.
