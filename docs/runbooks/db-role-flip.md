@@ -34,12 +34,14 @@
 > 1. `cd backend && DATABASE_URL='<admin url>' npx tsx scripts/preflight-role-flip.ts`
 >    — read-only; exits 0 only when every table has a policy and every grant is
 >    present, and names the blockers when it does not.
-> 2. Add a `DB_APP_PASSWORD` repository secret — a password you choose
->    (16+ chars, letters/digits/`-_.~` only). The workflow sets it on the role
->    and derives the connection string itself; nobody assembles a URL by hand.
->    The role's original password was never recorded anywhere, and setting a
->    new one is safe because nothing connects with it today.
-> 3. Set `.ops/db-role` to `app` and push.
+> 2. Set `.ops/db-role` to `app` and push.
+>
+> That is the whole procedure. No secret has to be created: the role's original
+> password was never recorded anywhere, so the workflow generates one, sets it,
+> and writes it into the Container App secret. Nobody handles it. Setting a
+> `DB_APP_PASSWORD` secret overrides that when a known password is wanted — it
+> must then be 16+ chars of letters, digits and `-_.~`, because anything else
+> would store one password and connect with another.
 >
 > The workflow re-runs the preflight, shifts traffic only after the new
 > revision provisions, then proves the new role can read a real table — a login

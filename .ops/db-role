@@ -1,5 +1,8 @@
 app
 
+# re-run 2026-08-06: first attempt stopped safely at password validation before
+# touching production. The password requirement is gone — one is generated now.
+#
 # flipped 2026-08-06: preflight reported GO against production — every
 # RLS-enabled tenant table has a policy, and databridge_app holds every grant.
 # Row-level security is now actually enforced rather than bypassed.
@@ -24,10 +27,11 @@ app
 # every grant it needs. The flip workflow runs it again itself and refuses to
 # proceed on a NO-GO, so this is a courtesy check, not the only one.
 #
-# The flip requires ONE GitHub secret: DB_APP_PASSWORD, a password you choose.
-# The workflow sets it on the role, proves the role can read real tables, and
-# derives the connection string from the admin one. It fails with a clear
-# message if the secret is missing rather than deploying a broken revision.
+# No secret is needed. The workflow generates the app role's password, sets it,
+# proves the role can read real tables, and writes it into the Container App
+# secret — nobody handles it. Set DB_APP_PASSWORD only if you want a known
+# password; it must then be 16+ chars of letters, digits and - _ . ~ so it
+# survives a connection URL intact.
 #
 # Rollback is this same one-line edit back to `admin`, and the workflow also
 # rolls back on its own if the new revision cannot read the database.
