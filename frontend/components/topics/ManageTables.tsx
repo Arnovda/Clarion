@@ -411,13 +411,18 @@ function TableDetail({
           ) : (
             <div className="group/summary flex items-start gap-2">
               <p className="min-w-0 flex-1 text-[15px] leading-[1.6] text-ink [text-wrap:pretty]">{summary}</p>
-              <button
-                type="button"
-                onClick={() => setEditingSummary((table.plain_summary ?? '').trim() || summary)}
-                className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-muted-2 opacity-0 transition-opacity duration-1 hover:text-ocean focus-visible:opacity-100 group-hover/summary:opacity-100"
-              >
-                Edit
-              </button>
+              {/* Admin-only: PATCH /products/tables/:id is admin-gated on the
+                  API, so showing an analyst an Edit button would only earn
+                  them a 403 after they had typed a paragraph. */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setEditingSummary((table.plain_summary ?? '').trim() || summary)}
+                  className="shrink-0 rounded px-1.5 py-0.5 text-[11.5px] text-muted-2 opacity-0 transition-opacity duration-1 hover:text-ocean focus-visible:opacity-100 group-hover/summary:opacity-100"
+                >
+                  Edit
+                </button>
+              )}
             </div>
           )}
 
