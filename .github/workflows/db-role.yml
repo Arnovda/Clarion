@@ -123,6 +123,25 @@ jobs:
             TARGET_URL="$ADMIN_URL"
           fi
 
+          # Wait for the app to be free before modifying it. Every merge to main
+          # triggers deploy.yml, which updates this same Container App, so a
+          # flip pushed right after a merge collides with it:
+          #   (ContainerAppOperationInProgress) Cannot modify a container app
+          # Failing on that would be an arbitrary race, not a real problem with
+          # the flip — so wait it out rather than make the operator retry.
+          wait_for_idle() {
+            for _ in $(seq 1 40); do
+              STATE=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+              case "$STATE" in
+                InProgress|Provisioning) echo "  app busy ($STATE) — waiting"; sleep 15 ;;
+                *) return 0 ;;
+              esac
+            done
+            echo "::error::container app still busy after 10 minutes"; return 1
+          }
+          wait_for_idle
+
           # Revision serving traffic right now — the rollback target.
           PREV_REV=$(az containerapp ingress traffic show --name "$APP" --resource-group "$RG" \
             --query "[?weight>\`0\`] | [0].revisionName" -o tsv)
