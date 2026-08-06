@@ -77,6 +77,62 @@ already applied** — it will not create a revision or shift traffic. It is not 
 promote vehicle: re-applying would push the app's current template image to 100%
 traffic and so bypass deploy.yml's 0%-traffic test-first model.
 
+## `db-role`
+
+Contains exactly one word: `admin` or `app`.
+
+| Value | Meaning |
+|---|---|
+| `app` | The backend connects as `databridge_app` (NOBYPASSRLS). Every `tenant_isolation` policy in the database **actually applies**. |
+| `admin` | The backend connects as the superuser `databridge`, which **bypasses row-level security unconditionally**. Isolation then rests entirely on the application's own tenant filters. The rollback. |
+
+Production ran as `admin` from the beginning, which meant RLS enforced nothing —
+a superuser bypasses it, and `FORCE ROW LEVEL SECURITY` binds the table *owner*,
+not a superuser. Flipped to `app` on 2026-08-06.
+
+The workflow refuses to proceed on a preflight NO-GO, shifts traffic only after
+the new revision provisions, then **proves the role can read a real table** (a
+login attempt with a nonsense address must return 401, not 500) and returns
+traffic to the previous revision by itself if it cannot.
+
+No secret is needed: the role's password is generated, set, verified and written
+into the Container App secret without anybody handling it. Set `DB_APP_PASSWORD`
+only if you want a known password — it must then be 16+ characters of letters,
+digits and `- _ . ~`, because anything else would store one password and connect
+with another.
+
+**After flipping, watch `prod-logs` for `grant-missing`** — a table the role was
+never granted, on a code path verification did not exercise.
+
+Details: `docs/runbooks/db-role-flip.md`.
+
+## `prod-checks`
+
+Contains one word: `report` or `backfill-graph-tenant`.
+
+Runs the two verifications that gate the tenant-isolation work: the database
+role-flip preflight (read-only), and whether every Neo4j node carries a
+`tenantId`. `report` writes nothing; `backfill-graph-tenant` performs the one
+write, and is idempotent.
+
+The graph half **cannot currently run from a GitHub runner** — Neo4j has
+`external_enabled = false`, which is the correct posture and means this check
+needs a runner inside the Container Apps environment. The workflow distinguishes
+"could not look" from "looked and found gaps" precisely so an unreachable Neo4j
+is never mistaken for a clean result.
+
+Until it reports clean, a tenant predicate must **not** be added to the reads in
+`db/semanticGraph.ts`: an unstamped node does not leak once predicates exist, it
+silently vanishes from its owner's catalog.
+
+## `relationship-audit`
+
+Free-text; contains a tenant id. Dumps that tenant's semantic layer read-only —
+per-connection table and column counts, every relationship with its provenance,
+and a summary **last** (so a truncated log still shows it) flagging the four
+defect shapes foreign-key detection is known to produce. Only schema metadata is
+read; no row values.
+
 ## `infra-preflight`
 
 Free-text. Editing it runs a **read-only** probe that reports which roles the
@@ -85,3 +141,27 @@ Terraform state exists in the subscription, the image + health of both apps, and
 the state of warehouse storage (which `tenant-*` containers exist and whether
 anything has actually been written into them — the open validation question from
 the per-tenant flip). It changes nothing; use it to check production at any time.
+
+## `prod-logs`
+
+Contains a lookback window: `24h`, `7d`, … (Log Analytics keeps 30 days.)
+
+Editing it runs a **read-only** Log Analytics query and reports whether a short
+list of known failure signatures appeared:
+
+| Signature | Meaning |
+|---|---|
+| `grant-missing` | `42501` / `permission denied for` — a table the app role was never granted. The residual risk of the `db-role` flip. |
+| `rls-write-denied` | A policy refused a write. Fail-closed, but a user hit a wall. |
+| `ownership-refused` | The tenant ownership gate turned traffic away. A burst means it is refusing *legitimate* requests. |
+| `runner-active` | **Positive** signal — the child-process query runner announced itself. Its absence means it silently fell back in-process. |
+| `runner-degraded` | The runner said so itself. |
+
+Every one of these is something CLAUDE.md already tells the next person to
+"watch for", each followed by a note that nobody has ever looked, because looking
+meant having Azure credentials on a laptop. That is the gap this closes.
+
+The report prints **log volume first**, deliberately: a clean report over a
+window in which nobody used the product proves nothing, and this repository's
+recurring failure is exactly the change believed to work while inert. For the
+same reason a query that could not run is reported as *unknown*, never as clean.

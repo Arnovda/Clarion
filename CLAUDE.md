@@ -52,8 +52,9 @@ under RLS and correctly refused bad credentials.
 - **Rollback is one line**: set `.ops/db-role` back to `admin` and push. The
   workflow also rolls back on its own if verification fails.
 - **WATCH FOR `42501 insufficient_privilege`.** That is a missing grant on a
-  table no code path touched during verification. It is the one residual risk
-  and the reason to look at logs over the next day.
+  table no code path touched during verification. It is the one residual risk.
+  **Do not watch it by remembering to** — edit `.ops/prod-logs` (below), which
+  queries for exactly this signature and four others.
 - **`ai_model_config` has RLS enabled but NOT FORCEd** — the only table outside
   the FORCE audit. Harmless now that the backend is a non-owner, but it should
   be brought in line.
@@ -65,6 +66,30 @@ under RLS and correctly refused bad credentials.
   merge itself. Only the third could have caused an outage, and it never
   reached Azure. **The order — verify the database, then touch production — is
   what made seven failures free.**
+
+**PRODUCTION LOGS ARE NOW READABLE — `.ops/prod-logs` (2026-08-06).** This file
+is full of sentences of the form "watch for X in the logs", each followed by
+"NOT yet observed: no log access from the sandbox". Those were never
+observations, they were intentions, and the platform's most-repeated failure is
+the change that shipped, was believed to work, and was inert for weeks. A signal
+nobody can read is not a feedback loop. Editing the file (it holds a lookback
+window, `24h`/`7d`) runs a read-only Log Analytics query for five signatures:
+`grant-missing` (the role flip's residual risk), `rls-write-denied`,
+`ownership-refused` (the gate turning away legitimate traffic — flagged as
+unverified since 2026-07-28), and `runner-active` / `runner-degraded` (whether
+`DUCKDB_RUNNER=child` actually took effect, open since 2026-07-27).
+- **It prints log VOLUME first, deliberately.** A clean report over a window in
+  which nobody used the product proves nothing, and the whole point is to stop
+  mistaking absence of evidence for evidence of health. For the same reason a
+  query that could not run is reported as *unknown*, never as clean — the same
+  discipline `prod-checks` applies to an unreachable Neo4j.
+- **Absence is only reported as a finding for the POSITIVE signal.** Saying "no
+  `grant-missing`, therefore fine" would repeat the exact mistake this exists to
+  stop; the missing `runner-active` line, on the other hand, IS the finding.
+- The report formatting was dry-run against synthetic query output before
+  shipping — including a log excerpt beginning with `-`, which `echo` would have
+  swallowed as an option flag, and the empty-result path.
+- Retention is 30 days (`azurerm_log_analytics_workspace.main`).
 
 **`.ops/prod-checks` RUNS THE PRODUCTION VERIFICATIONS FROM CI (2026-08-06).**
 Both checks that gated this work needed production credentials, which live in
