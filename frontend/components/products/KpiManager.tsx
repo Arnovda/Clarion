@@ -34,6 +34,8 @@ interface KpiManagerProps {
 interface DraftState {
   name: string;
   description: string;
+  /** First-person phrasing shown on the topic page's "Try asking" rows. */
+  questionText: string;
   formulaPlainText: string;
   formulaSql: string;
   /** AI-assist state for the inline draft. */
@@ -45,6 +47,7 @@ interface DraftState {
 const EMPTY_DRAFT: DraftState = {
   name: '',
   description: '',
+  questionText: '',
   formulaPlainText: '',
   formulaSql: '',
   drafting: false,
@@ -69,6 +72,7 @@ export default function KpiManager({ productId, kpis, onChanged }: KpiManagerPro
     setDraft({
       name:             kpi.name,
       description:      kpi.description ?? '',
+      questionText:     kpi.question_text ?? '',
       formulaPlainText: kpi.formula_plain_text ?? '',
       formulaSql:       kpi.formula_sql ?? '',
       drafting:         false,
@@ -124,6 +128,7 @@ export default function KpiManager({ productId, kpis, onChanged }: KpiManagerPro
         await api.post(`/products/${productId}/kpis`, {
           name:             draft.name.trim(),
           description:      draft.description || undefined,
+          questionText:     draft.questionText.trim() || undefined,
           formulaPlainText: draft.formulaPlainText || undefined,
           formulaSql:       draft.formulaSql || undefined,
         });
@@ -132,6 +137,7 @@ export default function KpiManager({ productId, kpis, onChanged }: KpiManagerPro
         await api.put(`/products/kpis/${editingId}`, {
           name:               draft.name.trim(),
           description:        draft.description || null,
+          question_text:      draft.questionText.trim() || null,
           formula_plain_text: draft.formulaPlainText || null,
           formula_sql:        draft.formulaSql || null,
           ai_draft:           false,
@@ -261,6 +267,12 @@ function KpiCard({
               <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2">draft</span>
             )}
           </div>
+          {kpi.question_text && (
+            <p className="mb-2 text-[12.5px] leading-relaxed text-ink-2">
+              <span className="mr-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2">ASKED AS</span>
+              {kpi.question_text}
+            </p>
+          )}
           {kpi.description && (
             <p className="text-[12.5px] text-ink-2 leading-relaxed mb-2">{kpi.description}</p>
           )}
@@ -369,6 +381,27 @@ function KpiEditor({
           className="w-full px-3 py-2 text-[13px] bg-bg border border-line rounded focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
         />
       </div>
+
+      {/* Question — what the business user sees.
+          This is the string the topic page's "Try asking" row shows and the
+          "Answers …" sub-line in Manage mode reuses. It is stored on the KPI
+          rather than derived, so the phrasing a business user reads is
+          something a curator chose, not something a regex produced. */}
+      <label className="block">
+        <span className="mb-1 block text-[11px] font-medium uppercase tracking-wider text-muted-2">
+          Question{' '}
+          <span className="font-normal normal-case tracking-normal text-muted">
+            — how a business user would ask for this. Shown on the topic page.
+          </span>
+        </span>
+        <input
+          type="text"
+          value={draft.questionText}
+          onChange={(e) => setDraft((d) => ({ ...d, questionText: e.target.value }))}
+          placeholder="e.g. Who owes me money right now?"
+          className="w-full rounded border border-line bg-bg px-3 py-2 text-[13px] focus:border-ocean focus:outline-none focus:ring-1 focus:ring-ocean/30"
+        />
+      </label>
 
       {aiOpen && (
         <AiPromptDialog

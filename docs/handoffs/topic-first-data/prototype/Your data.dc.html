@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@0.462.0/dist/umd/lucide.min.js"></script>
+<style>
+  body { margin:0; background:#e6e8ea; font-family:Inter, system-ui, sans-serif; color:#0f1a22; -webkit-font-smoothing:antialiased; }
+  a { color:#164e63; text-decoration:none; }
+  a:hover { color:#103d4f; text-decoration:underline; }
+  * { box-sizing:border-box; }
+</style>
+</helmet>
+
+<section style="padding:56px 56px 40px; display:flex; flex-direction:column; gap:28px">
+  <div style="display:flex; flex-direction:column; gap:8px; max-width:860px">
+    <div style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#6b7680">Turn 3 — the flow from 1b into 2a, live</div>
+    <div style="font-family:'Source Serif 4',Georgia,serif; font-size:30px; letter-spacing:-0.02em; line-height:1.2">Manage mode is the same screen, turned over</div>
+    <div style="font-size:14.5px; color:#4a5660; line-height:1.6; text-wrap:pretty">Click <em>Manage this data</em> below and the frame actually transitions — no page load, the topic name stays put and everything else swaps around it. <kbd style="font-family:'Geist Mono',monospace; font-size:11px; border:1px solid #d0d5da; border-radius:4px; padding:1px 5px; background:#fff">Esc</kbd> or <em>Done</em> takes you back. Refinements over <a href="#2a">2a</a>: an ocean mode bar that says changes are private until you deploy, plain language before SQL, and one line per table saying what it answers.</div>
+  </div>
+
+  <div id="3a" style="display:flex; flex-direction:column; gap:12px">
+    <div style="display:flex; align-items:baseline; gap:10px">
+      <span style="font-family:'Geist Mono',monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; color:#fff; background:#164e63; padding:3px 8px; border-radius:4px">3a</span>
+      <span style="font-size:14px; font-weight:500">Interactive — click the button in the frame</span>
+    </div>
+
+    <div style="width:1440px; height:900px; background:#eef0f2; border:1px solid #d0d5da; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12)">
+
+      <header style="height:48px; background:#ffffff; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:12px; padding:0 16px; flex-shrink:0; z-index:3">
+        <div style="display:flex; align-items:center; gap:9px; font-family:'Source Serif 4',Georgia,serif; font-weight:500; font-size:17px; letter-spacing:-0.02em; color:#0f1a22; line-height:1">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.6" fill="#164e63"></circle></svg>
+          <span>Clarion</span>
+        </div>
+        <div style="flex:1"></div>
+        <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid #d0d5da; border-radius:6px; background:#f8f9fa; font-size:12.5px; color:#6b7680">
+          <i data-lucide="search" width="12" height="12" stroke-width="1.75"></i>
+          <span style="width:160px; text-align:left">Search or ask…</span>
+          <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.04em; color:#8891a0">⌘K</span>
+        </div>
+        <div style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:#6b7680"><i data-lucide="bell" width="15" height="15" stroke-width="1.5"></i></div>
+        <div style="width:26px; height:26px; border-radius:999px; background:#e8f0f3; color:#164e63; font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center">AV</div>
+      </header>
+
+      <div style="flex:1; display:flex; min-height:0">
+        <aside style="width:220px; flex-shrink:0; background:#164e63; border-right:1px solid rgba(16,61,79,0.7); display:flex; flex-direction:column; z-index:2">
+          <nav style="flex:1; display:flex; flex-direction:column; gap:2px; padding:14px 8px">
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="home" width="14" height="14" stroke-width="1.5"></i><span>Home</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="message-square" width="14" height="14" stroke-width="1.5"></i><span>Ask AI</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="layout-grid" width="14" height="14" stroke-width="1.5"></i><span>Dashboards</span></div>
+            <div style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); padding:14px 10px 6px; font-weight:500">Your data</div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; background:rgba(255,255,255,0.15); color:#ffffff; font-weight:500"><i data-lucide="landmark" width="14" height="14" stroke-width="1.5"></i><span>Finance</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="receipt" width="14" height="14" stroke-width="1.5"></i><span>Sales</span></div>
+            <div style="display:flex; align-items:center; gap:6px; padding:14px 10px 6px">
+              <i data-lucide="chevron-down" width="12" height="12" stroke-width="2" color="rgba(255,255,255,0.45)"></i>
+              <span style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); font-weight:500">Studio</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="plug" width="14" height="14" stroke-width="1.5"></i><span>Sources</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="library" width="14" height="14" stroke-width="1.5"></i><span>Shared data</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="workflow" width="14" height="14" stroke-width="1.5"></i><span>Refresh</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6">
+              <i data-lucide="inbox" width="14" height="14" stroke-width="1.5"></i>
+              <span style="flex:1">Suggestions</span>
+              <span style="min-width:18px; height:18px; padding:0 4px; border-radius:999px; background:#103d4f; color:#fff; font-family:'Geist Mono',monospace; font-size:10px; display:flex; align-items:center; justify-content:center">30</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="code-2" width="14" height="14" stroke-width="1.5"></i><span>Notebooks</span></div>
+          </nav>
+          <div style="padding:8px; border-top:1px solid rgba(255,255,255,0.1)">
+            <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:6px; color:#d0e1e6; font-size:12px">
+              <i data-lucide="chevron-left" width="16" height="16" stroke-width="1.75"></i>
+              <span style="font-family:'Geist Mono',monospace; text-transform:uppercase; letter-spacing:0.1em; font-size:10.5px">Collapse</span>
+            </div>
+          </div>
+        </aside>
+
+        <main style="flex:1; min-width:0; position:relative; background:#eef0f2; overflow:hidden">
+
+          <div style="position:absolute; inset:0; padding:60px 40px 40px; transition:opacity 260ms cubic-bezier(0.22,1,0.36,1), transform 320ms cubic-bezier(0.22,1,0.36,1); opacity:{{ topicOpacity }}; transform:{{ topicTransform }}; pointer-events:{{ topicPointer }}">
+            <div style="max-width:720px; margin:0 auto; display:flex; flex-direction:column; gap:30px">
+              <div style="display:flex; flex-direction:column; gap:10px; align-items:center; text-align:center">
+                <div style="width:44px; height:44px; border-radius:10px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="landmark" width="22" height="22" stroke-width="1.6"></i></div>
+                <div style="font-family:'Source Serif 4',Georgia,serif; font-size:38px; letter-spacing:-0.02em; line-height:1.15">Finance</div>
+                <p style="margin:0; font-size:15px; color:#4a5660; line-height:1.6; max-width:520px; text-wrap:pretty">General ledger, receivables and payables — everything Exact Online books, in plain language.</p>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; background:#ffffff; border:1px solid #d0d5da; border-radius:10px; padding:14px 18px">
+                <i data-lucide="message-square" width="16" height="16" stroke-width="1.6" color="#8891a0"></i>
+                <span style="flex:1; font-size:15px; color:#8891a0">Ask anything about Finance…</span>
+                <button type="button" style="padding:8px 14px; background:#164e63; color:#fff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Ask</button>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:10px">
+                <div style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Try asking</div>
+                <div style="display:flex; flex-direction:column; gap:8px">
+                  <a href="#3a" style="display:flex; align-items:center; gap:12px; background:#fff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63"><span style="flex:1">Who owes me money right now?</span><i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i></a>
+                  <a href="#3a" style="display:flex; align-items:center; gap:12px; background:#fff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63"><span style="flex:1">What was my balance at month end?</span><i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i></a>
+                  <a href="#3a" style="display:flex; align-items:center; gap:12px; background:#fff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63"><span style="flex:1">How did my costs move this quarter?</span><i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i></a>
+                </div>
+              </div>
+              <div style="font-size:14px; color:#4a5660; line-height:1.6; text-align:center">Break any of this down by <span style="color:#334049; border-bottom:1px solid #d0d5da">customer</span>, <span style="color:#334049; border-bottom:1px solid #d0d5da">GL account</span>, <span style="color:#334049; border-bottom:1px solid #d0d5da">journal</span>, <span style="color:#334049; border-bottom:1px solid #d0d5da">payment terms</span> or <span style="color:#334049; border-bottom:1px solid #d0d5da">date</span>.</div>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:18px; border-top:1px solid #d0d5da">
+                <div style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:#6b7680">
+                  <span style="width:7px; height:7px; border-radius:999px; background:#3f7a5c"></span>
+                  <span>Matches Exact Online as of 6 minutes ago · <a href="#3a">see data quality</a></span>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px">
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color:#8891a0">Only you can see this</span>
+                  <button type="button" onClick="{{ openManage }}" style="display:flex; align-items:center; gap:7px; padding:8px 12px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap" style-hover="border-color:#164e63; color:#164e63; background:#e8f0f3">
+                    <i data-lucide="sliders-horizontal" width="13" height="13" stroke-width="1.75"></i>
+                    <span>Manage this data</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; background:#eef0f2; transition:opacity 260ms cubic-bezier(0.22,1,0.36,1), transform 320ms cubic-bezier(0.22,1,0.36,1); opacity:{{ workOpacity }}; transform:{{ workTransform }}; pointer-events:{{ workPointer }}">
+
+            <div style="background:#164e63; color:#fff; padding:0 24px; height:38px; display:flex; align-items:center; gap:12px; flex-shrink:0">
+              <i data-lucide="sliders-horizontal" width="13" height="13" stroke-width="1.75"></i>
+              <span style="font-family:'Geist Mono',monospace; font-size:10.5px; letter-spacing:0.14em; text-transform:uppercase">Manage mode</span>
+              <span style="font-size:12.5px; color:#d0e1e6">Nothing here changes what your team sees until you deploy.</span>
+              <div style="flex:1"></div>
+              <span style="font-size:12px; color:#d0e1e6">Press <kbd style="font-family:'Geist Mono',monospace; font-size:10.5px; border:1px solid rgba(255,255,255,0.35); border-radius:4px; padding:1px 5px">Esc</kbd></span>
+              <button type="button" onClick="{{ closeManage }}" style="padding:5px 12px; background:#fff; color:#164e63; border:none; border-radius:5px; font-family:Inter,sans-serif; font-size:12.5px; font-weight:500; cursor:pointer">Done</button>
+            </div>
+
+            <div style="background:#fff; border-bottom:1px solid #d0d5da; padding:16px 24px 0; display:flex; flex-direction:column; gap:12px; flex-shrink:0">
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:24px">
+                <div style="display:flex; align-items:center; gap:11px">
+                  <div style="width:30px; height:30px; border-radius:7px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="landmark" width="16" height="16" stroke-width="1.6"></i></div>
+                  <div>
+                    <div style="font-family:'Source Serif 4',Georgia,serif; font-size:22px; letter-spacing:-0.02em; line-height:1.2">Finance</div>
+                    <div style="font-size:12px; color:#6b7680">3 tables · 5 shared lookups · 1 metric · built 6 minutes ago</div>
+                  </div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px">
+                  <span style="display:flex; align-items:center; gap:6px; padding:5px 10px; border-radius:999px; background:#f1e4c8; color:#a06a1c; font-size:12px">2 changes not deployed</span>
+                  <button type="button" style="display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:13px; color:#334049; cursor:pointer" style-hover="border-color:#164e63; color:#164e63"><i data-lucide="refresh-cw" width="13" height="13" stroke-width="1.75"></i>Refresh</button>
+                  <button type="button" style="padding:8px 14px; background:#164e63; color:#fff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Deploy changes</button>
+                  <button type="button" style="padding:8px 10px; border:1px solid #d0d5da; border-radius:6px; background:#fff; color:#8891a0; cursor:pointer; display:flex"><i data-lucide="more-horizontal" width="15" height="15" stroke-width="1.75"></i></button>
+                </div>
+              </div>
+              <div style="display:flex; gap:4px">
+                <div style="position:relative; padding:10px 14px; font-size:13px; font-weight:500; color:#0f1a22">Tables<span style="position:absolute; left:8px; right:8px; bottom:0; height:2px; background:#164e63; border-radius:2px"></span></div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">How it fits together</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Where it comes from</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Metrics</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Quality</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Activity</div>
+              </div>
+            </div>
+
+            <div style="flex:1; display:flex; min-height:0">
+              <div style="width:320px; flex-shrink:0; border-right:1px solid #d0d5da; background:#f8f9fa; display:flex; flex-direction:column; overflow:hidden">
+                <div style="padding:10px 18px; border-bottom:1px solid #d0d5da; font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Measures — 3</div>
+                <div style="display:flex; align-items:flex-start; gap:10px; padding:12px 18px; background:#fff; border-left:2px solid #164e63; border-bottom:1px solid #edeff2">
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c; margin-top:5px; flex-shrink:0"></span>
+                  <div style="flex:1; min-width:0">
+                    <div style="font-size:13.5px; font-weight:500; color:#0f1a22">GL transactions</div>
+                    <div style="font-size:12px; color:#6b7680; margin-top:1px">Answers “how did my costs move?”</div>
+                  </div>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0; margin-top:2px">4,812</span>
+                </div>
+                <div style="display:flex; align-items:flex-start; gap:10px; padding:12px 18px; border-bottom:1px solid #edeff2" style-hover="background:#edeff2">
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c; margin-top:5px; flex-shrink:0"></span>
+                  <div style="flex:1; min-width:0">
+                    <div style="font-size:13.5px; color:#334049">Open receivables</div>
+                    <div style="font-size:12px; color:#6b7680; margin-top:1px">Answers “who owes me money?”</div>
+                  </div>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0; margin-top:2px">318</span>
+                </div>
+                <div style="display:flex; align-items:flex-start; gap:10px; padding:12px 18px; border-bottom:1px solid #edeff2" style-hover="background:#edeff2">
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c; margin-top:5px; flex-shrink:0"></span>
+                  <div style="flex:1; min-width:0">
+                    <div style="font-size:13.5px; color:#334049">Open payables</div>
+                    <div style="font-size:12px; color:#6b7680; margin-top:1px">Answers “who am I about to pay?”</div>
+                  </div>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0; margin-top:2px">96</span>
+                </div>
+                <div style="padding:10px 18px; border-top:1px solid #d0d5da; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:8px">
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0; flex:1">Shared lookups — 5</span>
+                  <a href="#3a" style="font-size:11.5px">Edit in Shared data</a>
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; padding:14px 18px">
+                  <span style="padding:5px 9px; border:1px solid #d0d5da; border-radius:999px; background:#fff; font-size:12px; color:#6b7680; white-space:nowrap">Accounts <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">23</span></span>
+                  <span style="padding:5px 9px; border:1px solid #d0d5da; border-radius:999px; background:#fff; font-size:12px; color:#6b7680; white-space:nowrap">GL accounts <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">370</span></span>
+                  <span style="padding:5px 9px; border:1px solid #d0d5da; border-radius:999px; background:#fff; font-size:12px; color:#6b7680; white-space:nowrap">Journals <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">12</span></span>
+                  <span style="padding:5px 9px; border:1px solid #d0d5da; border-radius:999px; background:#fff; font-size:12px; color:#6b7680; white-space:nowrap">Payment conditions <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5</span></span>
+                  <span style="padding:5px 9px; border:1px solid #d0d5da; border-radius:999px; background:#fff; font-size:12px; color:#6b7680; white-space:nowrap">Date <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5,114</span></span>
+                </div>
+              </div>
+
+              <div style="flex:1; min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:20px 26px 0">
+                <div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:14px">
+                  <div style="flex:1; min-width:0">
+                    <div style="display:flex; align-items:center; gap:9px">
+                      <span style="font-family:'Source Serif 4',Georgia,serif; font-size:20px; letter-spacing:-0.01em">GL transactions</span>
+                      <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 6px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                    </div>
+                    <div style="font-size:12.5px; color:#6b7680; margin-top:3px">One row per general-ledger line · rebuilt 6m ago · 8 of 8 checks passing</div>
+                  </div>
+                  <div style="display:flex; gap:6px">
+                    <button type="button" style="padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap">Preview rows</button>
+                    <button type="button" style="padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap">Run</button>
+                  </div>
+                </div>
+
+                <div style="display:flex; gap:2px; border-bottom:1px solid #d0d5da; margin-bottom:16px">
+                  <div style="position:relative; padding:8px 12px; font-size:12.5px; font-weight:500; color:#0f1a22">How it's built<span style="position:absolute; left:6px; right:6px; bottom:-1px; height:2px; background:#164e63; border-radius:2px"></span></div>
+                  <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Columns <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">14</span></div>
+                  <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Relationships <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5</span></div>
+                  <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Quality</div>
+                </div>
+
+                <div style="background:#fff; border:1px solid #d0d5da; border-radius:10px; padding:20px 22px; display:flex; flex-direction:column; gap:16px">
+                  <div style="font-size:15px; color:#0f1a22; line-height:1.6; text-wrap:pretty">Every general-ledger line Exact Online has booked, with the deleted ones dropped, joined to the date, the account, the GL account and the journal so you can slice by any of them.</div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#8891a0">From</span>
+                    <span style="padding:4px 9px; border-radius:5px; background:#edeff2; font-family:'Geist Mono',monospace; font-size:11.5px; color:#334049">exactonline.transaction_lines</span>
+                    <i data-lucide="arrow-right" width="13" height="13" stroke-width="1.75" color="#b8bec5"></i>
+                    <span style="padding:4px 9px; border-radius:5px; background:#e8f0f3; font-size:12px; color:#164e63">Date</span>
+                    <span style="padding:4px 9px; border-radius:5px; background:#e8f0f3; font-size:12px; color:#164e63">Accounts</span>
+                    <span style="padding:4px 9px; border-radius:5px; background:#e8f0f3; font-size:12px; color:#164e63">GL accounts</span>
+                    <span style="padding:4px 9px; border-radius:5px; background:#e8f0f3; font-size:12px; color:#164e63">Journals</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding-top:4px; border-top:1px solid #edeff2">
+                    <button type="button" onClick="{{ toggleSql }}" style="display:flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap" style-hover="border-color:#164e63; color:#164e63">
+                      <i data-lucide="code-2" width="13" height="13" stroke-width="1.75"></i>
+                      <span>{{ sqlLabel }}</span>
+                    </button>
+                    <button type="button" style="display:flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap" style-hover="border-color:#164e63; color:#164e63">
+                      <i data-lucide="sparkles" width="13" height="13" stroke-width="1.75" color="#164e63"></i>
+                      <span>Ask AI to change it</span>
+                    </button>
+                    <span style="font-size:11.5px; color:#8891a0; margin-left:auto">Business users never see this tab.</span>
+                  </div>
+                  <sc-if value="{{ sqlOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="background:#0f1a22; border-radius:8px; overflow:hidden">
+                      <div style="padding:9px 14px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:space-between">
+                        <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.6)">fct_gl_transactions.sql</span>
+                        <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.4)">incremental · edit to override</span>
+                      </div>
+                      <pre style="margin:0; padding:14px; font-family:'Geist Mono',monospace; font-size:11.5px; line-height:1.7; color:rgba(255,255,255,0.8); overflow:hidden">select
+    t.transaction_id                      as gl_transaction_key,
+    d.date_key, a.account_key,
+    g.gl_account_key, j.journal_key,
+    t.amount_dc                           as amount,
+    t.currency, t.description
+from  exactonline.transaction_lines t
+left join dim_date        d on d.full_date    = t.entry_date
+left join dim_accounts    a on a.account_id   = t.account_id
+left join dim_gl_accounts g on g.gl_code      = t.gl_account
+left join dim_journals    j on j.journal_code = t.journal
+where t.deleted is null</pre>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </main>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="padding:56px 56px 40px; display:flex; flex-direction:column; gap:28px">
+  <div style="display:flex; flex-direction:column; gap:8px; max-width:820px">
+    <div style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#6b7680">Turn 2 — where the builder tools go, behind 1b</div>
+    <div style="font-family:'Source Serif 4',Georgia,serif; font-size:30px; letter-spacing:-0.02em; line-height:1.2">Everything on today's screen, behind one door</div>
+    <div style="font-size:14.5px; color:#4a5660; line-height:1.6; text-wrap:pretty">Nothing is deleted — tables, columns, relationships, the star schema, data flow, quality checks, transformations, refresh/deploy/delete and Refine all still exist. The question is whether the door opens a <a href="#2a">full working surface</a> or a <a href="#2b">drawer over the business view</a>.</div>
+  </div>
+
+  <div style="display:flex; flex-wrap:wrap; gap:40px; align-items:flex-start">
+
+    <div id="2a" style="display:flex; flex-direction:column; gap:12px">
+      <div style="display:flex; align-items:baseline; gap:10px">
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; color:#fff; background:#164e63; padding:3px 8px; border-radius:4px">2a</span>
+        <span style="font-size:14px; font-weight:500">Manage is a mode</span>
+        <span style="font-size:13px; color:#6b7680">the whole screen becomes the workshop for Finance; Studio reappears in the rail</span>
+      </div>
+
+      <div style="width:1440px; height:900px; background:#eef0f2; border:1px solid #d0d5da; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12)">
+
+        <header style="height:48px; background:#ffffff; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:12px; padding:0 16px; flex-shrink:0">
+          <div style="display:flex; align-items:center; gap:9px; font-family:'Source Serif 4',Georgia,serif; font-weight:500; font-size:17px; letter-spacing:-0.02em; color:#0f1a22; line-height:1">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.6" fill="#164e63"></circle></svg>
+            <span>Clarion</span>
+          </div>
+          <div style="flex:1"></div>
+          <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid #d0d5da; border-radius:6px; background:#f8f9fa; font-size:12.5px; color:#6b7680">
+            <i data-lucide="search" width="12" height="12" stroke-width="1.75"></i>
+            <span style="width:160px; text-align:left">Search or ask…</span>
+            <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.04em; color:#8891a0">⌘K</span>
+          </div>
+          <div style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:#6b7680"><i data-lucide="bell" width="15" height="15" stroke-width="1.5"></i></div>
+          <div style="width:26px; height:26px; border-radius:999px; background:#e8f0f3; color:#164e63; font-size:11px; font-weight:600; letter-spacing:0.02em; display:flex; align-items:center; justify-content:center">AV</div>
+        </header>
+
+        <div style="flex:1; display:flex; min-height:0">
+          <aside style="width:220px; flex-shrink:0; background:#164e63; border-right:1px solid rgba(16,61,79,0.7); display:flex; flex-direction:column">
+            <nav style="flex:1; display:flex; flex-direction:column; gap:2px; padding:14px 8px">
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="home" width="14" height="14" stroke-width="1.5"></i><span>Home</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="message-square" width="14" height="14" stroke-width="1.5"></i><span>Ask AI</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="layout-grid" width="14" height="14" stroke-width="1.5"></i><span>Dashboards</span></div>
+              <div style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); padding:14px 10px 6px; font-weight:500">Your data</div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; background:rgba(255,255,255,0.15); color:#ffffff; font-weight:500"><i data-lucide="landmark" width="14" height="14" stroke-width="1.5"></i><span>Finance</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="receipt" width="14" height="14" stroke-width="1.5"></i><span>Sales</span></div>
+              <div style="display:flex; align-items:center; gap:6px; padding:14px 10px 6px">
+                <i data-lucide="chevron-down" width="12" height="12" stroke-width="2" color="rgba(255,255,255,0.45)"></i>
+                <span style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); font-weight:500">Studio</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="plug" width="14" height="14" stroke-width="1.5"></i><span>Sources</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="workflow" width="14" height="14" stroke-width="1.5"></i><span>Refresh</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6">
+                <i data-lucide="inbox" width="14" height="14" stroke-width="1.5"></i>
+                <span style="flex:1">Suggestions</span>
+                <span style="min-width:18px; height:18px; padding:0 4px; border-radius:999px; background:#103d4f; color:#fff; font-family:'Geist Mono',monospace; font-size:10px; font-weight:500; display:flex; align-items:center; justify-content:center">30</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="code-2" width="14" height="14" stroke-width="1.5"></i><span>Notebooks</span></div>
+              <div style="display:flex; align-items:center; gap:6px; padding:14px 10px 6px">
+                <i data-lucide="chevron-down" width="12" height="12" stroke-width="2" color="rgba(255,255,255,0.45)" style="transform:rotate(-90deg)"></i>
+                <span style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); font-weight:500">Settings</span>
+              </div>
+            </nav>
+            <div style="padding:8px; border-top:1px solid rgba(255,255,255,0.1)">
+              <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:6px; color:#d0e1e6; font-size:12px">
+                <i data-lucide="chevron-left" width="16" height="16" stroke-width="1.75"></i>
+                <span style="font-family:'Geist Mono',monospace; text-transform:uppercase; letter-spacing:0.1em; font-size:10.5px">Collapse</span>
+              </div>
+            </div>
+          </aside>
+
+          <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:#eef0f2; overflow:hidden">
+
+            <div style="background:#f8f9fa; border-bottom:1px solid #d0d5da; padding:8px 28px; display:flex; align-items:center; gap:10px">
+              <a href="#2a" style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:#164e63; text-decoration:none">
+                <i data-lucide="arrow-left" width="13" height="13" stroke-width="1.75"></i>
+                <span>Back to Finance</span>
+              </a>
+              <span style="color:#b8bec5">/</span>
+              <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Manage this data</span>
+            </div>
+
+            <div style="background:#ffffff; border-bottom:1px solid #d0d5da; padding:18px 28px 0; display:flex; flex-direction:column; gap:14px">
+              <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:24px">
+                <div>
+                  <h1 style="margin:0; font-family:'Source Serif 4',Georgia,serif; font-size:22px; line-height:1.25; letter-spacing:-0.02em">The data behind Finance</h1>
+                  <div style="font-size:12px; color:#6b7680; margin-top:3px">3 tables · 5 shared lookups · 1 metric · built 6 minutes ago</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px">
+                  <button type="button" style="display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:13px; color:#334049; cursor:pointer" style-hover="border-color:#164e63; color:#164e63"><i data-lucide="wrench" width="13" height="13" stroke-width="1.75" color="#164e63"></i>Refine</button>
+                  <button type="button" style="display:flex; align-items:center; gap:6px; padding:8px 12px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:13px; color:#334049; cursor:pointer" style-hover="border-color:#164e63; color:#164e63"><i data-lucide="refresh-cw" width="13" height="13" stroke-width="1.75"></i>Refresh</button>
+                  <button type="button" style="padding:8px 14px; background:#164e63; color:#fff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Deploy all</button>
+                  <button type="button" style="padding:8px 10px; border:1px solid #d0d5da; border-radius:6px; background:#fff; color:#8891a0; cursor:pointer; display:flex; align-items:center"><i data-lucide="more-horizontal" width="15" height="15" stroke-width="1.75"></i></button>
+                </div>
+              </div>
+              <div style="display:flex; gap:4px">
+                <div style="position:relative; padding:10px 14px; font-size:13px; font-weight:500; color:#0f1a22">Tables<span style="position:absolute; left:8px; right:8px; bottom:0; height:2px; background:#164e63; border-radius:2px"></span></div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Schema diagram</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Data flow</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Metrics</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Quality</div>
+                <div style="padding:10px 14px; font-size:13px; color:#6b7680; white-space:nowrap">Activity</div>
+              </div>
+            </div>
+
+            <div style="flex:1; display:flex; min-height:0">
+
+              <div style="width:288px; flex-shrink:0; border-right:1px solid #d0d5da; background:#f8f9fa; display:flex; flex-direction:column; overflow:hidden">
+                <div style="padding:10px 16px; border-bottom:1px solid #d0d5da; font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Measures — 3</div>
+                <div style="display:flex; flex-direction:column">
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; background:#ffffff; border-left:2px solid #164e63; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                    <span style="flex:1; font-size:13px; font-weight:500; color:#0f1a22">GL transactions</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">4,812</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Open receivables</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">318</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Open payables</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">96</span>
+                  </div>
+                </div>
+                <div style="padding:10px 16px; border-top:1px solid #d0d5da; border-bottom:1px solid #d0d5da; font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Shared lookups — 5</div>
+                <div style="display:flex; flex-direction:column">
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Accounts</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">23</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                    <span style="flex:1; font-size:13px; color:#334049">GL accounts</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">370</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Journals</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">12</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Payment conditions</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; padding:11px 16px; border-bottom:1px solid #edeff2">
+                    <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                    <span style="flex:1; font-size:13px; color:#334049">Date</span>
+                    <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5,114</span>
+                  </div>
+                </div>
+              </div>
+
+              <div style="flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; background:#eef0f2">
+                <div style="padding:20px 28px 0; display:flex; flex-direction:column; gap:14px; flex:1; min-height:0">
+
+                  <div style="display:flex; align-items:center; gap:12px">
+                    <div style="flex:1; min-width:0">
+                      <div style="display:flex; align-items:center; gap:9px">
+                        <span style="font-family:'Source Serif 4',Georgia,serif; font-size:20px; letter-spacing:-0.01em">GL transactions</span>
+                        <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 6px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                        <span style="display:flex; align-items:center; gap:5px; font-size:11.5px; color:#3f7a5c"><span style="width:7px; height:7px; border-radius:999px; background:#3f7a5c"></span>Built 6m ago</span>
+                      </div>
+                      <div style="font-size:12.5px; color:#6b7680; margin-top:3px">One row per general-ledger line — amount, GL account, journal, date, account.</div>
+                    </div>
+                    <div style="display:flex; gap:6px">
+                      <button type="button" style="padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap">Preview rows</button>
+                      <button type="button" style="padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap">Run</button>
+                    </div>
+                  </div>
+
+                  <div style="display:flex; gap:2px; border-bottom:1px solid #d0d5da">
+                    <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Columns <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">14</span></div>
+                    <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Relationships <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">5</span></div>
+                    <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Quality</div>
+                    <div style="position:relative; padding:8px 12px; font-size:12.5px; font-weight:500; color:#0f1a22">Transformation<span style="position:absolute; left:6px; right:6px; bottom:-1px; height:2px; background:#164e63; border-radius:2px"></span></div>
+                    <div style="padding:8px 12px; font-size:12.5px; color:#6b7680; white-space:nowrap">Lineage</div>
+                  </div>
+
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px">
+                    <div style="font-size:12.5px; color:#6b7680">Written by Clarion, edited by you. Never shown to business users.</div>
+                    <div style="display:flex; gap:6px">
+                      <button type="button" style="padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap">Edit SQL</button>
+                      <button type="button" style="display:flex; align-items:center; gap:6px; padding:6px 11px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12.5px; color:#334049; cursor:pointer; white-space:nowrap"><i data-lucide="sparkles" width="12" height="12" stroke-width="1.75" color="#164e63"></i>Ask AI to change it</button>
+                    </div>
+                  </div>
+
+                  <div style="flex:1; min-height:0; background:#0f1a22; border:1px solid rgba(255,255,255,0.06); border-radius:8px; overflow:hidden; display:flex; flex-direction:column; margin-bottom:24px">
+                    <div style="padding:9px 14px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; align-items:center; justify-content:space-between">
+                      <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.6)">fct_gl_transactions.sql</span>
+                      <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:rgba(255,255,255,0.4)">incremental · 4,812 rows</span>
+                    </div>
+                    <pre style="margin:0; padding:14px; font-family:'Geist Mono',monospace; font-size:11.5px; line-height:1.75; color:rgba(255,255,255,0.8); overflow:hidden">select
+    t.transaction_id                        as gl_transaction_key,
+    d.date_key,
+    a.account_key,
+    g.gl_account_key,
+    j.journal_key,
+    t.amount_dc                             as amount,
+    t.currency,
+    t.description
+from  exactonline.transaction_lines t
+left join dim_date        d on d.full_date   = t.entry_date
+left join dim_accounts    a on a.account_id  = t.account_id
+left join dim_gl_accounts g on g.gl_code     = t.gl_account
+left join dim_journals    j on j.journal_code = t.journal
+where t.deleted is null</pre>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <div id="2b" style="display:flex; flex-direction:column; gap:12px">
+      <div style="display:flex; align-items:baseline; gap:10px">
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; color:#fff; background:#164e63; padding:3px 8px; border-radius:4px">2b</span>
+        <span style="font-size:14px; font-weight:500">Manage is a drawer</span>
+        <span style="font-size:13px; color:#6b7680">the business view stays behind it; good for a look, cramped for a rebuild</span>
+      </div>
+
+      <div style="width:1440px; height:900px; background:#eef0f2; border:1px solid #d0d5da; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12); position:relative">
+
+        <header style="height:48px; background:#ffffff; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:12px; padding:0 16px; flex-shrink:0">
+          <div style="display:flex; align-items:center; gap:9px; font-family:'Source Serif 4',Georgia,serif; font-weight:500; font-size:17px; letter-spacing:-0.02em; color:#0f1a22; line-height:1">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.6" fill="#164e63"></circle></svg>
+            <span>Clarion</span>
+          </div>
+          <div style="flex:1"></div>
+          <div style="width:26px; height:26px; border-radius:999px; background:#e8f0f3; color:#164e63; font-size:11px; font-weight:600; display:flex; align-items:center; justify-content:center">AV</div>
+        </header>
+
+        <div style="flex:1; display:flex; min-height:0">
+          <aside style="width:220px; flex-shrink:0; background:#164e63; display:flex; flex-direction:column">
+            <nav style="flex:1; display:flex; flex-direction:column; gap:2px; padding:14px 8px">
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="home" width="14" height="14" stroke-width="1.5"></i><span>Home</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="message-square" width="14" height="14" stroke-width="1.5"></i><span>Ask AI</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="layout-grid" width="14" height="14" stroke-width="1.5"></i><span>Dashboards</span></div>
+              <div style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); padding:14px 10px 6px; font-weight:500">Your data</div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; background:rgba(255,255,255,0.15); color:#ffffff; font-weight:500"><i data-lucide="landmark" width="14" height="14" stroke-width="1.5"></i><span>Finance</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="receipt" width="14" height="14" stroke-width="1.5"></i><span>Sales</span></div>
+            </nav>
+          </aside>
+
+          <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:#eef0f2; overflow:hidden; position:relative">
+            <div style="flex:1; padding:56px 40px 40px; opacity:0.4">
+              <div style="max-width:640px; margin:0 auto; display:flex; flex-direction:column; gap:26px; align-items:center; text-align:center">
+                <div style="width:44px; height:44px; border-radius:10px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="landmark" width="22" height="22" stroke-width="1.6"></i></div>
+                <div style="font-family:'Source Serif 4',Georgia,serif; font-size:38px; letter-spacing:-0.02em; line-height:1.15">Finance</div>
+                <div style="font-size:15px; color:#4a5660">General ledger, receivables and payables.</div>
+                <div style="width:100%; height:52px; background:#fff; border:1px solid #d0d5da; border-radius:10px"></div>
+                <div style="width:100%; display:flex; flex-direction:column; gap:8px">
+                  <div style="height:52px; background:#fff; border:1px solid #d0d5da; border-radius:8px"></div>
+                  <div style="height:52px; background:#fff; border:1px solid #d0d5da; border-radius:8px"></div>
+                  <div style="height:52px; background:#fff; border:1px solid #d0d5da; border-radius:8px"></div>
+                </div>
+              </div>
+            </div>
+
+            <div style="position:absolute; top:0; right:0; bottom:0; width:560px; background:#f8f9fa; border-left:1px solid #d0d5da; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12); display:flex; flex-direction:column">
+              <div style="padding:16px 20px; border-bottom:1px solid #d0d5da; background:#fff; display:flex; align-items:flex-start; gap:12px">
+                <div style="flex:1">
+                  <div style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Manage this data</div>
+                  <div style="font-family:'Source Serif 4',Georgia,serif; font-size:19px; letter-spacing:-0.01em; margin-top:2px">Finance</div>
+                  <div style="font-size:12px; color:#6b7680; margin-top:2px">3 tables · 5 shared lookups · built 6m ago</div>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px">
+                  <button type="button" style="padding:7px 11px; background:#164e63; color:#fff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:12.5px; font-weight:500; cursor:pointer">Deploy all</button>
+                  <button type="button" style="padding:6px; border:none; background:none; color:#8891a0; cursor:pointer; display:flex"><i data-lucide="x" width="17" height="17" stroke-width="1.75"></i></button>
+                </div>
+              </div>
+
+              <div style="display:flex; gap:2px; padding:0 14px; background:#fff; border-bottom:1px solid #d0d5da">
+                <div style="position:relative; padding:9px 11px; font-size:12.5px; font-weight:500; color:#0f1a22">Tables<span style="position:absolute; left:6px; right:6px; bottom:0; height:2px; background:#164e63; border-radius:2px"></span></div>
+                <div style="padding:9px 11px; font-size:12.5px; color:#6b7680">Diagram</div>
+                <div style="padding:9px 11px; font-size:12.5px; color:#6b7680">Flow</div>
+                <div style="padding:9px 11px; font-size:12.5px; color:#6b7680">Metrics</div>
+                <div style="padding:9px 11px; font-size:12.5px; color:#6b7680">Quality</div>
+                <div style="padding:9px 11px; font-size:12.5px; color:#6b7680">Refine</div>
+              </div>
+
+              <div style="flex:1; overflow:hidden; display:flex; flex-direction:column">
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-down" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                  <span style="flex:1; font-size:13px; font-weight:500">GL transactions</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">4,812 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+                <div style="padding:12px 20px 16px; background:#eef0f2; border-bottom:1px solid #d0d5da; display:flex; flex-direction:column; gap:10px">
+                  <div style="display:flex; gap:14px; font-size:12px">
+                    <span style="color:#164e63; border-bottom:2px solid #164e63; padding-bottom:3px">Transformation</span>
+                    <span style="color:#6b7680">Columns 14</span>
+                    <span style="color:#6b7680">Relationships 5</span>
+                    <span style="color:#6b7680">Quality</span>
+                  </div>
+                  <div style="background:#0f1a22; border-radius:6px; overflow:hidden">
+                    <pre style="margin:0; padding:12px; font-family:'Geist Mono',monospace; font-size:11px; line-height:1.7; color:rgba(255,255,255,0.8); overflow:hidden">select
+    t.transaction_id  as gl_transaction_key,
+    d.date_key, a.account_key,
+    g.gl_account_key, j.journal_key,
+    t.amount_dc       as amount
+from  transaction_lines t
+left join dim_date d on d.full_date = t.entry_date
+…</pre>
+                  </div>
+                  <div style="display:flex; gap:6px">
+                    <button type="button" style="padding:6px 10px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12px; color:#334049; cursor:pointer">Edit</button>
+                    <button type="button" style="padding:6px 10px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12px; color:#334049; cursor:pointer">Run</button>
+                    <button type="button" style="padding:6px 10px; border:1px solid #d0d5da; border-radius:6px; background:#fff; font-family:Inter,sans-serif; font-size:12px; color:#334049; cursor:pointer">Ask AI to change it</button>
+                  </div>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-right" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                  <span style="flex:1; font-size:13px; color:#334049">Open receivables</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">318 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-right" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#f1e4d6; color:#c08a5e">Measures</span>
+                  <span style="flex:1; font-size:13px; color:#334049">Open payables</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">96 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+                <div style="padding:9px 20px; background:#edeff2; border-bottom:1px solid #d0d5da; font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Shared lookups — 5</div>
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-right" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                  <span style="flex:1; font-size:13px; color:#334049">Accounts</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">23 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-right" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                  <span style="flex:1; font-size:13px; color:#334049">GL accounts</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">370 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; padding:11px 20px; border-bottom:1px solid #edeff2; background:#fff">
+                  <i data-lucide="chevron-right" width="13" height="13" stroke-width="2" color="#8891a0"></i>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10px; font-weight:600; padding:2px 5px; border-radius:4px; background:#e8f0f3; color:#164e63">Lookup</span>
+                  <span style="flex:1; font-size:13px; color:#334049">Journals</span>
+                  <span style="font-family:'Geist Mono',monospace; font-size:10.5px; color:#8891a0">12 rows</span>
+                  <span style="width:8px; height:8px; border-radius:999px; background:#3f7a5c"></span>
+                </div>
+              </div>
+
+              <div style="padding:12px 20px; border-top:1px solid #d0d5da; background:#fff; display:flex; align-items:center; justify-content:space-between">
+                <span style="font-size:12px; color:#6b7680">Quality: 8 of 8 checks passing</span>
+                <a href="#2b" style="font-size:12.5px">Open full workshop →</a>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section style="padding:56px 56px 96px; display:flex; flex-direction:column; gap:28px">
+  <div style="display:flex; flex-direction:column; gap:8px; max-width:760px">
+    <div style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#6b7680">Turn 1 — viewer-first data page</div>
+    <div style="font-family:'Source Serif 4',Georgia,serif; font-size:30px; letter-spacing:-0.02em; line-height:1.2">Two ways to make the topic the product</div>
+    <div style="font-size:14.5px; color:#4a5660; line-height:1.6; text-wrap:pretty"><a href="#1a">1a</a> keeps a page for the container and puts two question-led topic cards on it. <a href="#1b">1b</a> deletes the container: topics live in the nav and you land inside one. Both use the viewer's three-item rail, both hide everything else behind one <em>Manage this data</em> door.</div>
+  </div>
+
+  <div style="display:flex; flex-wrap:wrap; gap:40px; align-items:flex-start">
+
+    <div id="1a" style="display:flex; flex-direction:column; gap:12px">
+      <div style="display:flex; align-items:baseline; gap:10px">
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; color:#fff; background:#164e63; padding:3px 8px; border-radius:4px">1a</span>
+        <span style="font-size:14px; font-weight:500">Topics on one page</span>
+        <span style="font-size:13px; color:#6b7680">“Your data” stays a destination</span>
+      </div>
+
+      <div style="width:1440px; height:900px; background:#eef0f2; border:1px solid #d0d5da; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12)">
+
+        <header style="height:48px; background:#ffffff; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:12px; padding:0 16px; flex-shrink:0">
+          <div style="display:flex; align-items:center; gap:9px; font-family:'Source Serif 4',Georgia,serif; font-weight:500; font-size:17px; letter-spacing:-0.02em; color:#0f1a22; line-height:1">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.6" fill="#164e63"></circle></svg>
+            <span>Clarion</span>
+          </div>
+          <div style="flex:1"></div>
+          <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid #d0d5da; border-radius:6px; background:#f8f9fa; font-size:12.5px; color:#6b7680">
+            <i data-lucide="search" width="12" height="12" stroke-width="1.75"></i>
+            <span style="width:160px; text-align:left">Search or ask…</span>
+            <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.04em; color:#8891a0">⌘K</span>
+          </div>
+          <div style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:#6b7680"><i data-lucide="bell" width="15" height="15" stroke-width="1.5"></i></div>
+          <div style="width:26px; height:26px; border-radius:999px; background:#e8f0f3; color:#164e63; font-size:11px; font-weight:600; letter-spacing:0.02em; display:flex; align-items:center; justify-content:center">AV</div>
+        </header>
+
+        <div style="flex:1; display:flex; min-height:0">
+          <aside style="width:220px; flex-shrink:0; background:#164e63; border-right:1px solid rgba(16,61,79,0.7); display:flex; flex-direction:column">
+            <nav style="flex:1; display:flex; flex-direction:column; gap:2px; padding:14px 8px">
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="home" width="14" height="14" stroke-width="1.5"></i><span>Home</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="message-square" width="14" height="14" stroke-width="1.5"></i><span>Ask AI</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="layout-grid" width="14" height="14" stroke-width="1.5"></i><span>Dashboards</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; background:rgba(255,255,255,0.15); color:#ffffff; font-weight:500"><i data-lucide="book-open" width="14" height="14" stroke-width="1.5"></i><span>Your data</span></div>
+            </nav>
+            <div style="padding:8px; border-top:1px solid rgba(255,255,255,0.1)">
+              <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:6px; color:#d0e1e6; font-size:12px">
+                <i data-lucide="chevron-left" width="16" height="16" stroke-width="1.75"></i>
+                <span style="font-family:'Geist Mono',monospace; text-transform:uppercase; letter-spacing:0.1em; font-size:10.5px">Collapse</span>
+              </div>
+            </div>
+          </aside>
+
+          <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:#eef0f2">
+            <div style="background:#ffffff; border-bottom:1px solid #d0d5da; padding:20px 40px; display:flex; align-items:flex-start; justify-content:space-between; gap:24px">
+              <div>
+                <div style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#6b7680; margin-bottom:2px">Your data</div>
+                <h1 style="margin:0; font-family:'Source Serif 4',Georgia,serif; font-size:22px; line-height:1.25; letter-spacing:-0.02em; color:#0f1a22">What you can ask about</h1>
+              </div>
+              <div style="position:relative">
+                <button type="button" onClick="{{ toggleDoor }}" style="display:flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid #d0d5da; border-radius:6px; background:#ffffff; font-family:Inter,sans-serif; font-size:12.5px; color:#4a5660; cursor:pointer" style-hover="border-color:#b8bec5; color:#0f1a22">
+                  <i data-lucide="sliders-horizontal" width="13" height="13" stroke-width="1.75"></i>
+                  <span>Manage this data</span>
+                </button>
+                <sc-if value="{{ doorOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:absolute; top:40px; right:0; width:268px; background:#ffffff; border:1px solid #d0d5da; border-radius:8px; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12); padding:6px; z-index:10">
+                    <div style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.12em; text-transform:uppercase; color:#8891a0; padding:8px 10px 6px">Admin &amp; analyst only</div>
+                    <div style="display:flex; flex-direction:column">
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Data tables</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Schema diagram</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Data flow</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Data quality detail</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Transformations</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Refresh, deploy, delete</div>
+                      <div style="padding:8px 10px; font-size:13px; color:#334049; border-radius:5px">Refine with AI</div>
+                    </div>
+                  </div>
+                </sc-if>
+              </div>
+            </div>
+
+            <div style="flex:1; overflow:hidden; padding:36px 40px">
+              <div style="max-width:1040px; margin:0 auto; display:flex; flex-direction:column; gap:28px">
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px">
+
+                  <div style="background:#ffffff; border:1px solid #d0d5da; border-radius:10px; padding:26px 26px 20px; display:flex; flex-direction:column; gap:18px; box-shadow:0 1px 2px rgba(15,26,34,0.04)">
+                    <div style="display:flex; align-items:center; gap:12px">
+                      <div style="width:38px; height:38px; border-radius:8px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="landmark" width="19" height="19" stroke-width="1.6"></i></div>
+                      <div>
+                        <div style="font-family:'Source Serif 4',Georgia,serif; font-size:24px; letter-spacing:-0.01em; line-height:1.1">Finance</div>
+                        <div style="font-size:13px; color:#6b7680; margin-top:3px">General ledger, receivables and payables.</div>
+                      </div>
+                    </div>
+                    <div style="display:flex; flex-direction:column">
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">Who owes me money right now?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">What was my balance at month end?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">How did my costs move this quarter?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                    </div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:4px">
+                      <span style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:0.04em; color:#8891a0">Updated 6 minutes ago</span>
+                      <button type="button" style="padding:9px 14px; background:#164e63; color:#ffffff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Ask a question</button>
+                    </div>
+                  </div>
+
+                  <div style="background:#ffffff; border:1px solid #d0d5da; border-radius:10px; padding:26px 26px 20px; display:flex; flex-direction:column; gap:18px; box-shadow:0 1px 2px rgba(15,26,34,0.04)">
+                    <div style="display:flex; align-items:center; gap:12px">
+                      <div style="width:38px; height:38px; border-radius:8px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="receipt" width="19" height="19" stroke-width="1.6"></i></div>
+                      <div>
+                        <div style="font-family:'Source Serif 4',Georgia,serif; font-size:24px; letter-spacing:-0.01em; line-height:1.1">Sales</div>
+                        <div style="font-size:13px; color:#6b7680; margin-top:3px">Invoiced revenue and order intake.</div>
+                      </div>
+                    </div>
+                    <div style="display:flex; flex-direction:column">
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">How much did I invoice this month?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">Which customers are buying more?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                      <a href="#1a" style="display:flex; align-items:center; gap:12px; padding:13px 0; border-top:1px solid #edeff2; font-size:15px; color:#0f1a22; text-decoration:none" style-hover="color:#164e63">
+                        <span style="flex:1">Is my order intake keeping up?</span>
+                        <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                      </a>
+                    </div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:4px">
+                      <span style="font-family:'Geist Mono',monospace; font-size:11px; letter-spacing:0.04em; color:#8891a0">Updated 6 minutes ago</span>
+                      <button type="button" style="padding:9px 14px; background:#164e63; color:#ffffff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Ask a question</button>
+                    </div>
+                  </div>
+
+                </div>
+
+                <div style="font-size:14px; color:#4a5660; line-height:1.6">
+                  Break any of this down by <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">customer</a>, <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">product</a>, <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">GL account</a>, <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">journal</a>, <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">payment terms</a> or <a href="#1a" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">date</a>.
+                </div>
+
+                <div style="display:flex; align-items:center; gap:9px; padding-top:16px; border-top:1px solid #d0d5da; font-size:12.5px; color:#6b7680">
+                  <span style="width:7px; height:7px; border-radius:999px; background:#3f7a5c; flex-shrink:0"></span>
+                  <span>Matches Exact Online as of 6 minutes ago · 5,532 rows checked · <a href="#1a">see data quality</a></span>
+                </div>
+
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+    <div id="1b" style="display:flex; flex-direction:column; gap:12px">
+      <div style="display:flex; align-items:baseline; gap:10px">
+        <span style="font-family:'Geist Mono',monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; color:#fff; background:#164e63; padding:3px 8px; border-radius:4px">1b</span>
+        <span style="font-size:14px; font-weight:500">Topics in the nav</span>
+        <span style="font-size:13px; color:#6b7680">no container, no list page — you land inside Finance</span>
+      </div>
+
+      <div style="width:1440px; height:900px; background:#eef0f2; border:1px solid #d0d5da; border-radius:10px; overflow:hidden; display:flex; flex-direction:column; box-shadow:0 1px 2px rgba(15,26,34,0.04), 0 12px 40px -12px rgba(15,26,34,0.12)">
+
+        <header style="height:48px; background:#ffffff; border-bottom:1px solid #d0d5da; display:flex; align-items:center; gap:12px; padding:0 16px; flex-shrink:0">
+          <div style="display:flex; align-items:center; gap:9px; font-family:'Source Serif 4',Georgia,serif; font-weight:500; font-size:17px; letter-spacing:-0.02em; color:#0f1a22; line-height:1">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle><circle cx="12" cy="12" r="0.6" fill="#164e63"></circle></svg>
+            <span>Clarion</span>
+          </div>
+          <div style="flex:1"></div>
+          <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 12px; border:1px solid #d0d5da; border-radius:6px; background:#f8f9fa; font-size:12.5px; color:#6b7680">
+            <i data-lucide="search" width="12" height="12" stroke-width="1.75"></i>
+            <span style="width:160px; text-align:left">Search or ask…</span>
+            <span style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.04em; color:#8891a0">⌘K</span>
+          </div>
+          <div style="width:26px; height:26px; display:flex; align-items:center; justify-content:center; color:#6b7680"><i data-lucide="bell" width="15" height="15" stroke-width="1.5"></i></div>
+          <div style="width:26px; height:26px; border-radius:999px; background:#e8f0f3; color:#164e63; font-size:11px; font-weight:600; letter-spacing:0.02em; display:flex; align-items:center; justify-content:center">AV</div>
+        </header>
+
+        <div style="flex:1; display:flex; min-height:0">
+          <aside style="width:220px; flex-shrink:0; background:#164e63; border-right:1px solid rgba(16,61,79,0.7); display:flex; flex-direction:column">
+            <nav style="flex:1; display:flex; flex-direction:column; gap:2px; padding:14px 8px">
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="home" width="14" height="14" stroke-width="1.5"></i><span>Home</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="message-square" width="14" height="14" stroke-width="1.5"></i><span>Ask AI</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="layout-grid" width="14" height="14" stroke-width="1.5"></i><span>Dashboards</span></div>
+              <div style="font-family:'Geist Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:rgba(255,255,255,0.55); padding:14px 10px 6px; font-weight:500">Your data</div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; background:rgba(255,255,255,0.15); color:#ffffff; font-weight:500"><i data-lucide="landmark" width="14" height="14" stroke-width="1.5"></i><span>Finance</span></div>
+              <div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:6px; font-size:13.5px; color:#d0e1e6"><i data-lucide="receipt" width="14" height="14" stroke-width="1.5"></i><span>Sales</span></div>
+            </nav>
+            <div style="padding:8px; border-top:1px solid rgba(255,255,255,0.1)">
+              <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:6px; color:#d0e1e6; font-size:12px">
+                <i data-lucide="chevron-left" width="16" height="16" stroke-width="1.75"></i>
+                <span style="font-family:'Geist Mono',monospace; text-transform:uppercase; letter-spacing:0.1em; font-size:10.5px">Collapse</span>
+              </div>
+            </div>
+          </aside>
+
+          <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:#eef0f2; overflow:hidden">
+            <div style="flex:1; padding:64px 40px 40px">
+              <div style="max-width:720px; margin:0 auto; display:flex; flex-direction:column; gap:32px">
+
+                <div style="display:flex; flex-direction:column; gap:10px; text-align:center; align-items:center">
+                  <div style="width:44px; height:44px; border-radius:10px; background:#e8f0f3; color:#164e63; display:flex; align-items:center; justify-content:center"><i data-lucide="landmark" width="22" height="22" stroke-width="1.6"></i></div>
+                  <h1 style="margin:4px 0 0; font-family:'Source Serif 4',Georgia,serif; font-size:38px; font-weight:400; letter-spacing:-0.02em; line-height:1.15">Finance</h1>
+                  <p style="margin:0; font-size:15px; color:#4a5660; line-height:1.6; max-width:520px; text-wrap:pretty">General ledger, receivables and payables — everything Exact Online books, in plain language.</p>
+                </div>
+
+                <div style="display:flex; align-items:center; gap:10px; background:#ffffff; border:1px solid #d0d5da; border-radius:10px; padding:14px 18px; box-shadow:0 1px 2px rgba(15,26,34,0.04)">
+                  <i data-lucide="message-square" width="16" height="16" stroke-width="1.6" color="#8891a0"></i>
+                  <span style="flex:1; font-size:15px; color:#8891a0">Ask anything about Finance…</span>
+                  <button type="button" style="padding:8px 14px; background:#164e63; color:#ffffff; border:none; border-radius:6px; font-family:Inter,sans-serif; font-size:13px; font-weight:500; cursor:pointer" style-hover="background:#103d4f">Ask</button>
+                </div>
+
+                <div style="display:flex; flex-direction:column; gap:10px">
+                  <div style="font-family:'Geist Mono',monospace; font-size:10px; letter-spacing:0.14em; text-transform:uppercase; color:#8891a0">Try asking</div>
+                  <div style="display:flex; flex-direction:column; gap:8px">
+                    <a href="#1b" style="display:flex; align-items:center; gap:12px; background:#ffffff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63">
+                      <span style="flex:1">Who owes me money right now?</span>
+                      <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                    </a>
+                    <a href="#1b" style="display:flex; align-items:center; gap:12px; background:#ffffff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63">
+                      <span style="flex:1">What was my balance at month end?</span>
+                      <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                    </a>
+                    <a href="#1b" style="display:flex; align-items:center; gap:12px; background:#ffffff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63">
+                      <span style="flex:1">How did my costs move this quarter?</span>
+                      <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                    </a>
+                    <a href="#1b" style="display:flex; align-items:center; gap:12px; background:#ffffff; border:1px solid #d0d5da; border-radius:8px; padding:15px 18px; font-size:15.5px; color:#0f1a22; text-decoration:none" style-hover="border-color:#164e63; color:#164e63">
+                      <span style="flex:1">Which suppliers am I about to pay?</span>
+                      <i data-lucide="arrow-right" width="15" height="15" stroke-width="1.75" color="#8891a0"></i>
+                    </a>
+                  </div>
+                </div>
+
+                <div style="font-size:14px; color:#4a5660; line-height:1.6; text-align:center">
+                  Break any of this down by <a href="#1b" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">customer</a>, <a href="#1b" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">GL account</a>, <a href="#1b" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">journal</a>, <a href="#1b" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">payment terms</a> or <a href="#1b" style="color:#334049; border-bottom:1px solid #d0d5da; text-decoration:none" style-hover="color:#164e63; border-color:#164e63">date</a>.
+                </div>
+
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding-top:18px; border-top:1px solid #d0d5da">
+                  <div style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:#6b7680">
+                    <span style="width:7px; height:7px; border-radius:999px; background:#3f7a5c; flex-shrink:0"></span>
+                    <span>Matches Exact Online as of 6 minutes ago · <a href="#1b">see data quality</a></span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid #d0d5da; border-radius:6px; background:#ffffff; font-size:12.5px; color:#4a5660">
+                    <i data-lucide="sliders-horizontal" width="13" height="13" stroke-width="1.75"></i>
+                    <span>Manage this data</span>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:3040,&quot;height&quot;:1120}}">
+class Component extends DCLogic {
+  state = { doorOpen: false, manage: false, sqlOpen: false };
+  icons() {
+    const go = () => { if (window.lucide) window.lucide.createIcons(); };
+    go();
+    setTimeout(go, 200);
+    setTimeout(go, 900);
+  }
+  componentDidMount() {
+    this.icons();
+    this._esc = (e) => { if (e.key === 'Escape') this.setState({ manage: false }); };
+    window.addEventListener('keydown', this._esc);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this._esc); }
+  componentDidUpdate() { this.icons(); }
+  renderVals() {
+    return {
+      doorOpen: this.state.doorOpen,
+      toggleDoor: () => this.setState(s => ({ doorOpen: !s.doorOpen })),
+      openManage: () => this.setState({ manage: true }),
+      closeManage: () => this.setState({ manage: false, sqlOpen: false }),
+      toggleSql: () => this.setState(s => ({ sqlOpen: !s.sqlOpen })),
+      sqlOpen: this.state.sqlOpen,
+      sqlLabel: this.state.sqlOpen ? 'Hide SQL' : 'Show SQL',
+      topicOpacity: this.state.manage ? 0 : 1,
+      topicTransform: this.state.manage ? 'scale(0.985) translateY(-10px)' : 'none',
+      topicPointer: this.state.manage ? 'none' : 'auto',
+      workOpacity: this.state.manage ? 1 : 0,
+      workTransform: this.state.manage ? 'none' : 'scale(1.015) translateY(12px)',
+      workPointer: this.state.manage ? 'auto' : 'none',
+    };
+  }
+}
+</script>
+</body>
+</html>

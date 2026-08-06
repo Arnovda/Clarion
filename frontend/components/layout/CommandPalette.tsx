@@ -57,7 +57,10 @@ const ACTIONS_ALL: ActionDef[] = [
   { type: 'action', id: 'catalog',    title: 'Browse the catalog', subtitle: 'Find & understand your data',      icon: 'book',  href: '/catalog',    roles: ALL },
   { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/glossary',   roles: ALL },
   { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
-  { type: 'action', id: 'products',   title: 'Data products',      subtitle: 'Studio · model your data',          icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] },
+  { type: 'action', id: 'shared',     title: 'Shared data',        subtitle: 'Studio · the lookups every topic slices by', icon: 'book', href: '/shared-data', roles: ['admin', 'analyst'] },
+  // The topic rows in the rail replaced this as the way IN to a subject area;
+  // the workshop is still where a NEW topic gets built, so it keeps a door here.
+  { type: 'action', id: 'products',   title: 'Build workshop',     subtitle: 'Studio · design a new topic',       icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] },
   { type: 'action', id: 'suggestions',title: 'Suggestions',        subtitle: 'Studio · confirm AI proposals',     icon: 'bolt',  href: '/review',     roles: ['admin', 'analyst'] },
   { type: 'action', id: 'team',       title: 'Team & roles',       subtitle: 'Settings · users & invites',        icon: 'users', href: '/users',      roles: ['admin'] },
 ];

@@ -63,6 +63,13 @@ export interface ProductTable {
   display_name: string | null;
   description: string | null;
   table_role: string;
+  /**
+   * Curator-written plain-language explanation of how the table is built.
+   * Shown FIRST on Manage mode's "How it's built" card, above the provenance
+   * trail and the collapsed SQL. Null means nobody has written one — the UI
+   * derives a sentence from the transformation's FROM/JOINs instead.
+   */
+  plain_summary?: string | null;
   transformation_sql: string | null;
   transformation_status: string;
   dag_order: number;
@@ -118,6 +125,12 @@ export interface ProductKpi {
   formula_sql: string | null;
   ai_draft: boolean;
   owner_name: string | null;
+  /**
+   * The KPI phrased as a first-person question ("Who owes me money right
+   * now?"). Drives the topic page's "Try asking" rows and the "Answers …"
+   * sub-line in Manage mode. Null falls back to `name`.
+   */
+  question_text?: string | null;
 }
 
 export type ActiveTab = 'overview' | 'bus-matrix' | 'schema' | 'lineage' | 'kpis' | 'quality';

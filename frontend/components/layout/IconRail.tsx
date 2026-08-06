@@ -12,17 +12,24 @@ import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
+import { iconForAnalytics } from '@/components/catalog/entityIcons';
+import { cleanTopicName } from '@/app/products/helpers';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-// IA model (2026-06 redesign): the rail is business-first.
-//   • workspace — the calm default surface every business data-owner lives in
-//     (no eyebrow; it IS the app). Ask / see / understand your data.
-//   • studio    — builder + technical tools (sources, modelling, refresh,
-//     review, notebooks), visually demoted under a "Studio" header so they're
-//     out of the business owner's way. analyst+ only.
+// IA model (2026-08, topic-first): the rail is business-first.
+//   • workspace — the three things every user does: Home, Ask AI, Dashboards.
+//   • topics    — YOUR DATA. One row per analytics data product, fetched at
+//     runtime. This is the business user's world; there is no "data product"
+//     container page any more, so the topics ARE the navigation.
+//   • studio    — builder + technical tools (sources, shared data, refresh,
+//     suggestions, notebooks), demoted under a "Studio" disclosure. analyst+.
 //   • settings  — admin-only org config.
-// Every existing route is preserved — this is a regrouping, not a removal.
-type Group = 'workspace' | 'studio' | 'settings';
+//
+// `Data products` and `Catalog` are gone from the rail on purpose: the topic
+// rows replace both as the way in. Their routes still resolve for deep links
+// (/products is where a new topic is built, /catalog is the browse surface) —
+// this is a removal from the NAV, not from the app.
+type Group = 'workspace' | 'topics' | 'studio' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
@@ -55,16 +62,15 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // ── Workspace — the business data-owner's default surface ───────────────
+  // ── Workspace — exactly three items, for every role ──────────────────────
   { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
-  // Catalog is the single "understand your data" surface. Glossary + Trust are
-  // facets inside it (see /catalog), not separate destinations.
-  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
-  { key: 'products',   href: '/products',   label: 'Data products',   icon: ICONS.package, roles: ['admin', 'analyst'],            group: 'studio' },
+  // The conformed lookups every topic slices by. Owned here, read-only
+  // everywhere else — replaces the "Core dimensions" pseudo-product.
+  { key: 'shared',     href: '/shared-data', label: 'Shared data',    icon: ICONS.library, roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'studio' },
@@ -81,8 +87,7 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/notebooks':  ['/notebooks'],
   // /glossary + /health are facets of Catalog now — keep them highlighting
   // the Catalog rail item so deep links don't orphan the active state.
-  '/catalog':    ['/catalog', '/semantic', '/glossary', '/health'],
-  '/products':   ['/products'],
+  '/shared-data': ['/shared-data'],
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
   '/review':     ['/review', '/gaps', '/suggestions'],
@@ -95,15 +100,17 @@ const GROUP_LABELS: Record<Group, string> = {
   // which keeps the top of the rail calm. Studio + Settings are labelled so
   // the builder/admin tools read as a clearly separate, secondary area.
   workspace: '',
+  topics:    'Your data',
   studio:    'Studio',
   settings:  'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['workspace', 'studio', 'settings'];
+const GROUP_ORDER: Group[] = ['workspace', 'topics', 'studio', 'settings'];
 
 // Groups that render as collapsible disclosures (collapsed by default) so the
 // business owner's rail is just the calm Workspace items until they choose to
-// open the builder/admin tools. `workspace` is never collapsible — it's the app.
+// open the builder/admin tools. `workspace` and `topics` are never collapsible
+// — between them they ARE the business user's app.
 const COLLAPSIBLE_GROUPS: Group[] = ['studio', 'settings'];
 
 // ─── Sizing constants ─────────────────────────────────────────────────────
@@ -127,6 +134,10 @@ export default function IconRail() {
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [sourcesCount, setSourcesCount] = useState<number>(0);
+  // "Your data" — one row per analytics data product. Fetched for EVERY role:
+  // the topics are the viewer's entire world, so an empty list here means a
+  // viewer has no navigation at all.
+  const [topics, setTopics] = useState<Array<{ id: number; name: string }>>([]);
 
   // Width + collapsed state — hydrated from localStorage on first effect
   // so the SSR render stays deterministic (avoids hydration warnings).
@@ -170,6 +181,26 @@ export default function IconRail() {
     setItem(STORAGE_KEY, JSON.stringify({ width, collapsed, openGroups } satisfies PersistedState));
   }, [width, collapsed, openGroups, hydrated]);
 
+  // Topic rows. Reference-kind products are deliberately excluded — they are
+  // lookups, not subject areas, and they live under Studio → Shared data.
+  useEffect(() => {
+    if (!payload) return;
+    let cancelled = false;
+    api.get('/products')
+      .then((res) => {
+        if (cancelled) return;
+        const rows = (res.data.data ?? []) as Array<{ id: number; name: string; kind?: string }>;
+        setTopics(
+          rows
+            .filter((p) => (p.kind ?? 'analytics') === 'analytics')
+            .map((p) => ({ id: p.id, name: p.name }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        );
+      })
+      .catch(() => { /* rail degrades to Workspace + Studio */ });
+    return () => { cancelled = true; };
+  }, [payload]);
+
   // Badge counts for analyst+
   useEffect(() => {
     const role = payload?.role;
@@ -193,7 +224,22 @@ export default function IconRail() {
   }, [payload?.role]);
 
   const role: Role = payload?.role ?? 'viewer';
-  const visible = NAV_ITEMS.filter((i) => i.roles.includes(role));
+  // Topic rows are built here rather than being part of NAV_ITEMS because
+  // they are tenant data, not app structure. They wear the same curated
+  // glyph the rest of the app resolves from a product name, so a topic looks
+  // identical in the rail, in the catalog and on its own page.
+  const topicItems: NavItem[] = topics.map((t) => {
+    const Glyph = iconForAnalytics(t.name);
+    return {
+      key: `topic-${t.id}`,
+      href: `/topics/${t.id}`,
+      label: cleanTopicName(t.name),
+      icon: <Glyph className={ICON_CLASS} strokeWidth={1.5} />,
+      roles: ['admin', 'analyst', 'viewer'],
+      group: 'topics',
+    };
+  });
+  const visible = [...NAV_ITEMS, ...topicItems].filter((i) => i.roles.includes(role));
 
   function isActive(href: string) {
     const aliases = ROUTE_ALIASES[href] ?? [href];

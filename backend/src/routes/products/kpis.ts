@@ -159,9 +159,9 @@ router.get('/:id/starters', requireAuth, async (req: Request, res: Response, nex
 router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(createProductKpiSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { name, description, formulaPlainText, formulaSql, ownerName } = req.body as {
+    const { name, description, formulaPlainText, formulaSql, ownerName, questionText } = req.body as {
       name: string; description?: string; formulaPlainText?: string;
-      formulaSql?: string; ownerName?: string;
+      formulaSql?: string; ownerName?: string; questionText?: string;
     };
 
     const tenantId = req.user?.tenantId;
@@ -174,6 +174,7 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(
           formula_plain_text: formulaPlainText ?? null,
           formula_sql:        formulaSql ?? null,
           owner_name:         ownerName ?? null,
+          question_text:      questionText ?? null,
           ai_draft:           false,
         })
         .returning('id');
@@ -190,7 +191,7 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(
 router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), validate(updateProductKpiSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const allowed = ['name', 'description', 'formula_plain_text', 'formula_sql', 'owner_name', 'ai_draft'];
+    const allowed = ['name', 'description', 'formula_plain_text', 'formula_sql', 'owner_name', 'question_text', 'ai_draft'];
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
