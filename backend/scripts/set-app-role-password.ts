@@ -26,6 +26,8 @@
  *   DATABASE_URL='<admin url>' DB_APP_PASSWORD='…' \
  *     npx tsx scripts/set-app-role-password.ts
  */
+import { randomBytes } from 'crypto';
+import { appendFileSync } from 'fs';
 import { Client } from 'pg';
 
 const APP_ROLE = process.env.RLS_APP_ROLE ?? 'databridge_app';
@@ -43,23 +45,44 @@ function ssl(url: string) {
     : { rejectUnauthorized: false };
 }
 
+/**
+ * A password nobody has to invent. 32 chars from the URL-unreserved set is
+ * ~190 bits — far beyond anything that needs remembering, and it never has to
+ * be: the same run writes it to the role and to the Container App secret.
+ *
+ * This is the default on purpose. Requiring a human-chosen password made the
+ * flip depend on someone picking one that survives a connection URL intact,
+ * which is a constraint about URL syntax, not about security, and a poor thing
+ * to put in front of someone who just wants row-level security turned on.
+ */
+function generatePassword(): string {
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const bytes = randomBytes(32);
+  return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join('');
+}
+
 async function main(): Promise<void> {
   const adminUrl = process.env.DATABASE_URL;
-  const password = process.env.DB_APP_PASSWORD;
+  const supplied = process.env.DB_APP_PASSWORD;
   const out = (s = '') => process.stdout.write(s + '\n');
 
   if (!adminUrl) throw new Error('DATABASE_URL not set');
-  if (!password) {
+
+  // A supplied password must be usable; an unusable one is a mistake to report,
+  // not something to quietly replace with a generated one — the caller asked
+  // for a specific password and would never learn it was ignored.
+  if (supplied && !SAFE_PASSWORD.test(supplied)) {
     throw new Error(
-      'DB_APP_PASSWORD is not set. Add it as a repository secret — see docs/runbooks/db-role-flip.md.',
+      'DB_APP_PASSWORD is set but unusable: it must be at least 16 characters of letters, ' +
+      'digits, and - _ . ~ only. Other characters have meaning inside a connection URL and ' +
+      'would store one password while connecting with another.\n' +
+      'Either fix the secret, or DELETE it — with no secret set, a strong password is ' +
+      'generated here and you never have to handle one.',
     );
   }
-  if (!SAFE_PASSWORD.test(password)) {
-    throw new Error(
-      'DB_APP_PASSWORD must be at least 16 characters of letters, digits, and - _ . ~ only. ' +
-      'Other characters have meaning inside a connection URL and would not survive the round trip.',
-    );
-  }
+
+  const password = supplied ?? generatePassword();
+  out(supplied ? '  using the supplied DB_APP_PASSWORD' : '  no DB_APP_PASSWORD set — generated one');
 
   // ── 1. Set the password ───────────────────────────────────────────────────
   const admin = new Client({ connectionString: adminUrl, ssl: ssl(adminUrl) });
@@ -109,6 +132,16 @@ async function main(): Promise<void> {
     );
   } finally {
     await app.end();
+  }
+
+  // Hand the password to the workflow so it can build the connection string,
+  // without it ever appearing in a log. ::add-mask:: registers the value with
+  // the runner first, so any later accidental echo is redacted; GITHUB_OUTPUT
+  // itself is not printed.
+  const outFile = process.env.GITHUB_OUTPUT;
+  if (outFile) {
+    process.stdout.write(`::add-mask::${password}\n`);
+    appendFileSync(outFile, `password=${password}\n`);
   }
 
   out('');

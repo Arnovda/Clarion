@@ -18,9 +18,10 @@
 #   3. it then proves the new role can READ A REAL TABLE, and rolls traffic back
 #      by itself if it cannot
 #
-# The connection string is a Container App secret, so the value cannot live in
-# the repo. The workflow maps `admin`/`app` onto two GitHub secrets and never
-# prints either.
+# No secret has to be created for this. The app role's password is generated
+# here, set on the role, and written straight into the Container App secret —
+# it is never handled by a person and never printed. Set DB_APP_PASSWORD only
+# if you want a known password; it must then be URL-safe.
 #
 # Rollback: set .ops/db-role back to `admin` and push.
 
@@ -60,19 +61,6 @@ jobs:
           echo "role=$ROLE" >> "$GITHUB_OUTPUT"
           echo "Desired database role: $ROLE"
 
-      - name: Check the password secret exists
-        env:
-          PW: ${{ secrets.DB_APP_PASSWORD }}
-          ROLE: ${{ steps.role.outputs.role }}
-        run: |
-          set -euo pipefail
-          if [ "$ROLE" = "app" ] && [ -z "${PW}" ]; then
-            echo "::error::DB_APP_PASSWORD is not set. Add it as a repository secret"
-            echo "::error::(a password you choose) before flipping to 'app'."
-            echo "::error::See docs/runbooks/db-role-flip.md."
-            exit 1
-          fi
-
       - name: Install backend dependencies
         if: steps.role.outputs.role == 'app'
         working-directory: backend
@@ -90,7 +78,12 @@ jobs:
       # Sets the password and then proves the role can READ, not merely log in.
       # Both happen before anything touches the Container App, so a role that
       # authenticates but is denied every row never reaches production.
+      # No secret is required. With DB_APP_PASSWORD unset the script generates a
+      # strong password, sets it on the role, and hands it back masked — nobody
+      # has to invent one that survives a connection URL intact. Setting the
+      # secret still overrides, for when a known password is wanted.
       - name: Set the app role's password and verify it can read
+        id: pw
         if: steps.role.outputs.role == 'app'
         working-directory: backend
         env:
@@ -109,15 +102,15 @@ jobs:
           RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
           ROLE: ${{ steps.role.outputs.role }}
           ADMIN_URL: ${{ secrets.DATABASE_URL }}
-          APP_PW: ${{ secrets.DB_APP_PASSWORD }}
+          APP_PW: ${{ steps.pw.outputs.password }}
         run: |
           set -euo pipefail
 
           # The app connection string is DERIVED from the admin one — same host,
           # port, database and options, different credentials. Asking a human to
           # assemble a second URL by hand is an unnecessary way to get a subtly
-          # wrong one into production. DB_APP_PASSWORD is a registered secret so
-          # GitHub masks it wherever it appears.
+          # wrong one into production. The password was registered with the
+          # runner via ::add-mask:: before it got here, so it stays redacted.
           if [ "$ROLE" = "app" ]; then
             TARGET_URL=$(printf '%s' "$ADMIN_URL" | sed -E "s|://[^@]*@|://databridge_app:${APP_PW}@|")
             case "$TARGET_URL" in
