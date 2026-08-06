@@ -1,5 +1,9 @@
 app
 
+# re-run 2026-08-06 (5th): run 6 set an EMPTY password — a deleted GitHub
+# secret arrives as '', and `??` only falls back on null/undefined, so the
+# "generated one" message was a lie. Normalised now. Still no revision created.
+#
 # re-run 2026-08-06 (4th): run 5 set the generated password successfully but
 # could not verify it — pg did not recover the password from the spliced
 # connection string. Credentials are no longer serialised into a URL by hand.
