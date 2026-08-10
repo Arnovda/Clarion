@@ -1,7 +1,12 @@
 # Why an SMB pays for a warehouse — and what Clarion should become
 
 > Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
-> **§5.7 IS THE PLAN OF RECORD** — derive the dimensions from the source, but
+> **§5.8 IS THE PLAN OF RECORD** — ten fixed dimension names, never versioned,
+> never promoted; AI does everything else; anything off the list is the tenant's
+> own and may diverge freely. §5.7 is the reasoning that produced it, minus the
+> governance machinery §5.8 removes.
+>
+> Earlier framing, kept for the reasoning trail: **§5.7** — derive the dimensions from the source, but
 > standardise their NAMES plus a thin attribute contract, and promote
 > human-confirmed AI mappings from tenant-local to shipped. It supersedes §2.1
 > (canonical model) and §5.6 (measured conformed set); both are kept because their
@@ -1019,6 +1024,88 @@ which stay per-connector under this design. So benchmarking moves further out. I
 is deferred, not lost: measure conformance can be added later on the same
 promote-what-is-confirmed mechanism, once there is evidence about which measures
 actually recur.
+
+### 5.8 FINAL — the minimal version (this is the plan of record)
+
+Supersedes the governance machinery in §5.7. The owner ruled out versioned
+entries, promotion of names, aliases and deprecation windows. Removing them makes
+the design **simpler**, not weaker — because the contract columns already do the
+work promotion was there to do.
+
+#### The whole thing
+
+**1. One list. Written once. It does not change.**
+
+```
+dim_customer       key customer_key    match vat_number, email    name customer_name
+dim_supplier       key supplier_key    match vat_number, email    name supplier_name
+dim_product        key product_key     match product_code         name product_name
+dim_product_group  key group_key                                  name group_name
+dim_gl_account     key account_key     match account_code         name account_name
+dim_journal        key journal_key     match journal_code         name journal_name
+dim_payment_term   key term_key                                   name term_name
+dim_employee       key employee_key    match email                name employee_name
+dim_entity         key entity_key      match vat_number           name entity_name
+dim_date           already exists as platform infrastructure
+```
+
+Ten lines. These are the concepts nearly every business system has, so the list is
+written from what is already known rather than discovered over time. **There is no
+version number and nothing is ever promoted into it.**
+
+**2. Two sentences of guidance in the AI prompt** — not systems, not features:
+
+- *"If a source has customers, the table is `dim_customer` and the VAT number goes
+  in `vat_number`."*
+- *"For anything not on the list, name it `dim_<singular_english_noun>`."*
+
+**3. Anything not on the list is the tenant's own.** AI names it, it builds, it
+works, it is queryable. `dim_sales_channel` in one tenant and `dim_channel` in
+another **does not matter**, because Clarion ships nothing that reads them.
+Divergence only matters for things Clarion ships against, and Clarion only ships
+against the ten. No counting, no threshold, no promotion.
+
+**4. AI re-derives the mapping per tenant, and that is fine.** Because the ten
+names and their key/match columns are fixed, the *output shape* is pinned no matter
+how many times AI runs. Tenant A's and tenant B's `dim_customer` both have
+`customer_key` and `vat_number`; they may differ in which extra source columns come
+along, and that difference harms nothing.
+
+> **This is why mapping promotion is not needed.** §5.7 called it load-bearing on
+> the assumption that consistency had to come from caching the mapping. It comes
+> from the contract instead. Caching a confirmed mapping is then a pure cost
+> optimisation — do it later if AI spend becomes annoying, as a cache, not as
+> architecture.
+
+#### Where a customer could be blocked waiting for Clarion — nowhere
+
+- Source has customers, no shipped mapping → **AI maps it.** Not blocked.
+- Source has something unusual → **AI names and builds it.** Not blocked.
+- AI got it wrong → **user corrects it in the UI.** Not blocked.
+- The list itself → **never changes**, so there is nothing to wait for.
+
+That is the "no dependency on us" property, and it holds because the only thing
+Clarion owns is ten names that were fixed on day one.
+
+#### What is explicitly NOT built
+
+Versioned model entries · promotion of names into the list · alias and deprecation
+windows · unmatched-dimension counters as a feature · a canonical model · conformed
+facts or measures · per-tenant model governance of any kind.
+
+#### What actually has to be built
+
+| # | Work | Size |
+|---|---|---|
+| 1 | Write the ten-line list | half a day |
+| 2 | Rename dimensions in the two existing templates to match it — also fixes the live `dim_account` collision | half a day |
+| 3 | Add the two naming sentences to the star-schema / bus-matrix prompts | small |
+| 4 | **New:** an AI step that maps a *second* source into the dimensions that already exist, proposed in plain language, user confirms | the real build |
+| 5 | Identity layer — matching rows across systems (§2.2) | separate, larger |
+
+Items 1–3 are days and are worth doing regardless of everything else in this
+document, because they fix a real name collision and cost nothing. Item 4 is the
+feature. Item 5 is what makes cross-system actually answer questions.
 
 ---
 

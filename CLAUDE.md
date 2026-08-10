@@ -33,7 +33,43 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
 
-**PLAN OF RECORD IS §5.7 — DERIVE THE DIMS, STANDARDISE THE NAMES (2026-08-10).**
+**PLAN OF RECORD IS §5.8 — TEN FIXED NAMES, NOTHING ELSE (2026-08-10).** The
+owner ruled out versioned entries, promotion of names, aliases and deprecation
+windows. Removing them makes the design SIMPLER, not weaker, because the contract
+columns already do the work promotion was there to do. **The whole design:**
+(1) **ONE LIST, ~10 lines, written once, never changes** — `dim_customer`
+(`customer_key`; match `vat_number,email`), `dim_supplier`, `dim_product`,
+`dim_product_group`, `dim_gl_account`, `dim_journal`, `dim_payment_term`,
+`dim_employee`, `dim_entity`, plus the existing `dim_date`. Written from what is
+already known, not discovered over time. No version number; nothing is ever
+promoted into it. (2) **Two sentences in the AI prompt**, not systems: "if a source
+has customers the table is `dim_customer` and the VAT number goes in `vat_number`";
+"anything not on the list, name it `dim_<singular_english_noun>`". (3) **Anything
+off the list is the TENANT'S OWN** — AI names it, it builds, it works;
+`dim_sales_channel` here and `dim_channel` there DOES NOT MATTER because Clarion
+ships nothing that reads them. Divergence only matters for what Clarion ships
+against, and Clarion only ships against the ten. No counting, no threshold, no
+promotion. (4) **AI re-derives the mapping per tenant and that is fine** — the
+fixed names + key/match columns pin the OUTPUT SHAPE however many times AI runs, so
+consistency comes from the contract rather than from caching. **This is why the
+"promote confirmed mappings" step earlier called load-bearing is NOT needed**;
+caching a confirmed mapping is a pure cost optimisation to add later if AI spend
+becomes annoying, as a cache, not as architecture.
+**Nowhere can a customer be blocked waiting for us:** no shipped mapping → AI maps
+it; unusual source → AI names and builds it; AI wrong → user corrects in the UI;
+the list never changes so there is nothing to wait for.
+**NOT built:** versioned entries, promotion, aliases/deprecation, unmatched-dim
+counters as a feature, a canonical model, conformed facts or measures, per-tenant
+model governance.
+**WHAT TO ACTUALLY BUILD:** (1) write the ten-line list — half a day; (2) rename
+the dims in both existing templates to match, which also fixes the live
+`dim_account` collision — half a day; (3) add the two naming sentences to the
+star-schema/bus-matrix prompts — small; (4) **the real build — an AI step that maps
+a SECOND source into the dims that already exist**, proposed in plain language,
+user confirms; (5) the identity layer for per-row matching (§2.2), separate and
+larger. Items 1–3 are worth doing regardless of the rest of this doc.
+
+**BACKGROUND — DERIVE THE DIMS, STANDARDISE THE NAMES (§5.7).**
 The owner's landing position, and it supersedes both the canonical model (§2.1)
 and the measured conformed set (§5.6); both are kept in the doc because their
 reasoning is what produced §5.7. **Ship NO canonical model.** Let the first source
