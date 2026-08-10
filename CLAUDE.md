@@ -37,8 +37,8 @@ with false assumptions and produces broken code.
 `docs/backlog/warehouse-value-for-smb.md`: the three jobs an SMB actually buys a
 warehouse for — cross-system questions, spreadsheets as a first-class source,
 multi-entity consolidation — benchmarked against Fabric/Power BI. **Proposal
-status, awaiting owner sign-off (§8).** The doc is a TARGET-STATE argument; the
-current code is an appendix (§7), deliberately, because the first draft reasoned
+status, awaiting owner sign-off (§9).** The doc is a TARGET-STATE argument; the
+current code is an appendix (§8), deliberately, because the first draft reasoned
 from today's constraints and produced a roadmap for the platform Clarion is
 rather than the one it should be.
 **The reframe:** the three themes are one problem — an SMB's business never lives
@@ -70,9 +70,38 @@ already per-connector deterministic models, and both independently converged on 
 customer dimension carrying `vat_number` under the same name. The move is to
 unify deliberately what is already converging — extract the shared target, add it
 alongside, keep existing products working.
-**Sequencing (§5):** model spine + entity axis → identity → spreadsheets → metric
+**THE MAIN ALTERNATIVE IS ANSWERED IN §5** — "draw the relationships across all
+sources in a canvas and derive the Kimball model from that graph, instead of
+pre-determining entities". Read it before re-proposing that; it is the natural
+instinct and it is right about the long tail. Why it fails as the PRIMARY path:
+a relationship graph is only the ~10% of Kimball modelling that is "what joins to
+what" — grain, additivity and meaning are untouched; the cross-system link is
+precisely the one that CANNOT be drawn, because between two systems there is no
+FK, only a per-ROW identity assertion about the real world (so §2.2's identity
+layer is required either way); ~170 relationships across 60 EO entities is a
+data-modelling exercise no SMB owner will do, and the 2026-08-03 audit measured
+the AI-proposed version at 8 unresolved / 10 target-not-key / 14 multi-target out
+of 170; per-tenant models compose with nothing, so shipped metrics, benchmarking
+and cross-tenant support all become impossible and the platform stops
+accumulating. **And Clarion already ran this experiment** — the connector
+star-schema templates exist BECAUSE the AI designer working from schema +
+relationships was worse, and the bus-matrix flow now prefers the template.
+**The reframe:** a canonical model does not decide what the customer NEEDS, it
+decides what Clarion KNOWS ABOUT — the other ~48 EO entities still sync, still
+land as source tables, still query (spine, not cage). The entities are
+near-universal (an invoice is an invoice; the Belgian chart of accounts is
+legislated); what varies is the MAPPING and the vocabulary. **Synthesis (§5.3):**
+the drawer is the INPUT, not the output — layer 0 source graph (drawer repairs +
+extends) → layer 1 mapping into canonical concepts → layer 2 canonical model →
+layer 3 generated star schema. The drawer stays and must be excellent, for
+sources Clarion has never seen (custom SQL Server, homegrown), custom fields, and
+repair — plus the highest-leverage use, **as Clarion's own authoring tool for
+layer 1**, which makes connector onboarding a modelling task instead of a
+TypeScript task and ships to every tenant at once. It is the escape hatch, not
+the front door (§5.4).
+**Sequencing (§6):** model spine + entity axis → identity → spreadsheets → metric
 library → groups/consolidation → reconciliation → connector breadth → accountant
-portfolio → benchmarking. **§6 lists what kills this** (universal-model creep,
+portfolio → benchmarking. **§7 lists what kills this** (universal-model creep,
 identity false-merges, human decisions lost to a rebuild, benchmarking before
 consent, retrofitting the accountant tier).
 Four measured facts from the code, kept because they still bind:

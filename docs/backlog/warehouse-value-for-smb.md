@@ -1,9 +1,9 @@
 # Why an SMB pays for a warehouse — and what Clarion should become
 
 > Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
-> §1–§5 describe the target state and are the substance of this document.
-> §7 records where today's code stands relative to it — read it as a starting
-> position, not as a constraint on §1–§5.
+> §1–§6 describe the target state and are the substance of this document.
+> §5 answers the main architectural alternative. §8 records where today's code
+> stands relative to all of it — a starting position, not a constraint.
 
 ---
 
@@ -285,7 +285,145 @@ committing to.
 
 ---
 
-## 5. Sequencing
+## 5. The alternative: derive the model from a relationship graph
+
+The obvious alternative to *shipping* a model is to **discover** one. Give the user
+a relationship canvas spanning every table and column of every connected source,
+let them draw (with AI proposing) how it all fits together, and generate the
+Kimball model from that graph. Each new source is then: plug it in, connect its
+lines to what is already there, fill in the definitions, extend the model.
+
+It deserves a serious answer, because it is right about several things:
+
+- it avoids the universal-model death trap §2.1 warns about — nobody has to decide
+  in advance what "Customer" means for every business;
+- it fits the machinery already built — `RelationshipCanvas`, Neo4j,
+  `table_relationships`, the AI review queue, vendor-declared relationships;
+- it respects the real heterogeneity of SMBs, including custom Odoo modules,
+  homegrown systems and industry oddities;
+- it is incremental in exactly the way a small team wants.
+
+### 5.1 Where it breaks as the *primary* path
+
+**1. A relationship graph is not a model.** Knowing that
+`SalesInvoices.InvoiceTo → Accounts.ID` tells you how to *join*. It does not tell
+you that `Accounts` is a customer (in Exact Online the same table is customer,
+supplier and prospect, separated by flags), that `AmountDC` is net revenue and
+that credit notes are already negative, what the grain of a fact is, or which
+measures are additive. Kimball modelling is maybe 10% "what joins to what" and 90%
+"what does this mean, what is the grain, what may be summed". The graph gives the
+10% and the hard part is untouched.
+
+**2. The cross-system relationship is precisely the one that cannot be drawn.**
+Inside one source, a relationship is a foreign key: structural, verifiable,
+measurable by containment. Across two systems there is no foreign key — Shopify
+has no column pointing at Exact Online's `Accounts.ID`. What connects them is an
+*identity assertion about the real world*: "these two rows are the same company."
+That is a **per-row** fact, not a per-column one, and it is fuzzy and it changes.
+Drawing a line from `shopify.customers.email` to `exact.Accounts.Email` is not a
+relationship, it is a matching rule — and it will be silently right about 60% of
+the time. So the drawer solves the intra-source problem, which vendor docs and
+declared FKs already largely solve, and leaves the inter-source problem — the
+actual reason cross-system is hard — exactly where it was. **An identity layer
+(§2.2) is required under either architecture.**
+
+**3. Somebody has to draw it, and that somebody is a data modeller.** Sixty Exact
+Online entities produce ~170 relationships. Confirming them is a data-modelling
+exercise in a vendor's data model. The SMB owner cannot do it and the accountant
+will not. "AI proposes, human confirms" is what the platform already does — and
+the 2026-08-03 production audit measured that AI-proposed graph at 8 unresolved
+endpoints, 10 pointing at a non-key, and 14 multi-target out of 170. A business
+user confirming 170 propositions of which roughly a fifth are subtly wrong, in a
+domain they do not know, is the *opposite* of minimal technical involvement.
+
+**4. It does not compose across tenants.** If every tenant derives their own
+model, there is no shared vocabulary — so metric definitions cannot be shipped,
+benchmarking (§2.5) is impossible, support is bespoke forever, and a new connector
+helps one customer at a time instead of all of them.
+
+**5. The platform stops accumulating.** Under a shipped model, improving the Exact
+Online mapping improves every customer on the next release. Under a per-tenant
+drawn graph, each customer's model is frozen at whatever they drew, and improving
+it means redoing it per tenant, by hand, forever.
+
+**6. Clarion has already run this experiment.** The connector star-schema
+templates exist *because* AI-designing a model from profiled schema plus
+relationships produced worse results than a hand-authored model. The bus-matrix
+flow now prefers the template and the AI designer is officially the fallback. That
+is not a hypothesis about the drawer-first approach — it is the measured outcome
+of it, in this repository.
+
+### 5.2 The reframe that dissolves the tension
+
+The objection to §2.1 is really: *why should Clarion pre-determine which entities
+the customer needs?*
+
+It doesn't. **A canonical model does not decide what the customer needs. It
+decides what Clarion *knows about*.** Exact Online has 60 entities; a good
+canonical model covers perhaps 12 of them deeply. The other 48 still sync, still
+land as source tables, still appear in the catalog, and are still queryable —
+spine, not cage (§2.1, rule 3). Nothing is taken away. What is added is a
+reconciled centre that Clarion can ship metrics, benchmarks and cross-system joins
+against.
+
+And note which parts of an SMB are actually variable. Is a customer a customer?
+Is an invoice an invoice with a date, a party, lines, amounts and VAT? Is a GL
+account a GL account — in Belgium, *legislated* via the standardised chart of
+accounts? These are the same for every SMB on earth. What varies is which system
+holds which piece, what the business calls things, their reporting structure, and
+their custom fields.
+
+**The entities are near-universal; the mapping and the vocabulary are what vary.**
+Drawer-first inverts that — it treats the entities as the variable thing to be
+discovered per customer, and therefore re-derives the same Customer concept five
+hundred times.
+
+### 5.3 Synthesis — the drawer is the input, not the output
+
+The two ideas are not competitors once they are put in the right order:
+
+| Layer | What it is | Who does it |
+|---|---|---|
+| 0 — **Source graph** | Tables, columns and true FK relationships *within* each source | Vendor docs + declared FKs + profiling; **the drawer repairs and extends it** |
+| 1 — **Mapping** | "Exact `Accounts` where `IsSales` → canonical Customer" | Shipped by Clarion per connector; AI-assisted + drawer for unknown sources and custom fields |
+| 2 — **Canonical model** | Small, opinionated, versioned | Clarion |
+| 3 — **Star schema** | Facts, dimensions, grain, additivity | Generated from layer 2, deterministically |
+
+So the relationship drawer is not deleted — it is **positioned**, and it has three
+jobs it is genuinely the best tool for:
+
+1. **Sources Clarion has never seen** — a custom SQL Server database, a homegrown
+   system, an industry vertical tool. No mapping can be shipped, so drawer + AI
+   *is* the path. This is the long tail, and it must be supported.
+2. **Custom fields and custom modules** on a known source — the Odoo instance
+   with `x_` fields, the Exact division with a bespoke free-field convention.
+3. **Repair** — fixing a wrong AI inference, confirming an uncertain one.
+
+And there is a fourth use that is arguably the most valuable of all: **the drawer
+as Clarion's own internal authoring tool for layer 1.** If mapping a new connector
+into the canonical model is a visual exercise rather than a TypeScript exercise,
+connector onboarding stops being an engineering task and becomes a modelling task
+a non-engineer can do — and the result ships to every tenant at once. That turns
+the user's instinct into leverage instead of per-tenant labour.
+
+### 5.4 What the customer experiences, which is the real test
+
+*Drawer-first:* connect Exact → we found 60 tables and 400 columns → here are 170
+suggested relationships, please confirm each → now choose which are facts and
+which are dimensions → now declare the grain. The customer leaves. This is a
+sharper version of the onboarding problem the 2026-07-15 assessment already
+found.
+
+*Model-first:* connect Exact → "Found your customers, invoices, suppliers and
+general ledger. Here is your revenue, margin, DSO and top customers." Three
+minutes, zero decisions. Then, if something is missing or odd, open the drawer.
+
+The drawer is the escape hatch and the repair tool. It must be excellent. It must
+not be the front door.
+
+---
+
+## 6. Sequencing
 
 | # | Work | Why here |
 |---|---|---|
@@ -306,7 +444,7 @@ across companies, and it survives you changing ERP."* That sells against Fabric.
 
 ---
 
-## 6. What kills this, and the mitigations
+## 7. What kills this, and the mitigations
 
 - **The canonical model tries to be universal.** The classic death. Mitigate with
   §2.1's three rules: small, opinionated, passthrough-always-available. If it
@@ -332,7 +470,7 @@ across companies, and it survives you changing ERP."* That sells against Fabric.
 
 ---
 
-## 7. Appendix — the starting position
+## 8. Appendix — the starting position
 
 Where today's code sits relative to §2. Useful for estimating, not for scoping
 ambition.
@@ -380,7 +518,7 @@ cross-tenant blob-read vector.
 
 ---
 
-## 8. Decisions needed from the owner
+## 9. Decisions needed from the owner
 
 1. **The direction flip (§2.1, §4).** Is Clarion a platform that models each
    customer's sources, or one that ships a model of an SMB that sources map into?
