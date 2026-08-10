@@ -99,6 +99,34 @@ repair — plus the highest-leverage use, **as Clarion's own authoring tool for
 layer 1**, which makes connector onboarding a modelling task instead of a
 TypeScript task and ships to every tenant at once. It is the escape hatch, not
 the front door (§5.4).
+**§5.5 answers the refined version** — "understand the sources and their
+relations FIRST, then determine which entities this customer needs, then build
+the model from both". Steps 1, 2 and 4 of that sequence are right and are what
+the doc already proposes (understanding the source is a PREREQUISITE to mapping
+it; "a mapping table in between" is exactly §2.2; and generating SQL genuinely
+needs the source graph AND the canonical target, with the AI reading both).
+**Only step 3 breaks, on one word**: a model *determined per customer* is not
+canonical, it is a per-tenant model with a better name, and shipped metrics,
+benchmarking, ERP-migration survival and reusable connector mappings all die with
+it. The legitimate concern underneath it — a services firm has no stock — is
+answered by **activation, not determination**: the model is identical for
+everyone, and only the parts something maps into are shown. *Which entities does
+this customer see* is per-customer; *what is a Customer* is not. (Analogy that
+lands: the Belgian standardised chart of accounts — same accounts for everyone,
+you just don't use 30–39 without inventory.) Vertical differences are handled by
+**modules**, added once centrally, not by per-tenant design.
+**§2.1a defines the canonical model concretely** — three versioned artefacts in
+the repo, NOT per-tenant data: (a) ~12 entities with meaning/grain/identity +
+measures with additivity; (b) a mapping per connector, the same shape as today's
+`starSchemaTemplate.ts` retargeted from a per-connector model to a shared one;
+(c) a deterministically generated star schema. **§2.1b is how a user meets it —
+almost never**: connect and it already works; ONE plain-language coverage
+checklist ("Customers ✓ from Exact · Budget — upload a spreadsheet · Stock —
+doesn't apply") which is where "which entities do we need" is actually answered,
+by hiding rows, not designing; a per-ROW matching inbox when a second source
+arrives; **their own vocabulary** over canonical concepts — the one place
+per-customer variation genuinely belongs; and one-question extension for custom
+fields.
 **Sequencing (§6):** model spine + entity axis → identity → spreadsheets → metric
 library → groups/consolidation → reconciliation → connector breadth → accountant
 portfolio → benchmarking. **§7 lists what kills this** (universal-model creep,

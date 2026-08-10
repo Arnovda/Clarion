@@ -103,6 +103,83 @@ projects of the 2000s. The escape is three rules:
 3. **Versioned like code**, shipped with the product, extended by Clarion rather
    than by each tenant.
 
+### 2.1a What the canonical model *is*, concretely
+
+Not an abstraction. Three shipped artefacts, versioned like code, living in the
+repo next to the connector registry — **not** per-tenant data.
+
+**(a) The model.** ~12 entities, each with a stated meaning, grain and natural
+identity; attributes with types and meaning; relationships between entities; and
+measures with their definition and additivity rule.
+
+```
+Party            one concept; customer / supplier / employee are ROLES on it
+Product          goods and services
+Entity           legal entity / branch
+Account          GL account  ·  Reporting line   the management P&L structure
+Document         invoice, credit note, order, purchase   ·  Document line
+Journal entry    ·  Payment
+Period           ·  Project / Cost centre   ·  Stock movement   ·  Employee
+```
+
+Measures: net revenue, COGS, gross margin, receivables, payables, DSO, DPO, cash
+position, order intake, inventory value — each with one definition, shipped.
+
+**(b) A mapping per connector.** How Exact Online's `Accounts` where `IsSales`
+becomes a Party in the Customer role; how `SalesInvoiceLines` joined to
+`SalesInvoices` becomes Document + Document line at line grain; which column is
+net revenue. Shipped, versioned, testable — the same shape as today's
+`starSchemaTemplate.ts`, retargeted from a per-connector model to a shared one.
+
+**(c) A generated star schema.** Facts and dimensions emitted deterministically
+from (a) + (b). This is what DuckDB queries and what the AI reads.
+
+What it is **not**: not a star schema itself, not a per-tenant artefact, and not
+the only thing queryable — everything unmapped still syncs and still answers
+questions.
+
+### 2.1b How a user meets it — which is to say, almost never
+
+The business user never sees a model. They see five things, all in their own
+language:
+
+1. **Connect → it already works.** Exact is connected, and because the mapping is
+   shipped the topics appear with revenue, margin, DSO and top customers already
+   correct. Three minutes, zero decisions. *The canonical model is the reason this
+   is possible; the user never learns it exists.*
+
+2. **One coverage screen — "what we understand about your business".** A plain
+   checklist over a fixed model, not a design exercise:
+
+   ```
+   Customers      ✓  from Exact Online
+   Suppliers      ✓  from Exact Online
+   Products       ✓  from Exact Online
+   Sales orders   —  not found · connect a webshop, or hide this
+   Budget         —  not found · upload a spreadsheet
+   Stock          —  doesn't apply to us
+   ```
+
+   This is where "which entities does this customer need?" is actually answered.
+   The user's only action is to hide what doesn't apply. **Selection, not design.**
+
+3. **A matching inbox when a second source arrives.** *"Your webshop has customers
+   too. We matched 812 of 900 to customers you already have in Exact. 88 need your
+   eye."* Reviewed as rows — *Is this the same company? Yes / No / Not sure* — not
+   as a canvas. This is the mapping table, and it is per-row because identity is
+   per-row (§5.1.2).
+
+4. **Their own vocabulary.** The tenant renames canonical concepts — "clients"
+   not "customers", "leveranciers" not "suppliers" — and it flows into every
+   question, answer and dashboard. **This is where per-customer variation
+   genuinely belongs: the vocabulary varies, the structure does not.**
+
+5. **Extension, one question at a time.** *"Exact has a free field you fill with a
+   region code. Treat it as an attribute of your customers?"*
+
+The relationship drawer sits behind Manage mode for analysts, for the jobs in
+§5.3. It is never on a normal user's path.
+
 ### 2.2 An identity layer that is a real asset
 
 Cross-system joining is really an identity question: *is this the same customer?*
@@ -420,6 +497,76 @@ minutes, zero decisions. Then, if something is missing or odd, open the drawer.
 
 The drawer is the escape hatch and the repair tool. It must be excellent. It must
 not be the front door.
+
+### 5.5 The refined proposal: understand first, then *activate* — not *determine*
+
+The strongest version of the drawer-first argument is not "derive the model from
+the graph". It is a sequence:
+
+1. understand each source system — its relations and its definitions;
+2. to combine sources, draw the links between them, with a mapping table where
+   there is no key;
+3. **then** determine the canonical model — which entities does *this customer*
+   need;
+4. build the data model from both the canonical model and the source
+   relations/definitions, and point the AI at that.
+
+**Steps 1, 2 and 4 are right and are already what this document proposes.** You
+cannot map Exact into a canonical Customer without first knowing that `Accounts`
+with `IsSales` is the customer — understanding the source is a *prerequisite* to
+mapping, which is why layer 0 sits below layer 1 in §5.3. Step 2 is the identity
+layer (§2.2), and "a mapping table in between" is exactly right, because between
+two systems there is no key to draw. Step 4 is right too: the canonical model
+alone cannot emit SQL. Generating the star schema needs the source graph (which
+tables join, at what grain, with the vendor's own column semantics) *and* the
+canonical target. The AI then reads both — canonical concepts for meaning and
+metrics, source detail for everything the model doesn't cover.
+
+**Step 3 is where it breaks, and it is one word.** If the canonical model is
+*determined per customer, after inspecting their sources*, it is not canonical —
+it is a per-tenant model with a better name, and every property that justified it
+disappears: shipped metric definitions, benchmarking, dashboards surviving an ERP
+migration, one connector mapping reused by all tenants, improve-once-benefit-
+everyone. "Canonical" means *the same for everyone*. A per-customer canonical
+model is a contradiction in terms.
+
+**But the concern underneath step 3 is legitimate**, and it has a precise answer.
+The concern is: *not every customer needs every entity — a services firm has no
+stock, a retailer has no projects.* True. The answer is **activation, not
+determination**:
+
+- the model defines Party, Document, Stock, Project **identically for everyone**;
+- for a given tenant, only the parts something maps into are activated and shown;
+- a services firm simply never sees Stock — not because their model differs, but
+  because nothing feeds it.
+
+*Which entities does this customer see* is a per-customer question. *What is a
+Customer* is not. Compare the Belgian standardised chart of accounts: every
+company uses the same account 700 for revenue, and a company without inventory
+just doesn't use the 30–39 range. Nobody determines a bespoke chart per company;
+they use the parts that apply. That is exactly the relation between the canonical
+model and a tenant's activated subset. It is also why Odoo scales — it ships
+`res.partner` and `account.move` and lets you install modules, rather than asking
+each customer what a partner should be.
+
+**Two further readings of step 3 that are correct, and worth separating out:**
+
+- *"What we learn from real customers should shape the model."* Yes —
+  emphatically. The model should be built from what the connectors already agree
+  on, and grow as new sources reveal gaps. That is a **product development loop**,
+  run centrally and versioned. It is not a per-tenant loop.
+- *"Verticals differ — construction needs Project, staffing needs Placement."*
+  Yes — and the answer is **modules**, again as Odoo does. When thirty
+  construction customers need Project, it is added once and all thirty get it,
+  plus the thirty-first for free. Thirty tenants each designing their own Project
+  produces thirty incompatible Projects and zero leverage.
+
+So the corrected sequence, which is the architecture of §5.3:
+
+> understand the source → map it into a shipped canonical model (mapping table
+> where identity has no key) → **activate** the parts this customer's data
+> supports → generate the star schema from the canonical model *plus* the source
+> graph → point the AI at both.
 
 ---
 
