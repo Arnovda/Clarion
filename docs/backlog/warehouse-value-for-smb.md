@@ -884,6 +884,59 @@ one-way street.
   converging.
 - **"Not conformed" stays visible and counted** (§5.6) — still the demand signal.
 
+#### What Clarion specifies, and what AI does — the dividing line
+
+> **Clarion standardises the cheapest things with the highest leverage: names.
+> AI does everything expensive and variable: meaning, structure, mapping.**
+
+**What Clarion writes down — one file, ~40 lines, no model:**
+
+```
+dim_customer      identity customer_key   match vat_number, email   label customer_name
+dim_supplier      identity supplier_key   match vat_number, email   label supplier_name
+dim_product       identity product_key    match product_code        label product_name
+dim_product_group identity group_key      match group_code          label group_name
+dim_gl_account    identity account_key    match account_code        label account_name
+dim_journal       identity journal_key    match journal_code        label journal_name
+dim_payment_term  identity term_key       match term_code           label term_name
+dim_employee      identity employee_key   match email               label employee_name
+dim_entity        identity entity_key     match vat_number          label entity_name
+dim_date          platform infrastructure — already exists
+```
+
+That is the whole of the up-front specification. It says *"when a source has
+customers, the table is called `dim_customer`, and if the source has a VAT number
+it goes in a column called `vat_number`."* It does **not** say what a customer is,
+which attributes one has, or how many there should be.
+
+Plus two one-line rules: the **ERP wins** for master-data shape (§5.7.2), and
+**confirmed mappings get promoted** (§5.7.3).
+
+**What AI does, per source:**
+
+- read the source's tables, columns, relationships and vendor docs;
+- decide which source table feeds which standard dimension (*"Exact `Accounts`
+  where `IsSales` is the customer dimension"*);
+- fill the contract columns (`VATNumber → vat_number`, `Email → email`);
+- **bring every other source column along unchanged** — `City`, `CreditLine`,
+  `Status`, whatever exists;
+- propose it in plain language; the user confirms;
+- the confirmed mapping is stored and reused for every later tenant on that
+  connector.
+
+**Why Clarion must specify even the names.** If AI names things per tenant, one
+gets `dim_customer` and another `dim_client` — and then nothing written against
+the model works anywhere: not a shipped dashboard, not a support answer, not the
+AI's own prompt, not the matching code looking for a VAT number. Names are the one
+thing that must be identical everywhere **and** the cheapest thing to fix. A name
+constrains nothing about contents, so it costs no flexibility at all.
+
+**How the list grows — from evidence, not a design meeting.** When AI finds
+something with no existing home (Shopify's sales channel, say) it creates
+`dim_sales_channel` with no contract columns, and that is **counted**. When twenty
+tenants have a sales-channel dimension, it earns a line in the file. The list is
+never guessed — it is the record of what turned out to recur.
+
 #### The one thing deferred
 
 Benchmarking (§2.5) needs comparable **measures**, and measures live on facts,

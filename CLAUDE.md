@@ -66,6 +66,23 @@ advance, which is strictly better. Without it every tenant re-derives the same
 mapping differently and the platform never accumulates. Ladder per connector:
 **confirmed shipped mapping → AI proposal → user confirmation → promote back to
 shipped** (a loop, not one-way).
+**THE DIVIDING LINE (§5.7, "What Clarion specifies"):** Clarion standardises the
+cheapest/highest-leverage thing — NAMES — and AI does everything expensive and
+variable. The entire up-front spec is **one ~40-line file**: per standard dim, its
+`identity` / `match` / `label` column names (`dim_customer` → `customer_key`,
+`vat_number,email`, `customer_name`; likewise supplier, product, product_group,
+gl_account, journal, payment_term, employee, entity; `dim_date` already exists).
+It says "when a source has customers the table is `dim_customer`, and a VAT number
+goes in `vat_number`" — NOT what a customer is or which attributes it has. AI then
+reads each source's tables/columns/relations/docs, decides which source table
+feeds which standard dim, fills the contract columns, **brings every other source
+column along unchanged**, proposes in plain language, user confirms, mapping is
+stored + reused. **Why Clarion must own even the names:** AI naming per tenant
+gives one `dim_customer` and another `dim_client`, and then no shipped dashboard,
+support answer, prompt or matching code works anywhere — names must be identical
+everywhere AND cost zero flexibility (a name constrains no contents). **The list
+grows from evidence:** an unmatched dim (Shopify sales channel) is created with no
+contract columns and COUNTED; at ~20 tenants it earns a line in the file.
 **Unchanged:** the identity layer is still required (no name convention or AI
 mapping tells you Shopify customer 4471 IS Exact's VAN DAMME BVBA — per-row
 assertion); facts stay per-connector; "not conformed" stays visible and counted.
