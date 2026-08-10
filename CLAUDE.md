@@ -145,7 +145,48 @@ tenant redefining net revenue kills shipped metrics and benchmarking on the same
 day, and does it silently because every dashboard keeps working. Legitimate
 routes: add it centrally as its own measure everyone can use, or a tenant-local
 metric ALONGSIDE the canonical one, marked as theirs.
-**Sequencing (§6):** model spine + entity axis → identity → spreadsheets → metric
+**§5.6 IS THE MOST IMPORTANT SECTION — it scales the whole proposal down.** The
+owner's objection: a canonical model will be too RIGID (forcing fits), too
+EXPENSIVE for us to maintain, and makes customers DEPENDENT on us for their own
+modelling. All three are legitimate and the answers change the plan.
+(a) Rigidity is real only at the PERIPHERY — an invoice is an invoice, the Belgian
+CoA is legislated, so the core fit is genuine; manufacturing BOMs, construction
+WIP, staffing placements, subscription MRR are where forcing starts. **Coverage is
+therefore the wrong goal**; a small high-confidence core + AI-per-source for the
+rest is the right one, and unmapped data still syncs and still answers questions.
+(b) **The maintenance burden already exists and this REDUCES it** — the two
+`starSchemaTemplate.ts` files are already hand-authored per-connector models,
+chosen because the AI designer was worse; today connector #3 costs a whole
+template including its own dim design, with a shared target it costs a mapping.
+The genuinely NEW cost is governance: versioning the shared model and migrating
+tenants without breaking dashboards.
+(c) "Dependent on us" is a CHOICE BETWEEN dependencies — on our shipped model
+(wait for us at the edges), on AI inference (non-deterministic, wrong silently —
+the FK audit), or on the customer's own modelling skill (= a consultant, i.e. the
+Power BI failure mode). The mitigation is a genuinely SELF-SERVICE escape hatch:
+map an unmapped field yourself, add a tenant-local entity, extend a canonical
+entity, use the drawer for an unknown source. **This raises the drawer above what
+§5.3 gave it** — it is the guarantee the model can never become a ceiling.
+**The counter-proposal — "teach the AI each source's intricacies instead" — is
+right AND already built** (`exactonline/docs.ts`, 2,613 documented columns;
+`getKnownRelationships`). But source knowledge tells the AI how to read THAT
+source; it creates no vocabulary shared across sources or tenants, so there is
+nothing for a shipped metric or benchmark to hang on and the same source profiled
+twice can differ. Not a rigidity problem — a CONSISTENCY problem. And the two
+positions are nearly the same artefact: "Exact `Accounts` where `IsSales` → Party
+in Customer role" IS that intricacy, written down once instead of re-inferred per
+tenant. **The real question is one axis: re-derived by AI per tenant, or written
+down once and shipped?** Answer = the `docs > curated > ai` ladder one level up:
+written down for the stable core, AI for the periphery.
+**THE SMALLER BET (what to actually commit to): ship FIVE CONFORMED DIMENSIONS —
+Party, Product, Account, Period, Entity — and leave FACTS ENTIRELY ALONE** to the
+per-connector templates and the AI. Facts are where rigidity hurts (grain,
+additivity, vertical variation); dimensions are where sharing pays (join, match,
+filter, benchmark). Five artefacts, not a model of a business — small enough to
+write, version, and abandon. It is Kimball's own answer to this tension and
+deliberately LESS than a canonical model. Both templates have already converged on
+most of it. Extending toward §2.1's fuller model is a later, evidence-based call.
+**Sequencing (§6):** conformed dims + entity axis → identity → spreadsheets → metric
 library → groups/consolidation → reconciliation → connector breadth → accountant
 portfolio → benchmarking. **§7 lists what kills this** (universal-model creep,
 identity false-merges, human decisions lost to a rebuild, benchmarking before

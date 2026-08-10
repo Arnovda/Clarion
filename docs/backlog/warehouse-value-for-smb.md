@@ -1,6 +1,9 @@
 # Why an SMB pays for a warehouse — and what Clarion should become
 
 > Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
+> **Start at §5.6** — it scales the proposal down to the size actually worth
+> committing to (five conformed dimensions, not a canonical model). §2.1 describes
+> the fuller destination, which is a later, evidence-based decision.
 > §1–§6 describe the target state and are the substance of this document.
 > §5 answers the main architectural alternative. §8 records where today's code
 > stands relative to all of it — a starting position, not a constraint.
@@ -625,13 +628,120 @@ So the corrected sequence, which is the architecture of §5.3:
 > supports → generate the star schema from the canonical model *plus* the source
 > graph → point the AI at both.
 
+### 5.6 The rigidity objection — and the smaller bet that answers it
+
+Three worries, all legitimate: **(a)** a fixed model forces bad fits; **(b)**
+Clarion has to maintain it forever; **(c)** customers become dependent on us for
+their own modelling. Taken seriously, they shrink the proposal — correctly.
+
+**(a) Rigidity is real, but only at the periphery.** An invoice is an invoice; a
+GL account in Belgium is legislated; a party with a VAT number is a party with a
+VAT number. There is no forcing there — the fit is genuine, and it covers most of
+what an SMB analytics product ever needs. The forcing starts further out:
+manufacturing BOMs, construction work-in-progress, staffing placements,
+subscription MRR, project time-and-materials. **So coverage is the wrong goal.**
+A small high-confidence core plus AI-per-source for everything else is the right
+goal — and everything unmapped still syncs, still lands as source tables, still
+answers questions. Nobody is ever blocked; they just don't get the shipped
+guarantees on that part.
+
+**(b) The maintenance burden already exists, and this reduces it.**
+`exactonline/starSchemaTemplate.ts` (6 dims, 6 facts, 25 relationships) and
+`odoo/starSchemaTemplate.ts` (9 dims, 6 facts, 33 relationships) are already
+hand-authored per-connector models, maintained by us, chosen *because* the AI
+designer was worse. Today connector #3 costs a whole template including its own
+conformed-dimension design; with a shared target it costs a mapping. The genuinely
+new cost is **governance of the shared model** — versioning it, and migrating
+tenants when it changes without breaking their dashboards. That is real and should
+not be waved away.
+
+**(c) "Dependent on us" is a choice between dependencies, not a way to avoid
+one.** The alternatives are: dependent on our shipped model (fast and correct,
+but you wait for us at the edges); dependent on AI inference (autonomous, but
+non-deterministic and wrong silently — the 2026-08-03 FK audit is what that looks
+like); or dependent on the customer's own modelling skill, which for an SMB means
+dependent on a consultant, i.e. the Power BI failure mode.
+
+The mitigation is not to avoid shipping a model. It is to make the **escape hatch
+genuinely self-service**, so no customer ever *has* to wait for us:
+
+- map an unmapped source field into a canonical attribute themselves;
+- add a tenant-local entity or dimension the model doesn't have;
+- extend a canonical entity with their own attributes;
+- use the drawer for a source we have never seen.
+
+Accelerated where we have done the work, autonomous where we have not. **This
+raises the drawer's importance above what §5.3 gave it** — it is not only repair
+and long-tail, it is the guarantee that the model can never become a ceiling.
+
+#### The counter-proposal: teach the AI each source's intricacies instead
+
+*"Give the AI deep per-source knowledge — that Exact has one `Accounts` table with
+`IsSales`/`IsSupplier` flags — so it can behave correctly and derive the common
+dimensions itself."*
+
+This is right, and **it is already built**: `exactonline/docs.ts` carries 2,613
+vendor-documented columns, and `getKnownRelationships` carries the FK catalog. The
+AI already has the intricacies.
+
+But notice what that knowledge does and does not do. It tells the AI how to read
+*that source*. It does not create a vocabulary shared *across sources* or *across
+tenants* — so if tenant A's inference calls it Customer and tenant B's splits it
+differently, there is no concept to hang a shipped metric or a benchmark on, and
+the same source profiled twice can yield different models. That is not a rigidity
+problem, it is a **consistency** problem, and consistency is exactly what metrics,
+matching and benchmarking need.
+
+The two positions are closer than they look. *"Exact `Accounts` where `IsSales` →
+Party in the Customer role"* **is** the encoding of that intricacy — written down
+once instead of re-inferred per tenant. So the real question is one axis only:
+
+> **Is the source knowledge re-derived by AI per tenant, or written down once and
+> shipped?**
+
+Written down: deterministic, consistent, testable, improves for everyone, cheap at
+run time — but somebody writes it and it can be incomplete.
+Re-derived: adapts to each instance automatically, no maintenance — but
+non-deterministic, inconsistent between tenants, expensive, and wrong silently.
+
+The answer is the ladder Clarion already uses for descriptions
+(`docs > curated > ai`), one level up: **written down for the stable core,
+AI-derived for the periphery.**
+
+#### The smaller bet: conformed dimensions, not a canonical model
+
+Given (a)–(c), the first commitment should be much smaller than §2.1 implies:
+
+> Ship **five conformed dimensions** — Party, Product, Account, Period, Entity —
+> with agreed keys and definitions. Leave **facts entirely alone**, to the existing
+> per-connector templates and the AI.
+
+Why this is the right size:
+
+- **Facts are where rigidity hurts** — grain, additivity, business meaning, vertical
+  variation all live there. Dimensions are where sharing pays: they are what you
+  join on, match on, filter by and benchmark across.
+- It delivers what the three themes need: cross-system joins get a target,
+  identity gets something to resolve *into*, metrics get something to hang on,
+  the entity axis exists.
+- It is five artefacts, not a model of a business. Small enough to write, to
+  version, and to abandon if the thesis fails.
+- It is Kimball's own answer to this exact tension, and it is deliberately *less*
+  than a canonical model.
+- Both existing templates have already converged on most of it — `dim_account` and
+  `dim_partner` both carry `vat_number` under the same name (§8). The work is
+  extraction, not invention.
+
+If conformed dimensions prove out, extending toward the fuller model in §2.1 is a
+later, evidence-based decision. If they do not, very little was spent.
+
 ---
 
 ## 6. Sequencing
 
 | # | Work | Why here |
 |---|---|---|
-| 0 | **Canonical model spine + entity axis.** Extract from the two existing templates; ship as a versioned package; connectors declare mappings into it. | Everything else is cheaper after it and more expensive before it. The entity axis must land here or it is a migration later. |
+| 0 | **Five conformed dimensions + entity axis** (§5.6) — Party, Product, Account, Period, Entity. Extracted from the two existing templates, shipped as a versioned package, connectors declare mappings into them. **Facts stay with the per-connector templates and the AI.** | Everything else is cheaper after it and more expensive before it, and the entity axis must land here or it becomes a migration. Deliberately *less* than the full model in §2.1 — dimensions are where sharing pays, facts are where rigidity hurts. Extend later on evidence. |
 | 1 | **Identity layer.** Party registry + crosswalk; deterministic and externally-verified rungs only; human decisions sticky and rebuild-proof. | Every connector and every theme needs it. Compounding asset. |
 | 2 | **Spreadsheet layer.** Files in (upload + linked), managed grids, round-trip keys. | The cheapest second system, and the vehicle for every mapping table the other themes need. Budget vs actual is itself a cross-system question. |
 | 3 | **Metric library** shipped with the model, trilingual. | Day-one value; no engineering per tenant; prerequisite for benchmarking. |
