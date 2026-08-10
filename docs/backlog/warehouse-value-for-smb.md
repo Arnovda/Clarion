@@ -1,475 +1,398 @@
-# Why an SMB pays for a warehouse — and how Clarion delivers it
+# Why an SMB pays for a warehouse — and what Clarion should become
 
-> Status: **proposal**. No code changed. Written 2026-08-10.
-> Grounded in a read of the current code, not in what the docs claim.
-> Read §2 before disagreeing with §4–§6 — several assumptions people carry about
-> what Clarion can already do turn out to be false, and two turn out to be
-> pleasantly true.
-
----
-
-## 1. The question
-
-Fabric + Power BI is the right comparison: same buyer, same price ceiling, same
-"we already pay Microsoft" gravity. Clarion cannot win on warehouse engineering —
-Fabric's is better funded and always will be. So the question is not *what does a
-warehouse do*, it is **what does an SMB actually pay a warehouse to do that their
-SaaS tools refuse to do**.
-
-Three answers, all of which the buyer can state in one sentence without using a
-technical word:
-
-1. **Cross-system questions** — "which customers buy from the webshop but never
-   pay on time in the accounting package?" No single tool owns both halves.
-2. **Spreadsheets as a real source** — "compare this against my budget." The
-   budget lives in Excel, it always has, and it is not going to move.
-3. **Multi-entity consolidation** — "show me the group, not three companies."
-
-In Power BI all three are Power Query / dataflow work: a consultant writes merge
-steps, fuzzy-match joins and a mapping table hidden inside an M query. It works
-until someone renames a column, and then it fails silently and the SMB does not
-find out for a month.
-
-**That is the wedge.** Not "we also have a warehouse". The claim is: *the
-decisions that make these three work — which customer is the same customer, which
-GL account rolls into which reporting line, which companies are the group — are
-made by a business user in business language, are stored as first-class data, and
-survive a refresh.* In Power BI those decisions are code. In Clarion they should
-be content.
+> Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
+> §1–§5 describe the target state and are the substance of this document.
+> §7 records where today's code stands relative to it — read it as a starting
+> position, not as a constraint on §1–§5.
 
 ---
 
-## 2. What Clarion has today (measured)
+## 1. The reframe: three themes, one problem
 
-### 2.1 Everything is scoped to a connection
+Cross-system questions, spreadsheets, and multi-entity consolidation look like
+three features. They are three faces of a single fact:
 
-The unit of work is `connection_id`, end to end:
+> **An SMB's business does not live in one system, and it never will.**
 
-| Stage | Where | Scope |
-|---|---|---|
-| Design | `busMatrixOrchestrator.ts:83–94` | one `connectionId`; loads `source_tables` for it |
-| Build | `transformationRunner.ts:426` | source views from `ingested_tables where connection_id = product.connection_id` |
-| Query | `ConnectorFactory.ts:165–167` → `tableCatalog.listProductTablesByConnection` | `where dp.connection_id = connectionId` |
-| Ask AI | `routes/query.ts:247` | request body carries `connectionId` |
+Accounting in one place, sales in another, payroll in a third, a webshop in a
+fourth, and Excel filling every remaining gap. This is not a transitional state to
+be cleaned up. It is the permanent condition of every business under 250 people,
+and it gets *more* true as SaaS gets cheaper.
 
-So a question that spans two connections **cannot currently be expressed at the
-product layer.** This is the single biggest structural blocker, and it is a
-blocker for themes 1 *and* 3.
+Every SaaS tool reports on its own slice and is structurally incapable of doing
+more. So the job an SMB is paying a warehouse to do is:
 
-### 2.2 …but the cross-connection seam already exists, and works
+> **Be the one place where the whole business is reconciled into a single, true
+> picture — and stay true as systems come and go.**
 
-Two things are better than expected:
+That is the product. The warehouse is plumbing in service of it.
 
-- `transformationRunner.loadDependencyDimensions` (line 203) resolves upstream
-  dimensions **by `dependent_product_id` alone — it never filters by
-  connection.** A product on connection B can already consume a conformed
-  dimension built on connection A.
-- `tableCatalog.publishStubFromUpstream` (line 355) writes the upstream
-  `delta_path` into a stub row *belonging to the dependent product*. Because
-  `listProductTablesByConnection` does not exclude stubs, that shared dimension
-  becomes visible in the dependent connection's DuckDB session at query time.
-
-**Cross-connection joins are therefore already plumbed.** What is missing is not
-pipes. It is (a) a design flow that ever proposes such a product, (b) matching
-keys that agree across systems, and (c) a query scope that spans connections.
-
-### 2.3 The "cross-source" path in `query.ts` is SQLite-only legacy
-
-`routes/query.ts:640–780` builds a cross-source context from
-`cross_view_relationships`, and at line 706 it reads `cfg.filepath` and calls
-`path.resolve` on it, then executes via `ATTACH DATABASE`
-(`nlToSqlPrompt.ts:384–409`). Exact Online and Odoo connections have no
-`filepath`. **This path cannot work for any API connector and must not be built
-on.** It is dead weight that looks like a feature.
-
-### 2.4 Spreadsheets: nothing
-
-`grep` for csv/xlsx/excel/upload across `packages/connectors/src` and
-`backend/src/routes` returns **only export paths** (`utils/xlsxBuilder.ts` writes
-XLSX; it does not read it) and the semantic-dictionary CSV import. There is no
-file connector, no upload route, no reader. The 2026-07-15 product assessment
-listed "Excel/CSV upload connector" as a missing business feature; it is still
-missing.
-
-### 2.5 Multi-entity: one division per connection, no consolidation
-
-- Exact Online: `exactonline/schema.ts:9` — *"single division per connection"*,
-  `division` is a required scalar string. Three divisions = three connections =
-  three bus matrices = three unrelated sets of products.
-- Odoo: multi-company exists *inside* the instance — `dim_company` is in the
-  star-schema template (`odoo/starSchemaTemplate.ts:190`) and `company_id` is
-  carried on partners and journals. Nothing consolidates across it; it is just a
-  dimension.
-- No FX rate handling anywhere. No intercompany logic. `grep` for
-  `exchange_rate|fx_rate|consolidat` finds only storage-layer consolidation and
-  an unrelated Exact Online field.
-
-### 2.6 The one lucky break: VAT number is already conformed
-
-Both star-schema templates already surface the tax ID **under the same column
-name**:
-
-- `exactonline/starSchemaTemplate.ts:94` — `dim_account.vat_number` ← `Accounts.VATNumber`
-- `odoo/starSchemaTemplate.ts:97` — `dim_partner.vat_number` ← `res_partner.vat`
-
-For a Belgian SMB the VAT number is a near-perfect deterministic join key for
-companies. **Cross-system customer matching starts at high accuracy with a
-normaliser and zero AI**, which matters a great deal for §4.
+Fabric sells the plumbing. Power BI can technically do all three themes — as
+Power Query merge steps, fuzzy-match joins and mapping tables buried inside an M
+query that one consultant wrote and nobody maintains. It works until a column is
+renamed, and then it is quietly wrong for a month. **The gap Clarion should attack
+is not capability. It is that in the Microsoft stack the reconciliation decisions
+are code, and in Clarion they should be content** — made by a business person in
+business language, stored as data, versioned, and surviving every refresh and
+every source change.
 
 ---
 
-## 3. The insight: all three features need the same primitive
+## 2. What Clarion should have
 
-Look at what each theme's hard part actually is:
+Six layers. Each one is a thing that does not exist today, and each one makes the
+three themes fall out as consequences rather than features.
 
-| Theme | The hard part | Shape |
-|---|---|---|
-| Cross-system | Is Exact's *Van Damme BVBA* the same as the webshop's *vandamme@…*? | key ↔ key |
-| Spreadsheets | Which GL account rolls into which management P&L line? | key ↔ key |
-| Multi-entity | Entity A's chart of accounts ↔ the group's chart of accounts | key ↔ key |
-| Multi-entity | Is this counterparty one of our own companies? (intercompany) | key ↔ key |
+### 2.1 A canonical business model that exists before any source
 
-Every one is a **two-column correspondence, proposed by the machine, decided by a
-business user, stored, versioned, and joined at build time.** Build that once and
-the hard part of all three features is solved. Build it three times inside three
-features and Clarion acquires three subtly different half-versions of it.
+**The single most important idea in this document, and it inverts how Clarion is
+built today.**
 
-Call it a **Mapping**. It is the product's most important new noun, and it is the
-thing Power BI makes a consultant write in M.
+Today the direction is bottom-up: connect a source → profile it → let AI design a
+star schema from what it found → get products that are a *reflection of that
+source*. Every tenant gets a bespoke model. Every new connector is a fresh design
+problem.
 
-### 3.1 Mapping — proposed shape
-
-Two tables, mirroring the existing semantic-layer idiom:
+It should be top-down. Clarion should ship an opinionated **canonical model of an
+SMB** — roughly ten entities and forty measures:
 
 ```
-mappings       id, tenant_id, name, kind, left_ref, right_ref, status, …
-mapping_rows   mapping_id, left_key, left_label, right_key, right_label,
-               confidence, source, approval_status, decided_by, decided_at
+Party (customer / supplier / employee — one concept, roles as attributes)
+Product / Service
+Entity (legal entity, branch)
+Account (GL) + Reporting line
+Transaction (invoice, order, payment, journal, movement)
+Period / Calendar
+Document
+Project / Cost centre
 ```
 
-- `kind` — `entity_match` (customer ↔ customer) or `value_map` (GL account →
-  reporting line). Same table; the review UI differs only in wording.
-- `source` — `deterministic` | `ai` | `human` | `file`. A row uploaded as a
-  spreadsheet is a mapping with `source='file'` and no review needed.
-- Materialised as a product table via `tableCatalog.publishProductTable`, so it
-  becomes an ordinary DuckDB view and every downstream surface — Ask AI,
-  dashboards, notebooks — gets it for free. **No new query machinery.**
-- Reviewed through the existing `approval_status` idiom, but the copy is business
-  language: *"Is `Van Damme BVBA` (Exact) the same customer as `Van Damme B.V.B.A.`
-  (webshop)?"* → Yes / No / Not sure. Never "entity resolution", never "fuzzy
-  match threshold".
+Sources **map into** it. They do not define it.
 
-### 3.2 Human decisions must survive a rebuild — and this is the third time
+Why this changes everything downstream:
 
-Migration 70 already solved exactly this problem for semantic descriptions:
-`edited_by_user` / `confirmed_by_user`, snapshotted before the profiler wipe and
-merged back after. A mapping has the identical failure mode — a re-sync
-re-derives candidates and silently discards a human's "no, those are different
-companies". **Reuse that mechanism rather than inventing a second one**; if it is
-needed a third time it should become a shared facility, not a third copy.
+- **Cross-system stops being a feature.** Two systems that both map into `Party`
+  are joined by construction. There is no "cross-system join" to build, because
+  there is no seam.
+- **A new connector becomes a mapping job, not a design job.** Connector #7 does
+  not need to know anything about connectors #1–6. Onboarding cost per connector
+  drops by an order of magnitude, which is what turns connector breadth from a
+  strategic bet into a routine activity.
+- **AI's role narrows from designer to mapper of the remainder** — and narrow AI
+  is reliable AI. The star-schema designer is the most expensive, slowest and
+  least predictable call in the platform; mapping a known source into a known
+  model is a fraction of the tokens and far easier to verify.
+- **Metrics, dashboards and questions outlive the source system.** An SMB
+  migrating from Exact Online to Odoo keeps every dashboard. Power BI cannot
+  offer that, because a Power BI model is built against a specific source. This
+  is both a retention property and a genuinely new sales argument: *your
+  reporting survives your ERP*.
+- **Multi-entity, consolidation and benchmarking become expressible at all** —
+  each needs a shared vocabulary across tenants, which a per-tenant AI-designed
+  schema can never provide.
 
-### 3.3 Measure before you infer — the FK lesson applies verbatim
+**The known failure mode, and the escape.** Canonical models are where data
+platforms go to die. They die by trying to be universal and complete — the MDM
+projects of the 2000s. The escape is three rules:
 
-On 2026-08-03 relationship detection was found to be *inventing* foreign keys —
-value-overlap agreement mistaken for evidence, measured only once it hit
-production data. Entity matching is the same class of problem with a worse
-failure mode: a wrong match silently merges two customers' revenue.
+1. **Small and opinionated.** Not "a model of all business". A model of an EU SMB
+   doing commerce and accounting. Ten entities, not two hundred.
+2. **Spine, not cage.** Anything a source has that doesn't map still lands as a
+   source-specific table, queryable exactly as today. The canonical model adds a
+   reconciled centre; it never removes reach.
+3. **Versioned like code**, shipped with the product, extended by Clarion rather
+   than by each tenant.
 
-So the order is non-negotiable:
+### 2.2 An identity layer that is a real asset
 
-1. Ship **deterministic** matching only (normalised VAT, then email, then IBAN,
-   then exact normalised name).
-2. **Measure the residual** — how many customers remain unmatched, on real tenant
-   data, via a read-only audit control in the `.ops/` idiom (see
-   `.ops/relationship-audit`).
-3. Only then decide whether AI-proposed fuzzy matching earns its false positives.
+Cross-system joining is really an identity question: *is this the same customer?*
+It should be answered once, permanently, and centrally — not per join, per
+dashboard, per query.
 
-Do not skip to step 3 because it demos better.
+Clarion should own a **party registry**: a stable, tenant-owned identity for every
+customer, supplier, product, employee and legal entity, with a crosswalk to every
+system's own key.
 
----
+The resolution ladder, strongest rung first:
 
-## 4. Theme 1 — Cross-system questions
+1. **Externally verified identity** — VAT number validated against VIES, company
+   number against the national register (KBO/BCE in Belgium, KVK in NL). The
+   result is not "two strings that look alike"; it is *a real legal entity*.
+2. **Strong internal keys** — email, IBAN, GTIN/EAN for products.
+3. **Normalised name + address.**
+4. **AI-proposed candidates** — only for the residual, only after the residual has
+   been measured.
+5. **Human decision** — beats everything above it, permanently, and survives every
+   rebuild.
 
-### 4.1 The unwelcome part first
+Two things follow that are bigger than the joining itself:
 
-Clarion has **two connectors, and they are both ERPs.** Almost no SMB runs Exact
-Online *and* Odoo. Building sophisticated cross-system machinery now would be
-building a bridge between two islands nobody stands on simultaneously.
+- **Enrichment comes free.** Once a customer is a verified legal entity you also
+  have its sector (NACE code), size band, incorporation date, and corporate
+  relationships. That powers segmentation, credit risk signals, and the
+  benchmarking in §2.5 — none of which the SMB's own systems can produce.
+- **It compounds.** The identity graph gets better every month the customer uses
+  Clarion, and it is not portable to a competitor. This is a stronger moat than
+  semantic descriptions, which is where the platform has been putting its
+  differentiation effort.
 
-Cross-system value is gated on **connector breadth**, not on join machinery. The
-realistic second systems for a Belgian SMB, roughly in order of how often they
-create a question accounting alone cannot answer:
+This is also regional knowledge, which is precisely the kind of thing a global
+platform like Fabric will not do for the Benelux.
 
-1. **Spreadsheet** (budget, targets, mapping tables) — see §5. This is the
-   cheapest second system by an order of magnitude and it is already the source
-   of the single most-asked SMB question, *budget vs actual*.
-2. Webshop — Shopify / WooCommerce.
-3. CRM — Teamleader, HubSpot, Pipedrive.
-4. Payroll — SD Worx, Securex, Partena.
-5. Banking — CODA / PSD2.
+### 2.3 Excel as a first-class, bidirectional citizen
 
-**Recommendation: theme 1's first shipped instance should be theme 2.**
-Budget-vs-actual is a cross-system question. It proves the primitive, it needs no
-new API connector, and it is demoable to every prospect.
+Excel is not a legacy input to tolerate. **It is the SMB's actual analytics
+interface**, and the accountant will not leave it. The platform should meet that
+head-on in four ways, not one:
 
-### 4.2 What to build (in order)
+1. **Files in.** Budget, targets, price lists, opening balances, manual
+   reclassifications, mapping tables. Uploaded *and* linked (SharePoint /
+   OneDrive / Google Sheets) so they refresh on a schedule. A linked budget file
+   is the difference between an import and a source.
+2. **Managed grids in-product.** For data that is *born* manual and has no file —
+   a budget, a target, a GL→reporting-line mapping — the answer is not "go make a
+   spreadsheet". It is an editable, Excel-paste-friendly grid inside Clarion,
+   writing to the same store as uploaded files. Files are for what already exists;
+   grids are for what gets created.
+3. **Round trip with identity.** Every export carries stable keys, so when the
+   file comes back Clarion knows exactly what changed and what it refers to. This
+   is the mechanism that makes "send it to the accountant, get it back" actually
+   work rather than produce a second version of the truth.
+4. **Excel as a client.** A live-refreshing workbook / add-in is realistically the
+   highest-adoption "dashboard" an SMB accountant will ever use. Analyze-in-Excel
+   is one of Power BI's most-used features for exactly this reason.
 
-**(a) Un-scope the query layer from `connectionId`.** Prerequisite for themes 1
-and 3, and the largest single piece of work in this document.
+The strategic point: every competitor treats Excel as the thing they are replacing.
+The SMB does not want it replaced. **Clarion should be the product that makes the
+numbers in Excel trustworthy and refreshable**, rather than the product that asks
+people to stop using it.
 
-- `ConnectorFactory.createProductConnector` gains a tenant/topic-scoped sibling
-  of `listProductTablesByConnection`.
-- Name collisions are already handled: `tableSchemas` maps table → product name
-  and registers views schema-qualified (`ConnectorFactory.ts:169–177`). When the
-  scope spans connections, schema-qualification must become **mandatory** rather
-  than best-effort, or two `dim_account`s will collide.
-- `routes/query.ts` takes a topic/scope rather than a `connectionId`. Note this
-  is already where the product is heading: the front door became
-  `/topics/[productId]` on 2026-08-06, but the *question* path is still a
-  connection. **The front door and the question path disagree today**, and this
-  work resolves that — it is not a new direction.
+### 2.4 Entity as an axis of the model from day one
 
-**(b) Conformed customer via the Mapping.** A `dim_customer` built as a UNION of
-per-system customer dimensions plus the mapping, assigning one stable
-`customer_key`. Facts resolve through it. Mechanically this is an ordinary
-transformation over an ordinary product dependency — §2.2 says the plumbing
-already exists.
+Not a consolidation feature — an axis. `Entity` sits on the canonical model
+whether the customer has one company or twelve.
 
-**(c) Retire, do not extend, the ATTACH path.** `routes/query.ts:640–780` and the
-cross-source prompt in `nlToSqlPrompt.ts:384`. Leaving it in place is acceptable;
-building on it is not.
+- A single-entity SMB has one member and never sees a control. Zero cost, zero
+  complexity.
+- Growing into a group is a settings change, not a re-modelling exercise.
+- Intercompany elimination becomes a rule over the axis rather than bespoke logic.
+- Entity-scoped permissions come free — the bookkeeper for one company sees only
+  that company.
 
-### 4.3 Where the user meets it
+Bolting this on later is what forces schema migrations and re-modelling, which is
+why it belongs in the model from the start even though most early customers won't
+use it.
 
-Inside a **topic**, not on a new page. "Customers" is a topic that happens to
-draw on Exact and the webshop; the topic layer keeps its promise of no SQL, no
-counts, no warehouse vocabulary. The only new business-language surface is the
-mapping review, which belongs in Manage mode alongside the existing review queue.
+**And the broader read: "multi-entity" is not only legal entities.** It is also
+branches, franchises — and, most importantly, **an accounting firm's client
+portfolio.** A Belgian accountant with 80 SMB clients is the highest-leverage buyer
+this product has, and to them "multi-entity" means "80 businesses I need to see
+across, with one login and a consistent P&L structure".
 
----
+That reframes the theme from a feature into a **channel strategy**. Accountants are
+the distribution channel for SMB financial software in the Benelux; they decide
+what their clients run. Serving them needs a tier *above* the tenant — portfolio
+views, cross-client benchmarking, a shared reporting structure applied to every
+client, per-client billing, optional white-labelling. **That tier has to be
+designed into the permission model early**; retrofitting a level above the tenant
+is painful and touches every RLS policy in the database.
 
-## 5. Theme 2 — Spreadsheets as a first-class source
+### 2.5 A metric library, and then benchmarking
 
-**This is the highest value-to-effort item in the document and it should be built
-first.** It has no dependencies, it is immediately demoable, and it is the
-vehicle that themes 1 and 3 need for user-supplied mapping tables.
+If the model is canonical, metric definitions can be **shipped by Clarion** rather
+than derived per tenant: net revenue, gross margin, DSO, DPO, working capital,
+runway, customer concentration — each with the accounting-correct definition, in
+Dutch, French and English.
 
-### 5.1 The key decision: it is a connector, not a special case
+- Day-one value with no blank slate to fill in.
+- Consistency: two customers get the same definition of gross margin, which today
+  they demonstrably would not.
+- It is a content asset that improves without engineering.
 
-Implement `packages/connectors/src/file/` as an ordinary `SourceConnector`. Then
-profiling, the docs channel, the bus matrix, star-schema templates, quality,
-lineage, scheduling and the whole review queue work **unchanged**. Any design
-that makes uploads a parallel path re-implements six subsystems.
+And then the thing only a multi-tenant platform with a canonical model can do:
+**anonymous peer benchmarking.** *"Your DSO is 47 days; the median for wholesale
+businesses your size is 38."* SMB owners want this badly and cannot get it
+anywhere — their accountant has the data but not the tooling, and Fabric
+structurally cannot do it because every customer's model is their own.
 
-- `listEntities` → the sheets/tables found in the file.
-- `sync` → read the file, write Parquet through the existing `ParquetWriter` /
-  `BlobSasWarehouseWriter` with an **explicit `columns` schema** (the typed-write
-  path added for Exact Online on 2026-07-22 — an uploaded sheet is precisely the
-  case where types must not be guessed per-sync).
-- `describeEntities` → returns the user's own column labels with
-  `provenance: 'curated'`. Per the profiler's trusted rung those land
-  `approval_status='approved'` and **skip the review queue entirely**. An
-  uploaded sheet arrives fully documented, because the person who uploaded it
-  just told us what the columns mean. This is strictly better than what any API
-  connector can offer.
+It requires the canonical model (comparable measures), the identity layer (sector
+and size from the company register), and consent. It is plausibly the strongest
+long-run differentiator in this entire document, and it is only reachable *through*
+§2.1 and §2.2 — which is a good reason to sequence them first.
 
-### 5.2 The real work is the messy file, and it is where AI earns its cost
+### 2.6 Reconciliation as a shipped feature
 
-Users do not upload tidy tables. They upload a title row, a blank row, merged
-cells, three sub-tables on one sheet, a totals row at the bottom, and twelve
-month columns across the top. Handling this is the difference between "first-class
-source" and "CSV import".
+Cross-system joins and consolidation both introduce a failure mode the SMB cannot
+detect: **numbers that look plausible and are wrong.** A double-counted
+intercompany invoice, a totals row imported from a spreadsheet, a customer merged
+with the wrong customer.
 
-An AI **shape pass** at upload proposes, and the user confirms in a preview grid:
+So the platform should prove itself, continuously and visibly:
 
-- where the header row is and where the data range ends;
-- which rows are totals/subtotals to exclude (a totals row silently double-counts
-  everything — this is the highest-severity failure mode of the whole feature);
-- whether the layout is wide/pivoted and should be unpivoted to long form
-  (`Jan|Feb|Mar…` → `month | amount`) — the single most common shape for a budget
-  file, and the one users cannot fix themselves;
-- column types, and the business key.
+- warehouse revenue reconciles to the source system's own revenue report;
+- mapped GL accounts sum to the trial balance;
+- receivables reconcile to the aged-debtor listing;
+- intercompany balances net to zero across the group;
+- a flagged, quantified answer when they do not.
 
-Output is a plain-language summary plus at most two or three questions. Same
-philosophy as the profiling ladder: propose confidently, ask rarely, never show a
-setting.
-
-### 5.3 Refresh — the thing that separates a source from an import
-
-Three modes, in priority order:
-
-1. **Re-upload** — same connection, new file, merged on the business key. The
-   existing incremental merge path handles it. Schema drift is already supported
-   (`schema_mode='merge'`); a new column should surface as a plain-language
-   prompt, *"Your file has a new column* Region*. Add it?"*, not a silent widen.
-2. **Linked file — OneDrive / SharePoint.** The SMB being courted here is already
-   a Microsoft shop; the budget lives in SharePoint and is edited weekly.
-   A linked file that refreshes on a schedule is what makes this a *source*.
-   This is also directly competitive: it is the same file Power BI would connect
-   to, without the Power Query.
-3. Google Sheets — same mechanism, lower priority for this market.
-
-### 5.4 Do not loosen the SQL guard
-
-`sqlGuard.assertNoExternalAccess` deliberately refuses `read_csv` / `read_xlsx` /
-path literals in user and AI SQL — that is the control closing the cross-tenant
-blob-read vector. **The file connector reads the file in the sync path (connector
-→ writer), never through the guarded query path.** Anyone who "fixes" spreadsheet
-support by relaxing the guard reopens the vector this platform spent a security
-sprint closing. Raw uploads get their own tenant-scoped prefix under the existing
-per-tenant container discipline (`warehouseContainer(tenantId)`).
-
-### 5.5 What SMBs will actually upload
-
-In descending order of value:
-
-- **Budget / forecast** — makes every existing dashboard twice as useful overnight.
-- **GL account → management P&L line mapping.** Every SMB accountant already
-  maintains this in Excel. Supporting it natively is a sleeper wedge: it is the
-  bridge between the statutory books and the way the owner thinks about the
-  business, and in Power BI it is a merge query nobody maintains.
-- Sales targets per rep/region; cost prices; commission rates; headcount plan.
-
-Note the second item is a **Mapping with `source='file'`** — theme 2 delivers
-theme 3's chart-of-accounts alignment as a side effect.
+An SMB will not audit this and should not have to. **A warehouse that reconciles
+itself back to the source systems is worth paying for. One that does not is a
+liability**, and it is the single most credible answer to "why not just use Power
+BI" — because Power BI will happily show a wrong consolidated number forever, and
+never mention it.
 
 ---
 
-## 6. Theme 3 — Multi-entity consolidation
+## 3. What the three themes become
 
-### 6.1 Two shapes, and conflating them is the classic mistake
+Once §2 exists, the themes stop being projects:
 
-**(a) Several entities, same system** — three Exact Online divisions, or one Odoo
-with three companies. The Belgian pattern: operating company + holding + a
-property company. Schemas are identical.
+| Theme | What it becomes |
+|---|---|
+| **Cross-system questions** | A consequence of the canonical model + identity layer. There is no join to build. The work moves to connector breadth, which is now cheap. |
+| **Spreadsheets** | One more mapper into the model — plus grids, round-trip and Excel-as-client, which are what make it first-class rather than an import. |
+| **Multi-entity** | An axis that was always there. Consolidation is a rule set over it; the accountant portfolio is a tier above it. |
 
-**(b) Several entities, different systems** — an acquisition still on its own ERP.
-
-(a) is common and cheap. (b) is rarer and is just theme 1 with extra steps. Build
-(a); let (b) fall out of the theme 1 work.
-
-### 6.2 Design for (a): the group is a first-class object, the entity is a dimension
-
-Keep **one connection per division.** It isolates OAuth, rate limits and sync
-failures, and Exact Online's config schema is explicitly built that way
-(`exactonline/schema.ts:9`). Do not make `division` an array — that trades a
-clean failure boundary for a saved row.
-
-Add a tenant-level **Group**: an ordered list of member connections, each with its
-legal-entity metadata (display name, VAT number, currency, ownership %).
-
-Then build group products as **ordinary dependent products**:
-
-- each entity keeps its per-entity products exactly as today;
-- a group product declares `data_product_dependencies` on the member products and
-  `UNION ALL`s their facts, stamping `entity_id`;
-- `dim_entity` comes from the Group definition.
-
-The only code change of substance: `loadDependencyDimensions`
-(`transformationRunner.ts:203`) filters upstream tables to
-`tableRole === 'dimension'` (line 224). Group products need upstream **facts**
-too. That is a small, well-scoped change to an existing function — not new
-infrastructure. This is the cheapest correct path by a wide margin, and it is
-available precisely because §2.2 is true.
-
-### 6.3 Chart-of-accounts alignment is the actual content
-
-Entities rarely share an identical chart of accounts, and when they do somebody
-has already diverged one account code. The mapping from each entity's GL account
-to a group reporting line is a **Mapping** — proposed deterministically where
-codes match, AI-proposed where they nearly match, reviewed by the accountant in
-business language, and materialised as a joinable table. Or simply uploaded as a
-spreadsheet (§5.5), which is how it exists today in every one of these businesses.
-
-### 6.4 Intercompany — take the 80%, name the boundary
-
-Real statutory consolidation means eliminations, investment-in-subsidiary,
-minority interests, and an audit trail an auditor will accept. **Do not build
-that.** It is an accounting-grade rabbit hole and it is not what the buyer is
-asking for.
-
-What they are asking for is *management* consolidation: group revenue, group
-margin, group cash, without the inflation caused by companies invoicing each
-other. That is reachable cheaply:
-
-- match each transaction's counterparty VAT number against the member entities'
-  own VAT numbers — this falls straight out of the Group definition and the
-  normaliser already needed in §3.3;
-- flag those rows as intercompany;
-- offer one toggle on the topic: **"Exclude internal invoices between our own
-  companies."**
-
-That is 80% of the value at roughly 10% of the cost, and it is honest about what
-it is. The marketing word "consolidation" must not be allowed to smuggle in the
-statutory meaning — if a customer needs auditor-grade consolidation, Clarion
-should say no clearly.
-
-### 6.5 Currency: out of scope for v1, deliberately
-
-Multi-currency consolidation needs a rate table (monthly average for P&L, closing
-for balance sheet) and a decision per measure about which to apply. Exact Online
-already gives division-currency amounts (`*DC`), which covers a single-currency
-group completely. Belgian SMB groups are overwhelmingly EUR-only. **Defer until a
-real multi-currency customer exists**, then implement the rate table as a
-spreadsheet source (§5) rather than a feed.
-
-### 6.6 Where the user meets it
-
-The topic page gains one control: **"Company: All / BVBA X / Holding Y"**. That is
-business language and fits the topic layer's constraints as they stand. Everything
-else — group definition, CoA mapping, intercompany rules — lives in Manage mode.
+That is the test of whether the architecture is right: the named features should
+become boring.
 
 ---
 
-## 7. Sequencing
+## 4. How the build direction changes
 
-| # | Work | Why here | Rough size |
-|---|---|---|---|
-| 0 | **Spreadsheet connector** (§5.1–5.4), upload + re-upload only | No dependencies. Highest value/effort. Demoable. Produces the vehicle for every mapping table. | L |
-| 1 | **Mapping primitive** (§3), deterministic matching only, `source='file'` and `source='deterministic'` | Solves the hard part of all three themes once. | M–L |
-| 2 | **Groups + group products** (§6.2), single currency, no intercompany | Reuses the dependency mechanism; smallest change per unit of customer value. | M |
-| 3 | **Un-scope the query layer** from `connectionId` (§4.2a) | Unblocks true cross-system questions; also resolves the topic/connection disagreement. | L |
-| 4 | **Intercompany flag + exclude toggle** (§6.4) | Falls out of 1 + 2 almost for free. | S |
-| 5 | **Linked files** — SharePoint/OneDrive (§5.3) | Turns the upload into a source; directly competitive with Power BI's most common connection. | M |
-| 6 | **Conformed customer across systems** (§4.2b) | Only worth it once a real second non-ERP connector exists. | M |
-| 7 | Measure match residual, then decide on AI fuzzy matching (§3.3) | Evidence before inference. | S then ? |
+Today: **source → profile → AI designs a model → products.**
+Target: **model → sources map into it → products are generated.**
 
-Items 0–2 are a coherent release with a one-sentence pitch: *"Upload your budget
-and your account mapping, group your companies, and ask questions across all of
-it."* That sentence sells against Fabric. "We have a lakehouse" does not.
+The honest objection is that this looks like a rewrite of a live platform. It is
+not, and the reason is that **the convergence has already started by accident**:
 
----
+- The connector star-schema templates are already per-connector deterministic
+  models — the muscle for "declare a model, instantiate it" is built, tested and
+  shipping. The generalisation is to point templates at a *shared* target instead
+  of a per-connector one.
+- Both templates independently arrived at the same conformed shapes: a customer
+  dimension carrying `vat_number` under the same column name in both. Two
+  connectors converged on the same model without being asked to.
 
-## 8. What NOT to do
+So the move is: **unify deliberately what is already converging.** Extract the
+common target from the two existing templates, make it the canonical model, and
+have each connector declare its mapping into it. AI keeps the remainder. Existing
+per-connector products keep working throughout; the canonical layer is added
+alongside, not swapped in.
 
-- **Do not extend the SQLite `ATTACH` cross-source path** (`routes/query.ts:640–780`,
-  `nlToSqlPrompt.ts:384`). It reads `config.filepath`; no API connector has one.
-- **Do not build statutory consolidation** (eliminations, minority interests).
-  Say no to it explicitly and early.
-- **Do not build FX** before a multi-currency customer exists.
-- **Do not make cross-system or consolidation a new top-level surface.** Both
-  belong inside topics. The 2026-08-06 topic-first work is the right IA; adding
-  a "Consolidation" nav item would undo it.
-- **Do not relax `sqlGuard` for spreadsheets** (§5.4).
-- **Do not ship AI fuzzy entity matching before measuring the deterministic
-  residual** (§3.3). The FK-detection incident is the precedent and it cost a
-  production measurement to discover.
-- **Do not implement uploads as a bespoke path outside the connector framework**
-  (§5.1). It would re-implement profiling, docs, quality, scheduling and lineage.
+That is an incremental path with a real destination, which is the only kind worth
+committing to.
 
 ---
 
-## 9. Decisions needed from the owner
+## 5. Sequencing
 
-1. **Sequencing** — is the spreadsheet-first ordering in §7 accepted, given it
-   defers the marquee "cross-system" story behind a file-upload feature?
-2. **Connector breadth** — which second non-ERP system is real for the target
-   customer (webshop / CRM / payroll / banking)? §4.1 argues cross-system value
-   is gated on this, and the answer changes what item 6 is worth.
-3. **Consolidation scope** — confirm that *management* consolidation (§6.4) is
-   the product, and that statutory consolidation is a documented "no".
-4. **Linked files** — is SharePoint/OneDrive support in the first release or the
-   second? It is the difference between "import" and "source" in the buyer's mind.
-5. **Mapping as a named product concept** — does "Mapping" get a user-visible
-   name and a place in Manage mode, or does it stay an implementation detail
-   behind per-feature review screens? §3 argues strongly for the former.
+| # | Work | Why here |
+|---|---|---|
+| 0 | **Canonical model spine + entity axis.** Extract from the two existing templates; ship as a versioned package; connectors declare mappings into it. | Everything else is cheaper after it and more expensive before it. The entity axis must land here or it is a migration later. |
+| 1 | **Identity layer.** Party registry + crosswalk; deterministic and externally-verified rungs only; human decisions sticky and rebuild-proof. | Every connector and every theme needs it. Compounding asset. |
+| 2 | **Spreadsheet layer.** Files in (upload + linked), managed grids, round-trip keys. | The cheapest second system, and the vehicle for every mapping table the other themes need. Budget vs actual is itself a cross-system question. |
+| 3 | **Metric library** shipped with the model, trilingual. | Day-one value; no engineering per tenant; prerequisite for benchmarking. |
+| 4 | **Groups + management consolidation** over the entity axis, with intercompany flagging. | Falls out of 0 + 1 cheaply once the axis exists. |
+| 5 | **Reconciliation checks** as a visible, shipped feature. | Must land with consolidation, not after — this is where wrong numbers first become invisible. |
+| 6 | **Connector breadth**, now a routine mapping exercise: webshop, CRM, payroll, banking. | This is when cross-system questions become real for actual customers. |
+| 7 | **Accountant portfolio tier** (design the permission model early, build when a firm signs). | Channel strategy; touches RLS everywhere, so decide the shape before 4. |
+| 8 | **Benchmarking**, opt-in, k-anonymous, sector- and size-keyed. | Needs 0–3 plus tenant scale. Strongest long-run moat. |
+
+The pitch after 0–4 is one sentence: *"Connect your systems and your
+spreadsheets, and Clarion gives you one true picture of your whole business —
+across companies, and it survives you changing ERP."* That sells against Fabric.
+"We have a lakehouse too" does not.
+
+---
+
+## 6. What kills this, and the mitigations
+
+- **The canonical model tries to be universal.** The classic death. Mitigate with
+  §2.1's three rules: small, opinionated, passthrough-always-available. If it
+  needs a committee, it is already too big.
+- **Identity resolution merges two real customers.** A wrong match silently merges
+  revenue and no one notices. Mitigate: verified-external and deterministic rungs
+  ship first; the AI rung ships only after the residual is *measured* on real
+  tenant data. The 2026-08-03 invented-foreign-key incident is the precedent for
+  what inference does when nobody measures it.
+- **Human decisions get overwritten by a rebuild.** Already a known failure class
+  in this codebase, already solved once for semantic edits. The mapping and
+  identity layers need the same snapshot-and-merge treatment, and it should become
+  a shared facility rather than a third copy.
+- **Benchmarking gets built before consent and anonymity are designed.** Opt-in,
+  aggregate-only, minimum cohort sizes, never raw values. Getting this wrong once
+  is unrecoverable reputationally in the accountant channel.
+- **The accountant tier is retrofitted.** Adding a level above the tenant after
+  the fact touches every isolation policy in the database. Design the shape now
+  even if it ships late.
+- **Rebuild framing.** If §4 is communicated as "we're rewriting the modelling
+  layer", it will not survive contact with a roadmap. It is an extraction of what
+  two connectors already agree on, added alongside what exists.
+
+---
+
+## 7. Appendix — the starting position
+
+Where today's code sits relative to §2. Useful for estimating, not for scoping
+ambition.
+
+**Everything is scoped to `connection_id`** — design (`busMatrixOrchestrator.ts:83`),
+build (`transformationRunner.ts:426`), query (`ConnectorFactory.ts:165` →
+`listProductTablesByConnection`), Ask AI (`routes/query.ts:247`). A
+cross-connection question cannot currently be expressed at the product layer. Note
+the front door became a *topic* on 2026-08-06 while the question path stayed a
+*connection* — the canonical model resolves that disagreement rather than papering
+over it.
+
+**The cross-connection plumbing already works.** `loadDependencyDimensions`
+(`transformationRunner.ts:203`) resolves upstream dimensions by
+`dependent_product_id` alone and never filters by connection;
+`publishStubFromUpstream` writes the upstream URI onto a row owned by the
+*dependent* product, making it visible in that connection's DuckDB session. Pipes
+exist; keys and scope do not.
+
+**`vat_number` is already conformed across both templates**
+(`exactonline/starSchemaTemplate.ts:94` ← `Accounts.VATNumber`;
+`odoo/starSchemaTemplate.ts:97` ← `res_partner.vat`). This is the accidental
+convergence §4 is built on, and it means the identity layer's strongest rung works
+on day one.
+
+**The `cross_view_relationships` + `ATTACH` path is SQLite-only legacy**
+(`routes/query.ts:706` reads `cfg.filepath`; `nlToSqlPrompt.ts:384`). It cannot
+work for any API connector. Retire it; do not build on it.
+
+**Spreadsheets: nothing.** `utils/xlsxBuilder.ts` writes XLSX; nothing reads any
+tabular file. Open since the 2026-07-15 assessment.
+
+**Multi-entity: nothing.** Exact Online is one division per connection by design
+(`exactonline/schema.ts:9`); Odoo's `dim_company` is a dimension, not a
+consolidation. No FX, no intercompany, no group concept.
+
+**Two connectors, both ERPs.** Under the current source-first architecture each
+new connector is an expensive design problem, which is exactly the constraint
+§2.1 removes.
+
+**Security note for the spreadsheet work:** `sqlGuard.assertNoExternalAccess`
+deliberately refuses `read_csv` / `read_xlsx` / path literals in user and AI SQL.
+Files must be read in the sync path, never by relaxing that guard — it closes the
+cross-tenant blob-read vector.
+
+---
+
+## 8. Decisions needed from the owner
+
+1. **The direction flip (§2.1, §4).** Is Clarion a platform that models each
+   customer's sources, or one that ships a model of an SMB that sources map into?
+   Everything else in this document follows from that answer.
+2. **The accountant channel (§2.4).** Is the buyer the SMB, the accounting firm,
+   or the firm on behalf of the SMB? It changes the permission model, the pricing
+   model, and whether a portfolio tier is a v1 concern.
+3. **Benchmarking (§2.5).** Worth building toward as a differentiator, or out of
+   scope on privacy grounds? It shapes how much the canonical model needs to be
+   comparable across tenants.
+4. **Excel ambition (§2.3).** Files-in only, or the full round trip including
+   grids and Excel-as-client? The latter is a materially different product
+   surface and arguably the highest-adoption one.
+5. **Reconciliation (§2.6).** Shipped feature and marketing claim, or internal
+   quality check? Making it visible is a commitment to being caught when wrong.

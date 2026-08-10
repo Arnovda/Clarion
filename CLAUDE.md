@@ -33,12 +33,49 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
 
-**WHY AN SMB PAYS FOR A WAREHOUSE — PLAN OF RECORD (2026-08-10).** New
-`docs/backlog/warehouse-value-for-smb.md`: how Clarion should deliver the three
-jobs an SMB actually buys a warehouse for — cross-system questions, spreadsheets
-as a first-class source, multi-entity consolidation — benchmarked against
-Fabric/Power BI. **Proposal status, awaiting owner sign-off (§9).** Grounded in a
-read of the code, and four measured facts change the plan:
+**WHAT CLARION SHOULD BECOME — PLAN OF RECORD (2026-08-10).** New
+`docs/backlog/warehouse-value-for-smb.md`: the three jobs an SMB actually buys a
+warehouse for — cross-system questions, spreadsheets as a first-class source,
+multi-entity consolidation — benchmarked against Fabric/Power BI. **Proposal
+status, awaiting owner sign-off (§8).** The doc is a TARGET-STATE argument; the
+current code is an appendix (§7), deliberately, because the first draft reasoned
+from today's constraints and produced a roadmap for the platform Clarion is
+rather than the one it should be.
+**The reframe:** the three themes are one problem — an SMB's business never lives
+in one system, so the warehouse's job is to be the single reconciled picture of
+the whole business that stays true as systems come and go. In the Microsoft stack
+those reconciliation decisions are Power Query code a consultant wrote; in
+Clarion they should be **content** a business user owns.
+**Six layers Clarion should have** (§2): (1) a **canonical SMB business model
+that exists before any source** — ~10 entities, sources map INTO it rather than
+defining it; this inverts today's source→profile→AI-designs-a-model direction and
+makes cross-system a non-feature, turns each new connector into a cheap mapping
+job, narrows AI from designer to mapper, and lets dashboards survive an ERP
+migration; (2) an **identity layer** — a party registry with externally-VERIFIED
+rungs (VIES VAT, KBO/BCE) above deterministic keys above AI, compounding into a
+moat and yielding sector/size enrichment for free; (3) **Excel bidirectionally** —
+linked files, in-product managed grids, round-trip keys, and Excel-as-a-client,
+on the argument that Excel is the SMB accountant's real analytics UI and should be
+made trustworthy rather than replaced; (4) **entity as an axis from day one**, not
+a consolidation feature — and the broader read that the accounting firm's **client
+portfolio** is the same axis, making this a CHANNEL strategy needing a tier above
+the tenant designed into the permission model early; (5) a **shipped metric
+library** and then **anonymous peer benchmarking**, which only a multi-tenant
+platform with a canonical model can do and Fabric structurally cannot;
+(6) **reconciliation as a shipped, visible feature** — a warehouse that proves
+itself against the source system's own totals is worth paying for; one that does
+not is a liability.
+**Why this is not a rewrite (§4):** the connector star-schema templates are
+already per-connector deterministic models, and both independently converged on a
+customer dimension carrying `vat_number` under the same name. The move is to
+unify deliberately what is already converging — extract the shared target, add it
+alongside, keep existing products working.
+**Sequencing (§5):** model spine + entity axis → identity → spreadsheets → metric
+library → groups/consolidation → reconciliation → connector breadth → accountant
+portfolio → benchmarking. **§6 lists what kills this** (universal-model creep,
+identity false-merges, human decisions lost to a rebuild, benchmarking before
+consent, retrofitting the accountant tier).
+Four measured facts from the code, kept because they still bind:
 - **Everything is scoped to `connection_id`** end to end (design
   `busMatrixOrchestrator.ts:83`, build `transformationRunner.ts:426`, query
   `ConnectorFactory.ts:165` → `listProductTablesByConnection`, Ask AI
