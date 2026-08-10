@@ -2,8 +2,9 @@
 
 > Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
 > **Start at §5.6** — it scales the proposal down to the size actually worth
-> committing to (five conformed dimensions, not a canonical model). §2.1 describes
-> the fuller destination, which is a later, evidence-based decision.
+> committing to (six conformed dimensions, measured from the two existing
+> templates, not a canonical model). §2.1 describes the fuller destination, which
+> is a later, evidence-based decision.
 > §1–§6 describe the target state and are the substance of this document.
 > §5 answers the main architectural alternative. §8 records where today's code
 > stands relative to all of it — a starting position, not a constraint.
@@ -711,10 +712,64 @@ AI-derived for the periphery.**
 #### The smaller bet: conformed dimensions, not a canonical model
 
 Given (a)–(c), the first commitment should be much smaller than §2.1 implies:
+conformed **dimensions** only, with **facts left entirely alone** to the existing
+per-connector templates and the AI.
 
-> Ship **five conformed dimensions** — Party, Product, Account, Period, Entity —
-> with agreed keys and definitions. Leave **facts entirely alone**, to the existing
-> per-connector templates and the AI.
+**And the starter set should be measured, not argued.** Both worries — missing a
+dimension that is genuinely common, and squeezing in one that isn't — are the same
+failure: guessing the boundary. Two hand-authored templates already exist, written
+independently by people who knew the sources. Where they *agree* is evidence.
+
+Diffing them (`exactonline/starSchemaTemplate.ts` vs `odoo/starSchemaTemplate.ts`):
+
+| Concept | Exact Online | Odoo | Verdict |
+|---|---|---|---|
+| Party | `dim_account` | `dim_partner` | **both — conform** |
+| Product | `dim_item` | `dim_product` | **both — conform** |
+| Product group | `dim_item_group` | `dim_product_category` | **both — conform** |
+| GL account | `dim_gl_account` | `dim_account` | **both — conform** |
+| Journal | `dim_journal` | `dim_journal` | **both — conform** |
+| Payment terms | `dim_payment_condition` | `dim_payment_term` | **both — conform** |
+| Legal entity | — (one division per connection) | `dim_company` | one — but a known requirement (§2.4) |
+| Currency | — | `dim_currency` | one — not yet evidence |
+| Unit of measure | — | `dim_uom` | one — not yet evidence |
+| Date | infrastructure (`dim_date`, always allowed) | same | already conformed |
+
+So the evidenced set is **six**, not the five guessed earlier — and the guess was
+wrong in *both* directions: it named Period (already handled as infrastructure)
+and Entity (a design decision, not convergence), while missing Product group,
+Journal and Payment terms, which both connectors independently have. That is the
+owner's worry (a) materialising inside a single paragraph, and it is the argument
+for measuring rather than designing.
+
+**A concrete bug this also surfaces:** `dim_account` means *party* in the Exact
+template and *GL account* in the Odoo one. The same table name, two different
+concepts. The moment a query spans both connectors those collide — which is an
+independent, immediate reason to conform names.
+
+**The inclusion rule, so the boundary is not relitigated every time:** a dimension
+enters the conformed set only when (i) **two or more connectors independently have
+it**, (ii) it has a stable identity attribute, and (iii) people filter, group or
+match on it across systems. Everything else waits. That rule prevents squeezing;
+the demand signal below prevents missing.
+
+**Make "not conformed" a visible, measured state — not a defect.** When a source
+has a dimension outside the set, it still syncs, still lands, still answers
+questions, and Clarion says so plainly: *"Exact also has Cost centres — we don't
+share these across systems yet."* Then **count how often that line appears across
+tenants**. That is a demand signal telling you exactly what to conform next, from
+evidence rather than argument. After the first release you never have to guess
+again.
+
+**Make it reversible.** A conformed dimension that does not hold up is demoted
+back to per-connector. Designing for removal is what keeps the bet cheap.
+
+**Why facts still stay out, concretely.** Four of the six facts also converge by
+*name* — but not by *semantics*. Odoo's invoice-line fact needs
+`CASE WHEN move_type IN ('out_refund','in_refund') THEN -price_subtotal`, while the
+Exact template's own comment records that credit notes are natively negative "so
+unlike the Odoo template no sign-flip". Same concept, opposite handling. Names
+converging is not semantics converging, and facts are where that gap does damage.
 
 Why this is the right size:
 
@@ -741,7 +796,7 @@ later, evidence-based decision. If they do not, very little was spent.
 
 | # | Work | Why here |
 |---|---|---|
-| 0 | **Five conformed dimensions + entity axis** (§5.6) — Party, Product, Account, Period, Entity. Extracted from the two existing templates, shipped as a versioned package, connectors declare mappings into them. **Facts stay with the per-connector templates and the AI.** | Everything else is cheaper after it and more expensive before it, and the entity axis must land here or it becomes a migration. Deliberately *less* than the full model in §2.1 — dimensions are where sharing pays, facts are where rigidity hurts. Extend later on evidence. |
+| 0 | **Six measured conformed dimensions + entity axis** (§5.6) — Party, Product, Product group, GL account, Journal, Payment terms; entity added deliberately. Extracted from the two existing templates, shipped as a versioned package, connectors declare mappings into them. **Facts stay with the per-connector templates and the AI.** | Everything else is cheaper after it and more expensive before it, and the entity axis must land here or it becomes a migration. Deliberately *less* than the full model in §2.1 — dimensions are where sharing pays, facts are where rigidity hurts. Extend later on evidence. |
 | 1 | **Identity layer.** Party registry + crosswalk; deterministic and externally-verified rungs only; human decisions sticky and rebuild-proof. | Every connector and every theme needs it. Compounding asset. |
 | 2 | **Spreadsheet layer.** Files in (upload + linked), managed grids, round-trip keys. | The cheapest second system, and the vehicle for every mapping table the other themes need. Budget vs actual is itself a cross-system question. |
 | 3 | **Metric library** shipped with the model, trilingual. | Day-one value; no engineering per tenant; prerequisite for benchmarking. |

@@ -178,9 +178,29 @@ in Customer role" IS that intricacy, written down once instead of re-inferred pe
 tenant. **The real question is one axis: re-derived by AI per tenant, or written
 down once and shipped?** Answer = the `docs > curated > ai` ladder one level up:
 written down for the stable core, AI for the periphery.
-**THE SMALLER BET (what to actually commit to): ship FIVE CONFORMED DIMENSIONS —
-Party, Product, Account, Period, Entity — and leave FACTS ENTIRELY ALONE** to the
-per-connector templates and the AI. Facts are where rigidity hurts (grain,
+**THE SMALLER BET (what to actually commit to): ship CONFORMED DIMENSIONS ONLY
+and leave FACTS ENTIRELY ALONE** to the per-connector templates and the AI.
+**The starter set is MEASURED, not argued** — diffing the two hand-authored
+templates shows SIX concepts both connectors independently have: Party
+(`dim_account`↔`dim_partner`), Product (`dim_item`↔`dim_product`), Product group
+(`dim_item_group`↔`dim_product_category`), GL account
+(`dim_gl_account`↔`dim_account`), Journal (both `dim_journal`), Payment terms
+(`dim_payment_condition`↔`dim_payment_term`). Currency and UoM are Odoo-only (not
+yet evidence); `dim_date` is already platform infrastructure; Entity is a
+deliberate addition for the §2.4 requirement, not convergence. An earlier GUESS of
+"Party, Product, Account, Period, Entity" was wrong in BOTH directions — proof of
+why this is measured. **It also surfaced a real bug: `dim_account` means PARTY in
+the EO template and GL ACCOUNT in the Odoo one** — same name, two concepts, which
+collide the moment a query spans both. **Inclusion rule:** ≥2 connectors have it +
+stable identity + people filter/group/match on it across systems. **Missing
+dimensions are handled by making "not conformed" a VISIBLE, COUNTED state** ("Exact
+also has Cost centres — not shared across systems yet"); counting it across tenants
+is the demand signal for what to conform next, so the boundary is never guessed
+twice. **Reversible** — a dimension that doesn't hold up is demoted back to
+per-connector. **Why facts stay out, concretely:** 4 of 6 facts converge by NAME
+but not SEMANTICS — Odoo needs `CASE WHEN move_type IN ('out_refund','in_refund')
+THEN -price_subtotal` while the EO template's own comment says credit notes are
+natively negative "so unlike the Odoo template no sign-flip". Facts are where rigidity hurts (grain,
 additivity, vertical variation); dimensions are where sharing pays (join, match,
 filter, benchmark). Five artefacts, not a model of a business — small enough to
 write, version, and abandon. It is Kimball's own answer to this tension and
