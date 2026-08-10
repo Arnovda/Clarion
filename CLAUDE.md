@@ -33,7 +33,47 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
 
-**WHAT CLARION SHOULD BECOME — PLAN OF RECORD (2026-08-10).** New
+**PLAN OF RECORD IS §5.7 — DERIVE THE DIMS, STANDARDISE THE NAMES (2026-08-10).**
+The owner's landing position, and it supersedes both the canonical model (§2.1)
+and the measured conformed set (§5.6); both are kept in the doc because their
+reasoning is what produced §5.7. **Ship NO canonical model.** Let the first source
+DERIVE its dims and facts (existing connector template, or AI where there is
+none), but **standardise the dimension NAMES** to Kimball convention —
+`dim_customer`, `dim_product`, `dim_gl_account`. When a second source arrives, AI
+works out how it flows into the dims that ALREADY EXIST, using that source's
+relationships and definitions, user confirming. This is better than a shipped
+model: nothing to design up front, **unanticipated dims come free**
+(`dim_cost_centre` just exists), the model reflects what sources actually have,
+and AI is used for mapping-onto-a-known-target rather than schema design — the
+task it was measurably bad at. **Three additions make it work:**
+(1) **A thin attribute contract, not just a name** — a standard name with
+free-form contents is a promise the platform can't keep, because a shipped metric
+reading `dim_customer.country` works for the Exact-derived tenant and fails
+silently for the Shopify-derived one. Fix only the identity column
+(`customer_key`) + the match attributes (`vat_number`, `email`) — 3–5 columns per
+dim; everything else stays source-derived.
+(2) **A source-priority rule** — otherwise CONNECTION ORDER decides the model
+(Shopify-first vs Exact-first tenants get differently-shaped `dim_customer`, and
+adding Exact later squeezes rich accounting master data into a webshop shape).
+Rule: **when present, the accounting/ERP source establishes master-data dim
+shape.**
+(3) **THE LOAD-BEARING ONE — promote confirmed mappings from tenant-local to
+shipped.** The first time Shopify→`dim_customer` is AI-proposed and
+human-confirmed, STORE it and reuse it for the next tenant on that connector. At
+that point this design and §2.1 converge, because a cached confirmed mapping IS a
+shipped connector mapping — only DISCOVERED from real data instead of authored in
+advance, which is strictly better. Without it every tenant re-derives the same
+mapping differently and the platform never accumulates. Ladder per connector:
+**confirmed shipped mapping → AI proposal → user confirmation → promote back to
+shipped** (a loop, not one-way).
+**Unchanged:** the identity layer is still required (no name convention or AI
+mapping tells you Shopify customer 4471 IS Exact's VAN DAMME BVBA — per-row
+assertion); facts stay per-connector; "not conformed" stays visible and counted.
+**Deferred, not lost:** benchmarking needs comparable MEASURES, which live on
+facts, so it moves further out — add measure conformance later on the same
+promote-what-is-confirmed mechanism.
+
+**BACKGROUND — WHAT CLARION SHOULD BECOME (2026-08-10).** New
 `docs/backlog/warehouse-value-for-smb.md`: the three jobs an SMB actually buys a
 warehouse for — cross-system questions, spreadsheets as a first-class source,
 multi-entity consolidation — benchmarked against Fabric/Power BI. **Proposal

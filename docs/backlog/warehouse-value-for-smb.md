@@ -1,10 +1,11 @@
 # Why an SMB pays for a warehouse — and what Clarion should become
 
 > Status: **proposal**. No code changed. Written 2026-08-10, reframed the same day.
-> **Start at §5.6** — it scales the proposal down to the size actually worth
-> committing to (six conformed dimensions, measured from the two existing
-> templates, not a canonical model). §2.1 describes the fuller destination, which
-> is a later, evidence-based decision.
+> **§5.7 IS THE PLAN OF RECORD** — derive the dimensions from the source, but
+> standardise their NAMES plus a thin attribute contract, and promote
+> human-confirmed AI mappings from tenant-local to shipped. It supersedes §2.1
+> (canonical model) and §5.6 (measured conformed set); both are kept because their
+> reasoning is what produced §5.7.
 > §1–§6 describe the target state and are the substance of this document.
 > §5 answers the main architectural alternative. §8 records where today's code
 > stands relative to all of it — a starting position, not a constraint.
@@ -790,13 +791,115 @@ Why this is the right size:
 If conformed dimensions prove out, extending toward the fuller model in §2.1 is a
 later, evidence-based decision. If they do not, very little was spent.
 
+### 5.7 ADOPTED DESIGN — derive the dimensions, standardise the names
+
+**This supersedes §2.1 and §5.6 as the plan of record.** §2.1 remains the
+described destination; §5.6's measurement is still needed, but its output changes
+from "pick a canonical set" to "pick the standard names and the thin contract".
+
+The design:
+
+> Do **not** ship a canonical model. Let the **first source derive** the dimensions
+> and facts — using the connector's existing star-schema template, or AI where
+> there is none. But **standardise the dimension names** to Kimball conventions:
+> everyone has a customer, a product, a GL account, so they are always
+> `dim_customer`, `dim_product`, `dim_gl_account`. When a second source arrives,
+> AI works out how it flows into the **dimensions that already exist**, using the
+> source's relationships and definitions, with the user confirming.
+
+Why this is better than a shipped canonical model:
+
+- **No up-front commitment.** Nothing has to be designed before the product ships.
+- **Unanticipated dimensions come free.** If Exact has cost centres,
+  `dim_cost_centre` simply exists — no waiting for us to add it to a model. This
+  was the strongest objection to §2.1 and this design answers it structurally.
+- **The model reflects what sources actually have**, not what we guessed they
+  have.
+- **AI is used where it is genuinely good**: mapping a new thing onto an existing,
+  known thing — far easier and more verifiable than designing a schema from
+  scratch, which is the task it was measurably bad at.
+- The naming standard alone fixes a live defect: `dim_account` currently means
+  *party* in the Exact template and *GL account* in the Odoo one (§5.6).
+
+It needs three additions to actually work.
+
+#### (1) Standardise a thin attribute contract, not only the name
+
+A standard name with free-form contents is a promise the platform cannot keep. If
+tenant A's `dim_customer` comes from Exact (`account_code`, `vat_number`,
+`is_supplier`) and tenant B's comes from Shopify (`email`, `total_spent`), then a
+shipped metric or a dashboard reading `dim_customer.country` works for one and
+fails silently for the other. The **name creates an expectation that queries, the
+AI and shipped metrics will rely on.**
+
+The fix is small — per standardised dimension, fix only:
+
+- the **identity column** (`customer_key`), and
+- the **match attributes** used to resolve the same entity across systems
+  (`vat_number`, `email`).
+
+Three to five columns. Everything else stays whatever the source has, free-form
+and source-derived. That is not a canonical model; it is the minimum that makes
+the shared name mean something.
+
+#### (2) A source-priority rule, so connection order doesn't decide the model
+
+If tenant A connects Shopify first and tenant B connects Exact first, their
+`dim_customer` are shaped differently — and when A later adds Exact, the richer
+accounting master data gets squeezed into a webshop-shaped dimension. That is
+rigidity introduced *by accident*, which is worse than rigidity by design.
+
+Rule: **when present, the accounting/ERP source establishes the shape of master-data
+dimensions.** It is the most complete and most authoritative source for parties,
+products and accounts, and any accountant would say the same. Other sources
+conform to it.
+
+#### (3) Promote confirmed mappings from tenant-local to shipped — the load-bearing one
+
+The first time Shopify is mapped into `dim_customer`, AI proposes it and a human
+confirms it. **Do not throw that away.** Store it, and reuse it for the next
+tenant that connects Shopify.
+
+Once that happens, this design and §2.1 converge — because a cached, human-confirmed
+mapping *is* a shipped connector mapping. The difference is that it was
+**discovered from real data rather than authored in advance**, which is strictly
+better: it is evidence-based, it costs nothing up front, and it is right by
+construction for the sources customers actually run.
+
+That single move is what turns per-tenant AI inference (which diverges, and cannot
+support shipped metrics or benchmarking) into a compounding platform asset. Without
+it, every tenant re-derives the same mapping slightly differently and the platform
+never accumulates.
+
+The precedence ladder becomes, per connector: **confirmed shipped mapping →
+AI proposal → user confirmation → promote back to shipped.** A loop, not a
+one-way street.
+
+#### What does not change
+
+- **The identity layer is still required** (§2.2). No naming convention and no AI
+  mapping can tell you that Shopify customer 4471 is Exact's VAN DAMME BVBA. That
+  is a per-row assertion about the real world and stays per-row.
+- **Facts stay per-connector** (§5.6) — names converging is not semantics
+  converging.
+- **"Not conformed" stays visible and counted** (§5.6) — still the demand signal.
+
+#### The one thing deferred
+
+Benchmarking (§2.5) needs comparable **measures**, and measures live on facts,
+which stay per-connector under this design. So benchmarking moves further out. It
+is deferred, not lost: measure conformance can be added later on the same
+promote-what-is-confirmed mechanism, once there is evidence about which measures
+actually recur.
+
 ---
 
 ## 6. Sequencing
 
 | # | Work | Why here |
 |---|---|---|
-| 0 | **Six measured conformed dimensions + entity axis** (§5.6) — Party, Product, Product group, GL account, Journal, Payment terms; entity added deliberately. Extracted from the two existing templates, shipped as a versioned package, connectors declare mappings into them. **Facts stay with the per-connector templates and the AI.** | Everything else is cheaper after it and more expensive before it, and the entity axis must land here or it becomes a migration. Deliberately *less* than the full model in §2.1 — dimensions are where sharing pays, facts are where rigidity hurts. Extend later on evidence. |
+| 0 | **Standard dimension names + thin attribute contract + entity axis** (§5.7). Derive dims from the source as today; fix the NAMES (`dim_customer`, `dim_product`, `dim_gl_account`, …) and 3–5 contract columns per dim (identity + match keys). **Facts stay per-connector.** | No up-front model to design, unanticipated dims come free, and it fixes the live `dim_account` name collision. The entity axis must land here or it becomes a migration later. |
+| 0b | **Mapping promotion loop** (§5.7 addition 3) — store every human-confirmed AI mapping and reuse it for the next tenant on that connector. | The load-bearing piece: without it every tenant re-derives the same mapping differently and the platform never accumulates. |
 | 1 | **Identity layer.** Party registry + crosswalk; deterministic and externally-verified rungs only; human decisions sticky and rebuild-proof. | Every connector and every theme needs it. Compounding asset. |
 | 2 | **Spreadsheet layer.** Files in (upload + linked), managed grids, round-trip keys. | The cheapest second system, and the vehicle for every mapping table the other themes need. Budget vs actual is itself a cross-system question. |
 | 3 | **Metric library** shipped with the model, trilingual. | Day-one value; no engineering per tenant; prerequisite for benchmarking. |
