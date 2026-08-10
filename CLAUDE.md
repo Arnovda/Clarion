@@ -31,7 +31,56 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-06 (TOPIC-FIRST DATA EXPERIENCE — `/topics/[id]` replaces `/products` as the front door)
+**Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
+
+**WHY AN SMB PAYS FOR A WAREHOUSE — PLAN OF RECORD (2026-08-10).** New
+`docs/backlog/warehouse-value-for-smb.md`: how Clarion should deliver the three
+jobs an SMB actually buys a warehouse for — cross-system questions, spreadsheets
+as a first-class source, multi-entity consolidation — benchmarked against
+Fabric/Power BI. **Proposal status, awaiting owner sign-off (§9).** Grounded in a
+read of the code, and four measured facts change the plan:
+- **Everything is scoped to `connection_id`** end to end (design
+  `busMatrixOrchestrator.ts:83`, build `transformationRunner.ts:426`, query
+  `ConnectorFactory.ts:165` → `listProductTablesByConnection`, Ask AI
+  `routes/query.ts:247`). A cross-connection question cannot be expressed at the
+  product layer. **The front door became a topic on 2026-08-06 but the question
+  path is still a connection** — the two disagree, and un-scoping the query layer
+  is the largest single item in the plan.
+- **BUT the cross-connection seam already works.**
+  `loadDependencyDimensions` (`transformationRunner.ts:203`) resolves upstream
+  dims by `dependent_product_id` alone — it never filters by connection — and
+  `publishStubFromUpstream` puts the upstream URI on a stub row owned by the
+  DEPENDENT product, so it is visible in that connection's DuckDB session.
+  Cross-connection joins are plumbed; what is missing is matching keys, a design
+  flow that proposes such a product, and query scope.
+- **The `cross_view_relationships` + ATTACH path is SQLite-only legacy**
+  (`routes/query.ts:706` reads `cfg.filepath`; `nlToSqlPrompt.ts:384`). It cannot
+  work for any API connector. **Do not build on it.**
+- **`vat_number` is already conformed across both templates**
+  (`exactonline/starSchemaTemplate.ts:94`, `odoo/starSchemaTemplate.ts:97`), so
+  deterministic cross-system customer matching starts high-accuracy with zero AI.
+- **Spreadsheets: nothing exists** — `xlsxBuilder.ts` writes XLSX, nothing reads
+  it. Still open since the 2026-07-15 assessment.
+- **Multi-entity: nothing exists** — Exact Online is one division per connection
+  by design (`exactonline/schema.ts:9`); Odoo's `dim_company` is a dimension, not
+  a consolidation. No FX, no intercompany.
+The plan's central argument: all three features need **one** primitive — a
+**Mapping** (customer↔customer, GL account→reporting line, entity CoA→group CoA,
+counterparty→own entity): a two-column correspondence proposed by machine,
+decided by a business user in business language, materialised as a product table.
+Build it once or acquire three half-versions. Human decisions must survive a
+rebuild — **reuse migration 70's snapshot-and-merge**, this is its third caller.
+And **deterministic matching ships before any AI fuzzy matching**, with the
+residual measured on real data first — the 2026-08-03 invented-FK incident is the
+precedent. Sequencing (§7) puts the **spreadsheet connector first** (built as an
+ordinary `SourceConnector` so profiling/docs/quality/lineage work unchanged), on
+the argument that cross-system value is gated on connector breadth — Clarion has
+two connectors and both are ERPs no SMB runs together — and a spreadsheet is the
+cheapest second system. §8 lists what NOT to do (don't extend the ATTACH path,
+don't build statutory consolidation or FX, don't relax `sqlGuard` for uploads,
+don't give consolidation its own nav item).
+
+**Prior last updated:** 2026-08-06 (TOPIC-FIRST DATA EXPERIENCE — `/topics/[id]` replaces `/products` as the front door)
 
 **THE FRONT DOOR IS NOW A TOPIC, NOT A DATA PRODUCT (2026-08-06).** Implements
 the `design_handoff_topic_first_data` handoff. `/products` served the admin who
