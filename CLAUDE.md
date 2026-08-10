@@ -37,14 +37,18 @@ with false assumptions and produces broken code.
 owner ruled out versioned entries, promotion of names, aliases and deprecation
 windows. Removing them makes the design SIMPLER, not weaker, because the contract
 columns already do the work promotion was there to do. **The whole design:**
-(1) **ONE LIST, ~10 lines, written once, never changes** — `dim_customer`
+(1) **ONE LIST, 12 lines, written once, never changes** — `dim_customer`
 (`customer_key`; match `vat_number,email`), `dim_supplier`, `dim_product`,
 `dim_product_group`, `dim_gl_account`, `dim_journal`, `dim_payment_term`,
-`dim_employee`, `dim_entity`, plus the existing `dim_date`. Written from what is
-already known, not discovered over time. No version number; nothing is ever
-promoted into it. (2) **Two sentences in the AI prompt**, not systems: "if a source
-has customers the table is `dim_customer` and the VAT number goes in `vat_number`";
-"anything not on the list, name it `dim_<singular_english_noun>`". (3) **Anything
+`dim_employee`, `dim_entity`, **`dim_location`, `dim_department`**, plus the
+existing `dim_date`. Written from what is already known, not discovered over time.
+No version number; nothing is ever promoted into it. (2) **Four sentences in the AI
+prompt**, not systems: "if a source has customers the table is `dim_customer` and
+the VAT number goes in `vat_number`"; "anything not on the list, name it
+`dim_<singular_english_noun>`"; **"reuse a dim in multiple ROLES — invoice/due/
+payment date are all `dim_date`; never emit `dim_invoice_date` or
+`dim_ship_date`"**; **"never create a dimension for a status, transaction type,
+flag set or audit metadata"**. (3) **Anything
 off the list is the TENANT'S OWN** — AI names it, it builds, it works;
 `dim_sales_channel` here and `dim_channel` there DOES NOT MATTER because Clarion
 ships nothing that reads them. Divergence only matters for what Clarion ships
@@ -61,6 +65,31 @@ the list never changes so there is nothing to wait for.
 **NOT built:** versioned entries, promotion, aliases/deprecation, unmatched-dim
 counters as a feature, a canonical model, conformed facts or measures, per-tenant
 model governance.
+**§5.9 — THE LIST IS NOW EVIDENCED AGAINST KIMBALL, NOT JUST AGAINST EO+ODOO.**
+The owner supplied a chapter-by-chapter breakdown of *The Data Warehouse Toolkit*
+(3rd ed.) splitting each of 13 industry bus matrices into CONFORMED vs SINGLE-USE
+dimensions. Tallying concepts across chapters (Passenger/Student/Patient/
+Policyholder all = customer; Store/Warehouse/Branch/Facility/Airport all =
+location): date 13/13, **customer 10/13**, employee 9/13, product 9/13,
+**location 8/13**, **department 5/13**, carrier 4/13, supplier 3/13, then
+gl_account / product_group / channel / promotion / status at 2/13.
+**Result: +2 added (`dim_location`, `dim_department`), `dim_carrier` held back
+until a webshop/delivery source exists — and FOUR earlier guesses REMOVED because
+the book contradicts them:** currency (Kimball lists it SINGLE-USE), payment method
+(SINGLE-USE, POS only), promotion/campaign (2/13, webshop-specific), project (absent
+from every conformed set). **The book trimmed more than it added**, which is the
+strongest evidence yet that this design does not quietly grow into a canonical
+model. **Low Kimball frequency ≠ low value** — gl_account and journal score 2/13
+only because most case studies aren't accounting-centric; for an SMB platform
+anchored on accounting they are essential, so the second filter is always "would a
+realistic SMB source actually emit this table?". **Two prompt rules fall out of the
+book:** (a) ROLE-PLAYING — one physical dim used in several roles (invoice/due/
+payment date, ship-to/bill-to, employee-as-manager); left alone AI emits
+`dim_order_date` + `dim_ship_date` and breaks conformance immediately; (b) NEVER
+conform a status / transaction type / flag set / audit dim — the book's clearest
+structural teaching is that every bus-matrix column is conformed while junk, audit,
+status, transaction-type and mini-dimensions live only in the detail figures;
+degenerate dims (invoice/order numbers) stay on the fact with no table.
 **WHAT TO ACTUALLY BUILD:** (1) write the ten-line list — half a day; (2) rename
 the dims in both existing templates to match, which also fixes the live
 `dim_account` collision — half a day; (3) add the two naming sentences to the

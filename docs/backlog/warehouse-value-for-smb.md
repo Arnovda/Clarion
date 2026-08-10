@@ -1046,18 +1046,30 @@ dim_journal        key journal_key     match journal_code         name journal_n
 dim_payment_term   key term_key                                   name term_name
 dim_employee       key employee_key    match email                name employee_name
 dim_entity         key entity_key      match vat_number           name entity_name
+dim_location       key location_key    match location_code        name location_name
+dim_department     key department_key  match department_code      name department_name
 dim_date           already exists as platform infrastructure
 ```
 
-Ten lines. These are the concepts nearly every business system has, so the list is
-written from what is already known rather than discovered over time. **There is no
-version number and nothing is ever promoted into it.**
+Twelve lines. These are the concepts nearly every business system has, so the list
+is written from what is already known rather than discovered over time. **There is
+no version number and nothing is ever promoted into it.**
 
-**2. Two sentences of guidance in the AI prompt** — not systems, not features:
+The last two were added from the Kimball cross-industry evidence in §5.9;
+`dim_carrier` is a defensible thirteenth and is held back until a webshop or
+delivery source exists.
+
+**2. Four sentences of guidance in the AI prompt** — not systems, not features:
 
 - *"If a source has customers, the table is `dim_customer` and the VAT number goes
   in `vat_number`."*
 - *"For anything not on the list, name it `dim_<singular_english_noun>`."*
+- *"Reuse a dimension in multiple ROLES rather than duplicating it: an invoice date,
+  due date and payment date are all `dim_date`. Never emit `dim_invoice_date`,
+  `dim_ship_date` or `dim_bill_to_customer`."*
+- *"Never create a dimension for a status, a transaction type, a set of flags, or
+  audit metadata. Those belong on the fact or in a junk dimension, not in the
+  shared list."*
 
 **3. Anything not on the list is the tenant's own.** AI names it, it builds, it
 works, it is queryable. `dim_sales_channel` in one tenant and `dim_channel` in
@@ -1106,6 +1118,71 @@ facts or measures · per-tenant model governance of any kind.
 Items 1–3 are days and are worth doing regardless of everything else in this
 document, because they fix a real name collision and cost nothing. Item 4 is the
 feature. Item 5 is what makes cross-system actually answer questions.
+
+### 5.9 Evidence for the list — Kimball's cross-industry bus matrices
+
+The list in §5.8 was originally derived from two ERP connectors, which is a sample
+of two. *The Data Warehouse Toolkit* (Kimball & Ross, 3rd ed.) supplies a much
+better one: thirteen industry case studies — retail, inventory, procurement, order
+management, accounting, CRM, HR, banking, telecom, transportation, education,
+healthcare, e-commerce, insurance — each with a bus matrix whose columns are
+**deliberately conformed**, and a separately identified set of **single-use**
+dimensions.
+
+Counting each concept across chapters (normalising synonyms — Passenger, Student,
+Patient and Policyholder are all *customer*; Store, Warehouse, Branch, Facility
+and Airport are all *location*):
+
+| Chapters | Concept | On the list? |
+|---|---|---|
+| 13/13 | Date | ✓ |
+| 10/13 | **Customer / party** | ✓ |
+| 9/13 | **Employee** | ✓ |
+| 9/13 | **Product** | ✓ |
+| **8/13** | **Location / facility** | **added** |
+| **5/13** | **Department / organisation** | **added** |
+| 4/13 | Carrier / shipper | held back — needs a webshop or delivery source |
+| 3/13 | Supplier / vendor | ✓ |
+| 2/13 | GL account, ledger | ✓ |
+| 2/13 | Product group | ✓ (Kimball frames it as a *shrunken rollup* of Product) |
+| 2/13 | Channel | **no** — and Kimball's telecom chapter deliberately *eliminates* it, folding it into Sales Organisation |
+| 2/13 | Promotion / campaign | **no** — weak, and webshop-specific |
+| 2/13 | Status | **no** — see the negative rule below |
+
+**Low frequency does not mean low value.** GL account and journal appear in only
+two chapters because most of Kimball's case studies are not accounting-centric. For
+an SMB platform whose anchor source is an accounting package, they are essential.
+Kimball's frequency is a *supporting* signal, not the sole criterion; the second
+filter is always *"would a realistic SMB source system actually emit a table for
+this?"*
+
+**The book trimmed more than it added.** Four candidates suggested from memory
+before the evidence arrived do not survive it:
+
+- **Currency** — listed as *single-use* ("Local Currency", order management), not
+  conformed.
+- **Payment method** — listed as *single-use*, point-of-sale only.
+- **Promotion / campaign** — 2/13 and webshop-specific.
+- **Project** — does not appear in any chapter's conformed set at all.
+
+Net effect: **+2 (location, department), −4 guesses removed.** A sample of thirteen
+industries confirms that the conformed set for a general business platform really is
+about a dozen concepts, which is the strongest available evidence that this design
+does not quietly grow into a canonical model.
+
+**Two design rules fall out of the book and belong in the AI prompt** (both are now
+in §5.8):
+
+1. **Role-playing dimensions.** Origin/Destination airports, Ship-To/Bill-To,
+   primary/secondary Payer, Employee-as-Manager — one physical conformed dimension
+   used several times, never duplicated. Left alone, AI will happily emit
+   `dim_order_date` and `dim_ship_date` and break conformance on day one.
+2. **Never conform a status, transaction type, flag set or audit dimension.** This
+   is the book's clearest structural teaching: every column of every chapter's bus
+   matrix is conformed, and the non-conformed things — mini-dimensions, junk,
+   audit, status, transaction-type, event-specific — live in the detailed schema
+   figures instead. Degenerate dimensions (invoice, order and policy numbers) stay
+   on the fact and get no table at all.
 
 ---
 
