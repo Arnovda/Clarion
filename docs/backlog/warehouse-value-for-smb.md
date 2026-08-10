@@ -937,6 +937,81 @@ something with no existing home (Shopify's sales channel, say) it creates
 tenants have a sales-channel dimension, it earns a line in the file. The list is
 never guessed — it is the record of what turned out to recur.
 
+#### Does the file explode as connectors are added?
+
+The obvious worry: 40 lines for two ERPs, so 500 lines at fifteen connectors —
+at which point it *is* a canonical model, arrived at by the back door. It doesn't
+work out that way, for four reasons.
+
+**1. The file grows with SHARED concepts, not with sources — and shared concepts
+saturate.** The inclusion rule is "≥2 connectors independently have it". Most of
+what a new source brings is unique to it and therefore never enters the file:
+
+| New source | Feeds existing standard | Genuinely new shared entry |
+|---|---|---|
+| Shopify | customer, product, product group | *sales channel* — only once a **second** webshop connector exists |
+| HubSpot | customer (companies), employee (owner) | *pipeline stage* — only once a second CRM exists |
+| SD Worx | employee, entity, GL account | *pay component* — only once a second payroll exists |
+| CODA/PSD2 | supplier, customer, GL account | *bank account* |
+| Spreadsheet | whatever the user says it is | none |
+
+Each connector adds roughly **one to three** entries, not ten — and the big ones
+(customer, product, GL account, employee, entity) are hit by almost every source,
+so they are declared once and never again. Realistically: ~6 entries at two
+connectors, ~15–20 at ten. Call it 80 lines. The curve flattens.
+
+**2. Tier the entries — the expensive part is already closed.** Not all standard
+dimensions need a contract:
+
+- **Tier 1 — matching dimensions** (customer, supplier, product, employee,
+  entity). These carry the `identity` + `match` columns because they are what
+  identity is resolved on across systems. **This set is essentially complete
+  already** — the things SMBs match across systems are parties, products and
+  people, and there is no sixth category coming.
+- **Tier 2 — name-only dimensions** (journal, payment term, sales channel, cost
+  centre, pipeline stage, pay component). Nobody matches a journal across systems.
+  These need consistency of *name* and nothing else — **one word each.**
+
+So the part that costs thought stops growing almost immediately; the part that
+grows costs a word.
+
+**3. The cost per entry is constant and tiny.** Adding `dim_sales_channel` means
+writing its name and, if Tier 1, three column names. It does **not** require
+deciding what a sales channel *is*, what attributes it has, or how it relates to
+anything else. That is the whole difference from a canonical model, where each new
+entity costs a design discussion. Here even 80 lines is still a naming registry,
+not a model.
+
+**4. Entries can be removed.** Anything that stops earning its place is demoted
+back to source-specific.
+
+#### The real cost is renaming, not the file — and it has a cheap mitigation
+
+The genuine expense arrives when a concept is *promoted* after tenants already
+have it: twenty tenants hold an AI-named `dim_shop_channel` and it becomes
+`dim_sales_channel`. Renaming breaks their dashboards.
+
+Two mitigations, both cheap and both worth doing from day one:
+
+- **Constrain the naming pattern even where the name is not specified.** Require
+  AI to name every dimension `dim_<singular_snake_case_business_noun>` in English.
+  Ad-hoc names then land close to whatever the standard would be, and promotion is
+  usually a trivial rename rather than a redesign.
+- **Keep an alias list.** A promoted dimension answers to its old name for a
+  deprecation window, so nothing breaks the day the file changes.
+
+#### Governance: counted, not debated
+
+Unmatched dimensions are already counted (§5.6). Promotion is then mechanical:
+review the counter when onboarding a connector, promote anything over the
+threshold, bump the file's version, let tenants pick it up on their next build.
+No design meeting — the counter decides.
+
+And if the file *does* eventually reach fifty rich entries, that is not a failure:
+it is evidence that a canonical model was the right idea after all — arrived at
+from what customers actually run rather than from guessing. **The design is
+self-correcting in both directions.**
+
 #### The one thing deferred
 
 Benchmarking (§2.5) needs comparable **measures**, and measures live on facts,

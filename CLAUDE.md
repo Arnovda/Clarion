@@ -83,6 +83,31 @@ support answer, prompt or matching code works anywhere — names must be identic
 everywhere AND cost zero flexibility (a name constrains no contents). **The list
 grows from evidence:** an unmatched dim (Shopify sales channel) is created with no
 contract columns and COUNTED; at ~20 tenants it earns a line in the file.
+**DOES THE FILE EXPLODE AT 15 CONNECTORS? No — it grows with SHARED concepts, not
+with sources, and those saturate.** Inclusion needs ≥2 connectors, and most of
+what a new source brings is unique to it (Shopify → customer/product already
+standard, *sales channel* only once a SECOND webshop exists; HubSpot → customer,
+*pipeline stage* only at a second CRM). ~1–3 entries per connector, ~15–20 (≈80
+lines) at ten connectors. **Tier the entries:** Tier 1 = MATCHING dims
+(customer, supplier, product, employee, entity) carry identity+match columns —
+**this set is essentially closed already**, because parties/products/people are
+what SMBs match across systems and there is no sixth category; Tier 2 = name-only
+dims (journal, payment term, sales channel, cost centre) need consistency of NAME
+and nothing else — one word each. So the part that costs thought stops growing
+immediately and the part that grows costs a word. Cost per entry is CONSTANT: a
+name (+3 column names if Tier 1), never "what IS a sales channel" — that is the
+whole difference from a canonical model, where each entity costs a design
+discussion. **The real cost is RENAMING after promotion** (20 tenants hold
+`dim_shop_channel`, it becomes `dim_sales_channel`). Two cheap day-one
+mitigations: **constrain the naming PATTERN even where the name isn't specified**
+(AI must emit `dim_<singular_snake_case_english_noun>`, so ad-hoc names land close
+to the eventual standard and promotion is a trivial rename), and **keep an alias
+list** so a promoted dim answers to its old name through a deprecation window.
+Governance is the counter, not a design meeting: review it when onboarding a
+connector, promote over threshold, version the file, tenants pick it up on next
+build. **And if the file ever DOES reach ~50 rich entries, that is not a failure —
+it is evidence a canonical model was right, arrived at from what customers
+actually run. The design self-corrects in both directions.**
 **Unchanged:** the identity layer is still required (no name convention or AI
 mapping tells you Shopify customer 4471 IS Exact's VAN DAMME BVBA — per-row
 assertion); facts stay per-connector; "not conformed" stays visible and counted.
