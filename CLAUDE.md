@@ -127,6 +127,24 @@ by hiding rows, not designing; a per-ROW matching inbox when a second source
 arrives; **their own vocabulary** over canonical concepts — the one place
 per-customer variation genuinely belongs; and one-question extension for custom
 fields.
+**§2.1c pins three things that are easy to get wrong.** (1) Canonical fields are
+NOT all mandatory — a **required core** (Party: stable id, name, ≥1 role) plus an
+**optional set** (VAT, email, country, sector), so a thin source maps as "covers 8
+of 12 attributes" instead of failing. The coverage screen therefore has THREE
+states, and the middle one is the growth loop: filled / **available-but-empty**
+("Budget — upload a spreadsheet") / not-applicable. (2) Mapping precedence mirrors
+the profiler's docs>curated>AI ladder: a **shipped, hand-authored mapping** for
+known connectors with **no AI at run time** (per-tenant AI mapping would diverge
+per tenant, which is the exact thing the canonical model removes), AI only for
+custom fields / unknown tables / entirely unknown sources, human confirmation
+asked ONLY where AI ran. (3) **The customisation rule: customise the mapping and
+the vocabulary freely; never the definition.** Vocabulary (labels) and mapping
+(which source column feeds it, plus tenant-only extra attributes) are per-tenant
+and encouraged; **redefining what a canonical measure MEANS is refused** — a
+tenant redefining net revenue kills shipped metrics and benchmarking on the same
+day, and does it silently because every dashboard keeps working. Legitimate
+routes: add it centrally as its own measure everyone can use, or a tenant-local
+metric ALONGSIDE the canonical one, marked as theirs.
 **Sequencing (§6):** model spine + entity axis → identity → spreadsheets → metric
 library → groups/consolidation → reconciliation → connector breadth → accountant
 portfolio → benchmarking. **§7 lists what kills this** (universal-model creep,

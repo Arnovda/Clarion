@@ -180,6 +180,63 @@ language:
 The relationship drawer sits behind Manage mode for analysts, for the jobs in
 §5.3. It is never on a normal user's path.
 
+### 2.1c Required core vs optional attributes, and what may be customised
+
+**Not every canonical field is mandatory.** If every attribute were required, a
+source lacking one could not be mapped at all. Each entity has:
+
+- a **required core** — what makes the entity meaningful and identifiable. For
+  Party: a stable id, a name, at least one role.
+- an **optional set** — VAT number, email, address, country, sector, payment terms.
+  A source fills what it has; the rest is null, and the coverage screen says so:
+  *"Customers ✓ — no VAT numbers found, so matching across systems will be
+  weaker."*
+
+That turns "this connector is unsupported" into "this connector covers 8 of 12
+customer attributes", which is the difference between a brittle model and a usable
+one.
+
+**The coverage screen has three states, not two**, and the middle one is the
+commercially interesting one:
+
+| State | Meaning | What it does |
+|---|---|---|
+| **Filled** | a source maps into it | works |
+| **Available, empty** | we could fill this if you connected or uploaded something | *"Budget — upload a spreadsheet"* — this is the growth loop, not just UI |
+| **Not applicable** | the user hid it | gone from their world |
+
+**Who does the mapping — a precedence ladder, the same shape the profiler already
+uses for descriptions** (vendor docs > curated > AI):
+
+1. **Shipped mapping** for a known connector. Hand-authored, tested, identical for
+   every tenant. **No AI at run time.** Per-tenant AI mapping would produce subtly
+   different results per tenant, which reintroduces exactly the divergence the
+   canonical model exists to remove.
+2. **AI** for the remainder — custom fields, unrecognised tables, and entirely
+   unknown sources (custom SQL Server, homegrown apps) where no mapping can be
+   shipped.
+3. **Human confirmation**, asked for only where step 2 ran — never where the
+   shipped mapping applies.
+
+**What may be customised per tenant — and the one thing that may not.** Three
+different things hide inside the word "customise":
+
+| Kind | Example | Allowed? |
+|---|---|---|
+| **Vocabulary** | "we call them *clients*", "leveranciers" | **Yes** — encouraged; per-tenant labels over canonical concepts |
+| **Mapping & local extension** | "our customer number is in `Code`, not `ID`"; "free field 3 is the region" | **Yes** — the *source* side of the arrow moves, and tenant-only attributes may be added |
+| **Definition** | "for us, revenue includes shipping"; "our Customer is really a contract" | **No** |
+
+> **The rule: customise the mapping and the vocabulary freely; never customise the
+> definition.**
+
+If a tenant genuinely needs a different meaning, there are two legitimate routes
+and redefinition is neither of them: add it **centrally** as its own canonical
+measure that everyone can use (*revenue including shipping*), or let them define a
+**tenant-local metric alongside** the canonical one, clearly marked as theirs.
+Allowing tenants to redefine net revenue kills shipped metrics and benchmarking on
+the same day — and it kills them silently, because every dashboard keeps working.
+
 ### 2.2 An identity layer that is a real asset
 
 Cross-system joining is really an identity question: *is this the same customer?*
