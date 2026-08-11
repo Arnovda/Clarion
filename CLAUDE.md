@@ -33,6 +33,57 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
 
+**RELATIONSHIP CANVAS — BUILD PLAN AGREED (2026-08-11).** New
+`docs/backlog/relationship-canvas.md`. A cross-source relationship pane whose
+purpose is **building AI context by drawing**. Four decisions are SETTLED: primary
+job = **review what Clarion proposed** (the canvas IS the queue, not a blank
+canvas); scope = **cross-source from day one**; downstream effect = **enrich AI
+context only, never rebuild**; and **clean sheet** (new route + components; the
+1,975-line `RelationshipCanvas.tsx` and `components/catalog/relationships/*` retire
+only AT PARITY). Geometry constants (`HEADER_H`/`ROW_H`/`NODE_W`, the `L_`/`R_`
+handle-ID scheme) are LIFTED not re-derived — handle alignment against column rows
+is fiddly and currently correct.
+**The five ideas that matter:** (1) **MEASURE the relation, never ask the user to
+declare cardinality** — drop a line and Clarion answers "97% of values found in
+target · 1-to-many (avg 3.2, max 47) · 23 orphans"; the measurement IS the
+confirmation dialog. It MUST reuse the detector's own constants (`FK_SAMPLE_SIZE`,
+`FK_MIN_DISTINCT`, `FK_TARGET_UNIQUENESS`, `FK_MIN_CONTAINMENT`) and take
+containment + cardinality from the SAME sample — mismatched sets were the exact
+defect measured in production on 2026-08-03. (2) **TWO EDGE KINDS that are not the
+same object** — a `join` (inside a source, a real FK, verified by containment) vs a
+`match` (between sources, an assertion that two tables describe the same real-world
+things, verified by match rate, truth lives PER ROW). A match edge is the entry
+point to per-row matching, NOT a join; collapsing them is what makes cross-system
+look easy and then be wrong. (3) **SOURCE LANES** — vertical bands per source in the
+`SourceBadge` palette, so cross-source edges are the only ones crossing a boundary
+and the thing you came for is the thing that pops. (4) **NEVER RENDER EVERYTHING** —
+60 EO entities × 170 rels is a hairball; anchor + one hop + expand on demand,
+collapsed nodes by default. (5) **PROVENANCE IN THE LINE STYLE** (declared /
+AI-suggested / human-confirmed) so the review queue becomes a canvas filter; human
+wins forever via migration 70's EXISTING snapshot-and-merge — do not add a second
+mechanism. Plus: **show the payoff** after confirming ("Ask AI can now answer
+questions spanning Exact and your webshop") or the loop is invisible and the tool
+goes unused.
+**Backend prerequisites are the real work:** a **tenant-scoped graph endpoint**
+(everything is `connectionId`-scoped today — same un-scoping problem as the query
+layer, and every id must go through `denyUnlessOwned`/`ownedIds` because Neo4j has
+no tenant predicate); a **measurement endpoint** (cross-source measurement needs
+views from TWO connections in one DuckDB session — `createProductConnector` is
+connection-scoped, so this is real work, not a query; column names must be validated
+against the catalog, never interpolated); a **migration** adding `kind`
+(`join`|`match`, default `join` so existing rows are unchanged), `measured` jsonb and
+`match_keys` jsonb to `table_relationships` (which has NO `connection_id` — scope
+resolves via `from_table_id`); and **match edges must reach
+`getRelationshipsForContext`** phrased as identity assertions, not joins.
+**Build order:** measurement endpoint (single-source, testable with no UI) →
+migration → tenant-scoped graph → new route with lanes/collapsed nodes/join edges →
+queue-as-canvas + keyboard model → match edges + cross-source measurement → match
+panel into per-row review → retire the old canvas at parity.
+**§6 what NOT to do:** not the onboarding front door (escape hatch and repair tool —
+a new customer must never meet 170 edges on day one), no auto-rebuild, never render
+the full graph, never store a match as a join, no second human-edit-survival
+mechanism, no layout persistence in v1.
+
 **PLAN OF RECORD IS §5.8 — TEN FIXED NAMES, NOTHING ELSE (2026-08-10).** The
 owner ruled out versioned entries, promotion of names, aliases and deprecation
 windows. Removing them makes the design SIMPLER, not weaker, because the contract
