@@ -18,6 +18,7 @@ import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
 import { createConnector } from '../connectors/ConnectorFactory';
 import { measureRelationship } from '../services/relationshipMeasure';
+import { buildGraph, neighbourhood } from '../services/relationshipGraph';
 import { logger as rootLogger } from '../utils/logger';
 
 const router = Router();
@@ -44,6 +45,97 @@ async function denyUnlessOwned(
 
 interface ColumnRow { id: number; table_id: number; column_name: string }
 interface TableRow  { id: number; connection_id: number; table_name: string }
+
+// ---------------------------------------------------------------------------
+// GET /api/relationships/graph — the tenant's whole relationship graph
+// ---------------------------------------------------------------------------
+//
+// Tenant-scoped, not connection-scoped: the canvas exists to show how sources
+// connect to each other, so a per-connection view cannot express its subject.
+//
+// Reads Postgres rather than Neo4j — see services/relationshipGraph.ts for why
+// that is deliberate and not an oversight.
+//
+// Query params, all optional:
+//   connectionId   narrow to one source
+//   anchorTableId  return only this table's neighbourhood
+//   depth          hops from the anchor (default 1, max 3)
+//   withColumns=1  include columns for the returned tables
+router.get('/graph', requireAuth, requireRole('admin', 'analyst'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) { res.status(404).json({ ok: false, error: 'Not found' }); return; }
+
+      const connectionId = req.query.connectionId ? Number(req.query.connectionId) : undefined;
+      const anchorTableId = req.query.anchorTableId ? Number(req.query.anchorTableId) : undefined;
+      const depth = Math.min(Math.max(Number(req.query.depth) || 1, 1), 3);
+      const withColumns = req.query.withColumns === '1';
+
+      if (connectionId !== undefined && !await denyUnlessOwned(req, res, 'connections', connectionId)) return;
+      if (anchorTableId !== undefined && !await denyUnlessOwned(req, res, 'source_tables', anchorTableId)) return;
+
+      // Every query filters tenant_id explicitly. RLS is the backstop, not the
+      // control — reqDb can fall back to the global pool whose session-level
+      // tenant variable has a documented race.
+      const tableQuery = db('source_tables')
+        .where({ tenant_id: tenantId, is_active: true })
+        .select('id', 'connection_id', 'table_name', 'display_name', 'description');
+      if (connectionId !== undefined) tableQuery.andWhere({ connection_id: connectionId });
+      const tableRows = await tableQuery;
+
+      const tableIds = tableRows.map((t: { id: number }) => t.id);
+
+      // Relationships are fetched for the tenant and then filtered to the
+      // visible tables in buildGraph, rather than filtered here: an edge is only
+      // drawable when BOTH endpoints are in scope, and expressing that as SQL
+      // costs a self-join for no benefit at this size.
+      const relRows = tableIds.length
+        ? await db('table_relationships')
+            .where({ tenant_id: tenantId })
+            .andWhere(function () {
+              this.whereIn('from_table_id', tableIds).orWhereIn('to_table_id', tableIds);
+            })
+            .select(
+              'id', 'kind', 'from_table_id', 'from_column_id', 'to_table_id', 'to_column_id',
+              'relationship_type', 'description', 'ai_draft', 'confirmed_by_user',
+              'measured', 'match_keys',
+            )
+        : [];
+
+      const visibleTableIds = anchorTableId !== undefined
+        ? neighbourhood(anchorTableId, relRows, depth)
+        : undefined;
+
+      const graph = buildGraph(tableRows, relRows, { visibleTableIds });
+
+      const sources = await db('connections')
+        .where({ tenant_id: tenantId })
+        .whereIn('id', [...new Set(graph.tables.map((t) => t.connectionId))])
+        .select('id', 'name', 'type');
+
+      let columns: unknown[] | undefined;
+      if (withColumns && graph.tables.length) {
+        columns = await db('source_columns')
+          .where({ tenant_id: tenantId })
+          .whereIn('table_id', graph.tables.map((t) => t.id))
+          .select('id', 'table_id', 'column_name', 'data_type', 'display_name', 'is_dimension', 'is_measure');
+      }
+
+      res.json({
+        ok: true,
+        data: {
+          sources: sources.map((s: { id: number; name: string; type: string }) => ({
+            id: s.id, name: s.name, connectorType: s.type,
+          })),
+          ...graph,
+          ...(columns ? { columns } : {}),
+        },
+      });
+    } catch (err) { next(err); }
+  },
+);
 
 // ---------------------------------------------------------------------------
 // POST /api/relationships/measure — does this relationship hold in the data?

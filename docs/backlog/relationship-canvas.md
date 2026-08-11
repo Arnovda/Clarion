@@ -166,6 +166,41 @@ wrong thing — that needs two connections' views in one DuckDB session (slice 6
 
 17 unit tests, no DuckDB required (`tests/relationshipMeasure.test.ts`).
 
+### 4.0b Shipped — slice 3, the tenant-scoped graph (2026-08-11)
+
+`GET /api/relationships/graph` (analyst+). Optional `connectionId`,
+`anchorTableId`, `depth` (1–3), `withColumns=1`. Returns sources, tables,
+relationships, and the stats the queue-as-canvas needs
+(`pendingReview`, `crossSource`, `unresolved`).
+
+**It reads Postgres, not Neo4j — deliberately.** `semanticGraph` matches nodes by
+a bare `pgId` with no tenant predicate, so every route using it must gate each id
+first. That works when the caller names one entity; it inverts here, where the
+request means "everything this tenant has" — gating would mean fetching an
+unscoped graph and filtering it against an ownership query, i.e. reading other
+tenants' rows in order to discard them. Postgres carries `tenant_id` on all three
+tables, and the dual-write contract already lists whole-tenant aggregate reads as
+legitimately Postgres-side. Every query filters `tenant_id` **explicitly** rather
+than trusting RLS, because `reqDb` can fall back to the pool whose session-level
+tenant variable has a documented race.
+
+Three shaping rules, all unit-tested:
+
+- **`isCrossSource` is computed server-side**, so the canvas never joins tables to
+  discover which edges cross a lane boundary — the one thing it exists to show.
+- **An edge with one endpoint outside the requested scope is dropped**, not
+  half-drawn. Same for an unresolved endpoint (`Table.? -> Other.ID`, eight of
+  which the 2026-08-03 audit found in one tenant) — dropped from the drawing but
+  **counted** in `stats.unresolved`, so a broken catalog is discoverable rather
+  than invisible.
+- **Truncation is reported.** `MAX_TABLES` caps the payload and sets
+  `truncated: true` while `stats.tables` still carries the real total. A silent
+  cap reads as "this is your whole graph" when it is not.
+
+`provenance` is derived as human > ai > declared: a confirmed relationship counts
+as human even if it began as an AI draft, because confirming is taking ownership —
+otherwise the canvas would keep showing work the user already did.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
@@ -229,7 +264,7 @@ from the catalog.
 |---|---|---|
 | 1 | ~~Measurement endpoint, single-source only~~ **DONE 2026-08-11** | `POST /api/relationships/measure`. Independently useful, testable without any UI, and it is what makes the canvas a data tool. Can be exercised from the existing canvas before any new UI exists. |
 | 2 | ~~Migration — `kind`, `measured`, `match_keys`~~ **DONE 2026-08-11** (`20260811000077`) | Small, unblocks both edges. Additive only: `kind` defaults to `'join'` so every existing row keeps its meaning and no backfill is needed. |
-| 3 | Tenant-scoped graph endpoint | The prerequisite for anything cross-source. |
+| 3 | ~~Tenant-scoped graph endpoint~~ **DONE 2026-08-11** | `GET /api/relationships/graph`. The prerequisite for anything cross-source. |
 | 4 | New route + source lanes + collapsed nodes + join edges | The pane, single-source parity. |
 | 5 | Queue-as-canvas + keyboard model | Turns it into the review tool that was chosen as the primary job. |
 | 6 | Match edges + cross-source measurement | The reason for cross-source-from-day-one. |
