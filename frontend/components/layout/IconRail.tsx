@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
-  Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown,
+  Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -49,6 +49,7 @@ const ICONS = {
   workflow: <Workflow      className={ICON_CLASS} strokeWidth={1.5} />,
   search:   <Search         className={ICON_CLASS} strokeWidth={1.5} />,
   dollar:   <DollarSign     className={ICON_CLASS} strokeWidth={1.5} />,
+  relations: <Share2        className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -68,6 +69,10 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
+  // Where the relationship canvas lives. Studio on purpose — it is a repair and
+  // escape-hatch tool for people who already know their data, not the front
+  // door. A new customer must never meet 170 edges on day one.
+  { key: 'relations',  href: '/relationships', label: 'How it fits together', icon: ICONS.relations, roles: ['admin', 'analyst'],  group: 'studio' },
   // The conformed lookups every topic slices by. Owned here, read-only
   // everywhere else — replaces the "Core dimensions" pseudo-product.
   { key: 'shared',     href: '/shared-data', label: 'Shared data',    icon: ICONS.library, roles: ['admin', 'analyst'],            group: 'studio' },

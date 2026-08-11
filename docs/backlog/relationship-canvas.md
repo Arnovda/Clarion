@@ -201,6 +201,52 @@ Three shaping rules, all unit-tested:
 as human even if it began as an AI draft, because confirming is taking ownership —
 otherwise the canvas would keep showing work the user already did.
 
+### 4.0c Shipped — slice 4, the canvas (2026-08-11)
+
+`/relationships` (analyst+), in the **Studio** nav group — deliberately the
+demoted builder group, because this is a repair and escape-hatch tool, not the
+front door.
+
+`components/relationships/`: `geometry.ts` (lifted constants) · `types.ts` ·
+`laneLayout.ts` · `TableNode` · `LaneNode` · `RelationEdge` · `MeasurePanel` ·
+`GraphCanvas`.
+
+What was built, and why each choice:
+
+- **Source lanes are NODES, not an overlay.** An absolutely-positioned band sits
+  in screen space and drifts away from its tables the moment anyone pans or
+  zooms. As a node, ReactFlow applies the same viewport transform it applies to
+  everything else and the band stays welded to its contents.
+- **Not dagre.** Dagre optimises for hierarchy and would interleave tables from
+  different sources wherever that shortened an edge — destroying the one property
+  the layout exists to provide. `laneLayout` packs each source into its own band,
+  most-connected table first, so the hub of a source is visible without scrolling.
+- **Nodes are collapsed by default.** Sixty tables showing forty columns each is
+  the hairball the design exists to avoid. Columns appear on expand, and only
+  then do per-column handles exist to draw from; edges re-anchor from the node to
+  the specific column row as nodes open.
+- **Provenance is carried by line style**, not a badge — the default view is a
+  review queue, so "what has nobody checked?" must be answerable across the whole
+  graph at a glance. Human = solid ocean, declared = thin grey, AI = dashed amber.
+  A match edge additionally carries a second offset stroke so it can never read
+  as a join.
+- **Drawing measures before it saves.** Drop a line → `POST /measure` → the
+  `MeasurePanel` states the verdict in plain language and the measured shape.
+  Nothing is written until "Keep it", so an exploratory drag costs nothing, and
+  the measured cardinality becomes the stored `relationship_type` — the graph
+  records what the data says rather than what anyone assumed.
+- **The panel never blocks.** Weak and broken verdicts keep the Keep button
+  enabled, because a half-synced source looks exactly like low containment.
+- Thresholds in the copy come from the response, never hardcoded — the UI must
+  not state a different number from the one the detector applied.
+
+`next build` green; `/relationships` is 2.69 kB / 100 kB first load because
+ReactFlow is dynamically imported and so costs nothing on any other page.
+
+**Not yet:** the keyboard queue model (slice 5), match edges (slice 6), and
+cross-source measurement. Confirm/reject on an existing edge is still done from
+the old surface.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
@@ -265,7 +311,7 @@ from the catalog.
 | 1 | ~~Measurement endpoint, single-source only~~ **DONE 2026-08-11** | `POST /api/relationships/measure`. Independently useful, testable without any UI, and it is what makes the canvas a data tool. Can be exercised from the existing canvas before any new UI exists. |
 | 2 | ~~Migration — `kind`, `measured`, `match_keys`~~ **DONE 2026-08-11** (`20260811000077`) | Small, unblocks both edges. Additive only: `kind` defaults to `'join'` so every existing row keeps its meaning and no backfill is needed. |
 | 3 | ~~Tenant-scoped graph endpoint~~ **DONE 2026-08-11** | `GET /api/relationships/graph`. The prerequisite for anything cross-source. |
-| 4 | New route + source lanes + collapsed nodes + join edges | The pane, single-source parity. |
+| 4 | ~~New route + source lanes + collapsed nodes + join edges~~ **DONE 2026-08-11** | `/relationships`, analyst+, in Studio. |
 | 5 | Queue-as-canvas + keyboard model | Turns it into the review tool that was chosen as the primary job. |
 | 6 | Match edges + cross-source measurement | The reason for cross-source-from-day-one. |
 | 7 | Match panel → per-row review | The bridge into the identity layer (§2.2 of the warehouse-value plan). |
