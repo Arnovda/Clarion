@@ -72,7 +72,25 @@ answer instead of a form asking you to declare the cardinality.
   resolves via `from_table_id` (`db/semanticCacheScope.ts`); a second path to the
   same answer is how the two drift apart. The Neo4j relationship EDGE does not
   carry `kind` yet — nothing writes a match edge until slice 6.
-- 17 unit tests, no DuckDB needed. `tsc` clean, validate-coverage ratchet back at
+- **Slice 3 — `GET /api/relationships/graph` (tenant-scoped) is DONE.** Optional
+  `connectionId` / `anchorTableId` / `depth` (1–3) / `withColumns=1`; returns
+  sources, tables, relationships + `stats.{pendingReview,crossSource,unresolved}`.
+  **It reads POSTGRES, NOT NEO4J, on purpose** — `semanticGraph` matches on a bare
+  `pgId` with no tenant predicate, so id-gating works for "name one entity" but
+  inverts for "everything this tenant has" (you would fetch an unscoped graph and
+  filter it against an ownership query, i.e. read other tenants' rows to discard
+  them). Postgres has `tenant_id` on all three tables and the dual-write contract
+  already treats whole-tenant aggregates as Postgres-side. Every query filters
+  `tenant_id` EXPLICITLY — `reqDb` can fall back to the pool whose session-level
+  tenant var races. `isCrossSource` is computed server-side (the one thing the
+  canvas exists to show); edges with an out-of-scope or unresolved endpoint are
+  DROPPED from the drawing but COUNTED in `stats.unresolved`; truncation sets
+  `truncated` while `stats.tables` keeps the real total. Provenance =
+  human > ai > declared, and a confirmed row counts as human even if it began as
+  an AI draft (confirming is taking ownership) — otherwise the queue re-shows
+  finished work. 16 further unit tests.
+- 33 unit tests total across the two services, no DuckDB needed. `tsc` clean,
+  validate-coverage ratchet back at
   166 (my multi-line `router.post(` initially hid the `validate()` from the linter's
   2-line window — keep it within two lines).
 
