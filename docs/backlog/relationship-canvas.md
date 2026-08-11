@@ -130,6 +130,42 @@ point.
 
 ## 4. What has to be built
 
+### 4.0 Shipped — slice 1, the measurement endpoint (2026-08-11)
+
+`POST /api/relationships/measure` (analyst+, behind `computeLimiter`) takes four
+ids and answers whether the relationship holds:
+
+```
+{ verdict, reason, containment, target, cardinality, orphans, thresholds, elapsedMs }
+```
+
+Three decisions worth keeping:
+
+- **`verifyFkCandidate` was extracted to `semantic/fkVerification.ts`.** Importing
+  it from `SchemaProfiler` dragged in `ConnectorFactory` → DuckDB's native
+  binding, which made the measurement service unloadable in any environment
+  where that binding is not built. It only ever needed something with
+  `executeQuery`. The profiler re-exports it, so nothing else moved, and there is
+  still exactly one implementation of the test.
+- **The endpoint never refuses and never throws.** Every failure — a missing
+  table, an uncastable type, a warehouse that has not materialised, the budget
+  expiring — becomes `verdict: 'unmeasurable'` with a machine-readable `reason`.
+  A weak or broken result is reported, not blocked: the source may simply not
+  have finished syncing, and the human decides.
+- **Its own wall-clock budget** (`RELATIONSHIP_MEASURE_TIMEOUT_MS`, 8s) far below
+  DuckDB's 45s query timeout, because this runs under an open popover. When the
+  budget wins, the abandoned query gets a rejection sink — otherwise the route's
+  `disconnect()` turns it into an unhandled rejection.
+
+`verdict` is `strong` | `weak` | `broken` | `unmeasurable`, and `thresholds` is
+echoed so the UI can say "min 85%" without hardcoding a number that lives in the
+detector's env.
+
+**Cross-source returns 400 `cross_source_unsupported`** rather than measuring the
+wrong thing — that needs two connections' views in one DuckDB session (slice 6).
+
+17 unit tests, no DuckDB required (`tests/relationshipMeasure.test.ts`).
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
@@ -191,7 +227,7 @@ from the catalog.
 
 | # | Slice | Why here |
 |---|---|---|
-| 1 | Measurement endpoint, single-source only | Independently useful, testable without any UI, and it is what makes the canvas a data tool. Can be exercised from the existing canvas first. |
+| 1 | ~~Measurement endpoint, single-source only~~ **DONE 2026-08-11** | `POST /api/relationships/measure`. Independently useful, testable without any UI, and it is what makes the canvas a data tool. Can be exercised from the existing canvas before any new UI exists. |
 | 2 | Migration — `kind`, `measured`, `match_keys` | Small, unblocks both edges. |
 | 3 | Tenant-scoped graph endpoint | The prerequisite for anything cross-source. |
 | 4 | New route + source lanes + collapsed nodes + join edges | The pane, single-source parity. |

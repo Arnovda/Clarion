@@ -33,6 +33,39 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
 
+**RELATIONSHIP CANVAS — SLICE 1 SHIPPED: THE MEASUREMENT ENDPOINT (2026-08-11).**
+`POST /api/relationships/measure` (analyst+, `computeLimiter`, four ids in) answers
+whether a proposed relationship actually holds:
+`{ verdict, reason, containment, target, cardinality, orphans, thresholds, elapsedMs }`.
+This is the interaction the whole canvas is built around — drag a line, get a real
+answer instead of a form asking you to declare the cardinality.
+- **`verifyFkCandidate` was EXTRACTED to `semantic/fkVerification.ts`.** Importing
+  it from `SchemaProfiler` dragged in `ConnectorFactory` → DuckDB's native binding,
+  so the service could not even load where that binding is unbuilt (this sandbox,
+  and any test run). It only ever needed `{ executeQuery }`. SchemaProfiler
+  re-exports it — **still exactly one implementation of the FK test**, which is the
+  invariant that stopped Pass B inventing `→ GLClassifications.Name`.
+- **Never refuses, never throws.** Missing table, uncastable type, unmaterialised
+  warehouse, budget expiry → `verdict: 'unmeasurable'` + a machine-readable
+  `reason` the UI renders as a sentence. A weak/broken result is REPORTED, not
+  blocked — a half-synced source looks exactly like low containment and the human
+  decides. Verdicts: `strong` | `weak` | `broken` | `unmeasurable`.
+- **Own wall-clock budget** `RELATIONSHIP_MEASURE_TIMEOUT_MS` (8s, in
+  `.env.example`) far below DuckDB's 45s, because this runs under an open popover.
+  When the budget wins, the abandoned query gets a rejection sink — the route's
+  `disconnect()` would otherwise turn it into an unhandled rejection.
+- **`thresholds` is echoed** so the UI never hardcodes a number that lives in the
+  detector's env. Containment stays SAMPLED, cardinality/orphans are FULL-table and
+  labelled `basis`, so the two can never be presented as one ratio (the 2026-08-03
+  defect).
+- **Cross-source → 400 `cross_source_unsupported`**, deliberately: it needs two
+  connections' views in one DuckDB session (slice 6). Identifiers are catalog-resolved
+  by id AND regex-guarded before interpolation; all four ids go through
+  `denyUnlessOwned`, and a column must belong to the table it was submitted with.
+- 17 unit tests, no DuckDB needed. `tsc` clean, validate-coverage ratchet back at
+  166 (my multi-line `router.post(` initially hid the `validate()` from the linter's
+  2-line window — keep it within two lines).
+
 **RELATIONSHIP CANVAS — BUILD PLAN AGREED (2026-08-11).** New
 `docs/backlog/relationship-canvas.md`. A cross-source relationship pane whose
 purpose is **building AI context by drawing**. Four decisions are SETTLED: primary

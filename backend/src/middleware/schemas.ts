@@ -568,3 +568,15 @@ export const deleteTenantSchema = z.object({
     password: z.string().min(1, 'Password is required to confirm deletion'),
   }),
 });
+
+// POST /relationships/measure — does a proposed relationship hold in the data?
+// All four ids are required: a measurement names a column on each side, and a
+// table alone cannot be measured against another table.
+export const measureRelationshipSchema = z.object({
+  body: z.object({
+    fromTableId: positiveInt,
+    fromColumnId: positiveInt,
+    toTableId: positiveInt,
+    toColumnId: positiveInt,
+  }),
+});

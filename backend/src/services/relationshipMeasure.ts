@@ -1,0 +1,317 @@
+/**
+ * Measure whether a proposed relationship actually holds in the data.
+ *
+ * This exists to serve one interaction: the user drags a line between two
+ * columns on the relationship canvas, and instead of a form asking them to
+ * declare "is this one-to-many?", Clarion answers from the data:
+ *
+ *   97% of values found in target · 1-to-many (avg 3.2, max 47) · 23 orphans
+ *
+ * The measurement IS the confirmation dialog, so three things matter as much
+ * as correctness:
+ *
+ *   • It must be FAST. A popover that spins is worse than no popover — hence
+ *     the wall-clock budget below, which is far tighter than DuckDB's own
+ *     45s query timeout.
+ *   • It must NEVER throw at the caller. Every failure becomes an
+ *     `unmeasurable` verdict with a machine-readable reason the UI renders as
+ *     a sentence. A raw stack trace in a design tool is a dead end for the user.
+ *   • It must NEVER refuse. A weak or broken result is information, not a
+ *     veto — the user may know something the data does not show yet (an empty
+ *     table, a source that has not synced). We report; they decide.
+ *
+ * CONSISTENCY WITH THE DETECTOR IS NON-NEGOTIABLE. Containment and target
+ * uniqueness come from `verifyFkCandidate` in semantic/fkVerification — the
+ * same function, the same thresholds, the same sample the automatic detector
+ * uses — because a canvas reporting 97% for a relationship the detector
+ * silently rejected is lying to the user about which one is wrong. That
+ * function is why there is no second copy of the test here.
+ */
+
+import { verifyFkCandidate, type FkVerdict } from '../semantic/fkVerification';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'relationshipMeasure' });
+
+/**
+ * Wall-clock budget for a whole measurement. Deliberately much shorter than
+ * `DUCKDB_QUERY_TIMEOUT_MS` (45s): this runs while a popover is open under the
+ * user's cursor. Past a few seconds the honest answer is "we couldn't tell you
+ * quickly", not a longer spinner.
+ */
+const MEASURE_TIMEOUT_MS = Number(process.env.RELATIONSHIP_MEASURE_TIMEOUT_MS) || 8000;
+
+export type Cardinality = 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
+
+/**
+ * What the UI colours and phrases the result with.
+ *
+ *   strong       — passes every guard the automatic detector applies.
+ *   weak         — plausible, but the data does not confirm it. Either too few
+ *                  distinct values to be evidence, or the target is not a key,
+ *                  or containment is below threshold but not absurd.
+ *   broken       — containment so low the relationship almost certainly is not
+ *                  one (fewer than half the values have a partner).
+ *   unmeasurable — we could not run the check. Not a judgement on the
+ *                  relationship.
+ */
+export type MeasureVerdict = 'strong' | 'weak' | 'broken' | 'unmeasurable';
+
+export type MeasureReason =
+  | 'ok'
+  | 'too-few-distinct'
+  | 'target-not-key'
+  | 'low-containment'
+  | 'no-values'
+  | 'timeout'
+  | 'query-failed';
+
+export interface RelationshipMeasurement {
+  verdict: MeasureVerdict;
+  reason: MeasureReason;
+  /**
+   * Distinct-value containment, measured on a bounded sample. `matched` and
+   * `sampled` come from the SAME sample — mixing a sampled numerator with a
+   * whole-column denominator is the exact defect measured in production on
+   * 2026-08-03, and it systematically rejected the wide keys worth having.
+   */
+  containment: {
+    matchedDistinct: number;
+    sampledDistinct: number;
+    ratio: number;
+    sampleSize: number;
+  } | null;
+  /** Is the target side actually a key? Measured, never guessed from its name. */
+  target: { rows: number; distinct: number; isKey: boolean } | null;
+  /**
+   * Measured over the FULL source table, not the sample — "max 47" is
+   * meaningless from a sample of 1,000 distinct values. Reported separately
+   * from `containment` so the two are never mistaken for one ratio.
+   */
+  cardinality: {
+    type: Cardinality;
+    avgChildren: number;
+    maxChildren: number;
+    basis: 'full';
+  } | null;
+  /** Source rows whose value has no partner in the target. Full table. */
+  orphans: { rows: number; basis: 'full' } | null;
+  /** Echoed so the UI can say "min 85%" without hardcoding a threshold. */
+  thresholds: {
+    sampleSize: number;
+    minDistinct: number;
+    targetUniqueness: number;
+    minContainment: number;
+  };
+  elapsedMs: number;
+}
+
+/** The subset of a connector this needs — keeps the unit tests free of DuckDB. */
+export interface QueryableConnector {
+  executeQuery(sql: string): Promise<{ rows: unknown[] }>;
+}
+
+/**
+ * Identifier guard.
+ *
+ * Table and column names here are resolved from the catalog by id, never taken
+ * from the request body, so this is defence in depth rather than the primary
+ * control. It exists because these names are interpolated into SQL: a name
+ * carrying a double quote would break out of the quoting, and `sqlGuard` does
+ * not run on queries this service composes itself.
+ */
+const SAFE_IDENT = /^[A-Za-z0-9_][A-Za-z0-9_ .$-]{0,127}$/;
+
+export function assertSafeIdentifier(name: string, what: string): void {
+  if (!SAFE_IDENT.test(name)) {
+    throw new Error(`Unsafe ${what} from catalog: ${JSON.stringify(name)}`);
+  }
+}
+
+/**
+ * Decide the cardinality from measured uniqueness on both sides.
+ *
+ * Read "from" as the child and "to" as the parent — the direction the user
+ * dragged. A foreign key is the many-to-one case, which is why it is the one
+ * that must come out right.
+ */
+export function classifyCardinality(
+  fromIsUnique: boolean,
+  toIsUnique: boolean,
+): Cardinality {
+  if (fromIsUnique && toIsUnique) return 'one_to_one';
+  if (fromIsUnique && !toIsUnique) return 'one_to_many';
+  if (!fromIsUnique && toIsUnique) return 'many_to_one';
+  return 'many_to_many';
+}
+
+/**
+ * Map the detector's verdict onto something the UI can colour.
+ *
+ * `low-containment` splits: below half, the relationship is almost certainly
+ * wrong and should look it; between half and the threshold it is worth showing
+ * as unconfirmed rather than condemned, because a partially-synced source
+ * produces exactly that shape.
+ */
+export function verdictFromFk(v: FkVerdict): { verdict: MeasureVerdict; reason: MeasureReason } {
+  if (v.sampled === 0) return { verdict: 'unmeasurable', reason: 'no-values' };
+  switch (v.reason) {
+    case 'ok':
+      return { verdict: 'strong', reason: 'ok' };
+    case 'too-few-distinct':
+      return { verdict: 'weak', reason: 'too-few-distinct' };
+    case 'target-not-key':
+      return { verdict: 'weak', reason: 'target-not-key' };
+    case 'low-containment':
+      return v.containment < 0.5
+        ? { verdict: 'broken', reason: 'low-containment' }
+        : { verdict: 'weak', reason: 'low-containment' };
+  }
+}
+
+/**
+ * Cardinality + orphan counts, over the full source table.
+ *
+ * One statement rather than three, because every round trip is latency the
+ * user watches. The grouped CTE yields distinct values, total rows, the
+ * children-per-parent distribution and the orphan row count together.
+ */
+function cardinalitySql(
+  fromTable: string, fromColumn: string, toTable: string, toColumn: string,
+): string {
+  return `WITH g AS (
+    SELECT "${fromColumn}" AS v, COUNT(*) AS n
+    FROM "${fromTable}"
+    WHERE "${fromColumn}" IS NOT NULL
+    GROUP BY 1
+  )
+  SELECT (SELECT COUNT(*)             FROM g) AS distinct_vals,
+         (SELECT COALESCE(SUM(n), 0)  FROM g) AS total_rows,
+         (SELECT COALESCE(AVG(n), 0)  FROM g) AS avg_children,
+         (SELECT COALESCE(MAX(n), 0)  FROM g) AS max_children,
+         (SELECT COALESCE(SUM(n), 0)  FROM g
+            WHERE NOT EXISTS (
+              SELECT 1 FROM "${toTable}" t
+              WHERE CAST(t."${toColumn}" AS TEXT) = CAST(g.v AS TEXT)
+            )) AS orphan_rows`;
+}
+
+function emptyThresholds(): RelationshipMeasurement['thresholds'] {
+  return {
+    sampleSize: Number(process.env.FK_SAMPLE_SIZE) || 1000,
+    minDistinct: Number(process.env.FK_MIN_DISTINCT) || 8,
+    targetUniqueness: Number(process.env.FK_TARGET_UNIQUENESS) || 0.99,
+    minContainment: Number(process.env.FK_MIN_CONTAINMENT) || 0.85,
+  };
+}
+
+function unmeasurable(reason: MeasureReason, elapsedMs: number): RelationshipMeasurement {
+  return {
+    verdict: 'unmeasurable',
+    reason,
+    containment: null,
+    target: null,
+    cardinality: null,
+    orphans: null,
+    thresholds: emptyThresholds(),
+    elapsedMs,
+  };
+}
+
+/**
+ * Measure a proposed relationship. Never throws.
+ */
+export async function measureRelationship(
+  connector: QueryableConnector,
+  fromTable: string, fromColumn: string,
+  toTable: string, toColumn: string,
+): Promise<RelationshipMeasurement> {
+  const started = Date.now();
+  const thresholds = emptyThresholds();
+
+  try {
+    assertSafeIdentifier(fromTable, 'table name');
+    assertSafeIdentifier(fromColumn, 'column name');
+    assertSafeIdentifier(toTable, 'table name');
+    assertSafeIdentifier(toColumn, 'column name');
+  } catch (err) {
+    log.error({ err, fromTable, fromColumn, toTable, toColumn }, 'refusing to measure: unsafe identifier');
+    return unmeasurable('query-failed', Date.now() - started);
+  }
+
+  // A single budget across both queries. Whichever settles first loses to the
+  // clock if the pair takes too long; the user gets a definite answer either
+  // way, which is the point.
+  let timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), MEASURE_TIMEOUT_MS);
+  });
+
+  try {
+    const work = (async () => {
+      const fk = await verifyFkCandidate(connector, fromTable, fromColumn, toTable, toColumn);
+
+      const card = await connector.executeQuery(
+        cardinalitySql(fromTable, fromColumn, toTable, toColumn),
+      );
+      const row = card.rows[0] as Record<string, unknown> | undefined;
+      return { fk, row };
+    })();
+    // When the budget wins the race, this promise is still in flight and its
+    // caller has already returned. The route then disconnects the connector,
+    // which can make the abandoned query reject — with nothing listening, that
+    // becomes an unhandled rejection and, depending on the Node flags, takes
+    // the process down. Attaching a sink here does not consume the promise for
+    // the race below.
+    work.catch(() => undefined);
+
+    const settled = await Promise.race([work, budget]);
+    if (settled === 'timeout') {
+      log.warn({ fromTable, fromColumn, toTable, toColumn, ms: MEASURE_TIMEOUT_MS }, 'measurement exceeded budget');
+      return unmeasurable('timeout', Date.now() - started);
+    }
+
+    const { fk, row } = settled;
+    const { verdict, reason } = verdictFromFk(fk);
+
+    const distinctVals = Number(row?.distinct_vals ?? 0);
+    const totalRows    = Number(row?.total_rows ?? 0);
+    const avgChildren  = Number(row?.avg_children ?? 0);
+    const maxChildren  = Number(row?.max_children ?? 0);
+    const orphanRows   = Number(row?.orphan_rows ?? 0);
+
+    const fromIsUnique = totalRows > 0 && distinctVals === totalRows;
+    const toIsUnique   = fk.targetRows > 0 && fk.targetDistinct / fk.targetRows >= thresholds.targetUniqueness;
+
+    return {
+      verdict,
+      reason,
+      containment: {
+        matchedDistinct: Math.round(fk.containment * fk.sampled),
+        sampledDistinct: fk.sampled,
+        ratio: fk.containment,
+        sampleSize: thresholds.sampleSize,
+      },
+      target: { rows: fk.targetRows, distinct: fk.targetDistinct, isKey: toIsUnique },
+      cardinality: totalRows > 0
+        ? {
+            type: classifyCardinality(fromIsUnique, toIsUnique),
+            avgChildren,
+            maxChildren,
+            basis: 'full',
+          }
+        : null,
+      orphans: { rows: orphanRows, basis: 'full' },
+      thresholds,
+      elapsedMs: Date.now() - started,
+    };
+  } catch (err) {
+    // A missing table, a type that will not cast, a warehouse that has not been
+    // materialised. All of these are "we cannot tell you", not a server error —
+    // the user is mid-gesture and needs a sentence, not a 500.
+    log.warn({ err, fromTable, fromColumn, toTable, toColumn }, 'measurement query failed');
+    return unmeasurable('query-failed', Date.now() - started);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
