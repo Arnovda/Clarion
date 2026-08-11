@@ -228,7 +228,7 @@ from the catalog.
 | # | Slice | Why here |
 |---|---|---|
 | 1 | ~~Measurement endpoint, single-source only~~ **DONE 2026-08-11** | `POST /api/relationships/measure`. Independently useful, testable without any UI, and it is what makes the canvas a data tool. Can be exercised from the existing canvas before any new UI exists. |
-| 2 | Migration — `kind`, `measured`, `match_keys` | Small, unblocks both edges. |
+| 2 | ~~Migration — `kind`, `measured`, `match_keys`~~ **DONE 2026-08-11** (`20260811000077`) | Small, unblocks both edges. Additive only: `kind` defaults to `'join'` so every existing row keeps its meaning and no backfill is needed. |
 | 3 | Tenant-scoped graph endpoint | The prerequisite for anything cross-source. |
 | 4 | New route + source lanes + collapsed nodes + join edges | The pane, single-source parity. |
 | 5 | Queue-as-canvas + keyboard model | Turns it into the review tool that was chosen as the primary job. |

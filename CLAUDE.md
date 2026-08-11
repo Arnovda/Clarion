@@ -62,6 +62,16 @@ answer instead of a form asking you to declare the cardinality.
   connections' views in one DuckDB session (slice 6). Identifiers are catalog-resolved
   by id AND regex-guarded before interpolation; all four ids go through
   `denyUnlessOwned`, and a column must belong to the table it was submitted with.
+- **Migration 77 (slice 2) adds `kind` / `measured` / `match_keys`** to
+  `table_relationships`. `kind` (`join`|`match`) defaults to `'join'`, so every
+  existing row keeps its meaning and no backfill is needed — everything written
+  before it was single-source by construction. `measured` caches the last
+  measurement (NULL = never measured, which must not render as a zero);
+  `match_keys` is meaningless for a join, hence nullable not defaulted.
+  **Deliberately NO `connection_id`** — this table has never had one and scope
+  resolves via `from_table_id` (`db/semanticCacheScope.ts`); a second path to the
+  same answer is how the two drift apart. The Neo4j relationship EDGE does not
+  carry `kind` yet — nothing writes a match edge until slice 6.
 - 17 unit tests, no DuckDB needed. `tsc` clean, validate-coverage ratchet back at
   166 (my multi-line `router.post(` initially hid the `validate()` from the linter's
   2-line window — keep it within two lines).
