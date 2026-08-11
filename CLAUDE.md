@@ -89,6 +89,33 @@ answer instead of a form asking you to declare the cardinality.
   human > ai > declared, and a confirmed row counts as human even if it began as
   an AI draft (confirming is taking ownership) — otherwise the queue re-shows
   finished work. 16 further unit tests.
+- **Slice 4 — THE CANVAS IS LIVE at `/relationships`** (analyst+, **Studio** nav
+  group on purpose: repair/escape-hatch tool, NOT the front door). New
+  `components/relationships/`: `geometry.ts` · `types.ts` · `laneLayout.ts` ·
+  `TableNode` · `LaneNode` · `RelationEdge` · `MeasurePanel` · `GraphCanvas`.
+  **Source lanes are NODES, not an overlay** — an absolutely-positioned band sits
+  in SCREEN space and drifts off its tables on the first pan/zoom; as a node it
+  gets the same viewport transform as everything else. **Deliberately NOT dagre** —
+  dagre optimises for hierarchy and would interleave tables from different sources
+  wherever that shortened an edge, destroying the one property lanes exist for
+  (a cross-source edge is the only kind crossing a boundary). **Nodes collapsed by
+  default**; columns (and per-column handles) appear on expand, and edges
+  re-anchor from the node handle to the specific column row as tables open.
+  **Provenance rides the LINE STYLE** (human solid ocean / declared thin grey /
+  AI dashed amber) because the default view is a review queue and "what has nobody
+  checked?" must be answerable across the whole graph at a glance; a match edge
+  carries a second offset stroke so it can never read as a join. **Drawing
+  measures before it saves** — drop → `POST /measure` → plain-language verdict →
+  nothing written until "Keep it", and the MEASURED cardinality becomes the stored
+  `relationship_type`. Weak/broken verdicts keep Keep enabled (a half-synced source
+  looks exactly like low containment). **Two bugs found and fixed while building:**
+  `POST /semantic/relationships` takes **snake_case** (`from_table_id`…) and
+  camelCase silently fails validation; and the first lane implementation was an
+  overlay (see above). `next build` green, `/relationships` 2.69 kB / 100 kB —
+  ReactFlow is dynamically imported so it costs nothing on other pages.
+  **Not yet:** keyboard queue model (slice 5), match edges + cross-source
+  measurement (slice 6); confirm/reject on an EXISTING edge still happens on the
+  old surface.
 - 33 unit tests total across the two services, no DuckDB needed. `tsc` clean,
   validate-coverage ratchet back at
   166 (my multi-line `router.post(` initially hid the `validate()` from the linter's
