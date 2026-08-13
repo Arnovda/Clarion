@@ -31,9 +31,9 @@ export default function RelationshipsPage() {
             How it fits together
           </h1>
           <p className="mt-1 max-w-2xl text-[12.5px] text-muted">
-            Every table Clarion has found, grouped by where it came from. Open two tables and
-            drag between columns to tell Clarion how they relate — it will check the link
-            against your data before saving it.
+            Pick a table on the left to see what it connects to and on which fields. Check
+            what Clarion suggested, correct it, or drag between two fields to add a link —
+            it measures every link against your data before saving it.
           </p>
         </header>
         <div className="min-h-0 flex-1">

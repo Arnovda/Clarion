@@ -13,7 +13,7 @@ import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge
 import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
-import { TableList } from './TableList';
+import { TableList, type TableListLink } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
 import { radialLayout, pairLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H, NODE_W } from './geometry';
@@ -60,7 +60,14 @@ function CanvasInner() {
   const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
   const [payoff, setPayoff] = useState<string | null>(null);
   const [mode, setMode] = useState<'review' | 'explore'>('review');
-  const [anchorId, setAnchorId] = useState<number | null>(null);
+  /** The table being worked on: anchored in Explore, expanded in the list always. */
+  const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
+  /**
+   * Narrows the review queue to one table. Set only by an explicit click, never
+   * derived from the current item — deriving it would let the queue narrow
+   * itself to whatever it happened to land on.
+   */
+  const [reviewScopeId, setReviewScopeId] = useState<number | null>(null);
   /**
    * Tables showing every column rather than just the ones they connect on.
    * Only drawing a NEW relationship needs the full list; everything else is
@@ -105,13 +112,24 @@ function CanvasInner() {
 
   /** Explore opens on the most connected table — the hub is what people look for. */
   useEffect(() => {
-    if (mode !== 'explore' || !graph || anchorId !== null) return;
+    if (mode !== 'explore' || !graph || selectedTableId !== null) return;
     const hub = [...graph.tables].sort((a, b) => b.relationshipCount - a.relationshipCount)[0];
-    if (hub) setAnchorId(hub.id);
-  }, [mode, graph, anchorId]);
+    if (hub) setSelectedTableId(hub.id);
+  }, [mode, graph, selectedTableId]);
+
+  /**
+   * Keep the list pointing at whatever the queue is showing, so "where am I?"
+   * is answered without looking for it. This only moves the highlight — the
+   * queue's own scope is set by clicking, never by where it happened to land.
+   */
+  useEffect(() => {
+    if (mode !== 'review' || !graph || selectedEdgeId == null) return;
+    const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
+    if (rel) setSelectedTableId(reviewScopeId ?? rel.fromTableId);
+  }, [mode, graph, selectedEdgeId, reviewScopeId]);
 
   /** A revealed column list belongs to the table you were just looking at. */
-  useEffect(() => { setShowAll(new Set()); }, [mode, anchorId, selectedEdgeId]);
+  useEffect(() => { setShowAll(new Set()); }, [mode, selectedTableId, selectedEdgeId]);
 
   const columnsByTable = useMemo(() => {
     const m = new Map<number, GraphColumn[]>();
@@ -131,6 +149,56 @@ function CanvasInner() {
     [colorIndexBySource],
   );
 
+  const columnNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const c of graph?.columns ?? []) m.set(c.id, c.column_name);
+    return m;
+  }, [graph]);
+
+  const tableNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const t of graph?.tables ?? []) m.set(t.id, t.displayName || t.tableName);
+    return m;
+  }, [graph]);
+
+  /** How many of each table's relationships nobody has decided on yet. */
+  const pendingByTable = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of graph?.relationships ?? []) {
+      if (r.provenance !== 'ai') continue;
+      m.set(r.fromTableId, (m.get(r.fromTableId) ?? 0) + 1);
+      if (r.toTableId !== r.fromTableId) m.set(r.toTableId, (m.get(r.toTableId) ?? 0) + 1);
+    }
+    return m;
+  }, [graph]);
+
+  /** A table's relationships, phrased from that table's side. */
+  const linksFor = useCallback((tableId: number): TableListLink[] => {
+    const out: TableListLink[] = [];
+    for (const r of graph?.relationships ?? []) {
+      const outgoing = r.fromTableId === tableId;
+      const incoming = r.toTableId === tableId;
+      if (!outgoing && !incoming) continue;
+      const ownCol = outgoing ? r.fromColumnId : r.toColumnId;
+      const otherTable = outgoing ? r.toTableId : r.fromTableId;
+      const otherCol = outgoing ? r.toColumnId : r.fromColumnId;
+      const otherName = tableNameById.get(otherTable) ?? 'table';
+      const otherColName = otherCol != null ? columnNameById.get(otherCol) : null;
+      out.push({
+        id: r.id,
+        ownLabel: (ownCol != null ? columnNameById.get(ownCol) : null) ?? 'this table',
+        otherLabel: otherColName ? `${otherName}.${otherColName}` : otherName,
+        provenance: r.provenance,
+        kind: r.kind,
+        isCrossSource: r.isCrossSource,
+      });
+    }
+    // Undecided first: the list is a work list before it is a reference.
+    return out.sort((a, b) =>
+      Number(b.provenance === 'ai') - Number(a.provenance === 'ai')
+      || a.otherLabel.localeCompare(b.otherLabel));
+  }, [graph, columnNameById, tableNameById]);
+
   const toggleAllColumns = useCallback((tableId: number) => {
     setShowAll((prev) => {
       const next = new Set(prev);
@@ -141,11 +209,11 @@ function CanvasInner() {
 
   const focus: Focus | null = useMemo(() => {
     if (!graph) return null;
-    if (mode === 'explore') return anchorId != null ? { kind: 'anchor', id: anchorId } : null;
+    if (mode === 'explore') return selectedTableId != null ? { kind: 'anchor', id: selectedTableId } : null;
     if (selectedEdgeId == null) return null;
     const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
     return rel ? { kind: 'pair', a: rel.fromTableId, b: rel.toTableId } : null;
-  }, [graph, mode, anchorId, selectedEdgeId]);
+  }, [graph, mode, selectedTableId, selectedEdgeId]);
 
   /**
    * The neighbours that make the ring, in the order they are placed around it.
@@ -340,7 +408,7 @@ function CanvasInner() {
     // that uses stale sizes and lands off-centre.
     const t = setTimeout(() => fitView({ padding: 0.18, maxZoom: 1, duration: 300 }), 60);
     return () => clearTimeout(t);
-  }, [nodes.length, mode, anchorId, selectedEdgeId, fitView]);
+  }, [nodes.length, mode, selectedTableId, selectedEdgeId, fitView]);
 
   const labelFor = useCallback((tableId: number, columnId: number | null) => {
     const t = graph?.tables.find((x) => x.id === tableId);
@@ -501,10 +569,29 @@ function CanvasInner() {
    * This is the queue — J and K step through it without the user hunting for
    * dashed lines by eye.
    */
-  const pendingQueue = useMemo(
-    () => (graph?.relationships ?? []).filter((r) => r.provenance === 'ai').map((r) => r.id),
-    [graph],
-  );
+  const pendingQueue = useMemo(() => {
+    const pending = (graph?.relationships ?? []).filter((r) => r.provenance === 'ai');
+    const scoped = reviewScopeId == null
+      ? pending
+      : pending.filter((r) => r.fromTableId === reviewScopeId || r.toTableId === reviewScopeId);
+    return scoped.map((r) => r.id);
+  }, [graph, reviewScopeId]);
+
+  /**
+   * Picking a table is the main gesture, and it means the same thing in both
+   * modes: *this* is the table I am working on. In Explore that re-centres the
+   * ring; in Review it narrows the queue to that table's suggestions, which is
+   * how someone goes over one table rather than the whole catalog in whatever
+   * order it came back in.
+   */
+  const pickTable = useCallback((tableId: number) => {
+    setSelectedTableId(tableId);
+    if (mode !== 'review') return;
+    setReviewScopeId(tableId);
+    const links = linksFor(tableId);
+    const next = links.find((l) => l.provenance === 'ai') ?? links[0];
+    setSelectedEdgeId(next ? next.id : null);
+  }, [mode, linksFor]);
 
   const queuePosition = (() => {
     if (mode !== 'review' || selectedEdgeId == null) return null;
@@ -638,7 +725,8 @@ function CanvasInner() {
           if (selectedRel && busy === null) { e.preventDefault(); void deleteRel(selectedRel); }
           break;
         case '/':
-          if (mode === 'explore') { e.preventDefault(); document.getElementById('rel-search')?.focus(); }
+          e.preventDefault();
+          document.getElementById('rel-search')?.focus();
           break;
         case 'Escape':
           setDraw(null); setMatch(null);
@@ -680,18 +768,27 @@ function CanvasInner() {
     ? graph?.tables.find((t) => t.id === focus.id) ?? null
     : null;
   const reviewEmpty = mode === 'review' && !focus;
+  const scopeTable = reviewScopeId != null
+    ? graph?.tables.find((t) => t.id === reviewScopeId) ?? null
+    : null;
 
   return (
     <div className="flex h-full">
-      {mode === 'explore' && graph && (
+      {/* Always present, in both modes. It is how you choose what to work on;
+          without it the canvas decides for you and there is nothing to click. */}
+      {graph && (
         <TableList
           tables={graph.tables}
           sources={graph.sources}
           colorFor={colorForConnection}
-          anchorId={anchorId}
+          pendingByTable={pendingByTable}
+          selectedTableId={selectedTableId}
+          selectedEdgeId={selectedEdgeId}
+          linksFor={linksFor}
           search={search}
           onSearch={setSearch}
-          onPick={(id) => { setAnchorId(id); setSelectedEdgeId(null); }}
+          onPickTable={pickTable}
+          onPickLink={setSelectedEdgeId}
         />
       )}
       <div className="relative min-w-0 flex-1">
@@ -744,6 +841,29 @@ function CanvasInner() {
           </div>
         )}
 
+        {/* Say when the queue is narrowed, and make widening it one click — a
+            filter you cannot see is a filter you get stuck in. */}
+        {mode === 'review' && scopeTable && (
+          <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 py-1.5 pl-3 pr-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ background: colorForConnection(scopeTable.connectionId) }}
+            />
+            Going through <span className="font-medium text-ink">{scopeTable.displayName || scopeTable.tableName}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setReviewScopeId(null);
+                const all = (graph?.relationships ?? []).filter((r) => r.provenance === 'ai');
+                if (selectedEdgeId == null && all.length) setSelectedEdgeId(all[0].id);
+              }}
+              className="rounded-lg px-1.5 py-0.5 text-[12px] text-ocean hover:bg-soft"
+            >
+              Review everything
+            </button>
+          </div>
+        )}
+
         {stats && (
           <div className="ml-auto flex items-center gap-3 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
             <span className="tabular-nums">{stats.tables} tables</span>
@@ -791,10 +911,8 @@ function CanvasInner() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onEdgeClick={(_, edge) => setSelectedEdgeId(Number(edge.id))}
-        onNodeClick={(_, node) => {
-          // Walking the graph: click a neighbour to make it the centre.
-          if (mode === 'explore') setAnchorId(Number(node.id));
-        }}
+        // Clicking a table means the same thing here as in the list.
+        onNodeClick={(_, node) => pickTable(Number(node.id))}
         onPaneClick={() => { if (mode === 'explore') setSelectedEdgeId(null); }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -814,16 +932,29 @@ function CanvasInner() {
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 rounded-2xl border border-line bg-raised/95 px-6 py-7 text-center shadow-sm backdrop-blur">
             <CheckCircle2 size={22} className="text-ok" />
-            <p className="text-[14px] font-medium text-ink">Nothing left to review</p>
+            <p className="text-[14px] font-medium text-ink">
+              {scopeTable
+                ? `${scopeTable.displayName || scopeTable.tableName} is done`
+                : 'Nothing left to review'}
+            </p>
             <p className="text-[12.5px] leading-relaxed text-muted">
-              Every relationship Clarion suggested has been decided on.
+              {scopeTable
+                ? 'Nothing on this table is waiting on you. Pick another table on the left, or go back to the full queue.'
+                : 'Every relationship Clarion suggested has been decided on. Pick a table on the left to go over its links anyway.'}
             </p>
             <button
               type="button"
-              onClick={() => setMode('explore')}
+              onClick={() => {
+                if (scopeTable) {
+                  setReviewScopeId(null);
+                  const all = (graph?.relationships ?? []).filter((r) => r.provenance === 'ai');
+                  if (all.length) { setSelectedEdgeId(all[0].id); return; }
+                }
+                setMode('explore');
+              }}
               className="mt-1 rounded-lg bg-ocean px-3 py-1.5 text-[12.5px] text-white hover:opacity-90"
             >
-              Explore your data
+              {scopeTable ? 'Review everything' : 'Explore your data'}
             </button>
           </div>
         </div>

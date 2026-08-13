@@ -146,6 +146,25 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **THE TABLE LIST IS NOW THE WORK LIST (2026-08-13).** Owner: *"how do I check
+  or edit per table? I can't select anything myself."* Correct — Review walked a
+  GLOBAL queue in whatever order the rows came back, and `TableList` existed only
+  in Explore where it merely moved the camera, so "I want to go over the bank
+  entries" was unreachable. Fixes: (1) **the list renders in BOTH modes** — it is
+  how you choose what to work on, and without it the canvas decides for you;
+  (2) **expanding a table lists its relationships**, each clickable straight into
+  the inspector (undecided first, hollow amber dot = AI suggestion, solid = a
+  person decided — same vocabulary as the edge styles), which is the "edit per
+  table" path that stepping a queue could never give; (3) **picking a table in
+  Review NARROWS the queue to that table**, with a visible chip and a one-click
+  "Review everything" — a filter you cannot see is a filter you get stuck in;
+  (4) **pending counts on the table rows**, sorted pending-first, so the list
+  answers "where is the work?" before any click; (5) clicking a table means the
+  same thing from the list and from a canvas node (one handler). **The scope is
+  set by CLICKING and never derived from the current queue item** — deriving it
+  would let the queue silently narrow itself to whatever it landed on. The page
+  header copy still described the deleted lane grid ("grouped by where it came
+  from") and now describes what the screen does.
   **ONE TABLE IN THE MIDDLE, ITS JOIN SURFACE VISIBLE (2026-08-13) — the
   layout is now a RING, and lanes are DELETED.** The grid still did not say which
   table the view was about, and finding the two fields a table joins on still

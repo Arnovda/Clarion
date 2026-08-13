@@ -434,6 +434,34 @@ Neither is "look at my whole graph". So there is no view that draws it.
 call. They must agree exactly or edges land off their rows and the ring stops
 being centred.
 
+### 4.0i The table list is the work list (2026-08-13)
+
+Owner feedback, and it is the right complaint: *"how do I check or edit per
+table? I can't select anything myself."* Review walked a global queue in
+whatever order the rows came back in, and the table list existed only in
+Explore, where all it did was move the camera. Between the two there was no way
+to say **"I want to go over the bank entries"** — which is how a person actually
+works through this.
+
+- **The list is present in both modes.** It is how you choose what to work on.
+  Without it the canvas decides for you and there is nothing to click.
+- **Expanding a table shows its relationships**, each one clickable straight into
+  the inspector. Undecided ones sort first and carry a hollow amber dot; decided
+  ones a solid dot — the same vocabulary as the edges on the canvas. This is the
+  "edit per table" path: you no longer have to reach a relationship by stepping
+  through a queue that might never offer it.
+- **Picking a table in Review narrows the queue to that table**, and the toolbar
+  says so with a one-click *"Review everything"* out. A filter you cannot see is
+  a filter you get stuck in.
+- **Pending counts sit on the table rows** (amber when non-zero, the plain
+  relationship count otherwise), and tables sort pending-first. The list answers
+  "where is the work?" before you click anything.
+- **Clicking a table means one thing everywhere** — same handler from the list
+  and from a node on the canvas.
+- The scope is set by clicking, **never derived from the current queue item**.
+  Deriving it would let the queue silently narrow itself to whatever it landed
+  on, which is the sort of bug that looks like data loss.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
