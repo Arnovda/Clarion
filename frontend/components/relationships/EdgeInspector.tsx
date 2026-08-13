@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2 } from 'lucide-react';
+import {
+  Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2, HelpCircle,
+} from 'lucide-react';
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
 import {
   explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
@@ -43,7 +45,51 @@ const CARDINALITY_TEXT: Record<string, string> = {
  * relationship's description is the sentence that ends up in the NL-to-SQL
  * prompt, so this field is the most direct way a person can teach Clarion
  * something it could not infer.
+ *
+ * **ORDER IS THE DESIGN.** The evidence comes first, because the question this
+ * panel exists to answer is "does this relationship hold?" — and everything
+ * else is either how to correct it or how to describe it. An earlier version
+ * opened with the shape picker and the column pickers, so the measurement (the
+ * only thing that could tell you whether the shape and columns were even worth
+ * correcting) sat below the fold behind four explanatory paragraphs.
  */
+
+/**
+ * Explanations are worth having and worth hiding. Each one is true and each one
+ * is read exactly once; left on screen they are the difference between a panel
+ * you scan and a panel you read.
+ */
+function Hint({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`rounded p-0.5 transition-colors ${open ? 'text-ocean' : 'text-muted2 hover:text-ink2'}`}
+        aria-label={open ? 'Hide explanation' : 'What is this?'}
+        aria-expanded={open}
+      >
+        <HelpCircle size={12} />
+      </button>
+      {open && <p className="mt-1 basis-full text-[11.5px] leading-relaxed text-muted">{text}</p>}
+    </>
+  );
+}
+
+/** A section heading with an optional `?` and an optional right-hand action. */
+function SectionHead({ label, hint, children }: {
+  label: string; hint?: string; children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">{label}</div>
+      {hint && <Hint text={hint} />}
+      {children && <div className="ml-auto">{children}</div>}
+    </div>
+  );
+}
+
 function ColumnPicker({ label, value, options, disabled, onChange }: {
   label: string;
   value: number | null;
@@ -111,6 +157,19 @@ export function EdgeInspector({
           <div className="mt-1 break-words text-[13px] leading-snug text-ink">
             {fromLabel} <span className="text-muted2">→</span> {toLabel}
           </div>
+          {/* Who asserted this is a one-word fact, so it rides on the title
+              line as a chip. It used to open the panel as a chip plus a full
+              sentence of explanation, which put the measurement — the thing
+              you came for — below the fold. */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span
+              className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+              style={{ color: prov.color, background: prov.bg }}
+            >
+              {prov.label}
+            </span>
+            <Hint text={prov.hint} />
+          </div>
         </div>
         <button type="button" onClick={onClose} className="rounded p-1 text-muted2 hover:bg-soft hover:text-ink" aria-label="Close">
           <X size={14} />
@@ -118,19 +177,11 @@ export function EdgeInspector({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        <div
-          className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
-          style={{ color: prov.color, background: prov.bg }}
-        >
-          {prov.label}
-        </div>
-        <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{prov.hint}</p>
-
         {/* A flag is a standing statement about this link, so it sits at the
             top with the other things that describe what it IS — not down with
             the buttons, where it would read as one more action to take. */}
         {relationship.flagged && (
-          <div className="mt-3 rounded-lg border border-warn/40 bg-warnSoft px-2.5 py-2">
+          <div className="mb-4 rounded-lg border border-warn/40 bg-warnSoft px-2.5 py-2">
             <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-ink">
               <Flag size={11} className="text-warn" />
               Flagged as a problem
@@ -158,61 +209,11 @@ export function EdgeInspector({
           </div>
         )}
 
-        <div className="mt-4">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
-            Clarion measures this, but you can correct it — you may know something
-            the data does not show yet.
-          </p>
-          <div className="mt-1.5 grid grid-cols-2 gap-1">
-            {(Object.keys(CARDINALITY_TEXT) as string[]).map((k) => (
-              <button
-                key={k}
-                type="button"
-                disabled={busy !== null}
-                onClick={() => onChangeType(k)}
-                className={`rounded-lg border px-2 py-1 text-[11.5px] transition-colors disabled:opacity-50 ${
-                  relationship.relationshipType === k
-                    ? 'border-ocean bg-ocean text-white'
-                    : 'border-line bg-surface text-ink2 hover:bg-soft'
-                }`}
-              >
-                {CARDINALITY_TEXT[k]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-4">
-          <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
-            Matched on
-          </div>
-          <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
-            If Clarion picked the wrong columns, change them here.
-          </p>
-          <div className="mt-1.5 space-y-1.5">
-            <ColumnPicker
-              label={fromLabel.split('.')[0]}
-              value={relationship.fromColumnId}
-              options={fromColumns}
-              disabled={busy !== null}
-              onChange={(id) => onChangeColumns({ from: id })}
-            />
-            <ColumnPicker
-              label={toLabel.split('.')[0]}
-              value={relationship.toColumnId}
-              options={toColumns}
-              disabled={busy !== null}
-              onChange={(id) => onChangeColumns({ to: id })}
-            />
-          </div>
-        </div>
-
-        <div className="mt-4 border-t border-line/60 pt-3">
-          <div className="flex items-center justify-between">
-            <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
-              Checked against your data
-            </div>
+        <div>
+          <SectionHead
+            label="Checked against your data"
+            hint="Three fixed SQL rules run against the warehouse. No AI is involved — the same rules Clarion uses when it detects relationships in the first place."
+          >
             <button
               type="button"
               onClick={onRemeasure}
@@ -224,24 +225,10 @@ export function EdgeInspector({
                 : <RefreshCw size={11} />}
               {m ? 'Check again' : 'Check now'}
             </button>
-          </div>
+          </SectionHead>
 
           {!m && busy !== 'measure' && (
             <p className="mt-1.5 text-[11.5px] text-muted">Not checked yet.</p>
-          )}
-
-          {/* Reading the two columns is its own act, available whether or not a
-              measurement exists — you often want the values BECAUSE the number
-              is surprising, and sometimes before there is a number at all. */}
-          {relationship.fromColumnId != null && relationship.toColumnId != null && (
-            <button
-              type="button"
-              onClick={onCompareValues}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11.5px] text-ink2 hover:bg-soft"
-            >
-              <Columns2 size={11} />
-              Compare the values side by side
-            </button>
           )}
 
           {m && (
@@ -271,7 +258,9 @@ export function EdgeInspector({
                 <div className="mt-2.5 grid grid-cols-2 gap-2">
                   {m.cardinality && (
                     <div>
-                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
+                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+                        Measured shape
+                      </div>
                       <div className="text-[13px] text-ink">{CARDINALITY_TEXT[m.cardinality.type]}</div>
                     </div>
                   )}
@@ -308,17 +297,74 @@ export function EdgeInspector({
               )}
             </>
           )}
+
+          {/* Reading the two columns is its own act, available whether or not a
+              measurement exists — you often want the values BECAUSE the number
+              is surprising, and sometimes before there is a number at all. It
+              closes the section rather than opening it: a button offering to
+              go deeper reads as noise above the answer it is deepening. */}
+          {relationship.fromColumnId != null && relationship.toColumnId != null && (
+            <button
+              type="button"
+              onClick={onCompareValues}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11.5px] text-ink2 hover:bg-soft"
+            >
+              <Columns2 size={11} />
+              Compare the values side by side
+            </button>
+          )}
+        </div>
+
+        {/* Corrections come after the evidence, because the evidence is what
+            tells you whether a correction is called for. */}
+        <div className="mt-4 border-t border-line/60 pt-3">
+          <SectionHead
+            label="Matched on"
+            hint="These are the two columns Clarion compares. If it picked the wrong ones, change them here — the check re-runs against the columns you choose."
+          />
+          <div className="mt-1.5 space-y-1.5">
+            <ColumnPicker
+              label={fromLabel.split('.')[0]}
+              value={relationship.fromColumnId}
+              options={fromColumns}
+              disabled={busy !== null}
+              onChange={(id) => onChangeColumns({ from: id })}
+            />
+            <ColumnPicker
+              label={toLabel.split('.')[0]}
+              value={relationship.toColumnId}
+              options={toColumns}
+              disabled={busy !== null}
+              onChange={(id) => onChangeColumns({ to: id })}
+            />
+            {/* A dropdown, not four buttons. The shape is a stored value that
+                is almost always already right — four always-visible options
+                gave a settled field the weight of a decision. */}
+            <label className="flex items-center gap-2">
+              <span className="w-[38%] shrink-0 truncate text-[11.5px] text-muted">Shape</span>
+              <select
+                value={relationship.relationshipType ?? ''}
+                disabled={busy !== null}
+                onChange={(e) => onChangeType(e.target.value)}
+                className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
+              >
+                {!relationship.relationshipType && <option value="">— not set —</option>}
+                {Object.keys(CARDINALITY_TEXT).map((k) => (
+                  <option key={k} value={k}>{CARDINALITY_TEXT[k]}</option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
 
         <div className="mt-4 border-t border-line/60 pt-3">
-          <label className="font-mono text-[10px] uppercase tracking-wider text-muted2" htmlFor="rel-desc">
-            What this means
-          </label>
-          <p className="mt-1 text-[11px] leading-relaxed text-muted">
-            <Sparkles size={10} className="mr-1 inline" />
-            Clarion reads this when answering questions. A sentence in your own words
-            helps more than anything else here.
-          </p>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label className="font-mono text-[10px] uppercase tracking-wider text-muted2" htmlFor="rel-desc">
+              What this means
+            </label>
+            <Hint text="Clarion reads this when answering questions. A sentence in your own words helps more than anything else here." />
+            <Sparkles size={10} className="text-muted2" />
+          </div>
           <textarea
             id="rel-desc"
             value={description}

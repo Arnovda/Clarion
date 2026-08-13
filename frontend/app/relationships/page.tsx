@@ -23,17 +23,16 @@ export default function RelationshipsPage() {
   return (
     <RequireRole roles={['admin', 'analyst']}>
       <div className="flex h-full flex-col">
-        <header className="border-b border-line px-6 py-4">
-          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted2">
-            Your data
-          </div>
-          <h1 className="mt-1 font-serif text-[22px] leading-tight text-ink">
-            How it fits together
+        {/* One sentence. The header had three, describing gestures the screen
+            below already offers, on a page whose whole problem was that it was
+            busy — and a paragraph of instructions is read once and then costs
+            vertical space to the canvas on every visit afterwards. */}
+        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-6 py-3">
+          <h1 className="font-serif text-[20px] leading-tight text-ink">
+            How your data fits together
           </h1>
-          <p className="mt-1 max-w-2xl text-[12.5px] text-muted">
-            Pick a table on the left to see what it connects to and on which fields. Check
-            what Clarion suggested, correct it, or drag between two fields to add a link —
-            it measures every link against your data before saving it.
+          <p className="text-[12.5px] text-muted">
+            Pick a table to see what it connects to, and on which fields.
           </p>
         </header>
         <div className="min-h-0 flex-1">

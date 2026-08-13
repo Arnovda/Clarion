@@ -32,6 +32,17 @@ export interface CheckProgress {
   total: number;
 }
 
+/** A table's links, gathered under the field each one leaves from. */
+function groupByColumn(links: readonly TableListLink[]) {
+  const out: { column: string; links: TableListLink[] }[] = [];
+  for (const l of links) {
+    const last = out[out.length - 1];
+    if (last && last.column === l.ownLabel) last.links.push(l);
+    else out.push({ column: l.ownLabel, links: [l] });
+  }
+  return out;
+}
+
 /**
  * How a table's links came out, as one line.
  *
@@ -223,10 +234,13 @@ export function TableList({
                         {pending}
                       </span>
                     )}
+                    {/* `2 42` read as "242". The slash is the cheapest thing
+                        that stops two adjacent numbers merging into one. */}
                     <span
-                      className="shrink-0 tabular-nums text-[11px] text-muted2"
+                      className="w-9 shrink-0 text-right tabular-nums text-[11px] text-muted2"
                       title={`${t.relationshipCount} relationships in total`}
                     >
+                      {pending > 0 && <span className="text-muted2/60">of </span>}
                       {t.relationshipCount}
                     </span>
                   </button>
@@ -290,65 +304,65 @@ export function TableList({
                           </div>
                         )}
 
-                        {links.map((l) => {
-                          const active = l.id === selectedEdgeId;
-                          const outcome = outcomeOf(l.measured);
-                          return (
-                            <button
-                              key={l.id}
-                              type="button"
-                              onClick={() => onPickLink(l.id)}
-                              className={`flex w-full items-center gap-1.5 rounded-md py-1 pl-1.5 pr-1 text-left ${
-                                active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
-                              }`}
-                            >
-                              {/* Same vocabulary as the canvas: solid = a person
-                                  decided this, hollow = still a suggestion. */}
-                              <span
-                                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                style={l.provenance === 'ai'
-                                  ? { border: '1.5px solid #b8823a' }
-                                  : { background: l.provenance === 'human' ? '#1f6f83' : '#9aa3ad' }}
-                              />
-                              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
-                                {l.ownLabel}
-                                <span
-                                  className="text-muted2"
-                                  title={l.direction === 'out'
-                                    ? 'This table points at the other one'
-                                    : 'The other table points at this one'}
-                                >
-                                  {l.direction === 'out' ? ' → ' : ' ← '}
-                                </span>
-                                {l.otherLabel}
-                              </span>
-                              {l.siblingTargets > 1 && (
-                                <span
-                                  className="shrink-0 rounded bg-soft px-1 text-[9.5px] text-muted"
-                                  title={`${l.ownLabel} points at ${l.siblingTargets} different targets — usually only one of them is real`}
-                                >
-                                  {l.siblingTargets} targets
+                        {/* Grouped under the field they leave from. Twelve rows
+                            all starting `Name ←` spend the width on a repeated
+                            prefix and truncate the part you have to read; as a
+                            heading it is said once. It also makes one column
+                            with several targets self-evident, which is what the
+                            `N targets` chip used to have to announce. */}
+                        {groupByColumn(links).map((group) => (
+                          <div key={group.column} className="mt-1 first:mt-0">
+                            <div className="flex items-baseline gap-1.5 pl-1.5 pt-1 text-[11px] font-medium text-ink2">
+                              {group.column}
+                              {group.links.length > 1 && (
+                                <span className="text-[10px] font-normal text-muted2">
+                                  {group.links.length} targets
                                 </span>
                               )}
-                              {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
-                              {l.isCrossSource && (
-                                <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
-                                  {l.kind === 'match' ? 'match' : 'cross'}
-                                </span>
-                              )}
-                              {/* The measured overlap, right-aligned so a column
-                                  of them scans as one list of numbers. */}
-                              {l.measured && outcome !== 'unknown' && (
-                                <span
-                                  className="w-[34px] shrink-0 text-right text-[11px] font-medium tabular-nums"
-                                  style={{ color: OUTCOME[outcome].color }}
+                            </div>
+                            {group.links.map((l) => {
+                              const active = l.id === selectedEdgeId;
+                              const outcome = outcomeOf(l.measured);
+                              return (
+                                <button
+                                  key={l.id}
+                                  type="button"
+                                  onClick={() => onPickLink(l.id)}
+                                  className={`flex w-full items-center gap-1.5 rounded-md py-[3px] pl-2 pr-1 text-left ${
+                                    active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
+                                  }`}
                                 >
-                                  {Math.round((l.measured.containment?.ratio ?? 0) * 100)}%
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
+                                  <span
+                                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                    style={l.provenance === 'ai'
+                                      ? { border: '1.5px solid #b8823a' }
+                                      : { background: l.provenance === 'human' ? '#1f6f83' : '#9aa3ad' }}
+                                  />
+                                  <span className="shrink-0 text-muted2">
+                                    {l.direction === 'out' ? '→' : '←'}
+                                  </span>
+                                  <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
+                                    {l.otherLabel}
+                                  </span>
+                                  {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
+                                  {l.isCrossSource && (
+                                    <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
+                                      {l.kind === 'match' ? 'match' : 'cross'}
+                                    </span>
+                                  )}
+                                  {l.measured && outcome !== 'unknown' && (
+                                    <span
+                                      className="w-[34px] shrink-0 text-right text-[11px] font-medium tabular-nums"
+                                      style={{ color: OUTCOME[outcome].color }}
+                                    >
+                                      {Math.round((l.measured.containment?.ratio ?? 0) * 100)}%
+                                    </span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ))}
                       </div>
                     );
                   })()}
