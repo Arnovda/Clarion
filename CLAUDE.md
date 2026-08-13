@@ -93,6 +93,10 @@ answer instead of a form asking you to declare the cardinality.
   group on purpose: repair/escape-hatch tool, NOT the front door). New
   `components/relationships/`: `geometry.ts` · `types.ts` · `laneLayout.ts` ·
   `TableNode` · `LaneNode` · `RelationEdge` · `MeasurePanel` · `GraphCanvas`.
+  (`laneLayout.ts` and `LaneNode` were later DELETED — see the ring layout below;
+  the module set today is `geometry` · `types` · `focusLayout` · `sourceColors` ·
+  `TableNode` · `RelationEdge` · `MeasurePanel` · `MatchPanel` · `EdgeInspector` ·
+  `TableList` · `GraphCanvas`.)
   **Source lanes are NODES, not an overlay** — an absolutely-positioned band sits
   in SCREEN space and drifts off its tables on the first pan/zoom; as a node it
   gets the same viewport transform as everything else. **Deliberately NOT dagre** —
@@ -142,6 +146,40 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **ONE TABLE IN THE MIDDLE, ITS JOIN SURFACE VISIBLE (2026-08-13) — the
+  layout is now a RING, and lanes are DELETED.** The grid still did not say which
+  table the view was about, and finding the two fields a table joins on still
+  meant opening it and reading forty column rows. Both are answers the layout
+  should give. **A person does exactly two things here** — "what does THIS table
+  connect to, and on which fields?" and "is this suggested relationship right?" —
+  so there is no view that draws the whole graph. (1) **Explore is
+  `focusLayout.radialLayout`: the anchor dead-centre, neighbours on an ellipse
+  around it.** Centre is not decoration — it is the only layout where the subject
+  needs no label — and it removes edge crossings BY CONSTRUCTION, since every edge
+  runs from the centre outward. (2) **THE CHANGE THAT MATTERS: a table renders the
+  fields it CONNECTS ON, not all of them and not none.** Forty columns buries the
+  answer to the only question asked; zero columns makes you click to find it. The
+  join surface is two or three rows, so every edge terminates on a NAMED FIELD at
+  both ends with nothing to open; `+N more fields` reveals the rest, which is the
+  one job (drawing a new relationship) that legitimately wants the full list.
+  (3) **Review is the pair side by side** (`pairLayout`), joined columns lit — the
+  one-hop context it used to draw was clutter, because the evidence for the
+  decision is the measurement in the inspector. (4) **Handles follow the
+  geometry** — they were hardcoded right-to-left, so every neighbour on the left
+  half of the ring got a line sweeping all the way around its node. (5) **`LaneNode`
+  and `laneLayout.ts` are DELETED**; `sourceColors.ts` keeps the palette and the
+  stable per-source assignment. Lanes were real (a cross-source edge was the only
+  kind crossing a band) but that only pays off in a view that draws everything,
+  which §2.4 forbids — the two ideas could not both be right. (6) **Ring capacity
+  12**, ranked by shared-link count then re-sorted so same-source neighbours are
+  adjacent (an alternating ring makes the colour spine useless); the toolbar says
+  "showing 12 of 31" rather than truncating silently. (7) **Finishing the queue
+  now says so** — the bootstrap that opens on the first pending item runs ONCE via
+  a ref, so clearing the queue no longer silently bounces you to Explore.
+  **`nodeHeight()` is the single expression the layout and the node component both
+  call** — they must agree exactly or edges land off their rows and the ring stops
+  being centred. `tsc` clean, `next lint` clean, `next build` green
+  (`/relationships` 2.69 kB / 100 kB).
   **EXPLORE REBUILT AROUND ONE ANCHOR (2026-08-13).** The full-graph Explore view
   was the hairball §2.4 exists to prevent — 36 tables, 169 edges, plus two
   40-column nodes whose expansion LEAKED IN FROM REVIEW MODE and shredded the

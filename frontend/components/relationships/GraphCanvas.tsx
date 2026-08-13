@@ -1,22 +1,22 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactFlow, {
   Background, Controls, ReactFlowProvider,
   useNodesState, useEdgesState, useReactFlow, Connection, Node, Edge, ConnectionMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
-import { LaneNode, type LaneNodeData } from './LaneNode';
 import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge';
 import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { TableList } from './TableList';
-import { laneLayout, laneColor } from './laneLayout';
-import { parseHandle, handleLeft, handleRight } from './geometry';
+import { assignColors, sourceColor } from './sourceColors';
+import { radialLayout, pairLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
+import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H, NODE_W } from './geometry';
 import type {
   GraphResponse, GraphColumn, Measurement, PendingDraw, Cardinality, GraphRelationship,
   MatchMeasurement, PendingMatch, Normalisation,
@@ -30,15 +30,28 @@ function Kbd({ children }: { children: React.ReactNode }) {
   );
 }
 
-const nodeTypes = { table: TableNode, lane: LaneNode };
+const nodeTypes = { table: TableNode };
 const edgeTypes = { relation: RelationEdge };
+
+/**
+ * What the canvas is currently about. There is never a third answer, and there is
+ * never "everything": a picture of 36 tables and 169 links is a hairball, not a
+ * tool, and it is the thing this rebuild exists to remove.
+ *
+ *  • `pair`   — reviewing ONE relationship: its two tables, side by side.
+ *  • `anchor` — exploring ONE table: it in the middle, what it connects to around it.
+ */
+type Focus =
+  | { kind: 'pair'; a: number; b: number }
+  | { kind: 'anchor'; id: number };
+
+const EMPTY_IDS: ReadonlySet<number> = new Set<number>();
 
 function CanvasInner() {
   const { fitView } = useReactFlow();
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState('');
   const [draw, setDraw] = useState<PendingDraw | null>(null);
   const [match, setMatch] = useState<PendingMatch | null>(null);
@@ -46,27 +59,19 @@ function CanvasInner() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
   const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
   const [payoff, setPayoff] = useState<string | null>(null);
-  /**
-   * 'review' shows only what you are deciding on right now — the focused
-   * relationship's two tables plus one hop. 'explore' shows the whole graph.
-   *
-   * Review is the default because reviewing is the job, and because rendering
-   * everything does not work: 36 tables in one source is a wall of nodes that
-   * fitView has to shrink past the point of legibility. The plan said never
-   * render everything; this is that rule, applied.
-   */
   const [mode, setMode] = useState<'review' | 'explore'>('review');
-  /**
-   * Explore centres on ONE table and shows what it connects to. There is no
-   * "everything" view: 36 tables and 169 edges is a picture of a hairball, not a
-   * tool, and it stops being readable the moment a second source is added.
-   */
   const [anchorId, setAnchorId] = useState<number | null>(null);
+  /**
+   * Tables showing every column rather than just the ones they connect on.
+   * Only drawing a NEW relationship needs the full list; everything else is
+   * better served by the join surface alone.
+   */
+  const [showAll, setShowAll] = useState<Set<number>>(new Set());
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<TableNodeData | LaneNodeData>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<TableNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RelationEdgeData>([]);
 
-  // Columns are fetched with the graph, so expanding a node is instant. At SMB
+  // Columns come with the graph, so revealing a table's fields is instant. At SMB
   // scale that payload is small, and a per-node round trip would make the one
   // interaction that must feel immediate feel laggy instead.
   const load = useCallback(async () => {
@@ -85,41 +90,28 @@ function CanvasInner() {
   useEffect(() => { void load(); }, [load]);
 
   /**
-   * Land on the first thing to review, with both its tables already open on the
-   * joined columns. Opening to an unanchored map of everything asks the user to
-   * find the work before they can do it.
+   * Land on the first thing to review; with nothing pending, open Explore.
+   *
+   * Once only. Re-running it would drag the user back to Explore the moment they
+   * clear the queue, which is exactly when they should be told they are done.
    */
+  const bootstrapped = useRef(false);
   useEffect(() => {
-    if (!graph || selectedEdgeId !== null) return;
+    if (!graph || bootstrapped.current) return;
+    bootstrapped.current = true;
     const first = graph.relationships.find((r) => r.provenance === 'ai');
-    if (!first) { setMode('explore'); return; }
-    setSelectedEdgeId(first.id);
-    setExpanded(new Set([first.fromTableId, first.toTableId]));
-  }, [graph, selectedEdgeId]);
+    if (first) setSelectedEdgeId(first.id); else setMode('explore');
+  }, [graph]);
 
+  /** Explore opens on the most connected table — the hub is what people look for. */
   useEffect(() => {
     if (mode !== 'explore' || !graph || anchorId !== null) return;
     const hub = [...graph.tables].sort((a, b) => b.relationshipCount - a.relationshipCount)[0];
     if (hub) setAnchorId(hub.id);
   }, [mode, graph, anchorId]);
 
-  /**
-   * Expansion is scoped to the pair being linked, and resets on every mode
-   * change. A table with forty columns is ~1,200px tall; letting one follow you
-   * out of Review is what shredded the Explore grid.
-   */
-  useEffect(() => { setExpanded(new Set()); }, [mode]);
-
-  /** Keep the focused relationship's tables open as the queue advances. */
-  useEffect(() => {
-    if (mode !== 'review' || !graph || selectedEdgeId === null) return;
-    const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
-    if (!rel) return;
-    setExpanded((prev) => {
-      if (prev.has(rel.fromTableId) && prev.has(rel.toTableId)) return prev;
-      return new Set([...prev, rel.fromTableId, rel.toTableId]);
-    });
-  }, [mode, graph, selectedEdgeId]);
+  /** A revealed column list belongs to the table you were just looking at. */
+  useEffect(() => { setShowAll(new Set()); }, [mode, anchorId, selectedEdgeId]);
 
   const columnsByTable = useMemo(() => {
     const m = new Map<number, GraphColumn[]>();
@@ -130,150 +122,225 @@ function CanvasInner() {
     return m;
   }, [graph]);
 
-  const toggleExpanded = useCallback((tableId: number) => {
-    setExpanded((prev) => {
+  const colorIndexBySource = useMemo(
+    () => assignColors(graph?.sources ?? []),
+    [graph],
+  );
+  const colorForConnection = useCallback(
+    (connectionId: number) => sourceColor(colorIndexBySource.get(connectionId) ?? 0),
+    [colorIndexBySource],
+  );
+
+  const toggleAllColumns = useCallback((tableId: number) => {
+    setShowAll((prev) => {
       const next = new Set(prev);
       if (next.has(tableId)) next.delete(tableId); else next.add(tableId);
       return next;
     });
   }, []);
 
-  const matches = useCallback((tableId: number) => {
-    if (!search.trim()) return true;
-    const t = graph?.tables.find((x) => x.id === tableId);
-    if (!t) return false;
-    const q = search.toLowerCase();
-    return `${t.tableName} ${t.displayName ?? ''}`.toLowerCase().includes(q);
-  }, [search, graph]);
-
-  /**
-   * In review mode, the canvas shows the focused relationship's two tables and
-   * their immediate neighbours — enough context to judge the link, and nothing
-   * else competing for attention.
-   */
-  /** The tables the current view is about — never the whole catalog. */
-  const focusIds = useMemo(() => {
+  const focus: Focus | null = useMemo(() => {
     if (!graph) return null;
-    if (mode === 'explore') return anchorId != null ? new Set([anchorId]) : null;
+    if (mode === 'explore') return anchorId != null ? { kind: 'anchor', id: anchorId } : null;
     if (selectedEdgeId == null) return null;
     const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
-    return rel ? new Set([rel.fromTableId, rel.toTableId]) : null;
+    return rel ? { kind: 'pair', a: rel.fromTableId, b: rel.toTableId } : null;
   }, [graph, mode, anchorId, selectedEdgeId]);
 
-  const visibleTables = useMemo(() => {
-    if (!graph) return [];
-    if (!focusIds) return graph.tables;
-    const keep = new Set(focusIds);
+  /**
+   * The neighbours that make the ring, in the order they are placed around it.
+   *
+   * Chosen by how many links they share with the anchor — "most strongly related"
+   * is what someone exploring means — then re-sorted so tables from the same
+   * source sit next to each other. A ring that alternates sources makes the
+   * colour spine useless; a ring that groups them makes "this half is Exact" a
+   * thing you see rather than read.
+   */
+  const { neighbours, neighbourTotal } = useMemo(() => {
+    if (!graph || focus?.kind !== 'anchor') return { neighbours: [] as number[], neighbourTotal: 0 };
+    const seen = new Set<number>();
     for (const r of graph.relationships) {
-      if (focusIds.has(r.fromTableId)) keep.add(r.toTableId);
-      if (focusIds.has(r.toTableId)) keep.add(r.fromTableId);
+      if (r.fromTableId === focus.id && r.toTableId !== focus.id) seen.add(r.toTableId);
+      if (r.toTableId === focus.id && r.fromTableId !== focus.id) seen.add(r.fromTableId);
     }
-    return graph.tables.filter((t) => keep.has(t.id));
-  }, [graph, focusIds]);
+    const known = [...seen].filter((id) => graph.tables.some((t) => t.id === id));
+    const ranked = rankNeighbours(focus.id, graph.relationships, known).slice(0, MAX_NEIGHBOURS);
 
-  const visibleTableIds = useMemo(
-    () => new Set(visibleTables.map((t) => t.id)),
-    [visibleTables],
-  );
-
-  const layout = useMemo(() => {
-    if (!graph) return null;
-    const counts = new Map<number, number>();
-    for (const t of visibleTables) counts.set(t.id, columnsByTable.get(t.id)?.length ?? 0);
-    return laneLayout(graph.sources, visibleTables, counts, expanded);
-  }, [graph, visibleTables, columnsByTable, expanded]);
-
-  /** Tables at the centre of the current view — rendered prominently. */
-  const focusPair = focusIds;
-
-  // Rebuild nodes and edges whenever the graph, layout or filters change.
-  useEffect(() => {
-    if (!graph || !layout) return;
-    const colorByConnection = new Map(layout.lanes.map((l) => [l.connectionId, laneColor(l.colorIndex)]));
-
-    // Lanes first and at a lower z so tables always sit on top of their band.
-    const laneNodes: Node<LaneNodeData>[] = layout.lanes.map((lane) => ({
-      id: `lane-${lane.connectionId}`,
-      type: 'lane',
-      position: { x: lane.x, y: -24 },
-      data: {
-        name: lane.name,
-        color: laneColor(lane.colorIndex),
-        width: lane.width,
-        height: Math.max(lane.height, 240) + 48,
-      },
-      draggable: false,
-      selectable: false,
-      focusable: false,
-      zIndex: 0,
-    }));
-
-    const tableNodes = visibleTables.map((t) => {
-      const pos = layout.positions.get(t.id) ?? { x: 0, y: 0 };
-      return {
-        id: String(t.id),
-        type: 'table',
-        position: pos,
-        draggable: true,
-        data: {
-          tableId: t.id,
-          label: t.displayName || t.tableName,
-          subtitle: t.description,
-          relationshipCount: t.relationshipCount,
-          laneColor: colorByConnection.get(t.connectionId) ?? '#6b7680',
-          columns: columnsByTable.get(t.id) ?? [],
-          expanded: expanded.has(t.id),
-          dimmed: !matches(t.id),
-          focused: !!focusPair && focusPair.has(t.id),
-          onToggle: toggleExpanded,
-        },
-        zIndex: 1,
-      } satisfies Node<TableNodeData>;
+    const tableById = new Map(graph.tables.map((t) => [t.id, t]));
+    const placed = [...ranked].sort((a, b) => {
+      const ta = tableById.get(a)!; const tb = tableById.get(b)!;
+      return (colorIndexBySource.get(ta.connectionId) ?? 0) - (colorIndexBySource.get(tb.connectionId) ?? 0)
+        || (ta.displayName || ta.tableName).localeCompare(tb.displayName || tb.tableName);
     });
+    return { neighbours: placed, neighbourTotal: known.length };
+  }, [graph, focus, colorIndexBySource]);
 
-    setNodes([...laneNodes, ...tableNodes]);
+  const visibleIds = useMemo(() => {
+    if (!focus) return EMPTY_IDS;
+    return focus.kind === 'pair'
+      ? new Set([focus.a, focus.b])
+      : new Set([focus.id, ...neighbours]);
+  }, [focus, neighbours]);
 
-    setEdges(graph.relationships
-      .filter((r) => visibleTableIds.has(r.fromTableId) && visibleTableIds.has(r.toTableId))
-      // Only lines that touch what the view is about. A neighbour's own
-      // relationships are not this view's subject, and drawing them is what
-      // turned 169 links into an unreadable scribble.
-      .filter((r) => !focusIds || focusIds.has(r.fromTableId) || focusIds.has(r.toTableId))
-      .map((r) => {
-        // Attach to a column row when that node is expanded; otherwise to the
-        // node itself. An edge pointing at a hidden row would float in space.
-        const fromExpanded = expanded.has(r.fromTableId) && r.fromColumnId != null;
-        const toExpanded = expanded.has(r.toTableId) && r.toColumnId != null;
+  /**
+   * Only lines that touch what the view is about. A neighbour's own
+   * relationships are not this view's subject, and drawing them is what turned
+   * 169 links into an unreadable scribble.
+   */
+  const drawnRels = useMemo(() => {
+    if (!graph || !focus) return [] as GraphRelationship[];
+    if (focus.kind === 'pair') {
+      return graph.relationships.filter((r) =>
+        (r.fromTableId === focus.a && r.toTableId === focus.b)
+        || (r.fromTableId === focus.b && r.toTableId === focus.a));
+    }
+    return graph.relationships.filter((r) =>
+      (r.fromTableId === focus.id && visibleIds.has(r.toTableId))
+      || (r.toTableId === focus.id && visibleIds.has(r.fromTableId)));
+  }, [graph, focus, visibleIds]);
+
+  /**
+   * Per table: exactly which columns to render, and how tall that makes it.
+   *
+   * A table shows the fields it CONNECTS ON. Forty columns buries the answer to
+   * the only question being asked; zero columns makes you click to find it. The
+   * join surface is both the answer and small.
+   */
+  const nodeSpec = useMemo(() => {
+    const linked = new Map<number, Set<number>>();
+    const add = (t: number, c: number) => {
+      if (!linked.has(t)) linked.set(t, new Set());
+      linked.get(t)!.add(c);
+    };
+    for (const r of drawnRels) {
+      if (r.fromColumnId != null) add(r.fromTableId, r.fromColumnId);
+      if (r.toColumnId != null) add(r.toTableId, r.toColumnId);
+    }
+
+    const out = new Map<number, {
+      columns: GraphColumn[]; hiddenCount: number; showingAll: boolean; height: number;
+    }>();
+    for (const id of visibleIds) {
+      const all = columnsByTable.get(id) ?? [];
+      const lit = linked.get(id) ?? EMPTY_IDS;
+      const linkedCols = all.filter((c) => lit.has(c.id));
+      const canToggle = all.length > linkedCols.length;
+      const showingAll = canToggle && showAll.has(id);
+      const columns = showingAll ? all : linkedCols;
+      const hiddenCount = all.length - columns.length;
+      out.set(id, {
+        columns,
+        hiddenCount,
+        showingAll,
+        height: nodeHeight(columns.length, hiddenCount > 0 || showingAll),
+      });
+    }
+    return out;
+  }, [drawnRels, visibleIds, columnsByTable, showAll]);
+
+  const positions = useMemo(() => {
+    const heightOf = (id: number) => nodeSpec.get(id)?.height ?? HEADER_H;
+    if (!focus) return new Map<number, { x: number; y: number }>();
+    if (focus.kind === 'anchor') return radialLayout(focus.id, neighbours, heightOf).positions;
+    // A self-referencing relationship has one table, not two.
+    if (focus.a === focus.b) {
+      return new Map([[focus.a, { x: -NODE_W / 2, y: -heightOf(focus.a) / 2 }]]);
+    }
+    return pairLayout(focus.a, focus.b, heightOf).positions;
+  }, [focus, neighbours, nodeSpec]);
+
+  /** Both ends of the relationship being inspected, lit up in their tables. */
+  const highlightColumnIds = useMemo(() => {
+    const rel = selectedEdgeId != null
+      ? graph?.relationships.find((r) => r.id === selectedEdgeId)
+      : null;
+    const s = new Set<number>();
+    if (rel?.fromColumnId != null) s.add(rel.fromColumnId);
+    if (rel?.toColumnId != null) s.add(rel.toColumnId);
+    return s;
+  }, [graph, selectedEdgeId]);
+
+  // Rebuild nodes and edges whenever the focus, layout or selection changes.
+  useEffect(() => {
+    if (!graph || !focus) { setNodes([]); setEdges([]); return; }
+
+    const focusedId = focus.kind === 'anchor' ? focus.id : null;
+
+    const tableNodes = graph.tables
+      .filter((t) => visibleIds.has(t.id))
+      .map((t) => {
+        const spec = nodeSpec.get(t.id)!;
         return {
-          id: String(r.id),
-          source: String(r.fromTableId),
-          target: String(r.toTableId),
-          sourceHandle: fromExpanded ? handleRight(r.fromColumnId!) : handleRight('table'),
-          targetHandle: toExpanded ? handleLeft(r.toColumnId!) : handleLeft('table'),
-          type: 'relation',
+          id: String(t.id),
+          type: 'table',
+          position: positions.get(t.id) ?? { x: 0, y: 0 },
+          draggable: true,
           data: {
-            kind: r.kind,
-            provenance: r.provenance,
-            isCrossSource: r.isCrossSource,
-            cardinality: (r.relationshipType as Cardinality) ?? null,
-            matchRate: r.kind === 'match'
-              ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
-              : null,
-            dimmed: (!matches(r.fromTableId) && !matches(r.toTableId))
-              || (mode === 'review' && selectedEdgeId != null && r.id !== selectedEdgeId),
+            tableId: t.id,
+            label: t.displayName || t.tableName,
+            relationshipCount: t.relationshipCount,
+            sourceColor: colorForConnection(t.connectionId),
+            columns: spec.columns,
+            hiddenCount: spec.hiddenCount,
+            highlightColumnIds,
+            showingAll: spec.showingAll,
+            dimmed: false,
+            focused: focusedId === t.id,
+            onToggleAllColumns: toggleAllColumns,
           },
-          selected: r.id === selectedEdgeId,
-        } satisfies Edge<RelationEdgeData>;
-      }));
-  }, [graph, layout, visibleTables, visibleTableIds, focusIds, columnsByTable, expanded, matches, selectedEdgeId, mode, focusPair, setNodes, setEdges, toggleExpanded]);
+        } satisfies Node<TableNodeData>;
+      });
+
+    setNodes(tableNodes);
+
+    setEdges(drawnRels.map((r) => {
+      // Which side each end leaves from follows the geometry: a neighbour to the
+      // left of the anchor is reached from the anchor's left edge. Fixed
+      // right-to-left handles made every edge on the left half sweep all the way
+      // around the node.
+      const fromX = positions.get(r.fromTableId)?.x ?? 0;
+      const toX = positions.get(r.toTableId)?.x ?? 0;
+      const leftToRight = fromX <= toX;
+      const fromShown = nodeSpec.get(r.fromTableId)?.columns.some((c) => c.id === r.fromColumnId);
+      const toShown = nodeSpec.get(r.toTableId)?.columns.some((c) => c.id === r.toColumnId);
+
+      const sourceHandle = leftToRight
+        ? handleRight(fromShown ? r.fromColumnId! : 'table')
+        : handleLeft(fromShown ? r.fromColumnId! : 'table');
+      const targetHandle = leftToRight
+        ? handleLeft(toShown ? r.toColumnId! : 'table')
+        : handleRight(toShown ? r.toColumnId! : 'table');
+
+      return {
+        id: String(r.id),
+        source: String(r.fromTableId),
+        target: String(r.toTableId),
+        sourceHandle,
+        targetHandle,
+        type: 'relation',
+        data: {
+          kind: r.kind,
+          provenance: r.provenance,
+          isCrossSource: r.isCrossSource,
+          cardinality: (r.relationshipType as Cardinality) ?? null,
+          matchRate: r.kind === 'match'
+            ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
+            : null,
+          dimmed: mode === 'review' && selectedEdgeId != null && r.id !== selectedEdgeId,
+        },
+        selected: r.id === selectedEdgeId,
+      } satisfies Edge<RelationEdgeData>;
+    }));
+  }, [graph, focus, visibleIds, drawnRels, nodeSpec, positions, highlightColumnIds,
+      colorForConnection, toggleAllColumns, mode, selectedEdgeId, setNodes, setEdges]);
 
   useEffect(() => {
     if (!nodes.length) return;
     // A frame's delay lets ReactFlow measure the new nodes first; fitting before
     // that uses stale sizes and lands off-centre.
-    const t = setTimeout(() => fitView({ padding: 0.2, maxZoom: 1, duration: 300 }), 60);
+    const t = setTimeout(() => fitView({ padding: 0.18, maxZoom: 1, duration: 300 }), 60);
     return () => clearTimeout(t);
-  }, [nodes.length, mode, selectedEdgeId, fitView]);
+  }, [nodes.length, mode, anchorId, selectedEdgeId, fitView]);
 
   const labelFor = useCallback((tableId: number, columnId: number | null) => {
     const t = graph?.tables.find((x) => x.id === tableId);
@@ -350,7 +417,7 @@ function CanvasInner() {
         fromLabel: labelFor(fromTableId, fromColumnId),
         toLabel: labelFor(toTableId, toColumnId),
         measurement: null,
-        error: 'Open both tables and drag between two specific columns — a relationship needs to know which columns match.',
+        error: 'Drag between two specific fields — use "more fields" on each table to see them all.',
       });
       return;
     }
@@ -454,6 +521,13 @@ function CanvasInner() {
     setSelectedEdgeId(pendingQueue[next]);
   }, [pendingQueue, selectedEdgeId]);
 
+  /** After deciding, land on the next item rather than on nothing. */
+  const advance = useCallback((decidedId: number) => {
+    const at = pendingQueue.indexOf(decidedId);
+    const rest = pendingQueue.filter((id) => id !== decidedId);
+    setSelectedEdgeId(rest.length ? rest[Math.min(Math.max(at, 0), rest.length - 1)] : null);
+  }, [pendingQueue]);
+
   const confirmRel = useCallback(async (rel: GraphRelationship) => {
     setBusy('confirm');
     try {
@@ -467,23 +541,23 @@ function CanvasInner() {
       setPayoff(rel.isCrossSource
         ? 'Clarion now knows these describe the same things across both sources.'
         : 'Ask AI can now use this link when answering questions.');
-      setSelectedEdgeId(null);
+      advance(rel.id);
       await load();
     } finally {
       setBusy(null);
     }
-  }, [load]);
+  }, [load, advance]);
 
   const deleteRel = useCallback(async (rel: GraphRelationship) => {
     setBusy('delete');
     try {
       await api.delete(`/semantic/relationships/${rel.id}`);
-      setSelectedEdgeId(null);
+      advance(rel.id);
       await load();
     } finally {
       setBusy(null);
     }
-  }, [load]);
+  }, [load, advance]);
 
   const saveDescription = useCallback(async (rel: GraphRelationship, text: string) => {
     setBusy('save');
@@ -564,18 +638,17 @@ function CanvasInner() {
           if (selectedRel && busy === null) { e.preventDefault(); void deleteRel(selectedRel); }
           break;
         case '/':
-          e.preventDefault();
-          document.getElementById('rel-search')?.focus();
+          if (mode === 'explore') { e.preventDefault(); document.getElementById('rel-search')?.focus(); }
           break;
         case 'Escape':
-          setSelectedEdgeId(null); setDraw(null); setMatch(null);
+          setDraw(null); setMatch(null);
           break;
         default: break;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [step, selectedRel, busy, confirmRel, deleteRel]);
+  }, [step, selectedRel, busy, confirmRel, deleteRel, mode]);
 
   // Payoff is a transient acknowledgement, not a notification to dismiss.
   useEffect(() => {
@@ -603,11 +676,10 @@ function CanvasInner() {
   }
 
   const stats = graph?.stats;
-  const anchorTable = graph?.tables.find((t) => t.id === anchorId) ?? null;
-  const colorForConnection = (connectionId: number) => {
-    const lane = layout?.lanes.find((l) => l.connectionId === connectionId);
-    return lane ? laneColor(lane.colorIndex) : '#6b7680';
-  };
+  const anchorTable = focus?.kind === 'anchor'
+    ? graph?.tables.find((t) => t.id === focus.id) ?? null
+    : null;
+  const reviewEmpty = mode === 'review' && !focus;
 
   return (
     <div className="flex h-full">
@@ -627,15 +699,22 @@ function CanvasInner() {
 
       {/* Toolbar */}
       <div className="absolute left-4 right-4 top-4 z-10 flex items-center gap-3">
-        {/* Mode is a real switch, not a filter: reviewing and exploring want
-            different amounts of the graph on screen, and conflating them is what
-            produced a wall of unreadable nodes. */}
+        {/* Mode is a real switch, not a filter: deciding on one link and looking
+            around are different jobs, and conflating them is what produced a
+            wall of unreadable nodes. */}
         <div className="flex items-center rounded-xl border border-line bg-raised/95 p-0.5 shadow-sm backdrop-blur">
           {(['review', 'explore'] as const).map((m) => (
             <button
               key={m}
               type="button"
-              onClick={() => { setMode(m); if (m === 'explore') setSelectedEdgeId(null); }}
+              onClick={() => {
+                setMode(m);
+                // Coming back to Review with nothing selected should land on the
+                // queue, not on the "all done" card.
+                if (m === 'review' && selectedEdgeId == null && pendingQueue.length) {
+                  setSelectedEdgeId(pendingQueue[0]);
+                }
+              }}
               className={`rounded-[10px] px-2.5 py-1 text-[12.5px] transition-colors ${
                 mode === m ? 'bg-ocean text-white' : 'text-ink2 hover:bg-soft'
               }`}
@@ -650,9 +729,18 @@ function CanvasInner() {
           ))}
         </div>
 
-        {mode === 'explore' && anchorTable && (
-          <div className="rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
-            Showing what <span className="font-medium text-ink">{anchorTable.displayName || anchorTable.tableName}</span> connects to
+        {anchorTable && (
+          <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ background: colorForConnection(anchorTable.connectionId) }}
+            />
+            What <span className="font-medium text-ink">{anchorTable.displayName || anchorTable.tableName}</span> connects to
+            {neighbourTotal > neighbours.length && (
+              <span className="text-muted">
+                · showing {neighbours.length} of {neighbourTotal}
+              </span>
+            )}
           </div>
         )}
 
@@ -705,16 +793,16 @@ function CanvasInner() {
         onEdgeClick={(_, edge) => setSelectedEdgeId(Number(edge.id))}
         onNodeClick={(_, node) => {
           // Walking the graph: click a neighbour to make it the centre.
-          if (mode === 'explore' && node.type === 'table') setAnchorId(Number(node.id));
+          if (mode === 'explore') setAnchorId(Number(node.id));
         }}
-        onPaneClick={() => setSelectedEdgeId(null)}
+        onPaneClick={() => { if (mode === 'explore') setSelectedEdgeId(null); }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
         proOptions={{ hideAttribution: true }}
         fitView
-        fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-        minZoom={0.25}
+        fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
+        minZoom={0.3}
         maxZoom={1.6}
         defaultEdgeOptions={{ type: 'relation' }}
       >
@@ -722,9 +810,22 @@ function CanvasInner() {
         <Controls showInteractive={false} />
       </ReactFlow>
 
-      {graph?.truncated && (
-        <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-warn/40 bg-warnSoft px-3 py-1.5 text-[11.5px] text-ink2">
-          Showing the first {graph.tables.length} of {graph.stats.tables} tables.
+      {reviewEmpty && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 rounded-2xl border border-line bg-raised/95 px-6 py-7 text-center shadow-sm backdrop-blur">
+            <CheckCircle2 size={22} className="text-ok" />
+            <p className="text-[14px] font-medium text-ink">Nothing left to review</p>
+            <p className="text-[12.5px] leading-relaxed text-muted">
+              Every relationship Clarion suggested has been decided on.
+            </p>
+            <button
+              type="button"
+              onClick={() => setMode('explore')}
+              className="mt-1 rounded-lg bg-ocean px-3 py-1.5 text-[12.5px] text-white hover:opacity-90"
+            >
+              Explore your data
+            </button>
+          </div>
         </div>
       )}
 
@@ -734,7 +835,7 @@ function CanvasInner() {
         </div>
       )}
 
-      {mode === 'review' && pendingQueue.length > 0 && !draw && !match && (
+      {mode === 'review' && focus && !draw && !match && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
           <span><Kbd>Y</Kbd> looks right</span>
           <span><Kbd>N</Kbd> remove</span>
@@ -757,7 +858,9 @@ function CanvasInner() {
           onChangeColumns={(change) => void changeColumns(selectedRel, change)}
           fromColumns={columnsByTable.get(selectedRel.fromTableId) ?? []}
           toColumns={columnsByTable.get(selectedRel.toTableId) ?? []}
-          onClose={() => setSelectedEdgeId(null)}
+          // In Review the inspector IS the decision surface — closing it means
+          // "skip", so it moves on rather than leaving an empty canvas.
+          onClose={() => (mode === 'review' ? step(1) : setSelectedEdgeId(null))}
         />
       )}
     </div>

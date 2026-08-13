@@ -67,6 +67,13 @@ and then wrong. A match edge is the **entry point to per-row matching**, not a j
 
 ### 2.3 Source lanes — the layout answers "where does this come from"
 
+> **SUPERSEDED 2026-08-13 — see §4.0h.** Lanes were built, shipped, and then
+> removed. The property was real (a cross-source edge is the only kind crossing a
+> band boundary) but it only pays off in a view that draws the whole graph, and
+> §2.4 says never draw the whole graph. The two ideas could not both be right.
+> Source identity now rides a 5px colour spine on each node, which works in a
+> focused view where there are no bands to cross.
+
 Vertical bands, one per source, tinted with the existing `SourceBadge` palette
 (`REGISTRY_COLORS`). Tables sit in their lane; **cross-source edges are the only
 ones that cross a band boundary**, so the thing the user came for is the thing that
@@ -374,6 +381,58 @@ running made that obvious in a way the plan did not. Four changes:
 - **Source colour concentrated in the spine.** It stays always-on, but tinting
   the header, the border and every row rule in one hue meant a single-source
   tenant saw "everything is beige" rather than "this is Exact Online".
+
+### 4.0h One table in the middle, its join surface visible (2026-08-13)
+
+The grid was still a grid. Clicking a table in the list changed which nodes were
+on screen but nothing said *which one the view was about*, and you still had to
+open a table and read forty column rows to find the two fields it actually joins
+on. Both are answers the layout should give, not the user's clicking.
+
+**What a person does here is one of exactly two things**, and every decision
+below follows from that:
+
+1. *"I care about this table — what does it connect to, and on which fields?"*
+2. *"Is this suggested relationship right?"*
+
+Neither is "look at my whole graph". So there is no view that draws it.
+
+- **Explore is a ring: the anchor dead-centre, its neighbours around it**
+  (`focusLayout.ts` → `radialLayout`). Centre is not decoration — it is the only
+  layout in which the subject of the view needs no label. It also removes edge
+  crossings *by construction*: every edge runs from the centre outward, so no two
+  can cross. That is worth more than any routing cleverness on a grid. An ellipse
+  rather than a circle because screens are wider than they are tall.
+- **A table shows the fields it CONNECTS ON, not all of them and not none.** This
+  is the change that answers the actual request. Forty columns buries the answer
+  to the only question being asked; zero columns makes you click to find it. The
+  join surface is both the answer and small — usually two or three rows — so every
+  edge terminates on a *named field* at both ends with nothing to open.
+  `+N more fields` reveals the rest, which is what drawing a NEW relationship
+  needs; that is the one job that legitimately wants the whole list.
+- **Review is the pair, side by side** (`pairLayout`), both showing their join
+  surface, the focused relationship's two columns lit. Previously review drew one
+  hop of context around the pair; the evidence for the decision is the
+  measurement in the inspector, not the neighbours, and the neighbours were
+  clutter.
+- **Handles follow the geometry.** Edge ends were hardcoded right-to-left, so
+  every neighbour on the left half of the ring got a line that swept all the way
+  around its node. The side is now chosen from the two nodes' x positions.
+- **Lanes and `laneLayout.ts` are deleted** — see §2.3. `sourceColors.ts` keeps
+  the palette and the stable per-source assignment.
+- **Ring capacity is 12**, ranked by how many links a neighbour shares with the
+  anchor, then re-sorted so same-source neighbours sit adjacent (a ring that
+  alternates sources makes the colour spine useless). When a hub has more, the
+  toolbar says *"showing 12 of 31"* rather than pretending the ring is the whole
+  answer — the §6 rule against silent truncation.
+- **Finishing the queue now says so.** Previously an empty queue silently bounced
+  you to Explore; there is now an "everything has been reviewed" card, and the
+  bootstrap that opens on the first pending item runs **once** rather than on
+  every render, which is what caused the bounce.
+
+`nodeHeight()` is the single expression the layout and the node component both
+call. They must agree exactly or edges land off their rows and the ring stops
+being centred.
 
 ### 4.1 Backend (the actual prerequisites)
 
