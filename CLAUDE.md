@@ -116,7 +116,33 @@ answer instead of a form asking you to declare the cardinality.
   **Not yet:** keyboard queue model (slice 5), match edges + cross-source
   measurement (slice 6); confirm/reject on an EXISTING edge still happens on the
   old surface.
-- 33 unit tests total across the two services, no DuckDB needed. `tsc` clean,
+- **Slices 6 + 7 — CROSS-SOURCE MATCHING.** `POST /api/relationships/match-preview`.
+  Drawing between two sources opens a **match** panel, not the join panel.
+  `crossSourceSession.buildTwoSourceConnector` puts **two connections' tables in
+  ONE DuckDB session** — resolves each URI via `listSourceTables`, registers both
+  under FIXED NEUTRAL view names (`match_left`/`match_right`) because two sources
+  may each have a table called `Accounts`, and uses `DuckDBConnector.ephemeral` so
+  a one-off scratch session never takes a key in the shared pool. Split from
+  `matchMeasure` (pure, unit-tested) for the same reason `fkVerification` was split
+  out — importing the measurement must not drag in the native binding.
+  **Normalisation is the whole game:** default `loose` strips non-alphanumerics +
+  upper-cases so `BE 0123.456.789` == `be0123456789`; raw comparison understates
+  real overlap, which is what makes someone conclude their data can't be joined
+  when it can. `exact` is one click away. **The unmatched SAMPLES are slice 7's
+  substance** — a rate says there's a gap, the samples say it's a formatting
+  problem you can fix. Stored `kind='match'` + `match_keys` + `measured`, never a
+  join. **`getMatchAssertions` phrases matches for the AI as identity assertions**
+  (`relationship_type: 'same_entity_as'` + a description stating outright it is NOT
+  an FK and must not be JOINed); only CONFIRMED matches reach the prompt.
+  **Two bugs found:** `POST /semantic/relationships` was **admin-only** while
+  PATCH/DELETE were admin+analyst, so an analyst could measure a link and then be
+  refused when saving it (widened for parity); and the confirm message claimed
+  "Ask AI can now answer questions that span both sources", which is **NOT TRUE**
+  while the query layer is still `connectionId`-scoped — copy now says what is
+  true. **NOT shipped (honest boundary of slice 7):** the persisted per-row
+  crosswalk ("Shopify customer 4471 IS Exact's VAN DAMME BVBA" × 900 rows). That
+  is the identity layer and is a separate, much larger piece.
+- 41 unit tests total across the three services, no DuckDB needed. `tsc` clean,
   validate-coverage ratchet back at
   166 (my multi-line `router.post(` initially hid the `validate()` from the linter's
   2-line window — keep it within two lines).
