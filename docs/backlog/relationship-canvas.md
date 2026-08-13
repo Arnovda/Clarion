@@ -694,6 +694,52 @@ are enough to form a suspicion, not to settle one.
   partial / empty / formatting-difference / numeric-as-text inputs, asserting
   that neither side loses a value.
 
+### 4.0p Audit of everything else the pane displays (2026-08-13)
+
+After the value-comparison bug, the owner asked for the rest of the pane to be
+checked for the same class of defect — **a number computed over one population
+and labelled as another** — and for the display to be verified as functionally
+correct. Six findings, all fixed. Three are the same class.
+
+**Same class as the bug that prompted this:**
+
+1. **Direction was reversed on incoming links.** `linksFor` rendered every link
+   as `ownColumn → other`, so a relationship pointing AT this table read
+   `ID → Payments.TransactionID` — a primary key drawn as if it were a foreign
+   key pointing away. The arrow now runs the way the relationship does: `→` for
+   outgoing, `←` for incoming, own column still first so the list stays aligned.
+2. **The `N targets` marker counted incoming links.** A key that three tables
+   point at is a primary key doing its job; warning "usually only one of them is
+   real" was not noise, it was wrong. Only OUTGOING links can compete.
+3. **`relationshipCount` double-counted self-references.** Both endpoints were
+   incremented, so `GLClassifications` (which has a `Parent` pointer) advertised
+   a total the list under it could never reach.
+
+**Two numbers with different bases shown side by side:**
+
+4. **The inspector never said containment is SAMPLED while orphan rows are the
+   WHOLE table.** The draw-time popover has always said so; the panel people
+   actually use did not, leaving "218 of 218 values" next to "0 rows with no
+   match" with nothing explaining that they count different things.
+5. **`matchedDistinct` was rebuilt as `round(containment × sampled)`.**
+   Provably correct, but reconstructing a displayed count from a ratio is the
+   exact shape of arithmetic that goes quietly wrong. `FkVerdict` now carries
+   `matched` through.
+
+**One number that silently meant two different things:**
+
+6. **The table row badge showed pending when non-zero and the total otherwise.**
+   A table reading `5` while holding 16 links told you nothing about which 5 it
+   meant. The total is now always shown, with anything still waiting on a person
+   in front of it.
+
+Also: matches are excluded from a table's `holds / partly / no match` summary —
+they are verified by match rate, not containment, so this check never runs on
+them and counting them as "not checked" left a number nobody could clear. And
+the toolbar now reports `N unusable` when links exist whose columns no longer
+resolve, because `relationships` counts only what can be drawn while `flagged`
+counts every row — two populations that were sitting next to each other unlabelled.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables

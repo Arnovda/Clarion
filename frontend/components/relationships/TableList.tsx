@@ -8,6 +8,8 @@ import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
 /** One of a table's relationships, as it reads in the list. */
 export interface TableListLink {
   id: number;
+  /** Which way the relationship runs relative to this table: child or parent. */
+  direction: 'out' | 'in';
   /** The column on this table. */
   ownLabel: string;
   /** The other end, table and column. */
@@ -38,7 +40,10 @@ export interface CheckProgress {
  */
 function summarise(links: readonly TableListLink[]) {
   const by: Record<Outcome, number> = { holds: 0, partial: 0, none: 0, unknown: 0 };
-  for (const l of links) by[outcomeOf(l.measured)] += 1;
+  // Matches are excluded: they are verified by match RATE, not by containment,
+  // so this check never runs on them. Counting them as "not checked" would
+  // leave a number nobody can ever bring down to zero.
+  for (const l of links) if (l.kind !== 'match') by[outcomeOf(l.measured)] += 1;
   return by;
 }
 
@@ -205,17 +210,25 @@ export function TableList({
                         {flaggedByTable.get(t.id)}
                       </span>
                     )}
-                    {/* Pending is the number that decides what to do next, so it
-                        is the one that gets the colour. */}
-                    {pending > 0 ? (
-                      <span className="shrink-0 rounded-full bg-warnSoft px-1.5 text-[10.5px] font-medium tabular-nums text-ink2">
+                    {/* The total is ALWAYS shown, and anything still waiting on
+                        a person sits in front of it. One number that silently
+                        means "pending" on some rows and "total" on others is
+                        unreadable: a table showing 5 while it has 16 links
+                        tells you nothing about which 5 it meant. */}
+                    {pending > 0 && (
+                      <span
+                        className="shrink-0 rounded-full bg-warnSoft px-1.5 text-[10.5px] font-medium tabular-nums text-ink2"
+                        title={`${pending} still waiting on you`}
+                      >
                         {pending}
                       </span>
-                    ) : (
-                      <span className="shrink-0 tabular-nums text-[11px] text-muted2">
-                        {t.relationshipCount}
-                      </span>
                     )}
+                    <span
+                      className="shrink-0 tabular-nums text-[11px] text-muted2"
+                      title={`${t.relationshipCount} relationships in total`}
+                    >
+                      {t.relationshipCount}
+                    </span>
                   </button>
 
                   {open && (() => {
@@ -299,7 +312,14 @@ export function TableList({
                               />
                               <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
                                 {l.ownLabel}
-                                <span className="text-muted2"> → </span>
+                                <span
+                                  className="text-muted2"
+                                  title={l.direction === 'out'
+                                    ? 'This table points at the other one'
+                                    : 'The other table points at this one'}
+                                >
+                                  {l.direction === 'out' ? ' → ' : ' ← '}
+                                </span>
                                 {l.otherLabel}
                               </span>
                               {l.siblingTargets > 1 && (

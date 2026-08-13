@@ -176,3 +176,25 @@ describe('flagged relationships', () => {
     expect(g.stats.flagged).toBe(2);
   });
 });
+
+
+describe('counting a table\'s relationships', () => {
+  it('counts a self-reference once, not twice', () => {
+    // A parent pointer inside one table (GLClassifications.Parent ->
+    // GLClassifications.ID) is ONE relationship. Counting both endpoints made
+    // the table advertise a number the list underneath it could never reach.
+    const g = buildGraph(
+      [table(1, 'GLClassifications', 7)],
+      [rel(1, 1, 1)],
+    );
+    expect(g.tables[0].relationshipCount).toBe(1);
+  });
+
+  it('still counts a normal relationship on both of its tables', () => {
+    const g = buildGraph(
+      [table(1, 'invoices', 7), table(2, 'customers', 7)],
+      [rel(1, 1, 2)],
+    );
+    expect(g.tables.map((t) => t.relationshipCount)).toEqual([1, 1]);
+  });
+});

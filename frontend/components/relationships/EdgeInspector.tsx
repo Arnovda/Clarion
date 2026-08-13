@@ -293,6 +293,19 @@ export function EdgeInspector({
                   <ValueComparison m={m} fromLabel={fromLabel} toLabel={toLabel} />
                 </div>
               )}
+
+              {/* The two numbers above are measured over DIFFERENT populations:
+                  the percentage is distinct values from a bounded sample, the
+                  row count is the whole table. Presenting them side by side
+                  without saying so is how a reader ends up dividing one by the
+                  other — the same mistake the detector itself made in 2026-08. */}
+              {m.containment && (
+                <p className="mt-2 text-[10.5px] leading-relaxed text-muted2">
+                  Compared {m.containment.sampledDistinct.toLocaleString('en-GB')} different
+                  values{m.containment.sampledDistinct >= m.thresholds.sampleSize
+                    && ` (a sample of the column)`}; row counts are from the whole table.
+                </p>
+              )}
             </>
           )}
         </div>

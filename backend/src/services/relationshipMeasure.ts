@@ -405,7 +405,7 @@ export async function measureRelationship(
       verdict,
       reason,
       containment: {
-        matchedDistinct: Math.round(fk.containment * fk.sampled),
+        matchedDistinct: fk.matched,
         sampledDistinct: fk.sampled,
         ratio: fk.containment,
         sampleSize: thresholds.sampleSize,

@@ -202,6 +202,23 @@ describe('measureRelationship', () => {
 });
 
 
+describe('containment counts', () => {
+  it('reports the measured match count, not one recovered from the ratio', async () => {
+    // "16 of 20 values" is shown to people. Rebuilding that 16 as
+    // round(containment * sampled) is the shape of arithmetic that goes
+    // quietly wrong; the count is carried through instead.
+    const m = await measureRelationship(
+      fakeConnector({
+        fk: { sampled: 3, matched: 1, target_rows: 10, target_distinct: 10 },
+        card: HEALTHY_CARD,
+      }),
+      'a', 'x', 'b', 'y',
+    );
+    expect(m.containment).toMatchObject({ matchedDistinct: 1, sampledDistinct: 3 });
+    expect(m.containment!.ratio).toBeCloseTo(1 / 3);
+  });
+});
+
 describe('example values', () => {
   const SAMPLES = [
     { bucket: 'matched', v: 'BE0123' },

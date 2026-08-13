@@ -226,8 +226,13 @@ export function buildGraph(
       matchKeys: r.match_keys ?? null,
     });
 
+    // A self-reference (a parent pointer inside one table) is ONE relationship,
+    // not two. Counting both endpoints made such a table advertise a number the
+    // list underneath it could never reach.
     relCount.set(r.from_table_id!, (relCount.get(r.from_table_id!) ?? 0) + 1);
-    relCount.set(r.to_table_id!, (relCount.get(r.to_table_id!) ?? 0) + 1);
+    if (r.to_table_id !== r.from_table_id) {
+      relCount.set(r.to_table_id!, (relCount.get(r.to_table_id!) ?? 0) + 1);
+    }
   }
 
   const scoped = tableRows.filter((t) => !visible || visible.has(t.id));

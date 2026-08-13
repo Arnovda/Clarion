@@ -234,6 +234,12 @@ function CanvasInner() {
       const otherColName = otherCol != null ? columnNameById.get(otherCol) : null;
       out.push({
         id: r.id,
+        // DIRECTION IS NOT COSMETIC. A relationship runs child → parent, and
+        // rendering an incoming one as `ID → Payments.TransactionID` states the
+        // opposite of the truth: it makes a primary key look like a foreign
+        // key pointing away. The own column stays first so the list still
+        // aligns; the arrow says which way it actually runs.
+        direction: outgoing ? 'out' : 'in',
         ownLabel: (ownCol != null ? columnNameById.get(ownCol) : null) ?? 'this table',
         otherLabel: otherColName ? `${otherName}.${otherColName}` : otherName,
         provenance: r.provenance,
@@ -252,9 +258,15 @@ function CanvasInner() {
     // scattered: `JournalCode → Journals.Code` at 100% next to
     // `JournalCode → Journals.ID` at 0% needs no explanation at all.
     // Triage ordering is the sidebar's filter's job, not this list's.
+    // Only OUTGOING links can have competing targets. A key that three other
+    // tables point AT is a primary key doing its job — flagging that as
+    // "3 targets, usually only one is real" is not just noise, it is wrong.
     const perColumn = new Map<string, number>();
-    for (const l of out) perColumn.set(l.ownLabel, (perColumn.get(l.ownLabel) ?? 0) + 1);
-    for (const l of out) l.siblingTargets = perColumn.get(l.ownLabel) ?? 1;
+    for (const l of out) {
+      if (l.direction !== 'out') continue;
+      perColumn.set(l.ownLabel, (perColumn.get(l.ownLabel) ?? 0) + 1);
+    }
+    for (const l of out) l.siblingTargets = l.direction === 'out' ? (perColumn.get(l.ownLabel) ?? 1) : 1;
 
     const rank = { none: 0, partial: 1, unknown: 2, holds: 3 } as const;
     return out.sort((a, b) =>
@@ -1080,6 +1092,17 @@ function CanvasInner() {
             )}
             {stats.crossSource > 0 && (
               <span className="tabular-nums text-ocean">{stats.crossSource} across sources</span>
+            )}
+            {/* `relationships` counts only what can be drawn, while `flagged`
+                counts every row. Without this the two numbers next to each
+                other describe different populations and nothing says so. */}
+            {stats.unresolved > 0 && (
+              <span
+                className="tabular-nums"
+                title="Links whose column no longer resolves — they cannot be drawn or checked"
+              >
+                {stats.unresolved} unusable
+              </span>
             )}
           </div>
         )}

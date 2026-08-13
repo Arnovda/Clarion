@@ -37,6 +37,13 @@ export interface FkVerdict {
   reason: 'ok' | 'too-few-distinct' | 'target-not-key' | 'low-containment';
   containment: number;
   sampled: number;
+  /**
+   * The raw count behind `containment`. Carried rather than left to be
+   * recovered as `round(containment * sampled)`: reconstructing a count from a
+   * ratio is the shape of arithmetic that goes quietly wrong, and this number
+   * is displayed to people as "16 of 20 values".
+   */
+  matched: number;
   targetRows: number;
   targetDistinct: number;
 }
@@ -94,10 +101,11 @@ export async function verifyFkCandidate(
   const row = result.rows[0] as
     { sampled: number; matched: number; target_rows: number; target_distinct: number } | undefined;
   const sampled       = Number(row?.sampled ?? 0);
-  const containment   = sampled > 0 ? Number(row?.matched ?? 0) / sampled : 0;
+  const matched       = Number(row?.matched ?? 0);
+  const containment   = sampled > 0 ? matched / sampled : 0;
   const targetRows    = Number(row?.target_rows ?? 0);
   const targetDistinct = Number(row?.target_distinct ?? 0);
-  const base = { containment, sampled, targetRows, targetDistinct };
+  const base = { containment, sampled, matched, targetRows, targetDistinct };
 
   if (sampled < FK_MIN_DISTINCT) return { ok: false, reason: 'too-few-distinct', ...base };
   if (!(targetRows > 0 && targetDistinct / targetRows >= FK_TARGET_UNIQUENESS)) {
