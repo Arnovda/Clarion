@@ -7,6 +7,29 @@
  * codes, or a parent that genuinely is not there. Five samples are enough to
  * form a suspicion; settling it means reading down both columns.
  *
+ * ---
+ *
+ * **THE WINDOWS MUST COVER THE SAME RANGE. This is the whole correctness
+ * problem here, and the first version got it wrong.**
+ *
+ * Taking the first N values of each side independently and then setting them
+ * next to each other compares two different slices of the value space the
+ * moment either side is truncated. Measured in production:
+ * `Payments.TransactionID` (218 GUIDs, all late in the alphabet) against
+ * `TransactionLines.ID` (2,589 values, of which the first 300 are all early in
+ * the alphabet). Containment was a true 100% — every payment does reference a
+ * real transaction line — while the side-by-side view showed 30 shared and 458
+ * one-sided, i.e. it reported a catastrophic mismatch that did not exist.
+ *
+ * That is the same defect shape as the 2026-08-03 detector bug: a numerator
+ * from one sample and a denominator from another. Two fixes, both required:
+ *
+ *   • **`matched` is computed against the WHOLE right column**, never against
+ *     the fetched window, so the headline count always agrees with the check.
+ *   • **The right side is fetched within the left window's range**, so the two
+ *     columns on screen describe the same stretch of the value space and the
+ *     gaps between them mean something.
+ *
  * Values are compared and ordered **as text**, matching how `verifyFkCandidate`
  * compares them (`CAST(... AS TEXT)`). Ordering a numeric key as text gives
  * 1, 10, 100, 2 — visually odd, but it is the ordering under which the two
@@ -25,20 +48,35 @@ export const VALUE_LIMIT = 300;
 /** Its own budget: this runs under an open dialog, like every other read here. */
 const VALUES_TIMEOUT_MS = Number(process.env.RELATIONSHIP_VALUES_TIMEOUT_MS) || 8000;
 
-export interface ColumnSide {
-  table: string;
-  column: string;
-  /** Distinct non-null values, ascending as text, capped at VALUE_LIMIT. */
-  values: string[];
-  /** How many distinct values the column really has, so the cap is honest. */
-  distinct: number;
+/** One value of the child column, and whether it exists in the parent at all. */
+export interface LeftValue {
+  v: string;
+  matched: boolean;
 }
 
 export interface ValueComparison {
   ok: boolean;
   reason: 'ok' | 'timeout' | 'query-failed';
-  left: ColumnSide | null;
-  right: ColumnSide | null;
+  left: {
+    table: string;
+    column: string;
+    values: LeftValue[];
+    /** True distinct count of the column, so the cap is stated not implied. */
+    distinct: number;
+    truncated: boolean;
+  } | null;
+  right: {
+    table: string;
+    column: string;
+    values: string[];
+    distinct: number;
+    truncated: boolean;
+    /**
+     * True when the right side was narrowed to the left window's range. The UI
+     * must say so — otherwise its list looks like the whole column.
+     */
+    rangeLimited: boolean;
+  } | null;
   limit: number;
 }
 
@@ -46,16 +84,34 @@ export interface QueryableConnector {
   executeQuery(sql: string): Promise<{ rows: unknown[] }>;
 }
 
+/**
+ * `matched` is an EXISTS over the entire parent column, not over the window
+ * below it. A value can be absent from the fetched 300 and still exist in the
+ * table, and calling that "not found" is the exact lie this file exists to
+ * avoid.
+ */
 function valuesSql(
   leftTable: string, leftColumn: string, rightTable: string, rightColumn: string,
 ): string {
-  const side = (tag: string, table: string, column: string) => `
-    SELECT * FROM (
-      SELECT '${tag}' AS side, CAST("${column}" AS TEXT) AS v
-      FROM "${table}" WHERE "${column}" IS NOT NULL
-      GROUP BY 1, 2 ORDER BY 2 LIMIT ${VALUE_LIMIT}
+  return `WITH l AS (
+      SELECT DISTINCT CAST("${leftColumn}" AS TEXT) AS v
+      FROM "${leftTable}" WHERE "${leftColumn}" IS NOT NULL
+      ORDER BY 1 LIMIT ${VALUE_LIMIT}
+    ),
+    bounds AS (SELECT MIN(v) AS lo, MAX(v) AS hi FROM l)
+    SELECT 'l' AS side, l.v AS v,
+           EXISTS (SELECT 1 FROM "${rightTable}" t
+                   WHERE CAST(t."${rightColumn}" AS TEXT) = l.v) AS matched
+    FROM l
+    UNION ALL
+    SELECT 'r' AS side, v, TRUE AS matched FROM (
+      SELECT DISTINCT CAST("${rightColumn}" AS TEXT) AS v
+      FROM "${rightTable}", bounds
+      WHERE "${rightColumn}" IS NOT NULL
+        AND CAST("${rightColumn}" AS TEXT) >= bounds.lo
+        AND CAST("${rightColumn}" AS TEXT) <= bounds.hi
+      ORDER BY 1 LIMIT ${VALUE_LIMIT}
     )`;
-  return `${side('l', leftTable, leftColumn)} UNION ALL ${side('r', rightTable, rightColumn)}`;
 }
 
 function countsSql(
@@ -66,25 +122,49 @@ function countsSql(
     (SELECT COUNT(DISTINCT CAST("${rightColumn}" AS TEXT)) FROM "${rightTable}" WHERE "${rightColumn}" IS NOT NULL) AS r`;
 }
 
-/** Shape the two result sets. Pure, so the ordering rules are testable. */
+/** Shape the result set. Pure, so the ordering and truncation rules are testable. */
 export function shapeSides(
   valueRows: readonly unknown[],
   countRow: Record<string, unknown> | undefined,
   left: { table: string; column: string },
   right: { table: string; column: string },
-): { left: ColumnSide; right: ColumnSide } {
-  const take = (tag: string) => valueRows
-    .filter((r) => (r as { side?: string }).side === tag)
-    .map((r) => String((r as { v?: unknown }).v ?? ''))
-    // Re-sorted here rather than trusted from SQL: the two lists are merged
-    // against each other in the UI, and a merge is only correct when both
-    // sides use the SAME comparison. The database's collation is not
-    // guaranteed to be JavaScript's.
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+): NonNullable<Pick<ValueComparison, 'left' | 'right'>> {
+  const rows = valueRows as { side?: string; v?: unknown; matched?: unknown }[];
+  // Re-sorted here rather than trusted from SQL: the two lists are merged
+  // against each other in the UI, and a merge is only correct when both sides
+  // use the SAME comparison. The database's collation is not guaranteed to be
+  // JavaScript's.
+  const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+  const leftValues: LeftValue[] = rows
+    .filter((r) => r.side === 'l')
+    .map((r) => ({ v: String(r.v ?? ''), matched: r.matched === true }))
+    .sort((a, b) => byText(a.v, b.v));
+
+  const rightValues = rows
+    .filter((r) => r.side === 'r')
+    .map((r) => String(r.v ?? ''))
+    .sort(byText);
+
+  const leftDistinct = Number(countRow?.l ?? 0);
+  const rightDistinct = Number(countRow?.r ?? 0);
 
   return {
-    left:  { ...left,  values: take('l'), distinct: Number(countRow?.l ?? 0) },
-    right: { ...right, values: take('r'), distinct: Number(countRow?.r ?? 0) },
+    left: {
+      ...left,
+      values: leftValues,
+      distinct: leftDistinct,
+      truncated: leftDistinct > leftValues.length,
+    },
+    right: {
+      ...right,
+      values: rightValues,
+      distinct: rightDistinct,
+      truncated: rightDistinct > rightValues.length,
+      // The right list was narrowed to the left window's range whenever it
+      // could not have held the whole column anyway.
+      rangeLimited: rightDistinct > rightValues.length,
+    },
   };
 }
 

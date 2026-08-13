@@ -28,19 +28,61 @@ function fakeConnector(opts: {
 }
 
 describe('shapeSides', () => {
+  it('carries the matched flag through, because it is the only honest count', () => {
+    // The flag is measured against the WHOLE parent column. Deriving "found"
+    // from whether a value has a neighbour in the fetched window is what
+    // reported 458 mismatches on a relationship measuring a true 100%.
+    const out = shapeSides(
+      [
+        { side: 'l', v: 'ff6', matched: true },
+        { side: 'l', v: 'e8a', matched: false },
+      ],
+      { l: 2, r: 2589 },
+      SIDES.left, SIDES.right,
+    );
+    expect(out.left.values).toEqual([
+      { v: 'e8a', matched: false },
+      { v: 'ff6', matched: true },
+    ]);
+  });
+
+  it('marks the parent side as range-limited when it could not be shown whole', () => {
+    // The right list is the stretch that lines up with the left window, not
+    // the first N of the column — and calling it "first 300" would be both
+    // wrong and misleading.
+    const out = shapeSides(
+      [{ side: 'r', v: 'e8a', matched: true }],
+      { l: 218, r: 2589 },
+      SIDES.left, SIDES.right,
+    );
+    expect(out.right.rangeLimited).toBe(true);
+    expect(out.right.distinct).toBe(2589);
+  });
+
+  it('does not claim truncation when the whole column fits', () => {
+    const out = shapeSides(
+      [{ side: 'l', v: 'a', matched: true }, { side: 'r', v: 'a', matched: true }],
+      { l: 1, r: 1 },
+      SIDES.left, SIDES.right,
+    );
+    expect(out.left.truncated).toBe(false);
+    expect(out.right.truncated).toBe(false);
+    expect(out.right.rangeLimited).toBe(false);
+  });
+
   it('splits the two sides and keeps each one sorted', () => {
     // Re-sorted in JS on purpose: the UI merges the two lists against each
     // other, and a merge is only correct when both sides use the SAME
     // comparison. The database's collation is not guaranteed to be JS's.
     const out = shapeSides(
       [
-        { side: 'l', v: 'B' }, { side: 'r', v: 'b' },
-        { side: 'l', v: 'A' }, { side: 'r', v: 'a' },
+        { side: 'l', v: 'B', matched: true }, { side: 'r', v: 'b' },
+        { side: 'l', v: 'A', matched: true }, { side: 'r', v: 'a' },
       ],
       { l: 2, r: 2 },
       SIDES.left, SIDES.right,
     );
-    expect(out.left.values).toEqual(['A', 'B']);
+    expect(out.left.values.map((x) => x.v)).toEqual(['A', 'B']);
     expect(out.right.values).toEqual(['a', 'b']);
     expect(out.left.column).toBe('JournalCode');
   });
@@ -49,17 +91,20 @@ describe('shapeSides', () => {
     // The cap has to be honest or "showing first 300" becomes a claim that the
     // column only has 300 values.
     const out = shapeSides(
-      [{ side: 'l', v: 'x' }],
+      [{ side: 'l', v: 'x', matched: true }],
       { l: 9_000, r: 12 },
       SIDES.left, SIDES.right,
     );
     expect(out.left.values).toHaveLength(1);
     expect(out.left.distinct).toBe(9_000);
+    expect(out.left.truncated).toBe(true);
   });
 
   it('renders a numeric key as the string it was compared as', () => {
-    const out = shapeSides([{ side: 'l', v: 42 }], { l: 1, r: 0 }, SIDES.left, SIDES.right);
-    expect(out.left.values).toEqual(['42']);
+    const out = shapeSides(
+      [{ side: 'l', v: 42, matched: false }], { l: 1, r: 0 }, SIDES.left, SIDES.right,
+    );
+    expect(out.left.values).toEqual([{ v: '42', matched: false }]);
   });
 });
 
@@ -70,6 +115,11 @@ describe('compareColumnValues', () => {
     expect(res.ok).toBe(true);
     expect(res.limit).toBe(VALUE_LIMIT);
     expect(c.queries[0]).toContain(`LIMIT ${VALUE_LIMIT}`);
+    // The parent side is bounded by the child window's range, not fetched
+    // independently — otherwise the two columns describe different stretches
+    // of the value space and the gaps between them mean nothing.
+    expect(c.queries[0]).toContain('bounds.lo');
+    expect(c.queries[0]).toContain('bounds.hi');
   });
 
   it('refuses an unsafe identifier rather than composing it into SQL', async () => {

@@ -166,6 +166,27 @@ answer instead of a form asking you to declare the cardinality.
   was dry-run over identical/disjoint/partial/empty/formatting-difference/
   numeric-as-text inputs asserting neither side loses a value; 6 new backend
   tests. New env `RELATIONSHIP_VALUES_TIMEOUT_MS` (8s).
+  **THE VALUE COMPARISON LIED — FIXED SAME DAY (2026-08-13).** Owner: *"Values
+  found on the other side can never be 100% here, can it?"* It could, and the
+  100% was right — **the dialog was wrong.**
+  `Payments.TransactionID → TransactionLines.ID` measures a true 100%, while
+  the comparison reported *30 on both sides · 458 on one side only*. Cause: the
+  first N distinct values of EACH side were fetched independently, so 218 GUIDs
+  on the left (all late in the alphabet) against the first 300 of 2,589 on the
+  right (all early) gave two windows that barely overlap — every row read as a
+  mismatch that does not exist. **This is the same defect shape as the
+  2026-08-03 detector bug**: a numerator from one sample, a denominator from
+  another. Two fixes, both needed: (1) **`matched` is an EXISTS against the
+  WHOLE parent column**, never the fetched window, so the headline count always
+  agrees with the check; (2) **the parent side is fetched within the child
+  window's RANGE** (`bounds.lo`/`bounds.hi`), so both columns describe the same
+  stretch of the value space. The header now says *only the matching stretch*,
+  not "first 300" — which would have been wrong as well as misleading. **The
+  tick is the fact, the gap is only alignment**: a row with nothing opposite it
+  may just be past the end of the parent window, so only a LEFT value whose
+  `matched` is false is highlighted; a parent key nobody references is normal.
+  Verified by dry-run: the production case now reports `3 of 3 found` where a
+  merge-derived count says 1. 9 backend tests.
   **EVIDENCE NOW OUTRANKS PROVENANCE ON THE LINE (2026-08-13).** Owner, after
   sweeping one table: *"they appear trustworthy because of their blue line, but
   some match for 0 percent."* **First, the facts: NONE of the failing columns is

@@ -3,23 +3,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { X, Loader2, AlertTriangle } from 'lucide-react';
 
-export interface ColumnSide {
-  table: string;
-  column: string;
-  values: string[];
-  distinct: number;
-}
+export interface LeftValue { v: string; matched: boolean }
 
 export interface ValueComparisonResult {
   ok: boolean;
   reason: 'ok' | 'timeout' | 'query-failed';
-  left: ColumnSide | null;
-  right: ColumnSide | null;
+  left: {
+    table: string; column: string; values: LeftValue[];
+    distinct: number; truncated: boolean;
+  } | null;
+  right: {
+    table: string; column: string; values: string[];
+    distinct: number; truncated: boolean; rangeLimited: boolean;
+  } | null;
   limit: number;
 }
 
 export interface ValueRow {
-  left: string | null;
+  left: LeftValue | null;
   right: string | null;
 }
 
@@ -37,29 +38,31 @@ export interface ValueRow {
  * and the two ragged columns say "these never line up" at a glance. That is
  * exactly the conclusion a percentage cannot deliver.
  */
-export function mergeSorted(left: readonly string[], right: readonly string[]): ValueRow[] {
+export function mergeSorted(left: readonly LeftValue[], right: readonly string[]): ValueRow[] {
   const out: ValueRow[] = [];
   let i = 0;
   let j = 0;
   while (i < left.length || j < right.length) {
     if (i >= left.length) { out.push({ left: null, right: right[j++] }); continue; }
     if (j >= right.length) { out.push({ left: left[i++], right: null }); continue; }
-    if (left[i] === right[j]) { out.push({ left: left[i++], right: right[j++] }); continue; }
-    if (left[i] < right[j]) out.push({ left: left[i++], right: null });
+    if (left[i].v === right[j]) { out.push({ left: left[i++], right: right[j++] }); continue; }
+    if (left[i].v < right[j]) out.push({ left: left[i++], right: null });
     else out.push({ left: null, right: right[j++] });
   }
   return out;
 }
 
-function SideHeader({ side, limit }: { side: ColumnSide; limit: number }) {
+function SideHeader({ table, column, distinct, note }: {
+  table: string; column: string; distinct: number; note?: string;
+}) {
   return (
     <div className="min-w-0">
-      <div className="truncate text-[12.5px] font-medium text-ink" title={`${side.table}.${side.column}`}>
-        {side.column}
+      <div className="truncate text-[12.5px] font-medium text-ink" title={`${table}.${column}`}>
+        {column}
       </div>
       <div className="truncate text-[11px] text-muted">
-        {side.table} · {side.distinct.toLocaleString('en-GB')} different values
-        {side.distinct > limit && ` · showing first ${limit}`}
+        {table} · {distinct.toLocaleString('en-GB')} different values
+        {note && ` · ${note}`}
       </div>
     </div>
   );
@@ -92,8 +95,18 @@ export function ValueExplorer({
     () => (result?.left && result?.right ? mergeSorted(result.left.values, result.right.values) : []),
     [result],
   );
-  const shown = onlyDiff ? rows.filter((r) => !r.left || !r.right) : rows;
-  const shared = rows.length - rows.filter((r) => !r.left || !r.right).length;
+  /**
+   * The headline counts come from the per-value `matched` flag, which was
+   * measured against the WHOLE parent column — never from the merge.
+   *
+   * A row can sit here with nothing opposite it simply because the parent's
+   * window did not reach that far, and counting those as mismatches is how the
+   * first version reported 458 problems on a relationship that measures a true
+   * 100%. The gap on screen is an alignment aid; the tick is the fact.
+   */
+  const found = result?.left?.values.filter((v) => v.matched).length ?? 0;
+  const total = result?.left?.values.length ?? 0;
+  const shown = onlyDiff ? rows.filter((r) => r.left && !r.left.matched) : rows;
 
   return (
     <div
@@ -143,19 +156,38 @@ export function ValueExplorer({
         {!loading && result?.ok && result.left && result.right && (
           <>
             <div className="grid grid-cols-2 gap-4 border-b border-line/70 px-5 py-2.5">
-              <SideHeader side={result.left} limit={result.limit} />
-              <SideHeader side={result.right} limit={result.limit} />
+              <SideHeader
+                table={result.left.table}
+                column={result.left.column}
+                distinct={result.left.distinct}
+                note={result.left.truncated ? `showing first ${result.limit}` : undefined}
+              />
+              <SideHeader
+                table={result.right.table}
+                column={result.right.column}
+                distinct={result.right.distinct}
+                // Saying "first 300" here would be wrong AND misleading: this
+                // side is not the first 300 of the column, it is the stretch
+                // that lines up with the values on the left.
+                note={result.right.rangeLimited ? 'only the matching stretch' : undefined}
+              />
             </div>
 
             <div className="flex items-center gap-3 border-b border-line/70 bg-surface px-5 py-1.5 text-[11.5px]">
               <span className="text-muted">
-                <span className="font-medium tabular-nums text-ink">{shared.toLocaleString('en-GB')}</span>{' '}
-                on both sides
-                <span className="text-muted2"> · </span>
                 <span className="font-medium tabular-nums text-ink">
-                  {(rows.length - shared).toLocaleString('en-GB')}
+                  {found.toLocaleString('en-GB')} of {total.toLocaleString('en-GB')}
                 </span>{' '}
-                on one side only
+                shown values exist in {result.right.column}
+                {total > found && (
+                  <>
+                    <span className="text-muted2"> · </span>
+                    <span className="font-medium tabular-nums" style={{ color: '#a43a3a' }}>
+                      {(total - found).toLocaleString('en-GB')}
+                    </span>{' '}
+                    not found
+                  </>
+                )}
               </span>
               <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-ink2">
                 <input
@@ -164,37 +196,52 @@ export function ValueExplorer({
                   onChange={(e) => setOnlyDiff(e.target.checked)}
                   className="accent-ocean"
                 />
-                Only show differences
+                Only show what wasn&apos;t found
               </label>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               {shown.length === 0 && (
                 <p className="px-5 py-8 text-center text-[12.5px] text-muted">
-                  {onlyDiff ? 'Every value shown exists on both sides.' : 'Both columns are empty.'}
+                  {onlyDiff ? 'Every value shown was found on the other side.' : 'Both columns are empty.'}
                 </p>
               )}
               {shown.map((r, i) => {
-                const both = r.left != null && r.right != null;
+                // Highlight only what is genuinely wrong: a LEFT value that
+                // does not exist in the parent. A right-hand value with nothing
+                // opposite it is just a parent key nobody references, which is
+                // normal and not a finding.
+                const missing = !!r.left && !r.left.matched;
                 return (
                   <div
-                    key={`${r.left ?? ''}|${r.right ?? ''}|${i}`}
+                    key={`${r.left?.v ?? ''}|${r.right ?? ''}|${i}`}
                     className="grid grid-cols-2 gap-4 border-b border-line/40 px-5 py-[3px] font-mono text-[11.5px] last:border-b-0"
-                    style={{ background: both ? undefined : '#fbf7f0' }}
+                    style={{ background: missing ? '#f9eaea' : undefined }}
                   >
-                    {/* A missing value is drawn as an empty cell, not a dash or
-                        a label. The gap IS the finding, and anything written in
-                        it reads as a value. */}
-                    <span
-                      className="min-w-0 truncate"
-                      style={{ color: r.left == null ? 'transparent' : both ? '#334049' : '#a06a1c' }}
-                      title={r.left ?? undefined}
-                    >
-                      {r.left ?? '·'}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {r.left && (
+                        <span
+                          className="shrink-0 text-[10px] leading-none"
+                          style={{ color: r.left.matched ? '#3f7a5c' : '#a43a3a' }}
+                          aria-hidden
+                        >
+                          {r.left.matched ? '✓' : '✗'}
+                        </span>
+                      )}
+                      {/* A missing value is drawn as an empty cell, not a dash
+                          or a label: the gap is the alignment, and anything
+                          written in it reads as a value. */}
+                      <span
+                        className="min-w-0 truncate"
+                        style={{ color: r.left == null ? 'transparent' : missing ? '#a43a3a' : '#334049' }}
+                        title={r.left?.v}
+                      >
+                        {r.left?.v ?? '·'}
+                      </span>
                     </span>
                     <span
                       className="min-w-0 truncate"
-                      style={{ color: r.right == null ? 'transparent' : both ? '#334049' : '#a06a1c' }}
+                      style={{ color: r.right == null ? 'transparent' : '#334049' }}
                       title={r.right ?? undefined}
                     >
                       {r.right ?? '·'}
@@ -206,7 +253,8 @@ export function ValueExplorer({
 
             <div className="border-t border-line/70 bg-surface px-5 py-2 text-[11px] leading-relaxed text-muted2">
               Sorted and compared as text, the same way Clarion checks whether the values
-              match. Rows where a value exists on one side only are highlighted.
+              match. The tick is measured against the whole {result.right.column} column, not
+              just the values shown here.
             </div>
           </>
         )}

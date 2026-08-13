@@ -661,6 +661,23 @@ are enough to form a suspicion, not to settle one.
   them. Ordering a numeric key as text gives 1, 10, 100, 2 — visually odd, but
   it is the ordering under which the two columns were judged to match, and
   showing a different one would invite exactly the wrong conclusion.
+- **THE WINDOWS HAVE TO COVER THE SAME RANGE — the first version did not, and
+  it lied.** Owner caught it: `Payments.TransactionID → TransactionLines.ID`
+  measured a true **100%** while the dialog reported *30 on both sides · 458 on
+  one side only*. Cause: the first N of each side were fetched independently,
+  so with 218 GUIDs on the left (all late in the alphabet) against the first
+  300 of 2,589 on the right (all early), the two windows barely overlapped and
+  every row read as a mismatch. **Same defect shape as the 2026-08-03 detector
+  bug**: a numerator from one sample and a denominator from another. Two fixes,
+  both required — `matched` is now an EXISTS against the **whole** parent
+  column so the headline always agrees with the check, and the parent side is
+  fetched **within the child window's range** so the two columns describe the
+  same stretch of the value space. The header says *only the matching stretch*
+  rather than "first 300", which would be both wrong and misleading.
+- **The tick is the fact; the gap is only alignment.** A row with nothing
+  opposite it may simply be past the end of the parent's window, so only a
+  LEFT value whose `matched` is false is highlighted. A parent key nobody
+  references is normal and is not a finding.
 - **THE LISTS ARE MERGED, not shown side by side.** This is the whole design.
   Two independently scrolled columns tell you almost nothing — row 40 on the
   left has no relationship to row 40 on the right. Interleaved, an equal value
