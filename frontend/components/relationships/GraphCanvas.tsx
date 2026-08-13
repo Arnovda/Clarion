@@ -12,10 +12,11 @@ import { TableNode, type TableNodeData } from './TableNode';
 import { LaneNode, type LaneNodeData } from './LaneNode';
 import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge';
 import { MeasurePanel } from './MeasurePanel';
+import { EdgeInspector } from './EdgeInspector';
 import { laneLayout, laneColor } from './laneLayout';
 import { parseHandle, handleLeft, handleRight } from './geometry';
 import type {
-  GraphResponse, GraphColumn, Measurement, PendingDraw, Cardinality,
+  GraphResponse, GraphColumn, Measurement, PendingDraw, Cardinality, GraphRelationship,
 } from './types';
 
 const nodeTypes = { table: TableNode, lane: LaneNode };
@@ -30,6 +31,9 @@ function CanvasInner() {
   const [onlyPending, setOnlyPending] = useState(false);
   const [draw, setDraw] = useState<PendingDraw | null>(null);
   const [saving, setSaving] = useState(false);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
+  const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
+  const [payoff, setPayoff] = useState<string | null>(null);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<TableNodeData | LaneNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RelationEdgeData>([]);
@@ -153,9 +157,10 @@ function CanvasInner() {
             matchRate: null,
             dimmed: !matches(r.fromTableId) && !matches(r.toTableId),
           },
+          selected: r.id === selectedEdgeId,
         } satisfies Edge<RelationEdgeData>;
       }));
-  }, [graph, layout, columnsByTable, expanded, onlyPending, matches, setNodes, setEdges, toggleExpanded]);
+  }, [graph, layout, columnsByTable, expanded, onlyPending, matches, selectedEdgeId, setNodes, setEdges, toggleExpanded]);
 
   const labelFor = useCallback((tableId: number, columnId: number | null) => {
     const t = graph?.tables.find((x) => x.id === tableId);
@@ -237,6 +242,133 @@ function CanvasInner() {
     }
   }, [draw, load]);
 
+  const selectedRel: GraphRelationship | null = selectedEdgeId != null
+    ? graph?.relationships.find((r) => r.id === selectedEdgeId) ?? null
+    : null;
+
+  /**
+   * Relationships still awaiting a human, in the order the canvas walks them.
+   * This is the queue — J and K step through it without the user hunting for
+   * dashed lines by eye.
+   */
+  const pendingQueue = useMemo(
+    () => (graph?.relationships ?? []).filter((r) => r.provenance === 'ai').map((r) => r.id),
+    [graph],
+  );
+
+  const step = useCallback((delta: number) => {
+    if (pendingQueue.length === 0) return;
+    const at = selectedEdgeId != null ? pendingQueue.indexOf(selectedEdgeId) : -1;
+    const next = at === -1
+      ? (delta > 0 ? 0 : pendingQueue.length - 1)
+      : (at + delta + pendingQueue.length) % pendingQueue.length;
+    setSelectedEdgeId(pendingQueue[next]);
+  }, [pendingQueue, selectedEdgeId]);
+
+  const confirmRel = useCallback(async (rel: GraphRelationship) => {
+    setBusy('confirm');
+    try {
+      // An empty PATCH is a valid confirm — the server flips ai_draft and
+      // stamps confirmed_by_user, which is what makes it survive a re-profile.
+      await api.patch(`/semantic/relationships/${rel.id}`, {
+        ...(rel.measured ? { measured: rel.measured } : {}),
+      });
+      // Close the loop: the point of this pane is AI context, so say what the
+      // confirmation bought. Without it people draw lines on faith.
+      setPayoff(rel.isCrossSource
+        ? 'Ask AI can now answer questions that span both sources.'
+        : 'Ask AI can now use this link when answering questions.');
+      setSelectedEdgeId(null);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
+  const deleteRel = useCallback(async (rel: GraphRelationship) => {
+    setBusy('delete');
+    try {
+      await api.delete(`/semantic/relationships/${rel.id}`);
+      setSelectedEdgeId(null);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
+  const saveDescription = useCallback(async (rel: GraphRelationship, text: string) => {
+    setBusy('save');
+    try {
+      await api.patch(`/semantic/relationships/${rel.id}`, { description: text });
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
+  const remeasure = useCallback(async (rel: GraphRelationship) => {
+    if (!rel.fromColumnId || !rel.toColumnId) return;
+    setBusy('measure');
+    try {
+      const res = await api.post('/relationships/measure', {
+        fromTableId: rel.fromTableId,
+        fromColumnId: rel.fromColumnId,
+        toTableId: rel.toTableId,
+        toColumnId: rel.toColumnId,
+      });
+      const measurement = res.data.data as Measurement;
+      // Cache it on the row so the next visit shows it without re-running.
+      await api.patch(`/semantic/relationships/${rel.id}`, { measured: measurement });
+      await load();
+    } catch {
+      /* the inspector keeps showing whatever it had; a failed check is not a
+         reason to lose the panel */
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
+  /**
+   * Keyboard model. Reviewing is repetitive, so the hand should not have to
+   * leave the keys — and shortcuts must never fire while someone is typing a
+   * description, which is why the target is checked first.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      switch (e.key) {
+        case 'j': case 'J': e.preventDefault(); step(1); break;
+        case 'k': case 'K': e.preventDefault(); step(-1); break;
+        case 'y': case 'Y':
+          if (selectedRel && busy === null) { e.preventDefault(); void confirmRel(selectedRel); }
+          break;
+        case 'n': case 'N':
+          if (selectedRel && busy === null) { e.preventDefault(); void deleteRel(selectedRel); }
+          break;
+        case '/':
+          e.preventDefault();
+          document.getElementById('rel-search')?.focus();
+          break;
+        case 'Escape':
+          setSelectedEdgeId(null); setDraw(null);
+          break;
+        default: break;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step, selectedRel, busy, confirmRel, deleteRel]);
+
+  // Payoff is a transient acknowledgement, not a notification to dismiss.
+  useEffect(() => {
+    if (!payoff) return;
+    const t = setTimeout(() => setPayoff(null), 5000);
+    return () => clearTimeout(t);
+  }, [payoff]);
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-[13px] text-muted">
@@ -258,7 +390,8 @@ function CanvasInner() {
   const stats = graph?.stats;
 
   return (
-    <div className="relative h-full">
+    <div className="flex h-full">
+      <div className="relative min-w-0 flex-1">
       <EdgeMarkers />
 
       {/* Toolbar */}
@@ -266,6 +399,7 @@ function CanvasInner() {
         <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 px-3 py-1.5 shadow-sm backdrop-blur">
           <Search size={13} className="text-muted2" />
           <input
+            id="rel-search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Find a table…"
@@ -319,6 +453,8 @@ function CanvasInner() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgeClick={(_, edge) => setSelectedEdgeId(Number(edge.id))}
+        onPaneClick={() => setSelectedEdgeId(null)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
@@ -336,6 +472,35 @@ function CanvasInner() {
         <div className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-warn/40 bg-warnSoft px-3 py-1.5 text-[11.5px] text-ink2">
           Showing the first {graph.tables.length} of {graph.stats.tables} tables.
         </div>
+      )}
+
+      {payoff && (
+        <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-lg border border-ocean/30 bg-oceanSofter px-3.5 py-2 text-[12.5px] text-ink shadow-sm">
+          {payoff}
+        </div>
+      )}
+
+      {pendingQueue.length > 0 && !selectedRel && !draw && (
+        <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted2">J</span> to start reviewing
+          {' · '}
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted2">/</span> to search
+        </div>
+      )}
+      </div>
+
+      {selectedRel && (
+        <EdgeInspector
+          relationship={selectedRel}
+          fromLabel={labelFor(selectedRel.fromTableId, selectedRel.fromColumnId)}
+          toLabel={labelFor(selectedRel.toTableId, selectedRel.toColumnId)}
+          busy={busy}
+          onConfirm={() => void confirmRel(selectedRel)}
+          onDelete={() => void deleteRel(selectedRel)}
+          onRemeasure={() => void remeasure(selectedRel)}
+          onSaveDescription={(text) => void saveDescription(selectedRel, text)}
+          onClose={() => setSelectedEdgeId(null)}
+        />
       )}
     </div>
   );

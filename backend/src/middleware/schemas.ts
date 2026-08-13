@@ -165,6 +165,9 @@ export const updateRelationshipSchema = z.object({
     from_column_id: nullableId,
     to_column_id: nullableId,
     ai_draft: z.boolean().optional(),
+    // The relationship canvas sends back what it measured, so an edge can show
+    // its containment and shape without re-running the check on every load.
+    measured: z.unknown().optional(),
   }).passthrough(),
 });
 

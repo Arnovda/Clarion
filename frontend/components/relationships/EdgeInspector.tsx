@@ -1,0 +1,204 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { Check, Trash2, RefreshCw, Loader2, X, Sparkles } from 'lucide-react';
+import type { GraphRelationship, Measurement, Provenance } from './types';
+import { explain } from './MeasurePanel';
+
+const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
+  human: {
+    label: 'Confirmed by you',
+    hint: 'Someone on your team checked this. It survives every re-analysis.',
+    color: '#164e63', bg: '#e8f0f3',
+  },
+  declared: {
+    label: 'From the source',
+    hint: "This comes from the system's own documentation, so it is reliable.",
+    color: '#4a5660', bg: '#e3e6ea',
+  },
+  ai: {
+    label: 'Suggested by Clarion',
+    hint: 'Clarion worked this out from your data. Confirm it or remove it.',
+    color: '#c08a5e', bg: '#f1e4d6',
+  },
+};
+
+const CARDINALITY_TEXT: Record<string, string> = {
+  one_to_one: 'one-to-one',
+  one_to_many: 'one-to-many',
+  many_to_one: 'many-to-one',
+  many_to_many: 'many-to-many',
+};
+
+/**
+ * Everything you can do to one relationship.
+ *
+ * Confirming and removing are the two actions that make this a review tool
+ * rather than a picture, and both are one click with a keyboard equivalent —
+ * this is repetitive work and the hand should not have to leave the keys.
+ *
+ * The description is editable here because it is **what the AI reads**. A
+ * relationship's description is the sentence that ends up in the NL-to-SQL
+ * prompt, so this field is the most direct way a person can teach Clarion
+ * something it could not infer.
+ */
+export function EdgeInspector({
+  relationship, fromLabel, toLabel, busy, onConfirm, onDelete, onRemeasure, onSaveDescription, onClose,
+}: {
+  relationship: GraphRelationship;
+  fromLabel: string;
+  toLabel: string;
+  busy: 'confirm' | 'delete' | 'measure' | 'save' | null;
+  onConfirm: () => void;
+  onDelete: () => void;
+  onRemeasure: () => void;
+  onSaveDescription: (text: string) => void;
+  onClose: () => void;
+}) {
+  const [description, setDescription] = useState(relationship.description ?? '');
+  useEffect(() => { setDescription(relationship.description ?? ''); }, [relationship.id, relationship.description]);
+
+  const prov = PROVENANCE_META[relationship.provenance];
+  const m = relationship.measured as Measurement | null;
+  const dirty = description.trim() !== (relationship.description ?? '').trim();
+
+  return (
+    <aside className="flex h-full w-[340px] flex-col border-l border-line bg-raised">
+      <div className="flex items-start gap-2 border-b border-line/70 px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+            {relationship.kind === 'match' ? 'Match' : 'Relationship'}
+            {relationship.isCrossSource && ' · across sources'}
+          </div>
+          <div className="mt-1 break-words text-[13px] leading-snug text-ink">
+            {fromLabel} <span className="text-muted2">→</span> {toLabel}
+          </div>
+        </div>
+        <button type="button" onClick={onClose} className="rounded p-1 text-muted2 hover:bg-soft hover:text-ink" aria-label="Close">
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+          style={{ color: prov.color, background: prov.bg }}
+        >
+          {prov.label}
+        </div>
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{prov.hint}</p>
+
+        <div className="mt-4">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
+          <div className="mt-1 text-[13px] text-ink">
+            {CARDINALITY_TEXT[relationship.relationshipType ?? ''] ?? 'not recorded'}
+          </div>
+        </div>
+
+        <div className="mt-4 border-t border-line/60 pt-3">
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+              Checked against your data
+            </div>
+            <button
+              type="button"
+              onClick={onRemeasure}
+              disabled={busy !== null}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ocean hover:bg-oceanSofter disabled:opacity-50"
+            >
+              {busy === 'measure'
+                ? <Loader2 size={11} className="animate-spin" />
+                : <RefreshCw size={11} />}
+              {m ? 'Check again' : 'Check now'}
+            </button>
+          </div>
+
+          {!m && busy !== 'measure' && (
+            <p className="mt-1.5 text-[11.5px] text-muted">Not checked yet.</p>
+          )}
+
+          {m && (
+            <>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {m.containment && (
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Found</div>
+                    <div className="text-[13px] tabular-nums text-ink">{Math.round(m.containment.ratio * 100)}%</div>
+                  </div>
+                )}
+                {m.cardinality && (
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
+                    <div className="text-[13px] text-ink">{CARDINALITY_TEXT[m.cardinality.type]}</div>
+                  </div>
+                )}
+                {m.orphans && (
+                  <div>
+                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Unmatched</div>
+                    <div className="text-[13px] tabular-nums text-ink">{m.orphans.rows.toLocaleString('en-GB')}</div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="mt-4 border-t border-line/60 pt-3">
+          <label className="font-mono text-[10px] uppercase tracking-wider text-muted2" htmlFor="rel-desc">
+            What this means
+          </label>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted">
+            <Sparkles size={10} className="mr-1 inline" />
+            Clarion reads this when answering questions. A sentence in your own words
+            helps more than anything else here.
+          </p>
+          <textarea
+            id="rel-desc"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            placeholder="e.g. Every invoice line belongs to one invoice."
+            className="mt-2 w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted2 focus:border-ocean"
+          />
+          {dirty && (
+            <button
+              type="button"
+              onClick={() => onSaveDescription(description)}
+              disabled={busy !== null}
+              className="mt-1.5 rounded-lg bg-ocean px-2.5 py-1 text-[12px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
+            >
+              {busy === 'save' ? <Loader2 size={11} className="mr-1 inline animate-spin" /> : null}
+              Save
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 border-t border-line/70 bg-surface px-4 py-3">
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={busy !== null}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12.5px] text-err hover:bg-errSoft disabled:opacity-50"
+          title="Remove (N)"
+        >
+          {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+          Remove
+        </button>
+        {relationship.provenance !== 'human' && (
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy !== null}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-ocean px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
+            title="Confirm (Y)"
+          >
+            {busy === 'confirm' ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+            Looks right
+          </button>
+        )}
+      </div>
+    </aside>
+  );
+}

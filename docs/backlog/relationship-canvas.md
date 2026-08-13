@@ -247,6 +247,40 @@ ReactFlow is dynamically imported and so costs nothing on any other page.
 cross-source measurement. Confirm/reject on an existing edge is still done from
 the old surface.
 
+### 4.0d Shipped — slice 5, the review loop (2026-08-11)
+
+Scope was widened from "keyboard model" to **the whole edge lifecycle**. A review
+tool that can create a relationship but not remove a wrong one is not a review
+tool, and removing was on the explicit must-have list.
+
+`EdgeInspector` — click any edge (or press `J`) and get:
+
+- **provenance in plain language** — "Confirmed by you" / "From the source" /
+  "Suggested by Clarion", each with a sentence saying what that means;
+- **the measurement**, with *Check again* to re-run it on demand. The result is
+  cached to `table_relationships.measured` (migration 77), so the column is now
+  live and a second visit shows the numbers without re-running anything;
+- **an editable description**, labelled as *what Clarion reads when answering
+  questions* — this is the most direct way a person can teach the AI something it
+  could not infer, and it deserved to be said out loud rather than presented as a
+  bare text field;
+- **Looks right** (confirm) and **Remove** (delete).
+
+Keyboard: `J`/`K` step the pending queue, `Y` confirm, `N` remove, `/` search,
+`Esc` deselect. Shortcuts check the event target first so they never fire while
+someone is typing a description.
+
+**Confirm closes the loop visibly** — "Ask AI can now answer questions that span
+both sources." Without that the user is drawing lines on faith, which is how a
+tool like this goes unused.
+
+Backend: `PATCH /semantic/relationships/:id` now accepts `measured`. Persisted to
+**Postgres only** — the Neo4j edge carries no measurement, and mirroring a
+statistic that changes on every sync would give the two stores a third way to
+disagree. An empty PATCH remains a valid confirm; the server already flips
+`ai_draft` and stamps `confirmed_by_user`, which is what makes a confirmation
+survive a re-profile.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
@@ -312,7 +346,7 @@ from the catalog.
 | 2 | ~~Migration — `kind`, `measured`, `match_keys`~~ **DONE 2026-08-11** (`20260811000077`) | Small, unblocks both edges. Additive only: `kind` defaults to `'join'` so every existing row keeps its meaning and no backfill is needed. |
 | 3 | ~~Tenant-scoped graph endpoint~~ **DONE 2026-08-11** | `GET /api/relationships/graph`. The prerequisite for anything cross-source. |
 | 4 | ~~New route + source lanes + collapsed nodes + join edges~~ **DONE 2026-08-11** | `/relationships`, analyst+, in Studio. |
-| 5 | Queue-as-canvas + keyboard model | Turns it into the review tool that was chosen as the primary job. |
+| 5 | ~~Queue-as-canvas + keyboard model~~ **DONE 2026-08-11** — scope widened to the full edge lifecycle (inspect / confirm / remove / edit / re-measure), because a review tool that cannot remove a wrong relationship is not one. | Turns it into the review tool that was chosen as the primary job. |
 | 6 | Match edges + cross-source measurement | The reason for cross-source-from-day-one. |
 | 7 | Match panel → per-row review | The bridge into the identity layer (§2.2 of the warehouse-value plan). |
 | 8 | Retire the old canvas | At parity, not before. |

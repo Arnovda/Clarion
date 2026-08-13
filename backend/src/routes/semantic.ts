@@ -587,7 +587,7 @@ router.post('/relationships', requireAuth, requireRole('admin'), validate(create
 router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateRelationshipSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { relationship_type, description, from_column_id, to_column_id } =
+    const { relationship_type, description, from_column_id, to_column_id, measured } =
       req.body as Record<string, unknown>;
 
     if (!await denyUnlessOwnedRelationship(req, res, Number(req.params.id))) return;
@@ -618,6 +618,13 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
     // Any PATCH here is a human acting on the relationship (confirm or
     // edit) — mark it so the profiler preserves it across re-profiles.
     relPatch.confirmed_by_user = true;
+    // Cached measurement (migration 77). Postgres-only: the Neo4j edge carries
+    // no measurement, and mirroring a statistic that changes on every sync
+    // would give the two stores a third way to disagree. Stringified rather
+    // than passed as an object so the jsonb cast is explicit.
+    if (measured !== undefined) {
+      relPatch.measured = measured === null ? null : JSON.stringify(measured);
+    }
     await db('table_relationships').where({ id: Number(req.params.id) }).update(relPatch);
 
     await invalidateSemanticCache(
