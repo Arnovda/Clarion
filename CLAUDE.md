@@ -146,6 +146,33 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **FLAGGING — THE THIRD THING YOU CAN SAY ABOUT A RELATIONSHIP (2026-08-13).**
+  Owner, on a human-confirmed link measuring 0%: *"I really want to flag this
+  while I'm investigating the table."* Not possible: a relationship had exactly
+  two states a person could put it in — **confirmed** or **deleted** — and
+  neither fits the finding that actually turns up (*the data says this does not
+  hold, but I am not deleting it; the source probably hasn't finished syncing*).
+  Deleting throws away a likely-real link; confirming asserts what the data
+  contradicts. So people do neither and the finding dies with the panel.
+  **Migration 78** adds `flagged_at` + `flagged_reason` — a nullable TIMESTAMP
+  not a boolean, because *when* it was raised tells you whether a sync has had
+  time to fix it since. Deliberately **NOT `approval_status`**: source
+  tables/columns carry that with its own draft/approved/flagged vocabulary tied
+  to the AI review queue, and a relationship flag is an observation about the
+  DATA, not a step in that queue. **`POST /api/relationships/:id/flag`** leaves
+  `confirmed_by_user`/`ai_draft` alone (same rule as `/check`).
+  **THE FLAG HAS TEETH: `getRelationshipsForContext` now EXCLUDES flagged
+  edges**, so a link a person says doesn't hold stops being handed to the model
+  as a joinable key — that is the whole reason to flag rather than leave a note,
+  and the panel says so in words. One click puts it back. **This is the one
+  field mirrored onto the Neo4j EDGE** (`setRelationshipFlagged`), so the
+  AI-context read filters in its own `MATCH` instead of subtracting a Postgres
+  query from a graph result; the reason text stays Postgres-only.
+  **Findable or it's decoration:** flagged links sort to the top of a table's
+  list with an icon, the table row shows a flag count that outranks the pending
+  badge, the toolbar carries the tenant total — and `stats.flagged` counts over
+  EVERY row including undrawable ones, because a flag on a link whose endpoint
+  later stopped resolving is still owed an answer.
   **CHECK A WHOLE TABLE AT ONCE + THE CHECKS ARE NOW SHOWN (2026-08-13).**
   Owner asked (a) whether the "checked against your data" result was AI —
   **it never was**, it is `verifyFkCandidate`'s three fixed SQL rules — and
@@ -3628,6 +3655,11 @@ write to those three tables.
 - `routes/notebooks.ts` — schema explorer.
 
 **Mirrored write surfaces today:**
+- `POST /api/relationships/:id/flag` — mirrors ONLY the boolean `flagged` onto
+  the `RELATES_TO` edge, so `getRelationshipsForContext` can filter flagged
+  links out of AI context inside its own `MATCH`. The reason text is
+  Postgres-only. Best-effort: an unreachable graph must not stop someone
+  recording a problem.
 - `SchemaProfiler.ts` — Postgres-first (gets auto-increment id), then Neo4j with
   that id as `pgId`. The original pattern; sets the id-alignment invariant.
 - `PATCH /semantic/tables/:id` — mirrors confirm/edit to `source_tables`.
