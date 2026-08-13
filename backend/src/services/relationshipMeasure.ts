@@ -216,6 +216,14 @@ function cardinalitySql(
 
 /** How many values of each kind to show. Enough to spot a pattern, not a dump. */
 const EXAMPLE_LIMIT = 5;
+/**
+ * Examples get their OWN slice of the budget, well inside the overall one.
+ *
+ * Without this the illustration could eat the whole wall clock and turn a
+ * measurement that had already succeeded into `unmeasurable` — the verdict lost
+ * to the thing that was only ever meant to explain it.
+ */
+const EXAMPLES_TIMEOUT_MS = Math.min(2500, Math.floor(MEASURE_TIMEOUT_MS / 3));
 /** A join key longer than this is not being read, it is being scrolled past. */
 const EXAMPLE_MAX_LEN = 64;
 
@@ -327,13 +335,28 @@ export async function measureRelationship(
       // readable, but losing them must never cost the verdict that was already
       // measured.
       let examples: RelationshipMeasurement['examples'] = null;
+      let exTimer: NodeJS.Timeout | undefined;
       try {
-        const ex = await connector.executeQuery(
+        const exQuery = connector.executeQuery(
           examplesSql(fromTable, fromColumn, toTable, toColumn, thresholds.sampleSize),
         );
-        examples = shapeExamples(ex.rows);
+        // Same sink as the outer race, for the same reason: when the sub-budget
+        // wins, this query is still in flight and the route will disconnect the
+        // connector underneath it.
+        exQuery.catch(() => undefined);
+        const exBudget = new Promise<'slow'>((resolve) => {
+          exTimer = setTimeout(() => resolve('slow'), EXAMPLES_TIMEOUT_MS);
+        });
+        const settledEx = await Promise.race([exQuery, exBudget]);
+        if (settledEx === 'slow') {
+          log.warn({ fromTable, fromColumn, ms: EXAMPLES_TIMEOUT_MS }, 'example values exceeded their slice');
+        } else {
+          examples = shapeExamples(settledEx.rows);
+        }
       } catch (err) {
         log.warn({ err, fromTable, fromColumn }, 'could not sample example values');
+      } finally {
+        if (exTimer) clearTimeout(exTimer);
       }
 
       return { fk, row, examples };

@@ -24,6 +24,8 @@ function fakeConnector(opts: {
   examples?: Bucketed[];
   throwOn?: 'fk' | 'card' | 'examples';
   delayMs?: number;
+  /** Delay applied only to the example-values query. */
+  examplesDelayMs?: number;
 }): QueryableConnector & { queries: string[] } {
   const queries: string[] = [];
   return {
@@ -37,7 +39,10 @@ function fakeConnector(opts: {
         throw new Error(kind === 'fk' ? 'no such table' : 'conversion error');
       }
       if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
-      if (kind === 'examples') return { rows: opts.examples ?? [] };
+      if (kind === 'examples') {
+        if (opts.examplesDelayMs) await new Promise((r) => setTimeout(r, opts.examplesDelayMs));
+        return { rows: opts.examples ?? [] };
+      }
       return { rows: [kind === 'fk' ? opts.fk ?? {} : opts.card ?? {}] };
     },
   };
@@ -227,6 +232,23 @@ describe('example values', () => {
     );
     expect(m.verdict).toBe('strong');
     expect(m.examples).toBeNull();
+  });
+
+  it('gives up on slow examples rather than losing the verdict', async () => {
+    // The illustration has its own slice of the budget. Without it a slow
+    // sample query would burn the whole wall clock and downgrade a measurement
+    // that had already succeeded to "we could not check" — the answer lost to
+    // the thing that was only meant to explain it.
+    vi.stubEnv('RELATIONSHIP_MEASURE_TIMEOUT_MS', '900');
+    vi.resetModules();
+    const fresh = await import('../services/relationshipMeasure');
+    const m = await fresh.measureRelationship(
+      fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, examplesDelayMs: 800 }),
+      'a', 'x', 'b', 'y',
+    );
+    expect(m.verdict).toBe('strong');
+    expect(m.examples).toBeNull();
+    vi.unstubAllEnvs();
   });
 
   it('never reuses the fk query name, so the two cannot be confused', async () => {
