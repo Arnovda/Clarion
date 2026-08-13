@@ -30,6 +30,16 @@ on:
   push:
     branches: [main, staging]
 
+# Deploys of different commits must not overlap. Azure locks a container app
+# while it provisions a revision, so a second deploy arriving mid-flight fails
+# with ContainerAppOperationInProgress — which is exactly what three pushes
+# inside two minutes produced. Queue them instead of cancelling: a cancelled
+# deploy can stop between `az containerapp update` and the label move, leaving
+# the staging label pointing at the wrong revision.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   ACR_REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
 
@@ -247,8 +257,13 @@ jobs:
 
           az containerapp revision label remove --name "$APP" --resource-group "$RG" \
             --label staging || true
+          # --yes is REQUIRED: when the label is already attached to another
+          # revision, `label add` asks to confirm the move. On a runner there is
+          # no TTY, so az raises NoTTYException and the whole deploy fails. The
+          # `label remove` above does not make this safe — a concurrent deploy
+          # can re-attach the label between the two calls.
           az containerapp revision label add --name "$APP" --resource-group "$RG" \
-            --label staging --revision "$APP--$TAG"
+            --label staging --revision "$APP--$TAG" --yes
 
           FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
             --query properties.configuration.ingress.fqdn -o tsv)
@@ -318,8 +333,13 @@ jobs:
 
           az containerapp revision label remove --name "$APP" --resource-group "$RG" \
             --label staging || true
+          # --yes is REQUIRED: when the label is already attached to another
+          # revision, `label add` asks to confirm the move. On a runner there is
+          # no TTY, so az raises NoTTYException and the whole deploy fails. The
+          # `label remove` above does not make this safe — a concurrent deploy
+          # can re-attach the label between the two calls.
           az containerapp revision label add --name "$APP" --resource-group "$RG" \
-            --label staging --revision "$APP--$TAG"
+            --label staging --revision "$APP--$TAG" --yes
 
           FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
             --query properties.configuration.ingress.fqdn -o tsv)

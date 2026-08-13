@@ -41,27 +41,53 @@ jobs:
           # A traffic entry pinned to "latest" auto-follows every future
           # revision, which would make the NEXT push go live immediately and
           # silently break the test-first deploy model.
+          #
+          # The whole thing RETRIES, and re-resolves the revision on every
+          # attempt. Azure locks a container app while a deploy provisions a
+          # revision, so promoting straight after a push fails with
+          # ContainerAppOperationInProgress. Retrying only the traffic call
+          # would fix the crash but not the real hazard: while that deploy is
+          # in flight its revision is not "ready" yet, so we would have
+          # resolved — and then promoted — the PREVIOUS revision, silently
+          # shipping something older than the commit you meant to ship.
+          # Re-resolving each round means the wait lands on the new revision.
           promote() {
-            local app="$1"
-            local rev
-            rev=$(az containerapp show \
-              --name "$app" \
-              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --query properties.latestReadyRevisionName -o tsv)
-            if [ -z "$rev" ]; then
-              echo "::error::No ready revision found for $app — nothing to promote."
-              exit 1
-            fi
-            echo "Promoting $app → $rev=100…"
-            az containerapp ingress traffic set \
-              --name "$app" \
-              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-              --revision-weight "$rev=100"
+            local app="$1" attempt rev out
+            for attempt in $(seq 1 15); do
+              rev=$(az containerapp show \
+                --name "$app" \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --query properties.latestReadyRevisionName -o tsv)
+              if [ -z "$rev" ]; then
+                echo "::error::No ready revision found for $app — nothing to promote."
+                return 1
+              fi
+              echo "Promoting $app → $rev=100 (attempt $attempt)…"
+              if out=$(az containerapp ingress traffic set \
+                --name "$app" \
+                --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+                --revision-weight "$rev=100" 2>&1); then
+                echo "$app now serves $rev"
+                echo "- \`$app\` → \`$rev\`" >> "$GITHUB_STEP_SUMMARY"
+                return 0
+              fi
+              if ! grep -q 'ContainerAppOperationInProgress' <<<"$out"; then
+                echo "$out" >&2
+                echo "::error::Could not promote $app."
+                return 1
+              fi
+              echo "  a deploy is still provisioning $app — waiting 20s, then re-checking which revision is ready…"
+              sleep 20
+            done
+            echo "::error::$app was busy for 5 minutes. A deploy may be stuck — check the Build & Deploy runs, then re-run this."
+            return 1
           }
+          # Name the revisions that actually went live. "the latest revision"
+          # is not something you can check afterwards against what you meant
+          # to ship; a revision name is.
+          echo "### ✅ Promoted to production" >> "$GITHUB_STEP_SUMMARY"
           case "${{ github.event.inputs.target }}" in
             "backend only")  promote "${{ secrets.BACKEND_APP_NAME }}" ;;
             "frontend only") promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
             *)               promote "${{ secrets.BACKEND_APP_NAME }}"; promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
           esac
-          echo "### ✅ Promoted to production" >> "$GITHUB_STEP_SUMMARY"
-          echo "Target: ${{ github.event.inputs.target }} — latest revision now serves 100% of traffic." >> "$GITHUB_STEP_SUMMARY"
