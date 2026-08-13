@@ -113,9 +113,18 @@ answer instead of a form asking you to declare the cardinality.
   camelCase silently fails validation; and the first lane implementation was an
   overlay (see above). `next build` green, `/relationships` 2.69 kB / 100 kB —
   ReactFlow is dynamically imported so it costs nothing on other pages.
-  **Not yet:** keyboard queue model (slice 5), match edges + cross-source
-  measurement (slice 6); confirm/reject on an EXISTING edge still happens on the
-  old surface.
+  **FIRST VERSION WAS UNUSABLE — fixed 2026-08-13.** It rendered ALL 36 tables and
+  a lane stacked them in ONE column, so the graph was a ~3,300px ribbon one node
+  wide; `fitView` zoomed out to fit and nothing was legible. Two structural fixes:
+  `packLane` now WRAPS a source into columns of ≤7 so a lane is a block not a
+  strip, and **review is the default mode** — the canvas shows the focused
+  relationship's two tables + one hop, pair opened on the joined columns,
+  everything else dimmed; `Explore` is a deliberate second mode. Viewport refits
+  on scope change with `maxZoom: 1` / `minZoom: 0.25` so nothing shrinks below
+  reading size. **The lesson:** §2.4 "never render everything" was written down,
+  the graph endpoint was built with `anchorTableId`/`depth` to support it, and the
+  canvas called it with neither — a constraint implemented in the API but not
+  exercised by its only caller is not implemented.
 - **Slices 6 + 7 — CROSS-SOURCE MATCHING.** `POST /api/relationships/match-preview`.
   Drawing between two sources opens a **match** panel, not the join panel.
   `crossSourceSession.buildTwoSourceConnector` puts **two connections' tables in

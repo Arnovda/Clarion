@@ -330,6 +330,31 @@ crosswalk — deciding, storing and re-using "Shopify customer 4471 IS Exact's V
 DAMME BVBA" for 900 rows. That is the identity layer, and it is a separate and
 much larger piece than a panel.
 
+### 4.0f Fixed — the first version rendered everything (2026-08-13)
+
+The canvas shipped ignoring its own §2.4. It loaded all 36 tables of a
+single-source tenant, and because a lane stacked its tables in ONE column, the
+layout was a ~3,300px ribbon one node wide. `fitView` dutifully zoomed out to fit
+it, and the result was an illegible strip of scribbles in the middle of an empty
+screen. Two causes, both structural rather than cosmetic:
+
+- **A lane was a strip, not a block.** `packLane` now wraps a source into columns
+  of at most seven, so a lane stays roughly screen-shaped however many tables it
+  holds.
+- **The default view was a map, not the work.** Review is now the default mode:
+  the canvas shows the focused relationship's two tables plus one hop, with the
+  pair opened on their joined columns and everything else dimmed to read as
+  context. `Explore` is a deliberate second mode for seeing the whole graph.
+
+Also: the viewport refits when the visible set changes, with `maxZoom: 1` and
+`minZoom: 0.25`, so nothing can shrink below reading size to fit — the specific
+mechanism that made the first version unusable.
+
+**The lesson worth keeping:** "never render everything" was written down as rule
+§2.4, the graph endpoint was built with `anchorTableId` and `depth` to support it,
+and the canvas then called it with neither. A constraint that is implemented in
+the API but not exercised by the only caller is not implemented.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables

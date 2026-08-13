@@ -27,6 +27,8 @@ export const LANE_GAP = 96;
 export const LANE_PAD = 28;
 /** Vertical gap between stacked nodes in a lane. */
 export const NODE_GAP_Y = 34;
+/** Horizontal gap between wrapped columns inside one lane. */
+export const NODE_GAP_X = 40;
 /** Top offset for the first node, leaving room for the lane header. */
 export const LANE_HEADER_H = 64;
 

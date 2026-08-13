@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactFlow, {
   Background, Controls, ReactFlowProvider,
-  useNodesState, useEdgesState, Connection, Node, Edge, ConnectionMode,
+  useNodesState, useEdgesState, useReactFlow, Connection, Node, Edge, ConnectionMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Search, Loader2, AlertTriangle } from 'lucide-react';
@@ -21,10 +21,19 @@ import type {
   MatchMeasurement, PendingMatch, Normalisation,
 } from './types';
 
+function Kbd({ children }: { children: React.ReactNode }) {
+  return (
+    <kbd className="rounded border border-line bg-surface px-1 font-mono text-[10px] uppercase tracking-wider text-muted2">
+      {children}
+    </kbd>
+  );
+}
+
 const nodeTypes = { table: TableNode, lane: LaneNode };
 const edgeTypes = { relation: RelationEdge };
 
 function CanvasInner() {
+  const { fitView } = useReactFlow();
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -37,6 +46,16 @@ function CanvasInner() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
   const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
   const [payoff, setPayoff] = useState<string | null>(null);
+  /**
+   * 'review' shows only what you are deciding on right now — the focused
+   * relationship's two tables plus one hop. 'explore' shows the whole graph.
+   *
+   * Review is the default because reviewing is the job, and because rendering
+   * everything does not work: 36 tables in one source is a wall of nodes that
+   * fitView has to shrink past the point of legibility. The plan said never
+   * render everything; this is that rule, applied.
+   */
+  const [mode, setMode] = useState<'review' | 'explore'>('review');
 
   const [nodes, setNodes, onNodesChange] = useNodesState<TableNodeData | LaneNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RelationEdgeData>([]);
@@ -58,6 +77,30 @@ function CanvasInner() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  /**
+   * Land on the first thing to review, with both its tables already open on the
+   * joined columns. Opening to an unanchored map of everything asks the user to
+   * find the work before they can do it.
+   */
+  useEffect(() => {
+    if (!graph || selectedEdgeId !== null) return;
+    const first = graph.relationships.find((r) => r.provenance === 'ai');
+    if (!first) { setMode('explore'); return; }
+    setSelectedEdgeId(first.id);
+    setExpanded(new Set([first.fromTableId, first.toTableId]));
+  }, [graph, selectedEdgeId]);
+
+  /** Keep the focused relationship's tables open as the queue advances. */
+  useEffect(() => {
+    if (mode !== 'review' || !graph || selectedEdgeId === null) return;
+    const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
+    if (!rel) return;
+    setExpanded((prev) => {
+      if (prev.has(rel.fromTableId) && prev.has(rel.toTableId)) return prev;
+      return new Set([...prev, rel.fromTableId, rel.toTableId]);
+    });
+  }, [mode, graph, selectedEdgeId]);
 
   const columnsByTable = useMemo(() => {
     const m = new Map<number, GraphColumn[]>();
@@ -84,12 +127,43 @@ function CanvasInner() {
     return `${t.tableName} ${t.displayName ?? ''}`.toLowerCase().includes(q);
   }, [search, graph]);
 
+  /**
+   * In review mode, the canvas shows the focused relationship's two tables and
+   * their immediate neighbours — enough context to judge the link, and nothing
+   * else competing for attention.
+   */
+  const visibleTables = useMemo(() => {
+    if (!graph) return [];
+    if (mode === 'explore' || !selectedEdgeId) return graph.tables;
+    const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
+    if (!rel) return graph.tables;
+
+    const keep = new Set<number>([rel.fromTableId, rel.toTableId]);
+    for (const r of graph.relationships) {
+      if (keep.has(r.fromTableId)) keep.add(r.toTableId);
+      else if (keep.has(r.toTableId)) keep.add(r.fromTableId);
+    }
+    return graph.tables.filter((t) => keep.has(t.id));
+  }, [graph, mode, selectedEdgeId]);
+
+  const visibleTableIds = useMemo(
+    () => new Set(visibleTables.map((t) => t.id)),
+    [visibleTables],
+  );
+
   const layout = useMemo(() => {
     if (!graph) return null;
     const counts = new Map<number, number>();
-    for (const t of graph.tables) counts.set(t.id, columnsByTable.get(t.id)?.length ?? 0);
-    return laneLayout(graph.sources, graph.tables, counts, expanded);
-  }, [graph, columnsByTable, expanded]);
+    for (const t of visibleTables) counts.set(t.id, columnsByTable.get(t.id)?.length ?? 0);
+    return laneLayout(graph.sources, visibleTables, counts, expanded);
+  }, [graph, visibleTables, columnsByTable, expanded]);
+
+  /** The two tables the focused relationship connects. */
+  const focusPair = useMemo(() => {
+    if (mode !== 'review' || selectedEdgeId == null || !graph) return null;
+    const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
+    return rel ? new Set([rel.fromTableId, rel.toTableId]) : null;
+  }, [mode, selectedEdgeId, graph]);
 
   // Rebuild nodes and edges whenever the graph, layout or filters change.
   useEffect(() => {
@@ -113,7 +187,7 @@ function CanvasInner() {
       zIndex: 0,
     }));
 
-    const tableNodes = graph.tables.map((t) => {
+    const tableNodes = visibleTables.map((t) => {
       const pos = layout.positions.get(t.id) ?? { x: 0, y: 0 };
       return {
         id: String(t.id),
@@ -128,8 +202,8 @@ function CanvasInner() {
           laneColor: colorByConnection.get(t.connectionId) ?? '#6b7680',
           columns: columnsByTable.get(t.id) ?? [],
           expanded: expanded.has(t.id),
-          dimmed: !matches(t.id),
-          focused: false,
+          dimmed: !matches(t.id) || (mode === 'review' && !!focusPair && !focusPair.has(t.id)),
+          focused: mode === 'review' && !!focusPair && focusPair.has(t.id),
           onToggle: toggleExpanded,
         },
         zIndex: 1,
@@ -139,6 +213,7 @@ function CanvasInner() {
     setNodes([...laneNodes, ...tableNodes]);
 
     setEdges(graph.relationships
+      .filter((r) => visibleTableIds.has(r.fromTableId) && visibleTableIds.has(r.toTableId))
       .filter((r) => !onlyPending || r.provenance === 'ai')
       .map((r) => {
         // Attach to a column row when that node is expanded; otherwise to the
@@ -160,12 +235,21 @@ function CanvasInner() {
             matchRate: r.kind === 'match'
               ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
               : null,
-            dimmed: !matches(r.fromTableId) && !matches(r.toTableId),
+            dimmed: (!matches(r.fromTableId) && !matches(r.toTableId))
+              || (mode === 'review' && selectedEdgeId != null && r.id !== selectedEdgeId),
           },
           selected: r.id === selectedEdgeId,
         } satisfies Edge<RelationEdgeData>;
       }));
-  }, [graph, layout, columnsByTable, expanded, onlyPending, matches, selectedEdgeId, setNodes, setEdges, toggleExpanded]);
+  }, [graph, layout, visibleTables, visibleTableIds, columnsByTable, expanded, onlyPending, matches, selectedEdgeId, mode, focusPair, setNodes, setEdges, toggleExpanded]);
+
+  useEffect(() => {
+    if (!nodes.length) return;
+    // A frame's delay lets ReactFlow measure the new nodes first; fitting before
+    // that uses stale sizes and lands off-centre.
+    const t = setTimeout(() => fitView({ padding: 0.2, maxZoom: 1, duration: 300 }), 60);
+    return () => clearTimeout(t);
+  }, [nodes.length, mode, selectedEdgeId, fitView]);
 
   const labelFor = useCallback((tableId: number, columnId: number | null) => {
     const t = graph?.tables.find((x) => x.id === tableId);
@@ -331,6 +415,12 @@ function CanvasInner() {
     [graph],
   );
 
+  const queuePosition = (() => {
+    if (mode !== 'review' || selectedEdgeId == null) return null;
+    const at = pendingQueue.indexOf(selectedEdgeId);
+    return at === -1 ? null : `${at + 1}/${pendingQueue.length}`;
+  })();
+
   const step = useCallback((delta: number) => {
     if (pendingQueue.length === 0) return;
     const at = selectedEdgeId != null ? pendingQueue.indexOf(selectedEdgeId) : -1;
@@ -482,22 +572,42 @@ function CanvasInner() {
           />
         </div>
 
-        <button
-          type="button"
-          onClick={() => setOnlyPending((v) => !v)}
-          className={`rounded-xl border px-3 py-1.5 text-[12.5px] shadow-sm backdrop-blur transition-colors ${
-            onlyPending
-              ? 'border-ocean bg-ocean text-white'
-              : 'border-line bg-raised/95 text-ink2 hover:bg-soft'
-          }`}
-        >
-          Needs review
-          {stats && stats.pendingReview > 0 && (
-            <span className={`ml-1.5 tabular-nums ${onlyPending ? 'text-white/80' : 'text-muted'}`}>
-              {stats.pendingReview}
-            </span>
-          )}
-        </button>
+        {/* Mode is a real switch, not a filter: reviewing and exploring want
+            different amounts of the graph on screen, and conflating them is what
+            produced a wall of unreadable nodes. */}
+        <div className="flex items-center rounded-xl border border-line bg-raised/95 p-0.5 shadow-sm backdrop-blur">
+          {(['review', 'explore'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => { setMode(m); if (m === 'explore') setSelectedEdgeId(null); }}
+              className={`rounded-[10px] px-2.5 py-1 text-[12.5px] transition-colors ${
+                mode === m ? 'bg-ocean text-white' : 'text-ink2 hover:bg-soft'
+              }`}
+            >
+              {m === 'review' ? 'Review' : 'Explore'}
+              {m === 'review' && queuePosition && (
+                <span className={`ml-1.5 tabular-nums ${mode === m ? 'text-white/80' : 'text-muted'}`}>
+                  {queuePosition}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        {mode === 'explore' && (
+          <button
+            type="button"
+            onClick={() => setOnlyPending((v) => !v)}
+            className={`rounded-xl border px-3 py-1.5 text-[12.5px] shadow-sm backdrop-blur transition-colors ${
+              onlyPending
+                ? 'border-ocean bg-ocean text-white'
+                : 'border-line bg-raised/95 text-ink2 hover:bg-soft'
+            }`}
+          >
+            Only unreviewed
+          </button>
+        )}
 
         {stats && (
           <div className="ml-auto flex items-center gap-3 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
@@ -552,7 +662,8 @@ function CanvasInner() {
         connectionMode={ConnectionMode.Loose}
         proOptions={{ hideAttribution: true }}
         fitView
-        minZoom={0.15}
+        fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+        minZoom={0.25}
         maxZoom={1.6}
         defaultEdgeOptions={{ type: 'relation' }}
       >
@@ -572,11 +683,11 @@ function CanvasInner() {
         </div>
       )}
 
-      {pendingQueue.length > 0 && !selectedRel && !draw && (
-        <div className="absolute bottom-4 left-4 z-10 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted2">J</span> to start reviewing
-          {' · '}
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted2">/</span> to search
+      {mode === 'review' && pendingQueue.length > 0 && !draw && !match && (
+        <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
+          <span><Kbd>Y</Kbd> looks right</span>
+          <span><Kbd>N</Kbd> remove</span>
+          <span><Kbd>J</Kbd> next</span>
         </div>
       )}
       </div>

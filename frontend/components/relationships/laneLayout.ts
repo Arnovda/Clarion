@@ -10,10 +10,16 @@
  * Deliberately not dagre. Dagre optimises for hierarchy and would interleave
  * tables from different sources wherever that shortened an edge — destroying the
  * one property this layout exists to provide.
+ *
+ * A lane WRAPS into columns rather than growing into one tall strip. The first
+ * version stacked every table in a single column, which for a tenant with one
+ * source and 36 tables produced a 3,300px ribbon one node wide: `fitView` then
+ * zoomed out far enough to fit it and nothing was legible. A lane is a block,
+ * not a strip.
  */
 
 import {
-  NODE_W, LANE_GAP, LANE_PAD, NODE_GAP_Y, LANE_HEADER_H, nodeHeight,
+  NODE_W, LANE_GAP, LANE_PAD, NODE_GAP_Y, NODE_GAP_X, LANE_HEADER_H, nodeHeight,
 } from './geometry';
 import type { GraphSource, GraphTable } from './types';
 
@@ -83,6 +89,45 @@ export function assignColors(sources: readonly GraphSource[]): Map<number, numbe
  * rest of the source hangs off — and putting it at the top means the useful part
  * of a lane is visible without scrolling.
  */
+
+/**
+ * Rows per column before a lane wraps.
+ *
+ * Chosen so a lane stays close to screen-shaped: taller than this and `fitView`
+ * has to zoom out past the point where a table name is readable, which is the
+ * failure the first version shipped with.
+ */
+const MAX_ROWS_PER_COLUMN = 7;
+
+/**
+ * Place one source's tables into a wrapped grid and return the block's size.
+ * Column widths are uniform, so a lane's width is just how many columns it needed.
+ */
+function packLane(
+  tables: readonly GraphTable[],
+  laneX: number,
+  positions: Map<number, { x: number; y: number }>,
+  columnCountByTable: Map<number, number>,
+  expanded: ReadonlySet<number>,
+): { width: number; height: number } {
+  const columns = Math.max(1, Math.ceil(tables.length / MAX_ROWS_PER_COLUMN));
+  const perColumn = Math.ceil(tables.length / columns);
+
+  let tallest = 0;
+  for (let c = 0; c < columns; c += 1) {
+    const slice = tables.slice(c * perColumn, (c + 1) * perColumn);
+    let y = LANE_HEADER_H;
+    for (const t of slice) {
+      positions.set(t.id, { x: laneX + LANE_PAD + c * (NODE_W + NODE_GAP_X), y });
+      y += nodeHeight(expanded.has(t.id), columnCountByTable.get(t.id) ?? 0) + NODE_GAP_Y;
+    }
+    tallest = Math.max(tallest, y);
+  }
+
+  const width = LANE_PAD * 2 + columns * NODE_W + (columns - 1) * NODE_GAP_X;
+  return { width, height: tallest };
+}
+
 export function laneLayout(
   sources: readonly GraphSource[],
   tables: readonly GraphTable[],
@@ -101,7 +146,6 @@ export function laneLayout(
     bySource.get(t.connectionId)!.push(t);
   }
 
-  const laneWidth = NODE_W + LANE_PAD * 2;
   let x = 0;
 
   for (const source of sources) {
@@ -112,23 +156,19 @@ export function laneLayout(
       b.relationshipCount - a.relationshipCount ||
       a.tableName.localeCompare(b.tableName));
 
-    let y = LANE_HEADER_H;
-    for (const t of laneTables) {
-      positions.set(t.id, { x: x + LANE_PAD, y });
-      y += nodeHeight(expanded.has(t.id), columnCountByTable.get(t.id) ?? 0) + NODE_GAP_Y;
-    }
+    const { width, height } = packLane(laneTables, x, positions, columnCountByTable, expanded);
 
     lanes.push({
       connectionId: source.id,
       name: source.name,
       connectorType: source.connectorType,
       x,
-      width: laneWidth,
-      height: y,
+      width,
+      height,
       colorIndex: colors.get(source.id) ?? 0,
     });
 
-    x += laneWidth + LANE_GAP;
+    x += width + LANE_GAP;
   }
 
   // Tables whose source is missing from `sources` would otherwise be invisible
@@ -136,18 +176,14 @@ export function laneLayout(
   const placed = new Set(lanes.map((l) => l.connectionId));
   const orphans = tables.filter((t) => !placed.has(t.connectionId));
   if (orphans.length) {
-    let y = LANE_HEADER_H;
-    for (const t of orphans) {
-      positions.set(t.id, { x: x + LANE_PAD, y });
-      y += nodeHeight(expanded.has(t.id), columnCountByTable.get(t.id) ?? 0) + NODE_GAP_Y;
-    }
+    const { width, height } = packLane(orphans, x, positions, columnCountByTable, expanded);
     lanes.push({
       connectionId: -1,
       name: 'Unassigned',
       connectorType: '',
       x,
-      width: laneWidth,
-      height: y,
+      width,
+      height,
       colorIndex: LANE_COLORS.length - 1,
     });
   }
