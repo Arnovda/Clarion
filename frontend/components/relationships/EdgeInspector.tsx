@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag } from 'lucide-react';
+import { Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2 } from 'lucide-react';
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
 import {
   explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
@@ -72,7 +72,7 @@ function ColumnPicker({ label, value, options, disabled, onChange }: {
 export function EdgeInspector({
   relationship, fromLabel, toLabel, fromColumns, toColumns, busy,
   onConfirm, onDelete, onRemeasure, onSaveDescription, onChangeType, onChangeColumns,
-  onFlag, onClose,
+  onFlag, onCompareValues, onClose,
 }: {
   relationship: GraphRelationship;
   fromLabel: string;
@@ -87,6 +87,7 @@ export function EdgeInspector({
   onChangeType: (type: string) => void;
   onChangeColumns: (change: { from?: number; to?: number }) => void;
   onFlag: (flagged: boolean, reason: string) => void;
+  onCompareValues: () => void;
   onClose: () => void;
 }) {
   const [description, setDescription] = useState(relationship.description ?? '');
@@ -227,6 +228,20 @@ export function EdgeInspector({
 
           {!m && busy !== 'measure' && (
             <p className="mt-1.5 text-[11.5px] text-muted">Not checked yet.</p>
+          )}
+
+          {/* Reading the two columns is its own act, available whether or not a
+              measurement exists — you often want the values BECAUSE the number
+              is surprising, and sometimes before there is a number at all. */}
+          {relationship.fromColumnId != null && relationship.toColumnId != null && (
+            <button
+              type="button"
+              onClick={onCompareValues}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11.5px] text-ink2 hover:bg-soft"
+            >
+              <Columns2 size={11} />
+              Compare the values side by side
+            </button>
           )}
 
           {m && (

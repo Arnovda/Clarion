@@ -13,6 +13,7 @@ import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge
 import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
+import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
 import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
 import { outcomeOf } from './MeasurePanel';
@@ -86,6 +87,10 @@ function CanvasInner() {
   const [check, setCheck] = useState<CheckProgress | null>(null);
   /** Filter the table list down to what is unresolved. */
   const [onlyAttention, setOnlyAttention] = useState(false);
+  /** The side-by-side value comparison, when open. */
+  const [values, setValues] = useState<
+    { title: string; loading: boolean; result: ValueComparisonResult | null } | null
+  >(null);
   const [freshMeasured, setFreshMeasured] = useState<Map<number, Measurement>>(new Map());
   /** Bumped to abandon a sweep the user has navigated away from. */
   const checkRun = useRef(0);
@@ -694,6 +699,18 @@ function CanvasInner() {
     }
   }, [draw, load]);
 
+  const compareValues = useCallback(async (rel: GraphRelationship, title: string) => {
+    setValues({ title, loading: true, result: null });
+    try {
+      const res = await api.get(`/relationships/${rel.id}/values`);
+      setValues((v) => (v ? { ...v, loading: false, result: res.data.data } : v));
+    } catch {
+      setValues((v) => (v
+        ? { ...v, loading: false, result: { ok: false, reason: 'query-failed', left: null, right: null, limit: 0 } }
+        : v));
+    }
+  }, []);
+
   const selectedRel: GraphRelationship | null = selectedEdgeId != null
     ? graph?.relationships.find((r) => r.id === selectedEdgeId) ?? null
     : null;
@@ -1153,6 +1170,15 @@ function CanvasInner() {
         </div>
       )}
 
+      {values && (
+        <ValueExplorer
+          title={values.title}
+          result={values.result}
+          loading={values.loading}
+          onClose={() => setValues(null)}
+        />
+      )}
+
       {payoff && (
         <div className="absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-lg border border-ocean/30 bg-oceanSofter px-3.5 py-2 text-[12.5px] text-ink shadow-sm">
           {payoff}
@@ -1211,6 +1237,10 @@ function CanvasInner() {
           onChangeType={(type) => void changeType(selectedRel, type)}
           onChangeColumns={(change) => void changeColumns(selectedRel, change)}
           onFlag={(flagged, reason) => void flagRel(selectedRel, flagged, reason)}
+          onCompareValues={() => void compareValues(
+            selectedRel,
+            `${labelFor(selectedRel.fromTableId, selectedRel.fromColumnId)} → ${labelFor(selectedRel.toTableId, selectedRel.toColumnId)}`,
+          )}
           fromColumns={columnsByTable.get(selectedRel.fromTableId) ?? []}
           toColumns={columnsByTable.get(selectedRel.toTableId) ?? []}
           // In Review the inspector IS the decision surface — closing it means

@@ -27,6 +27,7 @@ import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
 import { createConnector } from '../connectors/ConnectorFactory';
 import { measureRelationship } from '../services/relationshipMeasure';
+import { compareColumnValues } from '../services/columnValues';
 import { buildGraph, neighbourhood } from '../services/relationshipGraph';
 import { measureMatch, type Normalisation } from '../services/matchMeasure';
 import { buildTwoSourceConnector } from '../services/crossSourceSession';
@@ -523,6 +524,89 @@ router.post('/:id/flag', requireAuth, requireRole('admin', 'analyst'),
       );
       log.info({ id, flagged }, 'relationship flag changed');
       res.json({ ok: true });
+    } catch (err) { next(err); }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/relationships/:id/values
+// ---------------------------------------------------------------------------
+//
+// The distinct values of both columns, so a person can read them against each
+// other. The measurement says how much overlaps; only the values say why it
+// does not — a formatting difference, the wrong column, or an absent parent all
+// look identical as a percentage.
+//
+// Read-only and cached nowhere: values change with every sync, and a stale
+// column of data is worse than a slower dialog.
+router.get('/:id/values', requireAuth, requireRole('admin', 'analyst'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        res.status(400).json({ ok: false, error: 'Invalid id' });
+        return;
+      }
+
+      const rel = await db('table_relationships')
+        .where({ id })
+        .select('id', 'from_table_id', 'to_table_id', 'from_column_id', 'to_column_id')
+        .first();
+      if (!rel) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      if (!await denyUnlessOwned(req, res, 'source_tables', rel.from_table_id)) return;
+      if (!await denyUnlessOwned(req, res, 'source_tables', rel.to_table_id)) return;
+
+      if (!rel.from_column_id || !rel.to_column_id) {
+        res.status(400).json({ ok: false, error: 'This link does not name a column on both sides yet.', code: 'no_columns' });
+        return;
+      }
+
+      const tables: TableRow[] = await db('source_tables')
+        .whereIn('id', [rel.from_table_id, rel.to_table_id])
+        .select('id', 'connection_id', 'table_name');
+      const columns: ColumnRow[] = await db('source_columns')
+        .whereIn('id', [rel.from_column_id, rel.to_column_id])
+        .select('id', 'table_id', 'column_name');
+
+      const fromTable = tables.find((t) => t.id === rel.from_table_id);
+      const toTable   = tables.find((t) => t.id === rel.to_table_id);
+      const fromCol   = columns.find((c) => c.id === rel.from_column_id);
+      const toCol     = columns.find((c) => c.id === rel.to_column_id);
+      if (!fromTable || !toTable || !fromCol || !toCol) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      if (fromTable.connection_id !== toTable.connection_id) {
+        res.status(400).json({
+          ok: false,
+          error: 'Comparing values across two different sources is not available yet.',
+          code: 'cross_source_unsupported',
+        });
+        return;
+      }
+
+      const connRow = await db('connections').where({ id: fromTable.connection_id }).first();
+      if (!connRow) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+
+      const connector = await createConnector(connRow as unknown as Parameters<typeof createConnector>[0]);
+      try {
+        await connector.connect();
+        const result = await compareColumnValues(
+          connector,
+          fromTable.table_name, fromCol.column_name,
+          toTable.table_name, toCol.column_name,
+        );
+        res.json({ ok: true, data: result });
+      } finally {
+        try { connector.disconnect(); } catch { /* already closed */ }
+      }
     } catch (err) { next(err); }
   },
 );

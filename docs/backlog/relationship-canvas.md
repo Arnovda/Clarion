@@ -643,6 +643,40 @@ unrelated facts, and only one of them was visible.
   next to `JournalCode → Journals.ID` at 0% needs no explanation. A `N targets`
   marker says it outright.
 
+### 4.0o Reading both columns against each other (2026-08-13)
+
+Owner: *"I'd like to investigate a sample value from the two columns on either
+side of the relation — a pop-up in the middle showing both columns, sorted
+ascending and scrollable, so people can really set the values against each
+other."*
+
+Right, and it is where the investigation currently stops: five sample values
+are enough to form a suspicion, not to settle one.
+
+- **`GET /api/relationships/:id/values`** returns up to 300 distinct values per
+  side plus the REAL distinct count, so the cap can be stated rather than
+  quietly implied. Never cached: values change with every sync, and a stale
+  column of data is worse than a slower dialog.
+- **Compared and ordered as TEXT**, matching how `verifyFkCandidate` compares
+  them. Ordering a numeric key as text gives 1, 10, 100, 2 — visually odd, but
+  it is the ordering under which the two columns were judged to match, and
+  showing a different one would invite exactly the wrong conclusion.
+- **THE LISTS ARE MERGED, not shown side by side.** This is the whole design.
+  Two independently scrolled columns tell you almost nothing — row 40 on the
+  left has no relationship to row 40 on the right. Interleaved, an equal value
+  occupies ONE row and a value present on one side only leaves a gap opposite
+  it, so **the shape of the mismatch is the shape of the whitespace**. With a
+  `BE 0123.456` / `be0123456` formatting difference every row is a gap and the
+  two ragged columns say "these never line up" before a character is read.
+- A missing value renders as an EMPTY cell, not a dash or a label: the gap is
+  the finding, and anything written into it reads as a value.
+- Counts above the list (`N on both sides · M on one side only`) and an
+  **Only show differences** filter, which is what you want the moment overlap
+  is partial rather than zero.
+- The merge is a pure function and was dry-run against identical / disjoint /
+  partial / empty / formatting-difference / numeric-as-text inputs, asserting
+  that neither side loses a value.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
