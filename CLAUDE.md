@@ -146,6 +146,39 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **CHECK A WHOLE TABLE AT ONCE + THE CHECKS ARE NOW SHOWN (2026-08-13).**
+  Owner asked (a) whether the "checked against your data" result was AI —
+  **it never was**, it is `verifyFkCandidate`'s three fixed SQL rules — and
+  (b) for a per-table run button instead of checking each relationship.
+  (1) **The three rules now RENDER** with measured value vs threshold
+  (enough distinct values · the other column identifies one row · values found
+  on the other side), plus a line saying outright that these are fixed SQL
+  rules with no AI. The defect was never the check, it was showing only the
+  conclusion: **a verdict you cannot audit is one you must take on faith**,
+  which is what this pane exists to avoid. All three rows always render even
+  though the detector short-circuits — the one query computes every number
+  anyway. (2) **Contradictions are FLAGGED**: a `declared` (vendor-documented)
+  or human-confirmed relationship measuring `broken` is almost always an
+  unfinished sync, not a wrong link, and saying so turns a number into a next
+  step. (3) **NEW `POST /api/relationships/:id/check`** measures + caches.
+  **It exists because MEASURING IS NOT DECIDING** — storing via
+  `PATCH /semantic/relationships/:id` was silently stamping
+  `confirmed_by_user` and clearing `ai_draft`, so "Check again" CONFIRMED an
+  unreviewed AI suggestion and a table sweep would have emptied the review
+  queue as a side effect of asking a question. Example sampling is now
+  optional (`withExamples:false` for sweeps — saves a third query per link).
+  (4) **The run lives in the table list** as ONE line (offer → progress →
+  result), two links at a time (DuckDB allows two concurrent queries per
+  tenant; more only queues and raises timeout risk), a failed link never stops
+  the sweep, results land one by one, leaving the table abandons the run.
+  (5) **Three outcomes, not four verdicts** — `weak`/`broken` blur what was
+  asked for, the ratio does not: **holds** / **partly match** (usually a
+  formatting difference worth fixing) / **no match** (usually the wrong column
+  or an unfinished sync). `holds` still needs the FULL verdict: a link can
+  match 100% and still fail because the other column is not an identifier.
+  (6) Robustness: `cardinality` arrives as a CAST of a free-text column, so an
+  unexpected stored value gave `undefined` and indexing it would throw inside
+  a render and take the canvas down.
   **EXAMPLE VALUES + CARDINALITY ON THE LINE ENDS (2026-08-13).** Owner: the
   measurement panel wasn't intuitive, and the diagram didn't show cardinality.
   (1) **`measureRelationship` now returns `examples`** — a few source values that
