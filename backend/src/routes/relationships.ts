@@ -19,7 +19,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { measureRelationshipSchema, matchPreviewSchema } from '../middleware/schemas';
+import {
+  measureRelationshipSchema, matchPreviewSchema, checkRelationshipSchema,
+} from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
 import { createConnector } from '../connectors/ConnectorFactory';
@@ -336,6 +338,127 @@ router.post('/match-preview', requireAuth, requireRole('admin', 'analyst'),
       } finally {
         try { connector.disconnect(); } catch { /* already closed */ }
       }
+    } catch (err) { next(err); }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/relationships/:id/check
+// ---------------------------------------------------------------------------
+//
+// Re-measure an EXISTING relationship and cache the result on the row.
+//
+// **Measuring is not deciding, and that distinction is the whole reason this
+// route exists.** The obvious way to store a measurement is
+// `PATCH /semantic/relationships/:id { measured }` — but that handler treats
+// any patch as a human acting on the relationship: it stamps
+// `confirmed_by_user = true` and clears `ai_draft`. So "check this again"
+// silently confirmed an AI suggestion nobody had looked at, and a
+// check-the-whole-table run would have emptied the review queue as a side
+// effect of asking a question. This writes `measured` and nothing else.
+//
+// `withExamples` is false for a table-wide sweep: sampling values costs a
+// third query per relationship, and in a list of pass/fail the values are what
+// you look at afterwards, on the one that failed.
+router.post('/:id/check', requireAuth, requireRole('admin', 'analyst'),
+  validate(checkRelationshipSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        res.status(400).json({ ok: false, error: 'Invalid id' });
+        return;
+      }
+      const withExamples = req.body?.withExamples !== false;
+
+      // Scope resolves through from_table_id — table_relationships carries no
+      // connection_id, and adding a second path to the same answer is how the
+      // two drift apart.
+      const rel = await db('table_relationships')
+        .where({ id })
+        .select('id', 'from_table_id', 'to_table_id', 'from_column_id', 'to_column_id', 'kind')
+        .first();
+      if (!rel) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      // BOTH endpoints, not just the one scope resolves through: a relationship
+      // reaching into another tenant's table would otherwise have that table's
+      // data read and its column names composed into SQL.
+      if (!await denyUnlessOwned(req, res, 'source_tables', rel.from_table_id)) return;
+      if (!await denyUnlessOwned(req, res, 'source_tables', rel.to_table_id)) return;
+
+      // A relationship with an endpoint column missing cannot express a join,
+      // so there is nothing to measure — say so rather than measuring
+      // something else. Same for a match, which is a different test entirely.
+      if (!rel.from_column_id || !rel.to_column_id) {
+        res.status(400).json({ ok: false, error: 'This link does not name a column on both sides yet.', code: 'no_columns' });
+        return;
+      }
+      if (rel.kind === 'match') {
+        res.status(400).json({ ok: false, error: 'A cross-source match is checked differently.', code: 'is_match' });
+        return;
+      }
+
+      const tables: TableRow[] = await db('source_tables')
+        .whereIn('id', [rel.from_table_id, rel.to_table_id])
+        .select('id', 'connection_id', 'table_name');
+      const columns: ColumnRow[] = await db('source_columns')
+        .whereIn('id', [rel.from_column_id, rel.to_column_id])
+        .select('id', 'table_id', 'column_name');
+
+      const fromTable = tables.find((t) => t.id === rel.from_table_id);
+      const toTable   = tables.find((t) => t.id === rel.to_table_id);
+      const fromCol   = columns.find((c) => c.id === rel.from_column_id);
+      const toCol     = columns.find((c) => c.id === rel.to_column_id);
+      if (!fromTable || !toTable || !fromCol || !toCol) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      if (fromTable.connection_id !== toTable.connection_id) {
+        res.status(400).json({
+          ok: false,
+          error: 'Measuring a relationship between two different sources is not available yet.',
+          code: 'cross_source_unsupported',
+        });
+        return;
+      }
+
+      const connRow = await db('connections').where({ id: fromTable.connection_id }).first();
+      if (!connRow) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+
+      const connector = await createConnector(connRow as unknown as Parameters<typeof createConnector>[0]);
+      let measurement;
+      try {
+        await connector.connect();
+        measurement = await measureRelationship(
+          connector,
+          fromTable.table_name, fromCol.column_name,
+          toTable.table_name, toCol.column_name,
+          { examples: withExamples },
+        );
+      } finally {
+        try { connector.disconnect(); } catch { /* already closed */ }
+      }
+
+      await db('table_relationships').where({ id })
+        .update({ measured: JSON.stringify(measurement) });
+
+      log.info(
+        {
+          id,
+          from: `${fromTable.table_name}.${fromCol.column_name}`,
+          to: `${toTable.table_name}.${toCol.column_name}`,
+          verdict: measurement.verdict,
+          ms: measurement.elapsedMs,
+        },
+        'checked relationship',
+      );
+      res.json({ ok: true, data: measurement });
     } catch (err) { next(err); }
   },
 );

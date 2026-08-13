@@ -591,6 +591,17 @@ export const matchPreviewSchema = z.object({
   }),
 });
 
+/**
+ * Re-check an existing relationship. Everything needed is on the row, so the
+ * body carries only how thorough to be — `withExamples: false` for a
+ * table-wide sweep, where sampling values would cost a third query per link.
+ */
+export const checkRelationshipSchema = z.object({
+  body: z.object({
+    withExamples: z.boolean().optional(),
+  }),
+});
+
 export const measureRelationshipSchema = z.object({
   body: z.object({
     fromTableId: positiveInt,

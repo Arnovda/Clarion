@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Search, ChevronRight, ChevronDown } from 'lucide-react';
-import type { GraphSource, GraphTable, Provenance, EdgeKind } from './types';
+import { Search, ChevronRight, ChevronDown, Loader2, ListChecks } from 'lucide-react';
+import type { GraphSource, GraphTable, Provenance, EdgeKind, Measurement } from './types';
+import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
 
 /** One of a table's relationships, as it reads in the list. */
 export interface TableListLink {
@@ -14,6 +15,27 @@ export interface TableListLink {
   provenance: Provenance;
   kind: EdgeKind;
   isCrossSource: boolean;
+  /** Last measurement, if this link has ever been checked. */
+  measured: Measurement | null;
+}
+
+/** A per-table check in flight. */
+export interface CheckProgress {
+  tableId: number;
+  done: number;
+  total: number;
+}
+
+/**
+ * How a table's links came out, as one line.
+ *
+ * Counting is the point: after a sweep the question is "how many need me?",
+ * and three numbers answer it before any row is read.
+ */
+function summarise(links: readonly TableListLink[]) {
+  const by: Record<Outcome, number> = { holds: 0, partial: 0, none: 0, unknown: 0 };
+  for (const l of links) by[outcomeOf(l.measured)] += 1;
+  return by;
 }
 
 /**
@@ -32,7 +54,7 @@ export interface TableListLink {
  */
 export function TableList({
   tables, sources, colorFor, pendingByTable, selectedTableId, selectedEdgeId,
-  linksFor, search, onSearch, onPickTable, onPickLink,
+  linksFor, check, search, onSearch, onPickTable, onPickLink, onCheckTable,
 }: {
   tables: GraphTable[];
   sources: GraphSource[];
@@ -42,10 +64,13 @@ export function TableList({
   selectedTableId: number | null;
   selectedEdgeId: number | null;
   linksFor: (tableId: number) => TableListLink[];
+  /** The per-table check currently running, if any. */
+  check: CheckProgress | null;
   search: string;
   onSearch: (v: string) => void;
   onPickTable: (tableId: number) => void;
   onPickLink: (relationshipId: number) => void;
+  onCheckTable: (tableId: number) => void;
 }) {
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -139,48 +164,111 @@ export function TableList({
                     )}
                   </button>
 
-                  {open && (
-                    <div className="pb-1 pl-[26px] pr-2">
-                      {linksFor(t.id).length === 0 && (
-                        <p className="py-1.5 text-[11.5px] leading-relaxed text-muted">
-                          Nothing connects to this table yet. Open it on the canvas and drag
-                          from one of its fields to draw a link.
-                        </p>
-                      )}
-                      {linksFor(t.id).map((l) => {
-                        const active = l.id === selectedEdgeId;
-                        return (
-                          <button
-                            key={l.id}
-                            type="button"
-                            onClick={() => onPickLink(l.id)}
-                            className={`flex w-full items-center gap-1.5 rounded-md py-1 pl-1.5 pr-1 text-left ${
-                              active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
-                            }`}
-                          >
-                            {/* Same vocabulary as the canvas: solid = a person
-                                decided this, hollow = still a suggestion. */}
-                            <span
-                              className="h-1.5 w-1.5 shrink-0 rounded-full"
-                              style={l.provenance === 'ai'
-                                ? { border: '1.5px solid #b8823a' }
-                                : { background: l.provenance === 'human' ? '#1f6f83' : '#9aa3ad' }}
-                            />
-                            <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
-                              {l.ownLabel}
-                              <span className="text-muted2"> → </span>
-                              {l.otherLabel}
-                            </span>
-                            {l.isCrossSource && (
-                              <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
-                                {l.kind === 'match' ? 'match' : 'cross'}
+                  {open && (() => {
+                    const links = linksFor(t.id);
+                    const by = summarise(links);
+                    const checkable = links.filter((l) => l.kind !== 'match').length;
+                    const running = check?.tableId === t.id ? check : null;
+                    const everChecked = links.some((l) => l.measured);
+
+                    return (
+                      <div className="pb-1 pl-[26px] pr-2">
+                        {links.length === 0 && (
+                          <p className="py-1.5 text-[11.5px] leading-relaxed text-muted">
+                            Nothing connects to this table yet. Open it on the canvas and drag
+                            from one of its fields to draw a link.
+                          </p>
+                        )}
+
+                        {/* One line, three states: offer the run, show its
+                            progress, then show what it found. Anything more
+                            here competes with the rows it is describing. */}
+                        {checkable > 0 && (
+                          <div className="flex min-h-[24px] items-center gap-1.5 py-1 text-[11px]">
+                            {running ? (
+                              <span className="flex items-center gap-1.5 text-muted">
+                                <Loader2 size={11} className="animate-spin" />
+                                Checking {running.done + 1} of {running.total}…
                               </span>
+                            ) : everChecked ? (
+                              <>
+                                {(['none', 'partial', 'holds', 'unknown'] as const)
+                                  .filter((k) => by[k] > 0)
+                                  .map((k) => (
+                                    <span key={k} className="tabular-nums" style={{ color: OUTCOME[k].color }}>
+                                      {by[k]} {OUTCOME[k].label}
+                                    </span>
+                                  ))
+                                  .flatMap((el, i) => (i === 0 ? [el] : [
+                                    <span key={`s${i}`} className="text-muted2">·</span>, el,
+                                  ]))}
+                                <button
+                                  type="button"
+                                  onClick={() => onCheckTable(t.id)}
+                                  className="ml-auto shrink-0 rounded px-1 text-ocean hover:bg-oceanSofter"
+                                >
+                                  Check again
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => onCheckTable(t.id)}
+                                className="inline-flex items-center gap-1.5 rounded-md border border-line bg-raised px-2 py-[3px] text-ink2 hover:bg-soft"
+                              >
+                                <ListChecks size={11} />
+                                Check {checkable} link{checkable === 1 ? '' : 's'} against your data
+                              </button>
                             )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
+                          </div>
+                        )}
+
+                        {links.map((l) => {
+                          const active = l.id === selectedEdgeId;
+                          const outcome = outcomeOf(l.measured);
+                          return (
+                            <button
+                              key={l.id}
+                              type="button"
+                              onClick={() => onPickLink(l.id)}
+                              className={`flex w-full items-center gap-1.5 rounded-md py-1 pl-1.5 pr-1 text-left ${
+                                active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
+                              }`}
+                            >
+                              {/* Same vocabulary as the canvas: solid = a person
+                                  decided this, hollow = still a suggestion. */}
+                              <span
+                                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                style={l.provenance === 'ai'
+                                  ? { border: '1.5px solid #b8823a' }
+                                  : { background: l.provenance === 'human' ? '#1f6f83' : '#9aa3ad' }}
+                              />
+                              <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
+                                {l.ownLabel}
+                                <span className="text-muted2"> → </span>
+                                {l.otherLabel}
+                              </span>
+                              {l.isCrossSource && (
+                                <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
+                                  {l.kind === 'match' ? 'match' : 'cross'}
+                                </span>
+                              )}
+                              {/* The measured overlap, right-aligned so a column
+                                  of them scans as one list of numbers. */}
+                              {l.measured && outcome !== 'unknown' && (
+                                <span
+                                  className="w-[34px] shrink-0 text-right text-[11px] font-medium tabular-nums"
+                                  style={{ color: OUTCOME[outcome].color }}
+                                >
+                                  {Math.round((l.measured.containment?.ratio ?? 0) * 100)}%
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}

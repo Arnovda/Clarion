@@ -251,6 +251,17 @@ describe('example values', () => {
     vi.unstubAllEnvs();
   });
 
+  it('does not sample at all when the caller does not want examples', async () => {
+    // A per-table sweep runs this once per link. Sampling values there would
+    // add a third query per relationship for something the list never shows —
+    // the values are what you open afterwards, on the one that failed.
+    const c = fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, examples: SAMPLES });
+    const m = await measureRelationship(c, 'a', 'x', 'b', 'y', { examples: false });
+    expect(m.verdict).toBe('strong');
+    expect(m.examples).toBeNull();
+    expect(c.queries.filter((q) => q.includes('WITH ex AS'))).toHaveLength(0);
+  });
+
   it('never reuses the fk query name, so the two cannot be confused', async () => {
     const c = fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, examples: SAMPLES });
     await measureRelationship(c, 'a', 'x', 'b', 'y');

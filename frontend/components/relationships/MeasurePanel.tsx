@@ -105,6 +105,33 @@ export function OverlapBar({ m, targetLabel }: { m: Measurement; targetLabel: st
 }
 
 /**
+ * A measurement reduced to the one thing a list can show.
+ *
+ * Deliberately NOT the four verdicts. In a per-table sweep the question is
+ * "which of these do I have to look at?", and the useful split is *how badly*
+ * a link misses: values that partly line up are usually a formatting problem
+ * worth fixing, values that do not line up at all are usually the wrong column
+ * or an unfinished sync. `weak` and `broken` blur that; the ratio does not.
+ *
+ * `holds` still requires the full verdict, not just a high ratio — a link can
+ * match 100% and still fail because the other column is not an identifier.
+ */
+export type Outcome = 'holds' | 'partial' | 'none' | 'unknown';
+
+export function outcomeOf(m: Measurement | null | undefined): Outcome {
+  if (!m || m.verdict === 'unmeasurable' || !m.containment) return 'unknown';
+  if (m.verdict === 'strong') return 'holds';
+  return m.containment.ratio > 0 ? 'partial' : 'none';
+}
+
+export const OUTCOME: Record<Outcome, { color: string; label: string }> = {
+  holds:   { color: '#3f7a5c', label: 'hold' },
+  partial: { color: '#a06a1c', label: 'partly match' },
+  none:    { color: '#a43a3a', label: 'no match' },
+  unknown: { color: '#8891a0', label: 'not checked' },
+};
+
+/**
  * The rules themselves, each with what was measured and what it had to beat.
  *
  * **There is no AI anywhere in this.** It is three fixed rules, run as SQL

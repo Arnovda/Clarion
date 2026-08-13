@@ -534,6 +534,40 @@ pane exists precisely so nobody has to.
   outside the four keys yielded `undefined` and indexing it would have thrown
   inside a render — taking the whole canvas down.
 
+### 4.0l Check a whole table at once (2026-08-13)
+
+Owner: *"can you add a run button that does this assertion per table, so I
+don't have to check every relationship separately? And show which columns'
+values don't match, or don't match at all."*
+
+- **`POST /api/relationships/:id/check`** — measures an existing relationship
+  and caches the result on the row. **It exists because measuring is not
+  deciding.** The obvious way to store a measurement was
+  `PATCH /semantic/relationships/:id { measured }`, but that handler treats any
+  patch as a person acting on the relationship: it stamps `confirmed_by_user`
+  and clears `ai_draft`. So "check this again" was silently confirming an AI
+  suggestion nobody had looked at — and a table-wide sweep would have emptied
+  the review queue as a side effect of asking a question. Found while building
+  this; the single-relationship path was already doing it.
+- **Sampling example values is now optional.** A sweep is a list of pass/fail;
+  the values are what you open afterwards, on the one that failed. Skipping
+  them removes a third query per link.
+- **The run lives in the table list**, on the expanded table, as one line that
+  is either the offer, the progress, or the result — never more than one line,
+  because it sits directly above the rows it describes.
+- **Two at a time**, because DuckDB allows two concurrent queries per tenant;
+  more would only queue while making each likelier to hit its own budget and
+  come back "could not check". A failed link does not stop the sweep. Results
+  land one by one rather than after a single reload, which is what makes a
+  thirty-second wait legible. Navigating to another table abandons the run —
+  its progress line belongs to that table.
+- **Three outcomes, not four verdicts.** `weak`/`broken` blur the distinction
+  the owner asked for; the ratio does not. **holds** (green) · **partly match**
+  (amber — usually a formatting difference worth fixing) · **no match** (red —
+  usually the wrong column or an unfinished sync) · not checked. `holds` still
+  requires the whole verdict, not just a high ratio: a link can match 100% and
+  still fail because the other column is not an identifier.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables

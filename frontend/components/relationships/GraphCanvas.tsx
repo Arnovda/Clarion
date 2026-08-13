@@ -13,7 +13,7 @@ import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge
 import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
-import { TableList, type TableListLink } from './TableList';
+import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
 import { radialLayout, pairLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H, NODE_W } from './geometry';
@@ -74,6 +74,18 @@ function CanvasInner() {
    * better served by the join surface alone.
    */
   const [showAll, setShowAll] = useState<Set<number>>(new Set());
+  /**
+   * A per-table check in flight, and the results that have landed so far.
+   *
+   * Results are held locally as they arrive rather than reloading the graph per
+   * link: a sweep of a hub table is dozens of measurements, and watching them
+   * fill in one by one is what makes a thirty-second wait legible instead of a
+   * spinner. One reload at the end folds them into the graph proper.
+   */
+  const [check, setCheck] = useState<CheckProgress | null>(null);
+  const [freshMeasured, setFreshMeasured] = useState<Map<number, Measurement>>(new Map());
+  /** Bumped to abandon a sweep the user has navigated away from. */
+  const checkRun = useRef(0);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<TableNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RelationEdgeData>([]);
@@ -191,13 +203,14 @@ function CanvasInner() {
         provenance: r.provenance,
         kind: r.kind,
         isCrossSource: r.isCrossSource,
+        measured: freshMeasured.get(r.id) ?? (r.measured as Measurement | null),
       });
     }
     // Undecided first: the list is a work list before it is a reference.
     return out.sort((a, b) =>
       Number(b.provenance === 'ai') - Number(a.provenance === 'ai')
       || a.otherLabel.localeCompare(b.otherLabel));
-  }, [graph, columnNameById, tableNameById]);
+  }, [graph, columnNameById, tableNameById, freshMeasured]);
 
   const toggleAllColumns = useCallback((tableId: number) => {
     setShowAll((prev) => {
@@ -206,6 +219,54 @@ function CanvasInner() {
       return next;
     });
   }, []);
+
+
+  /**
+   * Check every link on one table against the data.
+   *
+   * Two at a time, because DuckDB allows two concurrent queries per tenant —
+   * more would only queue, while making each one likelier to hit its own
+   * budget and come back "could not check".
+   *
+   * A failed link does not stop the sweep: one unreadable table would
+   * otherwise cost you the answer for every other link on the table.
+   *
+   * `withExamples: false` — the sweep produces a list of pass/fail, and the
+   * example values are what you look at afterwards, on the one that failed.
+   */
+  const checkTable = useCallback(async (tableId: number) => {
+    const links = linksFor(tableId).filter((l) => l.kind !== 'match');
+    if (!links.length) return;
+
+    const token = ++checkRun.current;
+    setCheck({ tableId, done: 0, total: links.length });
+
+    const queue = [...links];
+    const worker = async () => {
+      for (;;) {
+        const l = queue.shift();
+        if (!l || checkRun.current !== token) return;
+        try {
+          const res = await api.post(`/relationships/${l.id}/check`, { withExamples: false });
+          if (checkRun.current !== token) return;
+          const m = res.data.data as Measurement;
+          setFreshMeasured((prev) => new Map(prev).set(l.id, m));
+        } catch {
+          /* leave it unchecked; the sweep is worth more than any one link */
+        }
+        if (checkRun.current !== token) return;
+        setCheck((c) => (c ? { ...c, done: c.done + 1 } : c));
+      }
+    };
+
+    await Promise.all([worker(), worker()]);
+    if (checkRun.current !== token) return;
+    setCheck(null);
+    // Fold the results into the graph, then drop the local copies so there is
+    // one source of truth again.
+    await load();
+    setFreshMeasured(new Map());
+  }, [linksFor, load]);
 
   const focus: Focus | null = useMemo(() => {
     if (!graph) return null;
@@ -585,13 +646,16 @@ function CanvasInner() {
    * order it came back in.
    */
   const pickTable = useCallback((tableId: number) => {
+    // Abandon a sweep of the table being left: its progress line is attached to
+    // that table, so letting it run on would report into a collapsed row.
+    if (check && check.tableId !== tableId) { checkRun.current += 1; setCheck(null); }
     setSelectedTableId(tableId);
     if (mode !== 'review') return;
     setReviewScopeId(tableId);
     const links = linksFor(tableId);
     const next = links.find((l) => l.provenance === 'ai') ?? links[0];
     setSelectedEdgeId(next ? next.id : null);
-  }, [mode, linksFor]);
+  }, [mode, linksFor, check]);
 
   const queuePosition = (() => {
     if (mode !== 'review' || selectedEdgeId == null) return null;
@@ -660,15 +724,13 @@ function CanvasInner() {
     if (!rel.fromColumnId || !rel.toColumnId) return;
     setBusy('measure');
     try {
-      const res = await api.post('/relationships/measure', {
-        fromTableId: rel.fromTableId,
-        fromColumnId: rel.fromColumnId,
-        toTableId: rel.toTableId,
-        toColumnId: rel.toColumnId,
-      });
-      const measurement = res.data.data as Measurement;
-      // Cache it on the row so the next visit shows it without re-running.
-      await api.patch(`/semantic/relationships/${rel.id}`, { measured: measurement });
+      // Measure AND cache in one call. This used to POST /measure and then
+      // PATCH the row — but that PATCH handler treats any patch as a person
+      // acting on the relationship: it stamps confirmed_by_user and clears
+      // ai_draft. So asking "does this still hold?" silently confirmed an AI
+      // suggestion nobody had looked at, and quietly removed it from the
+      // review queue. Checking is not deciding.
+      await api.post(`/relationships/${rel.id}/check`, { withExamples: true });
       await load();
     } catch {
       /* the inspector keeps showing whatever it had; a failed check is not a
@@ -785,10 +847,12 @@ function CanvasInner() {
           selectedTableId={selectedTableId}
           selectedEdgeId={selectedEdgeId}
           linksFor={linksFor}
+          check={check}
           search={search}
           onSearch={setSearch}
           onPickTable={pickTable}
           onPickLink={setSelectedEdgeId}
+          onCheckTable={checkTable}
         />
       )}
       <div className="relative min-w-0 flex-1">

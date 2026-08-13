@@ -214,6 +214,9 @@ function cardinalitySql(
             )) AS orphan_rows`;
 }
 
+/** Control-flow marker for "not asked for", so it is not logged as a failure. */
+class SkipExamples extends Error {}
+
 /** How many values of each kind to show. Enough to spot a pattern, not a dump. */
 const EXAMPLE_LIMIT = 5;
 /**
@@ -300,7 +303,15 @@ export async function measureRelationship(
   connector: QueryableConnector,
   fromTable: string, fromColumn: string,
   toTable: string, toColumn: string,
+  /**
+   * Example values cost a third query. Checking one relationship under an open
+   * panel wants them; checking a whole table's worth in a row does not — there
+   * the answer is a list of pass/fail, and the values are what you look at
+   * afterwards on the one that failed.
+   */
+  opts: { examples?: boolean } = {},
 ): Promise<RelationshipMeasurement> {
+  const wantExamples = opts.examples !== false;
   const started = Date.now();
   const thresholds = emptyThresholds();
 
@@ -337,6 +348,7 @@ export async function measureRelationship(
       let examples: RelationshipMeasurement['examples'] = null;
       let exTimer: NodeJS.Timeout | undefined;
       try {
+        if (!wantExamples) throw new SkipExamples();
         const exQuery = connector.executeQuery(
           examplesSql(fromTable, fromColumn, toTable, toColumn, thresholds.sampleSize),
         );
@@ -354,7 +366,9 @@ export async function measureRelationship(
           examples = shapeExamples(settledEx.rows);
         }
       } catch (err) {
-        log.warn({ err, fromTable, fromColumn }, 'could not sample example values');
+        if (!(err instanceof SkipExamples)) {
+          log.warn({ err, fromTable, fromColumn }, 'could not sample example values');
+        }
       } finally {
         if (exTimer) clearTimeout(exTimer);
       }
