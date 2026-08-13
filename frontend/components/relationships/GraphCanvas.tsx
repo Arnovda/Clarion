@@ -493,6 +493,32 @@ function CanvasInner() {
     }
   }, [load]);
 
+  const changeType = useCallback(async (rel: GraphRelationship, type: string) => {
+    setBusy('save');
+    try {
+      await api.patch(`/semantic/relationships/${rel.id}`, { relationship_type: type });
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
+  const changeColumns = useCallback(async (rel: GraphRelationship, change: { from?: number; to?: number }) => {
+    setBusy('save');
+    try {
+      await api.patch(`/semantic/relationships/${rel.id}`, {
+        ...(change.from !== undefined ? { from_column_id: change.from } : {}),
+        ...(change.to !== undefined ? { to_column_id: change.to } : {}),
+      });
+      // The old measurement described different columns, so it is now wrong.
+      // Clearing it is more honest than leaving a stale number on screen.
+      await api.patch(`/semantic/relationships/${rel.id}`, { measured: null });
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
   /**
    * Keyboard model. Reviewing is repetitive, so the hand should not have to
    * leave the keys — and shortcuts must never fire while someone is typing a
@@ -702,6 +728,10 @@ function CanvasInner() {
           onDelete={() => void deleteRel(selectedRel)}
           onRemeasure={() => void remeasure(selectedRel)}
           onSaveDescription={(text) => void saveDescription(selectedRel, text)}
+          onChangeType={(type) => void changeType(selectedRel, type)}
+          onChangeColumns={(change) => void changeColumns(selectedRel, change)}
+          fromColumns={columnsByTable.get(selectedRel.fromTableId) ?? []}
+          toColumns={columnsByTable.get(selectedRel.toTableId) ?? []}
           onClose={() => setSelectedEdgeId(null)}
         />
       )}

@@ -52,15 +52,28 @@ function RelationEdgeImpl({
 
   return (
     <>
+      {/* Invisible hit area. A hand-rolled edge gets no interaction path of its
+          own — ReactFlow only adds one inside BaseEdge — so the visible 2px
+          stroke was the entire click target and edges were effectively
+          unselectable. This makes the whole corridor grabbable. */}
+      <path
+        d={path}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={18}
+        strokeLinecap="round"
+        className="react-flow__edge-interaction"
+      />
       <path
         id={id}
         d={path}
         fill="none"
         stroke={style.color}
-        strokeWidth={selected ? style.width + 1 : style.width}
+        strokeWidth={selected ? style.width + 1.5 : style.width}
         strokeDasharray={style.dash}
         strokeOpacity={data?.dimmed ? 0.18 : 1}
         markerEnd="url(#rel-arrow)"
+        style={{ pointerEvents: 'none' }}
       />
       {/* A match edge is not a join, and must not read like one. The second
           stroke gives it a distinct texture at a glance, before any label is
@@ -75,6 +88,7 @@ function RelationEdgeImpl({
           strokeDasharray="2 6"
           strokeOpacity={data?.dimmed ? 0.12 : 0.55}
           transform="translate(0,3)"
+          style={{ pointerEvents: 'none' }}
         />
       )}
 

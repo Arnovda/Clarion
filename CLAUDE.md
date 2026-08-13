@@ -125,6 +125,23 @@ answer instead of a form asking you to declare the cardinality.
   the graph endpoint was built with `anchorTableId`/`depth` to support it, and the
   canvas called it with neither — a constraint implemented in the API but not
   exercised by its only caller is not implemented.
+  **THREE MORE FIXES 2026-08-13.** (1) **Edges were unclickable** — a hand-rolled
+  custom edge gets NO interaction path (ReactFlow only adds one inside
+  `BaseEdge`), so the visible ~2px stroke was the entire hit target and selecting
+  a relationship was near-impossible. That is why editing felt absent: the
+  inspector existed but could not be reached. A transparent 18px stroke now sits
+  under each edge, and the visible strokes are `pointerEvents: none` so they
+  cannot swallow the click first. (2) **Source colour now covers the WHOLE node**
+  — 4px spine, tinted header, tinted border and column-row rules — instead of one
+  small dot; selection adds a RING rather than recolouring, so "which system is
+  this from?" never stops being answerable. (3) **Relationships are now
+  editable**: the inspector's cardinality is a 4-way picker (§2.1 promised "the
+  user may always override the measured type" and read-only text never delivered
+  it) and the joined columns are re-pickable per side. Both go through the
+  existing PATCH, which already stamps `confirmed_by_user` — correcting a
+  relationship IS taking ownership of it. Changing a column CLEARS the cached
+  measurement, because it described different columns and a stale number on
+  screen is worse than none.
 - **Slices 6 + 7 — CROSS-SOURCE MATCHING.** `POST /api/relationships/match-preview`.
   Drawing between two sources opens a **match** panel, not the join panel.
   `crossSourceSession.buildTwoSourceConnector` puts **two connections' tables in

@@ -82,21 +82,24 @@ function TableNodeImpl({ data, selected }: NodeProps<TableNodeData>) {
         style={{
           width: NODE_W,
           height,
-          border: `1px solid ${selected || data.focused ? '#164e63' : '#d0d5da'}`,
+          // Border takes the source colour; selection adds a ring rather than
+          // recolouring, so "which system" never stops being readable.
+          border: `1px solid ${data.laneColor}55`,
           boxShadow: selected || data.focused
-            ? '0 0 0 3px rgba(22,78,99,0.12), 0 6px 18px rgba(15,26,34,0.10)'
+            ? `0 0 0 3px ${data.laneColor}33, 0 6px 18px rgba(15,26,34,0.12)`
             : '0 1px 2px rgba(15,26,34,0.06)',
         }}
       >
         <button
           type="button"
           onClick={() => data.onToggle(data.tableId)}
-          className="flex w-full items-start gap-2 px-3 text-left"
-          style={{ height: HEADER_H }}
+          className="relative flex w-full items-start gap-2 pl-4 pr-3 text-left"
+          style={{ height: HEADER_H, background: `${data.laneColor}14` }}
           title={data.expanded ? 'Hide columns' : 'Show columns'}
         >
+          {/* Full-height spine — the strongest and cheapest source cue. */}
           <span
-            className="mt-[15px] h-2 w-2 shrink-0 rounded-full"
+            className="absolute inset-y-0 left-0 w-[4px]"
             style={{ background: data.laneColor }}
             aria-hidden
           />
@@ -118,8 +121,8 @@ function TableNodeImpl({ data, selected }: NodeProps<TableNodeData>) {
         {expanded && columns.map((col) => (
           <div
             key={col.id}
-            className="flex items-center gap-1.5 border-t border-line/60 px-3 text-[11.5px] text-ink2"
-            style={{ height: ROW_H }}
+            className="flex items-center gap-1.5 border-t px-3 pl-4 text-[11.5px] text-ink2"
+            style={{ height: ROW_H, borderColor: `${data.laneColor}22` }}
           >
             {col.is_measure
               ? <Hash size={11} className="shrink-0 text-muted2" />

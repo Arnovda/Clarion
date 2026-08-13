@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Check, Trash2, RefreshCw, Loader2, X, Sparkles } from 'lucide-react';
-import type { GraphRelationship, Measurement, Provenance } from './types';
+import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
 import { explain } from './MeasurePanel';
 
 const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
@@ -42,17 +42,47 @@ const CARDINALITY_TEXT: Record<string, string> = {
  * prompt, so this field is the most direct way a person can teach Clarion
  * something it could not infer.
  */
+function ColumnPicker({ label, value, options, disabled, onChange }: {
+  label: string;
+  value: number | null;
+  options: GraphColumn[];
+  disabled: boolean;
+  onChange: (id: number) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <span className="w-[38%] shrink-0 truncate text-[11.5px] text-muted" title={label}>{label}</span>
+      <select
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
+      >
+        {value == null && <option value="">— pick a column —</option>}
+        {options.map((c) => (
+          <option key={c.id} value={c.id}>{c.column_name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export function EdgeInspector({
-  relationship, fromLabel, toLabel, busy, onConfirm, onDelete, onRemeasure, onSaveDescription, onClose,
+  relationship, fromLabel, toLabel, fromColumns, toColumns, busy,
+  onConfirm, onDelete, onRemeasure, onSaveDescription, onChangeType, onChangeColumns, onClose,
 }: {
   relationship: GraphRelationship;
   fromLabel: string;
   toLabel: string;
+  fromColumns: GraphColumn[];
+  toColumns: GraphColumn[];
   busy: 'confirm' | 'delete' | 'measure' | 'save' | null;
   onConfirm: () => void;
   onDelete: () => void;
   onRemeasure: () => void;
   onSaveDescription: (text: string) => void;
+  onChangeType: (type: string) => void;
+  onChangeColumns: (change: { from?: number; to?: number }) => void;
   onClose: () => void;
 }) {
   const [description, setDescription] = useState(relationship.description ?? '');
@@ -90,8 +120,51 @@ export function EdgeInspector({
 
         <div className="mt-4">
           <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
-          <div className="mt-1 text-[13px] text-ink">
-            {CARDINALITY_TEXT[relationship.relationshipType ?? ''] ?? 'not recorded'}
+          <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
+            Clarion measures this, but you can correct it — you may know something
+            the data does not show yet.
+          </p>
+          <div className="mt-1.5 grid grid-cols-2 gap-1">
+            {(Object.keys(CARDINALITY_TEXT) as string[]).map((k) => (
+              <button
+                key={k}
+                type="button"
+                disabled={busy !== null}
+                onClick={() => onChangeType(k)}
+                className={`rounded-lg border px-2 py-1 text-[11.5px] transition-colors disabled:opacity-50 ${
+                  relationship.relationshipType === k
+                    ? 'border-ocean bg-ocean text-white'
+                    : 'border-line bg-surface text-ink2 hover:bg-soft'
+                }`}
+              >
+                {CARDINALITY_TEXT[k]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+            Matched on
+          </div>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
+            If Clarion picked the wrong columns, change them here.
+          </p>
+          <div className="mt-1.5 space-y-1.5">
+            <ColumnPicker
+              label={fromLabel.split('.')[0]}
+              value={relationship.fromColumnId}
+              options={fromColumns}
+              disabled={busy !== null}
+              onChange={(id) => onChangeColumns({ from: id })}
+            />
+            <ColumnPicker
+              label={toLabel.split('.')[0]}
+              value={relationship.toColumnId}
+              options={toColumns}
+              disabled={busy !== null}
+              onChange={(id) => onChangeColumns({ to: id })}
+            />
           </div>
         </div>
 
