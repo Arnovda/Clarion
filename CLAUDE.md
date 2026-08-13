@@ -146,6 +146,31 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **EVIDENCE NOW OUTRANKS PROVENANCE ON THE LINE (2026-08-13).** Owner, after
+  sweeping one table: *"they appear trustworthy because of their blue line, but
+  some match for 0 percent."* **First, the facts: NONE of the failing columns is
+  documented by Exact Online.** `TransactionLines.JournalCode → Journals.Code`
+  IS curated (`entities.ts:881`) and measures 100%; `→ Journals.ID` is neither
+  documented nor curated and measures 0%. Same for
+  `Documents.FinancialTransactionEntryID → TransactionLines.ID` (0%, 330
+  unmatched) and `AccountCode`/`LineNumber → GLClassifications.Code|Name`
+  (76–80%). **These are exactly the invented FKs the 2026-08-03 audit measured**
+  — it named those columns and `→ GLClassifications.Name` explicitly. The tenant
+  was profiled BEFORE the detector rebuild, so the rows survive; a re-Analyse
+  would not create most of them today. **The design defect:** the line encoded
+  only WHO asserted a link, so a human-confirmed relationship measuring 0% drew
+  as the strongest line on the canvas. Two unrelated facts, one channel. Now:
+  **COLOUR = what the data says** (neutral unchecked · holds · partly · no
+  match), **DASH = who asserted it**. Unchecked stays NEUTRAL, never green —
+  not-yet-checked is not the same as fine, and that conflation was the bug. A
+  flag outranks both. **Plus: you can find the damage.** Sidebar gained a
+  *Needs attention* filter (flagged / contradicted / undecided — deliberately
+  NOT "unchecked", which before the first sweep matches everything and so
+  filters nothing) and **Check all shown**, scoped to whatever the list is
+  showing so search doubles as scoping. Toolbar reports `N checked · M don't
+  hold` at tenant scale. **A table's links are grouped by the FIELD they leave
+  from** with an `N targets` marker: one column with two targets is this
+  catalog's most common defect and is invisible when the rows are scattered.
   **FLAGGING — THE THIRD THING YOU CAN SAY ABOUT A RELATIONSHIP (2026-08-13).**
   Owner, on a human-confirmed link measuring 0%: *"I really want to flag this
   while I'm investigating the table."* Not possible: a relationship had exactly
