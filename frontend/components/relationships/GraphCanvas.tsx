@@ -15,6 +15,7 @@ import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
+import { outcomeOf } from './MeasurePanel';
 import { radialLayout, pairLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H, NODE_W } from './geometry';
 import type {
@@ -83,6 +84,8 @@ function CanvasInner() {
    * spinner. One reload at the end folds them into the graph proper.
    */
   const [check, setCheck] = useState<CheckProgress | null>(null);
+  /** Filter the table list down to what is unresolved. */
+  const [onlyAttention, setOnlyAttention] = useState(false);
   const [freshMeasured, setFreshMeasured] = useState<Map<number, Measurement>>(new Map());
   /** Bumped to abandon a sweep the user has navigated away from. */
   const checkRun = useRef(0);
@@ -173,6 +176,23 @@ function CanvasInner() {
     return m;
   }, [graph]);
 
+  /**
+   * Tables with something unresolved on them: a raised flag, a measurement the
+   * data contradicts, or a suggestion nobody has decided on. Deliberately NOT
+   * "anything unchecked" — before the first sweep that would be every table,
+   * and a filter that matches everything filters nothing.
+   */
+  const needsAttention = useMemo(() => {
+    const s = new Set<number>();
+    for (const r of graph?.relationships ?? []) {
+      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
+      if (!(r.flagged || r.provenance === 'ai' || o === 'none' || o === 'partial')) continue;
+      s.add(r.fromTableId);
+      s.add(r.toTableId);
+    }
+    return s;
+  }, [graph, freshMeasured]);
+
   /** How many of each table's relationships someone marked as a problem. */
   const flaggedByTable = useMemo(() => {
     const m = new Map<number, number>();
@@ -216,13 +236,25 @@ function CanvasInner() {
         isCrossSource: r.isCrossSource,
         measured: freshMeasured.get(r.id) ?? (r.measured as Measurement | null),
         flagged: r.flagged,
+        siblingTargets: 0,
       });
     }
-    // Flagged first, then undecided: the list is a work list before it is a
-    // reference, and a raised flag is the most decided kind of "not done".
+    // Grouped by the field they leave from, because that is the question the
+    // pane answers ("what does this table connect to, and on which fields?")
+    // — and because it puts a column's competing targets side by side. One
+    // column pointing at two different targets is the single most common
+    // defect in this catalog, and it is invisible when the two rows are
+    // scattered: `JournalCode → Journals.Code` at 100% next to
+    // `JournalCode → Journals.ID` at 0% needs no explanation at all.
+    // Triage ordering is the sidebar's filter's job, not this list's.
+    const perColumn = new Map<string, number>();
+    for (const l of out) perColumn.set(l.ownLabel, (perColumn.get(l.ownLabel) ?? 0) + 1);
+    for (const l of out) l.siblingTargets = perColumn.get(l.ownLabel) ?? 1;
+
+    const rank = { none: 0, partial: 1, unknown: 2, holds: 3 } as const;
     return out.sort((a, b) =>
-      Number(b.flagged) - Number(a.flagged)
-      || Number(b.provenance === 'ai') - Number(a.provenance === 'ai')
+      a.ownLabel.localeCompare(b.ownLabel)
+      || rank[outcomeOf(a.measured)] - rank[outcomeOf(b.measured)]
       || a.otherLabel.localeCompare(b.otherLabel));
   }, [graph, columnNameById, tableNameById, freshMeasured]);
 
@@ -248,8 +280,10 @@ function CanvasInner() {
    * `withExamples: false` — the sweep produces a list of pass/fail, and the
    * example values are what you look at afterwards, on the one that failed.
    */
-  const checkTable = useCallback(async (tableId: number) => {
-    const links = linksFor(tableId).filter((l) => l.kind !== 'match');
+  const runCheck = useCallback(async (
+    links: readonly TableListLink[],
+    tableId: number | null,
+  ) => {
     if (!links.length) return;
 
     const token = ++checkRun.current;
@@ -280,7 +314,29 @@ function CanvasInner() {
     // one source of truth again.
     await load();
     setFreshMeasured(new Map());
-  }, [linksFor, load]);
+  }, [load]);
+
+  const checkTable = useCallback(
+    (tableId: number) => runCheck(linksFor(tableId).filter((l) => l.kind !== 'match'), tableId),
+    [runCheck, linksFor],
+  );
+
+  /**
+   * Sweep several tables at once — the way you find out where the problem IS,
+   * rather than confirming one you already suspect.
+   *
+   * Deduped by relationship id: a link appears on both of its tables, and
+   * measuring it twice would double the wait for the same answer.
+   */
+  const checkMany = useCallback((tableIds: readonly number[]) => {
+    const seen = new Map<number, TableListLink>();
+    for (const id of tableIds) {
+      for (const l of linksFor(id)) {
+        if (l.kind !== 'match') seen.set(l.id, l);
+      }
+    }
+    return runCheck([...seen.values()], null);
+  }, [runCheck, linksFor]);
 
   const focus: Focus | null = useMemo(() => {
     if (!graph) return null;
@@ -469,13 +525,16 @@ function CanvasInner() {
           matchRate: r.kind === 'match'
             ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
             : null,
+          outcome: outcomeOf(freshMeasured.get(r.id) ?? r.measured),
+          flagged: r.flagged,
           dimmed: mode === 'review' && selectedEdgeId != null && r.id !== selectedEdgeId,
         },
         selected: r.id === selectedEdgeId,
       } satisfies Edge<RelationEdgeData>;
     }));
   }, [graph, focus, visibleIds, drawnRels, nodeSpec, positions, highlightColumnIds,
-      colorForConnection, toggleAllColumns, mode, selectedEdgeId, setNodes, setEdges]);
+      colorForConnection, toggleAllColumns, mode, selectedEdgeId, freshMeasured,
+      setNodes, setEdges]);
 
   useEffect(() => {
     if (!nodes.length) return;
@@ -662,7 +721,13 @@ function CanvasInner() {
   const pickTable = useCallback((tableId: number) => {
     // Abandon a sweep of the table being left: its progress line is attached to
     // that table, so letting it run on would report into a collapsed row.
-    if (check && check.tableId !== tableId) { checkRun.current += 1; setCheck(null); }
+    // Only a single-table sweep belongs to the table being left. A run over
+    // several tables is not attached to any one row, so leaving does not
+    // abandon it.
+    if (check && check.tableId !== null && check.tableId !== tableId) {
+      checkRun.current += 1;
+      setCheck(null);
+    }
     setSelectedTableId(tableId);
     if (mode !== 'review') return;
     setReviewScopeId(tableId);
@@ -858,6 +923,16 @@ function CanvasInner() {
   }
 
   const stats = graph?.stats;
+  const health = (() => {
+    let checked = 0; let bad = 0;
+    for (const r of graph?.relationships ?? []) {
+      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
+      if (o === 'unknown') continue;
+      checked += 1;
+      if (o !== 'holds') bad += 1;
+    }
+    return { checked, bad };
+  })();
   const anchorTable = focus?.kind === 'anchor'
     ? graph?.tables.find((t) => t.id === focus.id) ?? null
     : null;
@@ -881,6 +956,10 @@ function CanvasInner() {
           selectedEdgeId={selectedEdgeId}
           linksFor={linksFor}
           check={check}
+          needsAttention={needsAttention}
+          onlyAttention={onlyAttention}
+          onToggleAttention={() => setOnlyAttention((v) => !v)}
+          onCheckMany={(ids) => void checkMany(ids)}
           search={search}
           onSearch={setSearch}
           onPickTable={pickTable}
@@ -963,8 +1042,19 @@ function CanvasInner() {
 
         {stats && (
           <div className="ml-auto flex items-center gap-3 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
-            <span className="tabular-nums">{stats.tables} tables</span>
             <span className="tabular-nums">{stats.relationships} links</span>
+            {/* What the data says, at tenant scale. "169 links" alone gave no
+                hint that a third of them might not hold. */}
+            {health.checked > 0 && (
+              <>
+                <span className="tabular-nums">{health.checked} checked</span>
+                {health.bad > 0 && (
+                  <span className="tabular-nums" style={{ color: '#a43a3a' }}>
+                    {health.bad} don&apos;t hold
+                  </span>
+                )}
+              </>
+            )}
             {stats.flagged > 0 && (
               <span className="flex items-center gap-1 tabular-nums text-err">
                 <Flag size={10} />
@@ -1073,6 +1163,21 @@ function CanvasInner() {
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
           {/* The end symbols carry the cardinality now, so say what they mean
               once rather than making each user work it out. */}
+          {/* The colour changed meaning, so it has to be stated. Line colour is
+              what the DATA says; a dashed line is still an unreviewed
+              suggestion. Two facts, two channels, both named here. */}
+          {([
+            ['#8c96a0', 'not checked'],
+            ['#2f6f57', 'holds'],
+            ['#a06a1c', 'partly'],
+            ['#a43a3a', 'no match'],
+          ] as const).map(([c, label]) => (
+            <span key={label} className="flex items-center gap-1">
+              <span className="h-[2px] w-3 rounded-full" style={{ background: c }} />
+              {label}
+            </span>
+          ))}
+          <span className="text-muted2">·</span>
           <span className="flex items-center gap-1">
             <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">1</span>
             one row

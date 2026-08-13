@@ -3,6 +3,7 @@
 import { memo } from 'react';
 import { EdgeProps, getBezierPath, EdgeLabelRenderer, Position } from 'reactflow';
 import type { Cardinality, EdgeKind, Provenance } from './types';
+import type { Outcome } from './MeasurePanel';
 
 export interface RelationEdgeData {
   kind: EdgeKind;
@@ -10,25 +11,48 @@ export interface RelationEdgeData {
   isCrossSource: boolean;
   cardinality: Cardinality | null;
   dimmed: boolean;
+  /** What the data says about this link. Drives the colour. */
+  outcome: Outcome;
+  /** Someone marked this as a problem; it overrides everything else. */
+  flagged: boolean;
   /** Match rate for a match edge, 0..1. */
   matchRate: number | null;
 }
 
 /**
- * Provenance is carried by the LINE STYLE, not by a badge.
+ * TWO INDEPENDENT FACTS, TWO INDEPENDENT CHANNELS.
  *
- * The default view of this canvas is a review queue, so "which of these has
- * nobody checked?" has to be answerable at a glance across the whole graph. A
- * dashed line reads as provisional without needing a legend; a badge would have
- * to be found, one edge at a time.
+ * The line used to encode only provenance — who asserted this link. That made a
+ * human-confirmed relationship measuring **0% containment** draw as the
+ * strongest, most trustworthy line on the canvas. Which is exactly backwards,
+ * and it is what someone reading the picture would act on.
+ *
+ * *Who says so* and *whether the data agrees* are unrelated, so they get
+ * unrelated channels:
+ *
+ *   • **Colour = what the data says.** Unchecked is neutral; holds, partly
+ *     matches and does not match each get their own. Colour is the channel the
+ *     eye reads first, and "is this real?" is the more consequential question.
+ *   • **Dash = who asserted it.** Dashed still means an unreviewed AI
+ *     suggestion, which is what makes the review queue scannable, and it does
+ *     so without competing for the colour channel.
+ *
+ * A link nobody has measured stays neutral rather than green: not-yet-checked
+ * is not the same as fine, and colouring it as though it were is the whole
+ * defect being fixed here.
  */
-const STROKE: Record<Provenance, { color: string; dash?: string; width: number }> = {
-  // Confirmed by a person — the strongest thing on the canvas.
-  human: { color: '#164e63', width: 2 },
-  // Straight from the connector's documentation. Trusted, but not personally owned.
-  declared: { color: '#4a5660', width: 1.5 },
-  // AI's suggestion, awaiting a human. This is the work.
-  ai: { color: '#c08a5e', dash: '5 4', width: 1.5 },
+const HEALTH: Record<Outcome, { color: string; width: number }> = {
+  unknown: { color: '#8c96a0', width: 1.5 },
+  holds:   { color: '#2f6f57', width: 2 },
+  partial: { color: '#a06a1c', width: 2 },
+  none:    { color: '#a43a3a', width: 2 },
+};
+
+/** Dash pattern by provenance: only an unreviewed suggestion is provisional. */
+const DASH: Record<Provenance, string | undefined> = {
+  human: undefined,
+  declared: undefined,
+  ai: '5 4',
 };
 
 /**
@@ -77,7 +101,14 @@ function RelationEdgeImpl({
     sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
   });
 
-  const style = STROKE[data?.provenance ?? 'declared'];
+  const health = HEALTH[data?.outcome ?? 'unknown'];
+  const style = {
+    // A flag is a person saying "this is wrong" — it outranks any measurement,
+    // including one that has not been taken.
+    color: data?.flagged ? '#a43a3a' : health.color,
+    width: data?.flagged ? 2 : health.width,
+    dash: DASH[data?.provenance ?? 'declared'],
+  };
   const isMatch = data?.kind === 'match';
   const ends = data?.cardinality ? ENDS[data.cardinality] : undefined;
 

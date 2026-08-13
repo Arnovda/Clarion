@@ -18,11 +18,14 @@ export interface TableListLink {
   /** Last measurement, if this link has ever been checked. */
   measured: Measurement | null;
   flagged: boolean;
+  /** How many targets this link's source column points at, including itself. */
+  siblingTargets: number;
 }
 
 /** A per-table check in flight. */
 export interface CheckProgress {
-  tableId: number;
+  /** null when the sweep covers several tables at once. */
+  tableId: number | null;
   done: number;
   total: number;
 }
@@ -56,7 +59,7 @@ function summarise(links: readonly TableListLink[]) {
 export function TableList({
   tables, sources, colorFor, pendingByTable, selectedTableId, selectedEdgeId,
   linksFor, check, search, onSearch, onPickTable, onPickLink, onCheckTable,
-  flaggedByTable,
+  flaggedByTable, needsAttention, onlyAttention, onToggleAttention, onCheckMany,
 }: {
   tables: GraphTable[];
   sources: GraphSource[];
@@ -70,11 +73,16 @@ export function TableList({
   linksFor: (tableId: number) => TableListLink[];
   /** The per-table check currently running, if any. */
   check: CheckProgress | null;
+  /** Tables carrying something unresolved — drives the filter. */
+  needsAttention: ReadonlySet<number>;
+  onlyAttention: boolean;
+  onToggleAttention: () => void;
   search: string;
   onSearch: (v: string) => void;
   onPickTable: (tableId: number) => void;
   onPickLink: (relationshipId: number) => void;
   onCheckTable: (tableId: number) => void;
+  onCheckMany: (tableIds: number[]) => void;
 }) {
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -85,7 +93,8 @@ export function TableList({
       .map((s) => ({
         source: s,
         tables: tables
-          .filter((t) => t.connectionId === s.id && match(t))
+          .filter((t) => t.connectionId === s.id && match(t)
+            && (!onlyAttention || needsAttention.has(t.id)))
           // Where the work is, first. Then the hubs, which is what someone
           // exploring is almost always after; alphabetical buries both.
           .sort((a, b) =>
@@ -94,7 +103,7 @@ export function TableList({
             (a.displayName || a.tableName).localeCompare(b.displayName || b.tableName)),
       }))
       .filter((g) => g.tables.length > 0);
-  }, [tables, sources, search, pendingByTable]);
+  }, [tables, sources, search, pendingByTable, onlyAttention, needsAttention]);
 
   const total = grouped.reduce((n, g) => n + g.tables.length, 0);
 
@@ -113,9 +122,41 @@ export function TableList({
         </div>
       </div>
 
+      {/* One row, two controls: what to look at, and how to find out. Checking
+          a table at a time is fine once you know where the problem is; finding
+          that out over thirty-six tables is not something to do by hand. */}
+      <div className="flex items-center gap-1.5 border-b border-line/70 px-3 py-1.5">
+        <button
+          type="button"
+          onClick={onToggleAttention}
+          className={`rounded-md px-2 py-[3px] text-[11.5px] transition-colors ${
+            onlyAttention ? 'bg-ocean text-white' : 'text-ink2 hover:bg-soft'
+          }`}
+        >
+          Needs attention
+          <span className={`ml-1 tabular-nums ${onlyAttention ? 'text-white/75' : 'text-muted2'}`}>
+            {needsAttention.size}
+          </span>
+        </button>
+        <button
+          type="button"
+          disabled={!!check || total === 0}
+          onClick={() => onCheckMany(grouped.flatMap((g) => g.tables.map((t) => t.id)))}
+          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-[3px] text-[11.5px] text-ocean hover:bg-oceanSofter disabled:opacity-40"
+          title="Check every link on every table shown"
+        >
+          {check?.tableId === null
+            ? <Loader2 size={11} className="animate-spin" />
+            : <ListChecks size={11} />}
+          {check?.tableId === null ? `Checking ${check.done + 1}/${check.total}` : 'Check all shown'}
+        </button>
+      </div>
+
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {total === 0 && (
-          <p className="px-4 py-6 text-[12.5px] text-muted">No table matches that.</p>
+          <p className="px-4 py-6 text-[12.5px] text-muted">
+            {onlyAttention ? 'Nothing needs your attention here.' : 'No table matches that.'}
+          </p>
         )}
 
         {grouped.map((g) => (
@@ -261,6 +302,14 @@ export function TableList({
                                 <span className="text-muted2"> → </span>
                                 {l.otherLabel}
                               </span>
+                              {l.siblingTargets > 1 && (
+                                <span
+                                  className="shrink-0 rounded bg-soft px-1 text-[9.5px] text-muted"
+                                  title={`${l.ownLabel} points at ${l.siblingTargets} different targets — usually only one of them is real`}
+                                >
+                                  {l.siblingTargets} targets
+                                </span>
+                              )}
                               {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
                               {l.isCrossSource && (
                                 <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">

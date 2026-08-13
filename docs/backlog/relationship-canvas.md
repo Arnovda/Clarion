@@ -604,6 +604,45 @@ the finding dies with the panel. (`table_relationships` has no
   flag raised on a link whose endpoint later stopped resolving is still a flag
   you are owed an answer on.
 
+### 4.0n Evidence outranks provenance (2026-08-13)
+
+Owner, after sweeping one table: *"Look how many fail just from this one table.
+Are these documented relations in the API? They appear to be trustworthy
+because of their blue line, but some match for 0 percent."*
+
+**Answered factually first.** None of the failing columns is documented by
+Exact Online. `TransactionLines.JournalCode → Journals.Code` **is** curated
+(`entities.ts:881`) and measures 100%; `→ Journals.ID` is neither documented
+nor curated and measures 0%. Same for
+`Documents.FinancialTransactionEntryID → TransactionLines.ID` (0%, 330
+unmatched) and the `AccountCode`/`LineNumber → GLClassifications.Code|Name`
+family at 76–80%. These are precisely the invented FKs the 2026-08-03 audit
+measured — it named those columns and `→ GLClassifications.Name` explicitly.
+This tenant was profiled before the detector was rebuilt, so the rows survive;
+a re-Analyse would not create most of them today.
+
+**The design defect the owner spotted.** The line encoded only *who asserted
+this*, so a human-confirmed link measuring 0% drew as the strongest, most
+trustworthy line on the canvas. Who says so and whether the data agrees are
+unrelated facts, and only one of them was visible.
+
+- **Colour is now what the DATA says** — neutral (unchecked) · holds · partly ·
+  no match — and **dash is who asserted it**, so an unreviewed suggestion still
+  reads as provisional without competing for the colour channel. Unchecked
+  stays neutral rather than green: not-yet-checked is not the same as fine, and
+  that conflation is the whole bug. A flag outranks both.
+- **You can find the damage now.** The sidebar gained a *Needs attention*
+  filter (flagged, contradicted, or undecided — deliberately not "unchecked",
+  which before the first sweep is everything and therefore filters nothing) and
+  a **Check all shown** sweep, scoped to whatever the list is currently showing
+  so search doubles as scoping. The toolbar reports `N checked · M don't hold`
+  at tenant scale, which "169 links" never hinted at.
+- **A table's links are grouped by the field they leave from.** One column with
+  two targets is the most common defect in this catalog and it is invisible
+  when the rows are scattered; adjacent, `JournalCode → Journals.Code` at 100%
+  next to `JournalCode → Journals.ID` at 0% needs no explanation. A `N targets`
+  marker says it outright.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
