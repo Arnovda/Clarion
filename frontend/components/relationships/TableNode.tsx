@@ -84,22 +84,24 @@ function TableNodeImpl({ data, selected }: NodeProps<TableNodeData>) {
           height,
           // Border takes the source colour; selection adds a ring rather than
           // recolouring, so "which system" never stops being readable.
-          border: `1px solid ${data.laneColor}55`,
-          boxShadow: selected || data.focused
-            ? `0 0 0 3px ${data.laneColor}33, 0 6px 18px rgba(15,26,34,0.12)`
-            : '0 1px 2px rgba(15,26,34,0.06)',
+          border: `1px solid ${data.focused ? data.laneColor : '#d0d5da'}`,
+          boxShadow: data.focused
+            ? `0 0 0 3px ${data.laneColor}2e, 0 8px 22px rgba(15,26,34,0.13)`
+            : selected
+              ? '0 0 0 3px rgba(22,78,99,0.14), 0 6px 18px rgba(15,26,34,0.10)'
+              : '0 1px 2px rgba(15,26,34,0.06)',
         }}
       >
         <button
           type="button"
           onClick={() => data.onToggle(data.tableId)}
           className="relative flex w-full items-start gap-2 pl-4 pr-3 text-left"
-          style={{ height: HEADER_H, background: `${data.laneColor}14` }}
+          style={{ height: HEADER_H }}
           title={data.expanded ? 'Hide columns' : 'Show columns'}
         >
           {/* Full-height spine — the strongest and cheapest source cue. */}
           <span
-            className="absolute inset-y-0 left-0 w-[4px]"
+            className="absolute inset-y-0 left-0 w-[5px]"
             style={{ background: data.laneColor }}
             aria-hidden
           />
@@ -121,8 +123,8 @@ function TableNodeImpl({ data, selected }: NodeProps<TableNodeData>) {
         {expanded && columns.map((col) => (
           <div
             key={col.id}
-            className="flex items-center gap-1.5 border-t px-3 pl-4 text-[11.5px] text-ink2"
-            style={{ height: ROW_H, borderColor: `${data.laneColor}22` }}
+            className="flex items-center gap-1.5 border-t border-line/50 px-3 pl-4 text-[11.5px] text-ink2"
+            style={{ height: ROW_H }}
           >
             {col.is_measure
               ? <Hash size={11} className="shrink-0 text-muted2" />

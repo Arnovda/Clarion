@@ -355,6 +355,26 @@ mechanism that made the first version unusable.
 and the canvas then called it with neither. A constraint that is implemented in
 the API but not exercised by the only caller is not implemented.
 
+### 4.0g Explore rebuilt around one anchor (2026-08-13)
+
+The full-graph view was the thing §2.4 was written to prevent, and seeing it
+running made that obvious in a way the plan did not. Four changes:
+
+- **No "everything" view.** Explore centres on one table and shows what it
+  connects to. Finding a table is a *list* problem — a node-link diagram is a poor
+  instrument for orientation and an excellent one for "what does THIS connect
+  to?" — so `TableList` handles the finding and the canvas is reserved for the
+  answer. Sorted by relationship count: hubs are what someone exploring wants,
+  and alphabetical buries them.
+- **Expansion resets on mode change.** Two 40-column nodes had leaked in from
+  Review's auto-expand; at ~1,200px tall they destroyed the lane packing, which
+  assumes roughly uniform node heights.
+- **Only edges touching the focus are drawn.** A neighbour's own relationships
+  are not this view's subject.
+- **Source colour concentrated in the spine.** It stays always-on, but tinting
+  the header, the border and every row rule in one hue meant a single-source
+  tenant saw "everything is beige" rather than "this is Exact Online".
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables

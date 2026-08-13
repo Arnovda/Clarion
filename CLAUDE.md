@@ -142,6 +142,22 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **EXPLORE REBUILT AROUND ONE ANCHOR (2026-08-13).** The full-graph Explore view
+  was the hairball §2.4 exists to prevent — 36 tables, 169 edges, plus two
+  40-column nodes whose expansion LEAKED IN FROM REVIEW MODE and shredded the
+  lane packing (the packer assumes roughly uniform node heights). Four changes,
+  agreed with the owner: (1) **there is no "everything" view** — Explore centres
+  on ONE table and shows what it connects to, with a searchable `TableList`
+  sidebar (grouped by source, sorted by relationship count, because hubs are what
+  people look for and alphabetical buries them); clicking a neighbour re-anchors
+  and walks the graph. (2) **Expansion resets on every mode change** and is scoped
+  to the pair being linked. (3) **Only edges TOUCHING the focus are drawn** — a
+  neighbour's own relationships are not this view's subject, and drawing them is
+  what made 169 links unreadable. (4) **Colour stays always-on per source** (owner's
+  call over my "only when it distinguishes" suggestion) but is now concentrated in
+  a 5px SPINE instead of washing header + border + every row rule in one hue —
+  with a single source those three tinted surfaces read as "everything is beige"
+  rather than "this is Exact Online".
 - **Slices 6 + 7 — CROSS-SOURCE MATCHING.** `POST /api/relationships/match-preview`.
   Drawing between two sources opens a **match** panel, not the join panel.
   `crossSourceSession.buildTwoSourceConnector` puts **two connections' tables in
