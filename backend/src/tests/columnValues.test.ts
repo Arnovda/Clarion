@@ -71,6 +71,22 @@ describe('shapeSides', () => {
     expect(out.right.rangeLimited).toBe(false);
   });
 
+  it('re-sorts the parent side ascending, discarding the paired-first order', () => {
+    // The SQL returns the parent side paired-first so the cap keeps the values
+    // that have a partner. That is a selection rule and must not reach the
+    // screen: the UI merges in one pass and is only correct on ascending
+    // input. This test is what stops the sort being "cleaned up".
+    const out = shapeSides(
+      [
+        { side: 'r', v: 'a' }, { side: 'r', v: 'm' },
+        { side: 'r', v: 'z' }, { side: 'r', v: 'b' },
+      ],
+      { l: 0, r: 4 },
+      SIDES.left, SIDES.right,
+    );
+    expect(out.right.values).toEqual(['a', 'b', 'm', 'z']);
+  });
+
   it('splits the two sides and keeps each one sorted', () => {
     // Re-sorted in JS on purpose: the UI merges the two lists against each
     // other, and a merge is only correct when both sides use the SAME

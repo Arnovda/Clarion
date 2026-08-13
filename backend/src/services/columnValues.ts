@@ -140,10 +140,19 @@ export function shapeSides(
   right: { table: string; column: string },
 ): NonNullable<Pick<ValueComparison, 'left' | 'right'>> {
   const rows = valueRows as { side?: string; v?: unknown; matched?: unknown }[];
-  // Re-sorted here rather than trusted from SQL: the two lists are merged
-  // against each other in the UI, and a merge is only correct when both sides
-  // use the SAME comparison. The database's collation is not guaranteed to be
-  // JavaScript's.
+  /**
+   * **DO NOT REMOVE THIS SORT.** It is not tidying — the UI merges the two
+   * lists in a single pass and is only correct on ascending input.
+   *
+   * Two reasons, and the first is easy to miss: the parent query deliberately
+   * returns rows in **paired-first** order so that the 300-row cap cannot eat
+   * the values that have a partner. That order is a SELECTION rule — which 300
+   * come back — and must never reach the screen. Trusting the database's order
+   * here would feed the merge a non-ascending list and produce nonsense.
+   *
+   * The second is the ordinary one: the database's collation is not guaranteed
+   * to be JavaScript's, and a merge needs both sides compared the same way.
+   */
   const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
   const leftValues: LeftValue[] = rows
