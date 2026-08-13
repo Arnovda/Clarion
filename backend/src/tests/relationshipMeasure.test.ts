@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   measureRelationship,
+  shapeExamples,
   classifyCardinality,
   verdictFromFk,
   assertSafeIdentifier,
@@ -8,16 +9,20 @@ import {
 } from '../services/relationshipMeasure';
 
 /**
- * A connector that answers the two queries a measurement issues. They are told
+ * A connector that answers the three queries a measurement issues. They are told
  * apart by their leading CTE: `verifyFkCandidate` opens `WITH src AS`, the
- * cardinality query opens `WITH g AS`. Keeping the discrimination on real SQL
- * shape (rather than call order) means a future reordering does not silently
- * feed the wrong rows to the wrong reader.
+ * cardinality query opens `WITH g AS`, the example-values query opens
+ * `WITH ex AS`. Keeping the discrimination on real SQL shape (rather than call
+ * order) means a future reordering does not silently feed the wrong rows to the
+ * wrong reader — and it is why the examples query does not reuse the name `src`.
  */
+type Bucketed = { bucket: string; v: string };
+
 function fakeConnector(opts: {
   fk?: { sampled: number; matched: number; target_rows: number; target_distinct: number };
   card?: { distinct_vals: number; total_rows: number; avg_children: number; max_children: number; orphan_rows: number };
-  throwOn?: 'fk' | 'card';
+  examples?: Bucketed[];
+  throwOn?: 'fk' | 'card' | 'examples';
   delayMs?: number;
 }): QueryableConnector & { queries: string[] } {
   const queries: string[] = [];
@@ -25,11 +30,15 @@ function fakeConnector(opts: {
     queries,
     async executeQuery(sql: string) {
       queries.push(sql);
-      const isFk = sql.includes('WITH src AS');
-      if (opts.throwOn === 'fk' && isFk) throw new Error('no such table');
-      if (opts.throwOn === 'card' && !isFk) throw new Error('conversion error');
+      const kind = sql.includes('WITH src AS') ? 'fk'
+        : sql.includes('WITH ex AS') ? 'examples'
+        : 'card';
+      if (opts.throwOn === kind) {
+        throw new Error(kind === 'fk' ? 'no such table' : 'conversion error');
+      }
       if (opts.delayMs) await new Promise((r) => setTimeout(r, opts.delayMs));
-      return { rows: [isFk ? opts.fk ?? {} : opts.card ?? {}] };
+      if (kind === 'examples') return { rows: opts.examples ?? [] };
+      return { rows: [kind === 'fk' ? opts.fk ?? {} : opts.card ?? {}] };
     },
   };
 }
@@ -184,5 +193,66 @@ describe('measureRelationship', () => {
 
     expect(m.verdict).toBe('unmeasurable');
     expect(m.cardinality).toBeNull();
+  });
+});
+
+
+describe('example values', () => {
+  const SAMPLES = [
+    { bucket: 'matched', v: 'BE0123' },
+    { bucket: 'unmatched', v: 'BE 9999' },
+    { bucket: 'target', v: 'be0123' },
+  ];
+
+  it('carries values from both sides through to the caller', async () => {
+    // The percentage says there is a gap; only the values say whether it is a
+    // formatting problem the user can fix.
+    const m = await measureRelationship(
+      fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, examples: SAMPLES }),
+      'a', 'x', 'b', 'y',
+    );
+    expect(m.examples).toEqual({
+      matched: ['BE0123'],
+      unmatched: ['BE 9999'],
+      target: ['be0123'],
+    });
+  });
+
+  it('does not lose the verdict when sampling values fails', async () => {
+    // Examples are a nicety. The measurement is the substance, and a failure to
+    // illustrate it must never downgrade it to unmeasurable.
+    const m = await measureRelationship(
+      fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, throwOn: 'examples' }),
+      'a', 'x', 'b', 'y',
+    );
+    expect(m.verdict).toBe('strong');
+    expect(m.examples).toBeNull();
+  });
+
+  it('never reuses the fk query name, so the two cannot be confused', async () => {
+    const c = fakeConnector({ fk: HEALTHY_FK, card: HEALTHY_CARD, examples: SAMPLES });
+    await measureRelationship(c, 'a', 'x', 'b', 'y');
+    expect(c.queries.filter((q) => q.includes('WITH src AS'))).toHaveLength(1);
+    expect(c.queries.filter((q) => q.includes('WITH ex AS'))).toHaveLength(1);
+  });
+});
+
+describe('shapeExamples', () => {
+  it('buckets rows and truncates a value nobody would read', () => {
+    const long = 'x'.repeat(200);
+    const out = shapeExamples([
+      { bucket: 'matched', v: 'a' },
+      { bucket: 'unmatched', v: long },
+      { bucket: 'target', v: 42 },
+    ]);
+    expect(out!.matched).toEqual(['a']);
+    expect(out!.unmatched[0]).toHaveLength(65);
+    // Numbers reach the UI as strings, so a numeric key renders the same way a
+    // text one does rather than as "[object Object]".
+    expect(out!.target).toEqual(['42']);
+  });
+
+  it('returns empty buckets rather than null when nothing came back', () => {
+    expect(shapeExamples([])).toEqual({ matched: [], unmatched: [], target: [] });
   });
 });

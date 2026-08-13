@@ -15,7 +15,7 @@ import type { Cardinality, Measurement, MeasureVerdict, PendingDraw } from './ty
  * and the person drawing may know something the data does not show yet.
  */
 
-const VERDICT_STYLE: Record<MeasureVerdict, { fg: string; bg: string; border: string; label: string }> = {
+export const VERDICT_STYLE: Record<MeasureVerdict, { fg: string; bg: string; border: string; label: string }> = {
   strong:       { fg: '#3f7a5c', bg: '#dbe8e0', border: '#a8c9b6', label: 'This holds' },
   weak:         { fg: '#a06a1c', bg: '#f1e4c8', border: '#dcc48a', label: 'Unconfirmed' },
   broken:       { fg: '#a43a3a', bg: '#f1d7d7', border: '#dda9a9', label: "This doesn't hold" },
@@ -38,18 +38,28 @@ const CARDINALITY_TEXT: Record<Cardinality, string> = {
  */
 export function explain(m: Measurement): string {
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+  const n = m.containment?.sampledDistinct ?? 0;
+  const values = `${n} ${n === 1 ? 'value' : 'different values'}`;
+
   switch (m.reason) {
     case 'ok':
-      return `Every check passed — ${pct(m.containment?.ratio ?? 0)} of values were found in the target.`;
+      return `Every check passed — ${pct(m.containment?.ratio ?? 0)} of values were found on the other side.`;
     case 'too-few-distinct':
-      return `Only ${m.containment?.sampledDistinct ?? 0} different values to compare (we need at least `
-        + `${m.thresholds.minDistinct} before agreement means anything). It may still be right.`;
+      // A ratio of 0 here is not "not enough evidence", it is evidence: the
+      // handful of values there are do not exist on the other side. Saying
+      // "it may still be right" over a 0% is the confusing part, so split it.
+      if ((m.containment?.ratio ?? 0) === 0) {
+        return `This column holds only ${values}, and none of them exist on the other side. `
+          + `Either the link is wrong or that table hasn't finished syncing.`;
+      }
+      return `All matched, but this column holds only ${values} — too few for agreement to `
+        + `mean much (we look for at least ${m.thresholds.minDistinct}). It may still be right.`;
     case 'target-not-key':
-      return `The target column repeats itself, so it isn't a key — `
+      return `The other column repeats itself, so it isn't an identifier — `
         + `${m.target?.distinct ?? 0} different values across ${m.target?.rows ?? 0} rows.`;
     case 'low-containment':
-      return `Only ${pct(m.containment?.ratio ?? 0)} of values were found in the target `
-        + `(we'd expect at least ${pct(m.thresholds.minContainment)} for a real link).`;
+      return `Only ${pct(m.containment?.ratio ?? 0)} of values were found on the other side `
+        + `(a real link is usually above ${pct(m.thresholds.minContainment)}).`;
     case 'no-values':
       return 'That column is empty, so there is nothing to compare yet.';
     case 'timeout':
@@ -57,6 +67,113 @@ export function explain(m: Measurement): string {
     case 'query-failed':
       return "We couldn't read those columns — the source may not have finished syncing.";
   }
+}
+
+/**
+ * How much of one column exists in the other, as a bar.
+ *
+ * A bare "FOUND 0%" in a row of three statistics is a number to decode. A bar
+ * with the counts written out is the same fact already read: *2 of 24 values in
+ * this column exist in that one*.
+ */
+export function OverlapBar({ m, targetLabel }: { m: Measurement; targetLabel: string }) {
+  if (!m.containment || m.containment.sampledDistinct === 0) return null;
+  const { matchedDistinct, sampledDistinct, ratio } = m.containment;
+  const v = VERDICT_STYLE[m.verdict];
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[12px] text-ink2">
+          <span className="font-medium tabular-nums text-ink">
+            {matchedDistinct.toLocaleString('en-GB')} of {sampledDistinct.toLocaleString('en-GB')}
+          </span>{' '}
+          values exist in {targetLabel}
+        </span>
+        <span className="shrink-0 text-[12px] font-medium tabular-nums" style={{ color: v.fg }}>
+          {Math.round(ratio * 100)}%
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-soft">
+        <div
+          className="h-full rounded-full transition-[width]"
+          style={{ width: `${Math.max(ratio * 100, ratio > 0 ? 2 : 0)}%`, background: v.fg }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ValueList({ title, values, mark }: {
+  title: string;
+  values: string[];
+  mark?: 'found' | 'missing';
+}) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate font-mono text-[9.5px] uppercase tracking-wider text-muted2">{title}</div>
+      <ul className="mt-1 space-y-[3px]">
+        {values.map((v, i) => (
+          <li key={`${v}-${i}`} className="flex items-center gap-1">
+            {mark && (
+              <span
+                className="shrink-0 text-[10px] leading-none"
+                style={{ color: mark === 'found' ? '#3f7a5c' : '#a43a3a' }}
+                aria-hidden
+              >
+                {mark === 'found' ? '✓' : '✗'}
+              </span>
+            )}
+            <span
+              className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink2"
+              title={v}
+            >
+              {v === '' ? <span className="text-muted2">(blank)</span> : v}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The values themselves, side by side.
+ *
+ * This is the part that turns a verdict into an action. `BE 0123.456.789`
+ * against `be0123456789` is a formatting difference somebody can fix; a column
+ * of GUIDs against a column of three-letter codes is the wrong column entirely.
+ * No percentage distinguishes those two, and both look identical as "0%".
+ *
+ * Unmatched values come first when there are any — they are the ones carrying
+ * the information.
+ */
+export function ValueComparison({ m, fromLabel, toLabel }: {
+  m: Measurement;
+  fromLabel: string;
+  toLabel: string;
+}) {
+  const ex = m.examples;
+  if (!ex || (!ex.matched.length && !ex.unmatched.length && !ex.target.length)) return null;
+
+  return (
+    <div>
+      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+        What the values look like
+      </div>
+      <div className="mt-1.5 grid grid-cols-2 gap-3">
+        <div className="min-w-0 space-y-2">
+          {ex.unmatched.length > 0 && (
+            <ValueList title={`${fromLabel} — not found`} values={ex.unmatched} mark="missing" />
+          )}
+          {ex.matched.length > 0 && (
+            <ValueList title={`${fromLabel} — found`} values={ex.matched} mark="found" />
+          )}
+        </div>
+        {ex.target.length > 0 && <ValueList title={toLabel} values={ex.target} />}
+      </div>
+    </div>
+  );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -116,16 +233,20 @@ export function MeasurePanel({
 
           <p className="mt-2 text-[12.5px] leading-relaxed text-ink2">{explain(m)}</p>
 
-          {(m.containment || m.cardinality || m.orphans) && (
-            <div className="mt-3 grid grid-cols-3 gap-3 border-t border-line/60 pt-3">
-              {m.containment && (
-                <Stat label="Found" value={`${Math.round(m.containment.ratio * 100)}%`} />
-              )}
+          <div className="mt-3 border-t border-line/60 pt-3">
+            <OverlapBar m={m} targetLabel={draw.toLabel} />
+          </div>
+
+          {(m.cardinality || m.orphans) && (
+            <div className="mt-3 grid grid-cols-2 gap-3">
               {m.cardinality && (
                 <Stat label="Shape" value={CARDINALITY_TEXT[m.cardinality.type]} />
               )}
               {m.orphans && (
-                <Stat label="Unmatched" value={m.orphans.rows.toLocaleString('en-GB')} />
+                <Stat
+                  label="Rows with no match"
+                  value={m.orphans.rows.toLocaleString('en-GB')}
+                />
               )}
             </div>
           )}
@@ -137,9 +258,15 @@ export function MeasurePanel({
             </p>
           )}
 
+          {m.examples && (
+            <div className="mt-3 border-t border-line/60 pt-3">
+              <ValueComparison m={m} fromLabel={draw.fromLabel} toLabel={draw.toLabel} />
+            </div>
+          )}
+
           {m.containment && (
-            <p className="mt-2 text-[11px] text-muted2">
-              Checked {m.containment.sampledDistinct.toLocaleString('en-GB')} different values;
+            <p className="mt-3 text-[11px] text-muted2">
+              Compared {m.containment.sampledDistinct.toLocaleString('en-GB')} different values;
               row counts are from the whole table.
             </p>
           )}

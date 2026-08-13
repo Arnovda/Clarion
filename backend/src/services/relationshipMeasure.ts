@@ -96,6 +96,24 @@ export interface RelationshipMeasurement {
   } | null;
   /** Source rows whose value has no partner in the target. Full table. */
   orphans: { rows: number; basis: 'full' } | null;
+  /**
+   * Actual values from both columns, so a person can SEE why a percentage is
+   * what it is.
+   *
+   * A ratio says there is a gap; the values say whether it is a formatting
+   * problem you can fix (`BE 0123.456` against `be0123456`), a wrong column
+   * (GUIDs against codes), or a genuinely absent parent. This is the same
+   * reasoning that made the unmatched samples the substance of the cross-source
+   * match panel, applied to joins.
+   *
+   * Best-effort: a failure here leaves this null and never costs the verdict.
+   */
+  examples: {
+    matched: string[];
+    unmatched: string[];
+    /** A few values from the target column, for shape comparison. */
+    target: string[];
+  } | null;
   /** Echoed so the UI can say "min 85%" without hardcoding a threshold. */
   thresholds: {
     sampleSize: number;
@@ -196,6 +214,54 @@ function cardinalitySql(
             )) AS orphan_rows`;
 }
 
+/** How many values of each kind to show. Enough to spot a pattern, not a dump. */
+const EXAMPLE_LIMIT = 5;
+/** A join key longer than this is not being read, it is being scrolled past. */
+const EXAMPLE_MAX_LEN = 64;
+
+/**
+ * Values from both sides: some that found a partner, some that did not, and a
+ * few from the target for comparison.
+ *
+ * Deliberately NOT part of `verifyFkCandidate`. That function runs for every
+ * candidate of every table during profiling, and making it carry a presentation
+ * concern would put this cost on a path that never displays the result.
+ */
+function examplesSql(
+  fromTable: string, fromColumn: string, toTable: string, toColumn: string, sampleSize: number,
+): string {
+  // The CTE is named `ex`, not `src`, so this query is never mistaken for
+  // `verifyFkCandidate`'s — they are otherwise near-identical in shape, and the
+  // unit tests tell the three queries apart by exactly that opening.
+  const exists = `EXISTS (SELECT 1 FROM "${toTable}" t WHERE CAST(t."${toColumn}" AS TEXT) = s.v)`;
+  return `WITH ex AS (
+      SELECT DISTINCT CAST("${fromColumn}" AS TEXT) AS v
+      FROM "${fromTable}" WHERE "${fromColumn}" IS NOT NULL LIMIT ${sampleSize}
+    )
+    SELECT * FROM (
+      SELECT 'matched' AS bucket, s.v AS v FROM ex s WHERE ${exists} LIMIT ${EXAMPLE_LIMIT}
+    )
+    UNION ALL SELECT * FROM (
+      SELECT 'unmatched' AS bucket, s.v AS v FROM ex s WHERE NOT ${exists} LIMIT ${EXAMPLE_LIMIT}
+    )
+    UNION ALL SELECT * FROM (
+      SELECT 'target' AS bucket, CAST("${toColumn}" AS TEXT) AS v
+      FROM "${toTable}" WHERE "${toColumn}" IS NOT NULL GROUP BY 1 LIMIT ${EXAMPLE_LIMIT}
+    )`;
+}
+
+export function shapeExamples(rows: unknown[]): RelationshipMeasurement['examples'] {
+  const take = (bucket: string) => rows
+    .filter((r) => (r as { bucket?: string }).bucket === bucket)
+    .map((r) => String((r as { v?: unknown }).v ?? ''))
+    .map((v) => (v.length > EXAMPLE_MAX_LEN ? `${v.slice(0, EXAMPLE_MAX_LEN)}…` : v));
+  return {
+    matched: take('matched'),
+    unmatched: take('unmatched'),
+    target: take('target'),
+  };
+}
+
 function emptyThresholds(): RelationshipMeasurement['thresholds'] {
   return {
     sampleSize: Number(process.env.FK_SAMPLE_SIZE) || 1000,
@@ -213,6 +279,7 @@ function unmeasurable(reason: MeasureReason, elapsedMs: number): RelationshipMea
     target: null,
     cardinality: null,
     orphans: null,
+    examples: null,
     thresholds: emptyThresholds(),
     elapsedMs,
   };
@@ -255,7 +322,21 @@ export async function measureRelationship(
         cardinalitySql(fromTable, fromColumn, toTable, toColumn),
       );
       const row = card.rows[0] as Record<string, unknown> | undefined;
-      return { fk, row };
+
+      // Best-effort, and its own try/catch on purpose: examples make the number
+      // readable, but losing them must never cost the verdict that was already
+      // measured.
+      let examples: RelationshipMeasurement['examples'] = null;
+      try {
+        const ex = await connector.executeQuery(
+          examplesSql(fromTable, fromColumn, toTable, toColumn, thresholds.sampleSize),
+        );
+        examples = shapeExamples(ex.rows);
+      } catch (err) {
+        log.warn({ err, fromTable, fromColumn }, 'could not sample example values');
+      }
+
+      return { fk, row, examples };
     })();
     // When the budget wins the race, this promise is still in flight and its
     // caller has already returned. The route then disconnects the connector,
@@ -271,7 +352,7 @@ export async function measureRelationship(
       return unmeasurable('timeout', Date.now() - started);
     }
 
-    const { fk, row } = settled;
+    const { fk, row, examples } = settled;
     const { verdict, reason } = verdictFromFk(fk);
 
     const distinctVals = Number(row?.distinct_vals ?? 0);
@@ -302,6 +383,7 @@ export async function measureRelationship(
           }
         : null,
       orphans: { rows: orphanRows, basis: 'full' },
+      examples,
       thresholds,
       elapsedMs: Date.now() - started,
     };

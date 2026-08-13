@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Trash2, RefreshCw, Loader2, X, Sparkles } from 'lucide-react';
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
-import { explain } from './MeasurePanel';
+import { explain, OverlapBar, ValueComparison, VERDICT_STYLE } from './MeasurePanel';
 
 const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
   human: {
@@ -90,6 +90,7 @@ export function EdgeInspector({
 
   const prov = PROVENANCE_META[relationship.provenance];
   const m = relationship.measured as Measurement | null;
+  const verdict = VERDICT_STYLE[m?.verdict ?? 'unmeasurable'];
   const dirty = description.trim() !== (relationship.description ?? '').trim();
 
   return (
@@ -192,27 +193,47 @@ export function EdgeInspector({
 
           {m && (
             <>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                {m.containment && (
-                  <div>
-                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Found</div>
-                    <div className="text-[13px] tabular-nums text-ink">{Math.round(m.containment.ratio * 100)}%</div>
-                  </div>
-                )}
-                {m.cardinality && (
-                  <div>
-                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
-                    <div className="text-[13px] text-ink">{CARDINALITY_TEXT[m.cardinality.type]}</div>
-                  </div>
-                )}
-                {m.orphans && (
-                  <div>
-                    <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Unmatched</div>
-                    <div className="text-[13px] tabular-nums text-ink">{m.orphans.rows.toLocaleString('en-GB')}</div>
-                  </div>
-                )}
+              {/* Verdict first, in words. The old block led with "FOUND 0%"
+                  above a sentence saying "it may still be right", which reads
+                  as a contradiction — the headline has to be the conclusion. */}
+              <div
+                className="mt-2 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium"
+                style={{ color: verdict.fg, background: verdict.bg, borderColor: verdict.border }}
+              >
+                {verdict.label}
               </div>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
+
+              <div className="mt-2.5">
+                <OverlapBar m={m} targetLabel={toLabel} />
+              </div>
+
+              {(m.cardinality || m.orphans) && (
+                <div className="mt-2.5 grid grid-cols-2 gap-2">
+                  {m.cardinality && (
+                    <div>
+                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
+                      <div className="text-[13px] text-ink">{CARDINALITY_TEXT[m.cardinality.type]}</div>
+                    </div>
+                  )}
+                  {m.orphans && (
+                    <div>
+                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
+                        Rows with no match
+                      </div>
+                      <div className="text-[13px] tabular-nums text-ink">
+                        {m.orphans.rows.toLocaleString('en-GB')}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {m.examples && (
+                <div className="mt-3">
+                  <ValueComparison m={m} fromLabel={fromLabel} toLabel={toLabel} />
+                </div>
+              )}
             </>
           )}
         </div>

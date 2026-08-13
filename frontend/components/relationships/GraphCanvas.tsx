@@ -966,11 +966,26 @@ function CanvasInner() {
         </div>
       )}
 
-      {mode === 'review' && focus && !draw && !match && (
+      {!draw && !match && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
-          <span><Kbd>Y</Kbd> looks right</span>
-          <span><Kbd>N</Kbd> remove</span>
-          <span><Kbd>J</Kbd> next</span>
+          {/* The end symbols carry the cardinality now, so say what they mean
+              once rather than making each user work it out. */}
+          <span className="flex items-center gap-1">
+            <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">1</span>
+            one row
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">∗</span>
+            many rows
+          </span>
+          {mode === 'review' && focus && (
+            <>
+              <span className="text-muted2">·</span>
+              <span><Kbd>Y</Kbd> looks right</span>
+              <span><Kbd>N</Kbd> remove</span>
+              <span><Kbd>J</Kbd> next</span>
+            </>
+          )}
         </div>
       )}
       </div>

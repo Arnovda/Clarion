@@ -94,6 +94,8 @@ export interface Measurement {
     basis: 'full';
   } | null;
   orphans: { rows: number; basis: 'full' } | null;
+  /** Real values from both columns, so a percentage can be understood. */
+  examples: { matched: string[]; unmatched: string[]; target: string[] } | null;
   thresholds: {
     sampleSize: number;
     minDistinct: number;

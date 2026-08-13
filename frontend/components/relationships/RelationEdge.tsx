@@ -1,7 +1,7 @@
 'use client';
 
 import { memo } from 'react';
-import { EdgeProps, getBezierPath, EdgeLabelRenderer } from 'reactflow';
+import { EdgeProps, getBezierPath, EdgeLabelRenderer, Position } from 'reactflow';
 import type { Cardinality, EdgeKind, Provenance } from './types';
 
 export interface RelationEdgeData {
@@ -31,13 +31,43 @@ const STROKE: Record<Provenance, { color: string; dash?: string; width: number }
   ai: { color: '#c08a5e', dash: '5 4', width: 1.5 },
 };
 
-/** Compact cardinality notation. `1—N` reads faster than "one to many". */
-const CARDINALITY_LABEL: Record<Cardinality, string> = {
-  one_to_one: '1—1',
-  one_to_many: '1—N',
-  many_to_one: 'N—1',
-  many_to_many: 'N—N',
+/**
+ * Cardinality is read off the ENDS of the line, not a badge in the middle.
+ *
+ * `N—1` floating between two tables tells you the shape but not which side is
+ * which; you have to work out which end the N belongs to, every time. A symbol
+ * sitting on each end says it where it applies: **1** = one row, **∗** = many.
+ * That is the notation every ERD tool uses, for this reason.
+ *
+ * `∗` is U+2217, not the typographic asterisk — it sits on the centre line
+ * rather than riding high, which matters inside a small circle.
+ */
+const ENDS: Record<Cardinality, readonly [string, string]> = {
+  one_to_one:   ['1', '1'],
+  one_to_many:  ['1', '∗'],
+  many_to_one:  ['∗', '1'],
+  many_to_many: ['∗', '∗'],
 };
+
+/** How far along the line from the node edge the symbol sits. */
+const END_OFFSET = 15;
+
+function EndSymbol({ x, y, symbol, color, faded }: {
+  x: number; y: number; symbol: string; color: string; faded: boolean;
+}) {
+  return (
+    <g pointerEvents="none" opacity={faded ? 0.18 : 1}>
+      <circle cx={x} cy={y} r={7.5} fill="#fffdfa" stroke={color} strokeWidth={1.25} />
+      <text
+        x={x} y={y} textAnchor="middle" dominantBaseline="central"
+        fontSize={10} fontWeight={600} fill={color}
+        style={{ fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}
+      >
+        {symbol}
+      </text>
+    </g>
+  );
+}
 
 function RelationEdgeImpl({
   id, sourceX, sourceY, targetX, targetY,
@@ -92,7 +122,29 @@ function RelationEdgeImpl({
         />
       )}
 
-      {!data?.dimmed && (data?.cardinality || isMatch) && (
+      {/* A match has no cardinality worth asserting — it is a claim that two
+          things are the same, not a join — so it keeps the rate in the middle
+          and gets no end symbols. Two different objects, two different reads. */}
+      {!isMatch && data?.cardinality && (
+        <>
+          <EndSymbol
+            x={sourceX + (sourcePosition === Position.Left ? -END_OFFSET : END_OFFSET)}
+            y={sourceY}
+            symbol={ENDS[data.cardinality][0]}
+            color={style.color}
+            faded={!!data.dimmed}
+          />
+          <EndSymbol
+            x={targetX + (targetPosition === Position.Left ? -END_OFFSET : END_OFFSET)}
+            y={targetY}
+            symbol={ENDS[data.cardinality][1]}
+            color={style.color}
+            faded={!!data.dimmed}
+          />
+        </>
+      )}
+
+      {!data?.dimmed && isMatch && (
         <EdgeLabelRenderer>
           <div
             style={{
@@ -104,9 +156,7 @@ function RelationEdgeImpl({
             }}
             className="rounded-full border bg-raised/95 px-1.5 py-[1px] text-[10px] font-medium tabular-nums"
           >
-            {isMatch
-              ? data?.matchRate != null ? `${Math.round(data.matchRate * 100)}% matched` : 'match'
-              : CARDINALITY_LABEL[data!.cardinality!]}
+            {data?.matchRate != null ? `${Math.round(data.matchRate * 100)}% matched` : 'match'}
           </div>
         </EdgeLabelRenderer>
       )}
