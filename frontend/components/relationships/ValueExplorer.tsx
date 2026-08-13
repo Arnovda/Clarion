@@ -14,7 +14,7 @@ export interface ValueComparisonResult {
   } | null;
   right: {
     table: string; column: string; values: string[];
-    distinct: number; truncated: boolean; rangeLimited: boolean;
+    distinct: number; truncated: boolean; rangeLimited: boolean; shown: number;
   } | null;
   limit: number;
 }
@@ -167,9 +167,11 @@ export function ValueExplorer({
                 column={result.right.column}
                 distinct={result.right.distinct}
                 // Saying "first 300" here would be wrong AND misleading: this
-                // side is not the first 300 of the column, it is the stretch
-                // that lines up with the values on the left.
-                note={result.right.rangeLimited ? 'only the matching stretch' : undefined}
+                // side is not the first 300 of the column, it is the part that
+                // lines up with the values on the left.
+                note={result.right.rangeLimited
+                  ? `showing ${result.right.shown} that line up with the left`
+                  : undefined}
               />
             </div>
 

@@ -674,6 +674,13 @@ are enough to form a suspicion, not to settle one.
   fetched **within the child window's range** so the two columns describe the
   same stretch of the value space. The header says *only the matching stretch*
   rather than "first 300", which would be both wrong and misleading.
+- **Paired values survive the cap first** (`ORDER BY (v IN left) DESC, v`).
+  Ordering the parent side plainly by value and cutting at 300 drops the tail
+  of the range — so a value ticked as *found* sat opposite an empty cell, which
+  reads as a contradiction of its own tick. The merge exists to align; a cap
+  that breaks the alignment defeats the only thing it is for. Unpaired parent
+  keys fill whatever room is left. The header says `showing N that line up with
+  the left` rather than implying the list is the column.
 - **The tick is the fact; the gap is only alignment.** A row with nothing
   opposite it may simply be past the end of the parent's window, so only a
   LEFT value whose `matched` is false is highlighted. A parent key nobody

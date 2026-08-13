@@ -76,6 +76,8 @@ export interface ValueComparison {
      * must say so — otherwise its list looks like the whole column.
      */
     rangeLimited: boolean;
+    /** How many actually came back, so the UI can say "300 of 330". */
+    shown: number;
   } | null;
   limit: number;
 }
@@ -110,7 +112,15 @@ function valuesSql(
       WHERE "${rightColumn}" IS NOT NULL
         AND CAST("${rightColumn}" AS TEXT) >= bounds.lo
         AND CAST("${rightColumn}" AS TEXT) <= bounds.hi
-      ORDER BY 1 LIMIT ${VALUE_LIMIT}
+      -- PAIRED VALUES SURVIVE THE CAP FIRST. Ordering plainly by value and
+      -- cutting at the limit drops the tail of the range — so a value ticked
+      -- as found sat with an empty cell opposite it, which reads as a
+      -- contradiction of its own tick. The merge exists to align; a cap that
+      -- breaks the alignment defeats the only thing it is for. Unpaired
+      -- values fill whatever room is left, because "a parent key nobody
+      -- references" is worth seeing but is not what the view is about.
+      ORDER BY (v IN (SELECT v FROM l)) DESC, v
+      LIMIT ${VALUE_LIMIT}
     )`;
 }
 
@@ -161,9 +171,11 @@ export function shapeSides(
       values: rightValues,
       distinct: rightDistinct,
       truncated: rightDistinct > rightValues.length,
-      // The right list was narrowed to the left window's range whenever it
-      // could not have held the whole column anyway.
+      // Narrowed to the stretch that lines up with the left, and capped within
+      // it. One flag, because to a reader they are the same fact: this is not
+      // the whole column, it is the part that can be compared.
       rangeLimited: rightDistinct > rightValues.length,
+      shown: rightValues.length,
     },
   };
 }

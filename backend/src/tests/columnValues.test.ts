@@ -57,6 +57,7 @@ describe('shapeSides', () => {
     );
     expect(out.right.rangeLimited).toBe(true);
     expect(out.right.distinct).toBe(2589);
+    expect(out.right.shown).toBe(1);
   });
 
   it('does not claim truncation when the whole column fits', () => {
@@ -120,6 +121,10 @@ describe('compareColumnValues', () => {
     // of the value space and the gaps between them mean nothing.
     expect(c.queries[0]).toContain('bounds.lo');
     expect(c.queries[0]).toContain('bounds.hi');
+    // Paired values survive the cap first. Without this the cap eats the tail
+    // of the range, and a value ticked as found sits opposite an empty cell —
+    // which reads as a contradiction of its own tick.
+    expect(c.queries[0]).toContain('ORDER BY (v IN (SELECT v FROM l)) DESC');
   });
 
   it('refuses an unsafe identifier rather than composing it into SQL', async () => {
