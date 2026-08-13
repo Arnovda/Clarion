@@ -104,6 +104,114 @@ export function OverlapBar({ m, targetLabel }: { m: Measurement; targetLabel: st
   );
 }
 
+/**
+ * The rules themselves, each with what was measured and what it had to beat.
+ *
+ * **There is no AI anywhere in this.** It is three fixed rules, run as SQL
+ * against the tenant's own warehouse by `verifyFkCandidate` — the same function,
+ * the same thresholds and the same sample the automatic detector uses. Showing
+ * only the conclusion made that impossible to tell from the outside, and a
+ * verdict you cannot audit is one you have to take on faith, which is exactly
+ * what this pane exists not to ask for.
+ *
+ * All three rows always render, even though the detector short-circuits at the
+ * first failure: the single measurement query computes every number regardless,
+ * and seeing all three is what makes the verdict checkable rather than
+ * announced.
+ *
+ * The thresholds come from the response, never hardcoded here — they live in
+ * the detector's environment, and a panel stating a different number from the
+ * one actually applied would be lying about which of the two is wrong.
+ */
+export function CheckList({ m }: { m: Measurement }) {
+  if (!m.containment || !m.target) return null;
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  const rules = [
+    {
+      ok: m.containment.sampledDistinct >= m.thresholds.minDistinct,
+      label: 'Enough different values to judge',
+      got: m.containment.sampledDistinct.toLocaleString('en-GB'),
+      need: `${m.thresholds.minDistinct}+`,
+    },
+    {
+      ok: m.target.isKey,
+      label: 'The other column identifies one row',
+      got: m.target.rows > 0
+        ? `${pct(m.target.distinct / m.target.rows)} unique`
+        : 'no rows',
+      need: `${pct(m.thresholds.targetUniqueness)}+`,
+    },
+    {
+      ok: m.containment.ratio >= m.thresholds.minContainment,
+      label: 'Values found on the other side',
+      got: pct(m.containment.ratio),
+      need: `${pct(m.thresholds.minContainment)}+`,
+    },
+  ];
+
+  return (
+    <div>
+      <ul className="space-y-1">
+        {rules.map((r) => (
+          <li key={r.label} className="flex items-baseline gap-1.5 text-[11.5px]">
+            <span
+              className="w-3 shrink-0 text-[11px] leading-none"
+              style={{ color: r.ok ? '#3f7a5c' : '#a43a3a' }}
+              aria-hidden
+            >
+              {r.ok ? '✓' : '✗'}
+            </span>
+            <span className="min-w-0 flex-1 text-ink2">{r.label}</span>
+            <span
+              className="shrink-0 tabular-nums"
+              style={{ color: r.ok ? '#334049' : '#a43a3a' }}
+            >
+              {r.got}
+            </span>
+            <span className="w-[52px] shrink-0 text-right tabular-nums text-muted2">
+              needs {r.need}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted2">
+        Fixed rules, run as SQL against your own data. No AI is involved, and the
+        same rules decide what Clarion suggests in the first place.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A trusted relationship that the data contradicts.
+ *
+ * This is the case worth interrupting someone for. A link the source system
+ * documents, or one a colleague already confirmed, that now measures at almost
+ * nothing is nearly always a sync that has not finished — not a wrong link — and
+ * saying so is the difference between a number and a next step.
+ */
+export function ContradictionFlag({ m, provenance }: {
+  m: Measurement;
+  provenance: 'human' | 'declared' | 'ai';
+}) {
+  const trusted = provenance === 'declared' || provenance === 'human';
+  if (!trusted || m.verdict !== 'broken') return null;
+
+  return (
+    <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-warn/40 bg-warnSoft px-2.5 py-2">
+      <AlertTriangle size={12} className="mt-[2px] shrink-0 text-warn" />
+      <p className="text-[11.5px] leading-relaxed text-ink2">
+        {provenance === 'declared'
+          ? 'The source system documents this link, but your data does not back it.'
+          : 'Someone confirmed this link, but your data does not back it.'}{' '}
+        Most often that means one of these tables has not finished syncing —
+        check the source before removing the link.
+      </p>
+    </div>
+  );
+}
+
 function ValueList({ title, values, mark }: {
   title: string;
   values: string[];
@@ -235,6 +343,10 @@ export function MeasurePanel({
 
           <div className="mt-3 border-t border-line/60 pt-3">
             <OverlapBar m={m} targetLabel={draw.toLabel} />
+          </div>
+
+          <div className="mt-3">
+            <CheckList m={m} />
           </div>
 
           {(m.cardinality || m.orphans) && (

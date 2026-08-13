@@ -29,6 +29,22 @@ name: Build & Deploy
 on:
   push:
     branches: [main, staging]
+  # Manual redeploy. A component is only built when its own paths changed, so a
+  # deploy that FAILS leaves that component stale indefinitely — every later
+  # commit that touches something else skips it, and the app keeps serving the
+  # last image that made it through. That is not hypothetical: the frontend sat
+  # two commits behind for exactly this reason. This is how you get it current
+  # again without inventing a commit.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and redeploy these regardless of what changed'
+        type: choice
+        default: 'frontend + backend'
+        options:
+          - 'frontend + backend'
+          - 'frontend only'
+          - 'backend only'
 
 # Deploys of different commits must not overlap. Azure locks a container app
 # while it provisions a revision, so a second deploy arriving mid-flight fails
@@ -48,8 +64,8 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      frontend: ${{ steps.f.outputs.frontend }}
-      backend: ${{ steps.f.outputs.backend }}
+      frontend: ${{ steps.f.outputs.frontend == 'true' || contains(inputs.force, 'frontend') }}
+      backend: ${{ steps.f.outputs.backend == 'true' || contains(inputs.force, 'backend') }}
       etl: ${{ steps.f.outputs.etl }}
       worker: ${{ steps.f.outputs.worker }}
       migrations: ${{ steps.f.outputs.migrations }}

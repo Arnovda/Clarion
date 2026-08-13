@@ -3,7 +3,9 @@
 import { useEffect, useState } from 'react';
 import { Check, Trash2, RefreshCw, Loader2, X, Sparkles } from 'lucide-react';
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
-import { explain, OverlapBar, ValueComparison, VERDICT_STYLE } from './MeasurePanel';
+import {
+  explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
+} from './MeasurePanel';
 
 const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
   human: {
@@ -204,8 +206,14 @@ export function EdgeInspector({
               </div>
               <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
 
+              <ContradictionFlag m={m} provenance={relationship.provenance} />
+
               <div className="mt-2.5">
                 <OverlapBar m={m} targetLabel={toLabel} />
+              </div>
+
+              <div className="mt-2.5">
+                <CheckList m={m} />
               </div>
 
               {(m.cardinality || m.orphans) && (

@@ -79,6 +79,7 @@ function RelationEdgeImpl({
 
   const style = STROKE[data?.provenance ?? 'declared'];
   const isMatch = data?.kind === 'match';
+  const ends = data?.cardinality ? ENDS[data.cardinality] : undefined;
 
   return (
     <>
@@ -125,21 +126,25 @@ function RelationEdgeImpl({
       {/* A match has no cardinality worth asserting — it is a claim that two
           things are the same, not a join — so it keeps the rate in the middle
           and gets no end symbols. Two different objects, two different reads. */}
-      {!isMatch && data?.cardinality && (
+      {/* `cardinality` reaches here as a CAST of a free-text database column,
+          not a validated enum, so a stored value outside the four keys yields
+          undefined — and indexing it would throw inside a render and take the
+          whole canvas down. Look it up, then check. */}
+      {!isMatch && ends && (
         <>
           <EndSymbol
             x={sourceX + (sourcePosition === Position.Left ? -END_OFFSET : END_OFFSET)}
             y={sourceY}
-            symbol={ENDS[data.cardinality][0]}
+            symbol={ends[0]}
             color={style.color}
-            faded={!!data.dimmed}
+            faded={!!data?.dimmed}
           />
           <EndSymbol
             x={targetX + (targetPosition === Position.Left ? -END_OFFSET : END_OFFSET)}
             y={targetY}
-            symbol={ENDS[data.cardinality][1]}
+            symbol={ends[1]}
             color={style.color}
-            faded={!!data.dimmed}
+            faded={!!data?.dimmed}
           />
         </>
       )}

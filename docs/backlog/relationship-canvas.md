@@ -499,6 +499,41 @@ match edges, where it shows the match rate and where a cardinality would be a
 lie. A legend in the corner names the two symbols rather than assuming ERD
 literacy.
 
+### 4.0k The checks are shown, not just their conclusion (2026-08-13)
+
+Owner, on seeing a measurement: *"I suspect this was done with AI on the fly?
+I don't want AI for this, just pre-existing checks and controls with the
+explanation. And flag any problems."*
+
+**It was never AI**, and it never has been — `verifyFkCandidate` is three fixed
+rules run as SQL against the tenant's own warehouse, with thresholds from the
+environment. But the panel printed only the verdict, so from the outside there
+was no way to tell a measured rule from a language model's opinion. That is the
+defect: *a verdict you cannot audit is one you have to take on faith*, and this
+pane exists precisely so nobody has to.
+
+- **The three rules now render as a checklist**, each with what was measured and
+  what it had to beat: enough distinct values to judge · the other column
+  identifies one row · values found on the other side. Plus one line stating
+  outright that these are fixed SQL rules with no AI, and that the same rules
+  decide what Clarion suggests in the first place.
+- **All three always show**, even though the detector short-circuits at the
+  first failure. The single measurement query computes every number anyway, and
+  seeing all three is what makes the verdict checkable rather than announced.
+- **Thresholds come from the response**, never hardcoded in the UI — they live
+  in the detector's environment, and a panel quoting a different number from the
+  one applied would be lying about which of the two is wrong.
+- **Contradictions are flagged.** A relationship the source system *documents*,
+  or one a colleague already *confirmed*, that measures `broken` is the case
+  worth interrupting someone for — it is nearly always an unfinished sync rather
+  than a wrong link, and saying so turns a number into a next step. Exactly the
+  shape of `Documents.FinancialTransactionEntryID → TransactionLines.ID`
+  [declared] measuring 0% with 330 unmatched.
+- **Robustness fix found while here:** `cardinality` reaches the edge as a CAST
+  of a free-text database column, not a validated enum, so a stored value
+  outside the four keys yielded `undefined` and indexing it would have thrown
+  inside a render — taking the whole canvas down.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
