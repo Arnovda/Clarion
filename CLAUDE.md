@@ -146,6 +146,30 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **EXAMPLE VALUES + CARDINALITY ON THE LINE ENDS (2026-08-13).** Owner: the
+  measurement panel wasn't intuitive, and the diagram didn't show cardinality.
+  (1) **`measureRelationship` now returns `examples`** — a few source values that
+  found a partner, a few that did not, and a few target values for comparison.
+  A percentage says there is a gap; only the VALUES say whether it is a
+  formatting difference you can fix (`BE 0123.456` vs `be0123456`), the wrong
+  column (GUIDs vs codes), or a genuinely absent parent — all three look
+  identical as `0%`. Same reasoning as slice 7's unmatched samples, applied to
+  joins. **Sampling is NOT in `verifyFkCandidate`** (that runs for every
+  candidate of every table during profiling and must not carry a presentation
+  cost), its CTE is named `ex` not `src` so the unit tests can still tell the
+  three queries apart, and it has **its own sub-budget** (total/3, capped 2.5s)
+  — the first attempt raced all three queries against one wall clock, so a slow
+  sample query returned `unmeasurable` for a measurement that had ALREADY
+  SUCCEEDED. (2) **The panel leads with the verdict in words**, then an overlap
+  BAR ("2 of 24 values exist in Payment conditions.ID") instead of a bare
+  `FOUND 0%` sitting above "it may still be right" — which read as a
+  contradiction. `too-few-distinct` copy split: all-matched-but-too-few really
+  is "may still be right"; none-matched is evidence and says so. (3)
+  **Cardinality moved to the LINE ENDS** — `1` = one row, `∗` = many (U+2217,
+  centred in the circle). `N—1` in the middle tells you the shape but not which
+  side it applies to. The middle badge survives only on MATCH edges, where it
+  shows the rate and where a cardinality would be a lie; a corner legend names
+  the symbols rather than assuming ERD literacy.
   **THE TABLE LIST IS NOW THE WORK LIST (2026-08-13).** Owner: *"how do I check
   or edit per table? I can't select anything myself."* Correct — Review walked a
   GLOBAL queue in whatever order the rows came back, and `TableList` existed only

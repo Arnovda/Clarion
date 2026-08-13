@@ -462,6 +462,43 @@ works through this.
   Deriving it would let the queue silently narrow itself to whatever it landed
   on, which is the sort of bug that looks like data loss.
 
+### 4.0j Values behind the number, cardinality on the ends (2026-08-13)
+
+Two owner observations, both about things the screen showed without explaining.
+
+**A percentage on its own is not evidence.** The panel led with `FOUND 0%`
+above a sentence reading *"it may still be right"*, which is a contradiction to
+look at — and neither told you whether the gap was a formatting difference you
+can fix, the wrong column entirely, or a genuinely absent parent. All three look
+identical as 0%.
+
+- The measurement now returns `examples`: a few source values that found a
+  partner, a few that did not, and a few from the target for comparison.
+  Rendered side by side, `BE 0123.456` against `be0123456` is a fixable
+  difference you can *see*. This is the same reasoning that made the unmatched
+  samples the substance of the cross-source match panel (§4.0e), applied to
+  joins.
+- **Sampling is deliberately NOT in `verifyFkCandidate`.** That runs for every
+  candidate of every table during profiling and must not carry a presentation
+  cost.
+- **It has its own sub-budget** (a third of the total, capped at 2.5s) and its
+  own try/catch. The first attempt raced all three queries against one wall
+  clock, which meant a slow sample query could return `unmeasurable` for a
+  measurement that had already succeeded — the answer lost to the thing meant to
+  explain it.
+- The panel leads with the verdict in words, then an **overlap bar** reading
+  *"2 of 24 values exist in Payment conditions.ID"*. The `too-few-distinct` copy
+  split in two: all-matched-but-too-few genuinely is "may still be right";
+  none-matched is evidence and now says so.
+
+**Cardinality moved to the line ends.** `N—1` floating between two tables tells
+you the shape but not which side it applies to, so you work it out every time.
+Each end now carries its own symbol — **1** for one row, **∗** for many — which
+is what every ERD tool does, for this reason. The middle badge survives only on
+match edges, where it shows the match rate and where a cardinality would be a
+lie. A legend in the corner names the two symbols rather than assuming ERD
+literacy.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
