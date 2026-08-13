@@ -9,26 +9,29 @@
  *
  * ---
  *
- * **THE WINDOWS MUST COVER THE SAME RANGE. This is the whole correctness
- * problem here, and the first version got it wrong.**
+ * **THE TWO LISTS ARE INDEPENDENT, AND EVERY COUNT COMES FROM `matched`.**
  *
- * Taking the first N values of each side independently and then setting them
- * next to each other compares two different slices of the value space the
- * moment either side is truncated. Measured in production:
- * `Payments.TransactionID` (218 GUIDs, all late in the alphabet) against
- * `TransactionLines.ID` (2,589 values, of which the first 300 are all early in
- * the alphabet). Containment was a true 100% — every payment does reference a
- * real transaction line — while the side-by-side view showed 30 shared and 458
- * one-sided, i.e. it reported a catastrophic mismatch that did not exist.
+ * An earlier version interleaved them so equal values shared a row. That was
+ * wrong twice over, and both mistakes are worth remembering:
  *
- * That is the same defect shape as the 2026-08-03 detector bug: a numerator
- * from one sample and a denominator from another. Two fixes, both required:
+ *   1. It derived "how many are on both sides" from the merge, over two windows
+ *      fetched independently. `Payments.TransactionID` (218 GUIDs, all late in
+ *      the alphabet) against the first 300 of `TransactionLines.ID` (2,589, all
+ *      early) reported 458 one-sided values on a relationship measuring a true
+ *      100% — the same defect shape as the 2026-08-03 detector bug, a numerator
+ *      from one sample and a denominator from another.
+ *   2. Even once the counts were fixed, the alignment earned nothing. In a
+ *      containment check "found" means the two values are **textually equal**,
+ *      so a paired row shows the same string twice, and an unpaired row shows a
+ *      blank. The merge could not add information in either case — it could
+ *      only fill the gaps with parent keys nobody asked about. With 20 child
+ *      values against 1,289 parent values, that buried the answer under 280
+ *      rows of noise.
  *
- *   • **`matched` is computed against the WHOLE right column**, never against
- *     the fetched window, so the headline count always agrees with the check.
- *   • **The right side is fetched within the left window's range**, so the two
- *     columns on screen describe the same stretch of the value space and the
- *     gaps between them mean something.
+ * So: two plain lists, each ascending, each scrolling on its own, and the
+ * per-value `matched` flag — measured against the WHOLE parent column — carries
+ * every fact. Nothing on screen implies a row-by-row correspondence, because
+ * there is none.
  *
  * Values are compared and ordered **as text**, matching how `verifyFkCandidate`
  * compares them (`CAST(... AS TEXT)`). Ordering a numeric key as text gives
@@ -71,12 +74,7 @@ export interface ValueComparison {
     values: string[];
     distinct: number;
     truncated: boolean;
-    /**
-     * True when the right side was narrowed to the left window's range. The UI
-     * must say so — otherwise its list looks like the whole column.
-     */
-    rangeLimited: boolean;
-    /** How many actually came back, so the UI can say "300 of 330". */
+    /** How many actually came back, so the UI can say "first 300 of 1,289". */
     shown: number;
   } | null;
   limit: number;
@@ -87,10 +85,16 @@ export interface QueryableConnector {
 }
 
 /**
- * `matched` is an EXISTS over the entire parent column, not over the window
- * below it. A value can be absent from the fetched 300 and still exist in the
- * table, and calling that "not found" is the exact lie this file exists to
- * avoid.
+ * `matched` is an EXISTS over the ENTIRE parent column, not over the sample
+ * fetched beside it. A value can be absent from those rows and still exist in
+ * the table, and calling that "not found" is the lie this file exists to avoid.
+ *
+ * The parent side is a plain first-N sample. It answers one question — *what do
+ * the values over there look like?* — and that is a question about character
+ * shape, not about any particular row. Earlier versions bounded it to the
+ * child's range and ordered it to keep paired values inside the cap; both were
+ * scaffolding for an alignment that no longer exists, and both made the sample
+ * less representative of the column it is meant to characterise.
  */
 function valuesSql(
   leftTable: string, leftColumn: string, rightTable: string, rightColumn: string,
@@ -99,8 +103,7 @@ function valuesSql(
       SELECT DISTINCT CAST("${leftColumn}" AS TEXT) AS v
       FROM "${leftTable}" WHERE "${leftColumn}" IS NOT NULL
       ORDER BY 1 LIMIT ${VALUE_LIMIT}
-    ),
-    bounds AS (SELECT MIN(v) AS lo, MAX(v) AS hi FROM l)
+    )
     SELECT 'l' AS side, l.v AS v,
            EXISTS (SELECT 1 FROM "${rightTable}" t
                    WHERE CAST(t."${rightColumn}" AS TEXT) = l.v) AS matched
@@ -108,19 +111,8 @@ function valuesSql(
     UNION ALL
     SELECT 'r' AS side, v, TRUE AS matched FROM (
       SELECT DISTINCT CAST("${rightColumn}" AS TEXT) AS v
-      FROM "${rightTable}", bounds
-      WHERE "${rightColumn}" IS NOT NULL
-        AND CAST("${rightColumn}" AS TEXT) >= bounds.lo
-        AND CAST("${rightColumn}" AS TEXT) <= bounds.hi
-      -- PAIRED VALUES SURVIVE THE CAP FIRST. Ordering plainly by value and
-      -- cutting at the limit drops the tail of the range — so a value ticked
-      -- as found sat with an empty cell opposite it, which reads as a
-      -- contradiction of its own tick. The merge exists to align; a cap that
-      -- breaks the alignment defeats the only thing it is for. Unpaired
-      -- values fill whatever room is left, because "a parent key nobody
-      -- references" is worth seeing but is not what the view is about.
-      ORDER BY (v IN (SELECT v FROM l)) DESC, v
-      LIMIT ${VALUE_LIMIT}
+      FROM "${rightTable}" WHERE "${rightColumn}" IS NOT NULL
+      ORDER BY 1 LIMIT ${VALUE_LIMIT}
     )`;
 }
 
@@ -141,17 +133,9 @@ export function shapeSides(
 ): NonNullable<Pick<ValueComparison, 'left' | 'right'>> {
   const rows = valueRows as { side?: string; v?: unknown; matched?: unknown }[];
   /**
-   * **DO NOT REMOVE THIS SORT.** It is not tidying — the UI merges the two
-   * lists in a single pass and is only correct on ascending input.
-   *
-   * Two reasons, and the first is easy to miss: the parent query deliberately
-   * returns rows in **paired-first** order so that the 300-row cap cannot eat
-   * the values that have a partner. That order is a SELECTION rule — which 300
-   * come back — and must never reach the screen. Trusting the database's order
-   * here would feed the merge a non-ascending list and produce nonsense.
-   *
-   * The second is the ordinary one: the database's collation is not guaranteed
-   * to be JavaScript's, and a merge needs both sides compared the same way.
+   * Sorted here rather than trusted from SQL: the database's collation is not
+   * guaranteed to be JavaScript's, and two lists a person reads side by side
+   * should be in the order that person's browser would put them in.
    */
   const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -180,10 +164,6 @@ export function shapeSides(
       values: rightValues,
       distinct: rightDistinct,
       truncated: rightDistinct > rightValues.length,
-      // Narrowed to the stretch that lines up with the left, and capped within
-      // it. One flag, because to a reader they are the same fact: this is not
-      // the whole column, it is the part that can be compared.
-      rangeLimited: rightDistinct > rightValues.length,
       shown: rightValues.length,
     },
   };

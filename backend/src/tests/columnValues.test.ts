@@ -46,16 +46,15 @@ describe('shapeSides', () => {
     ]);
   });
 
-  it('marks the parent side as range-limited when it could not be shown whole', () => {
-    // The right list is the stretch that lines up with the left window, not
-    // the first N of the column — and calling it "first 300" would be both
-    // wrong and misleading.
+  it('reports how much of the parent column is on screen', () => {
+    // The parent list is a plain sample of what that column looks like. Its
+    // count has to be stated, or the list reads as the whole column.
     const out = shapeSides(
       [{ side: 'r', v: 'e8a', matched: true }],
       { l: 218, r: 2589 },
       SIDES.left, SIDES.right,
     );
-    expect(out.right.rangeLimited).toBe(true);
+    expect(out.right.truncated).toBe(true);
     expect(out.right.distinct).toBe(2589);
     expect(out.right.shown).toBe(1);
   });
@@ -68,14 +67,12 @@ describe('shapeSides', () => {
     );
     expect(out.left.truncated).toBe(false);
     expect(out.right.truncated).toBe(false);
-    expect(out.right.rangeLimited).toBe(false);
   });
 
-  it('re-sorts the parent side ascending, discarding the paired-first order', () => {
-    // The SQL returns the parent side paired-first so the cap keeps the values
-    // that have a partner. That is a selection rule and must not reach the
-    // screen: the UI merges in one pass and is only correct on ascending
-    // input. This test is what stops the sort being "cleaned up".
+  it('returns the parent side ascending whatever order the database used', () => {
+    // Two lists a person reads side by side should be in the order their
+    // browser would put them in; the database's collation is not guaranteed to
+    // be JavaScript's.
     const out = shapeSides(
       [
         { side: 'r', v: 'a' }, { side: 'r', v: 'm' },
@@ -132,15 +129,13 @@ describe('compareColumnValues', () => {
     expect(res.ok).toBe(true);
     expect(res.limit).toBe(VALUE_LIMIT);
     expect(c.queries[0]).toContain(`LIMIT ${VALUE_LIMIT}`);
-    // The parent side is bounded by the child window's range, not fetched
-    // independently — otherwise the two columns describe different stretches
-    // of the value space and the gaps between them mean nothing.
-    expect(c.queries[0]).toContain('bounds.lo');
-    expect(c.queries[0]).toContain('bounds.hi');
-    // Paired values survive the cap first. Without this the cap eats the tail
-    // of the range, and a value ticked as found sits opposite an empty cell —
-    // which reads as a contradiction of its own tick.
-    expect(c.queries[0]).toContain('ORDER BY (v IN (SELECT v FROM l)) DESC');
+    // `matched` is an EXISTS over the WHOLE parent table, never over the
+    // sample listed beside it. That is what keeps the headline count in
+    // agreement with the check that produced the percentage.
+    expect(c.queries[0]).toContain('EXISTS (SELECT 1 FROM');
+    // The two lists are independent — no range bounding, no ordering tricks to
+    // protect an alignment that no longer exists.
+    expect(c.queries[0]).not.toContain('bounds');
   });
 
   it('refuses an unsafe identifier rather than composing it into SQL', async () => {

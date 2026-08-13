@@ -14,44 +14,27 @@ export interface ValueComparisonResult {
   } | null;
   right: {
     table: string; column: string; values: string[];
-    distinct: number; truncated: boolean; rangeLimited: boolean; shown: number;
+    distinct: number; truncated: boolean; shown: number;
   } | null;
   limit: number;
 }
 
-export interface ValueRow {
-  left: LeftValue | null;
-  right: string | null;
-}
-
 /**
- * Interleave two sorted lists so equal values land on the SAME row.
+ * There is deliberately NO merge here, and the reason is worth keeping.
  *
- * This is the difference between showing two lists and showing a comparison.
- * Side by side but independently scrolled, two columns tell you almost nothing:
- * row 40 on the left has no relationship to row 40 on the right. Merged, a
- * value present on both sides occupies one row and a value present on only one
- * leaves a gap opposite it — so the shape of the mismatch is the shape of the
- * whitespace, readable without comparing a single character.
+ * An earlier version interleaved the two lists so equal values shared a row. It
+ * looked like the most informative thing to do and it was the least: in a
+ * containment check "found" means the two values are **textually equal**, so a
+ * paired row showed the same string twice, and an unpaired row showed a blank.
+ * Neither case carried information. What the alignment *did* do was fill the
+ * gaps with parent keys nobody asked about — with 20 child values against 1,289
+ * parent values, that was 280 rows of noise before the first row that mattered.
  *
- * With a `BE 0123.456` / `be0123456` formatting difference every row is a gap,
- * and the two ragged columns say "these never line up" at a glance. That is
- * exactly the conclusion a percentage cannot deliver.
+ * So the two columns are independent lists, each ascending, each scrolling on
+ * its own. Nothing on screen implies a row-by-row correspondence, because there
+ * is none. The tick carries the only fact that needs carrying, and it is
+ * measured against the whole parent column rather than the sample beside it.
  */
-export function mergeSorted(left: readonly LeftValue[], right: readonly string[]): ValueRow[] {
-  const out: ValueRow[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < left.length || j < right.length) {
-    if (i >= left.length) { out.push({ left: null, right: right[j++] }); continue; }
-    if (j >= right.length) { out.push({ left: left[i++], right: null }); continue; }
-    if (left[i].v === right[j]) { out.push({ left: left[i++], right: right[j++] }); continue; }
-    if (left[i].v < right[j]) out.push({ left: left[i++], right: null });
-    else out.push({ left: null, right: right[j++] });
-  }
-  return out;
-}
-
 function SideHeader({ table, column, distinct, note }: {
   table: string; column: string; distinct: number; note?: string;
 }) {
@@ -64,6 +47,33 @@ function SideHeader({ table, column, distinct, note }: {
         {table} · {distinct.toLocaleString('en-GB')} different values
         {note && ` · ${note}`}
       </div>
+    </div>
+  );
+}
+
+function ValueRow({ text, mark }: { text: string; mark?: 'found' | 'missing' }) {
+  const missing = mark === 'missing';
+  return (
+    <div
+      className="flex items-center gap-1.5 px-5 py-[3px] font-mono text-[11.5px]"
+      style={{ background: missing ? '#f9eaea' : undefined }}
+    >
+      {mark && (
+        <span
+          className="shrink-0 text-[10px] leading-none"
+          style={{ color: missing ? '#a43a3a' : '#3f7a5c' }}
+          aria-hidden
+        >
+          {missing ? '✗' : '✓'}
+        </span>
+      )}
+      <span
+        className="min-w-0 truncate"
+        style={{ color: missing ? '#a43a3a' : '#334049' }}
+        title={text}
+      >
+        {text === '' ? <span className="text-muted2">(blank)</span> : text}
+      </span>
     </div>
   );
 }
@@ -91,22 +101,18 @@ export function ValueExplorer({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const rows = useMemo(
-    () => (result?.left && result?.right ? mergeSorted(result.left.values, result.right.values) : []),
-    [result],
-  );
   /**
-   * The headline counts come from the per-value `matched` flag, which was
-   * measured against the WHOLE parent column — never from the merge.
-   *
-   * A row can sit here with nothing opposite it simply because the parent's
-   * window did not reach that far, and counting those as mismatches is how the
-   * first version reported 458 problems on a relationship that measures a true
-   * 100%. The gap on screen is an alignment aid; the tick is the fact.
+   * Counts come from the per-value `matched` flag, measured against the WHOLE
+   * parent column — never from what happens to be listed beside it. Deriving
+   * them from the two visible lists is what once reported 458 mismatches on a
+   * relationship measuring a true 100%.
    */
   const found = result?.left?.values.filter((v) => v.matched).length ?? 0;
   const total = result?.left?.values.length ?? 0;
-  const shown = onlyDiff ? rows.filter((r) => r.left && !r.left.matched) : rows;
+  const leftShown = useMemo(() => {
+    const all = result?.left?.values ?? [];
+    return onlyDiff ? all.filter((v) => !v.matched) : all;
+  }, [result, onlyDiff]);
 
   return (
     <div
@@ -155,32 +161,12 @@ export function ValueExplorer({
 
         {!loading && result?.ok && result.left && result.right && (
           <>
-            <div className="grid grid-cols-2 gap-4 border-b border-line/70 px-5 py-2.5">
-              <SideHeader
-                table={result.left.table}
-                column={result.left.column}
-                distinct={result.left.distinct}
-                note={result.left.truncated ? `showing first ${result.limit}` : undefined}
-              />
-              <SideHeader
-                table={result.right.table}
-                column={result.right.column}
-                distinct={result.right.distinct}
-                // Saying "first 300" here would be wrong AND misleading: this
-                // side is not the first 300 of the column, it is the part that
-                // lines up with the values on the left.
-                note={result.right.rangeLimited
-                  ? `showing ${result.right.shown} that line up with the left`
-                  : undefined}
-              />
-            </div>
-
-            <div className="flex items-center gap-3 border-b border-line/70 bg-surface px-5 py-1.5 text-[11.5px]">
-              <span className="text-muted">
+            <div className="flex items-center gap-3 border-b border-line/70 bg-surface px-5 py-2 text-[12px]">
+              <span className="min-w-0 text-muted">
                 <span className="font-medium tabular-nums text-ink">
                   {found.toLocaleString('en-GB')} of {total.toLocaleString('en-GB')}
                 </span>{' '}
-                shown values exist in {result.right.column}
+                {result.left.column} values exist in {result.right.column}
                 {total > found && (
                   <>
                     <span className="text-muted2"> · </span>
@@ -191,72 +177,61 @@ export function ValueExplorer({
                   </>
                 )}
               </span>
-              <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-ink2">
-                <input
-                  type="checkbox"
-                  checked={onlyDiff}
-                  onChange={(e) => setOnlyDiff(e.target.checked)}
-                  className="accent-ocean"
-                />
-                Only show what wasn&apos;t found
-              </label>
+              {total > found && (
+                <label className="ml-auto flex shrink-0 cursor-pointer items-center gap-1.5 text-ink2">
+                  <input
+                    type="checkbox"
+                    checked={onlyDiff}
+                    onChange={(e) => setOnlyDiff(e.target.checked)}
+                    className="accent-ocean"
+                  />
+                  Only show what wasn&apos;t found
+                </label>
+              )}
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {shown.length === 0 && (
-                <p className="px-5 py-8 text-center text-[12.5px] text-muted">
-                  {onlyDiff ? 'Every value shown was found on the other side.' : 'Both columns are empty.'}
-                </p>
-              )}
-              {shown.map((r, i) => {
-                // Highlight only what is genuinely wrong: a LEFT value that
-                // does not exist in the parent. A right-hand value with nothing
-                // opposite it is just a parent key nobody references, which is
-                // normal and not a finding.
-                const missing = !!r.left && !r.left.matched;
-                return (
-                  <div
-                    key={`${r.left?.v ?? ''}|${r.right ?? ''}|${i}`}
-                    className="grid grid-cols-2 gap-4 border-b border-line/40 px-5 py-[3px] font-mono text-[11.5px] last:border-b-0"
-                    style={{ background: missing ? '#f9eaea' : undefined }}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      {r.left && (
-                        <span
-                          className="shrink-0 text-[10px] leading-none"
-                          style={{ color: r.left.matched ? '#3f7a5c' : '#a43a3a' }}
-                          aria-hidden
-                        >
-                          {r.left.matched ? '✓' : '✗'}
-                        </span>
-                      )}
-                      {/* A missing value is drawn as an empty cell, not a dash
-                          or a label: the gap is the alignment, and anything
-                          written in it reads as a value. */}
-                      <span
-                        className="min-w-0 truncate"
-                        style={{ color: r.left == null ? 'transparent' : missing ? '#a43a3a' : '#334049' }}
-                        title={r.left?.v}
-                      >
-                        {r.left?.v ?? '·'}
-                      </span>
-                    </span>
-                    <span
-                      className="min-w-0 truncate"
-                      style={{ color: r.right == null ? 'transparent' : '#334049' }}
-                      title={r.right ?? undefined}
-                    >
-                      {r.right ?? '·'}
-                    </span>
-                  </div>
-                );
-              })}
+            {/* Two panes, each scrolling on its own. Position carries no meaning
+                across the divider, and nothing here suggests it does. */}
+            <div className="grid min-h-0 flex-1 grid-cols-2 divide-x divide-line/70">
+              <div className="flex min-h-0 flex-col">
+                <div className="border-b border-line/50 px-5 py-2">
+                  <SideHeader
+                    table={result.left.table}
+                    column={result.left.column}
+                    distinct={result.left.distinct}
+                    note={result.left.truncated ? `first ${result.left.values.length}` : undefined}
+                  />
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto py-1">
+                  {leftShown.length === 0 ? (
+                    <p className="px-5 py-6 text-[12px] text-muted">
+                      Every value was found on the other side.
+                    </p>
+                  ) : leftShown.map((val) => (
+                    <ValueRow key={val.v} text={val.v} mark={val.matched ? 'found' : 'missing'} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-col">
+                <div className="border-b border-line/50 px-5 py-2">
+                  <SideHeader
+                    table={result.right.table}
+                    column={result.right.column}
+                    distinct={result.right.distinct}
+                    note={result.right.truncated ? `first ${result.right.shown}` : undefined}
+                  />
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto py-1">
+                  {result.right.values.map((v) => <ValueRow key={v} text={v} />)}
+                </div>
+              </div>
             </div>
 
             <div className="border-t border-line/70 bg-surface px-5 py-2 text-[11px] leading-relaxed text-muted2">
-              Sorted and compared as text, the same way Clarion checks whether the values
-              match. The tick is measured against the whole {result.right.column} column, not
-              just the values shown here.
+              Compared as text, the same way Clarion checks whether the values match. The tick is
+              measured against the whole {result.right.column} column — the list beside it is a
+              sample of what that column looks like, not what each value matched against.
             </div>
           </>
         )}

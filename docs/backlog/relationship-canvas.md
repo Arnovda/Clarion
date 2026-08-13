@@ -661,42 +661,25 @@ are enough to form a suspicion, not to settle one.
   them. Ordering a numeric key as text gives 1, 10, 100, 2 — visually odd, but
   it is the ordering under which the two columns were judged to match, and
   showing a different one would invite exactly the wrong conclusion.
-- **THE WINDOWS HAVE TO COVER THE SAME RANGE — the first version did not, and
-  it lied.** Owner caught it: `Payments.TransactionID → TransactionLines.ID`
-  measured a true **100%** while the dialog reported *30 on both sides · 458 on
-  one side only*. Cause: the first N of each side were fetched independently,
-  so with 218 GUIDs on the left (all late in the alphabet) against the first
-  300 of 2,589 on the right (all early), the two windows barely overlapped and
-  every row read as a mismatch. **Same defect shape as the 2026-08-03 detector
-  bug**: a numerator from one sample and a denominator from another. Two fixes,
-  both required — `matched` is now an EXISTS against the **whole** parent
-  column so the headline always agrees with the check, and the parent side is
-  fetched **within the child window's range** so the two columns describe the
-  same stretch of the value space. The header says *only the matching stretch*
-  rather than "first 300", which would be both wrong and misleading.
-- **Paired values survive the cap first** (`ORDER BY (v IN left) DESC, v`).
-  Ordering the parent side plainly by value and cutting at 300 drops the tail
-  of the range — so a value ticked as *found* sat opposite an empty cell, which
-  reads as a contradiction of its own tick. The merge exists to align; a cap
-  that breaks the alignment defeats the only thing it is for. Unpaired parent
-  keys fill whatever room is left. The header says `showing N that line up with
-  the left` rather than implying the list is the column.
-- **The tick is the fact; the gap is only alignment.** A row with nothing
-  opposite it may simply be past the end of the parent's window, so only a
-  LEFT value whose `matched` is false is highlighted. A parent key nobody
-  references is normal and is not a finding.
-- **THE LISTS ARE MERGED, not shown side by side.** This is the whole design.
-  Two independently scrolled columns tell you almost nothing — row 40 on the
-  left has no relationship to row 40 on the right. Interleaved, an equal value
-  occupies ONE row and a value present on one side only leaves a gap opposite
-  it, so **the shape of the mismatch is the shape of the whitespace**. With a
-  `BE 0123.456` / `be0123456` formatting difference every row is a gap and the
-  two ragged columns say "these never line up" before a character is read.
-- A missing value renders as an EMPTY cell, not a dash or a label: the gap is
-  the finding, and anything written into it reads as a value.
-- Counts above the list (`N on both sides · M on one side only`) and an
-  **Only show differences** filter, which is what you want the moment overlap
-  is partial rather than zero.
+- **THE MERGE WAS WRONG AND IS GONE.** Two versions of it shipped before the
+  idea itself was examined. The first derived "on both sides" from two windows
+  fetched independently, and reported *458 one-sided* on a relationship
+  measuring a true 100% — the 2026-08-03 defect shape again, a numerator from
+  one sample and a denominator from another. The second fixed the counts and
+  still earned nothing, because **in a containment check "found" means the two
+  values are textually EQUAL**: a paired row showed the same string twice and an
+  unpaired row showed a blank, so the alignment could not carry information in
+  either case. What it *did* carry was noise — with 20 child values against
+  1,289 parent values, 280 rows of unrelated parent keys before the first row
+  that mattered.
+- **What shipped instead is what was originally asked for**: two plain lists,
+  each ascending, each scrolling on its own, the child side ticked ✓/✗. Nothing
+  implies a row-by-row correspondence, because there is none. This also deleted
+  the range-bounding and the paired-first ordering, both of which existed only
+  to protect an alignment that should not have been there.
+- Counts come from the per-value `matched` flag, measured against the WHOLE
+  parent column, never from what is listed beside it. An **Only show what
+  wasn't found** filter narrows the child list to the failures.
 - The merge is a pure function and was dry-run against identical / disjoint /
   partial / empty / formatting-difference / numeric-as-text inputs, asserting
   that neither side loses a value.
