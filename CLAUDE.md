@@ -146,6 +146,26 @@ answer instead of a form asking you to declare the cardinality.
   relationship IS taking ownership of it. Changing a column CLEARS the cached
   measurement, because it described different columns and a stale number on
   screen is worse than none.
+  **READ BOTH COLUMNS AGAINST EACH OTHER (2026-08-13).** Owner wanted to
+  investigate actual sample values from the two columns either side of a
+  relation — sorted, scrollable, side by side. Right: five samples form a
+  suspicion, they don't settle one. New **`GET /api/relationships/:id/values`**
+  (`services/columnValues.ts`) returns ≤300 distinct values per side plus the
+  REAL distinct count so the cap is stated, not implied; never cached (values
+  change every sync). Compared and ordered **as TEXT**, matching
+  `verifyFkCandidate` — a numeric key then sorts 1, 10, 100, 2, which looks odd
+  but IS the ordering under which the columns were judged to match; showing a
+  different one invites the wrong conclusion. **THE LISTS ARE MERGED, not shown
+  side by side — that is the whole design.** Two independently scrolled columns
+  say nothing (row 40 left has no relation to row 40 right); interleaved, an
+  equal value takes ONE row and a one-sided value leaves a gap opposite it, so
+  **the shape of the mismatch is the shape of the whitespace**. A missing value
+  renders as an EMPTY cell, never a dash or label — the gap is the finding, and
+  anything written in it reads as a value. Plus `N on both sides · M on one
+  side only` and an *Only show differences* filter. `mergeSorted` is pure and
+  was dry-run over identical/disjoint/partial/empty/formatting-difference/
+  numeric-as-text inputs asserting neither side loses a value; 6 new backend
+  tests. New env `RELATIONSHIP_VALUES_TIMEOUT_MS` (8s).
   **EVIDENCE NOW OUTRANKS PROVENANCE ON THE LINE (2026-08-13).** Owner, after
   sweeping one table: *"they appear trustworthy because of their blue line, but
   some match for 0 percent."* **First, the facts: NONE of the failing columns is
