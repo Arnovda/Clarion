@@ -47,6 +47,9 @@ export interface GraphRelationship {
   isCrossSource: boolean;
   measured: Measurement | null;
   matchKeys: unknown;
+  /** Someone looked at this and said the data does not back it. */
+  flagged: boolean;
+  flaggedReason: string | null;
 }
 
 export interface GraphResponse {
@@ -58,6 +61,7 @@ export interface GraphResponse {
     tables: number;
     relationships: number;
     pendingReview: number;
+    flagged: number;
     crossSource: number;
     unresolved: number;
   };

@@ -21,6 +21,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import {
   measureRelationshipSchema, matchPreviewSchema, checkRelationshipSchema,
+  flagRelationshipSchema,
 } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
@@ -29,6 +30,8 @@ import { measureRelationship } from '../services/relationshipMeasure';
 import { buildGraph, neighbourhood } from '../services/relationshipGraph';
 import { measureMatch, type Normalisation } from '../services/matchMeasure';
 import { buildTwoSourceConnector } from '../services/crossSourceSession';
+import * as graph from '../db/semanticGraph';
+import { connectionIdForEntity } from '../db/semanticCacheScope';
 import { logger as rootLogger } from '../utils/logger';
 
 const router = Router();
@@ -110,7 +113,7 @@ router.get('/graph', requireAuth, requireRole('admin', 'analyst'),
             .select(
               'id', 'kind', 'from_table_id', 'from_column_id', 'to_table_id', 'to_column_id',
               'relationship_type', 'description', 'ai_draft', 'confirmed_by_user',
-              'measured', 'match_keys',
+              'measured', 'match_keys', 'flagged_at', 'flagged_reason',
             )
         : [];
 
@@ -459,6 +462,67 @@ router.post('/:id/check', requireAuth, requireRole('admin', 'analyst'),
         'checked relationship',
       );
       res.json({ ok: true, data: measurement });
+    } catch (err) { next(err); }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/relationships/:id/flag
+// ---------------------------------------------------------------------------
+//
+// The third thing a person can say about a relationship.
+//
+// Before this there were two: confirm it, or delete it. Neither fits the most
+// common real finding — *"the data says this does not hold, but I am not
+// deleting it, the source has probably not finished syncing."* Deleting throws
+// away a link that is very likely real; confirming asserts something the data
+// contradicts. So people did neither, and the finding died with the panel.
+//
+// **A flag has teeth**: a flagged relationship is dropped from the AI context
+// (`getRelationshipsForContext`). That is the whole reason to flag rather than
+// to leave a note somewhere — a link a person says does not hold must stop
+// being offered to the model as a joinable key. One click puts it back.
+//
+// It does NOT touch `confirmed_by_user` or `ai_draft`: flagging is an
+// observation, not a decision about whether the relationship is real.
+router.post('/:id/flag', requireAuth, requireRole('admin', 'analyst'),
+  validate(flagRelationshipSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        res.status(400).json({ ok: false, error: 'Invalid id' });
+        return;
+      }
+      const { flagged, reason } = req.body as { flagged: boolean; reason?: string | null };
+
+      const rel = await db('table_relationships')
+        .where({ id }).select('id', 'from_table_id').first();
+      if (!rel) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      if (!await denyUnlessOwned(req, res, 'source_tables', rel.from_table_id)) return;
+
+      await db('table_relationships').where({ id }).update({
+        flagged_at: flagged ? db.fn.now() : null,
+        flagged_reason: flagged ? (reason?.trim() || null) : null,
+      });
+      // Mirror to the graph so the AI-context read can filter in its own MATCH.
+      // Best-effort: the flag is recorded either way, and a graph that is down
+      // must not make raising one fail.
+      try {
+        await graph.setRelationshipFlagged(id, flagged);
+      } catch (err) {
+        log.warn({ err, id }, 'could not mirror relationship flag to the graph');
+      }
+
+      await graph.invalidateSemanticCache(
+        await connectionIdForEntity(db, 'table_relationships', id) ?? undefined,
+      );
+      log.info({ id, flagged }, 'relationship flag changed');
+      res.json({ ok: true });
     } catch (err) { next(err); }
   },
 );

@@ -592,6 +592,17 @@ export const matchPreviewSchema = z.object({
 });
 
 /**
+ * Raise or clear a flag on a relationship. The reason is optional and short —
+ * it is a note to whoever comes back to it, not documentation.
+ */
+export const flagRelationshipSchema = z.object({
+  body: z.object({
+    flagged: z.boolean(),
+    reason: z.string().max(500).optional().nullable(),
+  }),
+});
+
+/**
  * Re-check an existing relationship. Everything needed is on the row, so the
  * body carries only how thorough to be — `withExamples: false` for a
  * table-wide sweep, where sampling values would cost a third query per link.

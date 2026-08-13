@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, Trash2, RefreshCw, Loader2, X, Sparkles } from 'lucide-react';
+import { Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag } from 'lucide-react';
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
 import {
   explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
@@ -71,23 +71,27 @@ function ColumnPicker({ label, value, options, disabled, onChange }: {
 
 export function EdgeInspector({
   relationship, fromLabel, toLabel, fromColumns, toColumns, busy,
-  onConfirm, onDelete, onRemeasure, onSaveDescription, onChangeType, onChangeColumns, onClose,
+  onConfirm, onDelete, onRemeasure, onSaveDescription, onChangeType, onChangeColumns,
+  onFlag, onClose,
 }: {
   relationship: GraphRelationship;
   fromLabel: string;
   toLabel: string;
   fromColumns: GraphColumn[];
   toColumns: GraphColumn[];
-  busy: 'confirm' | 'delete' | 'measure' | 'save' | null;
+  busy: 'confirm' | 'delete' | 'measure' | 'save' | 'flag' | null;
   onConfirm: () => void;
   onDelete: () => void;
   onRemeasure: () => void;
   onSaveDescription: (text: string) => void;
   onChangeType: (type: string) => void;
   onChangeColumns: (change: { from?: number; to?: number }) => void;
+  onFlag: (flagged: boolean, reason: string) => void;
   onClose: () => void;
 }) {
   const [description, setDescription] = useState(relationship.description ?? '');
+  const [reason, setReason] = useState(relationship.flaggedReason ?? '');
+  useEffect(() => { setReason(relationship.flaggedReason ?? ''); }, [relationship.id, relationship.flaggedReason]);
   useEffect(() => { setDescription(relationship.description ?? ''); }, [relationship.id, relationship.description]);
 
   const prov = PROVENANCE_META[relationship.provenance];
@@ -120,6 +124,38 @@ export function EdgeInspector({
           {prov.label}
         </div>
         <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">{prov.hint}</p>
+
+        {/* A flag is a standing statement about this link, so it sits at the
+            top with the other things that describe what it IS — not down with
+            the buttons, where it would read as one more action to take. */}
+        {relationship.flagged && (
+          <div className="mt-3 rounded-lg border border-warn/40 bg-warnSoft px-2.5 py-2">
+            <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-ink">
+              <Flag size={11} className="text-warn" />
+              Flagged as a problem
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-ink2">
+              Clarion has stopped using this link when answering questions.
+            </p>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              onBlur={() => {
+                if (reason.trim() !== (relationship.flaggedReason ?? '')) onFlag(true, reason);
+              }}
+              placeholder="Why? e.g. waiting on a full re-sync"
+              className="mt-1.5 w-full rounded-md border border-line bg-surface px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-muted2 focus:border-ocean"
+            />
+            <button
+              type="button"
+              onClick={() => onFlag(false, '')}
+              disabled={busy !== null}
+              className="mt-1.5 text-[11.5px] text-ocean hover:underline disabled:opacity-50"
+            >
+              Resolved — remove the flag
+            </button>
+          </div>
+        )}
 
         <div className="mt-4">
           <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">Shape</div>
@@ -288,6 +324,22 @@ export function EdgeInspector({
           {busy === 'delete' ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
           Remove
         </button>
+        {/* Flagging is the answer to "this is wrong but I am not deleting it",
+            which is the common case for a link the source documents and the
+            data contradicts. Without it the only options were to assert
+            something false or to throw away something probably real. */}
+        {!relationship.flagged && (
+          <button
+            type="button"
+            onClick={() => onFlag(true, '')}
+            disabled={busy !== null}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12.5px] text-ink2 hover:bg-soft disabled:opacity-50"
+            title="Mark as a problem to come back to"
+          >
+            {busy === 'flag' ? <Loader2 size={12} className="animate-spin" /> : <Flag size={12} />}
+            Flag
+          </button>
+        )}
         {relationship.provenance !== 'human' && (
           <button
             type="button"

@@ -436,6 +436,11 @@ export async function getRelationshipsForConnection(
 
 // Returns relationships as {from_table, from_column, to_table, to_column, relationship_type, description}
 // Used by query.ts and dashboards.ts for AI context.
+//
+// FLAGGED RELATIONSHIPS ARE EXCLUDED. A flag is a person saying "the data does
+// not back this link" — handing it to the model anyway as a joinable key is the
+// one thing that would make flagging pointless. `coalesce` because every edge
+// written before migration 78 has no such property.
 export async function getRelationshipsForContext(
   connectionId: number,
 ): Promise<Record<string, unknown>[]> {
@@ -443,6 +448,7 @@ export async function getRelationshipsForContext(
   try {
     const result = await session.run(
       `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+       WHERE coalesce(r.flagged, false) = false
        RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
       { cid: connectionId },
     );
@@ -457,6 +463,26 @@ export async function getRelationshipsForContext(
         description:       toStr(p.description),
       };
     });
+  } finally {
+    await session.close();
+  }
+}
+
+/**
+ * Mirror a flag onto the graph edge.
+ *
+ * The flag itself lives in Postgres; this copy exists only so
+ * `getRelationshipsForContext` can filter in its own MATCH rather than reading
+ * the graph and then subtracting a Postgres query from it. Nothing else reads
+ * it, and it carries no reason text — the *why* stays in one store.
+ */
+export async function setRelationshipFlagged(pgId: number, flagged: boolean): Promise<void> {
+  const session = getSession();
+  try {
+    await session.run(
+      `MATCH ()-[r:RELATES_TO {pgId: $pgId}]->() SET r.flagged = $flagged`,
+      { pgId, flagged },
+    );
   } finally {
     await session.close();
   }

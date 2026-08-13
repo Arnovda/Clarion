@@ -568,6 +568,42 @@ values don't match, or don't match at all."*
   requires the whole verdict, not just a high ratio: a link can match 100% and
   still fail because the other column is not an identifier.
 
+### 4.0m Flagging — the third thing you can say (2026-08-13)
+
+Owner, looking at a human-confirmed link measuring 0%: *"I really want to flag
+this while I'm investigating the table — is that possible?"* It was not.
+
+A relationship had exactly two states a person could put it in: **confirmed**
+or **deleted**. Neither fits the finding that actually turns up — *the data
+says this does not hold, but I am not deleting it, the source has probably not
+finished syncing.* Deleting throws away a link that is very likely real;
+confirming asserts something the data contradicts. So people do neither, and
+the finding dies with the panel. (`table_relationships` has no
+`approval_status`, which is why §slice-5 made rejection a hard delete.)
+
+- **Migration 78** adds `flagged_at` + `flagged_reason`. A nullable timestamp,
+  not a boolean, because *when* it was raised is what tells you whether a sync
+  has had time to fix it since. Deliberately **not** `approval_status`: source
+  tables and columns carry that with its own draft/approved/flagged vocabulary
+  tied to the AI review queue, and a relationship's flag is an observation
+  about the DATA, not a step in that queue.
+- **`POST /api/relationships/:id/flag`**, and like `/check` it does **not**
+  touch `confirmed_by_user` or `ai_draft` — flagging is an observation, not a
+  decision that the relationship is real.
+- **A flag has teeth.** `getRelationshipsForContext` now excludes flagged
+  edges, so a link a person says does not hold stops being handed to the model
+  as a joinable key. That is the whole reason to flag rather than leave a note
+  somewhere, and the panel says so in as many words. One click puts it back.
+  This is the one field where `flagged` is mirrored onto the Neo4j edge — so
+  the AI-context read can filter in its own `MATCH` rather than subtracting a
+  Postgres query from a graph result. The reason text stays in Postgres only.
+- **Findable, or it is decoration.** Flagged links sort to the top of a table's
+  list and carry a flag icon; the table row shows a flag count that outranks
+  the pending badge; the toolbar carries the tenant-wide total. `stats.flagged`
+  counts over **every** row, including ones that are no longer drawable — a
+  flag raised on a link whose endpoint later stopped resolving is still a flag
+  you are owed an answer on.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables

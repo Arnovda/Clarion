@@ -53,6 +53,8 @@ export interface RelationshipRow {
   confirmed_by_user: boolean | null;
   measured: unknown;
   match_keys: unknown;
+  flagged_at: Date | string | null;
+  flagged_reason: string | null;
 }
 
 export interface TableRow {
@@ -77,6 +79,9 @@ export interface GraphRelationship {
   isCrossSource: boolean;
   measured: unknown;
   matchKeys: unknown;
+  /** Someone looked at this and said the data does not back it (migration 78). */
+  flagged: boolean;
+  flaggedReason: string | null;
 }
 
 /**
@@ -162,6 +167,7 @@ export interface BuiltGraph {
     tables: number;
     relationships: number;
     pendingReview: number;
+    flagged: number;
     crossSource: number;
     unresolved: number;
   };
@@ -215,6 +221,8 @@ export function buildGraph(
       provenance: deriveProvenance(r),
       isCrossSource: fromConn !== toConn,
       measured: r.measured ?? null,
+      flagged: r.flagged_at != null,
+      flaggedReason: r.flagged_reason ?? null,
       matchKeys: r.match_keys ?? null,
     });
 
@@ -246,6 +254,10 @@ export function buildGraph(
       // The review queue, which is the canvas's default view: anything AI
       // proposed that nobody has confirmed yet.
       pendingReview: relationships.filter((r) => r.provenance === 'ai').length,
+      // Counted over EVERY row, not just the drawable ones: a flag you raised
+      // on a link that later became undrawable is still a flag you are owed
+      // an answer on.
+      flagged: relRows.filter((r) => r.flagged_at != null).length,
       crossSource: relationships.filter((r) => r.isCrossSource).length,
       unresolved,
     },

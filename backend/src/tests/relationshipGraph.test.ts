@@ -26,6 +26,8 @@ const rel = (id: number, from: number | null, to: number | null, over: Partial<R
   confirmed_by_user: false,
   measured: null,
   match_keys: null,
+  flagged_at: null,
+  flagged_reason: null,
   ...over,
 });
 
@@ -144,5 +146,33 @@ describe('buildGraph', () => {
   it('does not claim truncation at the cap boundary', () => {
     const exact = Array.from({ length: MAX_TABLES }, (_, i) => table(i + 1, 100));
     expect(buildGraph(exact, []).truncated).toBe(false);
+  });
+});
+
+
+describe('flagged relationships', () => {
+  it('surfaces the flag and its reason on the edge', () => {
+    const g = buildGraph(
+      [table(1, 'invoices', 7), table(2, 'customers', 7)],
+      [rel(1, 1, 2, { flagged_at: '2026-08-13T10:00:00Z', flagged_reason: 'Exact still syncing' })],
+    );
+    expect(g.relationships[0].flagged).toBe(true);
+    expect(g.relationships[0].flaggedReason).toBe('Exact still syncing');
+  });
+
+  it('counts flags over every row, including ones that cannot be drawn', () => {
+    // A flag raised on a link whose endpoint later stopped resolving is still a
+    // flag you are owed an answer on. Counting only the drawable ones would
+    // make it disappear from the tally without anyone deciding anything.
+    const g = buildGraph(
+      [table(1, 'invoices', 7), table(2, 'customers', 7)],
+      [
+        rel(1, 1, 2, { flagged_at: '2026-08-13T10:00:00Z' }),
+        rel(2, 1, null, { flagged_at: '2026-08-13T10:00:00Z' }),
+        rel(3, 1, 2),
+      ],
+    );
+    expect(g.relationships).toHaveLength(2);
+    expect(g.stats.flagged).toBe(2);
   });
 });

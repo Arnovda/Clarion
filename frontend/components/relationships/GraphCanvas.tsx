@@ -6,7 +6,7 @@ import ReactFlow, {
   useNodesState, useEdgesState, useReactFlow, Connection, Node, Edge, ConnectionMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Loader2, AlertTriangle, CheckCircle2, Flag } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
 import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge';
@@ -57,7 +57,7 @@ function CanvasInner() {
   const [match, setMatch] = useState<PendingMatch | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
-  const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
+  const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | 'flag' | null>(null);
   const [payoff, setPayoff] = useState<string | null>(null);
   const [mode, setMode] = useState<'review' | 'explore'>('review');
   /** The table being worked on: anchored in Explore, expanded in the list always. */
@@ -173,6 +173,17 @@ function CanvasInner() {
     return m;
   }, [graph]);
 
+  /** How many of each table's relationships someone marked as a problem. */
+  const flaggedByTable = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of graph?.relationships ?? []) {
+      if (!r.flagged) continue;
+      m.set(r.fromTableId, (m.get(r.fromTableId) ?? 0) + 1);
+      if (r.toTableId !== r.fromTableId) m.set(r.toTableId, (m.get(r.toTableId) ?? 0) + 1);
+    }
+    return m;
+  }, [graph]);
+
   /** How many of each table's relationships nobody has decided on yet. */
   const pendingByTable = useMemo(() => {
     const m = new Map<number, number>();
@@ -204,11 +215,14 @@ function CanvasInner() {
         kind: r.kind,
         isCrossSource: r.isCrossSource,
         measured: freshMeasured.get(r.id) ?? (r.measured as Measurement | null),
+        flagged: r.flagged,
       });
     }
-    // Undecided first: the list is a work list before it is a reference.
+    // Flagged first, then undecided: the list is a work list before it is a
+    // reference, and a raised flag is the most decided kind of "not done".
     return out.sort((a, b) =>
-      Number(b.provenance === 'ai') - Number(a.provenance === 'ai')
+      Number(b.flagged) - Number(a.flagged)
+      || Number(b.provenance === 'ai') - Number(a.provenance === 'ai')
       || a.otherLabel.localeCompare(b.otherLabel));
   }, [graph, columnNameById, tableNameById, freshMeasured]);
 
@@ -750,6 +764,24 @@ function CanvasInner() {
     }
   }, [load]);
 
+  /**
+   * Raise or clear a flag.
+   *
+   * Deliberately its own endpoint rather than a PATCH: flagging is an
+   * observation about the data, and the PATCH handler treats any write as a
+   * person deciding the relationship is correct.
+   */
+  const flagRel = useCallback(async (rel: GraphRelationship, flagged: boolean, reason: string) => {
+    setBusy('flag');
+    try {
+      await api.post(`/relationships/${rel.id}/flag`, { flagged, reason: reason || null });
+      if (flagged) setPayoff('Flagged. Clarion will stop using this link until you clear it.');
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  }, [load]);
+
   const changeColumns = useCallback(async (rel: GraphRelationship, change: { from?: number; to?: number }) => {
     setBusy('save');
     try {
@@ -844,6 +876,7 @@ function CanvasInner() {
           sources={graph.sources}
           colorFor={colorForConnection}
           pendingByTable={pendingByTable}
+          flaggedByTable={flaggedByTable}
           selectedTableId={selectedTableId}
           selectedEdgeId={selectedEdgeId}
           linksFor={linksFor}
@@ -932,6 +965,12 @@ function CanvasInner() {
           <div className="ml-auto flex items-center gap-3 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
             <span className="tabular-nums">{stats.tables} tables</span>
             <span className="tabular-nums">{stats.relationships} links</span>
+            {stats.flagged > 0 && (
+              <span className="flex items-center gap-1 tabular-nums text-err">
+                <Flag size={10} />
+                {stats.flagged} flagged
+              </span>
+            )}
             {stats.crossSource > 0 && (
               <span className="tabular-nums text-ocean">{stats.crossSource} across sources</span>
             )}
@@ -1066,6 +1105,7 @@ function CanvasInner() {
           onSaveDescription={(text) => void saveDescription(selectedRel, text)}
           onChangeType={(type) => void changeType(selectedRel, type)}
           onChangeColumns={(change) => void changeColumns(selectedRel, change)}
+          onFlag={(flagged, reason) => void flagRel(selectedRel, flagged, reason)}
           fromColumns={columnsByTable.get(selectedRel.fromTableId) ?? []}
           toColumns={columnsByTable.get(selectedRel.toTableId) ?? []}
           // In Review the inspector IS the decision surface — closing it means

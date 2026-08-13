@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Search, ChevronRight, ChevronDown, Loader2, ListChecks } from 'lucide-react';
+import { Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag } from 'lucide-react';
 import type { GraphSource, GraphTable, Provenance, EdgeKind, Measurement } from './types';
 import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
 
@@ -17,6 +17,7 @@ export interface TableListLink {
   isCrossSource: boolean;
   /** Last measurement, if this link has ever been checked. */
   measured: Measurement | null;
+  flagged: boolean;
 }
 
 /** A per-table check in flight. */
@@ -55,12 +56,15 @@ function summarise(links: readonly TableListLink[]) {
 export function TableList({
   tables, sources, colorFor, pendingByTable, selectedTableId, selectedEdgeId,
   linksFor, check, search, onSearch, onPickTable, onPickLink, onCheckTable,
+  flaggedByTable,
 }: {
   tables: GraphTable[];
   sources: GraphSource[];
   colorFor: (connectionId: number) => string;
   /** How many of a table's relationships nobody has decided on yet. */
   pendingByTable: Map<number, number>;
+  /** How many of a table's relationships someone has marked as a problem. */
+  flaggedByTable: Map<number, number>;
   selectedTableId: number | null;
   selectedEdgeId: number | null;
   linksFor: (tableId: number) => TableListLink[];
@@ -151,6 +155,15 @@ export function TableList({
                     <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
                       {t.displayName || t.tableName}
                     </span>
+                    {/* A raised flag outranks everything else on the row: it is
+                        the one thing on this table that a person has already
+                        said is wrong. */}
+                    {(flaggedByTable.get(t.id) ?? 0) > 0 && (
+                      <span className="flex shrink-0 items-center gap-0.5 text-[10.5px] font-medium tabular-nums text-err">
+                        <Flag size={9} />
+                        {flaggedByTable.get(t.id)}
+                      </span>
+                    )}
                     {/* Pending is the number that decides what to do next, so it
                         is the one that gets the colour. */}
                     {pending > 0 ? (
@@ -248,6 +261,7 @@ export function TableList({
                                 <span className="text-muted2"> → </span>
                                 {l.otherLabel}
                               </span>
+                              {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
                               {l.isCrossSource && (
                                 <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
                                   {l.kind === 'match' ? 'match' : 'cross'}
