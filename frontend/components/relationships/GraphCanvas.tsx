@@ -963,15 +963,22 @@ function CanvasInner() {
     }
     return { checked, bad };
   })();
-  /** The table the canvas is about, whether it is centred or half of a pair. */
-  const workingTable = selectedTableId != null
-    ? graph?.tables.find((t) => t.id === selectedTableId) ?? null
+  /**
+   * The table the canvas is about, whether it is centred or half of a pair.
+   * Read off the focus rather than off `selectedTableId` alone, so the chip
+   * that says where you are can never be the one thing missing from the screen.
+   */
+  const workingTableId = focus
+    ? (focus.kind === 'anchor' ? focus.id : (selectedTableId ?? focus.a))
+    : null;
+  const workingTable = workingTableId != null
+    ? graph?.tables.find((t) => t.id === workingTableId) ?? null
     : null;
 
   return (
     <div className="flex h-full">
-      {/* Always present, in both modes. It is how you choose what to work on;
-          without it the canvas decides for you and there is nothing to click. */}
+      {/* The work list. It is how you choose what to work on and what the
+          keyboard walks; without it the canvas decides for you. */}
       {graph && (
         <TableList
           tables={graph.tables}
