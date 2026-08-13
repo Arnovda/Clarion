@@ -150,9 +150,23 @@ export const OUTCOME: Record<Outcome, { color: string; label: string }> = {
  * the detector's environment, and a panel stating a different number from the
  * one actually applied would be lying about which of the two is wrong.
  */
-export function CheckList({ m }: { m: Measurement }) {
+export function CheckList({ m, fromLabel, toLabel }: {
+  m: Measurement;
+  /** `Table.column` of the side whose values must be found. */
+  fromLabel?: string;
+  /** `Table.column` of the side that must identify one row. */
+  toLabel?: string;
+}) {
   if (!m.containment || !m.target) return null;
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  // Named sides rather than "the other column". A person judging whether a
+  // relationship is SENSIBLE — which no measurement can decide — needs to read
+  // the assertion in their own table and column names and be able to disagree
+  // with it. "Every LineNumber exists in GL classifications.Code" is a sentence
+  // somebody can reject on sight; "values found on the other side" is not.
+  const fromShort = fromLabel?.split('.').pop() ?? 'value';
+  const toShort = toLabel?.split('.').pop() ?? 'the other column';
 
   const rules = [
     {
@@ -163,7 +177,7 @@ export function CheckList({ m }: { m: Measurement }) {
     },
     {
       ok: m.target.isKey,
-      label: 'The other column identifies one row',
+      label: `${toShort} identifies one row`,
       got: m.target.rows > 0
         ? `${pct(m.target.distinct / m.target.rows)} unique`
         : 'no rows',
@@ -171,7 +185,7 @@ export function CheckList({ m }: { m: Measurement }) {
     },
     {
       ok: m.containment.ratio >= m.thresholds.minContainment,
-      label: 'Values found on the other side',
+      label: `Every ${fromShort} exists there`,
       got: pct(m.containment.ratio),
       need: `${pct(m.thresholds.minContainment)}+`,
     },
@@ -179,6 +193,13 @@ export function CheckList({ m }: { m: Measurement }) {
 
   return (
     <div>
+      {fromLabel && toLabel && (
+        <p className="mb-1.5 text-[11.5px] leading-relaxed text-ink2">
+          Testing that <span className="font-medium">every value of {fromLabel}</span> also
+          exists in <span className="font-medium">{toLabel}</span>, and that {toLabel} points
+          at exactly one row. Empty values are skipped.
+        </p>
+      )}
       <ul className="space-y-1">
         {rules.map((r) => (
           <li key={r.label} className="flex items-baseline gap-1.5 text-[11.5px]">
@@ -203,8 +224,10 @@ export function CheckList({ m }: { m: Measurement }) {
         ))}
       </ul>
       <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted2">
-        Fixed rules, run as SQL against your own data. No AI is involved, and the
-        same rules decide what Clarion suggests in the first place.
+        Counted as different values, not rows: a value a thousand rows point at
+        still counts once. Fixed rules, run as SQL against your own data — no AI
+        is involved, and the same rules decide what Clarion suggests in the first
+        place.
       </p>
     </div>
   );
@@ -373,7 +396,7 @@ export function MeasurePanel({
           </div>
 
           <div className="mt-3">
-            <CheckList m={m} />
+            <CheckList m={m} fromLabel={draw.fromLabel} toLabel={draw.toLabel} />
           </div>
 
           {(m.cardinality || m.orphans) && (

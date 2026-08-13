@@ -264,7 +264,7 @@ export function EdgeInspector({
               </div>
 
               <div className="mt-2.5">
-                <CheckList m={m} />
+                <CheckList m={m} fromLabel={fromLabel} toLabel={toLabel} />
               </div>
 
               {(m.cardinality || m.orphans) && (

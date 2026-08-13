@@ -166,6 +166,34 @@ answer instead of a form asking you to declare the cardinality.
   was dry-run over identical/disjoint/partial/empty/formatting-difference/
   numeric-as-text inputs asserting neither side loses a value; 6 new backend
   tests. New env `RELATIONSHIP_VALUES_TIMEOUT_MS` (8s).
+  **THE MERGED VALUE VIEW WAS DELETED — IT COULD NOT CARRY INFORMATION
+  (2026-08-13).** Owner, on the shipped dialog: *"is this the way we want to
+  display the data?"* No. **In a containment check "found" means the two values
+  are textually EQUAL**, so a paired row showed the same string twice and an
+  unpaired row showed a blank — the alignment could not carry information in
+  either case. What it DID carry was noise: 20 child values against 1,289 parent
+  values meant ~280 rows of unrelated parent keys before the first row that
+  mattered. Two versions of that merge shipped before the idea itself was
+  examined. **Now: two plain lists, each ascending, each scrolling on its own,
+  the veel-kant ticked ✓/✗** — which is what was asked for originally. Nothing
+  implies a row-by-row correspondence because there is none. This also DELETED
+  the range-bounding and the paired-first ordering (both were scaffolding for
+  that alignment, and both made the parent sample unrepresentative); a label
+  they produced was already wrong on screen — *"showing 4 that line up with the
+  left"* on a relationship where none of the 8 values matched.
+  **THE CHECK NOW STATES ITS ASSERTION IN THE USER'S OWN NAMES.** Owner asked
+  what exactly is measured. The rules said "the other column identifies one row"
+  and "values found on the other side" — true but abstract. They now read
+  *"Every AccountCode exists there"* / *"GL classifications.Code identifies one
+  row"*, above a sentence naming both columns and stating that empty values are
+  skipped and that DIFFERENT VALUES are counted, not rows. **This matters
+  because no measurement can decide whether a link is MEANINGFUL** —
+  `LineNumber → GLClassifications.Code` measures 76% because line numbers 1-40
+  happen to also be account codes. A person can reject that on sight, but only
+  if the assertion is written in the names they know. Provenance next to the
+  measurement is the other half: documented + measures well = trustworthy;
+  measures well + nobody documented it = the coincidence the old detector mass-
+  produced.
   **THE VALUE COMPARISON LIED — FIXED SAME DAY (2026-08-13).** Owner: *"Values
   found on the other side can never be 100% here, can it?"* It could, and the
   100% was right — **the dialog was wrong.**
