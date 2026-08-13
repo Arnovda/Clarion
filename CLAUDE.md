@@ -31,7 +31,7 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-10 (WAREHOUSE-VALUE-FOR-SMB PLAN — doc only, no code changed)
+**Last updated:** 2026-08-13 (RELATIONSHIP CANVAS — one view, evidence first; the Review/Explore split is deleted)
 
 **RELATIONSHIP CANVAS — SLICE 1 SHIPPED: THE MEASUREMENT ENDPOINT (2026-08-11).**
 `POST /api/relationships/measure` (analyst+, `computeLimiter`, four ids in) answers
@@ -96,7 +96,7 @@ answer instead of a form asking you to declare the cardinality.
   (`laneLayout.ts` and `LaneNode` were later DELETED — see the ring layout below;
   the module set today is `geometry` · `types` · `focusLayout` · `sourceColors` ·
   `TableNode` · `RelationEdge` · `MeasurePanel` · `MatchPanel` · `EdgeInspector` ·
-  `TableList` · `GraphCanvas`.)
+  `ValueExplorer` · `TableList` · `GraphCanvas`.)
   **Source lanes are NODES, not an overlay** — an absolutely-positioned band sits
   in SCREEN space and drifts off its tables on the first pan/zoom; as a node it
   gets the same viewport transform as everything else. **Deliberately NOT dagre** —
@@ -393,6 +393,35 @@ answer instead of a form asking you to declare the cardinality.
   a 5px SPINE instead of washing header + border + every row rule in one hue —
   with a single source those three tinted surfaces read as "everything is beige"
   rather than "this is Exact Online".
+  **ONE PLACE FOR EVERYTHING — THE REVIEW/EXPLORE SPLIT IS DELETED (2026-08-13).**
+  Owner, after the functionality was all in: *"is het nogal druk denk ik?"* — yes,
+  and the mode switch was the root of it. **Review and Explore were two places to
+  be**: the same table could be open in one and unreachable in the other, the
+  sidebar meant something different on either side of the toggle, and "where do I
+  go to fix this?" had two answers. **What the canvas is about is now DERIVED,
+  never chosen** — a table selected shows its join surface, a relationship
+  selected shows that pair; picking one thing is the only gesture, and Escape /
+  pane-click / *Back to the table* lets go of the relationship. **The queue
+  follows the sidebar**: J/K step through the SELECTED TABLE's links, not a global
+  list of AI suggestions — walking the whole catalog meant the next item could be
+  a table you had never opened, which is precisely why "I want to go over the bank
+  entries" was unreachable. Deleted with the mode: `reviewScopeId`, the scope
+  chip, the *Nothing left to review* card, and the bootstrap that dropped you
+  inside one suggested link before you had asked about anything (it now opens on
+  the table with the most work waiting on it).
+  **THE INSPECTOR LEADS WITH THE EVIDENCE.** It opened with a provenance chip, a
+  sentence about provenance, a 4-button shape picker with two explanatory lines
+  and two column pickers with a third — so the measurement, *the only thing that
+  tells you whether the shape and columns are worth correcting*, sat below the
+  fold behind four paragraphs. Now: verdict → checks → compare-values, then the
+  corrections. Provenance is a chip on the title line; the shape picker is a
+  dropdown beside the column pickers (a settled field, not a decision — four
+  always-visible options gave it the weight of one); **every explanation is intact
+  behind a `?`**, because each is true and each is read exactly once. Plus: a
+  table's links group under the field they leave from so one column with two
+  targets is self-evident rather than announced; the legend folds down to the
+  colour scale (the part that is a key rather than a paragraph); the page header
+  is one line instead of three describing gestures the screen already offers.
 - **Slices 6 + 7 — CROSS-SOURCE MATCHING.** `POST /api/relationships/match-preview`.
   Drawing between two sources opens a **match** panel, not the join panel.
   `crossSourceSession.buildTwoSourceConnector` puts **two connections' tables in
