@@ -281,6 +281,55 @@ disagree. An empty PATCH remains a valid confirm; the server already flips
 `ai_draft` and stamps `confirmed_by_user`, which is what makes a confirmation
 survive a re-profile.
 
+### 4.0e Shipped — slices 6 and 7, cross-source matching (2026-08-11)
+
+`POST /api/relationships/match-preview`. Drawing between two sources now opens a
+**match** panel rather than the join panel, because they answer different
+questions and asking one with the other's question is the mistake this whole
+design exists to avoid.
+
+- **Two sources in one DuckDB session.** `crossSourceSession.buildTwoSourceConnector`
+  resolves each table's URI through `listSourceTables` and registers both under
+  fixed neutral view names — two sources may each have a table called `Accounts`,
+  so their real names cannot be used. `DuckDBConnector.ephemeral`, deliberately:
+  a one-off scratch session must not take a key in the pool every other surface
+  reuses.
+- **Split for the same reason as `fkVerification`.** `matchMeasure` is pure and
+  unit-tested; the connector construction lives in `crossSourceSession`, so
+  importing the measurement does not drag in DuckDB's native binding.
+- **Normalisation is the whole game.** Default `loose` strips non-alphanumerics
+  and upper-cases, so `BE 0123.456.789` and `be0123456789` are the same company.
+  Comparing raw strings understates the real overlap, and understating it is what
+  makes someone conclude their data cannot be joined when it can. `exact` is one
+  click away in the panel.
+- **The unmatched samples are the point** (this is slice 7's substance). A rate of
+  68% is a number; seeing that every miss is formatted differently tells you it is
+  a formatting problem you can fix.
+- **Stored as `kind='match'`** with `match_keys` and the measurement, never as a
+  join.
+- **`getMatchAssertions` phrases match edges for the AI as identity assertions** —
+  carrying `relationship_type: 'same_entity_as'` and a description that states
+  outright that this is not a foreign key and must not be JOINed on. Only
+  *confirmed* matches reach the prompt: an unreviewed guess about identity should
+  not be shaping answers.
+
+**Two things found and fixed while building:**
+
+- `POST /semantic/relationships` was **admin-only** while PATCH and DELETE were
+  admin+analyst — so an analyst on the canvas could measure a link, see that it
+  holds, and then be refused when saving it. Widened for parity.
+- The confirm message claimed *"Ask AI can now answer questions that span both
+  sources."* **That is not true yet** — the query layer is still
+  `connectionId`-scoped, so a match cannot be used to answer a cross-source
+  question. The copy now says what is actually true: Clarion knows these describe
+  the same things. The claim becomes true when the query layer is un-scoped
+  (warehouse-value plan §4.2a).
+
+**Not shipped, and it is the honest boundary of slice 7:** the persisted per-row
+crosswalk — deciding, storing and re-using "Shopify customer 4471 IS Exact's VAN
+DAMME BVBA" for 900 rows. That is the identity layer, and it is a separate and
+much larger piece than a panel.
+
 ### 4.1 Backend (the actual prerequisites)
 
 1. **Tenant-scoped graph endpoint** — `GET /api/graph?scope=tenant` returning tables
@@ -347,8 +396,8 @@ from the catalog.
 | 3 | ~~Tenant-scoped graph endpoint~~ **DONE 2026-08-11** | `GET /api/relationships/graph`. The prerequisite for anything cross-source. |
 | 4 | ~~New route + source lanes + collapsed nodes + join edges~~ **DONE 2026-08-11** | `/relationships`, analyst+, in Studio. |
 | 5 | ~~Queue-as-canvas + keyboard model~~ **DONE 2026-08-11** — scope widened to the full edge lifecycle (inspect / confirm / remove / edit / re-measure), because a review tool that cannot remove a wrong relationship is not one. | Turns it into the review tool that was chosen as the primary job. |
-| 6 | Match edges + cross-source measurement | The reason for cross-source-from-day-one. |
-| 7 | Match panel → per-row review | The bridge into the identity layer (§2.2 of the warehouse-value plan). |
+| 6 | ~~Match edges + cross-source measurement~~ **DONE 2026-08-11** | `POST /match-preview`; two sources in one DuckDB session. |
+| 7 | ~~Match panel~~ **PARTIAL 2026-08-11** — the panel and the unmatched samples ship; the persisted per-row crosswalk is the identity layer and stays a separate, larger piece. | The bridge into the identity layer (§2.2 of the warehouse-value plan). |
 | 8 | Retire the old canvas | At parity, not before. |
 
 ---

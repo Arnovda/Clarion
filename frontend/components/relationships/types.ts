@@ -115,3 +115,32 @@ export interface PendingDraw {
   measurement: Measurement | null;
   error: string | null;
 }
+
+export type Normalisation = 'exact' | 'loose';
+
+export interface MatchMeasurement {
+  ok: boolean;
+  reason: 'ok' | 'table-not-found' | 'timeout' | 'query-failed';
+  normalisation: Normalisation;
+  left: { total: number; matched: number; unmatchedSample: string[] } | null;
+  right: { total: number; matched: number; unmatchedSample: string[] } | null;
+  matchRate: number | null;
+  elapsedMs: number;
+}
+
+/**
+ * A cross-source link the user has drawn but not yet kept. Separate from
+ * PendingDraw because a match is a different object from a join — it has a rate
+ * and unmatched examples rather than a cardinality.
+ */
+export interface PendingMatch {
+  fromTableId: number;
+  fromColumnId: number;
+  toTableId: number;
+  toColumnId: number;
+  fromLabel: string;
+  toLabel: string;
+  normalisation: Normalisation;
+  measurement: MatchMeasurement | null;
+  error: string | null;
+}

@@ -1,24 +1,32 @@
 /**
  * Relationship canvas API.
  *
- * The surface behind the cross-source relationship pane. Today it serves one
- * endpoint — measurement — because that is the interaction the whole pane is
- * built around: drag a line between two columns and get a real answer from the
+ * The surface behind the cross-source relationship pane, built around one
+ * interaction: drag a line between two columns and get a real answer from the
  * data instead of a form asking you to declare the cardinality yourself.
  *
- * Slices still to land here (see docs/backlog/relationship-canvas.md):
- * a tenant-scoped graph read, and match edges for cross-source relations.
+ *   GET  /graph          the tenant's whole relationship graph, across sources
+ *   POST /measure        does this JOIN hold? containment, cardinality, orphans
+ *   POST /match-preview  how well do two SOURCES line up? rate + the misses
+ *
+ * `/measure` and `/match-preview` are separate because a join and a match are
+ * different objects (see docs/backlog/relationship-canvas.md §2.2): one is
+ * verified by containment against a key, the other by how many rows find a
+ * partner. Answering both with one endpoint would mean answering one of them
+ * with the wrong question.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { measureRelationshipSchema } from '../middleware/schemas';
+import { measureRelationshipSchema, matchPreviewSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
 import { createConnector } from '../connectors/ConnectorFactory';
 import { measureRelationship } from '../services/relationshipMeasure';
 import { buildGraph, neighbourhood } from '../services/relationshipGraph';
+import { measureMatch, type Normalisation } from '../services/matchMeasure';
+import { buildTwoSourceConnector } from '../services/crossSourceSession';
 import { logger as rootLogger } from '../utils/logger';
 
 const router = Router();
@@ -233,6 +241,99 @@ router.post('/measure', requireAuth, requireRole('admin', 'analyst'),
         // leaked warehouse session outlives the popover that asked for it.
         // `disconnect` is synchronous and may throw on an already-closed
         // handle, which must not mask the response we are about to send.
+        try { connector.disconnect(); } catch { /* already closed */ }
+      }
+    } catch (err) { next(err); }
+  },
+);
+
+
+// ---------------------------------------------------------------------------
+// POST /api/relationships/match-preview — how well do two SOURCES line up?
+// ---------------------------------------------------------------------------
+//
+// The cross-source counterpart of /measure. A link between two sources is not a
+// foreign key, so containment is the wrong question; this answers "how many rows
+// actually find a partner", in both directions, with a sample of the ones that
+// do not.
+//
+// The samples are the useful part. A rate on its own tells you there is a gap;
+// seeing that every miss is formatted `BE 0123.456.789` against `BE0123456789`
+// tells you it is a formatting problem, not a data problem.
+router.post('/match-preview', requireAuth, requireRole('admin', 'analyst'),
+  validate(matchPreviewSchema),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const { fromTableId, fromColumnId, toTableId, toColumnId, normalisation } = req.body as {
+        fromTableId: number; fromColumnId: number; toTableId: number; toColumnId: number;
+        normalisation?: Normalisation;
+      };
+
+      for (const [table, id] of [
+        ['source_tables', fromTableId],
+        ['source_tables', toTableId],
+        ['source_columns', fromColumnId],
+        ['source_columns', toColumnId],
+      ] as const) {
+        if (!await denyUnlessOwned(req, res, table, id)) return;
+      }
+
+      const tables: TableRow[] = await db('source_tables')
+        .whereIn('id', [fromTableId, toTableId])
+        .select('id', 'connection_id', 'table_name');
+      const columns: ColumnRow[] = await db('source_columns')
+        .whereIn('id', [fromColumnId, toColumnId])
+        .select('id', 'table_id', 'column_name');
+
+      const fromTable = tables.find((t) => t.id === Number(fromTableId));
+      const toTable = tables.find((t) => t.id === Number(toTableId));
+      const fromCol = columns.find((c) => c.id === Number(fromColumnId));
+      const toCol = columns.find((c) => c.id === Number(toColumnId));
+
+      if (!fromTable || !toTable || !fromCol || !toCol) {
+        res.status(404).json({ ok: false, error: 'Not found' });
+        return;
+      }
+      if (fromCol.table_id !== fromTable.id || toCol.table_id !== toTable.id) {
+        res.status(400).json({ ok: false, error: 'Column does not belong to the table it was submitted with' });
+        return;
+      }
+
+      const connector = await buildTwoSourceConnector(
+        req.user?.tenantId,
+        { connectionId: fromTable.connection_id, tableName: fromTable.table_name },
+        { connectionId: toTable.connection_id, tableName: toTable.table_name },
+      );
+      if (!connector) {
+        // Not an error: one of the sources has not been synced into the
+        // warehouse yet, which is a state the user can fix.
+        res.json({
+          ok: true,
+          data: {
+            ok: false, reason: 'table-not-found',
+            normalisation: normalisation ?? 'loose',
+            left: null, right: null, matchRate: null, elapsedMs: 0,
+          },
+        });
+        return;
+      }
+
+      try {
+        await connector.connect();
+        const result = await measureMatch(
+          connector, fromCol.column_name, toCol.column_name, normalisation ?? 'loose',
+        );
+        log.info(
+          {
+            from: `${fromTable.table_name}.${fromCol.column_name}`,
+            to: `${toTable.table_name}.${toCol.column_name}`,
+            rate: result.matchRate, ms: result.elapsedMs,
+          },
+          'measured cross-source match',
+        );
+        res.json({ ok: true, data: result });
+      } finally {
         try { connector.disconnect(); } catch { /* already closed */ }
       }
     } catch (err) { next(err); }

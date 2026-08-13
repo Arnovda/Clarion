@@ -9,6 +9,7 @@ import {
 import { reqDb } from '../db/reqDb';
 import { owns, ownedIds } from '../db/tenantOwnership';
 import type { OwnedTable } from '../db/tenantOwnership';
+import { getMatchAssertions } from '../services/matchAssertions';
 import { connectionIdForEntity } from '../db/semanticCacheScope';
 import type { ScopedEntity } from '../db/semanticCacheScope';
 import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
@@ -517,11 +518,21 @@ router.get('/relationships', requireAuth, async (req: Request, res: Response, ne
 });
 
 // POST /api/semantic/relationships
-router.post('/relationships', requireAuth, requireRole('admin'), validate(createRelationshipSchema), async (req: Request, res: Response, next: NextFunction) => {
+// POST /api/semantic/relationships
+// Role: admin + analyst — parity with PATCH and DELETE below. An analyst who
+// may confirm and remove a relationship must be able to draw one; the
+// relationship canvas is analyst+, and admin-only here meant an analyst could
+// measure a link, see that it holds, and then be refused when saving it.
+router.post('/relationships', requireAuth, requireRole('admin', 'analyst'), validate(createRelationshipSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description } =
+    const { from_table_id, from_column_id, to_table_id, to_column_id, relationship_type, description,
+            kind, match_keys, measured } =
       req.body as Record<string, unknown>;
+    // A link between two sources is a `match`, not a join — see migration 77.
+    // Anything unrecognised falls back to 'join', which is what every row
+    // written before that migration is.
+    const relKind = kind === 'match' ? 'match' : 'join';
 
     // Every id here is body-supplied and every graph call below is unscoped.
     // Unauthorised, this both READS another tenant's column names and plants a
@@ -565,6 +576,12 @@ router.post('/relationships', requireAuth, requireRole('admin'), validate(create
         relationship_type: String(relationship_type ?? ''),
         description:       description ? String(description) : null,
         ai_draft:          false,
+        kind:              relKind,
+        // Postgres-only, like the cached measurement: the Neo4j edge carries
+        // neither, and mirroring a statistic that moves on every sync would
+        // give the two stores a third way to disagree.
+        match_keys:        match_keys == null ? null : JSON.stringify(match_keys),
+        measured:          measured == null ? null : JSON.stringify(measured),
       })
       .onConflict('id').merge();
     // Keep table_relationships_id_seq ahead of any pgId we've inserted so
@@ -678,12 +695,16 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
     emit({ phase: 'loading', message: 'Loading semantic layer data…' });
 
     // Gather all enriched semantic context from Neo4j (including quality stats + FK candidates)
-    const [tables, columns, existingRels, kpis, fkCandidates] = await Promise.all([
+    const [tables, columns, existingRels, kpis, fkCandidates, matchAssertions] = await Promise.all([
       graph.getTablesByConnection(connectionId),
       graph.getColumnsByConnection(connectionId),
       graph.getRelationshipsForContext(connectionId),
       graph.getKpisByConnection(connectionId),
       graph.getFkCandidates(connectionId),
+      // Cross-source identity links. Postgres-backed and NOT part of the Neo4j
+      // relationship read above: `kind` lives only in Postgres, and a match
+      // spans two connections while that read is scoped to one.
+      getMatchAssertions(reqDb(req), req.user?.tenantId, connectionId),
     ]);
 
     if (!tables.length) {
@@ -717,7 +738,11 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
         min_value:      c.min_value ?? null,
         max_value:      c.max_value ?? null,
       })),
-      relationships: (existingRels as any[])
+      // Identity links are appended AFTER the joins, carrying their own
+      // relationship_type and a description that says outright they are not
+      // foreign keys — a model pattern-matching for something joinable must not
+      // find one here.
+      relationships: [...matchAssertions, ...(existingRels as any[])
         .filter((r) => !r.ai_draft) // only confirmed relationships
         .map((r) => ({
           from_table:        r.from_table,
@@ -726,7 +751,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
           to_column:         r.to_column ?? null,
           relationship_type: r.relationship_type,
           description:       r.description ?? null,
-        })),
+        }))],
       kpis: (kpis as any[]).map((k) => ({
         name:        k.name,
         description: k.description ?? null,

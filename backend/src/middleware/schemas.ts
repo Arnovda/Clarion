@@ -153,6 +153,10 @@ export const createRelationshipSchema = z.object({
     to_column_id: nullableId,
     relationship_type: optionalString,
     description: nullableOptionalString,
+    // 'match' marks a cross-source identity assertion rather than a join.
+    kind: z.enum(['join', 'match']).optional(),
+    match_keys: z.unknown().optional(),
+    measured: z.unknown().optional(),
   }).passthrough(),
 });
 
@@ -575,6 +579,18 @@ export const deleteTenantSchema = z.object({
 // POST /relationships/measure — does a proposed relationship hold in the data?
 // All four ids are required: a measurement names a column on each side, and a
 // table alone cannot be measured against another table.
+// POST /relationships/match-preview — how well two SOURCES line up. Same four
+// ids as a measurement, plus how hard to normalise before comparing.
+export const matchPreviewSchema = z.object({
+  body: z.object({
+    fromTableId: positiveInt,
+    fromColumnId: positiveInt,
+    toTableId: positiveInt,
+    toColumnId: positiveInt,
+    normalisation: z.enum(['exact', 'loose']).optional(),
+  }),
+});
+
 export const measureRelationshipSchema = z.object({
   body: z.object({
     fromTableId: positiveInt,

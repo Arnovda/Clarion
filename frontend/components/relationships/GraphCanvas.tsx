@@ -12,11 +12,13 @@ import { TableNode, type TableNodeData } from './TableNode';
 import { LaneNode, type LaneNodeData } from './LaneNode';
 import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge';
 import { MeasurePanel } from './MeasurePanel';
+import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { laneLayout, laneColor } from './laneLayout';
 import { parseHandle, handleLeft, handleRight } from './geometry';
 import type {
   GraphResponse, GraphColumn, Measurement, PendingDraw, Cardinality, GraphRelationship,
+  MatchMeasurement, PendingMatch, Normalisation,
 } from './types';
 
 const nodeTypes = { table: TableNode, lane: LaneNode };
@@ -30,6 +32,7 @@ function CanvasInner() {
   const [search, setSearch] = useState('');
   const [onlyPending, setOnlyPending] = useState(false);
   const [draw, setDraw] = useState<PendingDraw | null>(null);
+  const [match, setMatch] = useState<PendingMatch | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<number | null>(null);
   const [busy, setBusy] = useState<'confirm' | 'delete' | 'measure' | 'save' | null>(null);
@@ -154,7 +157,9 @@ function CanvasInner() {
             provenance: r.provenance,
             isCrossSource: r.isCrossSource,
             cardinality: (r.relationshipType as Cardinality) ?? null,
-            matchRate: null,
+            matchRate: r.kind === 'match'
+              ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
+              : null,
             dimmed: !matches(r.fromTableId) && !matches(r.toTableId),
           },
           selected: r.id === selectedEdgeId,
@@ -167,6 +172,57 @@ function CanvasInner() {
     const c = columnsByTable.get(tableId)?.find((x) => x.id === columnId);
     return `${t?.displayName || t?.tableName || 'table'}${c ? `.${c.column_name}` : ''}`;
   }, [graph, columnsByTable]);
+
+  /** Compare two sources on the chosen columns, then show the result. */
+  const runMatch = useCallback(async (pending: PendingMatch) => {
+    setMatch(pending);
+    try {
+      const res = await api.post('/relationships/match-preview', {
+        fromTableId: pending.fromTableId,
+        fromColumnId: pending.fromColumnId,
+        toTableId: pending.toTableId,
+        toColumnId: pending.toColumnId,
+        normalisation: pending.normalisation,
+      });
+      const measurement = res.data.data as MatchMeasurement;
+      setMatch((prev) => (prev && prev.fromColumnId === pending.fromColumnId
+        ? { ...prev, measurement } : prev));
+    } catch {
+      setMatch((prev) => (prev && prev.fromColumnId === pending.fromColumnId
+        ? { ...prev, error: 'Could not compare those two sources.' } : prev));
+    }
+  }, []);
+
+  const keepMatch = useCallback(async () => {
+    if (!match) return;
+    setSaving(true);
+    try {
+      await api.post('/semantic/relationships', {
+        from_table_id: match.fromTableId,
+        from_column_id: match.fromColumnId,
+        to_table_id: match.toTableId,
+        to_column_id: match.toColumnId,
+        // Stored as a match, never as a join: the AI must phrase it as an
+        // identity assertion rather than a JOIN instruction.
+        kind: 'match',
+        relationship_type: 'many_to_many',
+        match_keys: {
+          normalisation: match.normalisation,
+          fromColumnId: match.fromColumnId,
+          toColumnId: match.toColumnId,
+        },
+        measured: match.measurement,
+        description: null,
+      });
+      setMatch(null);
+      setPayoff('Clarion now knows these describe the same things across both sources.');
+      await load();
+    } catch {
+      setMatch((prev) => prev ? { ...prev, error: 'Could not save this link. Try again.' } : prev);
+    } finally {
+      setSaving(false);
+    }
+  }, [match, load]);
 
   /**
    * A drawn connection measures before it saves. Nothing is written until the
@@ -187,6 +243,25 @@ function CanvasInner() {
         toLabel: labelFor(toTableId, toColumnId),
         measurement: null,
         error: 'Open both tables and drag between two specific columns — a relationship needs to know which columns match.',
+      });
+      return;
+    }
+
+    // A link inside one source is a JOIN, verified by containment. A link
+    // between two sources is a MATCH — an assertion that both sides describe the
+    // same real things, verified by how many rows find a partner. Different
+    // questions, so different panels; asking one with the other's question is
+    // what makes cross-system look easy and then be wrong.
+    const fromConn = graph?.tables.find((t) => t.id === fromTableId)?.connectionId;
+    const toConn = graph?.tables.find((t) => t.id === toTableId)?.connectionId;
+    if (fromConn != null && toConn != null && fromConn !== toConn) {
+      void runMatch({
+        fromTableId, fromColumnId, toTableId, toColumnId,
+        fromLabel: labelFor(fromTableId, fromColumnId),
+        toLabel: labelFor(toTableId, toColumnId),
+        normalisation: 'loose',
+        measurement: null,
+        error: null,
       });
       return;
     }
@@ -216,7 +291,7 @@ function CanvasInner() {
           }
         : prev);
     }
-  }, [labelFor]);
+  }, [labelFor, graph, runMatch]);
 
   const keepDrawn = useCallback(async () => {
     if (!draw) return;
@@ -276,7 +351,7 @@ function CanvasInner() {
       // Close the loop: the point of this pane is AI context, so say what the
       // confirmation bought. Without it people draw lines on faith.
       setPayoff(rel.isCrossSource
-        ? 'Ask AI can now answer questions that span both sources.'
+        ? 'Clarion now knows these describe the same things across both sources.'
         : 'Ask AI can now use this link when answering questions.');
       setSelectedEdgeId(null);
       await load();
@@ -353,7 +428,7 @@ function CanvasInner() {
           document.getElementById('rel-search')?.focus();
           break;
         case 'Escape':
-          setSelectedEdgeId(null); setDraw(null);
+          setSelectedEdgeId(null); setDraw(null); setMatch(null);
           break;
         default: break;
       }
@@ -436,6 +511,23 @@ function CanvasInner() {
       </div>
 
       {/* Measurement popover */}
+      {match && (
+        <div className="absolute right-4 top-20 z-20">
+          <MatchPanel
+            match={match}
+            saving={saving}
+            onKeep={keepMatch}
+            onDiscard={() => setMatch(null)}
+            onToggleNormalisation={() => void runMatch({
+              ...match,
+              normalisation: (match.normalisation === 'loose' ? 'exact' : 'loose') as Normalisation,
+              measurement: null,
+              error: null,
+            })}
+          />
+        </div>
+      )}
+
       {draw && (
         <div className="absolute right-4 top-20 z-20">
           <MeasurePanel
