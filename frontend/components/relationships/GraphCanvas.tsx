@@ -19,8 +19,8 @@ import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
 import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
 import { outcomeOf } from './MeasurePanel';
-import { radialLayout, pairLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
-import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H, NODE_W } from './geometry';
+import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
+import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H } from './geometry';
 import type {
   GraphResponse, GraphColumn, Measurement, PendingDraw, Cardinality, GraphRelationship,
   MatchMeasurement, PendingMatch, Normalisation,
@@ -38,24 +38,18 @@ const nodeTypes = { table: TableNode };
 const edgeTypes = { relation: RelationEdge };
 
 /**
- * What the canvas is currently about. There is never a third answer, and there is
- * never "everything": a picture of 36 tables and 169 links is a hairball, not a
- * tool, and it is the thing this rebuild exists to remove.
+ * The canvas is about ONE TABLE, always: it in the middle, what it connects to
+ * around it. There is no "everything" view — 36 tables and 169 links is a
+ * hairball, not a tool — and there is no second view either.
  *
- *  • `anchor` — ONE table in the middle, what it connects to around it.
- *  • `pair`   — ONE relationship: its two tables, side by side.
- *
- * **THIS IS DERIVED, NEVER CHOSEN.** There used to be a Review/Explore switch
- * above the canvas, and it was a second place to be: the same table could be
- * open in one mode and unreachable in the other, the sidebar meant different
- * things on either side of it, and "where do I go to fix this?" had two answers.
- * Now the selection says it — a table selected shows its join surface, a
- * relationship selected shows that pair. Picking one thing is the only gesture,
- * and there is one place for everything.
+ * **Selecting a relationship does not change what is drawn.** It used to: the
+ * canvas collapsed to that link's two tables, side by side. That threw away the
+ * context that makes the answer readable (a column pointing at two different
+ * targets is only obvious when both targets are on screen) and made a click feel
+ * like navigation when it should feel like pointing. A selected relationship is
+ * now a HIGHLIGHT — its line brightens, the others fade, its two fields light up
+ * — and the layout does not move at all.
  */
-type Focus =
-  | { kind: 'pair'; a: number; b: number }
-  | { kind: 'anchor'; id: number };
 
 const EMPTY_IDS: ReadonlySet<number> = new Set<number>();
 
@@ -353,18 +347,25 @@ function CanvasInner() {
     return runCheck([...seen.values()], null);
   }, [runCheck, linksFor]);
 
+  const selectedRel: GraphRelationship | null = selectedEdgeId != null
+    ? graph?.relationships.find((r) => r.id === selectedEdgeId) ?? null
+    : null;
+
   /**
-   * A relationship in hand wins, because it is the more specific thing you asked
-   * for; otherwise the canvas is about the table. Nothing else to decide.
+   * The table in the middle. Normally the one you picked; if a relationship
+   * somehow arrives that does not touch it, its own table takes over rather than
+   * drawing a highlighted line to nowhere.
    */
-  const focus: Focus | null = useMemo(() => {
-    if (!graph) return null;
-    if (selectedEdgeId != null) {
-      const rel = graph.relationships.find((r) => r.id === selectedEdgeId);
-      if (rel) return { kind: 'pair', a: rel.fromTableId, b: rel.toTableId };
+  const anchorId: number | null = useMemo(() => {
+    if (!graph || !graph.tables.length) return null;
+    if (selectedTableId != null) {
+      const touches = !selectedRel
+        || selectedRel.fromTableId === selectedTableId
+        || selectedRel.toTableId === selectedTableId;
+      if (touches) return selectedTableId;
     }
-    return selectedTableId != null ? { kind: 'anchor', id: selectedTableId } : null;
-  }, [graph, selectedTableId, selectedEdgeId]);
+    return selectedRel?.fromTableId ?? selectedTableId;
+  }, [graph, selectedTableId, selectedRel]);
 
   /**
    * The neighbours that make the ring, in the order they are placed around it.
@@ -376,14 +377,24 @@ function CanvasInner() {
    * thing you see rather than read.
    */
   const { neighbours, neighbourTotal } = useMemo(() => {
-    if (!graph || focus?.kind !== 'anchor') return { neighbours: [] as number[], neighbourTotal: 0 };
+    if (!graph || anchorId == null) return { neighbours: [] as number[], neighbourTotal: 0 };
     const seen = new Set<number>();
     for (const r of graph.relationships) {
-      if (r.fromTableId === focus.id && r.toTableId !== focus.id) seen.add(r.toTableId);
-      if (r.toTableId === focus.id && r.fromTableId !== focus.id) seen.add(r.fromTableId);
+      if (r.fromTableId === anchorId && r.toTableId !== anchorId) seen.add(r.toTableId);
+      if (r.toTableId === anchorId && r.fromTableId !== anchorId) seen.add(r.fromTableId);
     }
     const known = [...seen].filter((id) => graph.tables.some((t) => t.id === id));
-    const ranked = rankNeighbours(focus.id, graph.relationships, known).slice(0, MAX_NEIGHBOURS);
+    const ranked = rankNeighbours(anchorId, graph.relationships, known).slice(0, MAX_NEIGHBOURS);
+
+    // The other end of whatever is selected is never allowed to fall off the
+    // ring. A hub can have more neighbours than the ring holds, and highlighting
+    // a link to a table that is not drawn highlights nothing at all.
+    const other = selectedRel
+      ? (selectedRel.fromTableId === anchorId ? selectedRel.toTableId : selectedRel.fromTableId)
+      : null;
+    if (other != null && other !== anchorId && known.includes(other) && !ranked.includes(other)) {
+      ranked[ranked.length - 1] = other;
+    }
 
     const tableById = new Map(graph.tables.map((t) => [t.id, t]));
     const placed = [...ranked].sort((a, b) => {
@@ -392,31 +403,24 @@ function CanvasInner() {
         || (ta.displayName || ta.tableName).localeCompare(tb.displayName || tb.tableName);
     });
     return { neighbours: placed, neighbourTotal: known.length };
-  }, [graph, focus, colorIndexBySource]);
+  }, [graph, anchorId, selectedRel, colorIndexBySource]);
 
-  const visibleIds = useMemo(() => {
-    if (!focus) return EMPTY_IDS;
-    return focus.kind === 'pair'
-      ? new Set([focus.a, focus.b])
-      : new Set([focus.id, ...neighbours]);
-  }, [focus, neighbours]);
+  const visibleIds = useMemo(
+    () => (anchorId == null ? EMPTY_IDS : new Set([anchorId, ...neighbours])),
+    [anchorId, neighbours],
+  );
 
   /**
-   * Only lines that touch what the view is about. A neighbour's own
-   * relationships are not this view's subject, and drawing them is what turned
-   * 169 links into an unreadable scribble.
+   * Only lines that touch the anchor. A neighbour's own relationships are not
+   * this view's subject, and drawing them is what turned 169 links into an
+   * unreadable scribble.
    */
   const drawnRels = useMemo(() => {
-    if (!graph || !focus) return [] as GraphRelationship[];
-    if (focus.kind === 'pair') {
-      return graph.relationships.filter((r) =>
-        (r.fromTableId === focus.a && r.toTableId === focus.b)
-        || (r.fromTableId === focus.b && r.toTableId === focus.a));
-    }
+    if (!graph || anchorId == null) return [] as GraphRelationship[];
     return graph.relationships.filter((r) =>
-      (r.fromTableId === focus.id && visibleIds.has(r.toTableId))
-      || (r.toTableId === focus.id && visibleIds.has(r.fromTableId)));
-  }, [graph, focus, visibleIds]);
+      (r.fromTableId === anchorId && visibleIds.has(r.toTableId))
+      || (r.toTableId === anchorId && visibleIds.has(r.fromTableId)));
+  }, [graph, anchorId, visibleIds]);
 
   /**
    * Per table: exactly which columns to render, and how tall that makes it.
@@ -458,32 +462,22 @@ function CanvasInner() {
   }, [drawnRels, visibleIds, columnsByTable, showAll]);
 
   const positions = useMemo(() => {
+    if (anchorId == null) return new Map<number, { x: number; y: number }>();
     const heightOf = (id: number) => nodeSpec.get(id)?.height ?? HEADER_H;
-    if (!focus) return new Map<number, { x: number; y: number }>();
-    if (focus.kind === 'anchor') return radialLayout(focus.id, neighbours, heightOf).positions;
-    // A self-referencing relationship has one table, not two.
-    if (focus.a === focus.b) {
-      return new Map([[focus.a, { x: -NODE_W / 2, y: -heightOf(focus.a) / 2 }]]);
-    }
-    return pairLayout(focus.a, focus.b, heightOf).positions;
-  }, [focus, neighbours, nodeSpec]);
+    return radialLayout(anchorId, neighbours, heightOf).positions;
+  }, [anchorId, neighbours, nodeSpec]);
 
   /** Both ends of the relationship being inspected, lit up in their tables. */
   const highlightColumnIds = useMemo(() => {
-    const rel = selectedEdgeId != null
-      ? graph?.relationships.find((r) => r.id === selectedEdgeId)
-      : null;
     const s = new Set<number>();
-    if (rel?.fromColumnId != null) s.add(rel.fromColumnId);
-    if (rel?.toColumnId != null) s.add(rel.toColumnId);
+    if (selectedRel?.fromColumnId != null) s.add(selectedRel.fromColumnId);
+    if (selectedRel?.toColumnId != null) s.add(selectedRel.toColumnId);
     return s;
-  }, [graph, selectedEdgeId]);
+  }, [selectedRel]);
 
-  // Rebuild nodes and edges whenever the focus, layout or selection changes.
+  // Rebuild nodes and edges whenever the anchor, layout or selection changes.
   useEffect(() => {
-    if (!graph || !focus) { setNodes([]); setEdges([]); return; }
-
-    const focusedId = focus.kind === 'anchor' ? focus.id : null;
+    if (!graph || anchorId == null) { setNodes([]); setEdges([]); return; }
 
     const tableNodes = graph.tables
       .filter((t) => visibleIds.has(t.id))
@@ -504,7 +498,7 @@ function CanvasInner() {
             highlightColumnIds,
             showingAll: spec.showingAll,
             dimmed: false,
-            focused: focusedId === t.id,
+            focused: anchorId === t.id,
             onToggleAllColumns: toggleAllColumns,
           },
         } satisfies Node<TableNodeData>;
@@ -552,17 +546,22 @@ function CanvasInner() {
         selected: r.id === selectedEdgeId,
       } satisfies Edge<RelationEdgeData>;
     }));
-  }, [graph, focus, visibleIds, drawnRels, nodeSpec, positions, highlightColumnIds,
+  }, [graph, anchorId, visibleIds, drawnRels, nodeSpec, positions, highlightColumnIds,
       colorForConnection, toggleAllColumns, selectedEdgeId, freshMeasured,
       setNodes, setEdges]);
 
+  /**
+   * Refit when the SUBJECT changes, never when the selection does. Clicking a
+   * line is pointing at something already on screen; moving the camera under
+   * that click is the thing that made selecting feel like navigating away.
+   */
   useEffect(() => {
     if (!nodes.length) return;
     // A frame's delay lets ReactFlow measure the new nodes first; fitting before
     // that uses stale sizes and lands off-centre.
     const t = setTimeout(() => fitView({ padding: 0.18, maxZoom: 1, duration: 300 }), 60);
     return () => clearTimeout(t);
-  }, [nodes.length, selectedTableId, selectedEdgeId, fitView]);
+  }, [nodes.length, anchorId, fitView]);
 
   const labelFor = useCallback((tableId: number, columnId: number | null) => {
     const t = graph?.tables.find((x) => x.id === tableId);
@@ -725,10 +724,6 @@ function CanvasInner() {
         : v));
     }
   }, []);
-
-  const selectedRel: GraphRelationship | null = selectedEdgeId != null
-    ? graph?.relationships.find((r) => r.id === selectedEdgeId) ?? null
-    : null;
 
   /**
    * The links of the table being worked on, in the order the sidebar lists them.
@@ -963,16 +958,9 @@ function CanvasInner() {
     }
     return { checked, bad };
   })();
-  /**
-   * The table the canvas is about, whether it is centred or half of a pair.
-   * Read off the focus rather than off `selectedTableId` alone, so the chip
-   * that says where you are can never be the one thing missing from the screen.
-   */
-  const workingTableId = focus
-    ? (focus.kind === 'anchor' ? focus.id : (selectedTableId ?? focus.a))
-    : null;
-  const workingTable = workingTableId != null
-    ? graph?.tables.find((t) => t.id === workingTableId) ?? null
+  /** The table in the middle — what the canvas is about. */
+  const workingTable = anchorId != null
+    ? graph?.tables.find((t) => t.id === anchorId) ?? null
     : null;
 
   return (
@@ -1006,43 +994,23 @@ function CanvasInner() {
 
       {/* Toolbar */}
       <div className="absolute left-4 right-4 top-4 z-10 flex items-center gap-3">
-        {/* One line saying what you are looking at, and — when you have drilled
-            into a link — one click back out. It replaces a mode switch, which
-            asked the user to choose a way of working before they had a
+        {/* One line saying what you are looking at. It replaces a mode switch,
+            which asked the user to choose a way of working before they had a
             question. */}
         {workingTable && (
-          <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 py-1.5 pl-3 pr-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
+          <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
             <span
               className="h-2 w-2 shrink-0 rounded-full"
               style={{ background: colorForConnection(workingTable.connectionId) }}
             />
-            {focus?.kind === 'pair' ? (
-              <>
-                <span className="font-medium text-ink">
-                  {workingTable.displayName || workingTable.tableName}
-                </span>
-                {queuePosition && <span className="tabular-nums text-muted">link {queuePosition}</span>}
-                <button
-                  type="button"
-                  onClick={() => setSelectedEdgeId(null)}
-                  className="rounded-lg px-1.5 py-0.5 text-[12px] text-ocean hover:bg-soft"
-                >
-                  Back to the table
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="pr-1.5">
-                  What <span className="font-medium text-ink">
-                    {workingTable.displayName || workingTable.tableName}
-                  </span> connects to
-                  {neighbourTotal > neighbours.length && (
-                    <span className="text-muted">
-                      {' '}· showing {neighbours.length} of {neighbourTotal}
-                    </span>
-                  )}
-                </span>
-              </>
+            What <span className="font-medium text-ink">
+              {workingTable.displayName || workingTable.tableName}
+            </span> connects to
+            {neighbourTotal > neighbours.length && (
+              <span className="text-muted">· showing {neighbours.length} of {neighbourTotal}</span>
+            )}
+            {queuePosition && (
+              <span className="text-muted">· link {queuePosition}</span>
             )}
           </div>
         )}
@@ -1141,7 +1109,7 @@ function CanvasInner() {
       </ReactFlow>
 
       {/* Nothing picked at all — only reachable before the first table exists. */}
-      {!focus && (
+      {anchorId == null && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
           <div className="flex max-w-sm flex-col items-center gap-2 rounded-2xl border border-line bg-raised/95 px-6 py-7 text-center shadow-sm backdrop-blur">
             <CheckCircle2 size={22} className="text-muted2" />
@@ -1211,7 +1179,7 @@ function CanvasInner() {
                 </svg>
                 nobody has decided yet
               </span>
-              {focus?.kind === 'pair' && (
+              {selectedRel && (
                 <>
                   <span className="text-muted2">·</span>
                   <span><Kbd>Y</Kbd> looks right</span>

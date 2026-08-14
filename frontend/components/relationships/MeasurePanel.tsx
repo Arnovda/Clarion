@@ -15,11 +15,17 @@ import type { Cardinality, Measurement, MeasureVerdict, PendingDraw } from './ty
  * and the person drawing may know something the data does not show yet.
  */
 
+/**
+ * `weak` used to read "Unconfirmed", which was the wrong word in the wrong
+ * place: next to a *Looks right* button and a "Suggested by Clarion" chip it
+ * says "you have not signed this off yet", when what it means is "your DATA does
+ * not settle it". Two different facts, and this panel exists to keep them apart.
+ */
 export const VERDICT_STYLE: Record<MeasureVerdict, { fg: string; bg: string; border: string; label: string }> = {
-  strong:       { fg: '#3f7a5c', bg: '#dbe8e0', border: '#a8c9b6', label: 'This holds' },
-  weak:         { fg: '#a06a1c', bg: '#f1e4c8', border: '#dcc48a', label: 'Unconfirmed' },
-  broken:       { fg: '#a43a3a', bg: '#f1d7d7', border: '#dda9a9', label: "This doesn't hold" },
-  unmeasurable: { fg: '#4a5660', bg: '#e3e6ea', border: '#c8ced4', label: 'Could not check' },
+  strong:       { fg: '#3f7a5c', bg: '#dbe8e0', border: '#a8c9b6', label: 'Holds' },
+  weak:         { fg: '#a06a1c', bg: '#f1e4c8', border: '#dcc48a', label: "Doesn't fully hold" },
+  broken:       { fg: '#a43a3a', bg: '#f1d7d7', border: '#dda9a9', label: "Doesn't hold" },
+  unmeasurable: { fg: '#4a5660', bg: '#e3e6ea', border: '#c8ced4', label: "Couldn't check" },
 };
 
 const CARDINALITY_TEXT: Record<Cardinality, string> = {
@@ -150,12 +156,26 @@ export const OUTCOME: Record<Outcome, { color: string; label: string }> = {
  * the detector's environment, and a panel stating a different number from the
  * one actually applied would be lying about which of the two is wrong.
  */
-export function CheckList({ m, fromLabel, toLabel }: {
+export function checkAssertion(fromLabel: string, toLabel: string): string {
+  return `Testing that every value of ${fromLabel} also exists in ${toLabel}, and that `
+    + `${toLabel} points at exactly one row. Empty values are skipped, and values are `
+    + `counted rather than rows — a value a thousand rows point at still counts once. `
+    + `These are fixed rules, run as SQL against your own data: no AI is involved, and `
+    + `they are the same rules that decide what Clarion suggests in the first place.`;
+}
+
+export function CheckList({ m, fromLabel, toLabel, prose = true }: {
   m: Measurement;
   /** `Table.column` of the side whose values must be found. */
   fromLabel?: string;
   /** `Table.column` of the side that must identify one row. */
   toLabel?: string;
+  /**
+   * Whether to print the assertion and the counting caveat here. The inspector
+   * sets this false and puts the same text behind a `?`: it is read once, and
+   * left on screen it is two paragraphs of prose wrapped around three numbers.
+   */
+  prose?: boolean;
 }) {
   if (!m.containment || !m.target) return null;
   const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -193,7 +213,7 @@ export function CheckList({ m, fromLabel, toLabel }: {
 
   return (
     <div>
-      {fromLabel && toLabel && (
+      {prose && fromLabel && toLabel && (
         <p className="mb-1.5 text-[11.5px] leading-relaxed text-ink2">
           Testing that <span className="font-medium">every value of {fromLabel}</span> also
           exists in <span className="font-medium">{toLabel}</span>, and that {toLabel} points
@@ -223,12 +243,14 @@ export function CheckList({ m, fromLabel, toLabel }: {
           </li>
         ))}
       </ul>
-      <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted2">
-        Counted as different values, not rows: a value a thousand rows point at
-        still counts once. Fixed rules, run as SQL against your own data — no AI
-        is involved, and the same rules decide what Clarion suggests in the first
-        place.
-      </p>
+      {prose && (
+        <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted2">
+          Counted as different values, not rows: a value a thousand rows point at
+          still counts once. Fixed rules, run as SQL against your own data — no AI
+          is involved, and the same rules decide what Clarion suggests in the first
+          place.
+        </p>
+      )}
     </div>
   );
 }

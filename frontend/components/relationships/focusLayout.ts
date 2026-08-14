@@ -68,21 +68,15 @@ export function radialLayout(
 }
 
 /**
- * The two tables of one relationship, side by side, vertically centred on each
- * other so the joined rows sit at a similar height and the edge between them
- * reads as a short horizontal hop.
+ * There is deliberately no pair layout any more.
+ *
+ * Selecting a relationship used to collapse the canvas to its two tables, side
+ * by side. It threw away the context that makes the answer readable — a column
+ * pointing at two different targets is only obvious when both targets are on
+ * screen — and it made a click feel like navigation when it should feel like
+ * pointing at something. Selecting now HIGHLIGHTS within the ring: the layout
+ * does not move, the other lines fade, and the two joined fields light up.
  */
-export function pairLayout(
-  leftId: number,
-  rightId: number,
-  heightOf: (id: number) => number,
-): Placement {
-  const positions = new Map<number, { x: number; y: number }>();
-  const gap = 260;
-  positions.set(leftId, { x: -(NODE_W + gap / 2), y: -heightOf(leftId) / 2 });
-  positions.set(rightId, { x: gap / 2, y: -heightOf(rightId) / 2 });
-  return { positions };
-}
 
 /**
  * Which neighbours make the ring when a hub has more than it can hold.

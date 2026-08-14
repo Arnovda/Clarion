@@ -7,6 +7,7 @@ import {
 import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
 import {
   explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
+  checkAssertion,
 } from './MeasurePanel';
 
 const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
@@ -90,7 +91,13 @@ function SectionHead({ label, hint, children }: {
   );
 }
 
+/**
+ * The table name is the `title`, not a visible label: the header one line up
+ * already says `Receivables.AccountCode → GL classifications.Code`, so printing
+ * it again beside each select costs a third of the width to repeat itself.
+ */
 function ColumnPicker({ label, value, options, disabled, onChange }: {
+  /** `Table.column`, used for the hover title only. */
   label: string;
   value: number | null;
   options: GraphColumn[];
@@ -98,20 +105,19 @@ function ColumnPicker({ label, value, options, disabled, onChange }: {
   onChange: (id: number) => void;
 }) {
   return (
-    <label className="flex items-center gap-2">
-      <span className="w-[38%] shrink-0 truncate text-[11.5px] text-muted" title={label}>{label}</span>
-      <select
-        value={value ?? ''}
-        disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
-      >
-        {value == null && <option value="">— pick a column —</option>}
-        {options.map((c) => (
-          <option key={c.id} value={c.id}>{c.column_name}</option>
-        ))}
-      </select>
-    </label>
+    <select
+      value={value ?? ''}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
+    >
+      {value == null && <option value="">— pick a column —</option>}
+      {options.map((c) => (
+        <option key={c.id} value={c.id}>{c.column_name}</option>
+      ))}
+    </select>
   );
 }
 
@@ -137,9 +143,12 @@ export function EdgeInspector({
   onClose: () => void;
 }) {
   const [description, setDescription] = useState(relationship.description ?? '');
+  const [noteOpen, setNoteOpen] = useState(false);
   const [reason, setReason] = useState(relationship.flaggedReason ?? '');
   useEffect(() => { setReason(relationship.flaggedReason ?? ''); }, [relationship.id, relationship.flaggedReason]);
   useEffect(() => { setDescription(relationship.description ?? ''); }, [relationship.id, relationship.description]);
+  // A note opened on one relationship must not stay open on the next.
+  useEffect(() => { setNoteOpen(false); }, [relationship.id]);
 
   const prov = PROVENANCE_META[relationship.provenance];
   const m = relationship.measured as Measurement | null;
@@ -212,7 +221,7 @@ export function EdgeInspector({
         <div>
           <SectionHead
             label="Checked against your data"
-            hint="Three fixed SQL rules run against the warehouse. No AI is involved — the same rules Clarion uses when it detects relationships in the first place."
+            hint={checkAssertion(fromLabel, toLabel)}
           >
             <button
               type="button"
@@ -233,16 +242,23 @@ export function EdgeInspector({
 
           {m && (
             <>
-              {/* Verdict first, in words. The old block led with "FOUND 0%"
-                  above a sentence saying "it may still be right", which reads
-                  as a contradiction — the headline has to be the conclusion. */}
               <div
                 className="mt-2 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium"
                 style={{ color: verdict.fg, background: verdict.bg, borderColor: verdict.border }}
               >
                 {verdict.label}
               </div>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
+
+              {/* The verdict SENTENCE only when the rules cannot speak for
+                  themselves. `explain(m)` says "the other column repeats itself,
+                  so it isn't an identifier — 1,289 different values across 1,827
+                  rows"; the row below says "✗ Code identifies one row · 71%
+                  unique · needs 99%+". One fact, two vocabularies, both on
+                  screen. Where there is no containment or target there are no
+                  rows to read, and then the sentence is all there is. */}
+              {(!m.containment || !m.target) && (
+                <p className="mt-1.5 text-[12px] leading-relaxed text-ink2">{explain(m)}</p>
+              )}
 
               <ContradictionFlag m={m} provenance={relationship.provenance} />
 
@@ -251,49 +267,37 @@ export function EdgeInspector({
               </div>
 
               <div className="mt-2.5">
-                <CheckList m={m} fromLabel={fromLabel} toLabel={toLabel} />
+                <CheckList m={m} fromLabel={fromLabel} toLabel={toLabel} prose={false} />
               </div>
 
-              {(m.cardinality || m.orphans) && (
-                <div className="mt-2.5 grid grid-cols-2 gap-2">
-                  {m.cardinality && (
-                    <div>
-                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
-                        Measured shape
-                      </div>
-                      <div className="text-[13px] text-ink">{CARDINALITY_TEXT[m.cardinality.type]}</div>
-                    </div>
-                  )}
-                  {m.orphans && (
-                    <div>
-                      <div className="font-mono text-[10px] uppercase tracking-wider text-muted2">
-                        Rows with no match
-                      </div>
-                      <div className="text-[13px] tabular-nums text-ink">
-                        {m.orphans.rows.toLocaleString('en-GB')}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* Shape, orphans and the sampling caveat as ONE muted line.
+                  They were three blocks — two headed statistics and a paragraph
+                  — for what is a footnote to the rules above. The caveat still
+                  has to be said: the percentage counts distinct values from a
+                  bounded sample while the row count is the whole table, and
+                  putting the two side by side without saying so is how a reader
+                  ends up dividing one by the other. */}
+              <p className="mt-2 text-[10.5px] leading-relaxed text-muted2">
+                {m.cardinality && <>Measured {CARDINALITY_TEXT[m.cardinality.type]}. </>}
+                {m.orphans && m.orphans.rows > 0 && (
+                  <>
+                    <span className="tabular-nums">{m.orphans.rows.toLocaleString('en-GB')}</span>
+                    {' '}rows have no match.{' '}
+                  </>
+                )}
+                {m.containment && (
+                  <>
+                    Compared {m.containment.sampledDistinct.toLocaleString('en-GB')} different
+                    values{m.containment.sampledDistinct >= m.thresholds.sampleSize
+                      && ' (a sample of the column)'}; row counts are from the whole table.
+                  </>
+                )}
+              </p>
 
               {m.examples && (
                 <div className="mt-3">
                   <ValueComparison m={m} fromLabel={fromLabel} toLabel={toLabel} />
                 </div>
-              )}
-
-              {/* The two numbers above are measured over DIFFERENT populations:
-                  the percentage is distinct values from a bounded sample, the
-                  row count is the whole table. Presenting them side by side
-                  without saying so is how a reader ends up dividing one by the
-                  other — the same mistake the detector itself made in 2026-08. */}
-              {m.containment && (
-                <p className="mt-2 text-[10.5px] leading-relaxed text-muted2">
-                  Compared {m.containment.sampledDistinct.toLocaleString('en-GB')} different
-                  values{m.containment.sampledDistinct >= m.thresholds.sampleSize
-                    && ` (a sample of the column)`}; row counts are from the whole table.
-                </p>
               )}
             </>
           )}
@@ -316,72 +320,93 @@ export function EdgeInspector({
         </div>
 
         {/* Corrections come after the evidence, because the evidence is what
-            tells you whether a correction is called for. */}
+            tells you whether a correction is called for.
+            The two columns sit on ONE row with the arrow between them, mirroring
+            the relationship in the header. They were three stacked rows, each
+            spending 38% of the width on a table name the header already gave. */}
         <div className="mt-4 border-t border-line/60 pt-3">
           <SectionHead
             label="Matched on"
-            hint="These are the two columns Clarion compares. If it picked the wrong ones, change them here — the check re-runs against the columns you choose."
+            hint="The two columns Clarion compares. If it picked the wrong ones, change them here — the old measurement is cleared, because it described different columns."
           />
-          <div className="mt-1.5 space-y-1.5">
+          <div className="mt-1.5 flex items-center gap-1.5">
             <ColumnPicker
-              label={fromLabel.split('.')[0]}
+              label={fromLabel}
               value={relationship.fromColumnId}
               options={fromColumns}
               disabled={busy !== null}
               onChange={(id) => onChangeColumns({ from: id })}
             />
+            <span className="shrink-0 text-muted2">&rarr;</span>
             <ColumnPicker
-              label={toLabel.split('.')[0]}
+              label={toLabel}
               value={relationship.toColumnId}
               options={toColumns}
               disabled={busy !== null}
               onChange={(id) => onChangeColumns({ to: id })}
             />
-            {/* A dropdown, not four buttons. The shape is a stored value that
-                is almost always already right — four always-visible options
-                gave a settled field the weight of a decision. */}
-            <label className="flex items-center gap-2">
-              <span className="w-[38%] shrink-0 truncate text-[11.5px] text-muted">Shape</span>
-              <select
-                value={relationship.relationshipType ?? ''}
-                disabled={busy !== null}
-                onChange={(e) => onChangeType(e.target.value)}
-                className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
-              >
-                {!relationship.relationshipType && <option value="">— not set —</option>}
-                {Object.keys(CARDINALITY_TEXT).map((k) => (
-                  <option key={k} value={k}>{CARDINALITY_TEXT[k]}</option>
-                ))}
-              </select>
-            </label>
           </div>
+          {/* A dropdown, not four buttons. The shape is a stored value that is
+              almost always already right — four always-visible options gave a
+              settled field the weight of a decision. */}
+          <label className="mt-1.5 flex items-center gap-2">
+            <span className="shrink-0 text-[11.5px] text-muted">Shape</span>
+            <select
+              value={relationship.relationshipType ?? ''}
+              disabled={busy !== null}
+              onChange={(e) => onChangeType(e.target.value)}
+              className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
+            >
+              {!relationship.relationshipType && <option value="">&mdash; not set &mdash;</option>}
+              {Object.keys(CARDINALITY_TEXT).map((k) => (
+                <option key={k} value={k}>{CARDINALITY_TEXT[k]}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
+        {/* Folded away when empty. It matters — this sentence is what the AI
+            reads — but an empty three-row textarea under a heading and an
+            explanation is a lot of pane spent on something most links never
+            need. Once written it is always visible, because then it is content. */}
         <div className="mt-4 border-t border-line/60 pt-3">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <label className="font-mono text-[10px] uppercase tracking-wider text-muted2" htmlFor="rel-desc">
-              What this means
-            </label>
-            <Hint text="Clarion reads this when answering questions. A sentence in your own words helps more than anything else here." />
-            <Sparkles size={10} className="text-muted2" />
-          </div>
-          <textarea
-            id="rel-desc"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            placeholder="e.g. Every invoice line belongs to one invoice."
-            className="mt-2 w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted2 focus:border-ocean"
-          />
-          {dirty && (
+          {noteOpen || description ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <label className="font-mono text-[10px] uppercase tracking-wider text-muted2" htmlFor="rel-desc">
+                  What this means
+                </label>
+                <Hint text="Clarion reads this when answering questions. A sentence in your own words helps more than anything else here." />
+                <Sparkles size={10} className="text-muted2" />
+              </div>
+              <textarea
+                id="rel-desc"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                placeholder="e.g. Every invoice line belongs to one invoice."
+                className="mt-1.5 w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted2 focus:border-ocean"
+              />
+              {dirty && (
+                <button
+                  type="button"
+                  onClick={() => onSaveDescription(description)}
+                  disabled={busy !== null}
+                  className="mt-1.5 rounded-lg bg-ocean px-2.5 py-1 text-[12px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
+                >
+                  {busy === 'save' ? <Loader2 size={11} className="mr-1 inline animate-spin" /> : null}
+                  Save
+                </button>
+              )}
+            </>
+          ) : (
             <button
               type="button"
-              onClick={() => onSaveDescription(description)}
-              disabled={busy !== null}
-              className="mt-1.5 rounded-lg bg-ocean px-2.5 py-1 text-[12px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
+              onClick={() => setNoteOpen(true)}
+              className="inline-flex items-center gap-1.5 text-[11.5px] text-ocean hover:underline"
             >
-              {busy === 'save' ? <Loader2 size={11} className="mr-1 inline animate-spin" /> : null}
-              Save
+              <Sparkles size={11} />
+              Describe what this link means, for the AI
             </button>
           )}
         </div>
