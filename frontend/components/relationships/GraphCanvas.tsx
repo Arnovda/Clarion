@@ -254,6 +254,7 @@ function CanvasInner() {
         flagged: r.flagged,
         siblingTargets: 0,
         sourceName: sourceNameByTable.get(tableId),
+        semanticSource: r.semanticSource ?? null,
       });
     }
     // Grouped by the field they leave from, because that is the question the
@@ -1201,11 +1202,19 @@ function CanvasInner() {
               <span className="text-muted2">·</span>
               <span className="text-muted2">in the list:</span>
               <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="declared" />
+                <ProvenanceMark provenance="declared" semanticSource="vendor_docs" />
                 the source documents it
               </span>
               <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="human" />
+                <ProvenanceMark provenance="declared" semanticSource="curated" />
+                a person wrote it
+              </span>
+              <span className="flex items-center gap-1">
+                <ProvenanceMark provenance="declared" semanticSource="value_overlap" />
+                Clarion measured it
+              </span>
+              <span className="flex items-center gap-1">
+                <ProvenanceMark provenance="human" semanticSource={null} />
                 someone confirmed it
               </span>
               {selectedRel && (

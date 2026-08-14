@@ -6,6 +6,29 @@
  */
 
 export type Provenance = 'human' | 'ai' | 'declared';
+
+/**
+ * WHICH channel produced a relationship.
+ *
+ * `Provenance` answers "may I trust this yet?" in three values and drives the
+ * review queue. This answers "where did it come from?" in seven, and it is the
+ * distinction `Provenance` structurally cannot make: `vendor_docs` and
+ * `curated` both arrive as `declared`, so a link a Clarion engineer wrote by
+ * hand used to claim the source system's authority on screen.
+ *
+ * NULL — the row predates migration 79 — must render as unknown, never as a
+ * guess. Existing rows are deliberately not backfilled: the information is gone,
+ * and inventing it would put a confident label on exactly the relationships most
+ * likely to be wrong.
+ */
+export type SemanticSource =
+  | 'vendor_docs'
+  | 'curated'
+  | 'declared'
+  | 'name_pattern'
+  | 'value_overlap'
+  | 'ai_suggested'
+  | 'ai_model';
 export type EdgeKind = 'join' | 'match';
 
 export interface GraphSource {
@@ -50,6 +73,7 @@ export interface GraphRelationship {
   /** Someone looked at this and said the data does not back it. */
   flagged: boolean;
   flaggedReason: string | null;
+  semanticSource: SemanticSource | null;
 }
 
 export interface GraphResponse {

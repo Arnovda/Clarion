@@ -250,7 +250,11 @@ export async function runSchemaProfiler(
             fromColumn: rel.fromColumn,
             toTable: rel.toTable,
             toColumn: rel.toColumn,
-            source: 'declared',
+            // CURATED, not declared. This catalogue is hand-written by us; the
+            // vendor has no idea it exists. Labelling it `declared` is what let
+            // 81 relationships we authored claim Exact Online's authority on
+            // screen.
+            source: 'curated',
             confidence: 1.0,
           });
         }
@@ -276,7 +280,8 @@ export async function runSchemaProfiler(
           fromColumn: rel.fromColumn,
           toTable:    rel.toTable,
           toColumn:   rel.toColumn,
-          source:     'declared',
+          // The only channel that is genuinely the SOURCE SYSTEM's own claim.
+          source:     'vendor_docs',
           confidence: 1.0,
         });
         docRelCount++;
@@ -291,11 +296,16 @@ export async function runSchemaProfiler(
     (fk) => !knownKeys.has(`${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`),
   );
 
+  const vendorCount = knownFks.filter((fk) => fk.source === 'vendor_docs').length;
+  const curatedCount = knownFks.filter((fk) => fk.source === 'curated').length;
   const declaredCount = heuristicFks.filter((fk) => fk.source === 'declared').length;
   const patternCount = heuristicFks.filter((fk) => fk.source === 'name_pattern').length;
   const overlapCount = heuristicFks.filter((fk) => fk.source === 'value_overlap').length;
   const fkParts: string[] = [];
-  if (knownFks.length) fkParts.push(`${knownFks.length} known`);
+  // Named separately in the progress line for the same reason they are stored
+  // separately: "12 known" hid the fact that 11 of them were ours.
+  if (vendorCount) fkParts.push(`${vendorCount} from the vendor's docs`);
+  if (curatedCount) fkParts.push(`${curatedCount} curated`);
   if (declaredCount) fkParts.push(`${declaredCount} declared`);
   if (patternCount) fkParts.push(`${patternCount} by name`);
   if (overlapCount) fkParts.push(`${overlapCount} by data`);
@@ -693,6 +703,12 @@ export async function runSchemaProfiler(
     from_table: string; from_column: string | null;
     to_table: string; to_column: string | null;
     relationship_type: string; description: string | null;
+    /**
+     * Carried through the re-profile so confirming a link does not erase which
+     * channel found it. Without this, every human confirmation would launder an
+     * AI guess into an unattributed relationship on the next Analyse.
+     */
+    semantic_source: string | null;
   };
   let humanRelSnaps: HumanRelSnap[] = [];
   try {
@@ -725,7 +741,7 @@ export async function runSchemaProfiler(
         .select(
           'ft.table_name as from_table', 'fc.column_name as from_column',
           'tt.table_name as to_table', 'tc.column_name as to_column',
-          'r.relationship_type', 'r.description',
+          'r.relationship_type', 'r.description', 'r.semantic_source',
         );
       return { tableRows, colRows, relRows };
     });
@@ -922,6 +938,21 @@ export async function runSchemaProfiler(
       }
     }
 
+    /**
+     * Which channel produced each candidate, keyed the same way `knownKeys` is.
+     *
+     * Built here rather than earlier because `allFkCandidates` only stops
+     * growing after AI Pass A. The AI table-context pass (Pass B) proposes
+     * relationships that are in no candidate list at all — anything not found
+     * here came from the model reading the schema, which is `ai_model`, and is
+     * the channel that produced ten copies of `→ GLClassifications.Name` in the
+     * 2026-08-03 audit. It is exactly the one worth being able to name.
+     */
+    const sourceByRelKey = new Map<string, string>();
+    for (const fk of allFkCandidates) {
+      sourceByRelKey.set(`${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`, fk.source);
+    }
+
     // Insert relationships from the AI table-context pass.
     const insertedRelKeys = new Set<string>();
     for (const rel of tableContext.relationships) {
@@ -959,6 +990,7 @@ export async function runSchemaProfiler(
         relationship_type: rel.type,
         description:       rel.reason ?? `${rel.from_table}.${rel.via_column} → ${rel.to_table}.${rel.to_column}`,
         ai_draft:          !isKnown,
+        semantic_source:   sourceByRelKey.get(relKey) ?? 'ai_model',
       });
       relationshipsInserted++;
     }
@@ -997,8 +1029,13 @@ export async function runSchemaProfiler(
         to_table_id:       toTableId,
         to_column_id:      toColId,
         relationship_type: 'many_to_one',
+        // The `[source]` tag stays in the description for now — it is what the
+        // pre-migration rows carry, and dropping it would make old and new rows
+        // read differently for no gain. `semantic_source` is the field to
+        // query; the tag is a human breadcrumb.
         description:       `${fk.fromTable}.${fk.fromColumn} → ${fk.toTable}.${fk.toColumn} [${fk.source}]`,
         ai_draft:          !isKnown,
+        semantic_source:   fk.source,
       });
       relationshipsInserted++;
     }
@@ -1032,6 +1069,11 @@ export async function runSchemaProfiler(
           confirmed_by_user: true,
           relationship_type: snap.relationship_type,
           ...(snap.description ? { description: snap.description } : {}),
+          // Only restore the snapshotted channel when the pipeline did NOT
+          // re-derive one. If it did, the fresh value is better information
+          // than a stale copy of the same fact.
+          ...(snap.semantic_source && !existing.semantic_source
+            ? { semantic_source: snap.semantic_source } : {}),
         });
       } else {
         await trx('table_relationships').insert({
@@ -1043,6 +1085,7 @@ export async function runSchemaProfiler(
           description: snap.description ?? `${snap.from_table}.${snap.from_column} → ${snap.to_table}.${snap.to_column} [confirmed by user]`,
           ai_draft: false,
           confirmed_by_user: true,
+          semantic_source: snap.semantic_source,
         });
         relationshipsInserted++;
       }

@@ -114,7 +114,7 @@ router.get('/graph', requireAuth, requireRole('admin', 'analyst'),
             .select(
               'id', 'kind', 'from_table_id', 'from_column_id', 'to_table_id', 'to_column_id',
               'relationship_type', 'description', 'ai_draft', 'confirmed_by_user',
-              'measured', 'match_keys', 'flagged_at', 'flagged_reason',
+              'measured', 'match_keys', 'flagged_at', 'flagged_reason', 'semantic_source',
             )
         : [];
 

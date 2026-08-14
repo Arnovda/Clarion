@@ -22,8 +22,24 @@ export interface FkCandidate {
   fromColumn: string;
   toTable: string;
   toColumn: string;
-  /** How was this candidate detected? */
-  source: 'declared' | 'name_pattern' | 'ai_suggested' | 'value_overlap';
+  /**
+   * How was this candidate detected?
+   *
+   * These are not degrees of one scale — they are different KINDS of evidence
+   * with different failure modes, and they are kept apart all the way to the
+   * screen. `declared` means the database itself declares a foreign-key
+   * constraint (never true for a Parquet or API source); `vendor_docs` means
+   * the source system documents it; `curated` means a Clarion engineer wrote it
+   * into the connector. The last two used to collapse into `declared`, so a
+   * relationship we authored claimed the vendor's authority.
+   */
+  source:
+    | 'declared'
+    | 'vendor_docs'
+    | 'curated'
+    | 'name_pattern'
+    | 'ai_suggested'
+    | 'value_overlap';
   /** 0-1 — how confident the heuristic is */
   confidence: number;
   /** Fraction of fromColumn values found in toColumn (null if not checked) */

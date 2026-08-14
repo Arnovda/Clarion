@@ -55,6 +55,8 @@ export interface RelationshipRow {
   match_keys: unknown;
   flagged_at: Date | string | null;
   flagged_reason: string | null;
+  /** Which detection channel produced this link (migration 79; NULL if older). */
+  semantic_source: string | null;
 }
 
 export interface TableRow {
@@ -82,6 +84,48 @@ export interface GraphRelationship {
   /** Someone looked at this and said the data does not back it (migration 78). */
   flagged: boolean;
   flaggedReason: string | null;
+  /**
+   * WHICH channel produced this link — the refinement `provenance` cannot make.
+   *
+   * `provenance` has three values and answers "may I trust this yet?".
+   * `semanticSource` has seven and answers "where did it come from?". They are
+   * not the same question: `vendor_docs` and `curated` both land as
+   * `declared`, so a relationship a Clarion engineer hand-wrote used to claim
+   * the source system's authority on screen. NULL means the row predates
+   * migration 79 and must render as unknown, never as a guess.
+   */
+  semanticSource: SemanticSource | null;
+}
+
+/**
+ * The detection channels, from strongest evidence to weakest.
+ *
+ * Kept as distinct values rather than a score because they fail differently:
+ * a name-pattern match is wrong when two systems use the same word for
+ * different things, a value-overlap match is wrong when a small domain agrees
+ * by coincidence, and an AI proposal is wrong in ways neither of those predict.
+ */
+export type SemanticSource =
+  | 'vendor_docs'
+  | 'curated'
+  | 'declared'
+  | 'name_pattern'
+  | 'value_overlap'
+  | 'ai_suggested'
+  | 'ai_model';
+
+const KNOWN_SOURCES: ReadonlySet<string> = new Set<SemanticSource>([
+  'vendor_docs', 'curated', 'declared',
+  'name_pattern', 'value_overlap', 'ai_suggested', 'ai_model',
+]);
+
+/**
+ * Anything unrecognised becomes null rather than being passed through. The
+ * column is free text, and a value the UI has no label for would otherwise
+ * reach a lookup table and render as `undefined`.
+ */
+export function normaliseSemanticSource(v: unknown): SemanticSource | null {
+  return typeof v === 'string' && KNOWN_SOURCES.has(v) ? (v as SemanticSource) : null;
 }
 
 /**
@@ -223,6 +267,7 @@ export function buildGraph(
       measured: r.measured ?? null,
       flagged: r.flagged_at != null,
       flaggedReason: r.flagged_reason ?? null,
+      semanticSource: normaliseSemanticSource(r.semantic_source),
       matchKeys: r.match_keys ?? null,
     });
 

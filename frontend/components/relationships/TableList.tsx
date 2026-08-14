@@ -2,61 +2,14 @@
 
 import { useMemo } from 'react';
 import {
-  Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag, BookText, UserCheck,
+  Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag,
+  BookText, UserCheck, Wrench, SearchCheck,
 } from 'lucide-react';
-import type { GraphSource, GraphTable, Provenance, EdgeKind, Measurement } from './types';
+import type {
+  GraphSource, GraphTable, Provenance, EdgeKind, Measurement, SemanticSource,
+} from './types';
+import { originOf, TIER_STYLE } from './provenance';
 import { shortFinding, type Outcome } from './MeasurePanel';
-
-/**
- * Who says this link exists — as a mark you can actually tell apart.
- *
- * It was a 6px dot: solid teal for a person, solid GREY for the source system's
- * own documentation, a hollow amber ring for an AI suggestion. At that size the
- * first two are indistinguishable, and grey — the quietest colour on screen —
- * was carrying the single most trustworthy fact the catalog holds. A vendor
- * documents a foreign key or it does not; that is externally verifiable and it
- * never changes, which is more than can be said for any measurement.
- *
- * So documented gets an icon of its own, in the accent colour, and the three
- * states differ by SHAPE rather than by a few degrees of hue.
- */
-export function ProvenanceMark({ provenance, sourceName }: {
-  provenance: Provenance;
-  sourceName?: string;
-}) {
-  if (provenance === 'declared') {
-    return (
-      <span
-        className="flex shrink-0 text-ocean"
-        title={sourceName
-          ? `${sourceName} documents this relationship in its own data model`
-          : 'The source system documents this relationship'}
-        aria-label="Documented by the source"
-      >
-        <BookText size={11} />
-      </span>
-    );
-  }
-  if (provenance === 'human') {
-    return (
-      <span
-        className="flex shrink-0 text-ocean"
-        title="Someone on your team confirmed this"
-        aria-label="Confirmed by someone on your team"
-      >
-        <UserCheck size={11} />
-      </span>
-    );
-  }
-  return (
-    <span
-      className="mx-[2px] h-[7px] w-[7px] shrink-0 rounded-full"
-      style={{ border: '1.5px solid #b8823a' }}
-      aria-label="Suggested by Clarion, not yet decided"
-      title="Suggested by Clarion — nobody has decided on it yet"
-    />
-  );
-}
 
 /** One of a table's relationships, as it reads in the list. */
 export interface TableListLink {
@@ -77,6 +30,8 @@ export interface TableListLink {
   siblingTargets: number;
   /** Which system this came from — named when it is the system's own documentation. */
   sourceName?: string;
+  /** Which detection channel produced it; null for links written before migration 79. */
+  semanticSource: SemanticSource | null;
 }
 
 /** A per-table check in flight. */
@@ -85,6 +40,73 @@ export interface CheckProgress {
   tableId: number | null;
   done: number;
   total: number;
+}
+
+/**
+ * WHERE this link came from — as a mark you can actually tell apart.
+ *
+ * It was a 6px dot with three states, and the middle one was wrong. Solid teal
+ * meant a person, solid GREY meant "declared" — and "declared" silently covered
+ * both the vendor's own documentation and a catalogue a Clarion engineer wrote
+ * by hand. Two very different claims, one grey dot, and grey was the quietest
+ * colour on screen carrying the most trustworthy fact the catalog holds.
+ *
+ * Migration 79 split them apart, so the mark can too. Four shapes, by how the
+ * link was established rather than by how much anyone likes it:
+ *
+ *   book        the source system documents it, or the database enforces it
+ *   wrench      a person wrote it — Clarion's connector, or your own team
+ *   magnifier   Clarion found it by measuring your data
+ *   open ring   Clarion proposed it and nobody has decided
+ */
+export function ProvenanceMark({ provenance, semanticSource, sourceName }: {
+  provenance: Provenance;
+  semanticSource: SemanticSource | null;
+  sourceName?: string;
+}) {
+  const o = originOf(provenance, semanticSource);
+  const title = sourceName && semanticSource === 'vendor_docs'
+    ? `${o.label} — ${sourceName} documents this in its own data model`
+    : `${o.label}${o.confirmed ? ' · confirmed by your team' : ''} — ${o.hint}`;
+
+  // A person's confirmation is drawn ON TOP of the channel, not instead of it,
+  // so a link somebody ticked still shows where it came from.
+  if (o.confirmed) {
+    return (
+      <span className="flex shrink-0 text-ocean" title={title} aria-label={title}>
+        <UserCheck size={11} />
+      </span>
+    );
+  }
+  if (o.tier === 'documented') {
+    return (
+      <span className="flex shrink-0" style={{ color: TIER_STYLE.documented.fg }} title={title} aria-label={title}>
+        <BookText size={11} />
+      </span>
+    );
+  }
+  if (o.tier === 'written') {
+    return (
+      <span className="flex shrink-0" style={{ color: TIER_STYLE.written.fg }} title={title} aria-label={title}>
+        <Wrench size={11} />
+      </span>
+    );
+  }
+  if (o.tier === 'found') {
+    return (
+      <span className="flex shrink-0 text-muted2" title={title} aria-label={title}>
+        <SearchCheck size={11} />
+      </span>
+    );
+  }
+  return (
+    <span
+      className="mx-[2px] h-[7px] w-[7px] shrink-0 rounded-full"
+      style={{ border: '1.5px solid #b8823a' }}
+      title={title}
+      aria-label={title}
+    />
+  );
 }
 
 /** A table's links, gathered under the field each one leaves from. */
@@ -409,6 +431,7 @@ export function TableList({
                                 >
                                   <ProvenanceMark
                                     provenance={l.provenance}
+                                    semanticSource={l.semanticSource}
                                     sourceName={l.sourceName}
                                   />
                                   <span className="shrink-0 text-muted2">

@@ -1,0 +1,130 @@
+import type { Provenance, SemanticSource } from './types';
+
+/**
+ * How a relationship's origin is described to a person.
+ *
+ * **Two facts, not one.** `Provenance` says whether anyone has vouched for the
+ * link — it drives the review queue and the dash pattern on the canvas.
+ * `SemanticSource` says which of seven channels actually produced it. They were
+ * collapsed into one field until migration 79, with two visible consequences:
+ *
+ *   • 81 relationships hand-written into Clarion's Exact Online connector
+ *     rendered as *"Documented by the source"*, claiming the vendor's authority
+ *     for our own work;
+ *   • a column-name guess, a value-overlap scan and two different AI passes all
+ *     rendered as *"Suggested by Clarion"*, so the channel that actually
+ *     produced the bad links — the model reading the schema — was
+ *     indistinguishable from the three that did not.
+ *
+ * The labels below are what a business user reads, so they name the thing that
+ * did the asserting rather than the mechanism: "Exact Online documents this",
+ * not "vendor_docs".
+ */
+export interface OriginMeta {
+  /** Short label for a chip. Kept under ~28 characters so it never wraps. */
+  label: string;
+  /** One sentence: what this channel actually did, and how much it is worth. */
+  hint: string;
+  /**
+   * How much to lean on it, independent of whether a person has confirmed it.
+   * `documented` is externally verifiable; `written` is a human decision made
+   * once for every tenant; `found` is a measurement; `proposed` is a guess that
+   * survived a measurement.
+   */
+  tier: 'documented' | 'written' | 'found' | 'proposed';
+}
+
+export const ORIGIN: Record<SemanticSource, OriginMeta> = {
+  vendor_docs: {
+    label: 'Documented by the source',
+    hint: 'The source system declares this relationship in its own data model, so it '
+      + 'exists by definition. If the data still does not back it, that is nearly always '
+      + 'a sync that has not finished — not a wrong link.',
+    tier: 'documented',
+  },
+  declared: {
+    label: 'A key in the database',
+    hint: 'The database itself declares this as a foreign key. It is enforced at the '
+      + 'source, so it cannot be wrong there.',
+    tier: 'documented',
+  },
+  curated: {
+    label: "Built into Clarion's connector",
+    hint: 'Written by hand into Clarion for this kind of source, because the vendor does '
+      + 'not document it. Reliable, but it is our claim rather than the vendor’s — '
+      + 'and it was written without seeing your data.',
+    tier: 'written',
+  },
+  name_pattern: {
+    label: 'Matched on column names',
+    hint: 'Found because the column names line up — a column ending in ID next to a table '
+      + 'of that name — and then checked against your values. Wrong when two systems use '
+      + 'the same word for different things.',
+    tier: 'found',
+  },
+  value_overlap: {
+    label: 'Found by comparing values',
+    hint: 'Found only because the values in the two columns agree. The weakest signal '
+      + 'there is: a small set of values can agree entirely by coincidence.',
+    tier: 'found',
+  },
+  ai_suggested: {
+    label: 'Clarion matched a loose key',
+    hint: 'A key column matched nothing, so Clarion proposed a target and then checked it '
+      + 'against your data. Proposals that failed the check were discarded.',
+    tier: 'proposed',
+  },
+  ai_model: {
+    label: 'Clarion read the schema',
+    hint: 'Clarion proposed this from the shape of your tables, then checked it against '
+      + 'your data. This is the broadest of the channels and the one most worth a second '
+      + 'look — it is where invented links have come from before.',
+    tier: 'proposed',
+  },
+};
+
+/** Rows written before migration 79 carry no channel, and must not pretend to. */
+const UNKNOWN_ORIGIN: Record<Provenance, OriginMeta> = {
+  human: {
+    label: 'Confirmed by your team',
+    hint: 'Someone on your team confirmed this. How Clarion first found it was not '
+      + 'recorded — this link predates that being tracked.',
+    tier: 'written',
+  },
+  declared: {
+    label: 'Trusted, origin not recorded',
+    hint: 'Clarion treated this as reliable from the start, but which channel produced it '
+      + 'was not recorded. Re-analysing this source will fill it in.',
+    tier: 'written',
+  },
+  ai: {
+    label: 'Suggested by Clarion',
+    hint: 'Clarion worked this out from your data. Which channel produced it was not '
+      + 'recorded — this link predates that being tracked. Confirm it or remove it.',
+    tier: 'proposed',
+  },
+};
+
+/**
+ * What to show for one relationship.
+ *
+ * Confirmation does NOT overwrite the channel: knowing a colleague ticked a link
+ * that Clarion invented from the schema is more useful than knowing only that
+ * somebody ticked it. So the channel is the label, and `confirmed` rides
+ * alongside it.
+ */
+export function originOf(
+  provenance: Provenance,
+  semanticSource: SemanticSource | null,
+): OriginMeta & { confirmed: boolean; recorded: boolean } {
+  const base = semanticSource ? ORIGIN[semanticSource] : UNKNOWN_ORIGIN[provenance];
+  return { ...base, confirmed: provenance === 'human', recorded: semanticSource !== null };
+}
+
+/** Chip colours by tier. Documented is the accent; a guess is never green. */
+export const TIER_STYLE: Record<OriginMeta['tier'], { fg: string; bg: string }> = {
+  documented: { fg: '#164e63', bg: '#dbeaf0' },
+  written:    { fg: '#3f7a5c', bg: '#dbe8e0' },
+  found:      { fg: '#4a5660', bg: '#e3e6ea' },
+  proposed:   { fg: '#a06a1c', bg: '#f1e4c8' },
+};

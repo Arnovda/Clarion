@@ -2,35 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2, HelpCircle,
+  Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2, HelpCircle, UserCheck,
 } from 'lucide-react';
-import type { GraphColumn, GraphRelationship, Measurement, Provenance } from './types';
+import type { GraphColumn, GraphRelationship, Measurement } from './types';
+import { originOf, TIER_STYLE } from './provenance';
 import {
   explain, OverlapBar, ValueComparison, CheckList, ContradictionFlag, VERDICT_STYLE,
   checkAssertion,
 } from './MeasurePanel';
-
-const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: string; bg: string }> = {
-  human: {
-    label: 'Confirmed by you',
-    hint: 'Someone on your team checked this. It survives every re-analysis.',
-    color: '#164e63', bg: '#e8f0f3',
-  },
-  // Vendor documentation is the strongest provenance in the catalog — it is
-  // externally verifiable and it does not change — and it used to render in the
-  // dimmest grey on screen, indistinguishable from a human confirmation. It gets
-  // the accent colour and says outright that the source itself declares it.
-  declared: {
-    label: 'Documented by the source',
-    hint: "The source system declares this relationship in its own data model, so it exists by definition. If the data below still doesn't back it, that is nearly always a sync that hasn't finished — not a wrong link.",
-    color: '#164e63', bg: '#dbeaf0',
-  },
-  ai: {
-    label: 'Suggested by Clarion',
-    hint: 'Clarion worked this out from your data. Confirm it or remove it.',
-    color: '#c08a5e', bg: '#f1e4d6',
-  },
-};
 
 const CARDINALITY_TEXT: Record<string, string> = {
   one_to_one: 'one-to-one',
@@ -154,7 +133,8 @@ export function EdgeInspector({
   // A note opened on one relationship must not stay open on the next.
   useEffect(() => { setNoteOpen(false); }, [relationship.id]);
 
-  const prov = PROVENANCE_META[relationship.provenance];
+  const origin = originOf(relationship.provenance, relationship.semanticSource);
+  const tier = TIER_STYLE[origin.tier];
   const m = relationship.measured as Measurement | null;
   const verdict = VERDICT_STYLE[m?.verdict ?? 'unmeasurable'];
   const dirty = description.trim() !== (relationship.description ?? '').trim();
@@ -170,18 +150,26 @@ export function EdgeInspector({
           <div className="mt-1 break-words text-[13px] leading-snug text-ink">
             {fromLabel} <span className="text-muted2">→</span> {toLabel}
           </div>
-          {/* Who asserted this is a one-word fact, so it rides on the title
-              line as a chip. It used to open the panel as a chip plus a full
-              sentence of explanation, which put the measurement — the thing
-              you came for — below the fold. */}
+          {/* WHICH channel found this, not just whether to trust it. Those are
+              two facts, and they were one field until migration 79 — which is
+              how 81 links a Clarion engineer hand-wrote came to claim the
+              vendor's authority on screen. Confirmation rides alongside rather
+              than replacing the channel: "a colleague ticked a link Clarion
+              invented from the schema" is more useful than either half. */}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <span
               className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
-              style={{ color: prov.color, background: prov.bg }}
+              style={{ color: tier.fg, background: tier.bg }}
             >
-              {prov.label}
+              {origin.label}
             </span>
-            <Hint text={prov.hint} />
+            {origin.confirmed && origin.recorded && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-ocean">
+                <UserCheck size={11} />
+                confirmed
+              </span>
+            )}
+            <Hint text={origin.hint} />
           </div>
         </div>
         <button type="button" onClick={onClose} className="rounded p-1 text-muted2 hover:bg-soft hover:text-ink" aria-label="Close">
