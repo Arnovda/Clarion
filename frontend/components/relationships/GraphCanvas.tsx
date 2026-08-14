@@ -16,7 +16,9 @@ import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
-import { TableList, type TableListLink, type CheckProgress } from './TableList';
+import {
+  TableList, ProvenanceMark, type TableListLink, type CheckProgress,
+} from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
 import { outcomeOf } from './MeasurePanel';
 import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
@@ -173,6 +175,17 @@ function CanvasInner() {
     return m;
   }, [graph]);
 
+  /** Which system a table came from, so "documented" can name who documented it. */
+  const sourceNameByTable = useMemo(() => {
+    const byConn = new Map((graph?.sources ?? []).map((s) => [s.id, s.name]));
+    const m = new Map<number, string>();
+    for (const t of graph?.tables ?? []) {
+      const n = byConn.get(t.connectionId);
+      if (n) m.set(t.id, n);
+    }
+    return m;
+  }, [graph]);
+
   /**
    * Tables with something unresolved on them: a raised flag, a measurement the
    * data contradicts, or a suggestion nobody has decided on. Deliberately NOT
@@ -240,6 +253,7 @@ function CanvasInner() {
         measured: freshMeasured.get(r.id) ?? (r.measured as Measurement | null),
         flagged: r.flagged,
         siblingTargets: 0,
+        sourceName: sourceNameByTable.get(tableId),
       });
     }
     // Grouped by the field they leave from, because that is the question the
@@ -265,7 +279,7 @@ function CanvasInner() {
       a.ownLabel.localeCompare(b.ownLabel)
       || rank[outcomeOf(a.measured)] - rank[outcomeOf(b.measured)]
       || a.otherLabel.localeCompare(b.otherLabel));
-  }, [graph, columnNameById, tableNameById, freshMeasured]);
+  }, [graph, columnNameById, tableNameById, sourceNameByTable, freshMeasured]);
 
   const toggleAllColumns = useCallback((tableId: number) => {
     setShowAll((prev) => {
@@ -1178,6 +1192,21 @@ function CanvasInner() {
                   <line x1="0" y1="2" x2="14" y2="2" stroke="#8c96a0" strokeWidth="1.5" strokeDasharray="5 4" />
                 </svg>
                 nobody has decided yet
+              </span>
+              {/* Colour and dash are the line's two channels and both are spoken
+                  for, so WHO said a link exists is read in the LIST, not off the
+                  picture — a third simultaneous encoding on one stroke is where
+                  all three stop being legible. Saying "in the list" is the
+                  difference between one legend and a misleading one. */}
+              <span className="text-muted2">·</span>
+              <span className="text-muted2">in the list:</span>
+              <span className="flex items-center gap-1">
+                <ProvenanceMark provenance="declared" />
+                the source documents it
+              </span>
+              <span className="flex items-center gap-1">
+                <ProvenanceMark provenance="human" />
+                someone confirmed it
               </span>
               {selectedRel && (
                 <>

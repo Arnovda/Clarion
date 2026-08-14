@@ -1,9 +1,62 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag } from 'lucide-react';
+import {
+  Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag, BookText, UserCheck,
+} from 'lucide-react';
 import type { GraphSource, GraphTable, Provenance, EdgeKind, Measurement } from './types';
-import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
+import { shortFinding, type Outcome } from './MeasurePanel';
+
+/**
+ * Who says this link exists — as a mark you can actually tell apart.
+ *
+ * It was a 6px dot: solid teal for a person, solid GREY for the source system's
+ * own documentation, a hollow amber ring for an AI suggestion. At that size the
+ * first two are indistinguishable, and grey — the quietest colour on screen —
+ * was carrying the single most trustworthy fact the catalog holds. A vendor
+ * documents a foreign key or it does not; that is externally verifiable and it
+ * never changes, which is more than can be said for any measurement.
+ *
+ * So documented gets an icon of its own, in the accent colour, and the three
+ * states differ by SHAPE rather than by a few degrees of hue.
+ */
+export function ProvenanceMark({ provenance, sourceName }: {
+  provenance: Provenance;
+  sourceName?: string;
+}) {
+  if (provenance === 'declared') {
+    return (
+      <span
+        className="flex shrink-0 text-ocean"
+        title={sourceName
+          ? `${sourceName} documents this relationship in its own data model`
+          : 'The source system documents this relationship'}
+        aria-label="Documented by the source"
+      >
+        <BookText size={11} />
+      </span>
+    );
+  }
+  if (provenance === 'human') {
+    return (
+      <span
+        className="flex shrink-0 text-ocean"
+        title="Someone on your team confirmed this"
+        aria-label="Confirmed by someone on your team"
+      >
+        <UserCheck size={11} />
+      </span>
+    );
+  }
+  return (
+    <span
+      className="mx-[2px] h-[7px] w-[7px] shrink-0 rounded-full"
+      style={{ border: '1.5px solid #b8823a' }}
+      aria-label="Suggested by Clarion, not yet decided"
+      title="Suggested by Clarion — nobody has decided on it yet"
+    />
+  );
+}
 
 /** One of a table's relationships, as it reads in the list. */
 export interface TableListLink {
@@ -22,6 +75,8 @@ export interface TableListLink {
   flagged: boolean;
   /** How many targets this link's source column points at, including itself. */
   siblingTargets: number;
+  /** Which system this came from — named when it is the system's own documentation. */
+  sourceName?: string;
 }
 
 /** A per-table check in flight. */
@@ -44,18 +99,32 @@ function groupByColumn(links: readonly TableListLink[]) {
 }
 
 /**
- * How a table's links came out, as one line.
+ * How a table's links came out, as one line — counted by CAUSE, not by severity.
  *
- * Counting is the point: after a sweep the question is "how many need me?",
- * and three numbers answer it before any row is read.
+ * It used to count the four outcomes, so a table whose every link fails the same
+ * way read "26 partly match". That is a severity histogram; it says how bad
+ * things are and nothing about what is wrong. Counted by cause the same table
+ * reads **"26 not unique · 1 holds"**, which is the actual finding: one column
+ * on this table repeats itself, and every link pointing at it fails for that one
+ * reason. Same twenty-six rows, a fact instead of a temperature.
+ *
+ * Matches are excluded: they are verified by match RATE, not by containment, so
+ * this check never runs on them and counting them would leave a number nobody
+ * can bring down to zero.
  */
 function summarise(links: readonly TableListLink[]) {
-  const by: Record<Outcome, number> = { holds: 0, partial: 0, none: 0, unknown: 0 };
-  // Matches are excluded: they are verified by match RATE, not by containment,
-  // so this check never runs on them. Counting them as "not checked" would
-  // leave a number nobody can ever bring down to zero.
-  for (const l of links) if (l.kind !== 'match') by[outcomeOf(l.measured)] += 1;
-  return by;
+  const by = new Map<string, { n: number; color: string; tone: Outcome }>();
+  for (const l of links) {
+    if (l.kind === 'match') continue;
+    const f = shortFinding(l.measured, l.otherLabel);
+    if (!f) continue;
+    const cur = by.get(f.group);
+    if (cur) cur.n += 1;
+    else by.set(f.group, { n: 1, color: f.color, tone: f.tone });
+  }
+  const rank: Record<Outcome, number> = { none: 0, partial: 1, unknown: 2, holds: 3 };
+  return [...by.entries()]
+    .sort(([, a], [, b]) => rank[a.tone] - rank[b.tone] || b.n - a.n);
 }
 
 /**
@@ -273,16 +342,16 @@ export function TableList({
                               </span>
                             ) : everChecked ? (
                               <>
-                                {(['none', 'partial', 'holds', 'unknown'] as const)
-                                  .filter((k) => by[k] > 0)
-                                  .map((k) => (
-                                    <span key={k} className="tabular-nums" style={{ color: OUTCOME[k].color }}>
-                                      {by[k]} {OUTCOME[k].label}
+                                <span className="min-w-0 flex-1 truncate">
+                                  {by.map(([label, v], i) => (
+                                    <span key={label}>
+                                      {i > 0 && <span className="text-muted2"> · </span>}
+                                      <span className="tabular-nums" style={{ color: v.color }}>
+                                        {v.n} {label}
+                                      </span>
                                     </span>
-                                  ))
-                                  .flatMap((el, i) => (i === 0 ? [el] : [
-                                    <span key={`s${i}`} className="text-muted2">·</span>, el,
-                                  ]))}
+                                  ))}
+                                </span>
                                 <button
                                   type="button"
                                   onClick={() => onCheckTable(t.id)}
@@ -322,21 +391,25 @@ export function TableList({
                             </div>
                             {group.links.map((l) => {
                               const active = l.id === selectedEdgeId;
-                              const outcome = outcomeOf(l.measured);
+                              // The BINDING CONSTRAINT, not the containment
+                              // ratio. A row reading "100%" in warning-amber —
+                              // because containment was total and the target
+                              // was not an identifier — states one measure and
+                              // colours it by another.
+                              const finding = shortFinding(l.measured, l.otherLabel);
                               return (
                                 <button
                                   key={l.id}
                                   type="button"
                                   onClick={() => onPickLink(l.id)}
-                                  className={`flex w-full items-center gap-1.5 rounded-md py-[3px] pl-2 pr-1 text-left ${
+                                  title={finding?.detail}
+                                  className={`flex w-full items-center gap-1.5 rounded-md py-[3px] pl-1.5 pr-1 text-left ${
                                     active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
                                   }`}
                                 >
-                                  <span
-                                    className="h-1.5 w-1.5 shrink-0 rounded-full"
-                                    style={l.provenance === 'ai'
-                                      ? { border: '1.5px solid #b8823a' }
-                                      : { background: l.provenance === 'human' ? '#1f6f83' : '#9aa3ad' }}
+                                  <ProvenanceMark
+                                    provenance={l.provenance}
+                                    sourceName={l.sourceName}
                                   />
                                   <span className="shrink-0 text-muted2">
                                     {l.direction === 'out' ? '→' : '←'}
@@ -350,12 +423,12 @@ export function TableList({
                                       {l.kind === 'match' ? 'match' : 'cross'}
                                     </span>
                                   )}
-                                  {l.measured && outcome !== 'unknown' && (
+                                  {finding && (
                                     <span
-                                      className="w-[34px] shrink-0 text-right text-[11px] font-medium tabular-nums"
-                                      style={{ color: OUTCOME[outcome].color }}
+                                      className="w-[64px] shrink-0 truncate text-right text-[11px] font-medium"
+                                      style={{ color: finding.color }}
                                     >
-                                      {Math.round((l.measured.containment?.ratio ?? 0) * 100)}%
+                                      {finding.label}
                                     </span>
                                   )}
                                 </button>

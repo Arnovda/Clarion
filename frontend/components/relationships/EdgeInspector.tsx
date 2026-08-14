@@ -16,10 +16,14 @@ const PROVENANCE_META: Record<Provenance, { label: string; hint: string; color: 
     hint: 'Someone on your team checked this. It survives every re-analysis.',
     color: '#164e63', bg: '#e8f0f3',
   },
+  // Vendor documentation is the strongest provenance in the catalog — it is
+  // externally verifiable and it does not change — and it used to render in the
+  // dimmest grey on screen, indistinguishable from a human confirmation. It gets
+  // the accent colour and says outright that the source itself declares it.
   declared: {
-    label: 'From the source',
-    hint: "This comes from the system's own documentation, so it is reliable.",
-    color: '#4a5660', bg: '#e3e6ea',
+    label: 'Documented by the source',
+    hint: "The source system declares this relationship in its own data model, so it exists by definition. If the data below still doesn't back it, that is nearly always a sync that hasn't finished — not a wrong link.",
+    color: '#164e63', bg: '#dbeaf0',
   },
   ai: {
     label: 'Suggested by Clarion',

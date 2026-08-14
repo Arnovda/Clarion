@@ -138,6 +138,99 @@ export const OUTCOME: Record<Outcome, { color: string; label: string }> = {
 };
 
 /**
+ * The ONE thing that decided this verdict, in two or three words.
+ *
+ * A list showed the containment percentage and coloured it by the full verdict,
+ * which meant a link reading **100%** could be amber — because containment was
+ * total and the *target* was not an identifier. The number and the colour then
+ * contradicted each other, and neither said why.
+ *
+ * Worse, it hid the shape of the problem. Thirteen links into a column that
+ * repeats itself are thirteen instances of ONE fact; as `100% 80% 87% 79% 100%`
+ * they read as thirteen unrelated near-misses, and the actual finding — *this
+ * column cannot identify a row, so nothing can point at it* — is invisible.
+ * Rendered as `not unique` thirteen times over, it is unmissable.
+ *
+ * Zero overlap outranks every other reason: no shared values at all is the
+ * clearest falsification available, and it is the thing a person scanning for
+ * "what is definitely wrong?" is looking for.
+ */
+export interface Finding {
+  label: string;
+  /**
+   * The label to count by when several links are summarised together. Only
+   * `low-containment` differs: every percentage is its own label but they are
+   * all one kind of problem, and bucketing them is what turns a table summary
+   * into a sentence instead of a histogram.
+   */
+  group: string;
+  /** The full sentence, for a title attribute. */
+  detail: string;
+  color: string;
+  tone: Outcome;
+}
+
+export function shortFinding(
+  m: Measurement | null | undefined,
+  toLabel?: string,
+): Finding | null {
+  if (!m) return null;
+  const c = m.containment;
+  const target = toLabel ?? 'the other column';
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  if (c && c.sampledDistinct > 0 && c.ratio === 0) {
+    return {
+      label: 'no match', group: 'no match',
+      detail: `None of these values exist in ${target}. Either the link is wrong or that table has not finished syncing.`,
+      color: OUTCOME.none.color,
+      tone: 'none',
+    };
+  }
+  switch (m.reason) {
+    case 'ok':
+      return {
+        label: 'holds', group: 'holds',
+        detail: `All three checks passed — ${pct(c?.ratio ?? 1)} of values were found in ${target}.`,
+        color: OUTCOME.holds.color,
+        tone: 'holds',
+      };
+    case 'target-not-key':
+      return {
+        label: 'not unique', group: 'not unique',
+        detail: `${target} repeats itself — ${(m.target?.distinct ?? 0).toLocaleString('en-GB')} different `
+          + `values across ${(m.target?.rows ?? 0).toLocaleString('en-GB')} rows — so it cannot identify a row. `
+          + `Nothing can point at it as a key, whatever the overlap.`,
+        color: OUTCOME.partial.color,
+        tone: 'partial',
+      };
+    case 'too-few-distinct':
+      return {
+        label: 'too few values', group: 'too few values',
+        detail: `This column holds only ${c?.sampledDistinct ?? 0} different values — too few for agreement `
+          + `to mean much (we look for at least ${m.thresholds.minDistinct}).`,
+        color: OUTCOME.partial.color,
+        tone: 'partial',
+      };
+    case 'low-containment':
+      return {
+        label: pct(c?.ratio ?? 0), group: 'partly match',
+        detail: `Only ${pct(c?.ratio ?? 0)} of values were found in ${target} `
+          + `(a real link is usually above ${pct(m.thresholds.minContainment)}).`,
+        color: OUTCOME.partial.color,
+        tone: 'partial',
+      };
+    default:
+      return {
+        label: "can't check", group: "couldn't check",
+        detail: explain(m),
+        color: OUTCOME.unknown.color,
+        tone: 'unknown',
+      };
+  }
+}
+
+/**
  * The rules themselves, each with what was measured and what it had to beat.
  *
  * **There is no AI anywhere in this.** It is three fixed rules, run as SQL
