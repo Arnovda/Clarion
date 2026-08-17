@@ -126,6 +126,10 @@ const END_OFFSET = 15;
 function EndSymbol({ x, y, symbol, color, faded }: {
   x: number; y: number; symbol: string; color: string; faded: boolean;
 }) {
+  // Deliberately NOT hoverable. A tooltip here would need pointer events, and
+  // these circles sit 15px off the node edge — right on top of the handles you
+  // drag to draw a new relationship. The shape is explained in the inspector,
+  // where it is also editable; it does not need to steal a drag target.
   return (
     <g pointerEvents="none" opacity={faded ? 0.18 : 1}>
       <circle cx={x} cy={y} r={7.5} fill="#fffdfa" stroke={color} strokeWidth={1.25} />

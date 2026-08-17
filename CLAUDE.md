@@ -90,16 +90,22 @@ right; the sentence attached to it was about the wrong subject.
   permanent dot would mark a shortfall nobody can clear) and outranked by a
   flag. The toolbar tally is phrased per bucket too: `N worth another look` in
   amber for Confirmed, `N of M checked don't hold` in red for To review.
-- **THE LEGEND IS DERIVED FROM `drawnRels`, NOT A FIXED CATALOGUE.** It listed
-  eight entries unconditionally, so a canvas of four amber links taught a red, a
-  green and a solid-line code that appeared nowhere — a key you have to search
-  is worse than no key. Membership now comes from the edges actually drawn, the
-  ORDER is fixed (worst first) so entries appear and disappear from a stable
-  template rather than reshuffling, and **the two buckets get different keys**
-  because they spend the channels differently: Confirmed shows the two authors
-  plus only the caveat marks present; To review shows only the outcome colours
-  present. The `1`/`∗` pair and its chevron render only when a drawn edge has a
-  measured cardinality. In the reported case: eight entries down to two.
+- **THE LEGEND IS FIXED PER TOGGLE — two wrong versions before this one.** V1
+  was a catalogue of eight entries shown unconditionally, so a canvas of four
+  amber links taught a red, a green and a solid-line code that appeared nowhere.
+  V2 derived membership from `drawnRels`, which fixed that and broke something
+  worse: **the key changed every time you picked a table**, so it had to be
+  re-read instead of learned once (owner: *"the legend changes with each table.
+  I want it to be always on"*). V3 keys membership to the BUCKET, which moves
+  only when the user moves it. **Confirmed:** `laid by the source` · `laid
+  manually` · the three caveat marks. **To review:** the four outcome colours
+  (`unverified` cannot occur there — it needs a source-laid link). **The `1`/`∗`
+  pair is GONE from the key and so is the chevron** — a key with a disclosure
+  control is a key you have to operate. The symbols still draw on the line ends;
+  they are deliberately NOT hoverable, because a tooltip needs pointer events
+  and those circles sit 15px off the node edge, on top of the handles you drag
+  to draw a relationship. Cardinality is explained in the inspector, where it is
+  also editable.
 - `tsc` clean, `next lint` clean, `next build` green (`/relationships` 2.6 kB /
   100 kB), 63 backend tests green, all six lint ratchets green **from the repo
   root** (they fail spuriously when run from `backend/`).

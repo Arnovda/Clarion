@@ -7,7 +7,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import {
-  Loader2, AlertTriangle, CheckCircle2, Flag, ChevronDown, ChevronUp,
+  Loader2, AlertTriangle, CheckCircle2, Flag,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
@@ -54,6 +54,15 @@ const edgeTypes = { relation: RelationEdge };
 
 const EMPTY_IDS: ReadonlySet<number> = new Set<number>();
 
+/** The words the key uses. One vocabulary, whichever bucket is showing. */
+const MARK_LABEL: Record<Outcome, string> = {
+  broken: 'no match',
+  partial: 'partly',
+  unverified: 'needs more data',
+  unknown: 'not checked',
+  holds: 'holds',
+};
+
 function CanvasInner() {
   const { fitView } = useReactFlow();
   const [graph, setGraph] = useState<GraphResponse | null>(null);
@@ -85,7 +94,6 @@ function CanvasInner() {
   const [check, setCheck] = useState<CheckProgress | null>(null);
   /** Filter the table list down to what is unresolved. */
   const [onlyAttention, setOnlyAttention] = useState(false);
-  const [legendOpen, setLegendOpen] = useState(false);
   /**
    * The one control that governs the screen.
    *
@@ -456,67 +464,44 @@ function CanvasInner() {
   }, [graph, shown, anchorId, visibleIds]);
 
   /**
-   * The key, derived from the edges actually on screen — and from which bucket
-   * they are in, because the two buckets spend the channels differently.
+   * The key. **Fixed per bucket, and it does not move.**
    *
-   * A fixed catalogue of eight entries made the reader do the matching: given a
-   * canvas of four links, five colours and two line styles were on offer and
-   * only one applied. Membership now comes from `drawnRels`, and the ORDER is
-   * fixed so an entry appearing or vanishing never reshuffles its neighbours.
+   * It was derived from the edges actually drawn, which fixed the original
+   * complaint (eight entries explaining codes that appeared nowhere) and
+   * introduced a worse one: the key changed every time you picked a table. A
+   * legend you have to re-read is not a legend — its whole value is that you
+   * learn it once and then stop looking at it.
    *
-   * In **Confirmed** the line colour is authorship, so the key is the two
-   * authors — and the outcome scale is demoted to the caveat marks, which only
-   * exist where a check came back short. In **To review** the colour is the
-   * measurement, so the key is the outcome scale and authorship is not a
-   * distinction at all (nothing there is source-laid).
+   * So membership is decided by the TOGGLE, which changes only when the user
+   * asks it to. The two buckets still get different keys, because they spend
+   * the channels differently — colour is authorship in Confirmed and evidence
+   * in To review, and one key describing both would describe a screen that does
+   * not exist.
+   *
+   * `unverified` appears only in the Confirmed key: it requires a source-laid
+   * link, and nothing in To review is source-laid.
    */
   const legend = useMemo(() => {
-    const seen = new Set<Outcome>();
-    let source = false; let manual = false; let cardinality = false;
-    for (const r of drawnRels) {
-      seen.add(outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r)));
-      if (laidBy(r) === 'source') source = true; else manual = true;
-      if (r.relationshipType) cardinality = true;
+    if (bucket === 'confirmed') {
+      return {
+        authors: (['source', 'manual'] as const).map((k) => ({
+          key: k, ...LAID_STROKE[k], ...LAID_BY[k],
+        })),
+        marks: (['broken', 'partial', 'unverified'] as const).map((o) => ({
+          outcome: o, color: OUTCOME[o].color, label: MARK_LABEL[o],
+        })),
+        colors: [] as { outcome: Outcome; color: string; label: string }[],
+      };
     }
-    // Worst first, always, whichever half of it is showing.
-    const ORDER: { outcome: Outcome; label: string; why: string }[] = [
-      { outcome: 'broken', label: 'no match', why: 'These values cannot point at that column' },
-      { outcome: 'partial', label: 'partly', why: 'A real key, but the values only partly line up' },
-      {
-        outcome: 'unverified',
-        label: 'needs more data',
-        why: 'The source defines this link, so it holds — your data cannot show it yet',
-      },
-      { outcome: 'unknown', label: 'not checked', why: 'Nobody has run the check on this link yet' },
-      { outcome: 'holds', label: 'holds', why: 'The check passed against your data' },
-    ];
-    const settled = bucket === 'confirmed';
     return {
-      settled,
-      /** Confirmed: who laid the line. Only the halves that are on screen. */
-      authors: settled
-        ? ([
-          source && { key: 'source' as const, ...LAID_STROKE.source, ...LAID_BY.source },
-          manual && { key: 'manual' as const, ...LAID_STROKE.manual, ...LAID_BY.manual },
-        ].filter(Boolean) as { key: LaidBy; color: string; width: number; label: string; hint: string }[])
-        : [],
-      /**
-       * Confirmed shows only the shortfalls, because that is all a mark can
-       * mean there — "holds" and "not checked" carry no mark, so listing them
-       * would be a key to something invisible.
-       */
-      marks: settled
-        ? ORDER.filter((e) => e.outcome !== 'holds' && e.outcome !== 'unknown' && seen.has(e.outcome))
-          .map((e) => ({ ...e, color: OUTCOME[e.outcome].color }))
-        : [],
-      /** To review: the colour scale, since colour is the measurement there. */
-      colors: settled
-        ? []
-        : ORDER.filter((e) => seen.has(e.outcome))
-          .map((e) => ({ ...e, color: OUTCOME[e.outcome].color })),
-      cardinality,
+      authors: [] as { key: LaidBy; color: string; width: number; label: string; hint: string }[],
+      marks: [] as { outcome: Outcome; color: string; label: string }[],
+      // Worst first, and every one of them can occur here.
+      colors: (['broken', 'partial', 'unknown', 'holds'] as const).map((o) => ({
+        outcome: o as Outcome, color: OUTCOME[o].color, label: MARK_LABEL[o],
+      })),
     };
-  }, [drawnRels, freshMeasured, bucket]);
+  }, [bucket]);
 
 
   /**
@@ -1231,20 +1216,19 @@ function CanvasInner() {
         </div>
       )}
 
-      {/* A KEY DECODES WHAT IS ON SCREEN — nothing else.
+      {/* THE KEY. Fixed per toggle, always fully shown, never folded.
 
-          It listed eight entries unconditionally, so on a canvas of four links
-          it taught codes that appeared nowhere and then asked which of the
-          eight the lines in front of you were. A key you have to search is
-          worse than no key. Every entry below is derived from the edges
-          actually drawn, in a fixed order, so entries appear and disappear from
-          a stable template rather than reshuffling as you move between tables.
+          Two earlier versions were wrong in opposite directions. The first was
+          a fixed catalogue of eight entries, so a canvas of four links taught
+          codes that appeared nowhere. The second derived membership from the
+          edges actually drawn, which fixed that and broke something worse: the
+          key changed every time you picked a table, so it had to be re-read
+          instead of learned once.
 
-          The two buckets get different keys because they spend the channels
-          differently — colour is authorship in Confirmed and evidence in To
-          review, and a key that showed both would describe a screen that does
-          not exist. */}
-      {!draw && !match && (legend.authors.length > 0 || legend.colors.length > 0) && (
+          Membership now follows the TOGGLE, which moves only when the user
+          moves it. Nothing is hidden behind a chevron either — a key with a
+          disclosure control is a key you have to operate. */}
+      {!draw && !match && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
           {legend.authors.map((a) => (
             <span key={a.key} className="flex items-center gap-1" title={a.hint}>
@@ -1254,19 +1238,20 @@ function CanvasInner() {
               {a.label.replace(/^Laid /, 'laid ')}
             </span>
           ))}
-          {legend.colors.map(({ outcome, color, label, why }) => (
-            <span key={outcome} className="flex items-center gap-1" title={why}>
+          {legend.colors.map(({ outcome, color, label }) => (
+            <span key={outcome} className="flex items-center gap-1">
               <span className="h-[2px] w-3 rounded-full" style={{ background: color }} />
               {label}
             </span>
           ))}
 
-          {/* The caveat marks, and ONLY the ones on screen. A confirmed link
-              says nothing unless a check came back short, so this list is
-              usually empty and the strip is just the two authors. */}
+          {/* The marks a confirmed line can carry. They are drawn only where a
+              check came back short, so on most links there is nothing here —
+              which is exactly what makes the ones that do carry a mark worth
+              looking at. */}
           {legend.marks.length > 0 && <span className="text-muted2">·</span>}
-          {legend.marks.map(({ outcome, color, label, why }) => (
-            <span key={outcome} className="flex items-center gap-1" title={why}>
+          {legend.marks.map(({ outcome, color, label }) => (
+            <span key={outcome} className="flex items-center gap-1">
               <svg width="11" height="11" aria-hidden>
                 <circle cx="5.5" cy="5.5" r="4.5" fill="#fffdfa" stroke={color} strokeWidth="1.5" />
                 <circle cx="5.5" cy="5.5" r="1.8" fill={color} />
@@ -1275,30 +1260,6 @@ function CanvasInner() {
             </span>
           ))}
 
-          {legend.cardinality && (
-            <button
-              type="button"
-              onClick={() => setLegendOpen((v) => !v)}
-              className="rounded p-0.5 text-muted2 hover:text-ink2"
-              aria-label={legendOpen ? 'Hide the rest of the key' : 'Show the rest of the key'}
-              aria-expanded={legendOpen}
-            >
-              {legendOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-            </button>
-          )}
-          {legendOpen && legend.cardinality && (
-            <>
-              <span className="text-muted2">·</span>
-              <span className="flex items-center gap-1">
-                <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">1</span>
-                one row
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">∗</span>
-                many rows
-              </span>
-            </>
-          )}
           {selectedRel && (
             <>
               <span className="text-muted2">·</span>
