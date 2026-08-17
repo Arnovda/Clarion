@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Check, Trash2, RefreshCw, Loader2, X, Sparkles, Flag, Columns2, HelpCircle, UserCheck,
+  Check, Trash2, RefreshCw, Loader2, X, Flag, Columns2, HelpCircle, UserCheck,
   ChevronDown, ChevronRight,
 } from 'lucide-react';
-import type { GraphColumn, GraphRelationship, Measurement } from './types';
+import type { GraphRelationship, Measurement } from './types';
 import { originOf, TIER_STYLE } from './provenance';
 import {
   explain, ValueComparison, CheckList, ContradictionFlag,
@@ -91,61 +91,23 @@ function Fold({ label, children, onOpen }: {
   );
 }
 
-/**
- * The table name is the `title`, not a visible label: the header one line up
- * already says `Receivables.AccountCode → GL classifications.Code`, so printing
- * it again beside each select costs a third of the width to repeat itself.
- */
-function ColumnPicker({ label, value, options, disabled, onChange }: {
-  /** `Table.column`, used for the hover title only. */
-  label: string;
-  value: number | null;
-  options: GraphColumn[];
-  disabled: boolean;
-  onChange: (id: number) => void;
-}) {
-  return (
-    <select
-      value={value ?? ''}
-      disabled={disabled}
-      title={label}
-      aria-label={label}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
-    >
-      {value == null && <option value="">— pick a column —</option>}
-      {options.map((c) => (
-        <option key={c.id} value={c.id}>{c.column_name}</option>
-      ))}
-    </select>
-  );
-}
-
 export function EdgeInspector({
-  relationship, fromLabel, toLabel, fromColumns, toColumns, busy,
-  onConfirm, onDelete, onRemeasure, onSaveDescription, onChangeType, onChangeColumns,
-  onFlag, onCompareValues, onClose,
+  relationship, fromLabel, toLabel, busy,
+  onConfirm, onDelete, onRemeasure, onFlag, onCompareValues, onClose,
 }: {
   relationship: GraphRelationship;
   fromLabel: string;
   toLabel: string;
-  fromColumns: GraphColumn[];
-  toColumns: GraphColumn[];
   busy: 'confirm' | 'delete' | 'measure' | 'save' | 'flag' | null;
   onConfirm: () => void;
   onDelete: () => void;
   onRemeasure: () => void;
-  onSaveDescription: (text: string) => void;
-  onChangeType: (type: string) => void;
-  onChangeColumns: (change: { from?: number; to?: number }) => void;
   onFlag: (flagged: boolean, reason: string) => void;
   onCompareValues: () => void;
   onClose: () => void;
 }) {
-  const [description, setDescription] = useState(relationship.description ?? '');
   const [reason, setReason] = useState(relationship.flaggedReason ?? '');
   useEffect(() => { setReason(relationship.flaggedReason ?? ''); }, [relationship.id, relationship.flaggedReason]);
-  useEffect(() => { setDescription(relationship.description ?? ''); }, [relationship.id, relationship.description]);
 
   const origin = originOf(relationship.provenance, relationship.semanticSource);
   const tier = TIER_STYLE[origin.tier];
@@ -154,7 +116,6 @@ export function EdgeInspector({
   // both panes is what makes a row and its panel obviously the same thing.
   const finding = shortFinding(m, toLabel);
   const outcome = OUTCOME[outcomeOf(m)];
-  const dirty = description.trim() !== (relationship.description ?? '').trim();
 
   return (
     <aside className="flex h-full w-[340px] flex-col border-l border-line bg-raised">
@@ -336,71 +297,6 @@ export function EdgeInspector({
             </button>
           )}
 
-          <Fold label="Change the columns">
-            <div className="pb-1 pt-1.5">
-              <div className="flex items-center gap-1.5">
-                <ColumnPicker
-                  label={fromLabel}
-                  value={relationship.fromColumnId}
-                  options={fromColumns}
-                  disabled={busy !== null}
-                  onChange={(id) => onChangeColumns({ from: id })}
-                />
-                <span className="shrink-0 text-muted2">&rarr;</span>
-                <ColumnPicker
-                  label={toLabel}
-                  value={relationship.toColumnId}
-                  options={toColumns}
-                  disabled={busy !== null}
-                  onChange={(id) => onChangeColumns({ to: id })}
-                />
-              </div>
-              <label className="mt-1.5 flex items-center gap-2">
-                <span className="shrink-0 text-[11.5px] text-muted">Shape</span>
-                <select
-                  value={relationship.relationshipType ?? ''}
-                  disabled={busy !== null}
-                  onChange={(e) => onChangeType(e.target.value)}
-                  className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2 py-1 text-[12px] text-ink outline-none focus:border-ocean disabled:opacity-50"
-                >
-                  {!relationship.relationshipType && <option value="">&mdash; not set &mdash;</option>}
-                  {Object.keys(CARDINALITY_TEXT).map((k) => (
-                    <option key={k} value={k}>{CARDINALITY_TEXT[k]}</option>
-                  ))}
-                </select>
-              </label>
-              <p className="mt-1 text-[10.5px] leading-relaxed text-muted2">
-                Changing a column clears the measurement — it described different columns.
-              </p>
-            </div>
-          </Fold>
-
-          <Fold label={description ? 'What this means' : 'Describe what this link means'}>
-            <div className="pb-1 pt-1.5">
-              <textarea
-                id="rel-desc"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={2}
-                placeholder="e.g. Every invoice line belongs to one invoice."
-                className="w-full resize-none rounded-lg border border-line bg-surface px-2.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-muted2 focus:border-ocean"
-              />
-              <p className="mt-1 flex items-center gap-1 text-[10.5px] text-muted2">
-                <Sparkles size={10} /> Clarion reads this when answering questions.
-              </p>
-              {dirty && (
-                <button
-                  type="button"
-                  onClick={() => onSaveDescription(description)}
-                  disabled={busy !== null}
-                  className="mt-1.5 rounded-lg bg-ocean px-2.5 py-1 text-[12px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
-                >
-                  {busy === 'save' ? <Loader2 size={11} className="mr-1 inline animate-spin" /> : null}
-                  Save
-                </button>
-              )}
-            </div>
-          </Fold>
         </div>
 
       </div>

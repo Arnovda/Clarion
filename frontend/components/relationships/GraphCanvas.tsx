@@ -7,7 +7,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import {
-  Loader2, AlertTriangle, CheckCircle2, Flag, ChevronDown, ChevronUp, Plus,
+  Loader2, AlertTriangle, CheckCircle2, Flag, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
@@ -97,8 +97,6 @@ function CanvasInner() {
    * never two sets that can disagree.
    */
   const [bucket, setBucket] = useState<Bucket>('review');
-  /** Showing the how-to-draw hint. Drawing needs discovering exactly once. */
-  const [drawHint, setDrawHint] = useState(false);
   /** The side-by-side value comparison, when open. */
   const [values, setValues] = useState<
     { title: string; loading: boolean; result: ValueComparisonResult | null } | null
@@ -239,16 +237,6 @@ function CanvasInner() {
     return m;
   }, [shown]);
 
-  /** How many of each table's relationships nobody has decided on yet. */
-  const pendingByTable = useMemo(() => {
-    const m = new Map<number, number>();
-    for (const r of shown) {
-      if (r.provenance !== 'ai') continue;
-      m.set(r.fromTableId, (m.get(r.fromTableId) ?? 0) + 1);
-      if (r.toTableId !== r.fromTableId) m.set(r.toTableId, (m.get(r.toTableId) ?? 0) + 1);
-    }
-    return m;
-  }, [shown]);
 
   /** A table's relationships, phrased from that table's side. */
   const linksFor = useCallback((tableId: number): TableListLink[] => {
@@ -416,8 +404,8 @@ function CanvasInner() {
    * colour spine useless; a ring that groups them makes "this half is Exact" a
    * thing you see rather than read.
    */
-  const { neighbours, neighbourTotal } = useMemo(() => {
-    if (!graph || anchorId == null) return { neighbours: [] as number[], neighbourTotal: 0 };
+  const neighbours = useMemo(() => {
+    if (!graph || anchorId == null) return [] as number[];
     const seen = new Set<number>();
     for (const r of shown) {
       if (r.fromTableId === anchorId && r.toTableId !== anchorId) seen.add(r.toTableId);
@@ -442,7 +430,7 @@ function CanvasInner() {
       return (colorIndexBySource.get(ta.connectionId) ?? 0) - (colorIndexBySource.get(tb.connectionId) ?? 0)
         || (ta.displayName || ta.tableName).localeCompare(tb.displayName || tb.tableName);
     });
-    return { neighbours: placed, neighbourTotal: known.length };
+    return placed;
   }, [graph, shown, anchorId, selectedRel, colorIndexBySource]);
 
   const visibleIds = useMemo(
@@ -795,11 +783,6 @@ function CanvasInner() {
     setSelectedEdgeId(null);
   }, [check]);
 
-  const queuePosition = (() => {
-    if (selectedEdgeId == null) return null;
-    const at = queue.indexOf(selectedEdgeId);
-    return at === -1 ? null : `${at + 1} of ${queue.length}`;
-  })();
 
   const step = useCallback((delta: number) => {
     if (queue.length === 0) return;
@@ -852,16 +835,6 @@ function CanvasInner() {
     }
   }, [load, advance]);
 
-  const saveDescription = useCallback(async (rel: GraphRelationship, text: string) => {
-    setBusy('save');
-    try {
-      await api.patch(`/semantic/relationships/${rel.id}`, { description: text });
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  }, [load]);
-
   const remeasure = useCallback(async (rel: GraphRelationship) => {
     if (!rel.fromColumnId || !rel.toColumnId) return;
     setBusy('measure');
@@ -882,16 +855,6 @@ function CanvasInner() {
     }
   }, [load]);
 
-  const changeType = useCallback(async (rel: GraphRelationship, type: string) => {
-    setBusy('save');
-    try {
-      await api.patch(`/semantic/relationships/${rel.id}`, { relationship_type: type });
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  }, [load]);
-
   /**
    * Raise or clear a flag.
    *
@@ -904,22 +867,6 @@ function CanvasInner() {
     try {
       await api.post(`/relationships/${rel.id}/flag`, { flagged, reason: reason || null });
       if (flagged) setPayoff('Flagged. Clarion will stop using this link until you clear it.');
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  }, [load]);
-
-  const changeColumns = useCallback(async (rel: GraphRelationship, change: { from?: number; to?: number }) => {
-    setBusy('save');
-    try {
-      await api.patch(`/semantic/relationships/${rel.id}`, {
-        ...(change.from !== undefined ? { from_column_id: change.from } : {}),
-        ...(change.to !== undefined ? { to_column_id: change.to } : {}),
-      });
-      // The old measurement described different columns, so it is now wrong.
-      // Clearing it is more honest than leaving a stale number on screen.
-      await api.patch(`/semantic/relationships/${rel.id}`, { measured: null });
       await load();
     } finally {
       setBusy(null);
@@ -1012,7 +959,6 @@ function CanvasInner() {
           tables={graph.tables}
           sources={graph.sources}
           colorFor={colorForConnection}
-          pendingByTable={pendingByTable}
           flaggedByTable={flaggedByTable}
           selectedTableId={selectedTableId}
           selectedEdgeId={selectedEdgeId}
@@ -1069,31 +1015,11 @@ function CanvasInner() {
             <span className="font-medium text-ink">
               {workingTable.displayName || workingTable.tableName}
             </span>
-            {neighbourTotal > neighbours.length && (
-              <span className="text-muted">· showing {neighbours.length} of {neighbourTotal}</span>
-            )}
-            {queuePosition && <span className="text-muted">· link {queuePosition}</span>}
           </div>
         )}
 
-        {/* Drawing is how the model gets COMPLETE. Nothing can tell you about a
-            relationship nobody has drawn, so this cannot stay a gesture you have
-            to discover — it is a first-class action, next to the toggle. */}
-        <button
-          type="button"
-          onClick={() => setDrawHint((v) => !v)}
-          className={`ml-auto flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[12.5px] shadow-sm backdrop-blur transition-colors ${
-            drawHint
-              ? 'border-ocean bg-ocean text-white'
-              : 'border-line bg-raised/95 text-ink2 hover:bg-soft'
-          }`}
-        >
-          <Plus size={13} />
-          Draw a relationship
-        </button>
-
         {stats && (
-          <div className="flex items-center gap-2.5 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
+          <div className="ml-auto flex items-center gap-2.5 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
             {/* Scoped to the half on screen. A tenant-wide "169 links" beside a
                 toggle that shows 128 is two populations in one strip. */}
             {health.checked > 0 && health.bad > 0 && (
@@ -1183,30 +1109,6 @@ function CanvasInner() {
               Choose one on the left and you will see what it connects to, and on which fields.
             </p>
           </div>
-        </div>
-      )}
-
-      {/* One sentence, dismissible, and it expands the tables so the fields are
-          actually there to drag between — telling somebody to drag between two
-          fields while both nodes show three rows is an instruction they cannot
-          follow. */}
-      {drawHint && (
-        <div className="absolute left-1/2 top-20 z-20 w-[22rem] -translate-x-1/2 rounded-xl border border-ocean/40 bg-raised px-3.5 py-2.5 shadow-lg">
-          <p className="text-[12.5px] leading-relaxed text-ink2">
-            Drag from a field on one table to a field on another. Use
-            <span className="font-medium text-ink"> + more fields </span>
-            on a table to see everything it has.
-          </p>
-          <p className="mt-1 text-[11.5px] text-muted">
-            Clarion measures the link against your data before anything is saved.
-          </p>
-          <button
-            type="button"
-            onClick={() => setDrawHint(false)}
-            className="mt-1.5 text-[11.5px] text-ocean hover:underline"
-          >
-            Got it
-          </button>
         </div>
       )}
 
@@ -1314,16 +1216,11 @@ function CanvasInner() {
           onConfirm={() => void confirmRel(selectedRel)}
           onDelete={() => void deleteRel(selectedRel)}
           onRemeasure={() => void remeasure(selectedRel)}
-          onSaveDescription={(text) => void saveDescription(selectedRel, text)}
-          onChangeType={(type) => void changeType(selectedRel, type)}
-          onChangeColumns={(change) => void changeColumns(selectedRel, change)}
           onFlag={(flagged, reason) => void flagRel(selectedRel, flagged, reason)}
           onCompareValues={() => void compareValues(
             selectedRel,
             `${labelFor(selectedRel.fromTableId, selectedRel.fromColumnId)} → ${labelFor(selectedRel.toTableId, selectedRel.toColumnId)}`,
           )}
-          fromColumns={columnsByTable.get(selectedRel.fromTableId) ?? []}
-          toColumns={columnsByTable.get(selectedRel.toTableId) ?? []}
           // Closing lets go of the relationship and leaves you on its table,
           // which is where you were before you opened it.
           onClose={() => setSelectedEdgeId(null)}

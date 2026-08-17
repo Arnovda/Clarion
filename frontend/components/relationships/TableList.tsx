@@ -200,7 +200,7 @@ function summarise(links: readonly TableListLink[]) {
  * over the bank entries".
  */
 export function TableList({
-  tables, sources, colorFor, pendingByTable, selectedTableId, selectedEdgeId,
+  tables, sources, colorFor, selectedTableId, selectedEdgeId,
   linksFor, check, search, onSearch, onPickTable, onPickLink, onCheckTable,
   flaggedByTable, needsAttention, onlyAttention, onToggleAttention, onCheckMany,
   bucket,
@@ -210,8 +210,6 @@ export function TableList({
   tables: GraphTable[];
   sources: GraphSource[];
   colorFor: (connectionId: number) => string;
-  /** How many of a table's relationships nobody has decided on yet. */
-  pendingByTable: Map<number, number>;
   /** How many of a table's relationships someone has marked as a problem. */
   flaggedByTable: Map<number, number>;
   selectedTableId: number | null;
@@ -248,17 +246,29 @@ export function TableList({
       .map((s) => ({
         source: s,
         tables: tables
+          // The table you are working on is never filtered away. `needsAttention`
+          // is derived per bucket, so with the filter on, flipping the toggle
+          // could drop the selected table out of the list while the canvas still
+          // showed it — the list and the canvas disagreeing about what you have
+          // open. A filter may hide anything except the thing in your hand.
           .filter((t) => t.connectionId === s.id && match(t)
-            && (!onlyAttention || needsAttention.has(t.id)))
-          // Where the work is, first. Then the hubs, which is what someone
-          // exploring is almost always after; alphabetical buries both.
+            && (!onlyAttention || needsAttention.has(t.id) || t.id === selectedTableId))
+          // ORDER MUST NOT MOVE WHEN THE TOGGLE MOVES. It used to sort by how
+          // much was pending, which is a per-BUCKET number — so flipping to
+          // Confirmed (where nothing is pending) re-sorted the entire list and
+          // the table you were reading jumped somewhere else. The list is how
+          // you navigate; a list that rearranges itself under a control that is
+          // not about navigation is disorienting for no gain.
+          //
+          // `relationshipCount` is the graph-wide total, so it is identical in
+          // both halves. Hubs first is what someone scanning is after anyway,
+          // and "where is the work?" is what the Needs attention filter is for.
           .sort((a, b) =>
-            (pendingByTable.get(b.id) ?? 0) - (pendingByTable.get(a.id) ?? 0) ||
             b.relationshipCount - a.relationshipCount ||
             (a.displayName || a.tableName).localeCompare(b.displayName || b.tableName)),
       }))
       .filter((g) => g.tables.length > 0);
-  }, [tables, sources, search, pendingByTable, onlyAttention, needsAttention]);
+  }, [tables, sources, search, onlyAttention, needsAttention, selectedTableId]);
 
   const total = grouped.reduce((n, g) => n + g.tables.length, 0);
 
@@ -330,7 +340,10 @@ export function TableList({
 
             {g.tables.map((t) => {
               const open = t.id === selectedTableId;
-              const pending = pendingByTable.get(t.id) ?? 0;
+              // How many links this table has IN THE HALF ON SCREEN. Showing the
+              // graph-wide total under a toggle that filters would put a number
+              // on the row that the rows below it contradict.
+              const inBucket = linksFor(t.id).length;
               const colour = colorFor(g.source.id);
               return (
                 <div key={t.id}>
@@ -360,27 +373,11 @@ export function TableList({
                         {flaggedByTable.get(t.id)}
                       </span>
                     )}
-                    {/* The total is ALWAYS shown, and anything still waiting on
-                        a person sits in front of it. One number that silently
-                        means "pending" on some rows and "total" on others is
-                        unreadable: a table showing 5 while it has 16 links
-                        tells you nothing about which 5 it meant. */}
-                    {pending > 0 && (
-                      <span
-                        className="shrink-0 rounded-full bg-warnSoft px-1.5 text-[10.5px] font-medium tabular-nums text-ink2"
-                        title={`${pending} still waiting on you`}
-                      >
-                        {pending}
-                      </span>
-                    )}
-                    {/* `2 42` read as "242". The slash is the cheapest thing
-                        that stops two adjacent numbers merging into one. */}
                     <span
-                      className="w-9 shrink-0 text-right tabular-nums text-[11px] text-muted2"
-                      title={`${t.relationshipCount} relationships in total`}
+                      className="w-7 shrink-0 text-right tabular-nums text-[11px] text-muted2"
+                      title={`${inBucket} of this table's links are ${bucket === 'confirmed' ? 'confirmed' : 'waiting on you'}`}
                     >
-                      {pending > 0 && <span className="text-muted2/60">of </span>}
-                      {t.relationshipCount}
+                      {inBucket}
                     </span>
                   </button>
 
