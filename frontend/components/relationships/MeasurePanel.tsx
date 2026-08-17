@@ -111,30 +111,50 @@ export function OverlapBar({ m, targetLabel }: { m: Measurement; targetLabel: st
 }
 
 /**
- * A measurement reduced to the one thing a list can show.
+ * A measurement reduced to what a person can act on in ONE SECOND.
  *
- * Deliberately NOT the four verdicts. In a per-table sweep the question is
- * "which of these do I have to look at?", and the useful split is *how badly*
- * a link misses: values that partly line up are usually a formatting problem
- * worth fixing, values that do not line up at all are usually the wrong column
- * or an unfinished sync. `weak` and `broken` blur that; the ratio does not.
+ * The split that matters is NOT how badly a link misses — it is whether looking
+ * harder could ever help:
  *
- * `holds` still requires the full verdict, not just a high ratio — a link can
- * match 100% and still fail because the other column is not an identifier.
+ *   • **`broken`** — the target column repeats, so it cannot identify a row, or
+ *     there is not one shared value. Neither is fixable by investigating. Remove
+ *     it, or flag it if you know the source has not finished syncing.
+ *   • **`partial`** — the target IS a real key and the values only partly line
+ *     up. That is usually a formatting difference somebody can fix, which makes
+ *     it the one case genuinely worth opening.
+ *
+ * Those two used to be one amber `partial`, so a link that can NEVER work looked
+ * exactly like one worth ten minutes of investigation. Separating them is most
+ * of the "readable at a glance" this pane was missing: colour now answers *can
+ * this ever work?*, and the short finding beside it answers *why not*.
  */
-export type Outcome = 'holds' | 'partial' | 'none' | 'unknown';
+export type Outcome = 'holds' | 'partial' | 'broken' | 'unknown';
 
 export function outcomeOf(m: Measurement | null | undefined): Outcome {
   if (!m || m.verdict === 'unmeasurable' || !m.containment) return 'unknown';
   if (m.verdict === 'strong') return 'holds';
-  return m.containment.ratio > 0 ? 'partial' : 'none';
+  // Structurally impossible, in both of its forms.
+  if (m.reason === 'target-not-key' || m.containment.ratio === 0) return 'broken';
+  return 'partial';
 }
 
-export const OUTCOME: Record<Outcome, { color: string; label: string }> = {
-  holds:   { color: '#3f7a5c', label: 'hold' },
-  partial: { color: '#a06a1c', label: 'partly match' },
-  none:    { color: '#a43a3a', label: 'no match' },
-  unknown: { color: '#8891a0', label: 'not checked' },
+/**
+ * Everything the outcome drives, in ONE place.
+ *
+ * `VERDICT_STYLE` must not be used for the headline any more: it is keyed by the
+ * four measurement verdicts, and `target-not-key` is `weak` there — amber. That
+ * is the exact case this split exists to colour RED, so drawing the headline
+ * from the verdict and the glyph from the outcome would put a red ✗ on an amber
+ * ground and label it "Doesn't fully hold". One source of truth, or the two
+ * quietly disagree.
+ */
+export const OUTCOME: Record<Outcome, {
+  color: string; bg: string; label: string; head: string; glyph: string;
+}> = {
+  holds:   { color: '#3f7a5c', bg: '#dbe8e0', label: 'hold',         head: 'Holds',           glyph: '\u2713' },
+  partial: { color: '#a06a1c', bg: '#f1e4c8', label: 'worth a look', head: 'Worth a look',    glyph: '~' },
+  broken:  { color: '#a43a3a', bg: '#f1d7d7', label: "don't hold",   head: "Doesn't hold",    glyph: '\u2717' },
+  unknown: { color: '#8891a0', bg: '#e3e6ea', label: 'not checked',  head: "Couldn't check",  glyph: '\u00b7' },
 };
 
 /**
@@ -183,8 +203,8 @@ export function shortFinding(
     return {
       label: 'no match', group: 'no match',
       detail: `None of these values exist in ${target}. Either the link is wrong or that table has not finished syncing.`,
-      color: OUTCOME.none.color,
-      tone: 'none',
+      color: OUTCOME.broken.color,
+      tone: 'broken',
     };
   }
   switch (m.reason) {
@@ -201,8 +221,9 @@ export function shortFinding(
         detail: `${target} repeats itself — ${(m.target?.distinct ?? 0).toLocaleString('en-GB')} different `
           + `values across ${(m.target?.rows ?? 0).toLocaleString('en-GB')} rows — so it cannot identify a row. `
           + `Nothing can point at it as a key, whatever the overlap.`,
-        color: OUTCOME.partial.color,
-        tone: 'partial',
+        // RED, not amber: no amount of investigating rescues a non-key target.
+        color: OUTCOME.broken.color,
+        tone: 'broken',
       };
     case 'too-few-distinct':
       return {
@@ -356,22 +377,30 @@ export function CheckList({ m, fromLabel, toLabel, prose = true }: {
  * nothing is nearly always a sync that has not finished — not a wrong link — and
  * saying so is the difference between a number and a next step.
  */
-export function ContradictionFlag({ m, provenance }: {
+export function ContradictionFlag({ m, provenance, semanticSource }: {
   m: Measurement;
   provenance: 'human' | 'declared' | 'ai';
+  /** Lets the notice name WHO is contradicted, rather than saying "the source". */
+  semanticSource?: string | null;
 }) {
   const trusted = provenance === 'declared' || provenance === 'human';
   if (!trusted || m.verdict !== 'broken') return null;
+
+  const who = provenance === 'human'
+    ? 'Someone on your team confirmed this link'
+    : semanticSource === 'curated'
+      ? 'Clarion ships this link for this kind of source'
+      : semanticSource === 'declared'
+        ? 'The database declares this as a foreign key'
+        : 'The source system documents this link';
 
   return (
     <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-warn/40 bg-warnSoft px-2.5 py-2">
       <AlertTriangle size={12} className="mt-[2px] shrink-0 text-warn" />
       <p className="text-[11.5px] leading-relaxed text-ink2">
-        {provenance === 'declared'
-          ? 'The source system documents this link, but your data does not back it.'
-          : 'Someone confirmed this link, but your data does not back it.'}{' '}
+        <span className="font-medium">{who}</span>, but your data does not back it.
         Most often that means one of these tables has not finished syncing —
-        check the source before removing the link.
+        check the source before removing the link. It stays in use until you flag it.
       </p>
     </div>
   );

@@ -128,3 +128,33 @@ export const TIER_STYLE: Record<OriginMeta['tier'], { fg: string; bg: string }> 
   found:      { fg: '#4a5660', bg: '#e3e6ea' },
   proposed:   { fg: '#a06a1c', bg: '#f1e4c8' },
 };
+
+/**
+ * The two buckets the whole screen is organised around.
+ *
+ * **Confirmed = what Ask AI is allowed to use.** A relationship earns that by
+ * somebody standing behind it: a person on the team confirmed it, the source
+ * system documents it, the database enforces it as a constraint, or Clarion's
+ * connector ships it. Everything Clarion *inferred* — from column names, from
+ * value overlap, from a model reading the schema — is a suggestion, and a
+ * suggestion is inert until a person accepts it.
+ *
+ * Rows written before migration 79 carry no channel at all. For those,
+ * `provenance === 'declared'` is the only signal there is: it means the profiler
+ * trusted them from the start, which on the old code path meant they came from
+ * the connector's documented or curated catalogue. Treating them as confirmed is
+ * the reading that matches what those rows actually were.
+ */
+export type Bucket = 'confirmed' | 'review';
+
+const CONFIRMED_SOURCES: ReadonlySet<SemanticSource> = new Set<SemanticSource>([
+  'vendor_docs', 'declared', 'curated',
+]);
+
+export function bucketOf(
+  r: { provenance: Provenance; semanticSource: SemanticSource | null },
+): Bucket {
+  if (r.provenance === 'human') return 'confirmed';
+  if (r.semanticSource) return CONFIRMED_SOURCES.has(r.semanticSource) ? 'confirmed' : 'review';
+  return r.provenance === 'declared' ? 'confirmed' : 'review';
+}

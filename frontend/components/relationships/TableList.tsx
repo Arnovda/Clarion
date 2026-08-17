@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Search, ChevronRight, ChevronDown, Loader2, ListChecks, Flag,
   BookText, UserCheck, Wrench, SearchCheck,
@@ -8,8 +8,8 @@ import {
 import type {
   GraphSource, GraphTable, Provenance, EdgeKind, Measurement, SemanticSource,
 } from './types';
-import { originOf, TIER_STYLE } from './provenance';
-import { shortFinding, type Outcome } from './MeasurePanel';
+import { originOf, TIER_STYLE, type Bucket } from './provenance';
+import { shortFinding, OUTCOME, type Outcome } from './MeasurePanel';
 
 /** One of a table's relationships, as it reads in the list. */
 export interface TableListLink {
@@ -109,15 +109,51 @@ export function ProvenanceMark({ provenance, semanticSource, sourceName }: {
   );
 }
 
-/** A table's links, gathered under the field each one leaves from. */
-function groupByColumn(links: readonly TableListLink[]) {
-  const out: { column: string; links: TableListLink[] }[] = [];
+/**
+ * A table's links, gathered under a HEADING THAT ANSWERS THE MODE'S QUESTION.
+ *
+ * They used to group under the field they leave from, which is the right answer
+ * to "what does this column point at?" and the wrong one to "what is waiting on
+ * me?". On `GL classifications` it produced two headings of thirteen rows each,
+ * every row saying the same thing — because all twenty-six fail for one reason.
+ *
+ * The two modes ask different questions, so they group differently:
+ *
+ *   • **To review** groups by CAUSE. Twenty-six rows become four headings, and
+ *     the shape of the problem is the heading rather than something you infer
+ *     from reading every row.
+ *   • **Confirmed** groups by ORIGIN. Nothing there needs deciding, so the
+ *     useful split is who stands behind it — the vendor, Clarion, or your team.
+ */
+export interface LinkGroup {
+  key: string;
+  label: string;
+  tone: Outcome | null;
+  links: TableListLink[];
+}
+
+function group(links: readonly TableListLink[], bucket: Bucket): LinkGroup[] {
+  const out = new Map<string, LinkGroup>();
   for (const l of links) {
-    const last = out[out.length - 1];
-    if (last && last.column === l.ownLabel) last.links.push(l);
-    else out.push({ column: l.ownLabel, links: [l] });
+    let key: string; let label: string; let tone: Outcome | null;
+    if (bucket === 'review') {
+      const f = shortFinding(l.measured, l.otherLabel);
+      key = f ? f.group : 'not checked';
+      label = f ? f.group : 'not checked';
+      tone = f ? f.tone : 'unknown';
+    } else {
+      const o = originOf(l.provenance, l.semanticSource);
+      key = o.label;
+      label = o.label;
+      tone = null;
+    }
+    const g = out.get(key);
+    if (g) g.links.push(l);
+    else out.set(key, { key, label, tone, links: [l] });
   }
-  return out;
+  const rank: Record<Outcome, number> = { broken: 0, partial: 1, unknown: 2, holds: 3 };
+  return [...out.values()].sort((a, b) =>
+    (a.tone && b.tone ? rank[a.tone] - rank[b.tone] : 0) || b.links.length - a.links.length);
 }
 
 /**
@@ -144,7 +180,7 @@ function summarise(links: readonly TableListLink[]) {
     if (cur) cur.n += 1;
     else by.set(f.group, { n: 1, color: f.color, tone: f.tone });
   }
-  const rank: Record<Outcome, number> = { none: 0, partial: 1, unknown: 2, holds: 3 };
+  const rank: Record<Outcome, number> = { broken: 0, partial: 1, unknown: 2, holds: 3 };
   return [...by.entries()]
     .sort(([, a], [, b]) => rank[a.tone] - rank[b.tone] || b.n - a.n);
 }
@@ -167,7 +203,10 @@ export function TableList({
   tables, sources, colorFor, pendingByTable, selectedTableId, selectedEdgeId,
   linksFor, check, search, onSearch, onPickTable, onPickLink, onCheckTable,
   flaggedByTable, needsAttention, onlyAttention, onToggleAttention, onCheckMany,
+  bucket,
 }: {
+  /** Which half of the toggle is showing. Decides how links are grouped. */
+  bucket: Bucket;
   tables: GraphTable[];
   sources: GraphSource[];
   colorFor: (connectionId: number) => string;
@@ -191,6 +230,15 @@ export function TableList({
   onCheckTable: (tableId: number) => void;
   onCheckMany: (tableIds: number[]) => void;
 }) {
+  // Which cause/origin headings are open, keyed `tableId|groupKey` so opening
+  // one on a table does not open the same-named one on the next.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (k: string) => setOpenGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(k)) next.delete(k); else next.add(k);
+    return next;
+  });
+
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
     const match = (t: GraphTable) =>
@@ -395,70 +443,72 @@ export function TableList({
                           </div>
                         )}
 
-                        {/* Grouped under the field they leave from. Twelve rows
-                            all starting `Name ←` spend the width on a repeated
-                            prefix and truncate the part you have to read; as a
-                            heading it is said once. It also makes one column
-                            with several targets self-evident, which is what the
-                            `N targets` chip used to have to announce. */}
-                        {groupByColumn(links).map((group) => (
-                          <div key={group.column} className="mt-1 first:mt-0">
-                            <div className="flex items-baseline gap-1.5 pl-1.5 pt-1 text-[11px] font-medium text-ink2">
-                              {group.column}
-                              {group.links.length > 1 && (
-                                <span className="text-[10px] font-normal text-muted2">
-                                  {group.links.length} targets
+                        {/* Collapsed by cause (or by origin, in Confirmed).
+                            Twenty-six near-identical rows become four headings
+                            you can read without opening anything. */}
+                        {group(links, bucket).map((gr) => {
+                          const open = openGroups.has(t.id + '|' + gr.key);
+                          return (
+                            <div key={gr.key} className="mt-1 first:mt-0">
+                              <button
+                                type="button"
+                                onClick={() => toggleGroup(t.id + '|' + gr.key)}
+                                className="flex w-full items-center gap-1.5 rounded-md py-[3px] pl-1 pr-1 text-left hover:bg-soft"
+                              >
+                                {open
+                                  ? <ChevronDown size={11} className="shrink-0 text-muted2" />
+                                  : <ChevronRight size={11} className="shrink-0 text-muted2" />}
+                                {gr.tone && (
+                                  <span
+                                    className="w-3 shrink-0 text-center text-[11px] font-bold leading-none"
+                                    style={{ color: OUTCOME[gr.tone].color }}
+                                    aria-hidden
+                                  >
+                                    {OUTCOME[gr.tone].glyph}
+                                  </span>
+                                )}
+                                <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
+                                  {gr.label}
                                 </span>
-                              )}
+                                <span className="shrink-0 tabular-nums text-[11px] text-muted2">
+                                  {gr.links.length}
+                                </span>
+                              </button>
+
+                              {open && gr.links.map((l) => {
+                                const active = l.id === selectedEdgeId;
+                                const finding = shortFinding(l.measured, l.otherLabel);
+                                return (
+                                  <button
+                                    key={l.id}
+                                    type="button"
+                                    onClick={() => onPickLink(l.id)}
+                                    title={finding?.detail}
+                                    className={`flex w-full items-center gap-1.5 rounded-md py-[3px] pl-5 pr-1 text-left ${
+                                      active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
+                                    }`}
+                                  >
+                                    <ProvenanceMark
+                                      provenance={l.provenance}
+                                      semanticSource={l.semanticSource}
+                                      sourceName={l.sourceName}
+                                    />
+                                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
+                                      <span className="text-muted2">{l.ownLabel} </span>
+                                      {l.direction === 'out' ? '\u2192' : '\u2190'} {l.otherLabel}
+                                    </span>
+                                    {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
+                                    {l.isCrossSource && (
+                                      <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
+                                        {l.kind === 'match' ? 'match' : 'cross'}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
                             </div>
-                            {group.links.map((l) => {
-                              const active = l.id === selectedEdgeId;
-                              // The BINDING CONSTRAINT, not the containment
-                              // ratio. A row reading "100%" in warning-amber —
-                              // because containment was total and the target
-                              // was not an identifier — states one measure and
-                              // colours it by another.
-                              const finding = shortFinding(l.measured, l.otherLabel);
-                              return (
-                                <button
-                                  key={l.id}
-                                  type="button"
-                                  onClick={() => onPickLink(l.id)}
-                                  title={finding?.detail}
-                                  className={`flex w-full items-center gap-1.5 rounded-md py-[3px] pl-1.5 pr-1 text-left ${
-                                    active ? 'bg-raised shadow-[0_0_0_1px_rgba(22,78,99,0.22)]' : 'hover:bg-soft'
-                                  }`}
-                                >
-                                  <ProvenanceMark
-                                    provenance={l.provenance}
-                                    semanticSource={l.semanticSource}
-                                    sourceName={l.sourceName}
-                                  />
-                                  <span className="shrink-0 text-muted2">
-                                    {l.direction === 'out' ? '→' : '←'}
-                                  </span>
-                                  <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink2">
-                                    {l.otherLabel}
-                                  </span>
-                                  {l.flagged && <Flag size={10} className="shrink-0 text-err" />}
-                                  {l.isCrossSource && (
-                                    <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-wide text-ocean">
-                                      {l.kind === 'match' ? 'match' : 'cross'}
-                                    </span>
-                                  )}
-                                  {finding && (
-                                    <span
-                                      className="w-[64px] shrink-0 truncate text-right text-[11px] font-medium"
-                                      style={{ color: finding.color }}
-                                    >
-                                      {finding.label}
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     );
                   })()}

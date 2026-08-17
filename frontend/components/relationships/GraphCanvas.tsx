@@ -7,7 +7,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import {
-  Loader2, AlertTriangle, CheckCircle2, Flag, ChevronDown, ChevronUp,
+  Loader2, AlertTriangle, CheckCircle2, Flag, ChevronDown, ChevronUp, Plus,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
@@ -20,6 +20,7 @@ import {
   TableList, ProvenanceMark, type TableListLink, type CheckProgress,
 } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
+import { bucketOf, type Bucket } from './provenance';
 import { outcomeOf } from './MeasurePanel';
 import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H } from './geometry';
@@ -87,6 +88,17 @@ function CanvasInner() {
   /** Filter the table list down to what is unresolved. */
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  /**
+   * The one control that governs the screen.
+   *
+   * `confirmed` is exactly what Ask AI is allowed to join on; `review` is
+   * everything Clarion proposed and nobody has accepted. Filtering the list and
+   * the diagram from the SAME predicate is the point — two views of one set,
+   * never two sets that can disagree.
+   */
+  const [bucket, setBucket] = useState<Bucket>('review');
+  /** Showing the how-to-draw hint. Drawing needs discovering exactly once. */
+  const [drawHint, setDrawHint] = useState(false);
   /** The side-by-side value comparison, when open. */
   const [values, setValues] = useState<
     { title: string; loading: boolean; result: ValueComparisonResult | null } | null
@@ -145,6 +157,19 @@ function CanvasInner() {
   /** A revealed column list belongs to the table you were just looking at. */
   useEffect(() => { setShowAll(new Set()); }, [selectedTableId, selectedEdgeId]);
 
+  /** Only the half of the graph the toggle is showing. */
+  const shown = useMemo(
+    () => (graph?.relationships ?? []).filter((r) => bucketOf(r) === bucket),
+    [graph, bucket],
+  );
+  const bucketCounts = useMemo(() => {
+    let confirmed = 0; let review = 0;
+    for (const r of graph?.relationships ?? []) {
+      if (bucketOf(r) === 'confirmed') confirmed += 1; else review += 1;
+    }
+    return { confirmed, review };
+  }, [graph]);
+
   const columnsByTable = useMemo(() => {
     const m = new Map<number, GraphColumn[]>();
     for (const c of graph?.columns ?? []) {
@@ -194,41 +219,41 @@ function CanvasInner() {
    */
   const needsAttention = useMemo(() => {
     const s = new Set<number>();
-    for (const r of graph?.relationships ?? []) {
+    for (const r of shown) {
       const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
-      if (!(r.flagged || r.provenance === 'ai' || o === 'none' || o === 'partial')) continue;
+      if (!(r.flagged || r.provenance === 'ai' || o === 'broken' || o === 'partial')) continue;
       s.add(r.fromTableId);
       s.add(r.toTableId);
     }
     return s;
-  }, [graph, freshMeasured]);
+  }, [shown, freshMeasured]);
 
   /** How many of each table's relationships someone marked as a problem. */
   const flaggedByTable = useMemo(() => {
     const m = new Map<number, number>();
-    for (const r of graph?.relationships ?? []) {
+    for (const r of shown) {
       if (!r.flagged) continue;
       m.set(r.fromTableId, (m.get(r.fromTableId) ?? 0) + 1);
       if (r.toTableId !== r.fromTableId) m.set(r.toTableId, (m.get(r.toTableId) ?? 0) + 1);
     }
     return m;
-  }, [graph]);
+  }, [shown]);
 
   /** How many of each table's relationships nobody has decided on yet. */
   const pendingByTable = useMemo(() => {
     const m = new Map<number, number>();
-    for (const r of graph?.relationships ?? []) {
+    for (const r of shown) {
       if (r.provenance !== 'ai') continue;
       m.set(r.fromTableId, (m.get(r.fromTableId) ?? 0) + 1);
       if (r.toTableId !== r.fromTableId) m.set(r.toTableId, (m.get(r.toTableId) ?? 0) + 1);
     }
     return m;
-  }, [graph]);
+  }, [shown]);
 
   /** A table's relationships, phrased from that table's side. */
   const linksFor = useCallback((tableId: number): TableListLink[] => {
     const out: TableListLink[] = [];
-    for (const r of graph?.relationships ?? []) {
+    for (const r of shown) {
       const outgoing = r.fromTableId === tableId;
       const incoming = r.toTableId === tableId;
       if (!outgoing && !incoming) continue;
@@ -275,12 +300,12 @@ function CanvasInner() {
     }
     for (const l of out) l.siblingTargets = l.direction === 'out' ? (perColumn.get(l.ownLabel) ?? 1) : 1;
 
-    const rank = { none: 0, partial: 1, unknown: 2, holds: 3 } as const;
+    const rank = { broken: 0, partial: 1, unknown: 2, holds: 3 } as const;
     return out.sort((a, b) =>
       a.ownLabel.localeCompare(b.ownLabel)
       || rank[outcomeOf(a.measured)] - rank[outcomeOf(b.measured)]
       || a.otherLabel.localeCompare(b.otherLabel));
-  }, [graph, columnNameById, tableNameById, sourceNameByTable, freshMeasured]);
+  }, [shown, columnNameById, tableNameById, sourceNameByTable, freshMeasured]);
 
   const toggleAllColumns = useCallback((tableId: number) => {
     setShowAll((prev) => {
@@ -363,7 +388,7 @@ function CanvasInner() {
   }, [runCheck, linksFor]);
 
   const selectedRel: GraphRelationship | null = selectedEdgeId != null
-    ? graph?.relationships.find((r) => r.id === selectedEdgeId) ?? null
+    ? shown.find((r) => r.id === selectedEdgeId) ?? null
     : null;
 
   /**
@@ -394,12 +419,12 @@ function CanvasInner() {
   const { neighbours, neighbourTotal } = useMemo(() => {
     if (!graph || anchorId == null) return { neighbours: [] as number[], neighbourTotal: 0 };
     const seen = new Set<number>();
-    for (const r of graph.relationships) {
+    for (const r of shown) {
       if (r.fromTableId === anchorId && r.toTableId !== anchorId) seen.add(r.toTableId);
       if (r.toTableId === anchorId && r.fromTableId !== anchorId) seen.add(r.fromTableId);
     }
     const known = [...seen].filter((id) => graph.tables.some((t) => t.id === id));
-    const ranked = rankNeighbours(anchorId, graph.relationships, known).slice(0, MAX_NEIGHBOURS);
+    const ranked = rankNeighbours(anchorId, shown, known).slice(0, MAX_NEIGHBOURS);
 
     // The other end of whatever is selected is never allowed to fall off the
     // ring. A hub can have more neighbours than the ring holds, and highlighting
@@ -418,7 +443,7 @@ function CanvasInner() {
         || (ta.displayName || ta.tableName).localeCompare(tb.displayName || tb.tableName);
     });
     return { neighbours: placed, neighbourTotal: known.length };
-  }, [graph, anchorId, selectedRel, colorIndexBySource]);
+  }, [graph, shown, anchorId, selectedRel, colorIndexBySource]);
 
   const visibleIds = useMemo(
     () => (anchorId == null ? EMPTY_IDS : new Set([anchorId, ...neighbours])),
@@ -432,10 +457,10 @@ function CanvasInner() {
    */
   const drawnRels = useMemo(() => {
     if (!graph || anchorId == null) return [] as GraphRelationship[];
-    return graph.relationships.filter((r) =>
+    return shown.filter((r) =>
       (r.fromTableId === anchorId && visibleIds.has(r.toTableId))
       || (r.toTableId === anchorId && visibleIds.has(r.fromTableId)));
-  }, [graph, anchorId, visibleIds]);
+  }, [graph, shown, anchorId, visibleIds]);
 
   /**
    * Per table: exactly which columns to render, and how tall that makes it.
@@ -965,7 +990,7 @@ function CanvasInner() {
   const stats = graph?.stats;
   const health = (() => {
     let checked = 0; let bad = 0;
-    for (const r of graph?.relationships ?? []) {
+    for (const r of shown) {
       const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
       if (o === 'unknown') continue;
       checked += 1;
@@ -1002,6 +1027,7 @@ function CanvasInner() {
           onPickTable={pickTable}
           onPickLink={setSelectedEdgeId}
           onCheckTable={checkTable}
+          bucket={bucket}
         />
       )}
       <div className="relative min-w-0 flex-1">
@@ -1009,54 +1035,78 @@ function CanvasInner() {
 
       {/* Toolbar */}
       <div className="absolute left-4 right-4 top-4 z-10 flex items-center gap-3">
-        {/* One line saying what you are looking at. It replaces a mode switch,
-            which asked the user to choose a way of working before they had a
-            question. */}
+        {/* THE control. Confirmed is exactly what Ask AI joins on; To review is
+            everything Clarion proposed and nobody has accepted. One predicate
+            filters the list and the diagram together, so the two halves of the
+            screen can never disagree about what is in scope. */}
+        <div className="flex items-center rounded-xl border border-line bg-raised/95 p-0.5 shadow-sm backdrop-blur">
+          {([
+            ['confirmed', 'Confirmed', bucketCounts.confirmed],
+            ['review', 'To review', bucketCounts.review],
+          ] as const).map(([b, label, n]) => (
+            <button
+              key={b}
+              type="button"
+              onClick={() => { setBucket(b); setSelectedEdgeId(null); }}
+              className={`flex items-center gap-1.5 rounded-[10px] px-2.5 py-1 text-[12.5px] transition-colors ${
+                bucket === b ? 'bg-ocean text-white' : 'text-ink2 hover:bg-soft'
+              }`}
+            >
+              {label}
+              <span className={`tabular-nums text-[11px] ${bucket === b ? 'text-white/75' : 'text-muted2'}`}>
+                {n}
+              </span>
+            </button>
+          ))}
+        </div>
+
         {workingTable && (
           <div className="flex items-center gap-2 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[12.5px] text-ink2 shadow-sm backdrop-blur">
             <span
               className="h-2 w-2 shrink-0 rounded-full"
               style={{ background: colorForConnection(workingTable.connectionId) }}
             />
-            What <span className="font-medium text-ink">
+            <span className="font-medium text-ink">
               {workingTable.displayName || workingTable.tableName}
-            </span> connects to
+            </span>
             {neighbourTotal > neighbours.length && (
               <span className="text-muted">· showing {neighbours.length} of {neighbourTotal}</span>
             )}
-            {queuePosition && (
-              <span className="text-muted">· link {queuePosition}</span>
-            )}
+            {queuePosition && <span className="text-muted">· link {queuePosition}</span>}
           </div>
         )}
 
+        {/* Drawing is how the model gets COMPLETE. Nothing can tell you about a
+            relationship nobody has drawn, so this cannot stay a gesture you have
+            to discover — it is a first-class action, next to the toggle. */}
+        <button
+          type="button"
+          onClick={() => setDrawHint((v) => !v)}
+          className={`ml-auto flex items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-[12.5px] shadow-sm backdrop-blur transition-colors ${
+            drawHint
+              ? 'border-ocean bg-ocean text-white'
+              : 'border-line bg-raised/95 text-ink2 hover:bg-soft'
+          }`}
+        >
+          <Plus size={13} />
+          Draw a relationship
+        </button>
+
         {stats && (
-          <div className="ml-auto flex items-center gap-3 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
-            <span className="tabular-nums">{stats.relationships} links</span>
-            {/* What the data says, at tenant scale. "169 links" alone gave no
-                hint that a third of them might not hold. */}
-            {health.checked > 0 && (
-              <>
-                <span className="tabular-nums">{health.checked} checked</span>
-                {health.bad > 0 && (
-                  <span className="tabular-nums" style={{ color: '#a43a3a' }}>
-                    {health.bad} don&apos;t hold
-                  </span>
-                )}
-              </>
+          <div className="flex items-center gap-2.5 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
+            {/* Scoped to the half on screen. A tenant-wide "169 links" beside a
+                toggle that shows 128 is two populations in one strip. */}
+            {health.checked > 0 && health.bad > 0 && (
+              <span className="tabular-nums" style={{ color: '#a43a3a' }}>
+                {health.bad} of {health.checked} checked don&apos;t hold
+              </span>
             )}
             {stats.flagged > 0 && (
               <span className="flex items-center gap-1 tabular-nums text-err">
                 <Flag size={10} />
-                {stats.flagged} flagged
+                {stats.flagged}
               </span>
             )}
-            {stats.crossSource > 0 && (
-              <span className="tabular-nums text-ocean">{stats.crossSource} across sources</span>
-            )}
-            {/* `relationships` counts only what can be drawn, while `flagged`
-                counts every row. Without this the two numbers next to each
-                other describe different populations and nothing says so. */}
             {stats.unresolved > 0 && (
               <span
                 className="tabular-nums"
@@ -1133,6 +1183,30 @@ function CanvasInner() {
               Choose one on the left and you will see what it connects to, and on which fields.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* One sentence, dismissible, and it expands the tables so the fields are
+          actually there to drag between — telling somebody to drag between two
+          fields while both nodes show three rows is an instruction they cannot
+          follow. */}
+      {drawHint && (
+        <div className="absolute left-1/2 top-20 z-20 w-[22rem] -translate-x-1/2 rounded-xl border border-ocean/40 bg-raised px-3.5 py-2.5 shadow-lg">
+          <p className="text-[12.5px] leading-relaxed text-ink2">
+            Drag from a field on one table to a field on another. Use
+            <span className="font-medium text-ink"> + more fields </span>
+            on a table to see everything it has.
+          </p>
+          <p className="mt-1 text-[11.5px] text-muted">
+            Clarion measures the link against your data before anything is saved.
+          </p>
+          <button
+            type="button"
+            onClick={() => setDrawHint(false)}
+            className="mt-1.5 text-[11.5px] text-ocean hover:underline"
+          >
+            Got it
+          </button>
         </div>
       )}
 

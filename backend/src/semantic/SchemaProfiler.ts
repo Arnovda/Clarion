@@ -238,56 +238,74 @@ export async function runSchemaProfiler(
   // API-style sources (ExactOnline, NetSuite, …) ship a documented data
   // model — far more reliable than heuristic name-pattern matching on
   // PascalCase columns.
+  //
+  // **THE VENDOR'S OWN DOCUMENTATION GOES IN FIRST, AND WINS THE DEDUP.**
+  // It used to be the other way round, and the labels were wrong because of
+  // it: measured against Exact Online, 61 of our 81 curated entries are links
+  // the vendor DOES document, but the curated catalogue was loaded first, so
+  // the docs channel skipped them as duplicates and all 61 kept the `curated`
+  // label. The effect was the opposite of the 2026-08-14 fix — instead of our
+  // work claiming the vendor's authority, the vendor's claims were being
+  // credited to us. Whoever asserts a link first here decides what it is
+  // called, so the stronger claim has to go first.
   const knownFks: FkCandidate[] = [];
-  if (connectorType && selectedEntities) {
-    try {
-      const sourceConnector = getSourceConnector(connectorType);
-      if (sourceConnector.getKnownRelationships) {
-        const known = sourceConnector.getKnownRelationships(selectedEntities);
-        for (const rel of known) {
-          knownFks.push({
-            fromTable: rel.fromTable,
-            fromColumn: rel.fromColumn,
-            toTable: rel.toTable,
-            toColumn: rel.toColumn,
-            // CURATED, not declared. This catalogue is hand-written by us; the
-            // vendor has no idea it exists. Labelling it `declared` is what let
-            // 81 relationships we authored claim Exact Online's authority on
-            // screen.
-            source: 'curated',
-            confidence: 1.0,
-          });
-        }
-        log.info(`Loaded ${knownFks.length} known relationship(s) from ${connectorType}`);
-      }
-    } catch (err) {
-      log.warn({ err }, `getKnownRelationships(${connectorType}) failed`);
-    }
-  }
+  const seenKnown = new Set<string>();
+  const keyOf = (a: string, b: string, c: string, d: string) => `${a}.${b}→${c}.${d}`;
 
-  // Docs-derived relationship facts (e.g. Odoo many2one `relation` targets)
-  // join the declared rung too — deduped against the static catalog.
+  // The only channel that is genuinely the SOURCE SYSTEM's own claim.
   {
-    const seen = new Set(knownFks.map((k) => `${k.fromTable}.${k.fromColumn}→${k.toTable}.${k.toColumn}`));
     let docRelCount = 0;
     for (const d of connectorDocs) {
       for (const rel of d.relationships ?? []) {
-        const key = `${rel.fromTable}.${rel.fromColumn}→${rel.toTable}.${rel.toColumn}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const key = keyOf(rel.fromTable, rel.fromColumn, rel.toTable, rel.toColumn);
+        if (seenKnown.has(key)) continue;
+        seenKnown.add(key);
         knownFks.push({
           fromTable:  rel.fromTable,
           fromColumn: rel.fromColumn,
           toTable:    rel.toTable,
           toColumn:   rel.toColumn,
-          // The only channel that is genuinely the SOURCE SYSTEM's own claim.
           source:     'vendor_docs',
           confidence: 1.0,
         });
         docRelCount++;
       }
     }
-    if (docRelCount > 0) log.info(`describeEntities(${connectorType}): +${docRelCount} declared relationship(s) from source metadata`);
+    if (docRelCount > 0) {
+      log.info(`describeEntities(${connectorType}): ${docRelCount} relationship(s) documented by the source`);
+    }
+  }
+
+  // Then OUR hand-written catalogue, for what the vendor does not document.
+  if (connectorType && selectedEntities) {
+    try {
+      const sourceConnector = getSourceConnector(connectorType);
+      if (sourceConnector.getKnownRelationships) {
+        const known = sourceConnector.getKnownRelationships(selectedEntities);
+        let curatedCount = 0;
+        for (const rel of known) {
+          const key = keyOf(rel.fromTable, rel.fromColumn, rel.toTable, rel.toColumn);
+          if (seenKnown.has(key)) continue;
+          seenKnown.add(key);
+          knownFks.push({
+            fromTable: rel.fromTable,
+            fromColumn: rel.fromColumn,
+            toTable: rel.toTable,
+            toColumn: rel.toColumn,
+            // CURATED, not declared. This catalogue is hand-written by us — part
+            // of it from the vendor's reference, part from a third-party Singer
+            // tap's schema — so the vendor has no idea it exists. What survives
+            // the dedup above is the genuinely-ours remainder.
+            source: 'curated',
+            confidence: 1.0,
+          });
+          curatedCount++;
+        }
+        log.info(`${connectorType}: ${curatedCount} curated relationship(s) the source does not document`);
+      }
+    } catch (err) {
+      log.warn({ err }, `getKnownRelationships(${connectorType}) failed`);
+    }
   }
 
   // De-duplicate: heuristic FKs that match a known one are dropped.

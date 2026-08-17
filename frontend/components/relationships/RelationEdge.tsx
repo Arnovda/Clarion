@@ -44,8 +44,11 @@ export interface RelationEdgeData {
 const HEALTH: Record<Outcome, { color: string; width: number }> = {
   unknown: { color: '#8c96a0', width: 1.5 },
   holds:   { color: '#2f6f57', width: 2 },
+  // Amber is now reserved for the case a person can actually fix: a real key
+  // whose values only partly line up. Red is "this can never work" — the target
+  // repeats, or nothing matches at all.
   partial: { color: '#a06a1c', width: 2 },
-  none:    { color: '#a43a3a', width: 2 },
+  broken:  { color: '#a43a3a', width: 2 },
 };
 
 /** Dash pattern by provenance: only an unreviewed suggestion is provisional. */
