@@ -54,6 +54,10 @@ const HEALTH: Record<Outcome, { color: string; width: number }> = {
   // repeats, or nothing matches at all.
   partial: { color: '#a06a1c', width: 2 },
   broken:  { color: '#a43a3a', width: 2 },
+  // A link the source itself lays, that our data cannot yet confirm. Never red,
+  // never amber: nothing about the LINK is in question, so the line must not
+  // pull the eye the way a wrong link should.
+  unverified: { color: '#7b8894', width: 2 },
 };
 
 /**

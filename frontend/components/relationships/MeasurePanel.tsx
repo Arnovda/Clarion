@@ -128,9 +128,36 @@ export function OverlapBar({ m, targetLabel }: { m: Measurement; targetLabel: st
  * of the "readable at a glance" this pane was missing: colour now answers *can
  * this ever work?*, and the short finding beside it answers *why not*.
  */
-export type Outcome = 'holds' | 'partial' | 'broken' | 'unknown';
+export type Outcome = 'holds' | 'partial' | 'broken' | 'unverified' | 'unknown';
 
-export function outcomeOf(m: Measurement | null | undefined): Outcome {
+/**
+ * @param laid WHO LAID THE LINE — and therefore what a failing check MEANS.
+ *
+ * The same measurement carries two different findings. On a link a person laid,
+ * a failed check is evidence against the LINK: somebody made a judgement and the
+ * data disagrees. On a link the SOURCE lays — its own documentation, or a
+ * foreign key its database enforces — the link is true by definition, so a
+ * failed check can only be evidence about the DATA WE HOLD: too little of it,
+ * or a table that has not finished syncing.
+ *
+ * Collapsing those into one red ✗ was the defect. It put "Doesn't hold" on links
+ * that cannot not hold, and it sent people to investigate a relationship when
+ * the thing worth looking at was the sync. Hence `unverified`: neutral, never
+ * red, and it never enters *Needs attention* — there is nothing here to decide.
+ */
+export function outcomeOf(
+  m: Measurement | null | undefined,
+  laid: 'source' | 'manual' = 'manual',
+): Outcome {
+  const measured = rawOutcome(m);
+  // Only a check that RAN can say the data is thin. A link nobody has measured
+  // is `unknown` whoever laid it — "not enough data to check fully" would be a
+  // claim about a check that never happened.
+  if (laid === 'source' && (measured === 'broken' || measured === 'partial')) return 'unverified';
+  return measured;
+}
+
+function rawOutcome(m: Measurement | null | undefined): Outcome {
   if (!m || m.verdict === 'unmeasurable' || !m.containment) return 'unknown';
   if (m.verdict === 'strong') return 'holds';
   // Structurally impossible, in both of its forms.
@@ -154,6 +181,12 @@ export const OUTCOME: Record<Outcome, {
   holds:   { color: '#3f7a5c', bg: '#dbe8e0', label: 'hold',         head: 'Holds',           glyph: '\u2713' },
   partial: { color: '#a06a1c', bg: '#f1e4c8', label: 'worth a look', head: 'Worth a look',    glyph: '~' },
   broken:  { color: '#a43a3a', bg: '#f1d7d7', label: "don't hold",   head: "Doesn't hold",    glyph: '\u2717' },
+  unverified: {
+    color: '#5a6b78', bg: '#e0e6ea',
+    label: 'not fully checked',
+    head: 'Not enough data to check fully',
+    glyph: '\u25cb',
+  },
   unknown: { color: '#8891a0', bg: '#e3e6ea', label: 'not checked',  head: "Couldn't check",  glyph: '\u00b7' },
 };
 
@@ -193,11 +226,25 @@ export interface Finding {
 export function shortFinding(
   m: Measurement | null | undefined,
   toLabel?: string,
+  /** See `outcomeOf`: on a source-laid link the check describes our DATA, not the link. */
+  laid: 'source' | 'manual' = 'manual',
 ): Finding | null {
   if (!m) return null;
   const c = m.containment;
   const target = toLabel ?? 'the other column';
   const pct = (n: number) => `${Math.round(n * 100)}%`;
+
+  const raw = rawOutcome(m);
+  if (laid === 'source' && (raw === 'broken' || raw === 'partial')) {
+    return {
+      label: 'not fully checked', group: 'not fully checked',
+      detail: `The source system defines this relationship itself, so it holds by definition. `
+        + `The data we hold cannot show that yet — ${describeShortfall(m, target)} — which is `
+        + `usually a table that has not finished syncing rather than a problem with the link.`,
+      color: OUTCOME.unverified.color,
+      tone: 'unverified',
+    };
+  }
 
   if (c && c.sampledDistinct > 0 && c.ratio === 0) {
     return {
@@ -249,6 +296,27 @@ export function shortFinding(
         tone: 'unknown',
       };
   }
+}
+
+/**
+ * Why the check could not confirm a source-laid link, as half a sentence.
+ *
+ * Deliberately phrased about what we HOLD, never about the link: "none of these
+ * values are here yet", not "no match". The measurement is identical either way
+ * — what changes is which of the two things it is evidence about.
+ */
+function describeShortfall(m: Measurement, target: string): string {
+  const c = m.containment;
+  const pct = (n: number) => `${Math.round(n * 100)}%`;
+  if (!c || m.verdict === 'unmeasurable') return 'we could not run the check here';
+  if (m.reason === 'target-not-key') {
+    return `${target} repeats itself in the rows we hold, so it cannot identify a row here`;
+  }
+  if (c.ratio === 0) return `none of these values have arrived in ${target} yet`;
+  if (m.reason === 'too-few-distinct') {
+    return `there are only ${c.sampledDistinct} different values to go on`;
+  }
+  return `${pct(c.ratio)} of these values are in ${target} so far`;
 }
 
 /**
@@ -377,14 +445,22 @@ export function CheckList({ m, fromLabel, toLabel, prose = true }: {
  * nothing is nearly always a sync that has not finished — not a wrong link — and
  * saying so is the difference between a number and a next step.
  */
-export function ContradictionFlag({ m, provenance, semanticSource }: {
+export function ContradictionFlag({ m, provenance, semanticSource, laid = 'manual' }: {
   m: Measurement;
   provenance: 'human' | 'declared' | 'ai';
   /** Lets the notice name WHO is contradicted, rather than saying "the source". */
   semanticSource?: string | null;
+  /**
+   * Silent on a SOURCE-LAID link. Nothing there is contradicted: the source
+   * defines the relationship, so a failing check is a statement about the rows
+   * we hold, and the verdict block already says so in those words. Repeating it
+   * here would put an amber warning triangle under a deliberately neutral
+   * headline and undo the distinction.
+   */
+  laid?: 'source' | 'manual';
 }) {
   const trusted = provenance === 'declared' || provenance === 'human';
-  if (!trusted || m.verdict !== 'broken') return null;
+  if (laid === 'source' || !trusted || m.verdict !== 'broken') return null;
 
   const who = provenance === 'human'
     ? 'Someone on your team confirmed this link'

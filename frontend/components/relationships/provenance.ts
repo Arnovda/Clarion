@@ -158,3 +158,42 @@ export function bucketOf(
   if (r.semanticSource) return CONFIRMED_SOURCES.has(r.semanticSource) ? 'confirmed' : 'review';
   return r.provenance === 'declared' ? 'confirmed' : 'review';
 }
+
+/**
+ * WHO LAID THIS LINE. The distinction the whole screen turns on.
+ *
+ *   • `source` — the source system itself asserts it: its own documentation, or
+ *     a foreign key the database enforces. It exists by definition. We do not
+ *     review these for correctness, because there is nothing to correct.
+ *   • `manual` — a person did: your team, or a Clarion engineer writing the
+ *     connector catalogue. Good judgement, but judgement, so it can be wrong.
+ *
+ * A CLARION SUGGESTION IS NOT A THIRD KIND. It is a proposal, not a
+ * relationship — it lives in To review until somebody accepts it, and accepting
+ * it makes it manual, because at that point a person laid it.
+ *
+ * The consequence that matters is not the label, it is what a FAILING CHECK
+ * means. The same measurement says two different things depending on this:
+ * on a manual link it means whoever laid it may have got it wrong; on a
+ * source-laid link the link is right and we simply could not confirm it here.
+ */
+export type LaidBy = 'source' | 'manual';
+
+export function laidBy(
+  r: { provenance: Provenance; semanticSource: SemanticSource | null },
+): LaidBy {
+  return originOf(r.provenance, r.semanticSource).tier === 'documented' ? 'source' : 'manual';
+}
+
+export const LAID_BY: Record<LaidBy, { label: string; hint: string }> = {
+  source: {
+    label: 'Laid by the source',
+    hint: 'The source system defines this relationship itself, so it exists whether or not '
+      + 'the data we hold can show it. Nothing here needs deciding.',
+  },
+  manual: {
+    label: 'Laid manually',
+    hint: 'A person put this link here — your team, or a Clarion engineer writing the '
+      + 'connector. That is a judgement, so it is the kind of link that can be wrong.',
+  },
+};

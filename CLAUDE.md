@@ -31,7 +31,57 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-13 (RELATIONSHIP CANVAS — one view, evidence first; the Review/Explore split is deleted)
+**Last updated:** 2026-08-17 (TWO KINDS OF LINE: laid by the source vs laid manually)
+
+**A FAILING CHECK MEANS TWO DIFFERENT THINGS, AND THE SCREEN NOW SAYS WHICH
+(2026-08-17).** Owner: *"I want to see 2 types of relations. 'laid by source' and
+'laid manually'. We assume that everything that is documented by the source is
+true, so this always has to hold. If it's laid by us, then maybe there can be an
+error and we have to have a notion of it."* Correct, and the canvas was stating
+the opposite. **`Payments.PaymentConditionID → PaymentConditions.ID` is
+documented by Exact Online — it cannot not hold — and it drew as a red line
+labelled "Doesn't hold" because 2 of 24 values had arrived.** The measurement was
+right; the sentence attached to it was about the wrong subject.
+- **`laidBy()` (`provenance.ts`) is the distinction, and it is DERIVED, not a new
+  field** — `originOf(...).tier === 'documented'` already separated the source's
+  own assertions (vendor docs, an enforced foreign key) from everybody's
+  judgement (Clarion's connector catalogue, your team, a confirmed suggestion).
+  Migration 79 did the storage work; this reads it. **A Clarion suggestion is not
+  a third kind**: it is a proposal, it lives in *To review*, and accepting it
+  makes it manual — because at that point a person laid it.
+- **New `unverified` outcome** (`outcomeOf(m, laid)`): a source-laid link whose
+  check comes back `broken` or `partial`. Neutral grey `#5a6b78`, glyph `○`,
+  headline **"Not enough data to check fully"** — the owner's own wording, chosen
+  over "your data is behind", which asserts a cause we have not established. The
+  detail sentence is phrased about what we HOLD, never about the link: *"none of
+  these values have arrived in PaymentConditions.ID yet"*, not *"no match"*.
+  Same measurement, different subject.
+- **`unknown` is NOT rerouted.** Only a check that RAN can report thin data; a
+  link nobody measured stays "not checked" whoever laid it. Getting this wrong
+  would have put "not enough data to check fully" on a check that never happened.
+- **The flag has consequences beyond the label**, which is the whole point:
+  `unverified` is excluded from *Needs attention* (there is nothing to decide —
+  sending someone to inspect the link wastes the filter that means "these need a
+  decision"), excluded from the toolbar's red `N don't hold` tally and counted
+  separately as `N need more data`, and it suppresses `ContradictionFlag` (an
+  amber warning triangle under a deliberately neutral headline undoes the
+  distinction it was just drawn to make).
+- **Confirmed now groups by WHO LAID THE LINE**, not by the seven-channel origin
+  label. Two headings, source first. The finer channel stays on every row's
+  `ProvenanceMark`, so nothing is lost — but the split you see first is the one
+  that decides what a failing check accuses.
+- **The dash on the canvas already carried this** (solid = the source, dashed =
+  a person) — the legend now names it as such and both entries carry the
+  `LAID_BY` hint.
+- `tsc` clean, `next lint` clean, `next build` green (`/relationships` 2.6 kB /
+  100 kB), 63 backend tests green, all six lint ratchets green **from the repo
+  root** (they fail spuriously when run from `backend/`).
+- **STILL OWED, and it needs the owner:** re-Analyse the Exact Online source so
+  `semantic_source` is populated for existing rows (they are NULL until then, and
+  a NULL channel reads as manual — the safe direction, but it undercounts the
+  source-laid half). Only after that do we look at the real Confirmed / To review
+  split and flip `getRelationshipsForContext` to confirmed-only.
+
 
 **RELATIONSHIP CANVAS — SLICE 1 SHIPPED: THE MEASUREMENT ENDPOINT (2026-08-11).**
 `POST /api/relationships/measure` (analyst+, `computeLimiter`, four ids in) answers

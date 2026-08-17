@@ -6,7 +6,7 @@ import {
   ChevronDown, ChevronRight,
 } from 'lucide-react';
 import type { GraphRelationship, Measurement } from './types';
-import { originOf, TIER_STYLE } from './provenance';
+import { laidBy, originOf, TIER_STYLE } from './provenance';
 import {
   explain, ValueComparison, CheckList, ContradictionFlag,
   checkAssertion, shortFinding, outcomeOf, OUTCOME,
@@ -114,8 +114,11 @@ export function EdgeInspector({
   const m = relationship.measured as Measurement | null;
   // The binding constraint, in the words the list uses. One vocabulary across
   // both panes is what makes a row and its panel obviously the same thing.
-  const finding = shortFinding(m, toLabel);
-  const outcome = OUTCOME[outcomeOf(m)];
+  // WHO LAID THE LINE decides what the measurement MEANS, so it is read before
+  // the measurement is rendered rather than mentioned beside it.
+  const laid = laidBy(relationship);
+  const finding = shortFinding(m, toLabel, laid);
+  const outcome = OUTCOME[outcomeOf(m, laid)];
 
   return (
     <aside className="flex h-full w-[340px] flex-col border-l border-line bg-raised">
@@ -235,6 +238,7 @@ export function EdgeInspector({
             m={m}
             provenance={relationship.provenance}
             semanticSource={relationship.semanticSource}
+            laid={laid}
           />
         )}
 

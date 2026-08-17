@@ -8,7 +8,7 @@ import {
 import type {
   GraphSource, GraphTable, Provenance, EdgeKind, Measurement, SemanticSource,
 } from './types';
-import { originOf, TIER_STYLE, type Bucket } from './provenance';
+import { laidBy, LAID_BY, originOf, TIER_STYLE, type Bucket } from './provenance';
 import { shortFinding, OUTCOME, type Outcome } from './MeasurePanel';
 
 /** One of a table's relationships, as it reads in the list. */
@@ -122,38 +122,57 @@ export function ProvenanceMark({ provenance, semanticSource, sourceName }: {
  *   • **To review** groups by CAUSE. Twenty-six rows become four headings, and
  *     the shape of the problem is the heading rather than something you infer
  *     from reading every row.
- *   • **Confirmed** groups by ORIGIN. Nothing there needs deciding, so the
- *     useful split is who stands behind it — the vendor, Clarion, or your team.
+ *   • **Confirmed** groups by WHO LAID THE LINE — the source system, or a
+ *     person. That is not a finer shade of the same thing; it decides what a
+ *     failing check MEANS, so it has to be the split you see first. The exact
+ *     channel underneath (the vendor, Clarion's connector, your team) stays
+ *     readable on every row's mark.
  */
 export interface LinkGroup {
   key: string;
   label: string;
+  hint?: string;
   tone: Outcome | null;
+  /** Lower sorts first. Fixed for the laid-by groups; unused when grouped by cause. */
+  order: number;
   links: TableListLink[];
 }
 
 function group(links: readonly TableListLink[], bucket: Bucket): LinkGroup[] {
   const out = new Map<string, LinkGroup>();
   for (const l of links) {
-    let key: string; let label: string; let tone: Outcome | null;
+    let g: Omit<LinkGroup, 'links'>;
     if (bucket === 'review') {
-      const f = shortFinding(l.measured, l.otherLabel);
-      key = f ? f.group : 'not checked';
-      label = f ? f.group : 'not checked';
-      tone = f ? f.tone : 'unknown';
+      const f = shortFinding(l.measured, l.otherLabel, laidBy(l));
+      g = {
+        key: f ? f.group : 'not checked',
+        label: f ? f.group : 'not checked',
+        tone: f ? f.tone : 'unknown',
+        order: 0,
+      };
     } else {
-      const o = originOf(l.provenance, l.semanticSource);
-      key = o.label;
-      label = o.label;
-      tone = null;
+      const by = laidBy(l);
+      g = {
+        key: by,
+        label: LAID_BY[by].label,
+        hint: LAID_BY[by].hint,
+        tone: null,
+        // Source first, always. It is the half with nothing to decide, so
+        // seeing it settle first is what makes the rest look finite.
+        order: by === 'source' ? 0 : 1,
+      };
     }
-    const g = out.get(key);
-    if (g) g.links.push(l);
-    else out.set(key, { key, label, tone, links: [l] });
+    const existing = out.get(g.key);
+    if (existing) existing.links.push(l);
+    else out.set(g.key, { ...g, links: [l] });
   }
-  const rank: Record<Outcome, number> = { broken: 0, partial: 1, unknown: 2, holds: 3 };
+  const rank: Record<Outcome, number> = {
+    broken: 0, partial: 1, unknown: 2, unverified: 3, holds: 4,
+  };
   return [...out.values()].sort((a, b) =>
-    (a.tone && b.tone ? rank[a.tone] - rank[b.tone] : 0) || b.links.length - a.links.length);
+    a.order - b.order
+    || (a.tone && b.tone ? rank[a.tone] - rank[b.tone] : 0)
+    || b.links.length - a.links.length);
 }
 
 /**
@@ -174,13 +193,15 @@ function summarise(links: readonly TableListLink[]) {
   const by = new Map<string, { n: number; color: string; tone: Outcome }>();
   for (const l of links) {
     if (l.kind === 'match') continue;
-    const f = shortFinding(l.measured, l.otherLabel);
+    const f = shortFinding(l.measured, l.otherLabel, laidBy(l));
     if (!f) continue;
     const cur = by.get(f.group);
     if (cur) cur.n += 1;
     else by.set(f.group, { n: 1, color: f.color, tone: f.tone });
   }
-  const rank: Record<Outcome, number> = { broken: 0, partial: 1, unknown: 2, holds: 3 };
+  const rank: Record<Outcome, number> = {
+    broken: 0, partial: 1, unknown: 2, unverified: 3, holds: 4,
+  };
   return [...by.entries()]
     .sort(([, a], [, b]) => rank[a.tone] - rank[b.tone] || b.n - a.n);
 }
@@ -450,6 +471,7 @@ export function TableList({
                               <button
                                 type="button"
                                 onClick={() => toggleGroup(t.id + '|' + gr.key)}
+                                title={gr.hint}
                                 className="flex w-full items-center gap-1.5 rounded-md py-[3px] pl-1 pr-1 text-left hover:bg-soft"
                               >
                                 {open
@@ -474,7 +496,7 @@ export function TableList({
 
                               {open && gr.links.map((l) => {
                                 const active = l.id === selectedEdgeId;
-                                const finding = shortFinding(l.measured, l.otherLabel);
+                                const finding = shortFinding(l.measured, l.otherLabel, laidBy(l));
                                 return (
                                   <button
                                     key={l.id}

@@ -18,8 +18,8 @@ import { EdgeInspector } from './EdgeInspector';
 import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
 import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
-import { bucketOf, originOf, type Bucket } from './provenance';
-import { outcomeOf } from './MeasurePanel';
+import { bucketOf, laidBy, LAID_BY, originOf, type Bucket } from './provenance';
+import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
 import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H } from './geometry';
 import type {
@@ -212,11 +212,16 @@ function CanvasInner() {
    * data contradicts, or a suggestion nobody has decided on. Deliberately NOT
    * "anything unchecked" — before the first sweep that would be every table,
    * and a filter that matches everything filters nothing.
+   *
+   * A SOURCE-LAID LINK IS NEVER IN HERE, however it measures. `outcomeOf`
+   * collapses those to `unverified`, and correctly: the link is not the thing
+   * in question, so sending someone to look at it wastes the one filter that is
+   * supposed to mean "these need a decision".
    */
   const needsAttention = useMemo(() => {
     const s = new Set<number>();
     for (const r of shown) {
-      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
+      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r));
       if (!(r.flagged || r.provenance === 'ai' || o === 'broken' || o === 'partial')) continue;
       s.add(r.fromTableId);
       s.add(r.toTableId);
@@ -286,10 +291,12 @@ function CanvasInner() {
     }
     for (const l of out) l.siblingTargets = l.direction === 'out' ? (perColumn.get(l.ownLabel) ?? 1) : 1;
 
-    const rank = { broken: 0, partial: 1, unknown: 2, holds: 3 } as const;
+    const rank: Record<Outcome, number> = {
+      broken: 0, partial: 1, unknown: 2, unverified: 3, holds: 4,
+    };
     return out.sort((a, b) =>
       a.ownLabel.localeCompare(b.ownLabel)
-      || rank[outcomeOf(a.measured)] - rank[outcomeOf(b.measured)]
+      || rank[outcomeOf(a.measured, laidBy(a))] - rank[outcomeOf(b.measured, laidBy(b))]
       || a.otherLabel.localeCompare(b.otherLabel));
   }, [shown, columnNameById, tableNameById, sourceNameByTable, freshMeasured]);
 
@@ -565,7 +572,7 @@ function CanvasInner() {
           matchRate: r.kind === 'match'
             ? ((r.measured as unknown as MatchMeasurement | null)?.matchRate ?? null)
             : null,
-          outcome: outcomeOf(freshMeasured.get(r.id) ?? r.measured),
+          outcome: outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r)),
           flagged: r.flagged,
           // Solid means the source system asserts it; dashed means a person or
           // Clarion does. `tier === 'documented'` is exactly that line —
@@ -938,15 +945,24 @@ function CanvasInner() {
   }
 
   const stats = graph?.stats;
+  /**
+   * `bad` counts only links a person could be WRONG about. A source-laid link
+   * the data cannot confirm is `unverified`, and putting it in a red "don't
+   * hold" tally would state the opposite of what it means — the source defines
+   * it, so it holds; what is short is our data. Those are counted separately,
+   * in their own neutral colour, because they point at the sync rather than at
+   * anything on this screen.
+   */
   const health = (() => {
-    let checked = 0; let bad = 0;
+    let checked = 0; let bad = 0; let thin = 0;
     for (const r of shown) {
-      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured);
+      const o = outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r));
       if (o === 'unknown') continue;
       checked += 1;
-      if (o !== 'holds') bad += 1;
+      if (o === 'unverified') thin += 1;
+      else if (o !== 'holds') bad += 1;
     }
-    return { checked, bad };
+    return { checked, bad, thin };
   })();
   /** The table in the middle — what the canvas is about. */
   const workingTable = anchorId != null
@@ -1028,6 +1044,16 @@ function CanvasInner() {
             {health.checked > 0 && health.bad > 0 && (
               <span className="tabular-nums" style={{ color: '#a43a3a' }}>
                 {health.bad} of {health.checked} checked don&apos;t hold
+              </span>
+            )}
+            {health.thin > 0 && (
+              <span
+                className="tabular-nums"
+                style={{ color: OUTCOME.unverified.color }}
+                title={'Links the source system defines itself, which your data cannot confirm yet — '
+                  + 'usually a table that has not finished syncing. The links are not in question.'}
+              >
+                {health.thin} need more data
               </span>
             )}
             {stats.flagged > 0 && (
@@ -1137,12 +1163,16 @@ function CanvasInner() {
       {!draw && !match && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
           {([
-            ['#8c96a0', 'not checked'],
-            ['#2f6f57', 'holds'],
-            ['#a06a1c', 'partly'],
-            ['#a43a3a', 'no match'],
-          ] as const).map(([c, label]) => (
-            <span key={label} className="flex items-center gap-1">
+            ['#8c96a0', 'not checked', 'Nobody has run the check on this link yet'],
+            ['#2f6f57', 'holds', 'The check passed against your data'],
+            ['#a06a1c', 'partly', 'A real key, but the values only partly line up'],
+            ['#a43a3a', 'no match', 'These values cannot point at that column'],
+            [
+              OUTCOME.unverified.color, 'needs more data',
+              'The source defines this link, so it holds — your data cannot show it yet',
+            ],
+          ] as const).map(([c, label, why]) => (
+            <span key={label} className="flex items-center gap-1" title={why}>
               <span className="h-[2px] w-3 rounded-full" style={{ background: c }} />
               {label}
             </span>
@@ -1158,20 +1188,27 @@ function CanvasInner() {
           </button>
           {legendOpen && (
             <>
-              {/* The dash changed meaning when the toggle took over
-                  decided-vs-undecided, so it has to be spelled out. */}
+              {/* THE ONE DISTINCTION THE SCREEN TURNS ON. Solid links exist by
+                  definition and are never wrong; dashed ones are somebody's
+                  judgement, so they are the only kind a failing check accuses. */}
               <span className="text-muted2">·</span>
-              <span className="flex items-center gap-1">
+              <span
+                className="flex items-center gap-1"
+                title={LAID_BY.source.hint}
+              >
                 <svg width="14" height="4" aria-hidden>
                   <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" />
                 </svg>
-                the source defines it
+                laid by the source
               </span>
-              <span className="flex items-center gap-1">
+              <span
+                className="flex items-center gap-1"
+                title={LAID_BY.manual.hint}
+              >
                 <svg width="14" height="4" aria-hidden>
                   <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" strokeDasharray="5 4" />
                 </svg>
-                a person or Clarion does
+                laid manually
               </span>
               <span className="text-muted2">·</span>
               <span className="flex items-center gap-1">
