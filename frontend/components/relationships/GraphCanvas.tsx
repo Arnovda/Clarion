@@ -11,14 +11,14 @@ import {
 } from 'lucide-react';
 import api from '@/lib/api';
 import { TableNode, type TableNodeData } from './TableNode';
-import { RelationEdge, EdgeMarkers, type RelationEdgeData } from './RelationEdge';
+import { RelationEdge, EdgeMarkers, LAID_STROKE, type RelationEdgeData } from './RelationEdge';
 import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
 import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
-import { bucketOf, laidBy, LAID_BY, originOf, type Bucket } from './provenance';
+import { bucketOf, laidBy, LAID_BY, type Bucket, type LaidBy } from './provenance';
 import { outcomeOf, OUTCOME, type Outcome } from './MeasurePanel';
 import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H } from './geometry';
@@ -456,16 +456,19 @@ function CanvasInner() {
   }, [graph, shown, anchorId, visibleIds]);
 
   /**
-   * The key, derived from the edges actually on screen.
+   * The key, derived from the edges actually on screen — and from which bucket
+   * they are in, because the two buckets spend the channels differently.
    *
    * A fixed catalogue of eight entries made the reader do the matching: given a
-   * canvas of four amber links, five colours and two line styles were on offer
-   * and only one of them applied. Deriving membership from `drawnRels` means the
-   * strip only ever explains marks that are visible.
+   * canvas of four links, five colours and two line styles were on offer and
+   * only one applied. Membership now comes from `drawnRels`, and the ORDER is
+   * fixed so an entry appearing or vanishing never reshuffles its neighbours.
    *
-   * The order is FIXED — worst first — so an entry appearing or vanishing never
-   * reshuffles the ones beside it. Membership changing is honest; positions
-   * moving under the eye is not.
+   * In **Confirmed** the line colour is authorship, so the key is the two
+   * authors — and the outcome scale is demoted to the caveat marks, which only
+   * exist where a check came back short. In **To review** the colour is the
+   * measurement, so the key is the outcome scale and authorship is not a
+   * distinction at all (nothing there is source-laid).
    */
   const legend = useMemo(() => {
     const seen = new Set<Outcome>();
@@ -475,6 +478,7 @@ function CanvasInner() {
       if (laidBy(r) === 'source') source = true; else manual = true;
       if (r.relationshipType) cardinality = true;
     }
+    // Worst first, always, whichever half of it is showing.
     const ORDER: { outcome: Outcome; label: string; why: string }[] = [
       { outcome: 'broken', label: 'no match', why: 'These values cannot point at that column' },
       { outcome: 'partial', label: 'partly', why: 'A real key, but the values only partly line up' },
@@ -486,15 +490,33 @@ function CanvasInner() {
       { outcome: 'unknown', label: 'not checked', why: 'Nobody has run the check on this link yet' },
       { outcome: 'holds', label: 'holds', why: 'The check passed against your data' },
     ];
+    const settled = bucket === 'confirmed';
     return {
-      colors: ORDER.filter((e) => seen.has(e.outcome))
-        .map((e) => ({ ...e, color: OUTCOME[e.outcome].color })),
-      // Only when BOTH are present. If every line on screen is dashed, the dash
-      // is not distinguishing anything and the pair is two lines of noise.
-      dash: source && manual,
+      settled,
+      /** Confirmed: who laid the line. Only the halves that are on screen. */
+      authors: settled
+        ? ([
+          source && { key: 'source' as const, ...LAID_STROKE.source, ...LAID_BY.source },
+          manual && { key: 'manual' as const, ...LAID_STROKE.manual, ...LAID_BY.manual },
+        ].filter(Boolean) as { key: LaidBy; color: string; width: number; label: string; hint: string }[])
+        : [],
+      /**
+       * Confirmed shows only the shortfalls, because that is all a mark can
+       * mean there — "holds" and "not checked" carry no mark, so listing them
+       * would be a key to something invisible.
+       */
+      marks: settled
+        ? ORDER.filter((e) => e.outcome !== 'holds' && e.outcome !== 'unknown' && seen.has(e.outcome))
+          .map((e) => ({ ...e, color: OUTCOME[e.outcome].color }))
+        : [],
+      /** To review: the colour scale, since colour is the measurement there. */
+      colors: settled
+        ? []
+        : ORDER.filter((e) => seen.has(e.outcome))
+          .map((e) => ({ ...e, color: OUTCOME[e.outcome].color })),
       cardinality,
     };
-  }, [drawnRels, freshMeasured]);
+  }, [drawnRels, freshMeasured, bucket]);
 
 
   /**
@@ -616,18 +638,18 @@ function CanvasInner() {
             : null,
           outcome: outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r)),
           flagged: r.flagged,
-          // Solid means the source system asserts it; dashed means a person or
-          // Clarion does. `tier === 'documented'` is exactly that line —
-          // vendor docs and real database constraints on one side, everything
-          // written or inferred on the other.
-          fromSource: originOf(r.provenance, r.semanticSource).tier === 'documented',
+          laidBy: laidBy(r),
+          // Everything in Confirmed is decided, so it is drawn as a fact: solid,
+          // coloured by who laid it. Everything in To review is a proposal, so
+          // it is drawn as a question: dashed, coloured by the evidence.
+          settled: bucket === 'confirmed',
           dimmed: selectedEdgeId != null && r.id !== selectedEdgeId,
         },
         selected: r.id === selectedEdgeId,
       } satisfies Edge<RelationEdgeData>;
     }));
   }, [graph, anchorId, visibleIds, drawnRels, nodeSpec, positions, highlightColumnIds,
-      colorForConnection, toggleAllColumns, selectedEdgeId, freshMeasured,
+      colorForConnection, toggleAllColumns, selectedEdgeId, freshMeasured, bucket,
       setNodes, setEdges]);
 
   /**
@@ -1083,10 +1105,21 @@ function CanvasInner() {
           <div className="ml-auto flex items-center gap-2.5 rounded-xl border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
             {/* Scoped to the half on screen. A tenant-wide "169 links" beside a
                 toggle that shows 128 is two populations in one strip. */}
+            {/* Phrased for the bucket. "Don't hold" is the finding in To
+                review, where you are deciding; in Confirmed the deciding is
+                already done, and a red verdict over links somebody stands
+                behind reads as "your confirmed model is broken" when what it
+                means is "two of these are worth another look". */}
             {health.checked > 0 && health.bad > 0 && (
-              <span className="tabular-nums" style={{ color: '#a43a3a' }}>
-                {health.bad} of {health.checked} checked don&apos;t hold
-              </span>
+              bucket === 'confirmed' ? (
+                <span className="tabular-nums" style={{ color: '#a06a1c' }}>
+                  {health.bad} worth another look
+                </span>
+              ) : (
+                <span className="tabular-nums" style={{ color: '#a43a3a' }}>
+                  {health.bad} of {health.checked} checked don&apos;t hold
+                </span>
+              )
             )}
             {health.thin > 0 && (
               <span
@@ -1200,29 +1233,49 @@ function CanvasInner() {
 
       {/* A KEY DECODES WHAT IS ON SCREEN — nothing else.
 
-          It listed eight entries unconditionally, so on a canvas of four amber
-          links it taught a red code, a green code and a solid-line code that
-          appeared nowhere, then asked which of the eight the lines in front of
-          you were. A key you have to search is worse than no key.
+          It listed eight entries unconditionally, so on a canvas of four links
+          it taught codes that appeared nowhere and then asked which of the
+          eight the lines in front of you were. A key you have to search is
+          worse than no key. Every entry below is derived from the edges
+          actually drawn, in a fixed order, so entries appear and disappear from
+          a stable template rather than reshuffling as you move between tables.
 
-          Every entry below is now derived from the edges actually drawn. The
-          ORDER is fixed, so entries appear and disappear from a stable template
-          rather than reshuffling as you move between tables.
-
-          The dash pair is the sharpest case: it only earns its place when BOTH
-          kinds are on screen. In *To review* nothing is ever source-laid — a
-          suggestion is by definition somebody's proposal — so every line there
-          is dashed, and a key distinguishing dashed from solid distinguishes
-          nothing. */}
-      {!draw && !match && legend.colors.length > 0 && (
+          The two buckets get different keys because they spend the channels
+          differently — colour is authorship in Confirmed and evidence in To
+          review, and a key that showed both would describe a screen that does
+          not exist. */}
+      {!draw && !match && (legend.authors.length > 0 || legend.colors.length > 0) && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
+          {legend.authors.map((a) => (
+            <span key={a.key} className="flex items-center gap-1" title={a.hint}>
+              <svg width="16" height="4" aria-hidden>
+                <line x1="0" y1="2" x2="16" y2="2" stroke={a.color} strokeWidth={a.width} />
+              </svg>
+              {a.label.replace(/^Laid /, 'laid ')}
+            </span>
+          ))}
           {legend.colors.map(({ outcome, color, label, why }) => (
             <span key={outcome} className="flex items-center gap-1" title={why}>
               <span className="h-[2px] w-3 rounded-full" style={{ background: color }} />
               {label}
             </span>
           ))}
-          {(legend.dash || legend.cardinality) && (
+
+          {/* The caveat marks, and ONLY the ones on screen. A confirmed link
+              says nothing unless a check came back short, so this list is
+              usually empty and the strip is just the two authors. */}
+          {legend.marks.length > 0 && <span className="text-muted2">·</span>}
+          {legend.marks.map(({ outcome, color, label, why }) => (
+            <span key={outcome} className="flex items-center gap-1" title={why}>
+              <svg width="11" height="11" aria-hidden>
+                <circle cx="5.5" cy="5.5" r="4.5" fill="#fffdfa" stroke={color} strokeWidth="1.5" />
+                <circle cx="5.5" cy="5.5" r="1.8" fill={color} />
+              </svg>
+              {label}
+            </span>
+          ))}
+
+          {legend.cardinality && (
             <button
               type="button"
               onClick={() => setLegendOpen((v) => !v)}
@@ -1232,26 +1285,6 @@ function CanvasInner() {
             >
               {legendOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
             </button>
-          )}
-          {legendOpen && legend.dash && (
-            <>
-              {/* THE ONE DISTINCTION THE SCREEN TURNS ON. Solid links exist by
-                  definition and are never wrong; dashed ones are somebody's
-                  judgement, so they are the only kind a failing check accuses. */}
-              <span className="text-muted2">·</span>
-              <span className="flex items-center gap-1" title={LAID_BY.source.hint}>
-                <svg width="14" height="4" aria-hidden>
-                  <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" />
-                </svg>
-                laid by the source
-              </span>
-              <span className="flex items-center gap-1" title={LAID_BY.manual.hint}>
-                <svg width="14" height="4" aria-hidden>
-                  <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" strokeDasharray="5 4" />
-                </svg>
-                laid manually
-              </span>
-            </>
           )}
           {legendOpen && legend.cardinality && (
             <>

@@ -4,6 +4,7 @@ import { memo } from 'react';
 import { EdgeProps, getBezierPath, EdgeLabelRenderer, Position } from 'reactflow';
 import type { Cardinality, EdgeKind, Provenance } from './types';
 import type { Outcome } from './MeasurePanel';
+import type { LaidBy } from './provenance';
 
 export interface RelationEdgeData {
   kind: EdgeKind;
@@ -15,11 +16,13 @@ export interface RelationEdgeData {
   outcome: Outcome;
   /** Someone marked this as a problem; it overrides everything else. */
   flagged: boolean;
+  /** Who put this line here. In Confirmed it is what the colour encodes. */
+  laidBy: LaidBy;
   /**
-   * The SOURCE SYSTEM asserts this link — its own documentation, or a foreign
-   * key the database enforces. False for anything a person or Clarion asserted.
+   * This link is DECIDED — it is in Confirmed, and Ask AI is allowed to join on
+   * it. Decides whether the line is drawn as a fact or as a question.
    */
-  fromSource: boolean;
+  settled: boolean;
   /** Match rate for a match edge, 0..1. */
   matchRate: number | null;
 }
@@ -61,23 +64,43 @@ const HEALTH: Record<Outcome, { color: string; width: number }> = {
 };
 
 /**
- * **SOLID = THE SOURCE SYSTEM SAYS SO. DASHED = A PERSON SAYS SO.**
+ * **A CONFIRMED LINE IS DRAWN AS A FACT. A SUGGESTION IS DRAWN AS A QUESTION.**
  *
- * The dash used to mean "nobody has decided yet". The Confirmed / To review
- * toggle now carries that — every line on screen is one or the other, and
- * repeating it on the stroke spends a channel saying what the toolbar already
- * said. So the dash is free, and it goes to the question that had no answer on
- * the diagram at all: *is this defined by the source, or by us?*
+ * Confirmed used to be coloured by its measurement, so a link somebody had
+ * decided on — and that Ask AI is actively joining on — could draw amber or red
+ * because two of its twenty-four values had arrived. The pane meant to say
+ * *this is what we know* read as *this is mostly broken*, which is the opposite
+ * of the truth and quietly undermines the decision the person already made.
  *
- * That question deserves the picture rather than only the list, because it is
- * the difference between a link that exists by definition and one somebody
- * asserted. Exact Online documenting a foreign key is externally verifiable and
- * never changes; a Clarion engineer writing one into the connector, or a
- * colleague ticking it, is a judgement — good, but a judgement.
+ * So the channels are reassigned per bucket, because the two buckets ask
+ * different questions:
+ *
+ *   • **Confirmed** — solid, always, and coloured by WHO LAID IT. The question
+ *     here is never "is this real?" (it is decided); it is "what is the
+ *     source's and what is ours?", because that is what decides how much a
+ *     shortfall matters.
+ *   • **To review** — dashed, and coloured by the measurement, which IS the
+ *     decision aid: you are being asked to accept or reject each one.
+ *
+ * The measurement does not vanish from Confirmed. It moves to a small mark on
+ * the line, drawn only when a check ran and did not fully pass — so absence
+ * means fine, and the eye is pulled by the two or three that have something to
+ * say rather than washed by all of them.
  */
-function dashFor(fromSource: boolean): string | undefined {
-  return fromSource ? undefined : '5 4';
-}
+export const LAID_STROKE: Record<LaidBy, { color: string; width: number }> = {
+  // The documented skeleton, in the accent. These are the backbone of the model
+  // and should read that way.
+  source: { color: '#164e63', width: 2.4 },
+  // Deliberately quieter. It is a good judgement, but a judgement.
+  manual: { color: '#6b7680', width: 2 },
+};
+
+/** Drawn only when a check RAN and came back short. Absence is the good case. */
+const CAVEAT: Partial<Record<Outcome, string>> = {
+  broken: '#a43a3a',
+  partial: '#a06a1c',
+  unverified: '#5a6b78',
+};
 
 /**
  * Cardinality is read off the ENDS of the line, not a badge in the middle.
@@ -125,14 +148,21 @@ function RelationEdgeImpl({
     sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition,
   });
 
-  const health = HEALTH[data?.outcome ?? 'unknown'];
+  const outcome = data?.outcome ?? 'unknown';
+  const settled = data?.settled ?? false;
+  const base = settled ? LAID_STROKE[data?.laidBy ?? 'manual'] : HEALTH[outcome];
   const style = {
     // A flag is a person saying "this is wrong" — it outranks any measurement,
-    // including one that has not been taken.
-    color: data?.flagged ? '#a43a3a' : health.color,
-    width: data?.flagged ? 2 : health.width,
-    dash: dashFor(data?.fromSource ?? false),
+    // including one that has not been taken, and it outranks the settled look
+    // too: the entire point of flagging is to make a decided link stop looking
+    // decided.
+    color: data?.flagged ? '#a43a3a' : base.color,
+    width: data?.flagged ? 2 : base.width,
+    dash: settled ? undefined : '5 4',
   };
+  // In Confirmed a shortfall is a footnote, not the headline. In To review the
+  // colour already carries it, so a second mark would only repeat it.
+  const caveat = settled && !data?.flagged ? CAVEAT[outcome] : undefined;
   const isMatch = data?.kind === 'match';
   const ends = data?.cardinality ? ENDS[data.cardinality] : undefined;
 
@@ -202,6 +232,22 @@ function RelationEdgeImpl({
             faded={!!data?.dimmed}
           />
         </>
+      )}
+
+      {/* THE FOOTNOTE. A confirmed link whose check came back short still says
+          so — the owner's point that a manually laid link "maybe can be an
+          error and we have to have a notion of it" — but as a mark on a solid
+          line rather than by recolouring the whole line amber. Absence is the
+          good case, which is what lets the eye find the two that are not.
+
+          Suppressed on a match edge: those are measured by match RATE, this
+          check never runs on them, and a permanent grey dot on every one would
+          mark a shortfall nobody can clear. */}
+      {caveat && !isMatch && !data?.dimmed && (
+        <g pointerEvents="none">
+          <circle cx={labelX} cy={labelY} r={5} fill="#fffdfa" stroke={caveat} strokeWidth={1.5} />
+          <circle cx={labelX} cy={labelY} r={2} fill={caveat} />
+        </g>
       )}
 
       {!data?.dimmed && isMatch && (

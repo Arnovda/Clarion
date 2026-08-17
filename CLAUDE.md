@@ -73,6 +73,33 @@ right; the sentence attached to it was about the wrong subject.
 - **The dash on the canvas already carried this** (solid = the source, dashed =
   a person) — the legend now names it as such and both entries carry the
   `LAID_BY` hint.
+- **THE CANVAS CHANNELS ARE NOW ASSIGNED PER BUCKET, and that is the second
+  half of the same defect.** Owner: *"I need the person that looks at the
+  'confirmed' pane to really feel they're confirmed; right now with the partial
+  lines it seems it's not good, while they are confirmed."* Colouring Confirmed
+  by its measurement made a decided link — one Ask AI is actively joining on —
+  draw amber because 2 of 24 values had arrived. **Confirmed is now SOLID
+  ALWAYS, coloured by WHO LAID IT** (`LAID_STROKE`: source `#164e63` at 2.4px,
+  manual `#6b7680` at 2px), because "is this real?" is settled there and "whose
+  is it?" is not. **To review stays dashed and coloured by the measurement** —
+  there the evidence IS the decision aid. The measurement does not vanish from
+  Confirmed: it becomes a **small ringed dot at the line's midpoint, drawn only
+  when a check RAN and came back short**, so absence means fine and the eye is
+  pulled by the two that have something to say instead of washed by all of them.
+  Suppressed on match edges (measured by rate, so the check never runs and a
+  permanent dot would mark a shortfall nobody can clear) and outranked by a
+  flag. The toolbar tally is phrased per bucket too: `N worth another look` in
+  amber for Confirmed, `N of M checked don't hold` in red for To review.
+- **THE LEGEND IS DERIVED FROM `drawnRels`, NOT A FIXED CATALOGUE.** It listed
+  eight entries unconditionally, so a canvas of four amber links taught a red, a
+  green and a solid-line code that appeared nowhere — a key you have to search
+  is worse than no key. Membership now comes from the edges actually drawn, the
+  ORDER is fixed (worst first) so entries appear and disappear from a stable
+  template rather than reshuffling, and **the two buckets get different keys**
+  because they spend the channels differently: Confirmed shows the two authors
+  plus only the caveat marks present; To review shows only the outcome colours
+  present. The `1`/`∗` pair and its chevron render only when a drawn edge has a
+  measured cardinality. In the reported case: eight entries down to two.
 - `tsc` clean, `next lint` clean, `next build` green (`/relationships` 2.6 kB /
   100 kB), 63 backend tests green, all six lint ratchets green **from the repo
   root** (they fail spuriously when run from `backend/`).
