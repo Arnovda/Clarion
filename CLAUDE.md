@@ -33,6 +33,66 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-08-17 (TWO KINDS OF LINE: laid by the source vs laid manually)
 
+**"LAID BY THE SOURCE" WAS HALF A FACT — MEASURED AND GATED (2026-08-17).**
+Owner, on the new source/manual split: *"Are the relations laid really coming
+from ExactOnline's documentation? And where can I find it?"* Tracing it found a
+defect in the CONTRACT, not in Exact Online, and the next connector shaped like
+it walks into the same trap.
+- **The vendor documents the target ENTITY. The target COLUMN is our
+  inference.** EO's docs pages hyperlink an FK property to the target entity;
+  `generate-eo-docs.ts` resolves the column from that entity's `data-key="True"`
+  property. That inference is wrong wherever the entity carries a second,
+  readable key. **`TransactionLines.JournalCode` (`Edm.String`) was sent to
+  `Journals.ID` (`Edm.Guid`) and measures 0% containment; `Journals.Code`
+  measures 100%.** Measured across the whole transcription: **35 of the 245
+  documented references cross a type boundary** (32 String→Guid, 3 Int32→Guid).
+  These rendered as *laid by the source* — the one kind of link the UI tells
+  people not to second-guess.
+- **A second, independent hole: 15 of the 81 curated relationships named a
+  column that is not on the vendor's property list at all** — `BankEntries.
+  Journal` where the API has `JournalCode`, `Quotations.OrderedBy` where it has
+  `OrderAccount`. The profiler drops an unresolvable endpoint at runtime, so
+  these failed SILENTLY: the link never appeared and nothing said why.
+- **`columnTypes.ts` is the shared rule.** `typeClass()` reads OData/SQL/plain
+  type names; `typesJoinable()` is false only when both sides declare types and
+  the classes differ. **GUID is its own class, not a kind of string** — that is
+  the whole point, since both land in the warehouse as VARCHAR. **It rejects
+  only on positive evidence:** an absent or unreadable type is `unknown` and
+  compatible with everything, so Odoo (whose `fields_get` docs channel publishes
+  no types) is completely unaffected.
+- **A type-mismatched reference is REFUSED at the documented rung, never
+  re-guessed.** Patching one inference with a second is how the original defect
+  was made. The link is not destroyed — value-overlap can still surface it into
+  *To review*, where the data decides and a person confirms, which is the right
+  home for a claim we cannot stand behind. `describeEntities` logs the refused
+  count rather than dropping them silently.
+- **Curated catalogue 81 → 69**: 12 removed (columns that do not exist, or that
+  the vendor already documents correctly under the right name) and **2
+  corrected** — `BankEntries.Journal`→`JournalCode` and
+  `WarehouseTransferLines.WarehouseTransferID→WarehouseTransfers.ID` →
+  `TransferID→TransferID`. Each resolution came from asking the docs *"which
+  column does the vendor say points at X?"*, never from guessing.
+  **`TransactionLines.JournalCode → Journals.Code` is now the ONLY assertion of
+  that link** (the vendor's own version is refused) — do not remove it.
+- **THE POINT IS THE GATE, not the correction.** `validateKnownRelationships`
+  gained an optional `columns` argument (endpoint EXISTENCE + type
+  compatibility) and a new `validateDocumentedRelationships` checks the same on
+  what `describeEntities` EMITS. Verified to fail: reintroducing
+  `JournalCode → Journals.ID` turns 2 suites red. `docs.ts` stays a faithful
+  transcription of the vendor's pages; the judgement about what may be claimed
+  lives in the connector, as one readable rule.
+- **`docs/SOURCE_ONBOARDING.md` Phase E1a** now states the rule, with the worked
+  example, plus a Definition-of-Done line. It said nothing about target-column
+  resolution before — the step that went wrong was not in the playbook.
+- **Odoo escaped by construction, not by design**: `toColumn: 'id'` is
+  hardcoded because Odoo's ORM guarantees every model's PK is `id` and a
+  many2one holds exactly that. The trap only fires for sources that name a
+  target entity whose key is ambiguous — i.e. most REST APIs with GUIDs
+  alongside human-readable codes.
+- 6 new `columnTypes` tests + 2 in `docs.test.ts`; 88 connector tests green
+  (the 5 failing files are the documented DuckDB-native-binding sandbox gap),
+  63 backend tests green, six lint ratchets green, `tsc` clean, dist rebuilt.
+
 **A FAILING CHECK MEANS TWO DIFFERENT THINGS, AND THE SCREEN NOW SAYS WHICH
 (2026-08-17).** Owner: *"I want to see 2 types of relations. 'laid by source' and
 'laid manually'. We assume that everything that is documented by the source is

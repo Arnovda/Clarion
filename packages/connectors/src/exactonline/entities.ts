@@ -850,12 +850,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ── GL: chart of accounts → classifications ──────────────────────────────
-  {
-    fromTable: 'GLAccounts',        fromColumn: 'GLClassification',
-    toTable:   'GLClassifications', toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'The classification group this GL account belongs to.',
-  },
   // GL classification hierarchy (Parent → ID self-reference)
   {
     fromTable: 'GLClassifications', fromColumn: 'Parent',
@@ -885,18 +879,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ── Item master → GL accounts ────────────────────────────────────────────
-  {
-    fromTable: 'Items',      fromColumn: 'GLAccountSales',
-    toTable:   'GLAccounts', toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'Default GL account for sales of this item.',
-  },
-  {
-    fromTable: 'Items',      fromColumn: 'GLAccountPurchase',
-    toTable:   'GLAccounts', toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'Default GL account for purchases of this item.',
-  },
 
   // ── Account hierarchy ────────────────────────────────────────────────────
   {
@@ -926,22 +908,10 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The account this address belongs to.',
   },
   {
-    fromTable: 'AccountClassifications', fromColumn: 'Account',
-    toTable:   'Accounts',               toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'The account this classification value is set on.',
-  },
-  {
     fromTable: 'BankAccounts', fromColumn: 'Account',
     toTable:   'Accounts',     toColumn:   'ID',
     type: 'many_to_one',
     description: 'The customer / supplier this bank account belongs to.',
-  },
-  {
-    fromTable: 'BankAccounts', fromColumn: 'GLAccount',
-    toTable:   'GLAccounts',   toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'The GL account this bank account posts to.',
   },
 
   // ── Opportunities → account ─────────────────────────────────────────────
@@ -953,18 +923,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
   },
 
   // ── Quotations: header → customer + invoice party; lines → quote header
-  {
-    fromTable: 'Quotations',  fromColumn: 'OrderedBy',
-    toTable:   'Accounts',    toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'Customer who requested the quotation.',
-  },
-  {
-    fromTable: 'Quotations',  fromColumn: 'InvoiceTo',
-    toTable:   'Accounts',    toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'Customer who would be billed if the quotation is accepted.',
-  },
   {
     fromTable: 'QuotationLines', fromColumn: 'QuotationID',
     toTable:   'Quotations',     toColumn:   'QuotationID',
@@ -1009,12 +967,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     type: 'many_to_one',
     description: 'The product or service being ordered.',
   },
-  {
-    fromTable: 'SalesOrderLines', fromColumn: 'GLAccount',
-    toTable:   'GLAccounts',      toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'GL account this line will post to on invoicing.',
-  },
 
   // ── Sales entries: header → customer; lines → entry
   {
@@ -1055,12 +1007,6 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     type: 'many_to_one',
     description: 'The product or service being purchased.',
   },
-  {
-    fromTable: 'PurchaseOrderLines', fromColumn: 'GLAccount',
-    toTable:   'GLAccounts',         toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'GL account the purchase line posts to.',
-  },
 
   // ── Purchase invoices: header → supplier; lines → invoice + item
   {
@@ -1070,22 +1016,10 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'Supplier who issued the purchase invoice.',
   },
   {
-    fromTable: 'PurchaseInvoiceLines', fromColumn: 'InvoiceID',
-    toTable:   'PurchaseInvoices',     toColumn:   'InvoiceID',
-    type: 'many_to_one',
-    description: 'Each purchase-invoice line belongs to one purchase-invoice header.',
-  },
-  {
     fromTable: 'PurchaseInvoiceLines', fromColumn: 'Item',
     toTable:   'Items',                toColumn:   'ID',
     type: 'many_to_one',
     description: 'The product or service being invoiced.',
-  },
-  {
-    fromTable: 'PurchaseInvoiceLines', fromColumn: 'GLAccount',
-    toTable:   'GLAccounts',           toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'GL account the purchase-invoice line posts to.',
   },
 
   // ── Purchase entries: header → supplier; lines → entry
@@ -1159,20 +1093,14 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
     description: 'The warehouse this physical count covers.',
   },
   {
-    fromTable: 'StockCountLines', fromColumn: 'StockCountID',
-    toTable:   'StockCounts',     toColumn:   'ID',
-    type: 'many_to_one',
-    description: 'Each count line belongs to one stock-count header.',
-  },
-  {
     fromTable: 'StockCountLines', fromColumn: 'Item',
     toTable:   'Items',           toColumn:   'ID',
     type: 'many_to_one',
     description: 'The item being counted on this line.',
   },
   {
-    fromTable: 'WarehouseTransferLines', fromColumn: 'WarehouseTransferID',
-    toTable:   'WarehouseTransfers',     toColumn:   'ID',
+    fromTable: 'WarehouseTransferLines', fromColumn: 'TransferID',
+    toTable:   'WarehouseTransfers',     toColumn:   'TransferID',
     type: 'many_to_one',
     description: 'Each transfer line belongs to one transfer header.',
   },
@@ -1197,7 +1125,7 @@ export const EXACT_ONLINE_KNOWN_RELATIONSHIPS: readonly KnownRelationship[] = [
 
   // ── Cashflow: bank entries / payments / receivables / payables
   {
-    fromTable: 'BankEntries',  fromColumn: 'Journal',
+    fromTable: 'BankEntries',  fromColumn: 'JournalCode',
     toTable:   'Journals',     toColumn:   'Code',
     type: 'many_to_one',
     description: 'The bank journal this statement is booked in.',

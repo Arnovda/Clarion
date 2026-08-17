@@ -17,6 +17,7 @@ import { getConnector, listConnectorTypes } from './registry';
 import { validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
 import { validateStarSchemaTemplate } from './starSchema';
 import { EXACT_ONLINE_ENTITIES } from './exactonline/entities';
+import { EXACT_ONLINE_COLUMN_DOCS } from './exactonline/docs';
 import { ODOO_ENTITIES } from './odoo/entities';
 
 describe('connector conformance — metadata (all registered connectors)', () => {
@@ -46,13 +47,25 @@ describe('connector conformance — entity catalogs', () => {
     expect(errs).toEqual([]);
   });
 
+  /**
+   * Column documentation per connector, where it ships any. Supplying it turns
+   * endpoint existence and type compatibility into merge-gate errors instead of
+   * a silent runtime drop — see validateKnownRelationships.
+   */
+  const columnDocs: Record<string, Record<string, ReadonlyArray<{ name: string; dataType?: string }>> | undefined> = {
+    exactonline: EXACT_ONLINE_COLUMN_DOCS,
+    // Odoo harvests its docs live from fields_get and ships no static column
+    // list, so there is nothing to check against here.
+    odoo: undefined,
+  };
+
   it.each(catalogs)('known relationships for "%s" connect catalogued entities', (type, entities) => {
     const connector = getConnector(type);
     if (!connector.getKnownRelationships) return;
     // Pass the full catalog as "selected" so every declared relationship is
     // returned and validated.
     const rels = connector.getKnownRelationships(entities.map((e) => e.name));
-    const errs = validateKnownRelationships(type, rels, entities);
+    const errs = validateKnownRelationships(type, rels, entities, columnDocs[type]);
     expect(errs).toEqual([]);
   });
 

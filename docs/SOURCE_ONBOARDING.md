@@ -183,6 +183,43 @@ transcribe from docs). Each entry gets a plain-English `description`.
 Column casing must match the Parquet headers exactly. The profiler
 merges these as `source: 'declared'` before heuristics and AI run.
 
+**E1a. The target column is almost never documented — treat it as an
+inference, and check it.** A source's docs normally mark a foreign key by
+linking the property to the *target entity*. That link is a vendor fact. The
+*target column* is not stated there, and whatever you resolve it to — the
+entity's primary key, its first key-marked property — is **your inference
+wearing the vendor's authority**, which is the most dangerous kind of claim
+this platform can make. It shows up as "laid by the source" on the
+relationship canvas, where the UI explicitly tells people not to second-guess
+it.
+
+Exact Online is the worked example. `TransactionLines.JournalCode` is an
+`Edm.String` holding a journal code; the docs link it to the `Journals` entity,
+whose key-marked property is `ID`, an `Edm.Guid`. The transcription therefore
+produced `JournalCode → Journals.ID`, which measures **0%** containment against
+real data. `Journals.Code` — same type, same meaning — measures **100%**. 35 of
+that connector's 245 documented references crossed a type boundary like this.
+
+Two rules follow, both enforced by `validateKnownRelationships` and
+`validateDocumentedRelationships` in `conformance.ts`:
+
+1. **Both endpoint columns must exist** in whatever column documentation the
+   connector ships. A relationship naming a column the source does not have
+   fails silently today — the profiler drops the unresolvable endpoint and the
+   link simply never appears, with nothing saying why. 15 of Exact Online's 81
+   curated relationships were in that state.
+2. **The two endpoints' declared types must be able to be one key**
+   (`typesJoinable` in `columnTypes.ts`). A GUID and a code column are not two
+   ends of the same key, however alike they look once both land in the
+   warehouse as `VARCHAR`. When either side declares no type the check is
+   skipped — it may only ever reject on positive evidence, never on silence.
+
+When a documented reference fails rule 2, **refuse it at the documented rung
+rather than guessing at a better column.** Do not invent a second inference to
+patch the first. The relationship is not lost: the ordinary value-overlap
+detector can still surface it into *To review*, where the data decides and a
+person confirms — which is the correct home for a claim we cannot stand behind.
+
 **E2. Table + column descriptions.**
 - Tier 1: harvest labels/descriptions during profiling from the
   metadata endpoint using the customer's own credentials. This covers
@@ -275,6 +312,7 @@ and the template can be written later without re-research.
 - [ ] Explicit `columns` schema on writes (no `auto_detect` for Tier 1/2)
 - [ ] Cursor filter `>=` + merge-by-key; type-aware flattening; stable pagination order; streaming + cancellation
 - [ ] `getKnownRelationships` with descriptions (Tier 1/2)
+- [ ] Every relationship endpoint column EXISTS, and the two ends' declared types could be one key (Phase E1a) — both are conformance errors, not runtime drops
 - [ ] Column/table docs harvested (Tier 1) or curated (Tier 2), landing at the trusted rung; AI covers only the remainder
 - [ ] Conformance suite green; unit tests for all pure logic; mocked sync tests for the six scenarios in Phase G
 - [ ] Live sandbox validation performed and findings noted in the README

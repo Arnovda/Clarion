@@ -34,6 +34,7 @@ import {
 } from '../types';
 import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
+import { typesJoinable } from '../columnTypes';
 import { EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
 import type { StarSchemaTemplate } from '../starSchema';
 import type { EntityDocs, KnownRelationship } from '../types';
@@ -553,11 +554,13 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
   async describeEntities(
     rawConfig: ConnectorConfig,
     selectedEntities: readonly string[],
-    _ctx: ProbeContext,
+    ctx: ProbeContext,
   ): Promise<EntityDocs[]> {
     this.validateConfig(rawConfig);
     const selected = new Set(selectedEntities);
     const out: EntityDocs[] = [];
+    /** Documented references whose two ends cannot be one key. See below. */
+    let rejected = 0;
     for (const name of selectedEntities) {
       const entity = ENTITIES_BY_NAME.get(name);
       if (!entity) continue;
@@ -568,16 +571,30 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       // the profiler dedupes these against getKnownRelationships.
       const relationships: KnownRelationship[] = [];
       for (const c of cols ?? []) {
-        if (c.references && selected.has(c.references.table)) {
-          relationships.push({
-            fromTable: name,
-            fromColumn: c.name,
-            toTable: c.references.table,
-            toColumn: c.references.column,
-            type: 'many_to_one',
-            description: c.description,
-          });
+        if (!c.references || !selected.has(c.references.table)) continue;
+        // THE VENDOR NAMES THE TARGET ENTITY, NOT THE TARGET COLUMN. The
+        // hyperlink on the property row is verbatim; the column was inferred by
+        // the transcription from the target's key-marked property, and that
+        // inference is wrong wherever the target carries a second, readable key
+        // — `JournalCode` (Edm.String) sent to `Journals.ID` (Edm.Guid) rather
+        // than `Journals.Code`. 35 of the 245 references cross a type boundary
+        // like that. Refuse those at this rung rather than lend them the
+        // source's authority; the value-overlap detector can still surface them
+        // into To review, where the data decides.
+        const target = EXACT_ONLINE_COLUMN_DOCS[c.references.table]
+          ?.find((t) => t.name === c.references!.column);
+        if (!typesJoinable(c.dataType, target?.dataType)) {
+          rejected += 1;
+          continue;
         }
+        relationships.push({
+          fromTable: name,
+          fromColumn: c.name,
+          toTable: c.references.table,
+          toColumn: c.references.column,
+          type: 'many_to_one',
+          description: c.description,
+        });
       }
       out.push({
         entityName: name,
@@ -587,6 +604,16 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         ...(relationships.length > 0 ? { relationships } : {}),
         provenance: 'curated',
       });
+    }
+    if (rejected > 0) {
+      // Not silent: a suppressed relationship is a suppressed fact, and the
+      // count is how anyone notices the transcription drifting from the
+      // vendor's pages. Warn rather than throw — a source with unusual types
+      // must still onboard.
+      ctx.log.warn(
+        'documented references refused: source and target column types cannot be one key',
+        { rejected },
+      );
     }
     return out;
   }

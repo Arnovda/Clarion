@@ -11,7 +11,8 @@
 import { describe, expect, it } from 'vitest';
 import { ExactOnlineConnector } from './ExactOnlineConnector';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
-import { ENTITIES_BY_NAME } from './entities';
+import { ENTITIES_BY_NAME, EXACT_ONLINE_ENTITIES } from './entities';
+import { validateDocumentedRelationships } from '../conformance';
 import { createNoopLogger } from '../logging';
 import type { ProbeContext } from '../types';
 
@@ -153,5 +154,33 @@ describe('ExactOnlineConnector.describeEntities', () => {
       expect(d.provenance).toBe('curated');
       expect(Array.isArray(d.columns)).toBe(true);
     }
+  });
+});
+
+describe('documented references — the target column is inferred, so it is checked', () => {
+  /**
+   * The vendor hyperlinks an FK property to the target ENTITY's page. Which
+   * COLUMN the key lands on is not on that row; the transcription infers it
+   * from the target's key-marked property, and that inference is wrong wherever
+   * the entity carries a second, readable key: `JournalCode` (Edm.String) was
+   * sent to `Journals.ID` (Edm.Guid) rather than `Journals.Code`, and measured
+   * 0% containment against real data while the curated version measured 100%.
+   *
+   * 35 of the 245 references crossed a type boundary that way. This asserts
+   * none of them are still emitted under the source's authority.
+   */
+  it('emits no relationship whose two ends cannot be one key', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(
+      config, EXACT_ONLINE_ENTITIES.map((e) => e.name), probeCtx,
+    );
+    expect(validateDocumentedRelationships('exactonline', docs, EXACT_ONLINE_COLUMN_DOCS)).toEqual([]);
+  });
+
+  it('refuses JournalCode → Journals.ID specifically', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(config, ['TransactionLines', 'Journals'], probeCtx);
+    const rels = docs.flatMap((d) => d.relationships ?? []);
+    expect(rels.find((r) => r.fromColumn === 'JournalCode')).toBeUndefined();
   });
 });
