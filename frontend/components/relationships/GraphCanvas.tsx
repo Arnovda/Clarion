@@ -456,6 +456,48 @@ function CanvasInner() {
   }, [graph, shown, anchorId, visibleIds]);
 
   /**
+   * The key, derived from the edges actually on screen.
+   *
+   * A fixed catalogue of eight entries made the reader do the matching: given a
+   * canvas of four amber links, five colours and two line styles were on offer
+   * and only one of them applied. Deriving membership from `drawnRels` means the
+   * strip only ever explains marks that are visible.
+   *
+   * The order is FIXED — worst first — so an entry appearing or vanishing never
+   * reshuffles the ones beside it. Membership changing is honest; positions
+   * moving under the eye is not.
+   */
+  const legend = useMemo(() => {
+    const seen = new Set<Outcome>();
+    let source = false; let manual = false; let cardinality = false;
+    for (const r of drawnRels) {
+      seen.add(outcomeOf(freshMeasured.get(r.id) ?? r.measured, laidBy(r)));
+      if (laidBy(r) === 'source') source = true; else manual = true;
+      if (r.relationshipType) cardinality = true;
+    }
+    const ORDER: { outcome: Outcome; label: string; why: string }[] = [
+      { outcome: 'broken', label: 'no match', why: 'These values cannot point at that column' },
+      { outcome: 'partial', label: 'partly', why: 'A real key, but the values only partly line up' },
+      {
+        outcome: 'unverified',
+        label: 'needs more data',
+        why: 'The source defines this link, so it holds — your data cannot show it yet',
+      },
+      { outcome: 'unknown', label: 'not checked', why: 'Nobody has run the check on this link yet' },
+      { outcome: 'holds', label: 'holds', why: 'The check passed against your data' },
+    ];
+    return {
+      colors: ORDER.filter((e) => seen.has(e.outcome))
+        .map((e) => ({ ...e, color: OUTCOME[e.outcome].color })),
+      // Only when BOTH are present. If every line on screen is dashed, the dash
+      // is not distinguishing anything and the pair is two lines of noise.
+      dash: source && manual,
+      cardinality,
+    };
+  }, [drawnRels, freshMeasured]);
+
+
+  /**
    * Per table: exactly which columns to render, and how tall that makes it.
    *
    * A table shows the fields it CONNECTS ON. Forty columns buries the answer to
@@ -1156,60 +1198,63 @@ function CanvasInner() {
         </div>
       )}
 
-      {/* The legend is read once and then never again, so it folds away. What
-          stays is the colour scale itself — the part that is genuinely a key
-          rather than a paragraph, and the part whose meaning changed when
-          colour stopped encoding provenance. */}
-      {!draw && !match && (
+      {/* A KEY DECODES WHAT IS ON SCREEN — nothing else.
+
+          It listed eight entries unconditionally, so on a canvas of four amber
+          links it taught a red code, a green code and a solid-line code that
+          appeared nowhere, then asked which of the eight the lines in front of
+          you were. A key you have to search is worse than no key.
+
+          Every entry below is now derived from the edges actually drawn. The
+          ORDER is fixed, so entries appear and disappear from a stable template
+          rather than reshuffling as you move between tables.
+
+          The dash pair is the sharpest case: it only earns its place when BOTH
+          kinds are on screen. In *To review* nothing is ever source-laid — a
+          suggestion is by definition somebody's proposal — so every line there
+          is dashed, and a key distinguishing dashed from solid distinguishes
+          nothing. */}
+      {!draw && !match && legend.colors.length > 0 && (
         <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2.5 rounded-lg border border-line bg-raised/95 px-3 py-1.5 text-[11.5px] text-muted shadow-sm backdrop-blur">
-          {([
-            ['#8c96a0', 'not checked', 'Nobody has run the check on this link yet'],
-            ['#2f6f57', 'holds', 'The check passed against your data'],
-            ['#a06a1c', 'partly', 'A real key, but the values only partly line up'],
-            ['#a43a3a', 'no match', 'These values cannot point at that column'],
-            [
-              OUTCOME.unverified.color, 'needs more data',
-              'The source defines this link, so it holds — your data cannot show it yet',
-            ],
-          ] as const).map(([c, label, why]) => (
-            <span key={label} className="flex items-center gap-1" title={why}>
-              <span className="h-[2px] w-3 rounded-full" style={{ background: c }} />
+          {legend.colors.map(({ outcome, color, label, why }) => (
+            <span key={outcome} className="flex items-center gap-1" title={why}>
+              <span className="h-[2px] w-3 rounded-full" style={{ background: color }} />
               {label}
             </span>
           ))}
-          <button
-            type="button"
-            onClick={() => setLegendOpen((v) => !v)}
-            className="rounded p-0.5 text-muted2 hover:text-ink2"
-            aria-label={legendOpen ? 'Hide the rest of the key' : 'Show the rest of the key'}
-            aria-expanded={legendOpen}
-          >
-            {legendOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-          </button>
-          {legendOpen && (
+          {(legend.dash || legend.cardinality) && (
+            <button
+              type="button"
+              onClick={() => setLegendOpen((v) => !v)}
+              className="rounded p-0.5 text-muted2 hover:text-ink2"
+              aria-label={legendOpen ? 'Hide the rest of the key' : 'Show the rest of the key'}
+              aria-expanded={legendOpen}
+            >
+              {legendOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+            </button>
+          )}
+          {legendOpen && legend.dash && (
             <>
               {/* THE ONE DISTINCTION THE SCREEN TURNS ON. Solid links exist by
                   definition and are never wrong; dashed ones are somebody's
                   judgement, so they are the only kind a failing check accuses. */}
               <span className="text-muted2">·</span>
-              <span
-                className="flex items-center gap-1"
-                title={LAID_BY.source.hint}
-              >
+              <span className="flex items-center gap-1" title={LAID_BY.source.hint}>
                 <svg width="14" height="4" aria-hidden>
                   <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" />
                 </svg>
                 laid by the source
               </span>
-              <span
-                className="flex items-center gap-1"
-                title={LAID_BY.manual.hint}
-              >
+              <span className="flex items-center gap-1" title={LAID_BY.manual.hint}>
                 <svg width="14" height="4" aria-hidden>
                   <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" strokeDasharray="5 4" />
                 </svg>
                 laid manually
               </span>
+            </>
+          )}
+          {legendOpen && legend.cardinality && (
+            <>
               <span className="text-muted2">·</span>
               <span className="flex items-center gap-1">
                 <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">1</span>
@@ -1219,14 +1264,14 @@ function CanvasInner() {
                 <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">∗</span>
                 many rows
               </span>
-              {selectedRel && (
-                <>
-                  <span className="text-muted2">·</span>
-                  <span><Kbd>Y</Kbd> looks right</span>
-                  <span><Kbd>N</Kbd> remove</span>
-                  <span><Kbd>J</Kbd> next</span>
-                </>
-              )}
+            </>
+          )}
+          {selectedRel && (
+            <>
+              <span className="text-muted2">·</span>
+              <span><Kbd>Y</Kbd> looks right</span>
+              <span><Kbd>N</Kbd> remove</span>
+              <span><Kbd>J</Kbd> next</span>
             </>
           )}
         </div>
