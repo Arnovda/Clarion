@@ -16,11 +16,9 @@ import { MeasurePanel } from './MeasurePanel';
 import { MatchPanel } from './MatchPanel';
 import { EdgeInspector } from './EdgeInspector';
 import { ValueExplorer, type ValueComparisonResult } from './ValueExplorer';
-import {
-  TableList, ProvenanceMark, type TableListLink, type CheckProgress,
-} from './TableList';
+import { TableList, type TableListLink, type CheckProgress } from './TableList';
 import { assignColors, sourceColor } from './sourceColors';
-import { bucketOf, type Bucket } from './provenance';
+import { bucketOf, originOf, type Bucket } from './provenance';
 import { outcomeOf } from './MeasurePanel';
 import { radialLayout, rankNeighbours, MAX_NEIGHBOURS } from './focusLayout';
 import { parseHandle, handleLeft, handleRight, nodeHeight, HEADER_H } from './geometry';
@@ -569,6 +567,11 @@ function CanvasInner() {
             : null,
           outcome: outcomeOf(freshMeasured.get(r.id) ?? r.measured),
           flagged: r.flagged,
+          // Solid means the source system asserts it; dashed means a person or
+          // Clarion does. `tier === 'documented'` is exactly that line —
+          // vendor docs and real database constraints on one side, everything
+          // written or inferred on the other.
+          fromSource: originOf(r.provenance, r.semanticSource).tier === 'documented',
           dimmed: selectedEdgeId != null && r.id !== selectedEdgeId,
         },
         selected: r.id === selectedEdgeId,
@@ -1155,6 +1158,21 @@ function CanvasInner() {
           </button>
           {legendOpen && (
             <>
+              {/* The dash changed meaning when the toggle took over
+                  decided-vs-undecided, so it has to be spelled out. */}
+              <span className="text-muted2">·</span>
+              <span className="flex items-center gap-1">
+                <svg width="14" height="4" aria-hidden>
+                  <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" />
+                </svg>
+                the source defines it
+              </span>
+              <span className="flex items-center gap-1">
+                <svg width="14" height="4" aria-hidden>
+                  <line x1="0" y1="2" x2="14" y2="2" stroke="#6b7680" strokeWidth="2" strokeDasharray="5 4" />
+                </svg>
+                a person or Clarion does
+              </span>
               <span className="text-muted2">·</span>
               <span className="flex items-center gap-1">
                 <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">1</span>
@@ -1163,35 +1181,6 @@ function CanvasInner() {
               <span className="flex items-center gap-1">
                 <span className="inline-flex h-[15px] w-[15px] items-center justify-center rounded-full border border-line bg-raised font-mono text-[9px] text-ink2">∗</span>
                 many rows
-              </span>
-              <span className="flex items-center gap-1">
-                <svg width="14" height="4" aria-hidden>
-                  <line x1="0" y1="2" x2="14" y2="2" stroke="#8c96a0" strokeWidth="1.5" strokeDasharray="5 4" />
-                </svg>
-                nobody has decided yet
-              </span>
-              {/* Colour and dash are the line's two channels and both are spoken
-                  for, so WHO said a link exists is read in the LIST, not off the
-                  picture — a third simultaneous encoding on one stroke is where
-                  all three stop being legible. Saying "in the list" is the
-                  difference between one legend and a misleading one. */}
-              <span className="text-muted2">·</span>
-              <span className="text-muted2">in the list:</span>
-              <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="declared" semanticSource="vendor_docs" />
-                the source documents it
-              </span>
-              <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="declared" semanticSource="curated" />
-                a person wrote it
-              </span>
-              <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="declared" semanticSource="value_overlap" />
-                Clarion measured it
-              </span>
-              <span className="flex items-center gap-1">
-                <ProvenanceMark provenance="human" semanticSource={null} />
-                someone confirmed it
               </span>
               {selectedRel && (
                 <>

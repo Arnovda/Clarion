@@ -15,6 +15,11 @@ export interface RelationEdgeData {
   outcome: Outcome;
   /** Someone marked this as a problem; it overrides everything else. */
   flagged: boolean;
+  /**
+   * The SOURCE SYSTEM asserts this link — its own documentation, or a foreign
+   * key the database enforces. False for anything a person or Clarion asserted.
+   */
+  fromSource: boolean;
   /** Match rate for a match edge, 0..1. */
   matchRate: number | null;
 }
@@ -51,12 +56,24 @@ const HEALTH: Record<Outcome, { color: string; width: number }> = {
   broken:  { color: '#a43a3a', width: 2 },
 };
 
-/** Dash pattern by provenance: only an unreviewed suggestion is provisional. */
-const DASH: Record<Provenance, string | undefined> = {
-  human: undefined,
-  declared: undefined,
-  ai: '5 4',
-};
+/**
+ * **SOLID = THE SOURCE SYSTEM SAYS SO. DASHED = A PERSON SAYS SO.**
+ *
+ * The dash used to mean "nobody has decided yet". The Confirmed / To review
+ * toggle now carries that — every line on screen is one or the other, and
+ * repeating it on the stroke spends a channel saying what the toolbar already
+ * said. So the dash is free, and it goes to the question that had no answer on
+ * the diagram at all: *is this defined by the source, or by us?*
+ *
+ * That question deserves the picture rather than only the list, because it is
+ * the difference between a link that exists by definition and one somebody
+ * asserted. Exact Online documenting a foreign key is externally verifiable and
+ * never changes; a Clarion engineer writing one into the connector, or a
+ * colleague ticking it, is a judgement — good, but a judgement.
+ */
+function dashFor(fromSource: boolean): string | undefined {
+  return fromSource ? undefined : '5 4';
+}
 
 /**
  * Cardinality is read off the ENDS of the line, not a badge in the middle.
@@ -110,7 +127,7 @@ function RelationEdgeImpl({
     // including one that has not been taken.
     color: data?.flagged ? '#a43a3a' : health.color,
     width: data?.flagged ? 2 : health.width,
-    dash: DASH[data?.provenance ?? 'declared'],
+    dash: dashFor(data?.fromSource ?? false),
   };
   const isMatch = data?.kind === 'match';
   const ends = data?.cardinality ? ENDS[data.cardinality] : undefined;
