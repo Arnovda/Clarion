@@ -89,9 +89,19 @@ it walks into the same trap.
   many2one holds exactly that. The trap only fires for sources that name a
   target entity whose key is ambiguous — i.e. most REST APIs with GUIDs
   alongside human-readable codes.
-- 6 new `columnTypes` tests + 2 in `docs.test.ts`; 88 connector tests green
-  (the 5 failing files are the documented DuckDB-native-binding sandbox gap),
-  63 backend tests green, six lint ratchets green, `tsc` clean, dist rebuilt.
+- 6 new `columnTypes` tests + 2 in `docs.test.ts`; **all 132 connector tests
+  green across all 15 files**, 63 backend tests green, six lint ratchets green,
+  `tsc` clean, dist rebuilt. That includes the DuckDB-backed star-schema
+  template suites, which MATERIALISE the EO template against synthetic tables
+  and run every KPI formula — so the curated-catalogue surgery above is
+  confirmed against execution, not just against the type checker.
+- **SANDBOX NOTE, correcting a long-standing entry: `npm install` in
+  `packages/connectors` DOES build the DuckDB native binding here.** It takes
+  ~15 minutes and needs a background run to clear the 600s tool timeout, but it
+  succeeds. Several entries above say the DuckDB-native suites are "CI-only" and
+  "can't run in the dev sandbox" — that is no longer true, and it means
+  `ParquetWriter`, `ExactOnlineConnector`, `OdooConnector.sync` and both
+  star-schema template suites can and should be run locally before pushing.
 
 **A FAILING CHECK MEANS TWO DIFFERENT THINGS, AND THE SCREEN NOW SAYS WHICH
 (2026-08-17).** Owner: *"I want to see 2 types of relations. 'laid by source' and
