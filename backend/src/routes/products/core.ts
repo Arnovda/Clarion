@@ -296,14 +296,17 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 // PUT /api/products/:id — Update data product
 // ---------------------------------------------------------------------------
 
-router.put('/:id', requireAuth, requireRole('admin'), validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+// admin+analyst: the role table grants product design to both, and the Build
+// page's show/hide toggle goes through this route.
+router.put('/:id', requireAuth, requireRole('admin', 'analyst'), validate(updateProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { name, description, status } = req.body as { name?: string; description?: string; status?: string };
+    const { name, description, status, hidden } = req.body as { name?: string; description?: string; status?: string; hidden?: boolean };
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (status !== undefined) updates.status = status;
+    if (hidden !== undefined) updates.hidden = hidden;
 
     await db('data_products').where({ id: req.params.id }).update(updates);
     res.json({ ok: true });

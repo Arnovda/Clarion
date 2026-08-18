@@ -7,6 +7,7 @@ import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
+  Blocks, Sparkles,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -14,6 +15,7 @@ import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { cleanTopicName } from '@/app/products/helpers';
+import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
 
 type Role = 'admin' | 'analyst' | 'viewer';
 // IA model (2026-08, topic-first): the rail is business-first.
@@ -50,6 +52,8 @@ const ICONS = {
   search:   <Search         className={ICON_CLASS} strokeWidth={1.5} />,
   dollar:   <DollarSign     className={ICON_CLASS} strokeWidth={1.5} />,
   relations: <Share2        className={ICON_CLASS} strokeWidth={1.5} />,
+  blocks:   <Blocks         className={ICON_CLASS} strokeWidth={1.5} />,
+  sparkles: <Sparkles       className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -69,6 +73,11 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
+  // Where a source becomes topics — the tenant-level front door to the
+  // bus-matrix flow (build, show/hide, guarded rebuild). Tenant-level on
+  // purpose: preparing data spans sources (shared data is conformed across
+  // them), so this is NOT a per-source action on the source card.
+  { key: 'build',      href: '/build',      label: 'Build',           icon: ICONS.blocks,  roles: ['admin', 'analyst'],            group: 'studio' },
   // Where the relationship canvas lives. Studio on purpose — it is a repair and
   // escape-hatch tool for people who already know their data, not the front
   // door. A new customer must never meet 170 edges on day one.
@@ -95,6 +104,7 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/shared-data': ['/shared-data'],
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
+  '/build':      ['/build'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],
@@ -188,22 +198,34 @@ export default function IconRail() {
 
   // Topic rows. Reference-kind products are deliberately excluded — they are
   // lookups, not subject areas, and they live under Studio → Shared data.
+  // Hidden products are excluded too: the Build page's show/hide toggle IS
+  // the topic selection, and this filter is what makes it mean something.
+  // Re-fetched on TOPICS_CHANGED_EVENT because the shell (and this rail)
+  // persists across client-side navigations — a build finishing or a toggle
+  // on /build must reach the rail without a full reload.
   useEffect(() => {
     if (!payload) return;
     let cancelled = false;
-    api.get('/products')
-      .then((res) => {
-        if (cancelled) return;
-        const rows = (res.data.data ?? []) as Array<{ id: number; name: string; kind?: string }>;
-        setTopics(
-          rows
-            .filter((p) => (p.kind ?? 'analytics') === 'analytics')
-            .map((p) => ({ id: p.id, name: p.name }))
-            .sort((a, b) => a.name.localeCompare(b.name)),
-        );
-      })
-      .catch(() => { /* rail degrades to Workspace + Studio */ });
-    return () => { cancelled = true; };
+    const fetchTopics = () => {
+      api.get('/products')
+        .then((res) => {
+          if (cancelled) return;
+          const rows = (res.data.data ?? []) as Array<{ id: number; name: string; kind?: string; hidden?: boolean }>;
+          setTopics(
+            rows
+              .filter((p) => (p.kind ?? 'analytics') === 'analytics' && p.hidden !== true)
+              .map((p) => ({ id: p.id, name: p.name }))
+              .sort((a, b) => a.name.localeCompare(b.name)),
+          );
+        })
+        .catch(() => { /* rail degrades to Workspace + Studio */ });
+    };
+    fetchTopics();
+    window.addEventListener(TOPICS_CHANGED_EVENT, fetchTopics);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(TOPICS_CHANGED_EVENT, fetchTopics);
+    };
   }, [payload]);
 
   // Badge counts for analyst+
@@ -244,6 +266,20 @@ export default function IconRail() {
       group: 'topics',
     };
   });
+  // Empty YOUR DATA is a builder's call to action, not a blank: the group
+  // used to render nothing at zero topics, which left the one job this rail
+  // exists for — get your topics up — behind an unlinked URL. Viewers keep
+  // the quiet rail (there is nothing they could do about it).
+  if (topicItems.length === 0 && (role === 'admin' || role === 'analyst')) {
+    topicItems.push({
+      key: 'topics-empty',
+      href: '/build',
+      label: 'Create your topics →',
+      icon: ICONS.sparkles,
+      roles: ['admin', 'analyst'],
+      group: 'topics',
+    });
+  }
   const visible = [...NAV_ITEMS, ...topicItems].filter((i) => i.roles.includes(role));
 
   function isActive(href: string) {

@@ -31,7 +31,81 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-17 (TWO KINDS OF LINE: laid by the source vs laid manually)
+**Last updated:** 2026-08-18 (BUILD — the tenant-level front door from source to topics)
+
+**THE BUS-MATRIX FLOW HAS A FRONT DOOR: STUDIO → BUILD (2026-08-18).** Owner:
+*"Waar in de app zou het nu logisch zijn om die 'prepare my data' te zetten?
+Dit zou niet achter een url zonder UI of knop moeten zitten."* — and, decisive:
+the button must NOT live on the source card, *"omdat we over verschillende
+bronnen ook conformed dimensions kunnen hebben."* Preparing data is a
+TENANT-level act, so the door hangs above the sources: new page **`/build`**
+(Studio, directly under Sources), which is warehouse doc §2.1b's coverage
+checklist finally given a home. Agreed with the owner before building:
+outcome language ("Create my topics", never fact/dimension/star schema);
+build EVERYTHING the template can and make show/hide the topic selection
+(activation, not determination); structure-rebuild behind a warned action.
+- **`GET /api/products/build-overview`** (new `routes/products/buildOverview.ts`,
+  admin+analyst) is the page's single read model: per connection → sync +
+  analyse state, source-table count, built products (with `hidden`), and THE
+  PLAN — the topics a build would create, computed by instantiating the REAL
+  connector template (`tryBuildBusMatrixFromTemplate`) against the REAL synced
+  table names, so the promise shown before the build is exactly what the build
+  produces, never a hand-maintained copy. Ships DISPLAY names only; the test
+  suite pins that no `dim_`/`fact_` name can reach the payload. Every query
+  filters `tenant_id` EXPLICITLY (the reqDb pool-race rule, same as
+  `/relationships/graph` and `/:id/topic`). **Mounted between `topic.ts` and
+  `core.ts` in `routes/products/index.ts`** — a literal route that must
+  register before core's `GET /:id` captures "build-overview" as an id.
+- **Migration 80: `data_products.hidden`** (nullable boolean; only `true`
+  means hidden — every pre-existing product stays visible). The rail's topics
+  fetch filters on it; the Build page toggles it via the existing
+  `PUT /products/:id` (schema + handler gained `hidden`). A hidden topic stays
+  fully built — un-hiding is instant and free, which is the whole point.
+- **The page** (`frontend/app/build/page.tsx`): one list, per source —
+  built topic rows (link to `/topics/[id]`, freshness, eye-toggle), a
+  Shared-data row for reference products (links `/shared-data`), and for an
+  unbuilt source the PLAN PANEL: planned topics with their KPI names as
+  "you'll see" hints, the shared lookups line, an **optional intent field**
+  ("What do you most want to see?") and one button. **The intent never steers
+  what gets built** — it becomes the finish card's CTA, deep-linking
+  `/query?q=…&autoSubmit=1` so the loop closes on the user's own question.
+  No template → honest AI-fallback copy, same button (the orchestrator
+  already falls back). Progress = slim SSE strip (ManageLayer's pattern, not
+  /products' dark terminal); reattaches on mount via `bus-matrix/active`
+  (note: that endpoint also matches refresh-mode jobs — a topic refresh
+  running elsewhere shows here with build copy; cosmetic, known).
+  **Rebuild is a separate warned action** naming what it costs: retire-and-
+  replace re-creates products, so product-level edits (reworded
+  `question_text`, KPI changes, `plain_summary`) are reset — data refresh
+  belongs to Refresh, not here. Snapshot-and-merge for product edits
+  (migration 70's pattern, third application) is the noted future fix.
+- **The doors all lead here**: rail gained a Studio entry **Build** (Blocks
+  icon, under Sources); an EMPTY "Your data" group now renders "Create your
+  topics →" for admin/analyst (it used to render nothing — the rail's one job
+  with zero topics was invisible; viewers keep the quiet rail); the source
+  card's analysed-state hint is now "Analysed. Turn it into topics on Build →".
+  New `lib/topicsChanged.ts` (`clarion:topics-changed` window event): the
+  shell persists across client navigations, so the rail re-fetches topics on
+  build completion and hide/show instead of waiting for a full reload.
+- **Role widening, deliberate and narrow**: the four bus-matrix job routes
+  (start/active/cancel/stream) and `PUT /products/:id` went admin-only →
+  admin+analyst, matching the role table's "Design star schema products:
+  analyst YES". The other build.ts routes stay admin-only.
+- **Tests**: new `products-build-overview.test.ts` (6) — the plan is the real
+  template (Purchasing must DROP when its entities weren't synced), no
+  warehouse vocabulary in the payload, hidden round-trips with NULL=visible,
+  analyst can toggle via PUT, tenant isolation, viewer 403.
+- Backend `npm run check` clean, all eight lint ratchets green from the repo
+  root, frontend `tsc --noEmit` clean, `next build` green (`/build` route
+  emitted). Repo-wide `next lint` carries pre-existing findings in ~39
+  untouched files; the files this session added or changed are lint-clean.
+- **NOT built (explicitly agreed as later phases)**: one-click chaining
+  (sync → analyse → build as one job — today the page points at Sources for
+  missing prerequisites); intent text feeding AI-written `question_text`;
+  the second-source mapping rows (§5.8 item 4) which will appear on this
+  same screen when built.
+
+**Prior last updated:** 2026-08-17 (TWO KINDS OF LINE: laid by the source vs laid manually)
 
 **"LAID BY THE SOURCE" WAS HALF A FACT — MEASURED AND GATED (2026-08-17).**
 Owner, on the new source/manual split: *"Are the relations laid really coming
@@ -3605,8 +3679,9 @@ clarion/                              ← on disk: databridge/
 │       │   ├── cross-views.ts        ← admin-only cross-source views (Neo4j graph)
 │       │   ├── quality.ts            ← quality profiling; alerts; trends
 │       │   ├── ingestion.ts          ← trigger ETL ingestion to Delta Lake warehouse
-│       │   ├── products/            ← CRUD data products, split 10 ways (see products/index.ts)
+│       │   ├── products/            ← CRUD data products, split 11 ways (see products/index.ts)
 │       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
+│       │   │   ├── buildOverview.ts ← GET /build-overview — the Build page's single read model
 │       │   │   └── …                ← catalog, core, design, tables, refine, kpis, build, refineChat, cells
 │       │   ├── jobs.ts               ← check background job status
 │       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
@@ -3680,6 +3755,9 @@ clarion/                              ← on disk: databridge/
     │   │   ├── types.ts              ← Topic, TopicQuestion, ManageTab, TableSubTab, DeployState
     │   │   └── [productId]/page.tsx  ← topic layer + manage layer (?manage=1) + cross-fade
     │   ├── shared-data/              ← conformed lookups (was the "Core dimensions" product)
+    │   │   ├── layout.tsx
+    │   │   └── page.tsx
+    │   ├── build/                    ← Studio → Build: source → topics (plan, create, show/hide, warned rebuild)
     │   │   ├── layout.tsx
     │   │   └── page.tsx
     │   ├── products/                 ← build workshop — off the nav, deep-link only

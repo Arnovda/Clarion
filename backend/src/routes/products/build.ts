@@ -278,7 +278,11 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), validate(pr
   }
 });
 
-router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+// The four bus-matrix job routes below (start / active / cancel / stream) are
+// admin+analyst: the role table grants "Design star schema products" to both,
+// and the Build page — the flow's front door — is an analyst+ surface. The
+// other build routes in this file stay admin-only until a surface needs them.
+router.post('/bus-matrix/start', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
   try {
     const db = reqDb(req);
     const { connectionId } = req.body as { connectionId: number };
@@ -333,7 +337,7 @@ router.post('/bus-matrix/start', requireAuth, requireRole('admin'), async (req: 
   }
 });
 
-router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/bus-matrix/active', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
@@ -370,7 +374,7 @@ router.get('/bus-matrix/active', requireAuth, requireRole('admin'), async (req: 
   }
 });
 
-router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
@@ -418,7 +422,7 @@ router.post('/bus-matrix/:jobId/cancel', requireAuth, requireRole('admin'), asyn
   }
 });
 
-router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
   const sse = startSSE(res);
 
   const tenantId = req.user?.tenantId;

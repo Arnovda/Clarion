@@ -794,7 +794,7 @@ function ConnectionCard({
     err:  'bg-err-soft text-err',
     idle: 'bg-softer text-muted-2',
   }[status.tone];
-  const nextStep: string | null = (() => {
+  const nextStep: React.ReactNode | null = (() => {
     if (syncError)                              return 'Sync failed — review the error and try again.';
     if (profilingState.status === 'error')      return 'Analysis failed — try Re-analyse to retry.';
     if (syncing || profilingState.status === 'running') return null;
@@ -803,7 +803,10 @@ function ConnectionCard({
       return 'Tables are loaded and visible in the catalog. Click Analyse to add AI descriptions and relationships.';
     if (profilingState.status !== 'done' && isSourceConnector && conn.last_synced_at)
       return 'Data is in. Click Analyse to register and describe the tables in the catalog.';
-    return 'Open the catalog to review tables, columns and relationships.';
+    // Analysed — the next step in the journey lives on Build, not here:
+    // turning sources into topics is a tenant-level act (shared data spans
+    // sources), so this card only points at it.
+    return <>Analysed. <a href="/build" className="text-ocean hover:underline">Turn it into topics on Build →</a></>;
   })();
 
   return (

@@ -413,6 +413,9 @@ export const updateProductSchema = z.object({
     name: optionalString,
     description: nullableOptionalString,
     status: optionalString,
+    // Build-page visibility toggle: hidden topics stay fully built but drop
+    // out of the rail. Only `true` means hidden (null/false = visible).
+    hidden: z.boolean().optional(),
   }).passthrough(),
 });
 
