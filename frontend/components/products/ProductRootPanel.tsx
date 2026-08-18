@@ -4,20 +4,23 @@
  * <ProductRootPanel> — the body of a data product detail surface.
  *
  * Extracted from `app/products/[id]/page.tsx` so it can be reused by the
- * unified `/catalog` page. Owns the tabbed inner view (Overview, Tables,
- * Schema, Lineage, KPIs, Quality, SQL) plus the rebuild button, delete,
- * and embedded AskAIPanel. The surrounding chrome (back button / route
- * navigation) lives in the caller.
+ * unified `/catalog` page. Owns the tabbed inner view (Overview, Tables —
+ * the definition/inspection surface, incl. the per-table notebook) plus the
+ * rebuild button, delete, and embedded AskAIPanel. The surrounding chrome
+ * (back button / route navigation) lives in the caller.
+ *
+ * SLIMMED 2026-08-18: the Schema diagram, Data flow, KPIs and Quality tabs
+ * duplicated the topic's Manage mode — one cockpit per topic, so this panel
+ * links there ("Manage this topic ↗") instead of re-implementing it.
  */
 
 import { useEffect, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
   ArrowLeft, Database, RefreshCw, Trash2, Loader2, ChevronRight, ChevronDown,
-  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Workflow, ShieldCheck, Plus, Rocket,
+  Sparkles, Code as CodeIcon, Boxes, Gauge, FileText, Network, Plus, Rocket,
   CheckCircle2, AlertCircle, X, PanelRightClose, PanelRightOpen,
 } from 'lucide-react';
-import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { cn } from '@/lib/cn';
@@ -37,15 +40,11 @@ import { cleanTopicName } from '@/app/products/helpers';
 import SourceBadge from '@/components/SourceBadge';
 
 const AskAIPanel = dynamic(() => import('@/app/products/AskAIPanel'), { ssr: false });
-const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
-const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
-const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: false });
-const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
 const RefineChat = dynamic(() => import('@/components/products/RefineChat'), { ssr: false });
 const RefreshHistoryChart = dynamic(() => import('@/components/products/RefreshHistoryChart'), { ssr: false });
 const TableNotebook = dynamic(() => import('@/components/products/TableNotebook'), { ssr: false });
 
-type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'kpis' | 'quality' | 'sql';
+type DetailTab = 'overview' | 'tables';
 
 type TransformResult = {
   table_name: string;
@@ -640,16 +639,25 @@ export default function ProductRootPanel({
           ) : (
             /* Product-level tabs */
             <>
+              {/* SLIMMED TO DEFINITION/INSPECTION (2026-08-18): the Schema
+                  diagram, Data flow, KPIs and Quality tabs duplicated the
+                  topic's Manage mode — two cockpits for the same topic drift
+                  apart. This panel keeps the catalog's own work (overview,
+                  tables/columns/definitions, data preview, notebook cells)
+                  and links to Manage mode for everything operational. */}
               <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
-                <nav className="flex gap-0">
+                <nav className="flex items-center gap-0">
                   <TabBtn active={tab === 'overview'} onClick={() => setTab('overview')} icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
                   <TabBtn active={tab === 'tables'} onClick={() => setTab('tables')} icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
                   {curator && (
-                    <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+                    <a
+                      href={`/topics/${productId}?manage=1`}
+                      className="flex items-center gap-1.5 px-3.5 py-2.5 text-[12px] font-mono uppercase tracking-[0.06em] text-muted hover:text-ocean transition-colors whitespace-nowrap"
+                    >
+                      <Gauge className="w-3.5 h-3.5" />
+                      Manage this topic ↗
+                    </a>
                   )}
-                  <TabBtn active={tab === 'lineage'} onClick={() => setTab('lineage')} icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
-                  <TabBtn active={tab === 'kpis'} onClick={() => setTab('kpis')} icon={<Gauge className="w-3.5 h-3.5" />}>KPIs</TabBtn>
-                  <TabBtn active={tab === 'quality'} onClick={() => setTab('quality')} icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
                 </nav>
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
@@ -662,10 +670,6 @@ export default function ProductRootPanel({
                     onOpenNotebook={(id) => setSelectedTableId(id)}
                   />
                 )}
-                {tab === 'schema' && <SchemaSection detail={detail} />}
-                {tab === 'lineage' && <LineageSection detail={detail} />}
-                {tab === 'kpis' && <KpiManager productId={productId} kpis={kpis} onChanged={loadKpis} />}
-                {tab === 'quality' && <QualityTab productNameFilter={detail.name} />}
               </div>
             </>
           )}
@@ -1045,60 +1049,8 @@ function RebuildBanner({
   );
 }
 
-function SchemaSection({ detail }: { detail: FullDataProduct }) {
-  if (detail.star_schemas.length === 0) {
-    return <p className="text-[13px] text-muted italic">No tables designed yet.</p>;
-  }
-  return (
-    <div className="space-y-6">
-      {detail.star_schemas.map((schema) => (
-        <StarSchemaFlow key={schema.id} schema={schema} />
-      ))}
-    </div>
-  );
-}
+// `SchemaSection`, `LineageSection`, `KpisSection` and the Quality tab were
+// removed on 2026-08-18: they duplicated the topic's Manage mode (How it
+// fits together / Where it comes from / Metrics / Quality). The tab bar
+// links there instead — one cockpit per topic.
 
-function LineageSection({ detail }: { detail: FullDataProduct }) {
-  const allTables = detail.star_schemas.flatMap((s) => s.tables);
-  if (allTables.length === 0) {
-    return <p className="text-[13px] text-muted italic">No tables to show lineage for yet.</p>;
-  }
-  return (
-    <div className="bg-raised border border-line rounded-lg overflow-hidden">
-      <LineageFlow data={{ tables: allTables }} />
-    </div>
-  );
-}
-
-// `KpisSection` was deleted in favour of the editable `<KpiManager>`
-// component in `components/products/KpiManager.tsx`. KpiManager handles
-// list + add + edit + delete + AI-assist all on the same surface.
-
-function SqlSection({ tables }: { tables: (ProductTable & { columns: ProductColumn[] })[] }) {
-  const withSql = tables.filter((t) => t.transformation_sql);
-  if (withSql.length === 0) {
-    return <p className="text-[13px] text-muted italic">No transformation SQL has been generated yet.</p>;
-  }
-  return (
-    <div className="space-y-4">
-      {withSql.map((t) => {
-        let formatted = t.transformation_sql ?? '';
-        try { formatted = sqlFormatter(formatted, { language: 'duckdb' }); } catch { /* leave as-is */ }
-        return (
-          <div key={t.id} className="preview-terminal rounded-md overflow-hidden">
-            <div className="px-3 py-2 flex items-center gap-2 border-b border-white/10">
-              <RoleBadge role={t.table_role} />
-              <span className="text-[12.5px] text-white/90 font-medium">{t.display_name ?? t.table_name}</span>
-              {t.row_count !== null && (
-                <span className="text-[11px] text-white/50 tabular-nums ml-auto">{t.row_count.toLocaleString('en-GB')} rows</span>
-              )}
-            </div>
-            <pre className="p-3 text-[11.5px] font-mono text-white/80 overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto">
-              {formatted}
-            </pre>
-          </div>
-        );
-      })}
-    </div>
-  );
-}

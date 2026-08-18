@@ -9,12 +9,16 @@
  *   • Overview      — what's in this source: table/row counts, last sync,
  *                     pending AI drafts, and which products consume it
  *   • Tables        — list of source tables (expand for columns)
- *   • Schema diagram — relationships visualisation (the most important tab —
- *                     keeps the original RelationshipsDiagramView)
  *   • Data flow     — products that consume this source, with quick stats
  *   • Quality       — per-table quality scores; click to drill into <QualityPanel>
  *   • SQL           — sample SELECT-* queries for each table (read-only,
  *                     for analyst/admin reference)
+ *
+ * The old "Schema diagram" tab (RelationshipsDiagramView + list + review
+ * queue, backed by the 2k-line RelationshipCanvas) was RETIRED on 2026-08-18:
+ * relationships have exactly one editing surface — /relationships ("How it
+ * fits together") — and a second editor here is how the two drift apart.
+ * The tab bar links there instead.
  *
  * KPIs are intentionally omitted — KPI definitions are a product-layer
  * concept (they live on `product_kpis`), so showing them here would be
@@ -26,18 +30,13 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
   AlertTriangle, Boxes, ChevronRight, ChevronDown, Code as CodeIcon,
-  Database, Eye, FileText, Filter, GitBranch, Loader2, Network, Play,
-  Plus, Search, ShieldCheck, Sparkles, Workflow, X,
+  Database, FileText, Loader2, Network, Play,
+  Search, ShieldCheck, Sparkles, Workflow, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
-import { useSchema, type RelationshipRow } from '@/components/catalog/relationships/useSchema';
-import RelationshipsDiagramView from '@/components/catalog/relationships/RelationshipsDiagramView';
-import RelationshipsListView from '@/components/catalog/relationships/RelationshipsListView';
-import ReviewQueueView from '@/components/catalog/relationships/ReviewQueueView';
-import AddRelationshipDialog from '@/components/catalog/relationships/AddRelationshipDialog';
-import KeyboardShortcuts from '@/components/catalog/relationships/KeyboardShortcuts';
+import { useSchema, type RelationshipRow } from '@/components/catalog/useSchema';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
 import { formatRelative } from '@/lib/dates';
 
@@ -79,7 +78,7 @@ interface QualityTableRow {
   row_count: number | null;
 }
 
-type DetailTab = 'overview' | 'tables' | 'schema' | 'lineage' | 'quality' | 'sql';
+type DetailTab = 'overview' | 'tables' | 'lineage' | 'quality' | 'sql';
 
 // ── Component ───────────────────────────────────────────────────────────────
 
@@ -239,7 +238,14 @@ export default function SourceRootPanel({ connectionId }: Props) {
               <TabBtn active={tab === 'overview'}  onClick={() => setTab('overview')}  icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
               <TabBtn active={tab === 'tables'}    onClick={() => setTab('tables')}    icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
               {curator && (
-                <TabBtn active={tab === 'schema'} onClick={() => setTab('schema')} icon={<Network className="w-3.5 h-3.5" />}>Schema diagram</TabBtn>
+                // Relationships have ONE editing surface. This is a door, not a tab.
+                <Link
+                  href="/relationships"
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 text-[12px] font-mono uppercase tracking-[0.06em] text-muted hover:text-ocean transition-colors whitespace-nowrap"
+                >
+                  <Network className="w-3.5 h-3.5" />
+                  Relations ↗
+                </Link>
               )}
               <TabBtn active={tab === 'lineage'}   onClick={() => setTab('lineage')}   icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
               <TabBtn active={tab === 'quality'}   onClick={() => setTab('quality')}   icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
@@ -271,16 +277,6 @@ export default function SourceRootPanel({ connectionId }: Props) {
                   columnsByTable={schema.columnsByTable}
                 />
               </div>
-            )}
-            {tab === 'schema' && (
-              <SchemaDiagramSection
-                connectionId={connectionId}
-                tables={schema.tables}
-                columnsByTable={schema.columnsByTable}
-                relationships={schema.relationships}
-                draftCount={draftCount}
-                onChanged={schema.reloadRelationships}
-              />
             )}
             {tab === 'lineage' && (
               <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
@@ -453,13 +449,15 @@ function OverviewSection({
               </button>
             )}
             {draftCount > 0 && (
-              <button
-                onClick={() => onJumpToTab('schema')}
+              // Relationship drafts are reviewed on the canvas — the catalog
+              // no longer carries its own relationship editor.
+              <Link
+                href="/relationships"
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-medium text-warn bg-warn-soft border border-line rounded hover:bg-warn/10 transition-colors"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-warn" />
-                {draftCount} relationship{draftCount === 1 ? '' : 's'}
-              </button>
+                {draftCount} relationship{draftCount === 1 ? '' : 's'} — review in Relations ↗
+              </Link>
             )}
           </div>
         </Card>
@@ -643,145 +641,6 @@ function TablesSection({
           })}
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Schema diagram tab ─────────────────────────────────────────────────────
-//
-// Re-uses the existing diagram/list/review-queue tooling with its own three-way
-// segmented switch — preserved so users keep the editing surface they're used
-// to and to keep "the relations part" first-class.
-
-function SchemaDiagramSection({
-  connectionId, tables, columnsByTable, relationships, draftCount, onChanged,
-}: {
-  connectionId: number;
-  tables: SourceTable[];
-  columnsByTable: Record<number, SourceColumn[]>;
-  relationships: RelationshipRow[];
-  draftCount: number;
-  onChanged: () => Promise<void>;
-}) {
-  type SubTab = 'diagram' | 'list' | 'review';
-  const [sub, setSub] = useState<SubTab>('diagram');
-  const [search, setSearch] = useState('');
-  const [addOpen, setAddOpen] = useState(false);
-
-  const SUBS: Array<{ id: SubTab; label: string; icon: typeof GitBranch }> = [
-    { id: 'diagram', label: 'Diagram',      icon: GitBranch },
-    { id: 'list',    label: 'List',         icon: Filter },
-    { id: 'review',  label: 'Review queue', icon: Eye },
-  ];
-
-  return (
-    <div className="flex-1 min-h-0 flex flex-col">
-      <div className="border-b border-line bg-raised px-6 py-3 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="inline-flex items-center bg-softer border border-line rounded-md p-0.5">
-            {SUBS.map(({ id, label, icon: Icon }) => {
-              const isActive = sub === id;
-              const isReview = id === 'review';
-              return (
-                <button
-                  key={id}
-                  onClick={() => setSub(id)}
-                  className={cn(
-                    'inline-flex items-center gap-2 px-3 py-1.5 text-[12px] font-mono uppercase tracking-[0.06em] rounded transition',
-                    isActive
-                      ? 'bg-raised text-ink shadow-[0_1px_2px_rgba(15,26,34,0.06)]'
-                      : 'text-muted hover:text-ink-2',
-                  )}
-                >
-                  <Icon className="w-3.5 h-3.5" strokeWidth={2} />
-                  {label}
-                  {isReview && draftCount > 0 && (
-                    <span className={cn(
-                      'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono',
-                      isActive ? 'bg-warn text-white' : 'bg-warn-soft text-warn',
-                    )}>
-                      {draftCount}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-2" strokeWidth={2} />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search tables, columns, or relationships…"
-              className="w-full bg-raised border border-line rounded-md pl-8 pr-7 py-1.5 text-[12.5px] text-ink placeholder:text-muted-2 focus:outline-none focus:border-ocean-soft focus:ring-1 focus:ring-ocean-soft"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-2 hover:text-ink-2"
-                aria-label="Clear search"
-              >
-                <X className="w-3.5 h-3.5" strokeWidth={2} />
-              </button>
-            )}
-          </div>
-
-          <button
-            onClick={() => setAddOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-ocean text-white text-[12px] font-mono uppercase tracking-[0.06em] rounded-md hover:bg-ocean-hover transition"
-          >
-            <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-            Add relationship
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 min-h-0 flex flex-col">
-        {sub === 'diagram' && (
-          <RelationshipsDiagramView
-            connectionId={connectionId}
-            tables={tables}
-            columnsByTable={columnsByTable}
-            relationships={relationships}
-            search={search}
-          />
-        )}
-        {sub === 'list' && (
-          <RelationshipsListView
-            tables={tables}
-            columnsByTable={columnsByTable}
-            relationships={relationships}
-            search={search}
-            onChanged={onChanged}
-            onAdd={() => setAddOpen(true)}
-          />
-        )}
-        {sub === 'review' && (
-          <ReviewQueueView
-            tables={tables}
-            columnsByTable={columnsByTable}
-            relationships={relationships}
-            onChanged={onChanged}
-            onSwitchToList={() => setSub('list')}
-          />
-        )}
-      </div>
-
-      {addOpen && (
-        <AddRelationshipDialog
-          tables={tables}
-          columnsByTable={columnsByTable}
-          onClose={() => setAddOpen(false)}
-          onCreated={() => {
-            setAddOpen(false);
-            void onChanged();
-          }}
-        />
-      )}
-
-      <KeyboardShortcuts />
     </div>
   );
 }

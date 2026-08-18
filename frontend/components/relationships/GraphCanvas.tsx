@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import ReactFlow, {
   Background, Controls, ReactFlowProvider,
   useNodesState, useEdgesState, useReactFlow, Connection, Node, Edge, ConnectionMode,
@@ -65,6 +66,13 @@ const MARK_LABEL: Record<Outcome, string> = {
 
 function CanvasInner() {
   const { fitView, screenToFlowPosition } = useReactFlow();
+  const searchParams = useSearchParams();
+  const urlTableId = useMemo(() => {
+    const raw = searchParams?.get('table');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) ? n : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -155,6 +163,15 @@ function CanvasInner() {
   useEffect(() => {
     if (!graph || bootstrapped.current || !graph.tables.length) return;
     bootstrapped.current = true;
+    // Deep link: `?table=<id>` anchors the canvas on that table — how the
+    // catalog's "Relations ↗" doors land you on the thing you were looking
+    // at instead of at the generic starting point. Safe inside this
+    // ssr:false component (never prerendered, so no Suspense boundary
+    // needed around useSearchParams).
+    if (urlTableId != null && graph.tables.some((t) => t.id === urlTableId)) {
+      setSelectedTableId(urlTableId);
+      return;
+    }
     const pending = new Map<number, number>();
     for (const r of graph.relationships) {
       if (r.provenance !== 'ai') continue;
@@ -165,7 +182,7 @@ function CanvasInner() {
       (pending.get(b.id) ?? 0) - (pending.get(a.id) ?? 0)
       || b.relationshipCount - a.relationshipCount)[0];
     setSelectedTableId(best.id);
-  }, [graph]);
+  }, [graph, urlTableId]);
 
   /** A revealed column list belongs to the table you were just looking at. */
   useEffect(() => { setShowAll(new Set()); }, [selectedTableId, selectedEdgeId]);

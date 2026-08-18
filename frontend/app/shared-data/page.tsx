@@ -10,7 +10,11 @@
  * accounts, Items, Journals and Payment conditions live HERE and nowhere
  * else, which is what makes a topic's "Shared lookups" pills read-only.
  *
- * Analyst+ (Studio). Reads the existing catalog-by-source endpoint, which
+ * Every role (Subjects group in the rail, 2026-08-18): the lookups are
+ * CONTENT — your customers, your products — and a viewer can already read
+ * the same rows through Ask AI. Viewers get the read-only view: the cards
+ * don't link into the build workshop for them. Curators keep the
+ * click-through. Reads the existing catalog-by-source endpoint, which
  * already unfolds reference-kind products into one card per lookup table
  * with its reverse-lineage ("used in").
  */
@@ -18,7 +22,8 @@
 import { useEffect, useState } from 'react';
 import { Library, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
-import RequireRole from '@/components/RequireRole';
+import { cn } from '@/lib/cn';
+import { useRole, canCurate } from '@/lib/role';
 import { formatRelativeLong } from '@/lib/dates';
 import { iconForReference } from '@/components/catalog/entityIcons';
 
@@ -40,14 +45,12 @@ interface SourceBlock {
 }
 
 export default function SharedDataPage() {
-  return (
-    <RequireRole roles={['admin', 'analyst']}>
-      <SharedData />
-    </RequireRole>
-  );
+  return <SharedData />;
 }
 
 function SharedData() {
+  const role = useRole();
+  const curator = canCurate(role);
   const [blocks, setBlocks] = useState<SourceBlock[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,8 +78,9 @@ function SharedData() {
           <div className="min-w-0">
             <h1 className="font-display text-[30px] leading-[1.15] tracking-[-0.02em] text-ink">Shared data</h1>
             <p className="mt-1 max-w-[560px] text-[14.5px] leading-[1.6] text-ink-3 [text-wrap:pretty]">
-              The lookups every topic is sliced by. Edit one here and every topic that
-              uses it follows — which is why a topic can only read them.
+              {curator
+                ? 'The lookups every subject is sliced by. Edit one here and every subject that uses it follows — which is why a subject can only read them.'
+                : 'The lookups every subject is sliced by — your customers, products and accounts, shared across all of them.'}
             </p>
           </div>
         </header>
@@ -107,11 +111,17 @@ function SharedData() {
             <div className="grid gap-3 sm:grid-cols-2">
               {block.reference.map((card) => {
                 const Glyph = iconForReference(card.name);
+                // Viewers get the card without the click-through: the target
+                // is the build workshop, a curator surface.
+                const Wrapper = curator ? 'a' : 'div';
                 return (
-                  <a
+                  <Wrapper
                     key={card.tableId}
-                    href={`/products/${card.productId}?table=${encodeURIComponent(card.name)}`}
-                    className="group flex flex-col gap-2 rounded-[10px] border border-line bg-raised px-5 py-4 transition-colors duration-1 ease-observatory hover:border-ocean"
+                    {...(curator ? { href: `/products/${card.productId}?table=${encodeURIComponent(card.name)}` } : {})}
+                    className={cn(
+                      'group flex flex-col gap-2 rounded-[10px] border border-line bg-raised px-5 py-4 transition-colors duration-1 ease-observatory',
+                      curator && 'hover:border-ocean',
+                    )}
                   >
                     <div className="flex items-center gap-2.5">
                       <Glyph className="h-4 w-4 shrink-0 text-ocean" strokeWidth={1.6} aria-hidden />
@@ -135,7 +145,7 @@ function SharedData() {
                       )}
                       {card.lastRefreshedAt && <span>· refreshed {formatRelativeLong(card.lastRefreshedAt)}</span>}
                     </div>
-                  </a>
+                  </Wrapper>
                 );
               })}
             </div>

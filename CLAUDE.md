@@ -31,7 +31,66 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-18 (BUILD — the tenant-level front door from source to topics)
+**Last updated:** 2026-08-18 (BUILD front door + rail IA per the owner's sketch + Data Catalog back in Studio)
+
+**THE RAIL NOW FOLLOWS THE OWNER'S SKETCH, AND THE DATA CATALOG IS BACK
+(2026-08-18, second batch same day).** Owner, from a hand-drawn nav: the
+catalog pane *"disappeared in one of the previous iterations… I want it as a
+pane in the studio"*, the relationships tab must leave the catalog (*"it's
+already in 'How it fits together'"*), and the groups become uncover /
+subjects / Studio / Settings. Agreed additions in discussion: Home and Build
+stay, Shared data moves under subjects **viewer-readable**, and — after the
+owner pushed back on my "make the catalog source-only" suggestion — the
+split is **by KIND OF WORK, not by layer**: the catalog is the
+definition/inspection surface across BOTH layers, Manage mode is the one
+per-topic cockpit, the workshop is structural surgery. Measured fact that
+settled it: `ProductTableDetailPanel` in the catalog is the ONLY surface
+that edits product COLUMN semantics (`PATCH /semantic/product-columns/:id`)
+— Manage mode has no column editor, so a source-only catalog would have
+made those definitions homeless.
+- **Rail groups** (`IconRail.tsx`): workspace = Home alone, unlabelled ·
+  **Uncover** = Ask AI, Dashboards, Notebooks (Notebooks analyst+, moved out
+  of Studio) · **Subjects** (was "Your data") = topic rows + **Shared data**
+  as its closing row for every role · **Studio** = Sources → Build →
+  **Relations** (renamed from "How it fits together") → **Data Catalog**
+  (new, `/catalog`) → Refresh → Suggestions · Settings unchanged.
+  `/catalog` aliases `/semantic`, `/glossary`, `/health` so deep links keep
+  the rail item lit.
+- **`/shared-data` is now viewer-readable, read-only**: the lookups are
+  CONTENT (your customers, your products) and viewers can already read the
+  same rows through Ask AI. Viewers get the cards without the workshop
+  click-through (`Wrapper = curator ? 'a' : 'div'`); copy adjusts. The
+  backend endpoint was already `requireAuth`-only.
+- **THE OLD RELATIONSHIP SURFACE IS RETIRED — the "retire at parity" debt
+  is paid.** `SourceRootPanel`'s "Schema diagram" tab (three-way diagram /
+  list / review queue) is deleted, and with it the entire old canvas:
+  `components/semantic/RelationshipCanvas.tsx` (1,975 lines) and
+  `components/catalog/relationships/*` are REMOVED from the repo.
+  `useSchema` was the one load-bearing survivor — it feeds the whole panel,
+  not just the dead tab — and moved to `components/catalog/useSchema.ts`.
+  Relationships now have exactly ONE editing surface (`/relationships`);
+  the catalog links there ("Relations ↗", and the relationship-drafts chip
+  on Overview). **`GraphCanvas` accepts `?table=<id>`** to anchor on a
+  specific table (read inside the ssr:false component, so no Suspense
+  boundary is needed), so catalog doors can land on the thing being looked
+  at; falls back to the most-work bootstrap when absent/unknown.
+- **`ProductRootPanel` slimmed to definition/inspection**: the Schema
+  diagram, Data flow, KPIs and Quality tabs DUPLICATED the topic's Manage
+  mode — two cockpits for one topic drift apart. Gone (with
+  `SchemaSection`/`LineageSection`/`SqlSection`); the tab bar now carries
+  "Manage this topic ↗" → `/topics/:id?manage=1`. What stays is the
+  catalog's own work: Overview, Tables with columns/definitions/data
+  preview, and the per-table notebook (still the deploy surface).
+- Frontend `tsc` clean; the touched files are lint-clean (repo-wide `next
+  lint` still carries pre-existing findings in ~39 untouched files).
+- **NEXT (agreed, not yet built): the lineage view** — in the Data Catalog,
+  ALWAYS anchored on a selected table/column, upstream and downstream
+  across both layers with transformations on the edges. The data largely
+  exists (`product_columns` lineage arrays, transformation expressions);
+  the build is the column-level reverse index + the anchored view. Never a
+  global lineage graph (§2.4).
+
+**Prior last updated:** 2026-08-18 (BUILD — the tenant-level front door from source to topics)
 
 **THE BUS-MATRIX FLOW HAS A FRONT DOOR: STUDIO → BUILD (2026-08-18).** Owner:
 *"Waar in de app zou het nu logisch zijn om die 'prepare my data' te zetten?
@@ -3843,7 +3902,6 @@ clarion/                              ← on disk: databridge/
     │   │   ├── HistoryPanel.tsx      ← change history tracking
     │   │   ├── KpiPanel.tsx          ← KPI definitions management
     │   │   ├── PathFinderPanel.tsx   ← relationship path finder
-    │   │   ├── RelationshipCanvas.tsx ← relationship mapping visualization
     │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
     │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel
     │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable

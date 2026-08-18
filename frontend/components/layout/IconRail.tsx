@@ -18,20 +18,23 @@ import { cleanTopicName } from '@/app/products/helpers';
 import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-// IA model (2026-08, topic-first): the rail is business-first.
-//   • workspace — the three things every user does: Home, Ask AI, Dashboards.
-//   • topics    — YOUR DATA. One row per analytics data product, fetched at
-//     runtime. This is the business user's world; there is no "data product"
-//     container page any more, so the topics ARE the navigation.
-//   • studio    — builder + technical tools (sources, shared data, refresh,
-//     suggestions, notebooks), demoted under a "Studio" disclosure. analyst+.
+// IA model (2026-08-18, the owner's sketch): the rail is business-first.
+//   • workspace — Home, unlabelled: the landing surface, above everything.
+//   • uncover   — the ways you interrogate the data: Ask AI, Dashboards,
+//     Notebooks (Notebooks analyst+ — viewers simply don't see the row).
+//   • subjects  — the business user's world. One row per analytics data
+//     product, fetched at runtime, plus Shared data: the lookups every
+//     subject slices by read as CONTENT, not tooling, so they live here
+//     (read-only for viewers) rather than in Studio.
+//   • studio    — the builder's pipeline, in pipeline order: Sources →
+//     Build → Relations → Data Catalog → Refresh → Suggestions. analyst+.
 //   • settings  — admin-only org config.
 //
-// `Data products` and `Catalog` are gone from the rail on purpose: the topic
-// rows replace both as the way in. Their routes still resolve for deep links
-// (/products is where a new topic is built, /catalog is the browse surface) —
-// this is a removal from the NAV, not from the app.
-type Group = 'workspace' | 'topics' | 'studio' | 'settings';
+// `Data Catalog` returned to the rail on 2026-08-18: the 2026-08-06 removal
+// was about the FRONT DOOR (topics replace it for business users), but it
+// also took away the curator's working surface — definitions, columns, data
+// preview — which is Studio work and needs a direct door.
+type Group = 'workspace' | 'uncover' | 'topics' | 'studio' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
@@ -67,11 +70,13 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  // ── Workspace — exactly three items, for every role ──────────────────────
+  // ── Workspace — Home alone, unlabelled, above everything ─────────────────
   { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
-  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
-  // ── Studio — builder + technical tools (analyst+), demoted out of the way ─
+  // ── Uncover — the ways you interrogate the data ──────────────────────────
+  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'uncover' },
+  // ── Studio — the builder's pipeline, in pipeline order ───────────────────
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
   // Where a source becomes topics — the tenant-level front door to the
   // bus-matrix flow (build, show/hide, guarded rebuild). Tenant-level on
@@ -81,13 +86,13 @@ const NAV_ITEMS: NavItem[] = [
   // Where the relationship canvas lives. Studio on purpose — it is a repair and
   // escape-hatch tool for people who already know their data, not the front
   // door. A new customer must never meet 170 edges on day one.
-  { key: 'relations',  href: '/relationships', label: 'How it fits together', icon: ICONS.relations, roles: ['admin', 'analyst'],  group: 'studio' },
-  // The conformed lookups every topic slices by. Owned here, read-only
-  // everywhere else — replaces the "Core dimensions" pseudo-product.
-  { key: 'shared',     href: '/shared-data', label: 'Shared data',    icon: ICONS.library, roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'relations',  href: '/relationships', label: 'Relations',    icon: ICONS.relations, roles: ['admin', 'analyst'],          group: 'studio' },
+  // The curator's working surface: browse both layers, edit definitions,
+  // preview data. The one relationship surface stays /relationships — the
+  // catalog's own diagram tab was retired the day this entry returned.
+  { key: 'catalog',    href: '/catalog',    label: 'Data Catalog',    icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'studio' },
   // ── Settings — admin-only org config ────────────────────────────────────
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
@@ -105,22 +110,25 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
   '/build':      ['/build'],
+  // Glossary + health are facets of the catalog surface; deep links there
+  // keep the Data Catalog rail item lit instead of orphaning the active state.
+  '/catalog':    ['/catalog', '/semantic', '/glossary', '/health'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],
 };
 
 const GROUP_LABELS: Record<Group, string> = {
-  // No eyebrow on the workspace group — it's the unlabelled default surface,
-  // which keeps the top of the rail calm. Studio + Settings are labelled so
-  // the builder/admin tools read as a clearly separate, secondary area.
+  // No eyebrow on the workspace group — it's the unlabelled default surface
+  // (just Home), which keeps the top of the rail calm. The rest are labelled.
   workspace: '',
-  topics:    'Your data',
+  uncover:   'Uncover',
+  topics:    'Subjects',
   studio:    'Studio',
   settings:  'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['workspace', 'topics', 'studio', 'settings'];
+const GROUP_ORDER: Group[] = ['workspace', 'uncover', 'topics', 'studio', 'settings'];
 
 // Groups that render as collapsible disclosures (collapsed by default) so the
 // business owner's rail is just the calm Workspace items until they choose to
@@ -280,6 +288,18 @@ export default function IconRail() {
       group: 'topics',
     });
   }
+  // Shared data closes the Subjects group: the lookups every subject slices
+  // by are CONTENT (your customers, your products), not tooling — so they
+  // sit with the subjects, for every role. The page is read-only for
+  // viewers; editing stays a curator affordance on the page itself.
+  topicItems.push({
+    key: 'shared',
+    href: '/shared-data',
+    label: 'Shared data',
+    icon: ICONS.library,
+    roles: ['admin', 'analyst', 'viewer'],
+    group: 'topics',
+  });
   const visible = [...NAV_ITEMS, ...topicItems].filter((i) => i.roles.includes(role));
 
   function isActive(href: string) {
