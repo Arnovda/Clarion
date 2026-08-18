@@ -125,6 +125,28 @@ only read as prompt context.
   and lineage links from the SQL provenance trail on the topic page —
   both natural extensions of the same endpoint.
 
+**EVERYTHING ABOVE IS ON MAIN AND PROMOTED (2026-08-18).** Owner: *"Doe
+alles naar main aub"* — main fast-forwarded to the branch, all four CI
+workflows green, and the owner ran "Promote to production" themselves. A
+follow-up copy fix (the Build plan cards now lead with the template's
+topic DESCRIPTION — "Accounting analytics: general-ledger detail, open
+receivables and payables" — instead of only the KPI names, which undersold
+Finance's three fact tables as one metric) is also on main, deployed
+green.
+
+**NEW GITOPS CONTROL: `.ops/star-schema-design`** (`templates` | `ai`) +
+`.github/workflows/star-schema-design-mode.yml`, cloned from the
+duckdb-runner control (paths-scoped, no-op when already applied, NOT a
+promote vehicle). Backend-only (the bus-matrix queue runs in the API).
+`ai` sets `STAR_SCHEMA_TEMPLATES_DISABLED=1` — the flag the code has
+honoured since the template work but that had no production vehicle.
+**Set to `ai` on 2026-08-18 at the owner's request** ("Ik wil nu even geen
+pre-defined ster schema voor een connector gebruiken"): every "Create my
+topics" run now uses the AI designer, including for EO. Costs: AI tokens +
+minutes per design, non-deterministic naming across tenants, and a rebuild
+replaces template-built products with AI-designed ones. Rollback = set the
+file back to `templates` and push. Documented in `.ops/README.md`.
+
 **Prior last updated:** 2026-08-18 (BUILD — the tenant-level front door from source to topics)
 
 **THE BUS-MATRIX FLOW HAS A FRONT DOOR: STUDIO → BUILD (2026-08-18).** Owner:

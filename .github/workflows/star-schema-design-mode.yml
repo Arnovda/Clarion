@@ -1,0 +1,169 @@
+# Star-schema design mode — GitOps control for ONE production setting.
+#
+#   .ops/star-schema-design   contains   `templates`   or   `ai`
+#
+# Editing that file on main applies STAR_SCHEMA_TEMPLATES_DISABLED to the
+# backend Container App and shifts traffic to the resulting revision.
+#
+# WHY this switch exists: "Create my topics" (the bus-matrix flow) prefers the
+# connector's deterministic star-schema template and falls back to the AI
+# designer (`tryBuildBusMatrixFromTemplate`). The code has honoured
+# STAR_SCHEMA_TEMPLATES_DISABLED=1 since the template work shipped, but there
+# was no vehicle to set it in production. `ai` forces the AI designer for every
+# source — useful for evaluating that path against real data; `templates` is
+# the default and the documented preference (the AI designer measured worse,
+# which is why the templates exist).
+#
+# BACKEND ONLY: the bus-matrix queue runs in the API container (see
+# jobs/queueRoles.ts — it needs the managed identity), not the jobs-worker.
+#
+# Same shape as .github/workflows/duckdb-runner-mode.yml: paths-scoped to one
+# file so ordinary code pushes keep deploy.yml's 0%-traffic test-first model;
+# NOT a promote vehicle — an already-applied value exits without creating a
+# revision. Rollback is the same one-line edit.
+#
+# Terraform does not set this variable, which matches the default
+# (`templates`); if the control is left on `ai` long-term, add it to
+# infra/main.tf or a later apply reverts it.
+
+name: Star-schema design mode
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/star-schema-design'
+  workflow_dispatch:
+
+concurrency:
+  group: star-schema-design-mode
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired design mode
+        id: mode
+        run: |
+          set -euo pipefail
+          # First non-empty, non-comment line is the value. Comment lines let an
+          # operator record WHY a mode was (re-)applied.
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/star-schema-design | head -1 | tr -d '[:space:]')
+          case "$MODE" in
+            templates|ai) ;;
+            *) echo "::error::invalid value '$MODE' (expected 'templates' or 'ai')"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Desired star-schema design mode: $MODE"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply design mode and shift traffic
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          set -euo pipefail
+
+          ENV_QUERY="properties.template.containers[0].env[?name=='STAR_SCHEMA_TEMPLATES_DISABLED'].value | [0]"
+
+          CURRENT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv 2>/dev/null || true)
+          # The env var is the inverse of the control value: `ai` disables the
+          # templates. Written as an explicit '0'/'1' so the portal shows the
+          # decision and the read-back can assert a value instead of an absence.
+          case "$MODE" in
+            ai)        TARGET="1" ;;
+            templates) TARGET="0" ;;
+          esac
+          echo "Current STAR_SCHEMA_TEMPLATES_DISABLED: ${CURRENT:-<unset>} → target: $TARGET ($MODE)"
+
+          # Already applied → do NOTHING (same reasoning as the duckdb-runner
+          # control: a needless re-apply would create a revision from the app's
+          # CURRENT TEMPLATE image and shift 100% traffic to it, silently
+          # promoting a possibly untested build).
+          if [ "$TARGET" = "$CURRENT" ]; then
+            echo "Already set to '$CURRENT' — nothing to do."
+            {
+              echo "### Star-schema design mode — no change"
+              echo ""
+              echo "Already \`$MODE\`. No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # `templates` with the variable unset is the same behaviour (only the
+          # literal '1' disables), so that is not worth a revision.
+          if [ "$MODE" = "templates" ] && { [ -z "$CURRENT" ] || [ "$CURRENT" = "None" ]; }; then
+            echo "Variable is unset, which already means templates-first — nothing to do."
+            {
+              echo "### Star-schema design mode — no change"
+              echo ""
+              echo "Target \`templates\` and the variable is unset, which is the same behaviour."
+              echo "No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 0%-traffic revisions require multiple-revision mode (idempotent).
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          NEW_REV=$(az containerapp update \
+            --name "$APP" --resource-group "$RG" \
+            --set-env-vars STAR_SCHEMA_TEMPLATES_DISABLED="$TARGET" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          # Wait for THAT revision to be provisioned — the boot smoke test —
+          # before any traffic reaches it.
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+
+          APPLIED=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv)
+          echo "Applied STAR_SCHEMA_TEMPLATES_DISABLED: $APPLIED"
+
+          {
+            echo "### Star-schema design mode → \`$MODE\`"
+            echo ""
+            echo "- App: \`$APP\` (backend only — the bus-matrix queue runs in the API)"
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- STAR_SCHEMA_TEMPLATES_DISABLED: \`${CURRENT:-<unset>}\` → \`$APPLIED\`"
+            echo ""
+            if [ "$MODE" = "ai" ]; then
+              echo "Every \"Create my topics\" run now uses the AI designer, including for"
+              echo "connectors that ship a template. Designs cost AI tokens and take minutes;"
+              echo "topic and table names are no longer guaranteed identical across tenants."
+              echo ""
+              echo "Rollback: set \`.ops/star-schema-design\` to \`templates\` and push."
+            else
+              echo "Template-first design is restored; AI remains the fallback for sources"
+              echo "without a covering template."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail loudly if Azure didn't actually take the value.
+          test "$APPLIED" = "$TARGET"

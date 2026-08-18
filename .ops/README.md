@@ -77,6 +77,26 @@ already applied** — it will not create a revision or shift traffic. It is not 
 promote vehicle: re-applying would push the app's current template image to 100%
 traffic and so bypass deploy.yml's 0%-traffic test-first model.
 
+## `star-schema-design`
+
+Contains exactly one word: `templates` or `ai`.
+
+| Value | Meaning |
+|---|---|
+| `templates` | "Create my topics" (the bus-matrix flow) instantiates the connector's deterministic star-schema template when one covers the synced entities; the AI designer is only the fallback. The default, and the documented preference — the AI designer measured worse, which is why the templates exist. |
+| `ai` | Force the AI designer for **every** source, including ExactOnline/Odoo. Sets `STAR_SCHEMA_TEMPLATES_DISABLED=1` on the backend. Useful for evaluating the AI path against real data. |
+
+Applies to the **backend app only** (the bus-matrix queue runs in the API —
+see `jobs/queueRoles.ts`).
+
+Mind what `ai` costs: designs spend AI tokens and take minutes instead of
+being instant, topic/table names are no longer guaranteed identical across
+tenants, and a rebuild retires template-built products and replaces them with
+AI-designed ones. Rollback is setting the file back to `templates`.
+
+Like `duckdb-runner`, this control **does nothing when the value is already
+applied** — it is not a promote vehicle.
+
 ## `db-role`
 
 Contains exactly one word: `admin` or `app`.

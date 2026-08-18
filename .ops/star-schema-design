@@ -1,0 +1,19 @@
+ai
+
+# Which path "Create my topics" (the bus-matrix flow) takes for star-schema
+# design:
+#   templates — connector-shipped deterministic templates when one covers the
+#               synced entities; AI only as fallback. The default, and the
+#               documented preference (the AI designer measured worse).
+#   ai        — force the AI designer for EVERY source, including EO/Odoo.
+#               Sets STAR_SCHEMA_TEMPLATES_DISABLED=1 on the backend.
+#
+# Set to `ai` on 2026-08-18 at the owner's request, to run the design flow
+# without the pre-defined connector templates for a while.
+#
+# Mind what `ai` means in practice: designs cost AI tokens and minutes
+# instead of being instant, topic/table names are no longer guaranteed
+# identical across tenants, and a rebuild retires the template-built
+# products and replaces them with AI-designed ones.
+#
+# Rollback: set this back to `templates` and push.
