@@ -371,6 +371,15 @@ export function TableList({
                   <button
                     type="button"
                     onClick={() => onPickTable(t.id)}
+                    // Dragging a row onto the canvas brings the table there as a
+                    // GUEST, so a relationship can be drawn to a table that is
+                    // not yet connected — the one job the anchor+neighbours view
+                    // cannot do on its own. Clicking still selects.
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('application/x-clarion-table', String(t.id));
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
                     className={`flex w-full items-center gap-1.5 py-[7px] pl-2 pr-3 text-left transition-colors ${
                       open ? 'bg-oceanSofter' : 'hover:bg-soft'
                     }`}
@@ -414,7 +423,8 @@ export function TableList({
                         {links.length === 0 && (
                           <p className="py-1.5 text-[11.5px] leading-relaxed text-muted">
                             Nothing connects to this table yet. Open it on the canvas and drag
-                            from one of its fields to draw a link.
+                            from one of its fields — or drag another table from this list onto
+                            the canvas to connect the two.
                           </p>
                         )}
 

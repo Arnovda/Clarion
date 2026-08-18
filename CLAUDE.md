@@ -198,6 +198,22 @@ right; the sentence attached to it was about the wrong subject.
   permanent dot would mark a shortfall nobody can clear) and outranked by a
   flag. The toolbar tally is phrased per bucket too: `N worth another look` in
   amber for Confirmed, `N of M checked don't hold` in red for To review.
+- **DRAG A TABLE ONTO THE CANVAS TO DRAW TO IT (2026-08-18).** The canvas
+  draws the anchor plus what it already connects to — which made the one
+  authoring job impossible: a table with NO link to the anchor is by definition
+  not on screen, so there was nothing to drag a relationship to. Sidebar rows
+  are now `draggable` (`application/x-clarion-table`); dropping one on the
+  canvas adds it as a **GUEST** at the drop point with its fields showing
+  (auto-added to `showAll` — a guest has no join surface yet, so without fields
+  there is nothing to grab). **Dropping saves NOTHING**: guests are pure view
+  state, cleared when the anchor changes — the owner's requirement that a
+  dropped table you never drew to must not persist. A guest someone DID draw to
+  comes back as a real neighbour on the post-save reload. Guests keyed to the
+  ANCHOR only, not `selectedEdgeId` — selecting the freshly drawn edge must not
+  sweep the guest away mid-flow. A guest's existing links to visible tables draw
+  too (re-creating a link blind is worse than seeing it), drop on an empty
+  canvas = pick as anchor, and the existing draw/measure/match flow takes over
+  unchanged from `onConnect`.
 - **THE LEGEND IS FIXED PER TOGGLE — two wrong versions before this one.** V1
   was a catalogue of eight entries shown unconditionally, so a canvas of four
   amber links taught a red, a green and a solid-line code that appeared nowhere.

@@ -64,7 +64,7 @@ const MARK_LABEL: Record<Outcome, string> = {
 };
 
 function CanvasInner() {
-  const { fitView } = useReactFlow();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const [graph, setGraph] = useState<GraphResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -92,6 +92,15 @@ function CanvasInner() {
    * spinner. One reload at the end folds them into the graph proper.
    */
   const [check, setCheck] = useState<CheckProgress | null>(null);
+  /**
+   * GUESTS: tables dragged onto the canvas from the list, at the spot they were
+   * dropped. Pure view state — dropping saves NOTHING. This exists for the one
+   * job the anchor+neighbours view cannot do: drawing a relationship to a table
+   * that is not yet connected, which by definition is not on screen. Cleared
+   * when the anchor changes, so a guest nobody drew to simply vanishes; a guest
+   * somebody DID draw to comes back as a real neighbour on the reload.
+   */
+  const [guests, setGuests] = useState<Map<number, { x: number; y: number }>>(new Map());
   /** Filter the table list down to what is unresolved. */
   const [onlyAttention, setOnlyAttention] = useState(false);
   /**
@@ -160,6 +169,12 @@ function CanvasInner() {
 
   /** A revealed column list belongs to the table you were just looking at. */
   useEffect(() => { setShowAll(new Set()); }, [selectedTableId, selectedEdgeId]);
+  /**
+   * Guests live exactly as long as the table they were dropped next to. Keyed to
+   * the ANCHOR only — selecting a relationship (including the one just drawn to
+   * the guest) must not sweep the guest away mid-flow.
+   */
+  useEffect(() => { setGuests(new Map()); }, [selectedTableId]);
 
   /** Only the half of the graph the toggle is showing. */
   const shown = useMemo(
@@ -447,8 +462,8 @@ function CanvasInner() {
   }, [graph, shown, anchorId, selectedRel, colorIndexBySource]);
 
   const visibleIds = useMemo(
-    () => (anchorId == null ? EMPTY_IDS : new Set([anchorId, ...neighbours])),
-    [anchorId, neighbours],
+    () => (anchorId == null ? EMPTY_IDS : new Set([anchorId, ...neighbours, ...guests.keys()])),
+    [anchorId, neighbours, guests],
   );
 
   /**
@@ -460,8 +475,13 @@ function CanvasInner() {
     if (!graph || anchorId == null) return [] as GraphRelationship[];
     return shown.filter((r) =>
       (r.fromTableId === anchorId && visibleIds.has(r.toTableId))
-      || (r.toTableId === anchorId && visibleIds.has(r.fromTableId)));
-  }, [graph, shown, anchorId, visibleIds]);
+      || (r.toTableId === anchorId && visibleIds.has(r.fromTableId))
+      // A guest's existing links to anything on screen draw too. If the link
+      // being "drawn" already exists, the honest response is to show it, not to
+      // let the user re-create it blind.
+      || (guests.has(r.fromTableId) && visibleIds.has(r.toTableId))
+      || (guests.has(r.toTableId) && visibleIds.has(r.fromTableId)));
+  }, [graph, shown, anchorId, visibleIds, guests]);
 
   /**
    * The key. **Fixed per bucket, and it does not move.**
@@ -546,8 +566,12 @@ function CanvasInner() {
   const positions = useMemo(() => {
     if (anchorId == null) return new Map<number, { x: number; y: number }>();
     const heightOf = (id: number) => nodeSpec.get(id)?.height ?? HEADER_H;
-    return radialLayout(anchorId, neighbours, heightOf).positions;
-  }, [anchorId, neighbours, nodeSpec]);
+    const placed = radialLayout(anchorId, neighbours, heightOf).positions;
+    // Guests are not part of the ring: they sit exactly where the user put
+    // them, which is the entire point of dropping rather than clicking.
+    for (const [id, at] of guests) if (!placed.has(id)) placed.set(id, at);
+    return placed;
+  }, [anchorId, neighbours, nodeSpec, guests]);
 
   /** Both ends of the relationship being inspected, lit up in their tables. */
   const highlightColumnIds = useMemo(() => {
@@ -828,6 +852,25 @@ function CanvasInner() {
    * centres the ring and drops any relationship in hand — you asked about the
    * table, so the canvas answers about the table.
    */
+  /**
+   * A table dropped from the list becomes a GUEST at the drop point, fields
+   * showing — the point of dropping it is to draw to it, and a table with no
+   * links yet has no join surface, so without the fields there would be nothing
+   * to grab. Dropping onto an empty canvas means "start here" instead.
+   */
+  const onCanvasDrop = useCallback((e: React.DragEvent) => {
+    const raw = e.dataTransfer.getData('application/x-clarion-table');
+    const id = Number(raw);
+    if (!raw || !Number.isFinite(id)) return;
+    e.preventDefault();
+    if (anchorId == null) { pickTableRef.current?.(id); return; }
+    if (visibleIds.has(id)) return;
+    const at = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    // Centre the node on the cursor rather than hanging it off the top-left.
+    setGuests((prev) => new Map(prev).set(id, { x: at.x - 130, y: at.y - 20 }));
+    setShowAll((prev) => new Set(prev).add(id));
+  }, [anchorId, visibleIds, screenToFlowPosition]);
+
   const pickTable = useCallback((tableId: number) => {
     // Abandon a sweep of the table being left: its progress line is attached to
     // that table, so letting it run on would report into a collapsed row.
@@ -841,6 +884,8 @@ function CanvasInner() {
     setSelectedTableId(tableId);
     setSelectedEdgeId(null);
   }, [check]);
+  const pickTableRef = useRef(pickTable);
+  useEffect(() => { pickTableRef.current = pickTable; }, [pickTable]);
 
 
   const step = useCallback((delta: number) => {
@@ -1044,7 +1089,16 @@ function CanvasInner() {
           bucket={bucket}
         />
       )}
-      <div className="relative min-w-0 flex-1">
+      <div
+        className="relative min-w-0 flex-1"
+        onDragOver={(e) => {
+          if (e.dataTransfer.types.includes('application/x-clarion-table')) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+          }
+        }}
+        onDrop={onCanvasDrop}
+      >
       <EdgeMarkers />
 
       {/* Toolbar */}
