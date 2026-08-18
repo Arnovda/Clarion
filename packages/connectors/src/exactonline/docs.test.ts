@@ -13,6 +13,7 @@ import { ExactOnlineConnector } from './ExactOnlineConnector';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
 import { ENTITIES_BY_NAME, EXACT_ONLINE_ENTITIES } from './entities';
 import { validateDocumentedRelationships } from '../conformance';
+import { typesJoinable } from '../columnTypes';
 import { createNoopLogger } from '../logging';
 import type { ProbeContext } from '../types';
 
@@ -182,5 +183,52 @@ describe('documented references — the target column is inferred, so it is chec
     const docs = await connector.describeEntities(config, ['TransactionLines', 'Journals'], probeCtx);
     const rels = docs.flatMap((d) => d.relationships ?? []);
     expect(rels.find((r) => r.fromColumn === 'JournalCode')).toBeUndefined();
+  });
+
+  /**
+   * Refusing is not the end of it. The connector cannot settle the column —
+   * that needs values — but it CAN say which columns of the target could carry
+   * the key by type, and hand the question to the profiler, which has the data.
+   * Dropping the reference instead would throw away a relationship the vendor
+   * genuinely documents.
+   */
+  it('hands the unsettled reference to the profiler with its candidates', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(config, ['TransactionLines', 'Journals'], probeCtx);
+    const u = docs.flatMap((d) => d.unresolvedReferences ?? []);
+    const journal = u.find((x) => x.fromColumn === 'JournalCode');
+
+    expect(journal).toBeDefined();
+    expect(journal?.toTable).toBe('Journals');
+    // What the vendor's own key marking implied, and why it does not fit.
+    expect(journal?.rejectedColumn).toBe('ID');
+    // Code must be offered; ID must not be re-offered as its own alternative.
+    expect(journal?.candidates).toContain('Code');
+    expect(journal?.candidates).not.toContain('ID');
+    // Candidates are type-compatible ONLY. Narrowing by name here would be the
+    // same class of guess that produced the defect — the profiler narrows the
+    // rest by measuring uniqueness.
+    expect(journal!.candidates.length).toBeGreaterThan(1);
+  });
+
+  it('never offers a candidate whose type could not carry the key', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(
+      config, EXACT_ONLINE_ENTITIES.map((e) => e.name), probeCtx,
+    );
+    const bad: string[] = [];
+    for (const d of docs) {
+      for (const u of d.unresolvedReferences ?? []) {
+        const from = EXACT_ONLINE_COLUMN_DOCS[d.entityName]?.find((c) => c.name === u.fromColumn);
+        for (const cand of u.candidates) {
+          const to = EXACT_ONLINE_COLUMN_DOCS[u.toTable]?.find((c) => c.name === cand);
+          if (!to) { bad.push(`${u.toTable}.${cand} is not a documented column`); continue; }
+          if (!typesJoinable(from?.dataType, to.dataType)) {
+            bad.push(`${d.entityName}.${u.fromColumn} (${from?.dataType}) vs ${u.toTable}.${cand} (${to.dataType})`);
+          }
+        }
+      }
+    }
+    expect(bad).toEqual([]);
   });
 });

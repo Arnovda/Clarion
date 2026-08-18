@@ -76,3 +76,24 @@ export function typesJoinable(a?: string | null, b?: string | null): boolean {
   if (ca === 'unknown' || cb === 'unknown') return true;
   return ca === cb;
 }
+
+/**
+ * Which columns of a target entity could carry a key of this type.
+ *
+ * Only a type filter — deliberately. Narrowing further here would mean guessing
+ * at what a key looks like from its NAME, which is the class of inference that
+ * produced the defect in the first place. The profiler narrows the rest by
+ * MEASURING uniqueness, which is what "is this a key?" actually means and is
+ * already one of the three fixed FK rules.
+ *
+ * The rejected column is excluded: it is the one we know does not fit.
+ */
+export function joinableCandidates(
+  sourceType: string | undefined | null,
+  targetColumns: ReadonlyArray<{ name: string; dataType?: string }>,
+  rejected?: string,
+): string[] {
+  return targetColumns
+    .filter((c) => c.name !== rejected && typesJoinable(sourceType, c.dataType))
+    .map((c) => c.name);
+}

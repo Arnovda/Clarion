@@ -51,6 +51,7 @@ export {
   type FkVerdict,
 } from './fkVerification';
 import { verifyFkCandidate, describeFkVerdict } from './fkVerification';
+import { resolveDocumentedReferences } from './referenceResolution';
 
 export interface ProfilerOptions {
   /**
@@ -273,6 +274,60 @@ export async function runSchemaProfiler(
     }
     if (docRelCount > 0) {
       log.info(`describeEntities(${connectorType}): ${docRelCount} relationship(s) documented by the source`);
+    }
+  }
+
+  // ── THE TARGET COLUMN THE VENDOR DID NOT NAME, SETTLED BY MEASUREMENT ──
+  //
+  // A source's docs hyperlink an FK property to the target ENTITY and stop
+  // there. Resolving the COLUMN from that entity's primary key sent Exact
+  // Online's `JournalCode` — a string of journal codes — at `Journals.ID`, a
+  // GUID: 0% containment where `Journals.Code` measures 100%. 35 of 245
+  // references landed that way.
+  //
+  // The connector refuses those, because on declared types alone refusing is
+  // all it can honestly do. But the column is NOT a matter of opinion — it is
+  // determinable — so it is determined here, where the data is, against the
+  // same three rules everything else is held to. Hand-patching the answer into
+  // the curated catalogue was the alternative, and that catalogue is exactly
+  // where 15 broken entries had been rotting unnoticed.
+  //
+  // Resolved this way it stays `vendor_docs`: the vendor asserted the
+  // relationship and the data settled the endpoint. No judgement entered, which
+  // is what separates this from a curated claim.
+  if (!structural && connectorDocs.length > 0) {
+    const unresolved = connectorDocs.flatMap((d) =>
+      (d.unresolvedReferences ?? []).map((u) => ({
+        fromTable: d.entityName,
+        fromColumn: u.fromColumn,
+        toTable: u.toTable,
+        rejectedColumn: u.rejectedColumn,
+        candidates: u.candidates,
+      })));
+    if (unresolved.length > 0) {
+      emit({ phase: 'schema', message: `Step 1/7 — Checking ${unresolved.length} documented link(s) against your data…` });
+      try {
+        const r = await resolveDocumentedReferences(connector, unresolved);
+        for (const rel of r.resolved) {
+          const key = keyOf(rel.fromTable, rel.fromColumn, rel.toTable, rel.toColumn);
+          if (seenKnown.has(key)) continue;
+          seenKnown.add(key);
+          knownFks.push({
+            fromTable: rel.fromTable, fromColumn: rel.fromColumn,
+            toTable: rel.toTable, toColumn: rel.toColumn,
+            source: 'vendor_docs', confidence: 1.0, overlapRatio: rel.containment,
+          });
+        }
+        log.info(
+          `documented references needing the data: ${unresolved.length} — `
+          + `${r.resolved.length} resolved, ${r.refused} left to review, ${r.ambiguous} ambiguous`,
+        );
+      } catch (err) {
+        // Never fail a profile over this. Every one of these is a relationship
+        // we did not have a minute ago; not getting it back is a smaller harm
+        // than losing the run.
+        log.warn({ err }, 'documented-reference resolution failed — those links stay unresolved');
+      }
     }
   }
 

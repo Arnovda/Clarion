@@ -34,10 +34,10 @@ import {
 } from '../types';
 import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
-import { typesJoinable } from '../columnTypes';
+import { typesJoinable, joinableCandidates } from '../columnTypes';
 import { EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
 import type { StarSchemaTemplate } from '../starSchema';
-import type { EntityDocs, KnownRelationship } from '../types';
+import type { EntityDocs, KnownRelationship, UnresolvedReference } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
 import { AuthRefreshError, exactOnlineOAuth, refreshAccessToken } from './oauth';
 import { fetchODataMetadata, lookupEntitySchema, type ODataMetadata } from './metadata';
@@ -570,6 +570,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       // user's selected entities so we never point at an unsynced table;
       // the profiler dedupes these against getKnownRelationships.
       const relationships: KnownRelationship[] = [];
+      const unresolved: UnresolvedReference[] = [];
       for (const c of cols ?? []) {
         if (!c.references || !selected.has(c.references.table)) continue;
         // THE VENDOR NAMES THE TARGET ENTITY, NOT THE TARGET COLUMN. The
@@ -581,10 +582,25 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         // like that. Refuse those at this rung rather than lend them the
         // source's authority; the value-overlap detector can still surface them
         // into To review, where the data decides.
-        const target = EXACT_ONLINE_COLUMN_DOCS[c.references.table]
-          ?.find((t) => t.name === c.references!.column);
+        const targetCols = EXACT_ONLINE_COLUMN_DOCS[c.references.table] ?? [];
+        const target = targetCols.find((t) => t.name === c.references!.column);
         if (!typesJoinable(c.dataType, target?.dataType)) {
           rejected += 1;
+          // Hand it to the profiler rather than dropping it. The vendor's claim
+          // that these two entities are related is sound; only OUR resolution of
+          // the column is not, and the tenant's own values can settle it where
+          // declared types cannot. Candidates are type-compatible only — see
+          // joinableCandidates on why this must not narrow by name.
+          const candidates = joinableCandidates(c.dataType, targetCols, c.references.column);
+          if (candidates.length > 0) {
+            unresolved.push({
+              fromColumn: c.name,
+              toTable: c.references.table,
+              rejectedColumn: c.references.column,
+              candidates,
+              ...(c.description ? { description: c.description } : {}),
+            });
+          }
           continue;
         }
         relationships.push({
@@ -602,6 +618,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         description: entity.description,
         columns: cols ? [...cols] : [],
         ...(relationships.length > 0 ? { relationships } : {}),
+        ...(unresolved.length > 0 ? { unresolvedReferences: unresolved } : {}),
         provenance: 'curated',
       });
     }
@@ -611,7 +628,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       // vendor's pages. Warn rather than throw — a source with unusual types
       // must still onboard.
       ctx.log.warn(
-        'documented references refused: source and target column types cannot be one key',
+        'documented references need the data to settle their target column',
         { rejected },
       );
     }

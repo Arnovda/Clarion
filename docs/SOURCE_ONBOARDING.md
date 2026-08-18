@@ -214,11 +214,41 @@ Two rules follow, both enforced by `validateKnownRelationships` and
    warehouse as `VARCHAR`. When either side declares no type the check is
    skipped — it may only ever reject on positive evidence, never on silence.
 
-When a documented reference fails rule 2, **refuse it at the documented rung
-rather than guessing at a better column.** Do not invent a second inference to
-patch the first. The relationship is not lost: the ordinary value-overlap
-detector can still surface it into *To review*, where the data decides and a
-person confirms — which is the correct home for a claim we cannot stand behind.
+**When a documented reference fails rule 2, do not guess at a better column and
+do not hand-patch one into the curated catalogue.** The target column is not a
+matter of opinion — it is *determinable* — so it is determined the way every
+other relationship claim here is settled: by measurement.
+
+The division of labour matters, because neither half can answer it alone:
+
+- **The connector** knows the source's shape and nothing about the tenant's
+  data. It emits `EntityDocs.unresolvedReferences` — the vendor's target entity,
+  the column its key marking implied and why that does not fit, and the columns
+  of the target that *could* carry the key **by declared type only**. Narrowing
+  by name here would be the same class of guess that caused the defect.
+- **The profiler** has the data and nothing about the source's shape.
+  `semantic/referenceResolution.ts` measures uniqueness once per target table
+  (a property of the column, not of the reference — 13 references into
+  `PaymentConditions` share one answer, and this is what turns 371 candidate
+  measurements into ~35), then runs `verifyFkCandidate` on the survivors.
+
+**Exactly one candidate may pass.** Type compatibility cannot separate `Code`
+from `Description` — both are strings — so if two pass we cannot know which the
+vendor meant, and picking the higher containment would be the guess again.
+Refuse; it goes to *To review* with its measurement, where a person decides.
+
+A reference settled this way stays attributed to the **source**: the vendor
+asserted the relationship, the data settled the endpoint, and no judgement
+entered. That is what separates it from a curated entry, where a person decided
+the relationship exists at all.
+
+**A hyperlink is not the vendor's whole documentation.** Measured on Exact
+Online: 245 columns carry an FK hyperlink, while a further ~186 describe a
+reference in *prose* only — `"ID of warehouse to transfer item from"`,
+`"Reference to the header"`. Those are real relationships the machine-readable
+channel misses, and they are the legitimate job of `getKnownRelationships`.
+But because *whether* it is a reference at all is our reading there, a
+prose-derived link is **manual**, never source-laid.
 
 **E2. Table + column descriptions.**
 - Tier 1: harvest labels/descriptions during profiling from the

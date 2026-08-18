@@ -236,6 +236,36 @@ export interface ColumnDoc {
   references?: { table: string; column: string };
 }
 
+/**
+ * A documented reference whose target column needs the data to settle it.
+ *
+ * Exact Online's docs hyperlink an FK property to the target ENTITY's page and
+ * stop there; the transcription then resolved the column from that entity's
+ * key-marked property, which sent `JournalCode` (a string of journal codes) at
+ * `Journals.ID` (a GUID). 35 of 245 references landed that way. Refusing them
+ * is right — but refusing is all a connector can do, because deciding between
+ * `Journals.Code` and `Journals.Description` needs values, not types.
+ */
+export interface UnresolvedReference {
+  /** The column on THIS entity that the vendor marked as a foreign key. */
+  fromColumn: string;
+  /** The entity the vendor points it at. Their claim, not ours. */
+  toTable: string;
+  /**
+   * The column the connector's own resolution produced and then rejected.
+   * Carried so a log line can say what was wrong rather than only that
+   * something was.
+   */
+  rejectedColumn: string;
+  /**
+   * Columns of `toTable` that could carry this key by declared type. Narrowed
+   * further by the profiler, which drops any that are not near-unique before
+   * spending a containment query on them.
+   */
+  candidates: string[];
+  description?: string;
+}
+
 /** Vendor documentation for one entity, returned by `describeEntities`. */
 export interface EntityDocs {
   /** Matches `EntityDescriptor.name`. */
@@ -256,6 +286,24 @@ export interface EntityDocs {
    * both in the selected entities.
    */
   relationships?: KnownRelationship[];
+
+  /**
+   * References the vendor documents but whose target COLUMN the connector could
+   * not settle from declared types alone — see `columnTypes.ts`.
+   *
+   * The division of labour is the point. **The connector knows the source's
+   * shape and nothing about the tenant's data; the profiler has the data and
+   * nothing about the source's shape.** So the connector says "the vendor
+   * points this column at that entity, and by type these are the columns of it
+   * that could carry the key", and the profiler measures which one actually
+   * does. Neither could answer it alone, and neither has to guess.
+   *
+   * A reference resolved this way stays attributed to the SOURCE. The vendor
+   * asserted the relationship; the endpoint was settled by measurement, not by
+   * anybody's judgement — which is the difference between this and a curated
+   * entry, where a person decided the relationship exists at all.
+   */
+  unresolvedReferences?: UnresolvedReference[];
 
   /**
    * Which playbook rung these docs came from:

@@ -60,12 +60,50 @@ it walks into the same trap.
   only on positive evidence:** an absent or unreadable type is `unknown` and
   compatible with everything, so Odoo (whose `fields_get` docs channel publishes
   no types) is completely unaffected.
-- **A type-mismatched reference is REFUSED at the documented rung, never
-  re-guessed.** Patching one inference with a second is how the original defect
-  was made. The link is not destroyed — value-overlap can still surface it into
-  *To review*, where the data decides and a person confirms, which is the right
-  home for a claim we cannot stand behind. `describeEntities` logs the refused
-  count rather than dropping them silently.
+- **THE TARGET COLUMN IS NOW SETTLED BY MEASUREMENT, NOT BY ANYBODY'S HAND
+  (2026-08-18).** Owner: *"Shouldn't we in an ideal world solely rely on the
+  source's documented relations and not try ourselves? And if we're not sure
+  that the relation is on code or ID, then we should check the data before
+  laying that connection?"* Right, and it dissolves the problem instead of
+  patching it. **I had begun writing 30 corrected links into the curated
+  catalogue by hand and reverted them** — the catalogue is exactly where 15
+  broken entries had been rotting unnoticed, and the target column is not a
+  matter of opinion, it is DETERMINABLE.
+- **New `backend/src/semantic/referenceResolution.ts`.** Division of labour, and
+  neither half can answer alone: **the connector** knows the source's shape and
+  nothing about the data, so it emits `EntityDocs.unresolvedReferences` (target
+  entity, the rejected column, and the columns that could carry the key **by
+  declared type only** — narrowing by NAME here would be the same class of guess
+  that caused the defect); **the profiler** has the data and nothing about the
+  shape, so it measures.
+- **The uniqueness pre-filter is what makes it affordable.** Across EO's 35
+  unresolved references the type filter leaves **371** candidate columns.
+  But "the target must be a key" is a property of the COLUMN, not of the
+  reference — 13 references into `PaymentConditions` share one answer — so
+  uniqueness is measured **once per target table** in a single query, and
+  almost always leaves one survivor. 371 measurements become ~35.
+- **EXACTLY ONE CANDIDATE MAY PASS.** Type cannot separate `Code` from
+  `Description` (both `Edm.String`), so if two pass we cannot know which the
+  vendor meant and picking the higher containment would be the guess again.
+  Refuse → *To review*, where a person decides. Same for an unreadable or empty
+  target table: that is "we could not tell", never "no column is a key".
+- **A reference resolved this way stays `vendor_docs` — source-laid.** The
+  vendor asserted the relationship; the data settled the endpoint; no judgement
+  entered. That is exactly what separates it from `curated`, where a person
+  decided the relationship exists at all.
+- **A HYPERLINK IS NOT THE VENDOR'S WHOLE DOCUMENTATION — measured.** 245 EO
+  columns carry an FK hyperlink; a further **~186 describe a reference in PROSE
+  only** (`"ID of warehouse to transfer item from"`, `"Reference to the
+  header"`). This corrects a claim made earlier the same day: the 5 curated
+  entries the vendor "does not document" ARE documented, just not marked up. So
+  the curated catalogue is 93% redundant in CONTENT but not in PURPOSE — its
+  real job is the prose-only channel, and it has been doing that for 5 things
+  while ~100+ sit uncaptured. **A prose-derived link is MANUAL, never
+  source-laid**: there, whether it is a reference at all is our reading.
+- **The curated catalogue is NOT being shrunk yet.** Removing the 64 duplicates
+  before the resolver is proven against real data would delete the safety net
+  ahead of its replacement. Order: ship → re-Analyse → confirm the 35 resolve →
+  then remove.
 - **Curated catalogue 81 → 69**: 12 removed (columns that do not exist, or that
   the vendor already documents correctly under the right name) and **2
   corrected** — `BankEntries.Journal`→`JournalCode` and
