@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Sparkles, Check, Flag, ArrowRight, GitBranch, X } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { Sparkles, Check, Flag, ArrowRight, Share2, X } from 'lucide-react';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -12,7 +13,13 @@ import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewT
 import { useRole, canCurate } from '@/lib/role';
 import AiPromptDialog from './AiPromptDialog';
 
-type ViewTab = 'overview' | 'columns' | 'relationships' | 'quality' | 'history';
+const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
+
+// 'relationships' became 'lineage' on 2026-08-18: the per-table FK list
+// duplicated /relationships (the one editing surface), while "which topic
+// columns does this table feed, and how?" had no home at all. The tab now
+// answers the second question and links to Relations for the first.
+type ViewTab = 'overview' | 'columns' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   table: SourceTable;
@@ -29,16 +36,6 @@ interface UsedInProduct {
   id: number;
   name: string;
   status: string;
-}
-
-interface RelRow {
-  id: number;
-  from_table: string;
-  from_column?: string | null;
-  to_table: string;
-  to_column?: string | null;
-  relationship_type: string;
-  description?: string | null;
 }
 
 const columnCompleteness = (col: SourceColumn) =>
@@ -70,10 +67,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
   const [viewTab, setViewTab] = useState<ViewTab>('overview');
 
   const [usedIn, setUsedIn] = useState<UsedInProduct[]>([]);
-  const [rels, setRels] = useState<RelRow[]>([]);
-  const [relsLoading, setRelsLoading] = useState(false);
 
-  // Fetch "used in" products and relationships when table changes
+  // Fetch "used in" products when table changes
   useEffect(() => {
     let cancelled = false;
     api.get(`/products/by-source-table/${tbl.id}`).then((res) => {
@@ -81,18 +76,6 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
     }).catch(() => { if (!cancelled) setUsedIn([]); });
     return () => { cancelled = true; };
   }, [tbl.id]);
-
-  useEffect(() => {
-    if (viewTab !== 'relationships') return;
-    let cancelled = false;
-    setRelsLoading(true);
-    api.get(`/semantic/relationships?connectionId=${tbl.connection_id}`).then((res) => {
-      if (cancelled) return;
-      const all = (res.data.data ?? []) as RelRow[];
-      setRels(all.filter((r) => r.from_table === tbl.table_name || r.to_table === tbl.table_name));
-    }).catch(() => { if (!cancelled) setRels([]); }).finally(() => { if (!cancelled) setRelsLoading(false); });
-    return () => { cancelled = true; };
-  }, [viewTab, tbl.connection_id, tbl.table_name]);
 
   function addDomain(value: string) {
     const tag = value.trim().toLowerCase();
@@ -168,7 +151,9 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
-    { id: 'relationships', label: 'Relationships' },
+    // Lineage is a curator surface (the endpoint carries transformation
+    // expressions and is analyst+), like History.
+    ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
     { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
@@ -649,41 +634,22 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
         </div>
       )}
 
-      {/* ── Relationships ─────────────────────────────────────────────────── */}
-      {viewTab === 'relationships' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          {relsLoading ? (
-            <p className="text-[13px] text-muted">Loading relationships...</p>
-          ) : rels.length === 0 ? (
-            <div className="bg-raised border border-line rounded-lg p-6 text-center">
-              <GitBranch className="w-8 h-8 text-muted-2 mx-auto mb-3" strokeWidth={1.5} />
-              <p className="font-display text-[16px] text-ink tracking-[-0.01em]">No relationships</p>
-              <p className="text-[12px] text-muted mt-1.5 max-w-md mx-auto leading-relaxed">
-                This table has no defined foreign-key relationships. Add or review them on the Catalog → Relationships tab.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {rels.map((r) => {
-                const outgoing = r.from_table === tbl.table_name;
-                return (
-                  <div key={r.id} className="bg-raised border border-line rounded-lg px-4 py-3 flex items-center gap-3">
-                    <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">
-                      {outgoing ? 'OUT' : 'IN'}
-                    </span>
-                    <div className="flex-1 min-w-0 flex items-center gap-2 text-[13px] font-mono">
-                      <span className="text-ink-2 truncate">{r.from_table}{r.from_column ? `.${r.from_column}` : ''}</span>
-                      <ArrowRight className="w-3.5 h-3.5 text-muted-2 flex-shrink-0" strokeWidth={2} />
-                      <span className="text-ink-2 truncate">{r.to_table}{r.to_column ? `.${r.to_column}` : ''}</span>
-                    </div>
-                    <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ocean bg-ocean-softer border border-line px-1.5 py-0.5 rounded">
-                      {r.relationship_type}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+      {/* ── Lineage ───────────────────────────────────────────────────────── */}
+      {viewTab === 'lineage' && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
+            <p className="text-[12px] text-muted">
+              Which topic columns this table feeds, and how.
+            </p>
+            <a
+              href={`/relationships?table=${tbl.id}`}
+              className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors"
+            >
+              <Share2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+              Relations ↗
+            </a>
+          </div>
+          <LineageGraph layer="source" tableId={tbl.id} />
         </div>
       )}
 

@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import dynamic from 'next/dynamic';
 import { format as formatSql } from 'sql-formatter';
-import { ArrowRight, GitBranch, X, Sparkles } from 'lucide-react';
+import { Gauge, X, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
@@ -12,7 +13,13 @@ import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
 import { useRole, canCurate } from '@/lib/role';
 
-type ViewTab = 'overview' | 'columns' | 'relationships' | 'quality' | 'history';
+const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
+
+// 'relationships' became 'lineage' on 2026-08-18: the star-schema FK list
+// duplicated the topic's Manage mode ("How it fits together"), while "which
+// source columns feed this table, and through what transformation?" had no
+// home. The tab now answers that and links to Manage mode for the shape.
+type ViewTab = 'overview' | 'columns' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   tableId: number;
@@ -67,15 +74,6 @@ const columnCompleteness = (col: ProductColumn) =>
     !col.ai_draft,
   );
 
-interface RelRow {
-  direction: 'OUT' | 'IN';
-  fromTable: string;
-  fromColumn: string | null;
-  toTable: string;
-  toColumn: string | null;
-  relationship: string;
-}
-
 // ---------------------------------------------------------------------------
 // Main panel — five-tab layout matching TableDetailPanel
 // ---------------------------------------------------------------------------
@@ -90,7 +88,6 @@ export default function ProductTableDetailPanel({
   let pgTableId: number | null = null;
   let productConnectionId: number | null = null;
   let parentProductId: number | null = null;
-  let parentSchemaId: number | null = null;
   const usedByProducts: string[] = [];
   for (const product of productTree) {
     for (const schema of product.starSchemas) {
@@ -100,7 +97,6 @@ export default function ProductTableDetailPanel({
         pgTableId = (found as { pg_table_id?: number }).pg_table_id ?? tableId;
         productConnectionId = product.connectionId;
         parentProductId = product.productId;
-        parentSchemaId = schema.schemaId;
         break;
       }
     }
@@ -133,59 +129,6 @@ export default function ProductTableDetailPanel({
   const [viewTab, setViewTab]         = useState<ViewTab>('overview');
   const [domainInput, setDomainInput] = useState('');
   const [showColHistory, setShowColHistory] = useState<number | null>(null);
-  const [rels, setRels] = useState<RelRow[]>([]);
-  const [relsLoading, setRelsLoading] = useState(false);
-
-  // Relationships are stored per star schema in product_relationships and exposed
-  // via GET /api/products/:productId. Fetch lazily when the user opens the tab.
-  useEffect(() => {
-    if (viewTab !== 'relationships') return;
-    if (parentProductId == null || !table) return;
-    const tableName = table.table_name;
-    let cancelled = false;
-    setRelsLoading(true);
-    api.get(`/products/${parentProductId}`).then((res) => {
-      if (cancelled) return;
-      const product = res.data.data ?? res.data;
-      const schemas: Array<{
-        id: number;
-        relationships: Array<{
-          from_table_name: string;
-          from_column_name: string | null;
-          to_table_name: string;
-          to_column_name: string | null;
-          relationship_type: string;
-        }>;
-      }> = product?.star_schemas ?? [];
-      const all = schemas.flatMap((s) => s.relationships ?? []);
-      const out: RelRow[] = [];
-      for (const r of all) {
-        if (r.from_table_name === tableName) {
-          out.push({
-            direction: 'OUT',
-            fromTable: r.from_table_name,
-            fromColumn: r.from_column_name,
-            toTable: r.to_table_name,
-            toColumn: r.to_column_name,
-            relationship: r.relationship_type,
-          });
-        } else if (r.to_table_name === tableName) {
-          out.push({
-            direction: 'IN',
-            fromTable: r.from_table_name,
-            fromColumn: r.from_column_name,
-            toTable: r.to_table_name,
-            toColumn: r.to_column_name,
-            relationship: r.relationship_type,
-          });
-        }
-      }
-      setRels(out);
-    }).catch(() => { if (!cancelled) setRels([]); })
-      .finally(() => { if (!cancelled) setRelsLoading(false); });
-    return () => { cancelled = true; };
-  }, [viewTab, parentProductId, table?.table_name]);
-
   // Keep local state in sync when parent switches table or columns arrive
   if (tableId !== prevTableId) {
     setPrevTableId(tableId);
@@ -262,7 +205,9 @@ export default function ProductTableDetailPanel({
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
-    { id: 'relationships', label: 'Relationships' },
+    // Lineage is a curator surface (transformation expressions; analyst+
+    // endpoint), like History.
+    ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
     { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
@@ -730,38 +675,24 @@ export default function ProductTableDetailPanel({
         </div>
       )}
 
-      {/* ── Relationships ─────────────────────────────────────────────────── */}
-      {viewTab === 'relationships' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          {relsLoading ? (
-            <p className="text-[13px] text-muted">Loading relationships...</p>
-          ) : rels.length === 0 ? (
-            <div className="bg-raised border border-line rounded-lg p-6 text-center">
-              <GitBranch className="w-8 h-8 text-muted-2 mx-auto mb-3" strokeWidth={1.5} />
-              <p className="font-display text-[16px] text-ink tracking-[-0.01em]">No relationships</p>
-              <p className="text-[12px] text-muted mt-1.5 max-w-md mx-auto leading-relaxed">
-                No relationships are defined for this product table in the star schema.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {rels.map((r, i) => (
-                <div key={i} className="bg-raised border border-line rounded-lg px-4 py-3 flex items-center gap-3">
-                  <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 bg-softer border border-line px-1.5 py-0.5 rounded">
-                    {r.direction}
-                  </span>
-                  <div className="flex-1 min-w-0 flex items-center gap-2 text-[13px] font-mono">
-                    <span className="text-ink-2 truncate">{r.fromTable}{r.fromColumn ? `.${r.fromColumn}` : ''}</span>
-                    <ArrowRight className="w-3.5 h-3.5 text-muted-2 flex-shrink-0" strokeWidth={2} />
-                    <span className="text-ink-2 truncate">{r.toTable}{r.toColumn ? `.${r.toColumn}` : ''}</span>
-                  </div>
-                  <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-ocean bg-ocean-softer border border-line px-1.5 py-0.5 rounded">
-                    {r.relationship}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+      {/* ── Lineage ───────────────────────────────────────────────────────── */}
+      {viewTab === 'lineage' && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
+            <p className="text-[12px] text-muted">
+              Which source columns feed this table, and how.
+            </p>
+            {parentProductId != null && (
+              <a
+                href={`/topics/${parentProductId}?manage=1`}
+                className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors"
+              >
+                <Gauge className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
+                Manage this topic ↗
+              </a>
+            )}
+          </div>
+          <LineageGraph layer="product" tableId={pgTableId ?? tableId} />
         </div>
       )}
 

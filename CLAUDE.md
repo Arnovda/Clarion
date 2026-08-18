@@ -83,12 +83,47 @@ made those definitions homeless.
   preview, and the per-table notebook (still the deploy surface).
 - Frontend `tsc` clean; the touched files are lint-clean (repo-wide `next
   lint` still carries pre-existing findings in ~39 untouched files).
-- **NEXT (agreed, not yet built): the lineage view** — in the Data Catalog,
-  ALWAYS anchored on a selected table/column, upstream and downstream
-  across both layers with transformations on the edges. The data largely
-  exists (`product_columns` lineage arrays, transformation expressions);
-  the build is the column-level reverse index + the anchored view. Never a
-  global lineage graph (§2.4).
+
+**THE LINEAGE VIEW SHIPPED (2026-08-18, third batch same day).** The owner's
+definition: *"a graph to really showcase which source tables and columns
+feed which data products and columns, and also transformations if there are
+any."* The data existed since migration 17 — `column_lineage
+(product_column_id, source_table_name, source_column_name,
+transformation_description)`, written by every build path but until now
+only read as prompt context.
+- **New `GET /api/lineage/table?layer=source|product&tableId=`**
+  (`routes/lineage.ts`, admin+analyst): anchored column-level lineage, both
+  directions. The correctness details that are easy to lose:
+  `source_table_name` is a NAME and names repeat across connections, so
+  downstream matches are limited to products belonging to the source's
+  connection (connection_id or a `data_product_sources` row) — never a bare
+  name match; the **`is_technical` firewall applies** (this is one more
+  user-facing read of `product_columns`, so `_row_hash` must not surface);
+  every query filters tenant_id explicitly; an upstream name the catalog no
+  longer has still renders (`tableId: null`) — the lineage is the fact, the
+  catalog link is a bonus. 5 tests (`lineage.test.ts`) pin exactly these.
+- **New `components/catalog/LineageGraph.tsx`** — two lanes (sources left,
+  topic tables right), SVG threads per column edge, click a column to
+  isolate its threads and read the transformations in a "How it flows"
+  strip (readable, not hover-only). **Deliberately NOT ReactFlow**: the
+  geometry is deterministic (fixed card/row heights, same idea as the
+  canvas's `nodeHeight()`), so threads draw from computed positions with no
+  DOM measuring and no pan/zoom machinery. Always anchored — §2.4 forbids
+  the global lineage hairball. A source card shows only the columns that
+  feed something, with "+N columns not feeding a topic yet" as a footer.
+- **The detail panels' Relationships tab became the Lineage tab** (both
+  `TableDetailPanel` and `ProductTableDetailPanel`): the per-table FK lists
+  duplicated /relationships (source layer) and Manage mode's "How it fits
+  together" (product layer). Each Lineage tab header links to the one real
+  surface — "Relations ↗" (`/relationships?table=<id>`, the anchor deep
+  link) on source tables, "Manage this topic ↗" on product tables.
+  Curator-gated like History. NOTE: `ProductTableDetailPanel` passes
+  `pgTableId` (the Postgres `product_tables.id`), not the tree's graph id.
+- Backend `npm run check` clean, full suite 32 files / 299 tests green, all
+  eight ratchets green, frontend `tsc` clean + `next build` green.
+- **Not in this slice**: multi-hop walking (product→product dependencies),
+  and lineage links from the SQL provenance trail on the topic page —
+  both natural extensions of the same endpoint.
 
 **Prior last updated:** 2026-08-18 (BUILD — the tenant-level front door from source to topics)
 
