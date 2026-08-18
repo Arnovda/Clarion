@@ -452,15 +452,26 @@ function PlanPanel({ src, intent, onIntent, onBuild, disabled }: {
                     <Glyph className="h-4 w-4 shrink-0 text-ocean" strokeWidth={1.6} aria-hidden />
                     <span className="text-[13.5px] font-medium text-ink">{cleanTopicName(t.name)}</span>
                   </div>
+                  {/* WHAT the topic contains leads; the ready-made metrics are
+                      a supporting line. The metric names alone undersold the
+                      build badly — EO ships 4 KPIs across all topics, while
+                      Finance alone carries three full fact tables. */}
+                  {t.description && (
+                    <p className="mt-1.5 text-[12px] leading-[1.5] text-ink-3">{t.description}</p>
+                  )}
                   {t.sampleQuestions.length > 0 && (
-                    <p className="mt-1.5 text-[12px] leading-[1.5] text-muted">
-                      You&apos;ll see: {t.sampleQuestions.join(' · ')}
+                    <p className="mt-1 text-[11.5px] leading-[1.5] text-muted">
+                      Ready-made metrics: {t.sampleQuestions.join(' · ')}
                     </p>
                   )}
                 </div>
               );
             })}
           </div>
+          <p className="mt-2.5 text-[12px] leading-[1.5] text-muted">
+            Everything in a topic can be asked about in Ask AI — the metrics are
+            ready-made starting points, not the limit.
+          </p>
           {sharedNames.length > 0 && (
             <p className="mt-3 flex items-start gap-2 text-[12.5px] leading-[1.55] text-muted">
               <Library className="mt-[2px] h-3.5 w-3.5 shrink-0" strokeWidth={1.6} aria-hidden />
