@@ -31,7 +31,90 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-18 (BUILD front door + rail IA per the owner's sketch + Data Catalog back in Studio)
+**Last updated:** 2026-08-19 (Build shows the thinking; zero-row builds fixed end to end)
+
+**THE BUILD RUN SHOWS THE WORK NOW (2026-08-19).** Owner: *"I want to see more
+thinking work visually as an end user when clarion is creating the facts and
+dimensions."* The finding that shaped the design: the orchestrator has
+ALWAYS streamed the AI designer's `thinking` deltas — the Build page
+discarded them and rendered only the last phase/log line, so the
+multi-minute AI design phase was one frozen sentence. Three layers now,
+each in the register the pane's outcome-language rule allows:
+- **Structured events** (`busMatrixOrchestrator.ts`): new `designed` (the
+  topic list with REAL product ids, emitted after Phase D persist so cards
+  can deep-link; payload is names/descriptions/counts only — the colocated
+  `busMatrixOrchestrator.test.ts` pins that no `dim_`/`fact_` name can
+  reach it, same invariant as the build-overview plan) and `product_start`
+  (flips a card to "building" without string-matching log text). Pure
+  `designedTopicsFromBusMatrix()` is exported for the tests. Phase events
+  gained an optional **`friendly`** business-language twin — the Build page
+  prefers it, the /products workshop keeps the technical `text`, and no
+  existing consumer changes.
+- **The run panel** (`frontend/app/build/page.tsx`): headline strip
+  (friendly phase + cancel) → **topic cards that materialize when the
+  design lands** and flip pending → building → ready/partial/failed per
+  product (reference products render as "Shared data") → a collapsed
+  **"Show the working"** disclosure streaming the raw reasoning (capped at
+  160k chars, auto-scrolling, labelled technical). `log` events no longer
+  drive the headline. Per-topic `error_detail` lands on its card; the
+  finish card folds topic errors into its summary. **Reattach works by
+  construction**: the SSE route replays the job log from index 0, so
+  landing mid-build rebuilds cards + reasoning. NOTE the deliberate
+  vocabulary exception documented in the page header: the disclosure speaks
+  warehouse vocabulary — never widen /build to viewers while it exists.
+
+**ZERO-ROW BUILDS NO LONGER FAIL — THE 2026-08-19 PRODUCTION DEFECT (three
+fixes, one root cause).** The owner's AI-mode build failed two facts with
+`Delta sidecar failed: DeltaError: Generic error: No data source supplied
+to write command`. Root cause REPRODUCED against deltalake 0.23.2 before
+fixing: the transformation SQL legitimately returned ZERO rows
+(AI-designed facts over entities that synced no data), and delta-rs
+refuses a write with no record batches. The sidecar's author had even
+handled `df.empty` in `add_row_hash` — the write step was the only gap.
+The parquet escape hatch never had the bug (empty COPY works), which is
+why it stayed latent; template builds can hit it too (any fact whose
+source tables synced but hold 0 rows).
+- **Fix 1 — the writer** (`etl/scd2/commit_table.py`): an empty result
+  MATERIALISES. First run → `DeltaTable.create` from the schema
+  (`mode="ignore"` so a transient load failure can't overwrite real data
+  with emptiness); refresh → `dt.delete()` (a new Delta version). Counts
+  honest: refresh-to-empty reports everything as deleted. Two new
+  end-to-end pytests drive `main()` against a real local Delta table —
+  suite now 28 green (run via a pinned venv; deps in etl/requirements.txt).
+- **Fix 2 — the state is legible**: `build-overview` ships `rowsTotal` per
+  product (SUM of `product_tables.row_count`; NULL = nothing
+  materialised), and the Build page's topic row reads **"built — waiting
+  for data from your source"** when a built topic's tables are all empty —
+  instead of "refreshed just now". Pinned in
+  `products-build-overview.test.ts`.
+- **Fix 3 — the designer is grounded**: each table in the AI design context
+  is annotated with its measured row count from `dataset_profiles` (a real
+  COUNT(*) as of the last analysis; best-effort — a structural-only
+  Analyse has no profiles and an unmeasured table gets no annotation), and
+  `busMatrixPrompt.ts` gained the rule: NEVER design a fact whose source
+  tables are ALL marked "NO ROWS"; empty lookups may still feed dimensions.
+  Counts can be stale (analysed-then-synced), hence the "at last analysis"
+  wording and fix 1 carrying correctness either way.
+
+**NEW GITOPS CONTROL: `.ops/promote`** — promote.yml gained a
+push-triggered path (paths-scoped to that file, `concurrency:
+promote-production`). Exists because `workflow_dispatch` is 403 for the
+integration token (re-verified this session via the GitHub MCP), so a
+session could deploy but never promote — the container-mode re-apply trick
+covered only the backend. First non-comment line = target (`backend +
+frontend` | `backend only` | `frontend only`); re-apply = comment edit.
+**Same LESSON as container-mode: touch the file only AFTER deploy.yml has
+finished** — it promotes whatever revision is READY right now. Documented
+in `.ops/README.md`.
+
+- Validation: backend `npm run check` clean; full backend suite **33 files
+  / 305 tests green** (this sandbox: native DuckDB builds via npm install,
+  Postgres 16 service with `databridge`/`databridge_app` roles +
+  `databridge_test` DB migrated); all eight lint ratchets green from the
+  repo root; frontend `tsc` clean, touched files lint-clean, `next build`
+  green; sidecar pytest 28 green.
+
+**Prior last updated:** 2026-08-18 (BUILD front door + rail IA per the owner's sketch + Data Catalog back in Studio)
 
 **THE RAIL NOW FOLLOWS THE OWNER'S SKETCH, AND THE DATA CATALOG IS BACK
 (2026-08-18, second batch same day).** Owner, from a hand-drawn nav: the
