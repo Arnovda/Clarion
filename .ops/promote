@@ -1,0 +1,8 @@
+backend + frontend
+
+# Created 2026-08-19: first application. Promotes commit 5c40b13 — the Build
+# page run panel (topic cards + AI-reasoning disclosure), the zero-row Delta
+# build fix, the "waiting for data" topic state, and row-count-grounded AI
+# design. Applied AFTER the Build & Deploy run for 5c40b13 reported success,
+# per the LESSON in promote.yml: this control promotes whatever revision is
+# READY right now.
