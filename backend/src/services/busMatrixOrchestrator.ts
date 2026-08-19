@@ -30,19 +30,45 @@ export type OrchestratorEventType =
   | 'thinking'   // AI thinking-token delta
   | 'diag'       // diagnostic from the AI streamer
   | 'log'        // arbitrary log line
+  | 'designed'   // structured: the design landed — topic list with ids (Build page cards)
+  | 'product_start' // structured: product transformation started (Build page card → building)
   | 'product'    // a product finished transforming (with status)
   | 'error_detail' // per-failed-table error (so user can see WHY)
   | 'source_run' // structured: source X has sync_run #N (so dock can drill in)
   | 'done'       // workflow finished successfully
   | 'error';     // workflow failed
 
+/**
+ * designed: one entry per data product the design created. Carries ONLY
+ * display-facing fields — grouping name, description, counts — never
+ * dim_/fact_ table names, because the Build page (the flow's front door)
+ * is an outcome-language surface where warehouse vocabulary is forbidden.
+ */
+export interface DesignedTopic {
+  id: number;
+  name: string;
+  description: string;
+  kind: 'analytics' | 'reference';
+  tableCount: number;
+  buildOrder: number;
+}
+
 export interface OrchestratorEvent {
   type: OrchestratorEventType;
   text?: string;
+  /**
+   * phase only: the same milestone in business language ("Studying your 36
+   * tables and how they connect…"). The Build page renders this over `text`;
+   * the /products workshop keeps the technical `text`. Optional so every
+   * existing consumer and phase emit stays valid.
+   */
+  friendly?: string;
   productName?: string;
   productId?: number;
   status?: 'ok' | 'error' | 'partial';
   details?: unknown;
+  /** designed: the topics the build is about to create (with real ids). */
+  topics?: DesignedTopic[];
   /** error_detail: which table inside `productName` failed. */
   tableName?: string;
   /** error_detail: the actual error message (e.g. "Column not found"). */
@@ -51,6 +77,35 @@ export interface OrchestratorEvent {
   sourceConnectionId?: number;
   /** source_run: source_sync_runs.id — dock fetches detail from this. */
   syncRunId?: number;
+}
+
+/**
+ * Derive the `designed` event payload from the validated bus matrix and the
+ * products Phase D just persisted. Pure on purpose (unit-tested without a
+ * DB): products are matched to their grouping by name, a grouping whose
+ * product failed to persist is dropped rather than shipped without an id,
+ * and `kind` mirrors busMatrixBuilder's rule — no fact tables = reference.
+ */
+export function designedTopicsFromBusMatrix(
+  busMatrix: BusMatrixOutput,
+  products: BuiltProduct[],
+): DesignedTopic[] {
+  const byName = new Map(products.map((p) => [p.name, p]));
+  return busMatrix.data_products
+    .map((dp): DesignedTopic | null => {
+      const built = byName.get(dp.name);
+      if (!built) return null;
+      return {
+        id: built.id,
+        name: dp.name,
+        description: dp.description ?? '',
+        kind: dp.fact_tables.length === 0 ? 'reference' : 'analytics',
+        tableCount: dp.fact_tables.length + dp.owned_dimensions.length,
+        buildOrder: built.build_order,
+      };
+    })
+    .filter((t): t is DesignedTopic => t !== null)
+    .sort((a, b) => a.buildOrder - b.buildOrder);
 }
 
 export interface RunBusMatrixWorkflowOptions {
@@ -83,7 +138,7 @@ export async function runBusMatrixWorkflow(
   const { connectionId, tenantId, emit } = opts;
 
   // ── Phase A: read schema + relationships ─────────────────────────────
-  emit({ type: 'phase', text: 'Reading schema…' });
+  emit({ type: 'phase', text: 'Reading schema…', friendly: 'Reading what your source contains…' });
 
   if (tenantId) await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
@@ -114,6 +169,7 @@ export async function runBusMatrixWorkflow(
     emit({
       type: 'phase',
       text: `Using the built-in ${connection.connector_type} star-schema template v${templateHit.templateVersion} — deterministic design, no AI needed (${busMatrix.conformed_dimensions.length} dimensions, ${busMatrix.fact_tables.length} fact tables)`,
+      friendly: `Using the ready-made design for ${connection.name} — your topics are already worked out.`,
     });
   } else {
     const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
@@ -152,7 +208,11 @@ export async function runBusMatrixWorkflow(
 
     const sourceContext = tablesText + relationshipsText;
 
-    emit({ type: 'phase', text: `Loaded ${sourceTables.length} tables, ${relCount} relationships — designing bus matrix…` });
+    emit({
+      type: 'phase',
+      text: `Loaded ${sourceTables.length} tables, ${relCount} relationships — designing bus matrix…`,
+      friendly: `Studying your ${sourceTables.length} tables and how they connect — working out the topics they can answer…`,
+    });
 
     await checkCancelled(opts);
 
@@ -188,6 +248,7 @@ export async function runBusMatrixWorkflow(
   emit({
     type: 'phase',
     text: `Saving ${busMatrix.conformed_dimensions.length} dimensions and ${busMatrix.fact_tables.length} fact tables…`,
+    friendly: 'Design ready — setting up your topics…',
   });
 
   // ── Phase D: persist ─────────────────────────────────────────────────
@@ -201,8 +262,15 @@ export async function runBusMatrixWorkflow(
 
   emit({ type: 'log', text: `Created ${products.length} data product(s)` });
 
+  // Structured topic list for the Build page's materializing cards. Emitted
+  // AFTER persist on purpose: the cards deep-link by product id, so the ids
+  // must be real. Rides the job log like every other event, which is what
+  // makes reattach work — a browser landing mid-build replays this and
+  // rebuilds the cards.
+  emit({ type: 'designed', topics: designedTopicsFromBusMatrix(busMatrix, products) });
+
   // ── Phase D.5: generate per-product line-icon SVGs (parallel, best-effort) ──
-  emit({ type: 'phase', text: 'Designing product icons…' });
+  emit({ type: 'phase', text: 'Designing product icons…', friendly: 'Drawing an icon for each topic…' });
   try {
     const { generateProductIcon } = await import('../ai/AIService');
     await Promise.all(products.map(async (p) => {
@@ -228,7 +296,7 @@ export async function runBusMatrixWorkflow(
   await checkCancelled(opts);
 
   // ── Phase E: run transformations per product in build_order ──────────
-  emit({ type: 'phase', text: 'Running transformations…' });
+  emit({ type: 'phase', text: 'Running transformations…', friendly: 'Building the data behind your topics…' });
 
   const sortedProducts = [...products].sort((a, b) => a.build_order - b.build_order);
   const { runProductTransformation } = await import('./transformationRunner');
@@ -238,6 +306,9 @@ export async function runBusMatrixWorkflow(
   for (const p of sortedProducts) {
     await checkCancelled(opts);
     emit({ type: 'log', text: `  Running "${p.name}"…` });
+    // Structured twin of the log line above — flips the Build page's card
+    // for this topic to "building" without string-matching log text.
+    emit({ type: 'product_start', productName: p.name, productId: p.id });
 
     try {
       // Read every row through tenantQuery — the orchestrator runs in a

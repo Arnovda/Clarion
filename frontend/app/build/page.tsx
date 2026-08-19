@@ -24,11 +24,18 @@
  *
  * Vocabulary: business words only — topic, shared data, question. The words
  * fact/dimension/star schema/data product must not appear on this screen.
+ * ONE deliberate exception: the run panel's collapsed "Show the working"
+ * disclosure streams the AI designer's raw reasoning (the `thinking` deltas
+ * the orchestrator has always emitted and this page used to discard). That
+ * text speaks warehouse vocabulary by nature; it is opt-in, labelled as
+ * technical, and this page is admin+analyst-gated — never widen the page to
+ * viewers while the disclosure exists.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight, Blocks, CheckCircle2, Eye, EyeOff, Library, Loader2, Sparkles, X,
+  AlertTriangle, ArrowRight, Blocks, CheckCircle2, ChevronDown, ChevronRight,
+  Eye, EyeOff, Library, Loader2, Sparkles, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -85,14 +92,40 @@ interface Overview {
 
 // ─── Build run state ───────────────────────────────────────────────────────
 
+/**
+ * A topic card in the run panel — born from the orchestrator's `designed`
+ * event (so it has a real product id), flipped to `building` by
+ * `product_start` and settled by the per-product `product` event. The whole
+ * event history rides the job log, so a reattach mid-run replays it and
+ * rebuilds these cards from scratch.
+ */
+interface RunTopic {
+  id: number;
+  name: string;
+  description: string;
+  kind: 'analytics' | 'reference';
+  tableCount: number;
+  status: 'pending' | 'building' | 'ok' | 'partial' | 'error';
+  note: string | null;
+  errors: string[];
+}
+
 interface BuildRun {
   connectionId: number;
   jobId: string | null;
   phase: string;
+  topics: RunTopic[];
+  /** The AI designer's raw reasoning stream — shown only behind the
+      "Show the working" disclosure. Capped so a reattach replay of a long
+      design cannot grow state without bound. */
+  working: string;
+  /** Errors not attributable to a specific topic (source-level failures). */
   errors: string[];
   done: boolean;
   ok: boolean;
 }
+
+const WORKING_CAP = 160_000;
 
 export default function BuildPage() {
   return (
@@ -136,7 +169,7 @@ function Build() {
   const attachToJob = useCallback(async (jobId: string, connectionId: number) => {
     const controller = new AbortController();
     abortRef.current = controller;
-    setRun({ connectionId, jobId, phase: 'Starting…', errors: [], done: false, ok: false });
+    setRun({ connectionId, jobId, phase: 'Starting…', topics: [], working: '', errors: [], done: false, ok: false });
     try {
       await streamSSE(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
         method: 'GET',
@@ -144,10 +177,54 @@ function Build() {
         onEvent: (raw) => {
           const e = raw as Record<string, unknown>;
           const type = e.type as string;
-          if (type === 'phase' || type === 'log') {
-            setRun((r) => (r ? { ...r, phase: String(e.text ?? '') } : r));
+          if (type === 'phase') {
+            // The headline speaks business language: prefer the orchestrator's
+            // `friendly` text, fall back to the technical one (refresh-mode
+            // jobs and older log replays carry no friendly variant).
+            setRun((r) => (r ? { ...r, phase: String(e.friendly ?? e.text ?? '') } : r));
+          } else if (type === 'thinking' || type === 'diag') {
+            const delta = type === 'diag' ? `\n· ${String(e.text ?? '')}\n` : String(e.text ?? '');
+            setRun((r) => (r ? { ...r, working: (r.working + delta).slice(-WORKING_CAP) } : r));
+          } else if (type === 'designed') {
+            const topics = (Array.isArray(e.topics) ? e.topics : []).map((t) => ({
+              ...(t as Omit<RunTopic, 'status' | 'note' | 'errors'>),
+              status: 'pending' as const,
+              note: null,
+              errors: [],
+            }));
+            setRun((r) => (r ? { ...r, topics } : r));
+          } else if (type === 'product_start') {
+            setRun((r) => {
+              if (!r) return r;
+              const topics = r.topics.map((t): RunTopic => (t.id === e.productId ? { ...t, status: 'building' } : t));
+              const started = topics.filter((t) => t.status !== 'pending').length;
+              const current = topics.find((t) => t.id === e.productId);
+              const phase = current
+                ? `Building “${current.kind === 'reference' ? 'Shared data' : cleanTopicName(current.name)}” (${started} of ${topics.length})…`
+                : r.phase;
+              return { ...r, topics, phase };
+            });
+          } else if (type === 'product') {
+            const status: RunTopic['status'] =
+              e.status === 'ok' ? 'ok' : e.status === 'partial' ? 'partial' : 'error';
+            setRun((r) => (r ? {
+              ...r,
+              topics: r.topics.map((t): RunTopic => (t.id === e.productId ? { ...t, status, note: String(e.text ?? '') } : t)),
+            } : r));
           } else if (type === 'error_detail') {
-            setRun((r) => (r ? { ...r, errors: [...r.errors, `${String(e.tableName)}: ${String(e.error)}`] } : r));
+            setRun((r) => {
+              if (!r) return r;
+              const pid = typeof e.productId === 'number' ? e.productId : null;
+              if (pid !== null && r.topics.some((t) => t.id === pid)) {
+                return {
+                  ...r,
+                  topics: r.topics.map((t): RunTopic => (t.id === pid
+                    ? { ...t, errors: [...t.errors, `${String(e.tableName)}: ${String(e.error)}`] }
+                    : t)),
+                };
+              }
+              return { ...r, errors: [...r.errors, `${String(e.tableName)}: ${String(e.error)}`] };
+            });
           } else if (type === 'completed') {
             const result = e.result as { allOk?: boolean } | null;
             setRun((r) => (r ? { ...r, done: true, ok: result?.allOk !== false } : r));
@@ -341,7 +418,7 @@ function SourceSection({
         )}
       </div>
 
-      {run && <RunStrip src={src} run={run} intent={intent} onCancel={onCancel} onDismiss={onDismissRun} />}
+      {run && <RunPanel src={src} run={run} intent={intent} onCancel={onCancel} onDismiss={onDismissRun} />}
 
       {hasProducts && (!run || run.done) && (
         <>
@@ -520,28 +597,91 @@ function PlanPanel({ src, intent, onIntent, onBuild, disabled }: {
 
 // ─── Build progress + finish card ──────────────────────────────────────────
 
-function RunStrip({ src, run, intent, onCancel, onDismiss }: {
+/**
+ * The run panel is three stacked layers, each earning its place:
+ *   1. the headline strip — one friendly sentence + cancel (the old strip);
+ *   2. topic cards that materialize the moment the design lands (`designed`)
+ *      and flip pending → building → ready as the build works through them —
+ *      progress shown as OUTCOMES arriving, not as log text;
+ *   3. "Show the working" — a collapsed disclosure streaming the AI
+ *      designer's raw reasoning, for the analyst who wants to watch along.
+ * After the run finishes the cards yield to the finish card: the real topic
+ * rows render right below from the reloaded overview, so keeping both would
+ * show every topic twice.
+ */
+function RunPanel({ src, run, intent, onCancel, onDismiss }: {
   src: SourceOverview;
   run: BuildRun;
   intent: string;
   onCancel: () => void;
   onDismiss: () => void;
 }) {
+  const [showWorking, setShowWorking] = useState(false);
+  const workingRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (showWorking && workingRef.current) workingRef.current.scrollTop = workingRef.current.scrollHeight;
+  }, [run.working, showWorking]);
+
   if (!run.done) {
     return (
-      <div className="mb-3 flex items-center gap-3 rounded-[10px] border border-line bg-raised px-4 py-3">
-        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ocean" strokeWidth={2} aria-hidden />
-        <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">
-          {run.phase || 'Creating your topics…'}
-        </span>
-        <button type="button" onClick={onCancel} className="shrink-0 text-[12px] text-muted-2 hover:text-ink-3 hover:underline">
-          Cancel
-        </button>
+      <div className="mb-3 rounded-[10px] border border-line bg-raised">
+        <div className="flex items-center gap-3 px-4 py-3">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-ocean" strokeWidth={2} aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">
+            {run.phase || 'Creating your topics…'}
+          </span>
+          <button type="button" onClick={onCancel} className="shrink-0 text-[12px] text-muted-2 hover:text-ink-3 hover:underline">
+            Cancel
+          </button>
+        </div>
+
+        {run.topics.length > 0 && (
+          <div className="grid gap-2.5 border-t border-line px-4 py-3.5 sm:grid-cols-2">
+            {run.topics.map((t) => <RunTopicCard key={t.id} topic={t} />)}
+          </div>
+        )}
+
+        {run.working.length > 0 && (
+          <div className="border-t border-line px-4 py-2.5">
+            <button
+              type="button"
+              onClick={() => setShowWorking((v) => !v)}
+              aria-expanded={showWorking}
+              className="flex items-center gap-1.5 text-[12px] text-muted-2 hover:text-ink-3"
+            >
+              {showWorking
+                ? <ChevronDown className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                : <ChevronRight className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />}
+              {showWorking ? 'Hide the working' : 'Show the working'}
+              <span className="relative flex h-1.5 w-1.5" aria-hidden>
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ocean opacity-60" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-ocean" />
+              </span>
+            </button>
+            {showWorking && (
+              <>
+                <p className="mt-1.5 text-[11.5px] text-muted-2">
+                  Clarion&apos;s raw reasoning as it designs — technical vocabulary ahead.
+                </p>
+                <pre
+                  ref={workingRef}
+                  className="mt-2 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-[8px] border border-line bg-bg px-3 py-2.5 font-mono text-[11px] leading-[1.65] text-ink-3"
+                >
+                  {run.working}
+                </pre>
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   }
 
   const question = intent.trim();
+  const allErrors = [
+    ...run.errors,
+    ...run.topics.flatMap((t) => t.errors.map((e) => `${cleanTopicName(t.name)} — ${e}`)),
+  ];
   return (
     <div className={cn(
       'mb-3 rounded-[10px] border border-line px-4 py-3.5',
@@ -554,9 +694,9 @@ function RunStrip({ src, run, intent, onCancel, onDismiss }: {
             {run.ok ? 'Your topics are ready — they’re in the sidebar now.' : 'The build finished with problems.'}
           </p>
           {!run.ok && run.phase && <p className="mt-0.5 text-[12.5px] text-ink-3">{run.phase}</p>}
-          {run.errors.length > 0 && (
+          {allErrors.length > 0 && (
             <ul className="mt-1 space-y-0.5">
-              {run.errors.slice(0, 5).map((e, i) => (
+              {allErrors.slice(0, 5).map((e, i) => (
                 <li key={i} className="text-[12px] text-err">✗ {e}</li>
               ))}
             </ul>
@@ -579,6 +719,70 @@ function RunStrip({ src, run, intent, onCancel, onDismiss }: {
       </div>
     </div>
   );
+}
+
+// ─── A topic being built (run panel card) ──────────────────────────────────
+
+function RunTopicCard({ topic }: { topic: RunTopic }) {
+  const isRef = topic.kind === 'reference';
+  const Glyph = isRef ? Library : iconForAnalytics(topic.name);
+  // Reference products render as "Shared data" — the page's name for the
+  // lookups, matching the built row they become after the run.
+  const name = isRef ? 'Shared data' : cleanTopicName(topic.name);
+  return (
+    <div className="rounded-[10px] border border-line bg-bg px-4 py-3">
+      <div className="flex items-center gap-2">
+        <Glyph className="h-4 w-4 shrink-0 text-ocean" strokeWidth={1.6} aria-hidden />
+        <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{name}</span>
+        <RunTopicStatus topic={topic} />
+      </div>
+      {topic.description && (
+        <p className="mt-1.5 text-[12px] leading-[1.5] text-ink-3">{topic.description}</p>
+      )}
+      {topic.errors.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5">
+          {topic.errors.slice(0, 3).map((e, i) => (
+            <li key={i} className="text-[11.5px] text-err">✗ {e}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RunTopicStatus({ topic }: { topic: RunTopic }) {
+  switch (topic.status) {
+    case 'building':
+      return (
+        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-ocean">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} aria-hidden />
+          building…
+        </span>
+      );
+    case 'ok':
+      return (
+        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-ok">
+          <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+          ready
+        </span>
+      );
+    case 'partial':
+      return (
+        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-warn">
+          <AlertTriangle className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+          {topic.note || 'built with problems'}
+        </span>
+      );
+    case 'error':
+      return (
+        <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-err" title={topic.note ?? undefined}>
+          <AlertTriangle className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
+          failed
+        </span>
+      );
+    default:
+      return <span className="shrink-0 text-[11.5px] text-muted-2">waiting</span>;
+  }
 }
 
 // ─── A built topic ─────────────────────────────────────────────────────────
