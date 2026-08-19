@@ -99,12 +99,25 @@ router.get('/build-overview', requireAuth, requireRole('admin', 'analyst'), asyn
           WHERE ss.data_product_id = data_products.id
             AND pt.transformation_status = 'success'
         ) as last_refreshed_at`),
+        // Total rows across the topic's built tables. NULL when nothing has
+        // materialised; 0 means "built, but every table is empty" — a
+        // legitimate state since the zero-row Delta fix (an AI-designed
+        // fact over entities that synced no data), which the Build page
+        // renders as "waiting for data" instead of "refreshed just now".
+        db.raw(`(
+          SELECT SUM(pt.row_count)
+          FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as rows_total`),
       )
       .orderBy('data_products.created_at', 'asc')) as Array<{
         id: number; name: string; description: string | null; kind: string | null;
         status: string | null; hidden: boolean | null; connection_id: number | null;
         template_version: number | null;
         table_count: string | number; last_refreshed_at: Date | string | null;
+        rows_total: string | number | null;
       }>;
 
     const knownConnIds = new Set(connIds);
@@ -118,6 +131,7 @@ router.get('/build-overview', requireAuth, requireRole('admin', 'analyst'), asyn
       templateVersion: p.template_version,
       tableCount: Number(p.table_count ?? 0),
       lastRefreshedAt: p.last_refreshed_at ? String(p.last_refreshed_at) : null,
+      rowsTotal: p.rows_total === null || p.rows_total === undefined ? null : Number(p.rows_total),
     });
 
     const sources = connections.map((c) => {

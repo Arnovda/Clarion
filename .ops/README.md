@@ -97,6 +97,25 @@ AI-designed ones. Rollback is setting the file back to `templates`.
 Like `duckdb-runner`, this control **does nothing when the value is already
 applied** — it is not a promote vehicle.
 
+## `promote`
+
+The GitOps mouth of the **Promote to production** workflow — the traffic shift
+that takes the latest deployed revisions live. The workflow's
+`workflow_dispatch` path still works from the Actions tab; this file exists
+because dispatch returns 403 for the repo's integration token, so a session
+operating via git push could deploy but never promote (the container-mode
+control covered only the backend, as a side effect).
+
+The first non-comment line is the target: `backend + frontend`,
+`backend only` or `frontend only`. A re-apply is a comment edit documenting
+what is being promoted — same convention as the other controls.
+
+**Edit this file only AFTER the deploy.yml run for your commit has finished.**
+The workflow promotes whatever revision is *ready* at that moment; touching
+the control while the image is still building silently promotes the previous
+build (the exact race the container-mode control's log documents from
+2026-07-30).
+
 ## `db-role`
 
 Contains exactly one word: `admin` or `app`.

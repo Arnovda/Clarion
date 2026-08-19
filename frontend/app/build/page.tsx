@@ -69,6 +69,9 @@ interface BuiltProduct {
   templateVersion: number | null;
   tableCount: number;
   lastRefreshedAt: string | null;
+  /** Sum of rows across built tables. 0 = built but every table is empty
+      ("waiting for data"); null = nothing materialised yet. */
+  rowsTotal: number | null;
 }
 
 interface SourceOverview {
@@ -803,9 +806,14 @@ function TopicRow({ product, onToggleHidden }: {
         {name}
       </a>
       <span className="hidden shrink-0 text-[11.5px] text-muted-2 sm:inline">
-        {product.lastRefreshedAt
-          ? `refreshed ${formatRelativeLong(product.lastRefreshedAt)}`
-          : 'not built yet'}
+        {/* A built topic whose tables all hold zero rows is "waiting for
+            data", not "refreshed just now" — the structure exists and the
+            next refresh that finds data fills it. */}
+        {!product.lastRefreshedAt
+          ? 'not built yet'
+          : product.rowsTotal === 0
+            ? 'built — waiting for data from your source'
+            : `refreshed ${formatRelativeLong(product.lastRefreshedAt)}`}
       </span>
       <button
         type="button"

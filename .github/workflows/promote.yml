@@ -5,7 +5,16 @@
 # the deploy job summary), run this workflow to shift 100% of user traffic to
 # the latest revision — that's the moment it goes live.
 #
-# Run it from the GitHub Actions tab → "Promote to production" → Run workflow.
+# Run it from the GitHub Actions tab → "Promote to production" → Run workflow,
+# OR — the GitOps path, since workflow_dispatch is 403 for the repo's
+# integration token — edit `.ops/promote` on main (see .ops/README.md). The
+# first non-comment line of that file is the target; a re-apply is a comment
+# edit documenting what is being promoted.
+#
+# SAME LESSON as the container-mode control: touch `.ops/promote` only AFTER
+# deploy.yml has finished building. This workflow promotes whatever revision
+# is READY right now — if the build hasn't created the new revision yet, the
+# previous one is what goes live, silently.
 #
 # Reuses the same secrets as deploy.yml (AZURE_CREDENTIALS, *_APP_NAME,
 # AZURE_RESOURCE_GROUP).
@@ -23,12 +32,40 @@ on:
           - 'backend + frontend'
           - 'backend only'
           - 'frontend only'
+  push:
+    branches: [main]
+    paths:
+      - '.ops/promote'
+
+concurrency: promote-production
 
 jobs:
   promote:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve promote target
+        id: target
+        run: |
+          set -euo pipefail
+          TARGET="${{ github.event.inputs.target }}"
+          if [ -z "$TARGET" ]; then
+            # Push-triggered: read the target from the control file. Comment
+            # lines let a re-apply document itself, same as the other .ops
+            # controls.
+            TARGET=$(grep -v '^[[:space:]]*#' .ops/promote | grep -v '^[[:space:]]*$' | head -1 | xargs)
+          fi
+          case "$TARGET" in
+            "backend + frontend"|"backend only"|"frontend only") ;;
+            *)
+              echo "::error::.ops/promote must name one of: 'backend + frontend', 'backend only', 'frontend only' (got '$TARGET')"
+              exit 1
+              ;;
+          esac
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
       - name: Log in to Azure
         uses: azure/login@v2
         with:
@@ -86,7 +123,7 @@ jobs:
           # is not something you can check afterwards against what you meant
           # to ship; a revision name is.
           echo "### ✅ Promoted to production" >> "$GITHUB_STEP_SUMMARY"
-          case "${{ github.event.inputs.target }}" in
+          case "${{ steps.target.outputs.target }}" in
             "backend only")  promote "${{ secrets.BACKEND_APP_NAME }}" ;;
             "frontend only") promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
             *)               promote "${{ secrets.BACKEND_APP_NAME }}"; promote "${{ secrets.FRONTEND_APP_NAME }}" ;;

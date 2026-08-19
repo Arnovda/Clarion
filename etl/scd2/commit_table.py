@@ -537,13 +537,39 @@ def main() -> int:
         arrow_table = new_state_arrow.append_column("_row_hash", hash_array)
         arrow_table = coerce_null_columns_to_string(arrow_table)
         arrow_table = coerce_uuid_columns_to_string(arrow_table)
-        write_deltalake(
-            delta_path,
-            arrow_table,
-            mode="overwrite",
-            schema_mode="merge",
-            storage_options=storage_options,
-        )
+        if arrow_table.num_rows == 0:
+            # A zero-row result is a legitimate state ("no inventory
+            # movements yet"), but delta-rs refuses a write with no record
+            # batches — `write_deltalake` on an empty table raises
+            # "Generic error: No data source supplied to write command",
+            # which is exactly the error that failed AI-designed facts over
+            # empty source entities in production (2026-08-19). Materialise
+            # the empty state explicitly instead:
+            #   first run → create the table from the schema with zero
+            #     rows, so the topic exists, the view registers, and the
+            #     next refresh that finds data is an ordinary write;
+            #   refresh   → delete every existing row (a new Delta
+            #     version), which is what "overwrite with nothing" means.
+            if first_run:
+                # mode="ignore": if the load above failed transiently but a
+                # table actually exists, leave its data alone rather than
+                # replacing it with emptiness on a false first_run.
+                DeltaTable.create(
+                    delta_path,
+                    schema=arrow_table.schema,
+                    mode="ignore",
+                    storage_options=storage_options,
+                )
+            else:
+                dt.delete()
+        else:
+            write_deltalake(
+                delta_path,
+                arrow_table,
+                mode="overwrite",
+                schema_mode="merge",
+                storage_options=storage_options,
+            )
 
         # 6. On first Delta commit at this path, remove the legacy
         #    `data.parquet` orphan left behind by the old parquet

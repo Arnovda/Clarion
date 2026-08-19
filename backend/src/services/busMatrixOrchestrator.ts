@@ -177,13 +177,44 @@ export async function runBusMatrixWorkflow(
       ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
       : [];
 
+    // Ground the design in what actually synced: the latest measured row
+    // count per table. dataset_profiles is written by quality profiling
+    // during Analyse with a real COUNT(*) — accurate as of the last
+    // analysis, which is what the annotation says. Best-effort on purpose:
+    // a structural-only Analyse leaves no profiles, and an unknown count
+    // simply gets no annotation. Without this the designer works from
+    // schema + descriptions alone and happily builds a fact on entities
+    // that hold no data (the 2026-08-19 fact_sales_pipeline case).
+    const rowCountByTable = new Map<string, number>();
+    try {
+      const profileQuery = semanticDb('dataset_profiles')
+        .where({ connection_id: connectionId })
+        .whereNotNull('row_count')
+        .orderBy('profiled_at', 'asc')
+        .select('table_name', 'row_count');
+      if (tenantId) profileQuery.andWhere('tenant_id', Number(tenantId));
+      const profileRows = await profileQuery;
+      // Ascending order → the latest profile per table wins the map slot.
+      for (const r of profileRows as Array<{ table_name: string; row_count: number }>) {
+        rowCountByTable.set(r.table_name, Number(r.row_count));
+      }
+    } catch (err) {
+      emit({ type: 'log', text: `Row-count context skipped: ${err instanceof Error ? err.message : String(err)}` });
+    }
+
     const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
       const cols = sourceColumns
         .filter((c: { table_id: number }) => c.table_id === t.id)
         .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
           return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
         }).join('\n');
-      return `Table: ${t.table_name} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
+      const rc = rowCountByTable.get(t.table_name);
+      const rcNote = rc === undefined
+        ? ''
+        : rc === 0
+          ? ' [NO ROWS at last analysis — this table is empty]'
+          : ` [~${rc} rows at last analysis]`;
+      return `Table: ${t.table_name}${rcNote} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
     }).join('\n\n');
 
     let relationshipsText = '';

@@ -170,6 +170,12 @@ The bus matrix identifies:
 - Never place text attributes in fact tables — move them to dimensions.
 - Role-playing dims: when one dim appears multiple times (order_date, ship_date),
   create separate FK aliases all pointing to dim_date.
+- EMPTY TABLES: some tables are annotated with their row count from the last
+  analysis. NEVER design a fact table whose source tables are ALL marked
+  "NO ROWS" — it would materialise empty and the topic would answer nothing.
+  Leave that subject area out entirely. An empty LOOKUP table may still feed
+  a dimension when a populated fact references it. Tables without a row-count
+  annotation were not measured — treat them as populated.
 
 **Data Products (groupings):**
 - Product names: plain business nouns (Sales, Purchases, Inventory, Articles, HR).

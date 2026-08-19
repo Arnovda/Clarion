@@ -419,3 +419,97 @@ def test_diff_handles_resurrected_row() -> None:
     counts = diff_states(existing, new_state, ["id"])
     assert counts["rows_inserted"] == 1
     assert counts["rows_unchanged"] == 1
+
+
+# ── Zero-row materialisation (end-to-end through main) ─────────────────────
+#
+# delta-rs refuses a write with no record batches ("No data source supplied
+# to write command") — the production failure mode for an AI-designed fact
+# whose source entities synced no rows. These tests drive main() with a real
+# local Delta path and pin that an empty result MATERIALISES instead of
+# failing: first run creates the table from the schema; a refresh that goes
+# empty deletes every row as a new Delta version.
+
+import io  # noqa: E402
+import json  # noqa: E402
+
+import pytest  # noqa: E402
+
+deltalake = pytest.importorskip("deltalake")
+
+
+def _run_main(monkeypatch, capsys, cfg: dict) -> dict:  # type: ignore[no-untyped-def]
+    from commit_table import main
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(cfg)))
+    exit_code = main()
+    assert exit_code == 0
+    return json.loads(capsys.readouterr().out)
+
+
+def _write_parquet(path, rows: list[dict]) -> None:  # type: ignore[no-untyped-def]
+    schema = pa.schema([("id", pa.int64()), ("v", pa.string())])
+    if rows:
+        table = pa.Table.from_pylist(rows, schema=schema)
+    else:
+        table = pa.Table.from_arrays(
+            [pa.array([], type=pa.int64()), pa.array([], type=pa.string())],
+            schema=schema,
+        )
+    import pyarrow.parquet as pq
+
+    pq.write_table(table, path)
+
+
+def test_zero_row_first_run_creates_empty_table(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    parquet = tmp_path / "new_state.parquet"
+    delta = tmp_path / "delta_table"
+    _write_parquet(parquet, [])
+
+    result = _run_main(monkeypatch, capsys, {
+        "delta_path": str(delta),
+        "new_state_parquet": str(parquet),
+        "business_key_columns": ["id"],
+        "business_columns": ["id", "v"],
+    })
+
+    assert result["status"] == "ok"
+    assert result["first_run"] is True
+    assert result["rows_total"] == 0
+    assert result["rows_inserted"] == 0
+
+    dt = deltalake.DeltaTable(str(delta))
+    loaded = dt.to_pyarrow_table()
+    assert loaded.num_rows == 0
+    assert set(loaded.schema.names) == {"id", "v", "_row_hash"}
+
+
+def test_zero_row_refresh_deletes_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    delta = tmp_path / "delta_table"
+
+    seed = tmp_path / "seed.parquet"
+    _write_parquet(seed, [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
+    seeded = _run_main(monkeypatch, capsys, {
+        "delta_path": str(delta),
+        "new_state_parquet": str(seed),
+        "business_key_columns": ["id"],
+        "business_columns": ["id", "v"],
+    })
+    assert seeded["rows_inserted"] == 2
+
+    empty = tmp_path / "empty.parquet"
+    _write_parquet(empty, [])
+    result = _run_main(monkeypatch, capsys, {
+        "delta_path": str(delta),
+        "new_state_parquet": str(empty),
+        "business_key_columns": ["id"],
+        "business_columns": ["id", "v"],
+    })
+
+    assert result["status"] == "ok"
+    assert result["first_run"] is False
+    assert result["rows_total"] == 0
+    assert result["rows_deleted"] == 2
+
+    dt = deltalake.DeltaTable(str(delta))
+    assert dt.to_pyarrow_table().num_rows == 0
