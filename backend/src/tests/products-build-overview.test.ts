@@ -100,7 +100,7 @@ interface OverviewSource {
   hasTemplate: boolean;
   tableCount: number;
   plan: { templateVersion: number; topics: Array<{ name: string; kind: string; sharedData: string[]; sampleQuestions: string[] }> } | null;
-  products: Array<{ id: number; name: string; hidden: boolean; kind: string }>;
+  products: Array<{ id: number; name: string; hidden: boolean; kind: string; lastRefreshedAt: string | null; rowsTotal: number | null }>;
 }
 
 async function fetchOverview(token: string) {
@@ -171,6 +171,51 @@ describe('GET /api/products/build-overview', () => {
       .put(`/api/products/${visibleProductId}`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ hidden: false });
+  });
+
+  it('reports rowsTotal so a built-but-empty topic reads "waiting for data", not "refreshed"', async () => {
+    const db = getTestDb();
+    const now = new Date();
+
+    // visibleProduct: built, every table empty → rowsTotal 0. The state the
+    // zero-row Delta fix makes reachable (AI-designed fact over entities
+    // that synced no rows) — it must be distinguishable from a healthy
+    // refresh AND from "not built yet".
+    const [emptyStar] = await db('star_schemas')
+      .insert({ tenant_id: tenantId, data_product_id: visibleProductId, name: 'Finance star' })
+      .returning('id');
+    const emptyStarId = Number((emptyStar as { id?: number }).id ?? emptyStar);
+    await db('product_tables').insert([
+      { tenant_id: tenantId, star_schema_id: emptyStarId, table_name: 'fact_receivables', table_role: 'fact', transformation_status: 'success', row_count: 0, last_run_at: now },
+      { tenant_id: tenantId, star_schema_id: emptyStarId, table_name: 'dim_gl_account', table_role: 'dimension', transformation_status: 'success', row_count: 0, last_run_at: now },
+    ]);
+
+    // hiddenProduct: one table with rows, one empty → rowsTotal is the sum.
+    const [filledStar] = await db('star_schemas')
+      .insert({ tenant_id: tenantId, data_product_id: hiddenProductId, name: 'Sales star' })
+      .returning('id');
+    const filledStarId = Number((filledStar as { id?: number }).id ?? filledStar);
+    await db('product_tables').insert([
+      { tenant_id: tenantId, star_schema_id: filledStarId, table_name: 'fact_sales_invoice_lines', table_role: 'fact', transformation_status: 'success', row_count: 5, last_run_at: now },
+      { tenant_id: tenantId, star_schema_id: filledStarId, table_name: 'dim_item', table_role: 'dimension', transformation_status: 'success', row_count: 0, last_run_at: now },
+    ]);
+
+    // A product with no materialised tables at all → rowsTotal null.
+    const [unbuilt] = await db('data_products')
+      .insert({ tenant_id: tenantId, connection_id: eoConnectionId, name: 'Banking', status: 'approved', kind: 'analytics' })
+      .returning('id');
+    const unbuiltId = Number((unbuilt as { id?: number }).id ?? unbuilt);
+
+    const res = await fetchOverview(adminToken);
+    const eo = (res.body.data.sources as OverviewSource[]).find((s) => s.id === eoConnectionId)!;
+    const byId = new Map(eo.products.map((p) => [p.id, p]));
+
+    const empty = byId.get(visibleProductId)!;
+    expect(empty.rowsTotal).toBe(0);
+    expect(empty.lastRefreshedAt).not.toBeNull();
+
+    expect(byId.get(hiddenProductId)!.rowsTotal).toBe(5);
+    expect(byId.get(unbuiltId)!.rowsTotal).toBeNull();
   });
 
   it('is tenant-isolated', async () => {
