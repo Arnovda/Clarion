@@ -1,8 +1,11 @@
-backend + frontend
+frontend only
 
-# Created 2026-08-19: first application. Promotes commit 5c40b13 — the Build
-# page run panel (topic cards + AI-reasoning disclosure), the zero-row Delta
-# build fix, the "waiting for data" topic state, and row-count-grounded AI
-# design. Applied AFTER the Build & Deploy run for 5c40b13 reported success,
-# per the LESSON in promote.yml: this control promotes whatever revision is
-# READY right now.
+# Re-applied 2026-08-19 (second): promotes frontend main-3d69c96 — Manage
+# mode's "How it fits together" rebuilt in the relations pane's language and
+# "Where it comes from" on the catalog's anchored LineageGraph. Frontend
+# only: this batch built no backend image. Applied AFTER the Build & Deploy
+# run for 3d69c96 reported success, per the LESSON in promote.yml.
+#
+# Created 2026-08-19: first application promoted commit 5c40b13 (backend +
+# frontend) — the Build page run panel, the zero-row Delta build fix, the
+# "waiting for data" topic state, and row-count-grounded AI design.
