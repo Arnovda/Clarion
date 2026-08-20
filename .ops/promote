@@ -1,5 +1,10 @@
 backend + frontend
 
+# Re-applied 2026-08-20 (fifth): promotes image main-e5242da — the Subjects
+# hub under Uncover replaces the per-topic rail rows (Option A of the mocked
+# navigation directions). Applied AFTER Build & Deploy for e5242da reported
+# success.
+#
 # Re-applied 2026-08-20 (fourth): promotes image main-7bade8a — column
 # lineage derived deterministically from the transformation SQL at build
 # time, and the lineage graph's Databricks-style row cap. Applied AFTER
