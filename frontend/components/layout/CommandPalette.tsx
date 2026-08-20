@@ -54,6 +54,7 @@ const ALL: ['admin', 'analyst', 'viewer'] = ['admin', 'analyst', 'viewer'];
 const ACTIONS_ALL: ActionDef[] = [
   { type: 'action', id: 'ask',        title: 'Ask a question',     subtitle: 'Get an answer in plain language', icon: 'chat',  href: '/query',      roles: ALL },
   { type: 'action', id: 'dashboard',  title: 'Create a dashboard', subtitle: 'Describe a report, AI builds it',  icon: 'grid',  href: '/dashboards', roles: ALL },
+  { type: 'action', id: 'subjects',   title: 'Subjects',           subtitle: 'Everything your team can ask about', icon: 'grid', href: '/subjects',   roles: ALL },
   { type: 'action', id: 'catalog',    title: 'Browse the catalog', subtitle: 'Find & understand your data',      icon: 'book',  href: '/catalog',    roles: ALL },
   { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/glossary',   roles: ALL },
   { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },

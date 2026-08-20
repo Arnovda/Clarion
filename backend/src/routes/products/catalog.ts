@@ -44,6 +44,17 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
           WHERE ss.data_product_id = data_products.id
             AND pt.transformation_status = 'success'
         ) as last_refreshed_at`),
+        // Same rule as build-overview's rowsTotal: NULL = nothing
+        // materialised, 0 = built but every table empty ("waiting for
+        // data") — the Subjects hub renders that state honestly instead
+        // of "refreshed just now".
+        db.raw(`(
+          SELECT SUM(pt.row_count)
+          FROM product_tables pt
+          JOIN star_schemas ss ON pt.star_schema_id = ss.id
+          WHERE ss.data_product_id = data_products.id
+            AND pt.transformation_status = 'success'
+        ) as rows_total`),
       )
       .orderBy('data_products.created_at', 'desc')
       .limit(limit)

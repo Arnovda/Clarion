@@ -218,6 +218,19 @@ describe('GET /api/products/build-overview', () => {
     expect(byId.get(unbuiltId)!.rowsTotal).toBeNull();
   });
 
+  it('GET /products carries rows_total so the Subjects hub can render "waiting for data"', async () => {
+    // Runs after the rowsTotal test above, so its product_tables fixtures
+    // (visibleProduct all-empty, hiddenProduct 5 rows) are in place.
+    const res = await (await request())
+      .get('/api/products')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(200);
+    const rows = res.body.data as Array<{ id: number; rows_total: string | number | null }>;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(Number(byId.get(visibleProductId)!.rows_total)).toBe(0);
+    expect(Number(byId.get(hiddenProductId)!.rows_total)).toBe(5);
+  });
+
   it('is tenant-isolated', async () => {
     const res = await fetchOverview(otherToken);
     expect(res.status).toBe(200);

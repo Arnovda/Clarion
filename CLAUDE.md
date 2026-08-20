@@ -31,7 +31,46 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (lineage is BUILT now, not hoped for: derived from the transformation SQL at persist time)
+**Last updated:** 2026-08-20 (Option A shipped: the Subjects hub replaces per-topic rail rows)
+
+**THE RAIL'S PER-TOPIC ROWS ARE GONE — OPTION A, THE OWNER'S PICK FROM
+THREE MOCKED DIRECTIONS (2026-08-20, third batch).** Owner: *"I'm starting
+to think that putting a 'data catalog' under 'uncover' is better and
+cleaner"* — and, after a three-option design canvas (A hub / B hub+pinned /
+C home-as-front-door), *"I want option A."* The reasoning that settled it:
+per-topic rows were right at two or three template topics, but the AI
+designer produces six-plus, and a rail that grows with the model's output
+always eventually scrolls.
+- **New `/subjects` (viewer-readable)** — the hub: ask bar (deep-links
+  `/query?q=…&autoSubmit=1`), a card per visible analytics topic
+  (`iconForAnalytics` glyph, description, freshness dot — "waiting for
+  data from your source" when `rows_total` is 0, same honesty rule as
+  Build), and a Shared data band → `/shared-data`. Empty state: analyst+
+  get "Create your topics" → /build; viewers get a quiet sentence.
+  Vocabulary rule applies in full (business words only). NOT named "Data
+  catalog" — Studio's Data Catalog is the curator surface and two catalogs
+  with different audiences would confuse both; "Subjects" keeps the
+  shipped vocabulary.
+- **`IconRail`**: ONE "Subjects" entry under Uncover (Ask AI → Dashboards
+  → Subjects → Notebooks, Layers icon, all roles); the `topics` group, the
+  runtime topics fetch, the per-topic rows, the empty-state CTA row and
+  the rail's Shared data row are all REMOVED. `ROUTE_ALIASES['/subjects']
+  = ['/subjects', '/topics', '/shared-data']` keeps the hub entry lit on a
+  topic page and on Shared data. CommandPalette gained a Subjects action.
+- **`GET /products` now ships `rows_total`** (same SUM rule as
+  build-overview's rowsTotal; NULL = nothing materialised) so the hub can
+  render the waiting-for-data state — pinned by a new test in
+  `products-build-overview.test.ts`.
+- **`lib/topicsChanged.ts` has no listener today** (the rail was the only
+  one); the Build page's dispatch is kept as the topic-set-changed bus —
+  header comment updated to say so honestly.
+- The three-option canvas lives at the "Clarion Subjects Navigation"
+  artifact (design mockups only — never shipped as code).
+- Validation: backend `npm run check` clean, full suite **36 files / 323
+  tests green**, eight ratchets green, frontend `tsc` + lint clean,
+  `next build` green (`/subjects` 2.81 kB / 116 kB).
+
+**Prior last updated:** 2026-08-20 (lineage is BUILT now, not hoped for: derived from the transformation SQL at persist time)
 
 **COLUMN LINEAGE IS DERIVED DETERMINISTICALLY AT BUILD TIME (2026-08-20,
 second batch).** Owner: *"I want you to build the lineage and visualize it

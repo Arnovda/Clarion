@@ -7,25 +7,24 @@ import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
-  Blocks, Sparkles,
+  Blocks, Sparkles, Layers,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
-import { iconForAnalytics } from '@/components/catalog/entityIcons';
-import { cleanTopicName } from '@/app/products/helpers';
-import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
 
 type Role = 'admin' | 'analyst' | 'viewer';
-// IA model (2026-08-18, the owner's sketch): the rail is business-first.
+// IA model (2026-08-18, the owner's sketch; revised 2026-08-20 — Option A of
+// three mocked directions, the owner's pick): the rail is business-first.
 //   • workspace — Home, unlabelled: the landing surface, above everything.
 //   • uncover   — the ways you interrogate the data: Ask AI, Dashboards,
-//     Notebooks (Notebooks analyst+ — viewers simply don't see the row).
-//   • subjects  — the business user's world. One row per analytics data
-//     product, fetched at runtime, plus Shared data: the lookups every
-//     subject slices by read as CONTENT, not tooling, so they live here
-//     (read-only for viewers) rather than in Studio.
+//     SUBJECTS, Notebooks (Notebooks analyst+). Subjects is ONE entry — the
+//     hub at /subjects — not a row per topic: per-topic rows were right at
+//     two or three template topics, but the AI designer produces six-plus
+//     and a rail that grows with the model's output always eventually
+//     scrolls. The hub carries what a rail row never could (descriptions,
+//     freshness), and Shared data lives there too.
 //   • studio    — the builder's pipeline, in pipeline order: Sources →
 //     Build → Relations → Data Catalog → Refresh → Suggestions. analyst+.
 //   • settings  — admin-only org config.
@@ -34,7 +33,7 @@ type Role = 'admin' | 'analyst' | 'viewer';
 // was about the FRONT DOOR (topics replace it for business users), but it
 // also took away the curator's working surface — definitions, columns, data
 // preview — which is Studio work and needs a direct door.
-type Group = 'workspace' | 'uncover' | 'topics' | 'studio' | 'settings';
+type Group = 'workspace' | 'uncover' | 'studio' | 'settings';
 
 const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
 
@@ -57,6 +56,7 @@ const ICONS = {
   relations: <Share2        className={ICON_CLASS} strokeWidth={1.5} />,
   blocks:   <Blocks         className={ICON_CLASS} strokeWidth={1.5} />,
   sparkles: <Sparkles       className={ICON_CLASS} strokeWidth={1.5} />,
+  layers:   <Layers         className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -75,6 +75,10 @@ const NAV_ITEMS: NavItem[] = [
   // ── Uncover — the ways you interrogate the data ──────────────────────────
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  // The Subjects hub — every topic plus Shared data, with the descriptions
+  // and freshness a rail row could never show. Stays lit on /topics/* and
+  // /shared-data via ROUTE_ALIASES so deep links don't orphan the state.
+  { key: 'subjects',   href: '/subjects',   label: 'Subjects',        icon: ICONS.layers,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'uncover' },
   // ── Studio — the builder's pipeline, in pipeline order ───────────────────
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
@@ -104,9 +108,9 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/query':      ['/query', '/ask'],
   '/dashboards': ['/dashboards'],
   '/notebooks':  ['/notebooks'],
-  // /glossary + /health are facets of Catalog now — keep them highlighting
-  // the Catalog rail item so deep links don't orphan the active state.
-  '/shared-data': ['/shared-data'],
+  // A topic page and Shared data are both "inside" the Subjects hub — keep
+  // the hub entry lit there so the rail always answers "where am I?".
+  '/subjects':   ['/subjects', '/topics', '/shared-data'],
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
   '/build':      ['/build'],
@@ -123,16 +127,15 @@ const GROUP_LABELS: Record<Group, string> = {
   // (just Home), which keeps the top of the rail calm. The rest are labelled.
   workspace: '',
   uncover:   'Uncover',
-  topics:    'Subjects',
   studio:    'Studio',
   settings:  'Settings',
 };
 
-const GROUP_ORDER: Group[] = ['workspace', 'uncover', 'topics', 'studio', 'settings'];
+const GROUP_ORDER: Group[] = ['workspace', 'uncover', 'studio', 'settings'];
 
 // Groups that render as collapsible disclosures (collapsed by default) so the
 // business owner's rail is just the calm Workspace items until they choose to
-// open the builder/admin tools. `workspace` and `topics` are never collapsible
+// open the builder/admin tools. `workspace` and `uncover` are never collapsible
 // — between them they ARE the business user's app.
 const COLLAPSIBLE_GROUPS: Group[] = ['studio', 'settings'];
 
@@ -157,11 +160,6 @@ export default function IconRail() {
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [sourcesCount, setSourcesCount] = useState<number>(0);
-  // "Your data" — one row per analytics data product. Fetched for EVERY role:
-  // the topics are the viewer's entire world, so an empty list here means a
-  // viewer has no navigation at all.
-  const [topics, setTopics] = useState<Array<{ id: number; name: string }>>([]);
-
   // Width + collapsed state — hydrated from localStorage on first effect
   // so the SSR render stays deterministic (avoids hydration warnings).
   const [width, setWidth] = useState<number>(NAV_DEFAULT_WIDTH);
@@ -204,38 +202,6 @@ export default function IconRail() {
     setItem(STORAGE_KEY, JSON.stringify({ width, collapsed, openGroups } satisfies PersistedState));
   }, [width, collapsed, openGroups, hydrated]);
 
-  // Topic rows. Reference-kind products are deliberately excluded — they are
-  // lookups, not subject areas, and they live under Studio → Shared data.
-  // Hidden products are excluded too: the Build page's show/hide toggle IS
-  // the topic selection, and this filter is what makes it mean something.
-  // Re-fetched on TOPICS_CHANGED_EVENT because the shell (and this rail)
-  // persists across client-side navigations — a build finishing or a toggle
-  // on /build must reach the rail without a full reload.
-  useEffect(() => {
-    if (!payload) return;
-    let cancelled = false;
-    const fetchTopics = () => {
-      api.get('/products')
-        .then((res) => {
-          if (cancelled) return;
-          const rows = (res.data.data ?? []) as Array<{ id: number; name: string; kind?: string; hidden?: boolean }>;
-          setTopics(
-            rows
-              .filter((p) => (p.kind ?? 'analytics') === 'analytics' && p.hidden !== true)
-              .map((p) => ({ id: p.id, name: p.name }))
-              .sort((a, b) => a.name.localeCompare(b.name)),
-          );
-        })
-        .catch(() => { /* rail degrades to Workspace + Studio */ });
-    };
-    fetchTopics();
-    window.addEventListener(TOPICS_CHANGED_EVENT, fetchTopics);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(TOPICS_CHANGED_EVENT, fetchTopics);
-    };
-  }, [payload]);
-
   // Badge counts for analyst+
   useEffect(() => {
     const role = payload?.role;
@@ -259,48 +225,10 @@ export default function IconRail() {
   }, [payload?.role]);
 
   const role: Role = payload?.role ?? 'viewer';
-  // Topic rows are built here rather than being part of NAV_ITEMS because
-  // they are tenant data, not app structure. They wear the same curated
-  // glyph the rest of the app resolves from a product name, so a topic looks
-  // identical in the rail, in the catalog and on its own page.
-  const topicItems: NavItem[] = topics.map((t) => {
-    const Glyph = iconForAnalytics(t.name);
-    return {
-      key: `topic-${t.id}`,
-      href: `/topics/${t.id}`,
-      label: cleanTopicName(t.name),
-      icon: <Glyph className={ICON_CLASS} strokeWidth={1.5} />,
-      roles: ['admin', 'analyst', 'viewer'],
-      group: 'topics',
-    };
-  });
-  // Empty YOUR DATA is a builder's call to action, not a blank: the group
-  // used to render nothing at zero topics, which left the one job this rail
-  // exists for — get your topics up — behind an unlinked URL. Viewers keep
-  // the quiet rail (there is nothing they could do about it).
-  if (topicItems.length === 0 && (role === 'admin' || role === 'analyst')) {
-    topicItems.push({
-      key: 'topics-empty',
-      href: '/build',
-      label: 'Create your topics →',
-      icon: ICONS.sparkles,
-      roles: ['admin', 'analyst'],
-      group: 'topics',
-    });
-  }
-  // Shared data closes the Subjects group: the lookups every subject slices
-  // by are CONTENT (your customers, your products), not tooling — so they
-  // sit with the subjects, for every role. The page is read-only for
-  // viewers; editing stays a curator affordance on the page itself.
-  topicItems.push({
-    key: 'shared',
-    href: '/shared-data',
-    label: 'Shared data',
-    icon: ICONS.library,
-    roles: ['admin', 'analyst', 'viewer'],
-    group: 'topics',
-  });
-  const visible = [...NAV_ITEMS, ...topicItems].filter((i) => i.roles.includes(role));
+  // Per-topic rows are gone (Option A, 2026-08-20): the Subjects entry under
+  // Uncover is the one door, and the hub at /subjects carries the topic list
+  // with descriptions and freshness. Shared data lives on the hub too.
+  const visible = NAV_ITEMS.filter((i) => i.roles.includes(role));
 
   function isActive(href: string) {
     const aliases = ROUTE_ALIASES[href] ?? [href];
