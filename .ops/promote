@@ -1,11 +1,16 @@
-frontend only
+backend + frontend
 
-# Re-applied 2026-08-19 (second): promotes frontend main-3d69c96 — Manage
-# mode's "How it fits together" rebuilt in the relations pane's language and
-# "Where it comes from" on the catalog's anchored LineageGraph. Frontend
-# only: this batch built no backend image. Applied AFTER the Build & Deploy
-# run for 3d69c96 reported success, per the LESSON in promote.yml.
+# Re-applied 2026-08-20 (third): promotes image main-b597605 — the schema
+# diagram's join columns ship past the is_technical firewall (edges land on
+# named fields again) and the builder synthesizes the dim_date relationship
+# rows the AI omits. Applied AFTER Build & Deploy run 467 reported success.
 #
-# Created 2026-08-19: first application promoted commit 5c40b13 (backend +
-# frontend) — the Build page run panel, the zero-row Delta build fix, the
-# "waiting for data" topic state, and row-count-grounded AI design.
+# Re-applied 2026-08-20 (second): promoted frontend main-3d69c96 — Manage
+# mode's two diagrams rebuilt (schema in the relations language, lineage on
+# the catalog's LineageGraph). Frontend only; the backend was unchanged.
+#
+# Created 2026-08-19: first application. Promoted commit 5c40b13 — the Build
+# page run panel (topic cards + AI-reasoning disclosure), the zero-row Delta
+# build fix, the "waiting for data" topic state, and row-count-grounded AI
+# design. Applied AFTER the Build & Deploy run for 5c40b13 reported success,
+# per the LESSON in promote.yml.
