@@ -647,7 +647,7 @@ function TablesSection({
 
 // ─── Data flow tab ──────────────────────────────────────────────────────────
 //
-// Source-side lineage is the inverse of the product-side LineageFlow: instead
+// Source-side lineage is the inverse of the product-side lineage view: instead
 // of "where did this product table come from", we want "which product tables
 // consume each of my source tables". A simple grouped list is more honest than
 // trying to render a fan-out diagram for tens of tables.

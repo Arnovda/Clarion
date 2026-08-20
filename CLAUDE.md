@@ -31,7 +31,41 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-19 (Build shows the thinking; zero-row builds fixed end to end)
+**Last updated:** 2026-08-19 (Manage mode's two diagrams rebuilt: schema in the relations language, lineage on the one real surface)
+
+**"HOW IT FITS TOGETHER" NOW SPEAKS THE RELATIONS PANE'S LANGUAGE
+(2026-08-19, second batch).** Owner, from the AI-built Purchasing topic:
+*"I want 'how it fits together' to look like the relations pane. And I don't
+see 'Where it comes from'."* Both were real defects surfaced by the AI
+designer's richer output:
+- **`StarSchemaFlow` rendered EVERY column of every table** — fine for an
+  8-column template table, a 2,000px strip for an 80-column AI table, and
+  fitView zoomed out until nothing was readable. REWRITTEN on the
+  /relationships canvas's two paid-for lessons: tables render their JOIN
+  SURFACE (+N more fields reveals the rest), and the layout answers the
+  question — the measures table dead-centre, lookups on the ellipse
+  (`radialLayout`). Geometry (`HEADER_H`/`ROW_H`/handle ids/`nodeHeight`)
+  and the layout are IMPORTED from `components/relationships`, not
+  re-derived — the two panes must agree visually and those numbers are
+  solved there. Cardinality rides the line ends (`1`/`∗` circles, U+2217),
+  edges solid ocean 2.2px. No fact in the data → anchor on the most-linked
+  table. Sole consumer is ManageLayer.
+- **"Where it comes from" rendered a BLANK canvas for AI-built topics**, by
+  design collision: `busMatrixPrompt` deliberately tells the model to OMIT
+  `lineage[]` for trivial columns (token rule, kept), and the old
+  `LineageFlow` drew ONLY lineage-bearing tables — zero rows meant zero
+  nodes and no message. The tab now uses **the catalog's `LineageGraph`**
+  (the owner-approved 2026-08-18 lineage surface, `GET /api/lineage/table
+  ?layer=product`) behind a table-picker chip row, defaulting to the
+  measures table — the "lineage links from the topic page" extension that
+  entry anticipated. Sparse/absent lineage now gets LineageGraph's honest
+  "No column-level lineage was recorded" card instead of silence.
+  **`LineageFlow.tsx` is DELETED** (zero consumers remained).
+- Validation: frontend `tsc` clean, rewritten files lint-clean (the two
+  `next lint` errors in `SourceRootPanel.tsx` are pre-existing findings on
+  untouched lines), `next build` green.
+
+**Prior last updated:** 2026-08-19 (Build shows the thinking; zero-row builds fixed end to end)
 
 **THE BUILD RUN SHOWS THE WORK NOW (2026-08-19).** Owner: *"I want to see more
 thinking work visually as an end user when clarion is creating the facts and

@@ -30,7 +30,9 @@ import type { FullDataProduct, ProductColumn, ProductKpi, ProductTable } from '@
 import type { DeployState, ManageTab, TableSubTab, Topic } from '@/app/topics/types';
 
 const StarSchemaFlow = dynamic(() => import('@/components/products/StarSchemaFlow'), { ssr: false });
-const LineageFlow = dynamic(() => import('@/components/products/LineageFlow'), { ssr: false });
+// "Where it comes from" is the catalog's anchored lineage graph, not a
+// bespoke flow: one lineage surface, drawn once (2026-08-18), reused here.
+const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
 const QualityTab = dynamic(() => import('@/app/products/QualityTab'), { ssr: false });
 const RefineChat = dynamic(() => import('@/components/products/RefineChat'), { ssr: false });
@@ -79,6 +81,9 @@ export default function ManageLayer({
   const [menuOpen, setMenuOpen] = useState(false);
   const [refineTable, setRefineTable] = useState<TableWithColumns | null>(null);
   const [refineOpen, setRefineOpen] = useState(false);
+  // "Where it comes from" is anchored on ONE table (§2.4 — no lineage
+  // hairball); null = the default anchor (the first measures table).
+  const [lineageTableId, setLineageTableId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -86,6 +91,11 @@ export default function ManageLayer({
   const tables: TableWithColumns[] = detail
     ? detail.star_schemas.flatMap((s) => s.tables)
     : [];
+
+  const lineageAnchorId = lineageTableId
+    ?? tables.find((t) => t.table_role === 'fact')?.id
+    ?? tables[0]?.id
+    ?? null;
 
   /**
    * Refresh = re-run the transformations through the existing bus-matrix
@@ -356,12 +366,35 @@ export default function ManageLayer({
 
           {tab === 'comes-from' && (
             <div className="flex-1 overflow-y-auto px-6 py-5">
-              {tables.length === 0
+              {tables.length === 0 || lineageAnchorId === null
                 ? <Empty>Nothing to trace yet.</Empty>
                 : (
-                  <div className="overflow-hidden rounded-lg border border-line bg-raised">
-                    <LineageFlow data={{ tables }} />
-                  </div>
+                  <>
+                    {/* One table at a time, picked here — the catalog's
+                        LineageGraph is always anchored, so the picker IS the
+                        navigation. Default anchor: the measures table, the
+                        one whose origin people actually ask about. */}
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      {tables.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setLineageTableId(t.id)}
+                          className={cn(
+                            'rounded-full border px-3 py-1 text-[12px] transition-colors',
+                            t.id === lineageAnchorId
+                              ? 'border-ocean bg-ocean-softer text-ocean'
+                              : 'border-line bg-raised text-ink-3 hover:border-ink-3',
+                          )}
+                        >
+                          {t.display_name || t.table_name}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="overflow-hidden rounded-lg border border-line bg-raised">
+                      <LineageGraph layer="product" tableId={lineageAnchorId} />
+                    </div>
+                  </>
                 )}
             </div>
           )}

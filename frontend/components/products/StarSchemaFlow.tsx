@@ -1,32 +1,47 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+/**
+ * <StarSchemaFlow> — one star schema, drawn in the relationship pane's language.
+ *
+ * Rebuilt 2026-08-19 (owner: "I want 'how it fits together' to look like the
+ * relations pane"). The previous version rendered EVERY column of every table
+ * as a row — fine for a template table with eight columns, unusable for an
+ * AI-designed table with eighty: the cards became 2,000px strips and fitView
+ * zoomed out until nothing was readable. This version applies the two lessons
+ * the /relationships canvas paid for:
+ *
+ *   1. A table renders the fields it CONNECTS ON, not all of them and not
+ *      none. The join surface is two or three rows, so every edge terminates
+ *      on a named field at both ends; "+N more fields" reveals the rest.
+ *   2. The layout answers the question being asked. A star schema IS one
+ *      table in the middle with its lookups around it, so the measures table
+ *      sits dead-centre and the lookups go on an ellipse (radialLayout) —
+ *      no edge crossings, by construction.
+ *
+ * Geometry (HEADER_H/ROW_H/handle ids/nodeHeight) and the radial layout are
+ * IMPORTED from components/relationships — the numbers are solved there and
+ * the two panes must agree visually, so re-deriving them here would just let
+ * them drift apart. Cardinality rides the line ENDS (1 = one row, ∗ = many),
+ * same notation, same 15px offset.
+ */
+
+import { useCallback, useMemo, useState } from 'react';
 import ReactFlow, {
-  Background, Controls, MiniMap,
-  useNodesState, useEdgesState,
-  Node, NodeProps,
+  Background,
+  Node, Edge, NodeProps,
   Handle, Position,
-  EdgeProps, getBezierPath, EdgeLabelRenderer,
+  EdgeProps, getBezierPath,
   ReactFlowProvider, ConnectionMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { KeyRound, Hash, Plus, Minus } from 'lucide-react';
+import {
+  HEADER_H, ROW_H, FOOTER_H, NODE_W, handleLeft, handleRight, rowCentreY, nodeHeight,
+} from '@/components/relationships/geometry';
+import { radialLayout } from '@/components/relationships/focusLayout';
 
 // ---------------------------------------------------------------------------
-// Layout constants
-// ---------------------------------------------------------------------------
-const HEADER_H = 52;
-const ROW_H    = 26;
-const DIM_W    = 260;
-const FACT_W   = 300;
-const GAP_X    = 360;   // horizontal gap between dim and fact columns
-const GAP_Y    = 24;    // vertical gap between table cards
-
-// Handle IDs
-const hL = (id: number | string) => `L_${id}`;
-const hR = (id: number | string) => `R_${id}`;
-
-// ---------------------------------------------------------------------------
-// Types expected from parent
+// Types expected from parent (the GET /products/:id payload)
 // ---------------------------------------------------------------------------
 export interface PTColumn {
   id: number;
@@ -64,609 +79,445 @@ export interface StarSchemaData {
   relationships: PTRelationship[];
 }
 
-// ---------------------------------------------------------------------------
-// Observatory palette for the schema diagram
-// ---------------------------------------------------------------------------
-const OBS = {
-  ink:          '#0f1a22',
-  ink2:         '#334049',
-  muted:        '#6b7680',
-  muted2:       '#8891a0',
-  line:         '#d0d5da',
-  softer:       '#edeff2',
-  raised:       '#ffffff',
-  ocean:        '#164e63',
-  oceanHover:   '#103d4f',
-  oceanSoft:    '#d0e1e6',
-  oceanSofter:  '#e8f0f3',
-  ai:           '#c08a5e',
-  aiSoft:       '#f1e4d6',
-  ok:           '#3f7a5c',
-  okSoft:       '#dbe8e0',
-  warn:         '#a06a1c',
-  warnSoft:     '#f1e4c8',
-  err:          '#a43a3a',
-  errSoft:      '#f1d7d7',
-  plum:         '#6b4e8c',
-} as const;
+// The two identities on this canvas: the measures table (fact) and its
+// lookups (dims). Same spine-mark treatment as the relationship pane's
+// source colours — one strong mark reads as identity.
+const FACT_COLOR = '#6b4e8c';
+const DIM_COLOR = '#164e63';
+const EDGE_COLOR = '#164e63';
 
 // ---------------------------------------------------------------------------
-// Relationship type metadata (matches RelationshipCanvas)
+// Node — the relationship pane's TableNode, retargeted at product tables
 // ---------------------------------------------------------------------------
-const TYPE_META: Record<string, { color: string; label: string; src: string; tgt: string }> = {
-  many_to_one:  { color: OBS.warn,  label: 'Many -> One',  src: 'N', tgt: '1' },
-  one_to_many:  { color: OBS.ocean, label: 'One -> Many',  src: '1', tgt: 'N' },
-  one_to_one:   { color: OBS.ok,    label: 'One -> One',   src: '1', tgt: '1' },
-  many_to_many: { color: OBS.plum,  label: 'Many <-> Many', src: 'N', tgt: 'N' },
-  fact_to_dim:  { color: OBS.ocean, label: 'Fact -> Dim',  src: 'N', tgt: '1' },
-  dim_to_fact:  { color: OBS.ocean, label: 'Dim -> Fact',  src: '1', tgt: 'N' },
-};
-const getMeta = (t: string) =>
-  TYPE_META[t] ?? { color: OBS.muted, label: t, src: '?', tgt: '?' };
-
-// ---------------------------------------------------------------------------
-// Column role badge
-// ---------------------------------------------------------------------------
-function ColRoleBadge({ role }: { role: string | null }) {
-  if (!role) return null;
-  const m: Record<string, { bg: string; text: string; label: string; hint: string }> = {
-    surrogate_key:         { bg: OBS.warnSoft,    text: OBS.warn,  label: 'SK',   hint: 'Surrogate key — the table’s own internal ID, generated here.' },
-    natural_key:           { bg: OBS.oceanSofter, text: OBS.ocean, label: 'NK',   hint: 'Natural key — the real-world ID from the source (e.g. invoice number).' },
-    foreign_key:           { bg: OBS.aiSoft,      text: OBS.ai,    label: 'FK',   hint: 'Foreign key — points at a row in a lookup table.' },
-    degenerate_dimension:  { bg: OBS.errSoft,     text: OBS.err,   label: 'DD',   hint: 'Degenerate dimension — an ID kept on the measure table with no lookup of its own.' },
-    measure:               { bg: OBS.okSoft,      text: OBS.ok,    label: 'M',    hint: 'Measure — a number you can sum or average.' },
-    attribute:             { bg: OBS.softer,      text: OBS.muted, label: 'attr', hint: 'Attribute — descriptive text you filter or group by.' },
-  };
-  const s = m[role];
-  if (!s) return null;
-  return (
-    <span title={s.hint} style={{
-      fontSize: 8, fontWeight: 600, padding: '1px 4px', borderRadius: 3,
-      background: s.bg, color: s.text, flexShrink: 0, lineHeight: '14px',
-      border: `1px solid ${OBS.line}`,
-    }}>{s.label}</span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Table node — similar to RelationshipCanvas TableNode
-// ---------------------------------------------------------------------------
-interface TableNodeData {
+interface SchemaNodeData {
   table: PTTable;
-  isDim: boolean;
-  focused: boolean;             // this table is clicked
-  highlighted: boolean;         // connected to the clicked table
-  dimmed: boolean;              // another table is clicked but this one is unrelated
-  highlightedFkCols: Set<string>; // FK column names to highlight
+  isFact: boolean;
+  /** Exactly the columns to render, in order. The parent decides which. */
+  shown: PTColumn[];
+  hiddenCount: number;
+  showingAll: boolean;
+  dimmed: boolean;
+  /** Column names lit because a selected/hovered table connects on them. */
+  litColumns: ReadonlySet<string>;
+  linkCount: number;
+  onToggleAll: (tableId: number) => void;
 }
 
-const HANDLE_STYLE_BASE = {
-  width: 8, height: 8,
-  border: '2px solid white',
-  borderRadius: '50%',
-  zIndex: 20,
+const HANDLE_STYLE: React.CSSProperties = {
+  width: 9,
+  height: 9,
+  background: '#ffffff',
+  border: '1.5px solid #b8bec5',
+  borderRadius: 9,
 };
 
-function TableNode({ data }: NodeProps<TableNodeData>) {
-  const { table, isDim, focused, highlighted, dimmed, highlightedFkCols } = data;
-  const cols = table.columns;
-  const totalH = HEADER_H + cols.length * ROW_H;
-
-  const headerBg = isDim ? (focused ? OBS.oceanHover : OBS.ocean) : (focused ? '#4e3a66' : OBS.plum);
-  const borderColor = focused ? (isDim ? OBS.ocean : OBS.plum) : highlighted ? (isDim ? OBS.oceanSoft : '#c8bcd6') : OBS.line;
-  const opacity = dimmed ? 0.3 : 1;
+function SchemaNodeImpl({ data, selected }: NodeProps<SchemaNodeData>) {
+  const { table, isFact, shown, hiddenCount, showingAll, dimmed, litColumns, linkCount } = data;
+  const hasFooter = hiddenCount > 0 || showingAll;
+  const height = nodeHeight(shown.length, hasFooter);
+  const color = isFact ? FACT_COLOR : DIM_COLOR;
 
   return (
-    <div style={{
-      position: 'relative',
-      width: isDim ? DIM_W : FACT_W,
-      height: totalH,
-      opacity,
-      transition: 'opacity 0.2s',
-    }}>
-      {/* Handles — column-level */}
-      {cols.map((col, i) => {
-        const top = HEADER_H + i * ROW_H + ROW_H / 2;
-        const handleBg = highlightedFkCols.has(col.column_name) ? OBS.warn : OBS.oceanSoft;
+    <div
+      style={{ position: 'relative', width: NODE_W, height }}
+      className={dimmed ? 'opacity-40 transition-opacity' : 'transition-opacity'}
+    >
+      {/* Whole-node handles so an endpoint that is somehow not rendered can
+          still anchor its edge at the header. Handles are SIBLINGS of the
+          box, never children — the box clips (rounded corners), and a handle
+          inside it is clipped away at exactly the node edge. */}
+      <Handle
+        type="source" position={Position.Left} id={handleLeft('table')}
+        style={{ ...HANDLE_STYLE, position: 'absolute', top: HEADER_H / 2, left: -5, transform: 'translateY(-50%)' }}
+      />
+      <Handle
+        type="source" position={Position.Right} id={handleRight('table')}
+        style={{ ...HANDLE_STYLE, position: 'absolute', top: HEADER_H / 2, right: -5, transform: 'translateY(-50%)' }}
+      />
+      {shown.map((col, i) => {
+        const top = rowCentreY(i);
         return (
-          <Fragment key={col.id}>
-            <Handle type="source" position={Position.Left} id={hL(col.id)}
-              style={{ ...HANDLE_STYLE_BASE, background: handleBg, position: 'absolute', top, left: -4, transform: 'translateY(-50%)' }} />
-            <Handle type="source" position={Position.Right} id={hR(col.id)}
-              style={{ ...HANDLE_STYLE_BASE, background: handleBg, position: 'absolute', top, right: -4, transform: 'translateY(-50%)' }} />
-          </Fragment>
+          <span key={col.id}>
+            <Handle
+              type="source" position={Position.Left} id={handleLeft(col.id)}
+              style={{ ...HANDLE_STYLE, position: 'absolute', top, left: -5, transform: 'translateY(-50%)' }}
+            />
+            <Handle
+              type="source" position={Position.Right} id={handleRight(col.id)}
+              style={{ ...HANDLE_STYLE, position: 'absolute', top, right: -5, transform: 'translateY(-50%)' }}
+            />
+          </span>
         );
       })}
 
-      {/* Visual box */}
-      <div style={{
-        position: 'absolute', inset: 0,
-        border: `1px solid ${borderColor}`,
-        borderRadius: 8,
-        overflow: 'hidden',
-        background: OBS.raised,
-        boxShadow: focused
-          ? `0 0 0 2px ${isDim ? OBS.oceanSoft : '#d6ccdf'}, 0 6px 20px rgba(13,28,47,0.1)`
-          : highlighted
-          ? `0 0 0 1px ${isDim ? OBS.oceanSoft : '#d6ccdf'}`
-          : '0 2px 6px rgba(13,28,47,0.04)',
-      }}>
-        {/* Header */}
-        <div style={{
-          height: HEADER_H,
-          background: headerBg,
-          padding: '8px 12px',
-          display: 'flex', flexDirection: 'column', justifyContent: 'center',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{
-              fontSize: 9, fontWeight: 500, padding: '1px 6px', borderRadius: 3,
-              background: 'rgba(255,255,255,0.18)',
-              color: 'rgba(255,255,255,0.9)',
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              fontFamily: 'var(--font-mono)',
-            }}>{isDim ? 'dimension' : 'fact'}</span>
+      <div
+        className="overflow-hidden rounded-xl bg-raised"
+        style={{
+          width: NODE_W,
+          height,
+          border: `1px solid ${isFact ? color : '#d0d5da'}`,
+          boxShadow: isFact
+            ? `0 0 0 4px ${color}26, 0 10px 28px rgba(15,26,34,0.14)`
+            : selected
+              ? '0 0 0 3px rgba(22,78,99,0.14), 0 6px 18px rgba(15,26,34,0.10)'
+              : '0 1px 3px rgba(15,26,34,0.07)',
+        }}
+      >
+        <div className="relative flex items-start gap-2 pl-4 pr-3" style={{ height: HEADER_H }}>
+          <span className="absolute inset-y-0 left-0 w-[5px]" style={{ background: color }} aria-hidden />
+          <div className="min-w-0 flex-1 pt-[10px]">
+            <div className={`truncate leading-tight text-ink ${isFact ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'}`}>
+              {table.display_name || table.table_name}
+            </div>
+            <div className="truncate text-[11px] leading-tight text-muted">
+              {isFact ? 'the measures table' : 'lookup'}
+              {' · '}
+              {linkCount === 0 ? 'not linked yet' : `${linkCount} link${linkCount === 1 ? '' : 's'}`}
+            </div>
           </div>
-          <p style={{
-            margin: '2px 0 0', color: '#fff', fontSize: 12, fontWeight: 500,
-            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>{table.display_name || table.table_name}</p>
         </div>
 
-        {/* Column rows */}
-        {cols.map((col, i) => {
-          const isFkHighlighted = highlightedFkCols.has(col.column_name);
-          const rowBg = isFkHighlighted ? OBS.warnSoft : i % 2 === 0 ? OBS.raised : OBS.softer;
-          const leftBdr = isFkHighlighted ? `2px solid ${OBS.warn}` : '2px solid transparent';
-
+        {shown.map((col) => {
+          const lit = litColumns.has(col.column_name);
+          const isMeasure = col.column_role === 'measure';
           return (
-            <div key={col.id} style={{
-              height: ROW_H,
-              display: 'flex', alignItems: 'center', gap: 5,
-              padding: '0 10px',
-              background: rowBg,
-              borderTop: `1px solid ${OBS.line}`,
-              borderLeft: leftBdr,
-            }}>
-              <ColRoleBadge role={col.column_role} />
-              <span style={{
-                fontSize: 11, color: isFkHighlighted ? OBS.warn : OBS.ink2,
-                fontWeight: isFkHighlighted ? 600 : 400,
-                flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>{col.column_name}</span>
-              {col.fk_target_table && (
-                <span style={{
-                  fontSize: 9, color: OBS.plum, fontFamily: 'var(--font-mono), monospace', flexShrink: 0,
-                }}>&#8594; {col.fk_target_table}</span>
-              )}
-              {!col.fk_target_table && (
-                <span style={{
-                  fontSize: 9, color: OBS.muted2, fontFamily: 'var(--font-mono), monospace', flexShrink: 0,
-                }}>{col.data_type?.toLowerCase().slice(0, 8)}</span>
-              )}
+            <div
+              key={col.id}
+              className="flex items-center gap-1.5 border-t border-line/50 pl-4 pr-3 text-[11.5px]"
+              style={{
+                height: ROW_H,
+                background: lit ? `${color}1a` : undefined,
+                color: lit ? '#0f1a22' : '#334049',
+                fontWeight: lit ? 600 : 400,
+              }}
+            >
+              {isMeasure
+                ? <Hash size={11} className="shrink-0 text-muted2" />
+                : <KeyRound size={11} className="shrink-0" style={{ color: lit ? color : '#8891a0' }} />}
+              <span className="min-w-0 flex-1 truncate">{col.column_name}</span>
+              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted2">
+                {(col.data_type ?? '').slice(0, 7)}
+              </span>
             </div>
           );
         })}
+
+        {hasFooter && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); data.onToggleAll(table.id); }}
+            className="flex w-full items-center gap-1.5 border-t border-line/50 pl-4 pr-3 text-left text-[11px] text-muted hover:bg-soft hover:text-ink2"
+            style={{ height: FOOTER_H }}
+          >
+            {showingAll ? <Minus size={10} /> : <Plus size={10} />}
+            {showingAll ? 'Show only linked fields' : `${hiddenCount} more field${hiddenCount === 1 ? '' : 's'}`}
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Relationship edge — bezier with 1/N labels, hover tooltip
+// Edge — solid line, cardinality on the ENDS (1 = one row, ∗ = many)
 // ---------------------------------------------------------------------------
-interface RelEdgeData {
-  relType: string;
-  relId: number;
-  fromLabel: string;
-  toLabel: string;
-  highlighted: boolean;
+interface SchemaEdgeData {
   dimmed: boolean;
-  onHover: (id: number | null) => void;
-  hovered: boolean;
+  /** [symbol at the rendered source end, symbol at the rendered target end] */
+  ends: readonly [string, string];
 }
 
-function RelEdge({
-  id, sourceX, sourceY, targetX, targetY,
-  sourcePosition, targetPosition, data,
-}: EdgeProps<RelEdgeData>) {
-  const meta = getMeta(data?.relType ?? '');
-  const isHighlighted = data?.highlighted ?? false;
-  const isDimmed = data?.dimmed ?? false;
-  const isHovered = data?.hovered ?? false;
-  const active = isHighlighted || isHovered;
-  const color = active ? OBS.ocean : isDimmed ? OBS.line : meta.color;
-  const strokeW = active ? 2.5 : isDimmed ? 1 : 1.5;
-  const opacity = isDimmed ? 0.25 : 1;
-  const markerId = `arr-star-${id}`;
+const END_OFFSET = 15;
 
-  const nColor = active ? OBS.ocean : OBS.muted2;
-  const oColor = active ? OBS.warn : OBS.muted2;
-  const srcLabelColor = meta.src === 'N' ? nColor : oColor;
-  const tgtLabelColor = meta.tgt === 'N' ? nColor : oColor;
-
-  const [edgePath, labelX, labelY] = getBezierPath({
-    sourceX, sourceY, sourcePosition,
-    targetX, targetY, targetPosition,
-    curvature: 0.3,
-  });
-
+function EndSymbol({ x, y, symbol, faded }: { x: number; y: number; symbol: string; faded: boolean }) {
   return (
-    <g style={{ opacity, transition: 'opacity 0.2s' }}>
-      <defs>
-        <marker id={markerId} viewBox="0 0 10 10" refX="8" refY="5"
-          markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-          <path d="M 0 1 L 9 5 L 0 9 z" fill={color} />
-        </marker>
-      </defs>
-
-      {/* White knockout */}
-      <path d={edgePath} fill="none" stroke="white" strokeWidth={strokeW + 6} />
-
-      {/* Wide hit zone */}
-      <path d={edgePath} fill="none" stroke="transparent" strokeWidth={18}
-        style={{ cursor: 'pointer' }}
-        onMouseEnter={() => data?.onHover(data.relId)}
-        onMouseLeave={() => data?.onHover(null)}
-      />
-
-      {/* Visible stroke */}
-      <path
-        id={id}
-        className="react-flow__edge-path"
-        d={edgePath}
-        fill="none"
-        stroke={color}
-        strokeWidth={strokeW}
-        markerEnd={`url(#${markerId})`}
-        style={{ cursor: 'pointer', transition: 'stroke 0.15s, stroke-width 0.15s' }}
-        onMouseEnter={() => data?.onHover(data.relId)}
-        onMouseLeave={() => data?.onHover(null)}
-      />
-
-      <EdgeLabelRenderer>
-        {/* Source cardinality */}
-        <div className="nodrag nopan" style={{
-          position: 'absolute', pointerEvents: 'none',
-          transform: `translate(-50%,-50%) translate(${
-            sourceX + (sourcePosition === Position.Right ? 14 : -14)
-          }px,${sourceY - 10}px)`,
-        }}>
-          <span style={{ fontSize: 11, fontWeight: 800, color: srcLabelColor }}>{meta.src}</span>
-        </div>
-
-        {/* Target cardinality */}
-        <div className="nodrag nopan" style={{
-          position: 'absolute', pointerEvents: 'none',
-          transform: `translate(-50%,-50%) translate(${
-            targetX + (targetPosition === Position.Left ? -14 : 14)
-          }px,${targetY - 10}px)`,
-        }}>
-          <span style={{ fontSize: 11, fontWeight: 800, color: tgtLabelColor }}>{meta.tgt}</span>
-        </div>
-
-        {/* Centre label — type pill on hover */}
-        <div className="nodrag nopan" style={{
-          position: 'absolute', pointerEvents: 'all', cursor: 'default',
-          transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
-        }}
-          onMouseEnter={() => data?.onHover(data!.relId)}
-          onMouseLeave={() => data?.onHover(null)}
-        >
-          <span style={{
-            fontSize: 10, fontWeight: 500, color: 'white',
-            background: color, padding: '2px 8px', borderRadius: 3,
-            whiteSpace: 'nowrap',
-            letterSpacing: '0.04em',
-            opacity: active ? 1 : 0,
-            transition: 'opacity 0.15s',
-            pointerEvents: active ? 'all' : 'none',
-          }}>{meta.label}</span>
-        </div>
-
-        {/* Hover tooltip */}
-        {isHovered && (
-          <div className="nodrag nopan" style={{
-            position: 'absolute', pointerEvents: 'none',
-            transform: `translate(-50%, -100%) translate(${labelX}px,${labelY - 18}px)`,
-            zIndex: 9999,
-          }}>
-            <div style={{
-              background: OBS.ink, color: 'rgba(255,255,255,0.9)',
-              borderRadius: 6, padding: '8px 12px',
-              minWidth: 180, maxWidth: 280,
-              boxShadow: '0 4px 16px rgba(13,28,47,0.18)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              fontSize: 11, lineHeight: 1.5, whiteSpace: 'nowrap',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.08em' }}>FROM</span>
-                <span style={{ fontWeight: 500, color: 'rgba(255,255,255,0.92)' }}>{data?.fromLabel}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-                <span style={{ color: meta.color, fontWeight: 600, fontSize: 13 }}>{meta.src}</span>
-                <div style={{ flex: 1, height: 1, background: meta.color, borderRadius: 1 }} />
-                <span style={{ fontSize: 10, color: meta.color, fontWeight: 500, letterSpacing: '0.04em' }}>{meta.label}</span>
-                <div style={{ flex: 1, height: 1, background: meta.color, borderRadius: 1 }} />
-                <span style={{ color: meta.color, fontWeight: 600, fontSize: 13 }}>{meta.tgt}</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, letterSpacing: '0.08em' }}>TO</span>
-                <span style={{ fontWeight: 500, color: 'rgba(255,255,255,0.92)' }}>{data?.toLabel}</span>
-              </div>
-              <div style={{
-                position: 'absolute', bottom: -6, left: '50%', transform: 'translateX(-50%)',
-                width: 0, height: 0,
-                borderLeft: '6px solid transparent', borderRight: '6px solid transparent',
-                borderTop: `6px solid ${OBS.ink}`,
-              }} />
-            </div>
-          </div>
-        )}
-      </EdgeLabelRenderer>
+    <g pointerEvents="none" opacity={faded ? 0.18 : 1}>
+      <circle cx={x} cy={y} r={7.5} fill="#fffdfa" stroke={EDGE_COLOR} strokeWidth={1.25} />
+      <text
+        x={x} y={y} textAnchor="middle" dominantBaseline="central"
+        fontSize={10} fontWeight={600} fill={EDGE_COLOR}
+        style={{ fontFamily: 'ui-monospace, SFMono-Regular, monospace' }}
+      >
+        {symbol}
+      </text>
     </g>
   );
 }
 
-const nodeTypes = { starTableNode: TableNode };
-const edgeTypes = { starRelEdge: RelEdge };
+function SchemaEdgeImpl({
+  sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data,
+}: EdgeProps<SchemaEdgeData>) {
+  const [path] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  const dimmed = data?.dimmed ?? false;
+  return (
+    <>
+      <path
+        d={path}
+        fill="none"
+        stroke={EDGE_COLOR}
+        strokeWidth={2.2}
+        strokeOpacity={dimmed ? 0.18 : 1}
+        style={{ pointerEvents: 'none' }}
+      />
+      {data?.ends && (
+        <>
+          <EndSymbol
+            x={sourceX + (sourcePosition === Position.Left ? -END_OFFSET : END_OFFSET)}
+            y={sourceY}
+            symbol={data.ends[0]}
+            faded={dimmed}
+          />
+          <EndSymbol
+            x={targetX + (targetPosition === Position.Left ? -END_OFFSET : END_OFFSET)}
+            y={targetY}
+            symbol={data.ends[1]}
+            faded={dimmed}
+          />
+        </>
+      )}
+    </>
+  );
+}
+
+const nodeTypes = { schemaNode: SchemaNodeImpl };
+const edgeTypes = { schemaEdge: SchemaEdgeImpl };
+
+// `∗` is U+2217, not the typographic asterisk — it sits on the centre line
+// inside the circle. Symbols follow the STORED from→to orientation and are
+// swapped when the edge is rendered the other way around.
+const END_SYMBOLS: Record<string, readonly [string, string]> = {
+  many_to_one: ['∗', '1'],
+  one_to_many: ['1', '∗'],
+  one_to_one: ['1', '1'],
+  many_to_many: ['∗', '∗'],
+  fact_to_dim: ['∗', '1'],
+  dim_to_fact: ['1', '∗'],
+};
 
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
-  const [activeTable, setActiveTable] = useState<string | null>(null);
-  const [hoveredRelId, setHoveredRelId] = useState<number | null>(null);
+  const [activeTableId, setActiveTableId] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
 
-  const factTables = useMemo(() => schema.tables.filter((t) => t.table_role === 'fact'), [schema]);
-  const dimTables = useMemo(() => schema.tables.filter((t) => t.table_role !== 'fact'), [schema]);
+  const toggleAll = useCallback((tableId: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(tableId)) next.delete(tableId);
+      else next.add(tableId);
+      return next;
+    });
+  }, []);
 
-  // Relationship map for highlighting
-  const relMap = useMemo(() => {
-    const m = new Map<string, Set<string>>();
+  const byName = useMemo(() => new Map(schema.tables.map((t) => [t.table_name, t])), [schema]);
+
+  // The join surface per table: every column that is an endpoint of a
+  // relationship in this schema, in the table's own column order.
+  const joinSurface = useMemo(() => {
+    const surface = new Map<number, Set<string>>();
     for (const rel of schema.relationships) {
-      const a = rel.from_table_name;
-      const b = rel.to_table_name;
-      if (!m.has(a)) m.set(a, new Set());
-      if (!m.has(b)) m.set(b, new Set());
-      m.get(a)!.add(b);
-      m.get(b)!.add(a);
-    }
-    return m;
-  }, [schema]);
-
-  // Build column name lookup: table_name -> { id -> column }
-  const colLookup = useMemo(() => {
-    const m = new Map<string, Map<string, PTColumn>>();
-    for (const t of schema.tables) {
-      const cm = new Map<string, PTColumn>();
-      for (const c of t.columns) cm.set(c.column_name, c);
-      m.set(t.table_name, cm);
-    }
-    return m;
-  }, [schema]);
-
-  const isHighlighted = useCallback((tableName: string) => {
-    if (!activeTable) return false;
-    if (tableName === activeTable) return true;
-    return relMap.get(activeTable)?.has(tableName) ?? false;
-  }, [activeTable, relMap]);
-
-  const isDimmed = useCallback((tableName: string) => {
-    return activeTable !== null && !isHighlighted(tableName);
-  }, [activeTable, isHighlighted]);
-
-  // FK columns that should be highlighted for the active table
-  const highlightedFkCols = useMemo(() => {
-    if (!activeTable) return new Set<string>();
-    const cols = new Set<string>();
-    for (const rel of schema.relationships) {
-      if (rel.from_table_name === activeTable || rel.to_table_name === activeTable) {
-        cols.add(rel.from_column_name);
-        cols.add(rel.to_column_name);
+      const from = byName.get(rel.from_table_name);
+      const to = byName.get(rel.to_table_name);
+      if (from) {
+        if (!surface.has(from.id)) surface.set(from.id, new Set());
+        surface.get(from.id)!.add(rel.from_column_name);
+      }
+      if (to) {
+        if (!surface.has(to.id)) surface.set(to.id, new Set());
+        surface.get(to.id)!.add(rel.to_column_name);
       }
     }
-    return cols;
-  }, [activeTable, schema.relationships]);
+    return surface;
+  }, [schema.relationships, byName]);
 
-  // Compute layout: dims on left, facts on right
-  const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
-    const nodes: Node[] = [];
-    const edges: any[] = [];
+  const shownColumns = useCallback((t: PTTable): PTColumn[] => {
+    if (expanded.has(t.id)) return t.columns;
+    const names = joinSurface.get(t.id);
+    if (!names || names.size === 0) return [];
+    return t.columns.filter((c) => names.has(c.column_name));
+  }, [expanded, joinSurface]);
 
-    // Layout dims vertically on the left
-    let dimY = 0;
-    for (const dim of dimTables) {
-      const h = HEADER_H + dim.columns.length * ROW_H;
-      nodes.push({
-        id: `table-${dim.table_name}`,
-        type: 'starTableNode',
-        position: { x: 0, y: dimY },
-        data: {
-          table: dim,
-          isDim: true,
-          focused: false,
-          highlighted: false,
-          dimmed: false,
-          highlightedFkCols: new Set<string>(),
-        },
-        style: { width: DIM_W, height: h },
-      });
-      dimY += h + GAP_Y;
-    }
-
-    // Layout facts vertically on the right, centered relative to dims
-    const totalDimH = dimY - GAP_Y;
-    let factY = 0;
-    const factHeights = factTables.map((f) => HEADER_H + f.columns.length * ROW_H);
-    const totalFactH = factHeights.reduce((s, h) => s + h + GAP_Y, -GAP_Y);
-    const factStartY = Math.max(0, (totalDimH - totalFactH) / 2);
-    factY = factStartY;
-
-    for (let i = 0; i < factTables.length; i++) {
-      const fact = factTables[i];
-      const h = factHeights[i];
-      nodes.push({
-        id: `table-${fact.table_name}`,
-        type: 'starTableNode',
-        position: { x: DIM_W + GAP_X, y: factY },
-        data: {
-          table: fact,
-          isDim: false,
-          focused: false,
-          highlighted: false,
-          dimmed: false,
-          highlightedFkCols: new Set<string>(),
-        },
-        style: { width: FACT_W, height: h },
-      });
-      factY += h + GAP_Y;
-    }
-
-    // Build edges from relationships — connect at column level
+  const linkCounts = useMemo(() => {
+    const counts = new Map<number, number>();
     for (const rel of schema.relationships) {
-      // Figure out which is the dim and which is the fact
-      const fromIsDim = dimTables.some((d) => d.table_name === rel.from_table_name);
-      const dimName = fromIsDim ? rel.from_table_name : rel.to_table_name;
-      const factName = fromIsDim ? rel.to_table_name : rel.from_table_name;
-      const dimColName = fromIsDim ? rel.from_column_name : rel.to_column_name;
-      const factColName = fromIsDim ? rel.to_column_name : rel.from_column_name;
+      const from = byName.get(rel.from_table_name);
+      const to = byName.get(rel.to_table_name);
+      if (from) counts.set(from.id, (counts.get(from.id) ?? 0) + 1);
+      if (to) counts.set(to.id, (counts.get(to.id) ?? 0) + 1);
+    }
+    return counts;
+  }, [schema.relationships, byName]);
 
-      const dimCol = colLookup.get(dimName)?.get(dimColName);
-      const factCol = colLookup.get(factName)?.get(factColName);
+  // Which tables sit next to the active one (for the dim/highlight pass).
+  const neighbours = useMemo(() => {
+    const m = new Map<number, Set<number>>();
+    for (const rel of schema.relationships) {
+      const a = byName.get(rel.from_table_name);
+      const b = byName.get(rel.to_table_name);
+      if (!a || !b) continue;
+      if (!m.has(a.id)) m.set(a.id, new Set());
+      if (!m.has(b.id)) m.set(b.id, new Set());
+      m.get(a.id)!.add(b.id);
+      m.get(b.id)!.add(a.id);
+    }
+    return m;
+  }, [schema.relationships, byName]);
 
-      if (!dimCol || !factCol) continue;
+  // Column names lit on each table: the fields the active table connects on.
+  const litByTable = useMemo(() => {
+    const m = new Map<number, Set<string>>();
+    if (activeTableId === null) return m;
+    const active = schema.tables.find((t) => t.id === activeTableId);
+    if (!active) return m;
+    for (const rel of schema.relationships) {
+      if (rel.from_table_name !== active.table_name && rel.to_table_name !== active.table_name) continue;
+      const from = byName.get(rel.from_table_name);
+      const to = byName.get(rel.to_table_name);
+      if (from) {
+        if (!m.has(from.id)) m.set(from.id, new Set());
+        m.get(from.id)!.add(rel.from_column_name);
+      }
+      if (to) {
+        if (!m.has(to.id)) m.set(to.id, new Set());
+        m.get(to.id)!.add(rel.to_column_name);
+      }
+    }
+    return m;
+  }, [activeTableId, schema, byName]);
+
+  const { nodes, edges } = useMemo(() => {
+    // The measures table anchors the ring. A schema is one fact plus its
+    // lookups by construction; if the data carries no fact (or several),
+    // anchor on the most-linked table — the centre must be the table the
+    // picture is about, and that is the one everything joins to.
+    const facts = schema.tables.filter((t) => t.table_role === 'fact');
+    const anchor = facts[0]
+      ?? [...schema.tables].sort((a, b) => (linkCounts.get(b.id) ?? 0) - (linkCounts.get(a.id) ?? 0))[0];
+    if (!anchor) return { nodes: [] as Node[], edges: [] as Edge[] };
+    const ringTables = schema.tables.filter((t) => t.id !== anchor.id);
+
+    const heightOf = (id: number) => {
+      const t = schema.tables.find((x) => x.id === id)!;
+      const shown = shownColumns(t);
+      const hasFooter = t.columns.length > shown.length || expanded.has(t.id);
+      return nodeHeight(shown.length, hasFooter);
+    };
+
+    const { positions } = radialLayout(anchor.id, ringTables.map((t) => t.id), heightOf);
+
+    const nodes: Node[] = schema.tables.map((t) => {
+      const shown = shownColumns(t);
+      const pos = positions.get(t.id) ?? { x: 0, y: 0 };
+      const dimmed = activeTableId !== null
+        && t.id !== activeTableId
+        && !(neighbours.get(activeTableId)?.has(t.id) ?? false);
+      return {
+        id: String(t.id),
+        type: 'schemaNode',
+        position: pos,
+        data: {
+          table: t,
+          isFact: t.id === anchor.id,
+          shown,
+          hiddenCount: t.columns.length - shown.length,
+          showingAll: expanded.has(t.id),
+          dimmed,
+          litColumns: litByTable.get(t.id) ?? new Set<string>(),
+          linkCount: linkCounts.get(t.id) ?? 0,
+          onToggleAll: toggleAll,
+        } satisfies SchemaNodeData,
+      };
+    });
+
+    const centreX = (id: number) => (positions.get(id)?.x ?? 0) + NODE_W / 2;
+
+    const edges: Edge[] = [];
+    for (const rel of schema.relationships) {
+      const from = byName.get(rel.from_table_name);
+      const to = byName.get(rel.to_table_name);
+      if (!from || !to) continue;
+
+      const fromShown = shownColumns(from);
+      const toShown = shownColumns(to);
+      const fromCol = fromShown.find((c) => c.column_name === rel.from_column_name);
+      const toCol = toShown.find((c) => c.column_name === rel.to_column_name);
+
+      // Handles follow the geometry: the edge leaves each node on the side
+      // facing the other node, or every neighbour on the left half of the
+      // ring gets a line sweeping all the way around its card.
+      const fromOnLeft = centreX(from.id) < centreX(to.id);
+      const sourceHandle = fromOnLeft ? handleRight(fromCol?.id ?? 'table') : handleLeft(fromCol?.id ?? 'table');
+      const targetHandle = fromOnLeft ? handleLeft(toCol?.id ?? 'table') : handleRight(toCol?.id ?? 'table');
+
+      const dimmed = activeTableId !== null && from.id !== activeTableId && to.id !== activeTableId;
+      const ends = END_SYMBOLS[rel.relationship_type] ?? (['∗', '1'] as const);
 
       edges.push({
         id: `rel-${rel.id}`,
-        source: `table-${dimName}`,
-        sourceHandle: hR(dimCol.id),     // right side of dim
-        target: `table-${factName}`,
-        targetHandle: hL(factCol.id),    // left side of fact
-        type: 'starRelEdge',
-        data: {
-          relType: rel.relationship_type,
-          relId: rel.id,
-          fromLabel: `${dimName}.${dimColName}`,
-          toLabel: `${factName}.${factColName}`,
-          highlighted: false,
-          dimmed: false,
-          onHover: () => {},
-          hovered: false,
-        },
+        source: String(from.id),
+        sourceHandle,
+        target: String(to.id),
+        targetHandle,
+        type: 'schemaEdge',
+        data: { dimmed, ends } satisfies SchemaEdgeData,
       });
     }
 
     return { nodes, edges };
-  }, [schema, dimTables, factTables, colLookup]);
+  }, [schema, shownColumns, expanded, activeTableId, neighbours, litByTable, linkCounts, byName, toggleAll]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-  // Update node/edge data when activeTable or hoveredRelId changes
-  useEffect(() => {
-    setNodes((nds) =>
-      nds.map((n) => {
-        const tableName = n.id.replace('table-', '');
-        return {
-          ...n,
-          data: {
-            ...n.data,
-            focused: activeTable === tableName,
-            highlighted: isHighlighted(tableName),
-            dimmed: isDimmed(tableName),
-            highlightedFkCols: activeTable === tableName || isHighlighted(tableName) ? highlightedFkCols : new Set<string>(),
-          },
-        };
-      }),
-    );
-  }, [activeTable, isHighlighted, isDimmed, highlightedFkCols, setNodes]);
-
-  useEffect(() => {
-    setEdges((eds) =>
-      eds.map((e) => {
-        const relData = e.data;
-        if (!relData) return e;
-        const fromTable = e.source.replace('table-', '');
-        const toTable = e.target.replace('table-', '');
-        const relIsHighlighted = activeTable === fromTable || activeTable === toTable;
-        const relIsDimmed = activeTable !== null && !relIsHighlighted;
-        return {
-          ...e,
-          data: {
-            ...relData,
-            highlighted: relIsHighlighted,
-            dimmed: relIsDimmed,
-            hovered: hoveredRelId === relData.relId,
-            onHover: setHoveredRelId,
-          },
-        };
-      }),
-    );
-  }, [activeTable, hoveredRelId, setEdges]);
-
-  const onNodeClick = useCallback((_: any, node: Node) => {
-    const tableName = node.id.replace('table-', '');
-    setActiveTable((prev) => (prev === tableName ? null : tableName));
+  const onNodeClick = useCallback((_: unknown, node: Node) => {
+    const id = Number(node.id);
+    setActiveTableId((prev) => (prev === id ? null : id));
   }, []);
 
-  const onPaneClick = useCallback(() => setActiveTable(null), []);
-
   return (
-    <div style={{ height: Math.max(600, (dimTables.length + factTables.length) * 120 + 200) }}>
+    <div style={{ height: 560 }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
+        onPaneClick={() => setActiveTableId(null)}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         connectionMode={ConnectionMode.Loose}
         fitView
-        fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.3}
-        maxZoom={1.5}
+        fitViewOptions={{ padding: 0.12 }}
+        // The relationship pane's lesson: nothing may shrink below reading
+        // size. If the ring is bigger than the pane, the user pans.
+        minZoom={0.25}
+        maxZoom={1}
         proOptions={{ hideAttribution: true }}
-        nodesDraggable={true}
+        nodesDraggable
         nodesConnectable={false}
-        elementsSelectable={true}
-        panOnScroll={true}
+        elementsSelectable
+        panOnScroll
         zoomOnScroll={false}
       >
-        <Background color={OBS.line} gap={20} size={1} />
-        <Controls showInteractive={false} />
-        <MiniMap
-          nodeColor={(n) => {
-            const isDim = n.data?.isDim;
-            return isDim ? OBS.oceanSoft : '#d6ccdf';
-          }}
-          maskColor="rgba(13,28,47,0.06)"
-          style={{ borderRadius: 6, border: `1px solid ${OBS.line}` }}
-        />
+        <Background color="#d0d5da" gap={20} size={1} />
       </ReactFlow>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Exported wrapper with ReactFlowProvider
+// Exported wrapper
 // ---------------------------------------------------------------------------
 export default function StarSchemaFlow({ schema }: { schema: StarSchemaData }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <div className="px-6 pt-5 pb-2">
-        <h3 className="text-lg font-bold text-slate-800">{schema.name}</h3>
+    <div className="overflow-hidden rounded-[12px] border border-line bg-raised">
+      <div className="border-b border-line px-6 pb-3 pt-4">
+        <h3 className="font-display text-[17px] tracking-[-0.01em] text-ink">{schema.name}</h3>
         {schema.grain && (
-          <p className="text-sm text-slate-500">
-            <span title="Grain — what one row of the measures table represents (e.g. one order line, one day per product).">Grain:</span> {schema.grain}
+          <p className="mt-0.5 text-[12.5px] text-muted">
+            <span title="What one row of the measures table represents (e.g. one order line).">Grain:</span> {schema.grain}
           </p>
         )}
-        <p className="text-xs text-slate-400 mt-1">
-          {schema.tables.length} tables · {schema.relationships.length} relationships · Click a table to highlight connections · Drag to reposition
+        <p className="mt-1 text-[11.5px] text-muted-2">
+          {schema.tables.length} tables · {schema.relationships.length} links · every line joins on the named
+          fields at both ends — <span className="font-mono">1</span> side has one row,{' '}
+          <span className="font-mono">∗</span> side has many · click a table to focus its connections
         </p>
       </div>
       <ReactFlowProvider>
