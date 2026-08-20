@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import path from 'path';
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 import { TableInfo, FkCandidate } from '../connectors/BaseConnector';
 import {
@@ -75,6 +76,7 @@ import {
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
 import { AI_OUTPUT_SCHEMAS, DASHBOARD_SPEC_JSON_SCHEMA } from './outputSchemas';
+import { BUILD_CHAT_SYSTEM, BuildChatResponse } from './prompts/buildChatPrompt';
 import {
   REFINE_PRODUCT_SYSTEM,
   REFINE_CROSS_PRODUCT_SYSTEM,
@@ -1660,6 +1662,12 @@ export async function generateBusMatrixStreaming(
   sourceTablesContext: string,
   onEvent: (type: 'thinking' | 'text' | 'diag', delta: string) => void,
   abortSignal?: AbortSignal,
+  /**
+   * Prompt override — the topic-EXTENSION workflow reuses this streamer
+   * (thinking deltas, watchdog, JSON repair) with its own system/user pair.
+   * Omitted = the classic full bus-matrix design prompt.
+   */
+  promptOverride?: { system: string; user: string },
 ): Promise<BusMatrixOutput> {
   const tenantId = await enforceAiBudget('bus_matrix_streaming');
   const streamCallLabel = 'bus_matrix_streaming';
@@ -1675,10 +1683,10 @@ export async function generateBusMatrixStreaming(
     thinking: { type: 'enabled', budget_tokens: 8000 },
     system: [{
       type: 'text',
-      text: BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
+      text: promptOverride?.system ?? BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
       cache_control: { type: 'ephemeral' },
     }],
-    messages: [{ role: 'user', content: buildBusMatrixUser(connectionName, sourceTablesContext) }],
+    messages: [{ role: 'user', content: promptOverride?.user ?? buildBusMatrixUser(connectionName, sourceTablesContext) }],
   };
 
   const sendDiag = (msg: string) => {
@@ -1820,6 +1828,39 @@ export async function generateBusMatrixStreaming(
     const preview = fullText.slice(-200).replace(/\n/g, ' ');
     throw new Error(`Failed to parse AI output as JSON (stop_reason=${lastStopReason}, text_chars=${fullText.length}). Likely truncated. Tail: "${preview}"`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Build-page chat — coverage Q&A + additive subject proposals
+// ---------------------------------------------------------------------------
+
+const BuildChatResponseSchema = z.object({
+  reply: z.string().min(1),
+  proposal: z.object({
+    connection_id: z.number(),
+    name: z.string().min(1),
+    description: z.string(),
+    focus: z.string().nullable().optional(),
+    entities: z.array(z.string().min(1)).min(1),
+  }).nullable().optional(),
+});
+
+/**
+ * Answer one turn of the Build page's "Ask about your subjects" chat.
+ * Read-only by design: the returned proposal is a SUGGESTION the route
+ * validates and the user must confirm with a click — this call can never
+ * mutate anything. Facts come from the server-built coverage context; the
+ * model only phrases.
+ */
+export async function respondBuildChat(
+  coverageContext: string,
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
+): Promise<BuildChatResponse> {
+  const raw = await callClaudeMultiTurn(
+    BUILD_CHAT_SYSTEM(coverageContext, currentDateStr()),
+    messages,
+  );
+  return parseJson(raw, BuildChatResponseSchema);
 }
 
 // ---------------------------------------------------------------------------

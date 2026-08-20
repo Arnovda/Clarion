@@ -10,7 +10,7 @@ import { semanticDb } from '../db/knex';
 import { deleteProductGraph } from '../db/semanticGraph';
 import { parseAliasMap, deriveColumnLineage, DerivedLineage } from './lineageDerivation';
 import { logger as rootLogger } from '../utils/logger';
-import type { BusMatrixOutput, BusMatrixRelationship } from '../ai/prompts/busMatrixPrompt';
+import type { BusMatrixOutput, BusMatrixRelationship, BusMatrixDimension } from '../ai/prompts/busMatrixPrompt';
 
 /** The slice of a designed table `synthesizeFkRelationships` reads. */
 export interface SynthesizableTable {
@@ -61,6 +61,138 @@ export function synthesizeFkRelationships(
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Extension guards — make an AI-designed ADDITIVE product safe to persist.
+// ---------------------------------------------------------------------------
+
+export interface ExtensionSchemaContext {
+  /** The product name the user approved — forced onto the output verbatim. */
+  productName: string;
+  /** Every existing product name on the tenant (case-insensitive collision check). */
+  existingProductNames: string[];
+  /** Every existing product table name on the connection (owners + stubs). */
+  existingTableNames: string[];
+  /**
+   * Existing owner dimensions, shaped as BusMatrixDimension (columns + the
+   * owner's transformation_sql) so they can be appended as SHADOW entries —
+   * present in conformed_dimensions for the stub loop to copy columns from,
+   * never in owned_dimensions, so buildBusMatrix persists them as stubs.
+   */
+  reusableDims: BusMatrixDimension[];
+}
+
+export interface ExtensionPrepareResult {
+  errors: string[];
+  /** Existing dim names the new product reuses — the caller wires
+      data_product_dependencies to their owner products from this list. */
+  usedExistingDims: string[];
+}
+
+/**
+ * Normalise + guard an AI-designed extension in place. The prompt states the
+ * rules; THIS enforces them — an addition must never be able to touch the
+ * existing build:
+ *
+ *   - exactly ONE data product, named what the user approved, build_order 2
+ *     (never 1 — build_order 1 is what materialises dim_date, and the
+ *     existing build already owns that);
+ *   - any AI redefinition of an existing table is DROPPED, and reused dims
+ *     are re-appended as DB-derived shadows (stub path in buildBusMatrix);
+ *   - any remaining NEW table name colliding with an existing one is a hard
+ *     error — persisting it would either duplicate a shared lookup or, worse,
+ *     let buildBusMatrix's retire-and-replace sweep fire on a name match;
+ *   - a fact naming a dimension that neither exists nor is defined is a hard
+ *     error (it would build a fact whose JOIN target never materialises).
+ *
+ * Pure on purpose — unit-tested without a DB.
+ */
+export function prepareExtensionMatrix(
+  busMatrix: BusMatrixOutput,
+  ctx: ExtensionSchemaContext,
+): ExtensionPrepareResult {
+  const errors: string[] = [];
+  const lc = (s: string) => s.trim().toLowerCase();
+  const existingTables = new Set(ctx.existingTableNames.map(lc));
+  const existingProducts = new Set(ctx.existingProductNames.map(lc));
+  const reusableByName = new Map(ctx.reusableDims.map((d) => [lc(d.table_name), d]));
+
+  if (existingProducts.has(lc(ctx.productName))) {
+    errors.push(`A subject named "${ctx.productName}" already exists`);
+  }
+
+  busMatrix.relationships = Array.isArray(busMatrix.relationships) ? busMatrix.relationships : [];
+  busMatrix.proposed_kpis = Array.isArray(busMatrix.proposed_kpis) ? busMatrix.proposed_kpis : [];
+  busMatrix.conformed_dimensions = Array.isArray(busMatrix.conformed_dimensions) ? busMatrix.conformed_dimensions : [];
+  busMatrix.fact_tables = Array.isArray(busMatrix.fact_tables) ? busMatrix.fact_tables : [];
+  if (!busMatrix.dim_date_range?.start || !busMatrix.dim_date_range?.end) {
+    busMatrix.dim_date_range = { start: '2020-01-01', end: '2027-12-31' };
+  }
+
+  // Drop AI redefinitions of existing tables from the design entirely.
+  const dropped = busMatrix.conformed_dimensions.filter((d) => existingTables.has(lc(d.table_name)));
+  busMatrix.conformed_dimensions = busMatrix.conformed_dimensions.filter(
+    (d) => !existingTables.has(lc(d.table_name)),
+  );
+  const newDimNames = busMatrix.conformed_dimensions.map((d) => d.table_name);
+
+  // New facts must not collide either — that is the retire-sweep hazard.
+  for (const f of busMatrix.fact_tables) {
+    if (existingTables.has(lc(f.table_name))) {
+      errors.push(`Table name "${f.table_name}" already exists in another subject`);
+    }
+  }
+
+  // Every dim a fact uses must be a new dim, a reusable existing dim (append
+  // its shadow), or dim_date. Anything else cannot materialise.
+  const usedExisting = new Map<string, BusMatrixDimension>();
+  const newDimSet = new Set(newDimNames.map(lc));
+  for (const f of busMatrix.fact_tables) {
+    f.dimensions_used = Array.isArray(f.dimensions_used) ? f.dimensions_used : [];
+    f.dimensions_used = f.dimensions_used.map((name) => {
+      if (lc(name) === 'dim_date' || newDimSet.has(lc(name))) return name;
+      const reusable = reusableByName.get(lc(name));
+      if (reusable) {
+        usedExisting.set(reusable.table_name, reusable);
+        return reusable.table_name; // canonical casing
+      }
+      // A dropped redefinition of a NON-reusable existing table (e.g. a fact
+      // name) or a dim the AI invented out of nothing.
+      if (dropped.some((d) => lc(d.table_name) === lc(name))) {
+        errors.push(`"${f.table_name}" redefines existing table "${name}" — reuse it instead`);
+      } else {
+        errors.push(`"${f.table_name}" uses unknown dimension "${name}"`);
+      }
+      return name;
+    });
+  }
+
+  // Append shadows so buildBusMatrix's stub loop can copy their columns.
+  for (const shadow of usedExisting.values()) {
+    busMatrix.conformed_dimensions.push(shadow);
+  }
+
+  // Exactly one product: the one the user approved, owning every NEW dim and
+  // every fact in the output (an unowned new dim would silently never build).
+  const grouping = busMatrix.data_products?.find?.(
+    (dp) => lc(dp.name) === lc(ctx.productName),
+  ) ?? busMatrix.data_products?.[0];
+  busMatrix.data_products = [{
+    name: ctx.productName,
+    description: grouping?.description ?? '',
+    build_order: 2,
+    fact_tables: busMatrix.fact_tables.map((f) => f.table_name),
+    owned_dimensions: newDimNames,
+  }];
+
+  if (busMatrix.fact_tables.length === 0) {
+    errors.push('The design contains nothing to measure — no subject was created');
+  }
+
+  for (const kpi of busMatrix.proposed_kpis) kpi.product_name = ctx.productName;
+
+  return { errors, usedExistingDims: [...usedExisting.keys()] };
 }
 
 const log = rootLogger.child({ mod: 'busMatrixBuilder' });

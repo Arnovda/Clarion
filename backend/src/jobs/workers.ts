@@ -254,6 +254,29 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
       return { products: 1, allOk: result.allOk };
     }
 
+    // ── Extend mode — add ONE subject next to the existing build ─────
+    if (mode === 'extend') {
+      const { extendRequest } = job.data;
+      if (!extendRequest) throw new Error('extendRequest required for extend mode');
+      await job.updateProgress({ phase: 'starting', message: `Adding "${extendRequest.name}"…` });
+      const { runTopicExtensionWorkflow } = await import('../services/busMatrixOrchestrator');
+      const result = await runTopicExtensionWorkflow({
+        connectionId,
+        tenantId,
+        userEmail: triggeredBy,
+        request: extendRequest,
+        abortSignal: controller.signal,
+        isCancelled: () => isJobCancelled(jobId),
+        emit: emitToJob,
+      });
+      trackEvent('topic_extension_complete', {
+        connectionId: String(connectionId),
+        tenantId: String(tenantId),
+        allOk: String(result.allOk),
+      });
+      return { products: 1, allOk: result.allOk };
+    }
+
     // ── Design mode (legacy default) — full bus-matrix workflow ──────
     await job.updateProgress({ phase: 'starting', message: 'Starting bus matrix workflow…' });
     const { runBusMatrixWorkflow } = await import('../services/busMatrixOrchestrator');

@@ -46,6 +46,7 @@ import { formatRelativeLong } from '@/lib/dates';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { cleanTopicName } from '@/app/products/helpers';
 import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
+import AskPanel from './AskPanel';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -340,6 +341,8 @@ function Build() {
             </p>
           </div>
         </header>
+
+        <AskPanel building={building} onAttach={(jobId, connId) => void attachToJob(jobId, connId)} />
 
         {error && <p className="text-[13px] text-err">{error}</p>}
 

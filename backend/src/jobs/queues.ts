@@ -53,8 +53,11 @@ export interface BusMatrixJobData {
    *   • 'pipeline' — run a saved-or-builtin pipeline (sources + products in
    *                  topo order). Reuses the same SSE / cancel / active-job
    *                  endpoints; the worker dispatches on `mode`.
+   *   • 'extend'   — design + build ONE additional subject next to the
+   *                  existing build (additive; never touches existing
+   *                  products — see runTopicExtensionWorkflow).
    */
-  mode?: 'design' | 'refresh' | 'pipeline';
+  mode?: 'design' | 'refresh' | 'pipeline' | 'extend';
   /** Required when mode='refresh' — which product to rebuild. */
   productId?: number;
   /**
@@ -70,6 +73,8 @@ export interface BusMatrixJobData {
   pipelineRunId?: number;
   /** Optional pipeline name for display in events. */
   pipelineName?: string;
+  /** Required when mode='extend' — the user-approved subject to add. */
+  extendRequest?: { name: string; description: string; focus?: string; entities: string[] };
 }
 
 export interface ConnectionSyncScheduleJobData {

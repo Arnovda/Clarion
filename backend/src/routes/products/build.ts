@@ -11,7 +11,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { productRefreshStartSchema } from '../../middleware/schemas';
+import { productRefreshStartSchema, buildChatSchema, busMatrixExtendStartSchema } from '../../middleware/schemas';
 import { reqDb } from '../../db/reqDb';
 import { startSSE } from '../../services/sse';
 import { log } from './shared';
@@ -276,6 +276,117 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), validate(pr
   } catch (err) {
     throw err; // central errorHandler — no inline raw-error echo
   }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/build-chat — the Build page's "Ask about your subjects"
+// chat. READ-ONLY BY CONSTRUCTION: this endpoint answers coverage questions
+// and may return a `proposal` object, but it mutates nothing — the only way
+// a proposal becomes a subject is the user clicking Add, which calls the
+// guarded /bus-matrix/extend-start below. Facts come from the server-built
+// coverage context (real catalog rows), the model only phrases them.
+// ---------------------------------------------------------------------------
+router.post('/build-chat', requireAuth, requireRole('admin', 'analyst'), validate(buildChatSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
+
+    const { messages } = req.body as { messages: Array<{ role: 'user' | 'assistant'; content: string }> };
+
+    const { buildCoverageContext } = await import('../../services/buildChatContext');
+    const coverage = await buildCoverageContext(db, tenantId);
+
+    const { respondBuildChat } = await import('../../ai/AIService');
+    const response = await respondBuildChat(coverage.text, messages);
+
+    // Server-side proposal validation — the model's suggestion only survives
+    // when every part of it checks out against the real catalog. A proposal
+    // that names an unknown connection, an existing subject, or entities
+    // that never synced is dropped (the reply still stands on its own).
+    let proposal = response.proposal ?? null;
+    if (proposal) {
+      const synced = coverage.syncedTablesByConnection.get(proposal.connection_id);
+      const entities = synced ? proposal.entities.filter((e) => synced.has(e)) : [];
+      const nameOk = !coverage.productNamesLower.has(proposal.name.trim().toLowerCase());
+      proposal = synced && entities.length > 0 && nameOk
+        ? { ...proposal, entities }
+        : null;
+    }
+
+    res.json({ ok: true, data: { reply: response.reply, proposal } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/products/bus-matrix/extend-start — enqueue an ADDITIVE build: one
+// new subject designed next to the existing ones. Guards run BEFORE the
+// queue check so they hold in every environment:
+//   404 unknown connection · 400 entities not synced · 409 name collision ·
+//   503 no Redis · 409 another build already running.
+// The workflow re-checks collisions in code after the AI designs (see
+// prepareExtensionMatrix) — this route's checks just fail fast and friendly.
+// ---------------------------------------------------------------------------
+router.post('/bus-matrix/extend-start', requireAuth, requireRole('admin', 'analyst'), validate(busMatrixExtendStartSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(403).json({ ok: false, error: 'Tenant context required' }); return; }
+
+    const { connectionId, name, description, focus, entities } = req.body as {
+      connectionId: number; name: string; description?: string; focus?: string; entities: string[];
+    };
+
+    const connection = await db('connections').where({ id: connectionId, tenant_id: tenantId }).first();
+    if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+
+    const syncedRows = await db('source_tables')
+      .where({ connection_id: connectionId, tenant_id: tenantId, is_active: true })
+      .whereIn('table_name', entities)
+      .select('table_name');
+    const syncedSet = new Set(syncedRows.map((r: { table_name: string }) => r.table_name));
+    const missing = entities.filter((e) => !syncedSet.has(e));
+    if (missing.length > 0) {
+      res.status(400).json({ ok: false, error: `These tables are not synced from this source: ${missing.join(', ')}` });
+      return;
+    }
+
+    const clash = await db('data_products')
+      .where({ tenant_id: tenantId })
+      .whereRaw('LOWER(TRIM(name)) = ?', [name.trim().toLowerCase()])
+      .first();
+    if (clash) {
+      res.status(409).json({ ok: false, error: `A subject named "${name}" already exists.` });
+      return;
+    }
+
+    const { getBusMatrixQueue } = await import('../../jobs/queues');
+    const queue = getBusMatrixQueue();
+    if (!queue) {
+      res.status(503).json({ ok: false, error: 'Job queue not available — Redis is not configured.' });
+      return;
+    }
+
+    // One build at a time per tenant — same rule as the full build; an
+    // extension racing a rebuild would design against a schema that is
+    // being replaced under it.
+    const activeJobs = await queue.getJobs(['waiting', 'active', 'delayed'], 0, 50);
+    const existing = activeJobs.find((j) => j.data.tenantId === tenantId);
+    if (existing) {
+      res.status(409).json({ ok: false, error: 'A build is already running — wait for it to finish.', jobId: existing.id });
+      return;
+    }
+
+    const job = await queue.add('topic-extend', {
+      connectionId,
+      tenantId,
+      triggeredBy: req.user?.email ?? 'unknown',
+      mode: 'extend' as const,
+      extendRequest: { name: name.trim(), description: description ?? '', focus, entities },
+    });
+
+    res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix', mode: 'extend' } });
+  } catch (err) { next(err); }
 });
 
 // The four bus-matrix job routes below (start / active / cancel / stream) are

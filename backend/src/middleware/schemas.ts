@@ -488,6 +488,27 @@ export const productRefreshStartSchema = z.object({
   }).passthrough().optional(),
 });
 
+// POST /products/build-chat — the Build page's "Ask about your subjects" chat
+export const buildChatSchema = z.object({
+  body: z.object({
+    messages: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().min(1).max(4000),
+    })).min(1).max(16),
+  }),
+});
+
+// POST /products/bus-matrix/extend-start — add ONE subject next to the build
+export const busMatrixExtendStartSchema = z.object({
+  body: z.object({
+    connectionId: z.number().int().positive(),
+    name: z.string().min(2).max(80),
+    description: z.string().max(500).optional(),
+    focus: z.string().max(300).optional(),
+    entities: z.array(z.string().min(1).max(200)).min(1).max(12),
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Pipelines
 // ---------------------------------------------------------------------------

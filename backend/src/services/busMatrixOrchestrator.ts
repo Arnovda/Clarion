@@ -20,10 +20,19 @@
 
 import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
-import { generateBusMatrixStreaming } from '../ai/AIService';
-import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, BuiltProduct } from './busMatrixBuilder';
+import { generateBusMatrixStreaming, generateProductIcon } from '../ai/AIService';
+import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, prepareExtensionMatrix, BuiltProduct } from './busMatrixBuilder';
 import { tryBuildBusMatrixFromTemplate } from './starSchemaTemplates';
-import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
+import { BUS_MATRIX_EXTEND_SYSTEM, buildBusMatrixExtendUser } from '../ai/prompts/busMatrixPrompt';
+import type { BusMatrixOutput, BusMatrixDimension, ExistingDimContext, ColumnDesign } from '../ai/prompts/busMatrixPrompt';
+
+// Lazy loaders — transformationRunner and productGraphSync pull the DuckDB
+// native binding (directly or transitively), so they must not load when this
+// module is merely imported. One loader per module keeps that deferral while
+// giving the dynamic-import ratchet a single site instead of one per
+// workflow function.
+const loadTransformationRunner = () => import('./transformationRunner');
+const loadProductGraphSync = () => import('./productGraphSync');
 
 export type OrchestratorEventType =
   | 'phase'      // human-readable phase change
@@ -135,6 +144,81 @@ async function checkCancelled(opts: RunBusMatrixWorkflowOptions): Promise<void> 
   if (opts.isCancelled && (await opts.isCancelled())) throw new CancelledError();
 }
 
+/**
+ * Build the AI designer's source context: every synced table with its
+ * columns, the latest measured row count per table (dataset_profiles — a
+ * real COUNT(*) as of the last analysis, best-effort on purpose: a
+ * structural-only Analyse leaves no profiles and an unmeasured table gets no
+ * annotation), and the confirmed relationships. Shared by the full design
+ * workflow and the topic-extension workflow so the two designers always see
+ * the same ground truth.
+ */
+async function buildAiSourceContext(
+  connectionId: number,
+  tenantId: number | undefined,
+  sourceTables: Array<{ id: number; table_name: string; description: string | null }>,
+  emit: (event: OrchestratorEvent) => void,
+): Promise<{ sourceContext: string; relCount: number }> {
+  const sourceTableIds = sourceTables.map((t) => t.id);
+  const sourceColumns = sourceTableIds.length
+    ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+    : [];
+
+  const rowCountByTable = new Map<string, number>();
+  try {
+    const profileQuery = semanticDb('dataset_profiles')
+      .where({ connection_id: connectionId })
+      .whereNotNull('row_count')
+      .orderBy('profiled_at', 'asc')
+      .select('table_name', 'row_count');
+    if (tenantId) profileQuery.andWhere('tenant_id', Number(tenantId));
+    const profileRows = await profileQuery;
+    // Ascending order → the latest profile per table wins the map slot.
+    for (const r of profileRows as Array<{ table_name: string; row_count: number }>) {
+      rowCountByTable.set(r.table_name, Number(r.row_count));
+    }
+  } catch (err) {
+    emit({ type: 'log', text: `Row-count context skipped: ${err instanceof Error ? err.message : String(err)}` });
+  }
+
+  const tablesText = sourceTables.map((t) => {
+    const cols = sourceColumns
+      .filter((c: { table_id: number }) => c.table_id === t.id)
+      .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
+        return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
+      }).join('\n');
+    const rc = rowCountByTable.get(t.table_name);
+    const rcNote = rc === undefined
+      ? ''
+      : rc === 0
+        ? ' [NO ROWS at last analysis — this table is empty]'
+        : ` [~${rc} rows at last analysis]`;
+    return `Table: ${t.table_name}${rcNote} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
+  }).join('\n\n');
+
+  let relationshipsText = '';
+  let relCount = 0;
+  try {
+    const { getRelationshipsForContext } = await import('../db/semanticGraph');
+    const rels = await getRelationshipsForContext(connectionId);
+    if (rels.length > 0) {
+      const lines = rels.map((r) => {
+        const from = `${r.from_table as string}.${r.from_column as string}`;
+        const to = `${r.to_table as string}.${r.to_column as string}`;
+        const type = (r.relationship_type as string) || 'RELATES_TO';
+        const desc = (r.description as string) ? ` — ${r.description as string}` : '';
+        return `  ${from} → ${to} (${type})${desc}`;
+      }).join('\n');
+      relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
+      relCount = rels.length;
+    }
+  } catch (err) {
+    emit({ type: 'log', text: `Failed to load Neo4j relationships: ${err instanceof Error ? err.message : String(err)}` });
+  }
+
+  return { sourceContext: tablesText + relationshipsText, relCount };
+}
+
 export async function runBusMatrixWorkflow(
   opts: RunBusMatrixWorkflowOptions,
 ): Promise<RunBusMatrixWorkflowResult> {
@@ -175,72 +259,7 @@ export async function runBusMatrixWorkflow(
       friendly: `Using the ready-made design for ${connection.name} — your topics are already worked out.`,
     });
   } else {
-    const sourceTableIds = sourceTables.map((t: { id: number }) => t.id);
-    const sourceColumns = sourceTableIds.length
-      ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
-      : [];
-
-    // Ground the design in what actually synced: the latest measured row
-    // count per table. dataset_profiles is written by quality profiling
-    // during Analyse with a real COUNT(*) — accurate as of the last
-    // analysis, which is what the annotation says. Best-effort on purpose:
-    // a structural-only Analyse leaves no profiles, and an unknown count
-    // simply gets no annotation. Without this the designer works from
-    // schema + descriptions alone and happily builds a fact on entities
-    // that hold no data (the 2026-08-19 fact_sales_pipeline case).
-    const rowCountByTable = new Map<string, number>();
-    try {
-      const profileQuery = semanticDb('dataset_profiles')
-        .where({ connection_id: connectionId })
-        .whereNotNull('row_count')
-        .orderBy('profiled_at', 'asc')
-        .select('table_name', 'row_count');
-      if (tenantId) profileQuery.andWhere('tenant_id', Number(tenantId));
-      const profileRows = await profileQuery;
-      // Ascending order → the latest profile per table wins the map slot.
-      for (const r of profileRows as Array<{ table_name: string; row_count: number }>) {
-        rowCountByTable.set(r.table_name, Number(r.row_count));
-      }
-    } catch (err) {
-      emit({ type: 'log', text: `Row-count context skipped: ${err instanceof Error ? err.message : String(err)}` });
-    }
-
-    const tablesText = sourceTables.map((t: { id: number; table_name: string; description: string }) => {
-      const cols = sourceColumns
-        .filter((c: { table_id: number }) => c.table_id === t.id)
-        .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) => {
-          return `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`;
-        }).join('\n');
-      const rc = rowCountByTable.get(t.table_name);
-      const rcNote = rc === undefined
-        ? ''
-        : rc === 0
-          ? ' [NO ROWS at last analysis — this table is empty]'
-          : ` [~${rc} rows at last analysis]`;
-      return `Table: ${t.table_name}${rcNote} — ${t.description ?? 'No description'}\n  Columns:\n${cols}`;
-    }).join('\n\n');
-
-    let relationshipsText = '';
-    let relCount = 0;
-    try {
-      const { getRelationshipsForContext } = await import('../db/semanticGraph');
-      const rels = await getRelationshipsForContext(connectionId);
-      if (rels.length > 0) {
-        const lines = rels.map((r) => {
-          const from = `${r.from_table as string}.${r.from_column as string}`;
-          const to = `${r.to_table as string}.${r.to_column as string}`;
-          const type = (r.relationship_type as string) || 'RELATES_TO';
-          const desc = (r.description as string) ? ` — ${r.description as string}` : '';
-          return `  ${from} → ${to} (${type})${desc}`;
-        }).join('\n');
-        relationshipsText = `\n\nCONFIRMED FOREIGN KEY RELATIONSHIPS (use these for fact↔dim joins — do NOT invent join columns):\n${lines}`;
-        relCount = rels.length;
-      }
-    } catch (err) {
-      emit({ type: 'log', text: `Failed to load Neo4j relationships: ${err instanceof Error ? err.message : String(err)}` });
-    }
-
-    const sourceContext = tablesText + relationshipsText;
+    const { sourceContext, relCount } = await buildAiSourceContext(connectionId, tenantId, sourceTables, emit);
 
     emit({
       type: 'phase',
@@ -356,7 +375,7 @@ export async function runBusMatrixWorkflow(
   emit({ type: 'phase', text: 'Running transformations…', friendly: 'Building the data behind your topics…' });
 
   const sortedProducts = [...products].sort((a, b) => a.build_order - b.build_order);
-  const { runProductTransformation } = await import('./transformationRunner');
+  const { runProductTransformation } = await loadTransformationRunner();
 
   let allOk = true;
 
@@ -427,7 +446,7 @@ export async function runBusMatrixWorkflow(
 
       // Sync to Neo4j (non-blocking)
       try {
-        const { syncProductToNeo4j } = await import('./productGraphSync');
+        const { syncProductToNeo4j } = await loadProductGraphSync();
         syncProductToNeo4j(p.id).catch(() => { /* non-fatal */ });
       } catch { /* ignore */ }
     } catch (runErr) {
@@ -607,7 +626,7 @@ export async function runPipelineWorkflow(
       displayNameById.set(r.id, ambiguous && connName ? `${r.name} (${connName})` : r.name);
     }
 
-    const { runProductTransformation } = await import('./transformationRunner');
+    const { runProductTransformation } = await loadTransformationRunner();
     for (const pid of ordered) {
       await checkPipelineCancelled(opts);
       // Same RLS guard as Phase E in runBusMatrixWorkflow — tenantQuery
@@ -672,7 +691,7 @@ export async function runPipelineWorkflow(
 
         // Sync to Neo4j (non-blocking)
         try {
-          const { syncProductToNeo4j } = await import('./productGraphSync');
+          const { syncProductToNeo4j } = await loadProductGraphSync();
           syncProductToNeo4j(pid).catch(() => { /* non-fatal */ });
         } catch { /* ignore */ }
       } catch (err) {
@@ -846,7 +865,7 @@ export async function runProductRefreshWorkflow(
       )
     : [];
 
-  const { runProductTransformation } = await import('./transformationRunner');
+  const { runProductTransformation } = await loadTransformationRunner();
   const results = await runProductTransformation(product, tables, tenantId);
 
   const failed = results.filter((r) => r.status === 'error');
@@ -880,11 +899,348 @@ export async function runProductRefreshWorkflow(
 
   // Sync to Neo4j (non-blocking)
   try {
-    const { syncProductToNeo4j } = await import('./productGraphSync');
+    const { syncProductToNeo4j } = await loadProductGraphSync();
     syncProductToNeo4j(productId).catch(() => { /* non-fatal */ });
   } catch { /* ignore */ }
 
   emit({ type: 'done', text: allOk ? 'All done!' : 'Refresh completed with some errors.' });
 
   return { productId, productName: product.name, allOk, results };
+}
+
+// ---------------------------------------------------------------------------
+// Topic-extension workflow — design and build ONE additional subject next to
+// an existing build, without touching it.
+//
+// The additive counterpart to runBusMatrixWorkflow. Where the full workflow
+// retires-and-replaces, this one may only ADD: prepareExtensionMatrix refuses
+// any table or product name collision in code (so the retire sweep can never
+// fire), reused shared dimensions are persisted as stubs exactly like the
+// full build does for cross-product dims, and data_product_dependencies rows
+// wire the new product to the owners of every dim it reuses (plus the
+// dim_date owner) so loadDependencyDimensions resolves them at run time.
+// ---------------------------------------------------------------------------
+
+export interface TopicExtensionRequest {
+  /** The approved product name — used verbatim. */
+  name: string;
+  description: string;
+  focus?: string;
+  /** Synced source table names the subject is built from. */
+  entities: string[];
+}
+
+export interface RunTopicExtensionWorkflowOptions {
+  connectionId: number;
+  tenantId: number | undefined;
+  userEmail: string | undefined;
+  request: TopicExtensionRequest;
+  emit: (event: OrchestratorEvent) => void;
+  abortSignal?: AbortSignal;
+  isCancelled?: () => boolean | Promise<boolean>;
+}
+
+interface ExistingSchemaForExtension {
+  productNames: string[];
+  tableNames: string[];
+  reusableDims: BusMatrixDimension[];
+  dimOwnerProductId: Map<string, number>;
+  dimDateOwnerProductId: number | null;
+}
+
+/**
+ * Load what already exists: every product name (tenant-wide — the collision
+ * space the Subjects hub shows), this connection's product table names (the
+ * forbidden list), and the owner dimensions with their real columns (the
+ * reusable shared lookups, shaped for both the prompt and the shadow
+ * entries). dim_date is never reusable-by-shadow (auto-injected per schema);
+ * only its owner matters, for the dependency row.
+ */
+async function loadExistingSchemaForExtension(
+  connectionId: number,
+  tenantId: number | undefined,
+): Promise<ExistingSchemaForExtension> {
+  const productRows = await tenantQuery(tenantId, (trx) =>
+    trx('data_products').select('name'),
+  ) as Array<{ name: string }>;
+
+  const tableRows = await tenantQuery(tenantId, (trx) =>
+    trx('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where('dp.connection_id', connectionId)
+      .select(
+        'pt.id', 'pt.table_name', 'pt.display_name', 'pt.description',
+        'pt.table_role', 'pt.is_shared_dimension', 'pt.transformation_sql',
+        'dp.id as product_id',
+      ),
+  ) as Array<{
+    id: number; table_name: string; display_name: string | null; description: string | null;
+    table_role: string; is_shared_dimension: boolean | null; transformation_sql: string | null;
+    product_id: number;
+  }>;
+
+  const ownerDims = tableRows.filter(
+    (r) => r.table_role === 'dimension' && r.is_shared_dimension !== true && r.transformation_sql,
+  );
+  const dimOwnerProductId = new Map<string, number>();
+  for (const d of ownerDims) dimOwnerProductId.set(d.table_name, d.product_id);
+  const dimDateOwnerProductId = ownerDims.find((d) => d.table_name === 'dim_date')?.product_id ?? null;
+
+  const shadowDims = ownerDims.filter((d) => d.table_name !== 'dim_date');
+  const dimIds = shadowDims.map((d) => d.id);
+  const colRows = dimIds.length
+    ? await tenantQuery(tenantId, (trx) =>
+        trx('product_columns').whereIn('product_table_id', dimIds).orderBy('sort_order'),
+      ) as Array<{
+        product_table_id: number; column_name: string; data_type: string;
+        display_name: string | null; description: string | null; column_role: string | null;
+        fk_target_table: string | null; fk_target_column: string | null;
+        transformation_expression: string | null; scd_type: number | null; sort_order: number | null;
+        is_technical: boolean | null;
+      }>
+    : [];
+
+  const reusableDims: BusMatrixDimension[] = shadowDims.map((d) => ({
+    table_name: d.table_name,
+    display_name: d.display_name ?? d.table_name,
+    description: d.description ?? '',
+    transformation_sql: d.transformation_sql as string,
+    // Shadows are never OWNED by the new product, so their source_tables are
+    // never read (allSourceTablesByProduct iterates owned dims only).
+    source_tables: [],
+    columns: colRows
+      .filter((c) => c.product_table_id === d.id)
+      .map((c): ColumnDesign => ({
+        column_name: c.column_name,
+        data_type: c.data_type,
+        display_name: c.display_name ?? c.column_name,
+        description: c.description ?? '',
+        column_role: (c.column_role ?? 'attribute') as ColumnDesign['column_role'],
+        fk_target_table: c.fk_target_table ?? undefined,
+        fk_target_column: c.fk_target_column ?? undefined,
+        transformation_expression: c.transformation_expression ?? '',
+        is_technical: c.is_technical ?? undefined,
+        scd_type: c.scd_type ?? 1,
+        sort_order: c.sort_order ?? 0,
+        lineage: [],
+      })),
+  }));
+
+  return {
+    productNames: productRows.map((p) => p.name),
+    tableNames: [...new Set(tableRows.map((r) => r.table_name))],
+    reusableDims,
+    dimOwnerProductId,
+    dimDateOwnerProductId,
+  };
+}
+
+export interface RunTopicExtensionWorkflowResult {
+  productId: number;
+  productName: string;
+  allOk: boolean;
+}
+
+export async function runTopicExtensionWorkflow(
+  opts: RunTopicExtensionWorkflowOptions,
+): Promise<RunTopicExtensionWorkflowResult> {
+  const { connectionId, tenantId, request, emit } = opts;
+
+  // ── Phase A: read source + existing schema ───────────────────────────
+  emit({
+    type: 'phase',
+    text: `Extending the build with "${request.name}"…`,
+    friendly: `Reading what your source contains for ${request.name}…`,
+  });
+
+  const connection = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: connectionId }).first(),
+  );
+  if (!connection) throw new Error(`Connection ${connectionId} not found`);
+
+  const sourceTables = await tenantQuery(tenantId, (trx) =>
+    trx('source_tables').where({ connection_id: connectionId, is_active: true }).select('*'),
+  );
+
+  const { sourceContext } = await buildAiSourceContext(connectionId, tenantId, sourceTables, emit);
+  const existing = await loadExistingSchemaForExtension(connectionId, tenantId);
+
+  emit({
+    type: 'phase',
+    text: `Designing 1 additional product (reusable dims: ${existing.reusableDims.length}, forbidden names: ${existing.tableNames.length})…`,
+    friendly: `Working out how ${request.name} fits next to your existing subjects…`,
+  });
+
+  await checkCancelled(opts as unknown as RunBusMatrixWorkflowOptions);
+
+  // ── Phase B: AI design (cancellable), same streamer as the full build ─
+  const dimContext: ExistingDimContext[] = existing.reusableDims.map((d) => ({
+    table_name: d.table_name,
+    display_name: d.display_name,
+    description: d.description,
+    columns: d.columns.map((c) => ({
+      column_name: c.column_name,
+      data_type: c.data_type,
+      column_role: c.column_role ?? null,
+    })),
+  }));
+
+  let designText = '';
+  let lastDraftEmit = 0;
+  let lastDraftCount = 0;
+  const busMatrix = await generateBusMatrixStreaming(
+    connection.name as string,
+    sourceContext,
+    (type, delta) => {
+      if (type === 'thinking') emit({ type: 'thinking', text: delta });
+      else if (type === 'diag') emit({ type: 'diag', text: delta });
+      else if (type === 'text') {
+        designText += delta;
+        const now = Date.now();
+        if (now - lastDraftEmit >= 2500) {
+          const drafted = (designText.match(/"table_name"/g) ?? []).length;
+          if (drafted > lastDraftCount) {
+            lastDraftEmit = now;
+            lastDraftCount = drafted;
+            emit({ type: 'design_progress', tablesDrafted: drafted });
+          }
+        }
+      }
+    },
+    opts.abortSignal,
+    {
+      system: BUS_MATRIX_EXTEND_SYSTEM(
+        sourceContext,
+        dimContext,
+        existing.tableNames,
+        new Date().toISOString().slice(0, 10),
+      ),
+      user: buildBusMatrixExtendUser(
+        connection.name as string,
+        request.name,
+        request.description,
+        request.focus,
+        request.entities,
+      ),
+    },
+  );
+
+  await checkCancelled(opts as unknown as RunBusMatrixWorkflowOptions);
+
+  // ── Phase C: guard + validate — additions must not be able to touch the
+  // existing build, and these checks are code, not prompt hope.
+  const prepared = prepareExtensionMatrix(busMatrix, {
+    productName: request.name,
+    existingProductNames: existing.productNames,
+    existingTableNames: existing.tableNames,
+    reusableDims: existing.reusableDims,
+  });
+  if (prepared.errors.length > 0) {
+    throw new Error(`The design for "${request.name}" was rejected: ${prepared.errors.slice(0, 4).join('; ')}. Nothing was changed — try asking again with a different name or focus.`);
+  }
+  const validationErrors = validateBusMatrix(busMatrix);
+  if (validationErrors.length > 0) {
+    throw new Error(`Design validation failed: ${validationErrors.slice(0, 5).join('; ')}`);
+  }
+
+  emit({
+    type: 'phase',
+    text: `Saving "${request.name}" (${busMatrix.fact_tables.length} facts, ${busMatrix.data_products[0].owned_dimensions.length} new dims, reusing ${prepared.usedExistingDims.length})…`,
+    friendly: `Design ready — adding ${request.name} next to your existing subjects…`,
+  });
+
+  // ── Phase D: persist + dependency wiring ─────────────────────────────
+  const { products } = await buildBusMatrix({
+    connectionId,
+    tenantId,
+    userEmail: opts.userEmail,
+    busMatrix,
+  });
+  const built = products[0];
+  if (!built) throw new Error('The new subject was not persisted');
+
+  // Wire the new product to the owners of every reused dim, plus the
+  // dim_date owner — loadDependencyDimensions resolves upstream dims through
+  // data_product_dependencies, and buildBusMatrix can only wire owners that
+  // exist INSIDE the matrix (the reused ones live outside it).
+  const depOwnerIds = new Set<number>();
+  for (const dimName of prepared.usedExistingDims) {
+    const owner = existing.dimOwnerProductId.get(dimName);
+    if (owner) depOwnerIds.add(owner);
+  }
+  if (existing.dimDateOwnerProductId) depOwnerIds.add(existing.dimDateOwnerProductId);
+  for (const sourceProductId of depOwnerIds) {
+    await tenantQuery(tenantId, (trx) =>
+      trx('data_product_dependencies').insert({
+        dependent_product_id: built.id,
+        source_product_id: sourceProductId,
+        tenant_id: tenantId,
+      }).onConflict(['dependent_product_id', 'source_product_id']).ignore(),
+    );
+  }
+
+  emit({ type: 'designed', topics: designedTopicsFromBusMatrix(busMatrix, products) });
+
+  // Icon (best-effort, same as the full build)
+  try {
+    const svg = await generateProductIcon(built.name, busMatrix.data_products[0].description);
+    if (svg) {
+      await tenantQuery(tenantId, (trx) =>
+        trx('data_products').where({ id: built.id }).update({ icon_svg: svg }),
+      );
+    }
+  } catch { /* non-fatal */ }
+
+  await checkCancelled(opts as unknown as RunBusMatrixWorkflowOptions);
+
+  // ── Phase E: transform the new product only ──────────────────────────
+  emit({ type: 'phase', text: 'Running transformations…', friendly: `Building the data behind ${request.name}…` });
+  emit({ type: 'product_start', productName: built.name, productId: built.id });
+
+  const { runProductTransformation } = await loadTransformationRunner();
+  const product = await tenantQuery(tenantId, (trx) =>
+    trx('data_products').where({ id: built.id }).first(),
+  );
+  const schemas = await tenantQuery(tenantId, (trx) =>
+    trx('star_schemas').where({ data_product_id: built.id }),
+  );
+  const schemaIds = schemas.map((s: { id: number }) => s.id);
+  const tables = schemaIds.length
+    ? await tenantQuery(tenantId, (trx) =>
+        trx('product_tables')
+          .whereIn('star_schema_id', schemaIds)
+          .whereNotNull('transformation_sql')
+          .orderBy('dag_order', 'asc'),
+      )
+    : [];
+  if (!product) throw new Error(`Product ${built.id} was inserted but cannot be read back — RLS or transaction visibility issue.`);
+
+  let allOk = true;
+  try {
+    const results = await runProductTransformation(product, tables, tenantId);
+    const failed = Array.isArray(results) ? results.filter((r: { status: string }) => r.status === 'error') : [];
+    if (failed.length > 0) {
+      emit({ type: 'product', productName: built.name, productId: built.id, status: 'partial', text: `${(results as unknown[]).length - failed.length} ok, ${failed.length} failed` });
+      for (const f of failed as Array<{ table_name: string; error?: string }>) {
+        emit({ type: 'error_detail', productName: built.name, productId: built.id, tableName: f.table_name, error: f.error ?? 'Unknown error' });
+      }
+      allOk = false;
+    } else {
+      emit({ type: 'product', productName: built.name, productId: built.id, status: 'ok', text: `all ${(results as unknown[]).length} tables ok` });
+    }
+    try {
+      const { syncProductToNeo4j } = await loadProductGraphSync();
+      syncProductToNeo4j(built.id).catch(() => { /* non-fatal */ });
+    } catch { /* ignore */ }
+  } catch (runErr) {
+    if (runErr instanceof CancelledError) throw runErr;
+    const msg = runErr instanceof Error ? runErr.message : 'Run failed';
+    emit({ type: 'product', productName: built.name, productId: built.id, status: 'error', text: msg });
+    allOk = false;
+  }
+
+  emit({ type: 'done', text: allOk ? 'All done!' : `${request.name} was added, but some tables failed to build.` });
+
+  return { productId: built.id, productName: built.name, allOk };
 }

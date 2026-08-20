@@ -25,7 +25,7 @@ const SRC = 'backend/src';
 // Count as of 2026-07-20 (SyncOrchestrator's SchemaProfiler +
 // notificationService imports made static). LOWER this as cycles are
 // untangled; never raise it.
-const BASELINE = 92;
+const BASELINE = 90;
 
 const PATTERN = /await import\(\s*['"]\.\.?\//g;
 

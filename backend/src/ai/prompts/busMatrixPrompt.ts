@@ -301,6 +301,115 @@ casualty of a token-budget overrun. Budget aggressively:
 }
 
 // ---------------------------------------------------------------------------
+// Extension prompt — design ONE additional topic next to an existing build
+// ---------------------------------------------------------------------------
+
+/**
+ * A reusable existing dimension, summarised for the extension prompt: the
+ * model must JOIN these by their real column names, never redefine them.
+ */
+export interface ExistingDimContext {
+  table_name: string;
+  display_name: string;
+  description: string;
+  columns: Array<{ column_name: string; data_type: string; column_role: string | null }>;
+}
+
+export function BUS_MATRIX_EXTEND_SYSTEM(
+  sourceContext: string,
+  existingDims: ExistingDimContext[],
+  forbiddenTableNames: string[],
+  currentDate: string,
+): string {
+  const dimsText = existingDims.length === 0
+    ? '(none built yet — you may create the dimensions this subject needs)'
+    : existingDims.map((d) => {
+        const cols = d.columns
+          .map((c) => `    ${c.column_name} (${c.data_type})${c.column_role ? ` [${c.column_role}]` : ''}`)
+          .join('\n');
+        return `${d.table_name} — ${d.display_name}: ${d.description}\n${cols}`;
+      }).join('\n\n');
+
+  return `You are an expert Kimball data warehouse architect and DuckDB SQL engineer. An enterprise bus matrix has ALREADY been built for this source. Your task: design EXACTLY ONE additional data product (one new subject area) that slots in NEXT TO the existing build without touching it.
+
+Current date: ${currentDate}
+
+━━━ SOURCE SCHEMA (use ONLY these exact column names — character for character) ━━━
+
+${sourceContext}
+
+━━━ EXISTING SHARED DIMENSIONS (REUSE these — never redefine them) ━━━━━━━━
+
+${dimsText}
+
+━━━ EXTENSION RULES (each one is enforced in code — violations fail the build) ━━━
+
+1. Output EXACTLY ONE entry in data_products. Its name is given in the user
+   message — use it verbatim. Set build_order: 2.
+2. REUSE the existing dimensions above wherever they cover a concept your
+   fact needs: name them in dimensions_used, point fact FK columns at their
+   real key columns, and JOIN them in fact SQL using ONLY the column names
+   listed above. Do NOT include a reused dimension in conformed_dimensions
+   or owned_dimensions — it already exists.
+3. conformed_dimensions may contain ONLY genuinely NEW dimensions — concepts
+   no existing dimension covers. Name them dim_<singular_english_noun>.
+4. NEVER use any of these table names (they already exist): ${forbiddenTableNames.join(', ') || '(none)'}
+5. Do NOT include dim_date — it is auto-generated. Reference it as usual:
+   fact FKs point to dim_date.date_key (INTEGER YYYYMMDD), computed as
+   TRY_CAST(strftime(TRY_CAST(date_col AS DATE), '%Y%m%d') AS INTEGER),
+   COALESCE(..., -1) when nullable.
+6. EMPTY TABLES: never design a fact whose source tables are ALL marked
+   "NO ROWS". An empty lookup may still feed a dimension.
+7. Keep it focused: 1-3 fact tables, only the new dimensions this subject
+   really needs. This is one subject, not a redesign.
+8. Propose 2-4 KPIs for the new product (product_name = the given name).
+
+━━━ KIMBALL + DuckDB RULES (same as the original build) ━━━━━━━━━━━━━━━━━━
+
+- Grain: every fact declares "One row per ...". Surrogate keys via ROW_NUMBER()
+  for NEW dims only. ALWAYS TRY_CAST, never CAST. strftime(value, format).
+- Every column referenced through a dim alias in fact SQL MUST exist on that
+  dim — for reused dims that means the column lists printed above, exactly.
+- Facts JOIN reused dims to resolve natural keys → surrogate keys, e.g.
+  LEFT JOIN dim_item di ON TRIM(CAST(s.Item AS VARCHAR)) = TRIM(CAST(di.item_id AS VARCHAR))
+  (adjust to the real key columns above).
+
+━━━ OUTPUT FORMAT — the SAME JSON shape as the original bus matrix ━━━━━━━
+
+{
+  "rationale": "...",
+  "conformed_dimensions": [ /* NEW dims only — often empty */ ],
+  "fact_tables": [ /* the new subject's facts */ ],
+  "relationships": [ /* fact → dim links, including links to REUSED dims */ ],
+  "data_products": [ { "name": "<given>", "description": "...", "build_order": 2, "fact_tables": [...], "owned_dimensions": [ /* NEW dims only */ ] } ],
+  "proposed_kpis": [...],
+  "dim_date_range": {"start": "2020-01-01", "end": "2027-12-31"}
+}
+
+Return ONLY valid JSON. Keep transformation_sql concise (short aliases, no
+comments); omit lineage[] for trivial columns.`;
+}
+
+export function buildBusMatrixExtendUser(
+  connectionName: string,
+  productName: string,
+  description: string,
+  focus: string | undefined,
+  entities: string[],
+): string {
+  return `Extend the existing build for "${connectionName}" with ONE new data product.
+
+Product name (use verbatim): "${productName}"
+What it is about: ${description}${focus ? `\nWhat the user most wants to see: ${focus}` : ''}
+Source tables to build it from: ${entities.join(', ')}
+
+Requirements:
+- Design ONLY this one product; reuse existing dimensions per the rules above
+- Use ONLY exact source column names from the schema
+- Return only valid JSON`;
+}
+
+// ---------------------------------------------------------------------------
 // User prompt builder
 // ---------------------------------------------------------------------------
 

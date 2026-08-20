@@ -31,7 +31,79 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (the build's "working" pane is human now: no plumbing, live design progress)
+**Last updated:** 2026-08-20 (Build has a chat: ask what's covered, add ONE subject additively)
+
+**"ASK ABOUT YOUR SUBJECTS" — THE BUILD PAGE CHAT + ADDITIVE SUBJECT
+CREATION (2026-08-20, fifth batch).** Owner, after noticing Quotations was
+missing from /subjects: *"add the option in build to add a subject when the
+user wants it, or when a user has a question about whether something is
+already in a topic … If there's a change needed then it can break no
+downstream dependencies. I need a place where we can ask what's there
+already and/or ask for changes/additions in human language."* Design of
+record, each safety property enforced in CODE, not prompt hope:
+- **The chat answers from real data, never guesses.** New
+  `services/buildChatContext.ts` (`buildCoverageContext`) assembles the
+  coverage context from the catalog: subjects with descriptions/KPIs/
+  question_text/table display names, synced source tables with measured row
+  counts (dataset_profiles, latest wins) and — the load-bearing line —
+  per-table "used by: Sales" vs "not part of any subject yet"
+  (data_product_sources inverted). Explicit tenant_id filters throughout
+  (reqDb pool-race rule). `POST /products/build-chat` (admin+analyst,
+  Zod-validated, `ai/prompts/buildChatPrompt.ts` +
+  `AIService.respondBuildChat`, Zod-parsed JSON out) — READ-ONLY BY
+  CONSTRUCTION: the endpoint has no mutation path. The model may return a
+  `proposal`; the route re-validates it server-side (connection in tenant,
+  entities ⊆ synced set — filtered, name not colliding — else dropped).
+- **Only a click builds.** The proposal renders as a card in the new
+  `frontend/app/build/AskPanel.tsx` ("New subject: Quotations · built from
+  Quotations, QuotationLines · your existing subjects stay untouched") with
+  ONE button → `POST /products/bus-matrix/extend-start` (admin+analyst,
+  Zod). Guards run BEFORE the queue check so they hold without Redis and
+  are testable: 404 unknown/foreign connection, 400 unsynced entities
+  (named), 409 subject-name collision (case-insensitive, tenant-wide), 503
+  no Redis, 409 another build running (one build at a time per tenant —
+  an extension racing a rebuild would design against a schema being
+  replaced under it). Job mode `'extend'` on the SAME bus-matrix queue, so
+  SSE/cancel/active/reattach and the run panel work unchanged.
+- **`runTopicExtensionWorkflow`** (busMatrixOrchestrator): reuses the
+  design streamer via a new `promptOverride` param on
+  `generateBusMatrixStreaming` (same thinking/design_progress events), a
+  new `BUS_MATRIX_EXTEND_SYSTEM` prompt that lists the existing owner dims
+  WITH their real columns (reuse by exact name, JOIN on real keys) and the
+  forbidden table-name list. Then **`prepareExtensionMatrix`**
+  (busMatrixBuilder, pure, 7 unit tests) enforces: exactly ONE product,
+  approved name verbatim, build_order forced to 2 (never 1 — 1 is what
+  materialises dim_date and the existing build owns that); AI
+  redefinitions of existing tables DROPPED and replaced by DB-derived
+  SHADOW entries (present in conformed_dimensions so buildBusMatrix's stub
+  loop copies columns, never owned, so they persist as stubs); any
+  remaining name collision is a HARD ERROR — persisting it would arm
+  buildBusMatrix's retire-and-replace sweep, the one thing an additive
+  flow must never do; a fact naming a dim that neither exists nor is
+  defined is refused. Post-persist the workflow inserts
+  `data_product_dependencies` rows to the owners of every reused dim PLUS
+  the dim_date owner (buildBusMatrix can only wire owners inside the
+  matrix; loadDependencyDimensions resolves through these rows at run
+  time). Then transforms the ONE new product and emits the standard events.
+- **Changes to existing subjects are refused**, with the honest reason
+  (dashboards and saved questions built on them) and a pointer to the
+  topic's own Manage mode; hide/show stays the Build page eye toggle. The
+  chat prompt bans warehouse vocabulary in replies (subjects/shared data/
+  tables, never fact/dimension/star schema/data product/SQL).
+- **Known caveat, stated on purpose:** a later full Rebuild is still
+  retire-and-replace for the whole topic set — an added subject gets
+  re-designed like everything else.
+- Drive-by: consolidated the orchestrator's repeated lazy imports into two
+  module-level loaders (`loadTransformationRunner`/`loadProductGraphSync` —
+  deferral kept, one ratchet site each) and used the static AIService
+  imports in the new workflow → dynamic-import ratchet count 100→90;
+  **baseline LOWERED 92→90** per the ratchet's covenant.
+- Validation: backend `npm run check` clean, full suite **37 files / 339
+  tests green** (16 new: 7 prepareExtensionMatrix, 9 route/coverage in
+  `products-build-chat.test.ts`), all eight ratchets green, frontend `tsc`
+  + lint clean, `next build` green.
+
+**Prior last updated:** 2026-08-20 (the build's "working" pane is human now: no plumbing, live design progress)
 
 **THE WORKING PANE SHOWED A DEBUGGER — FIXED (2026-08-20, fourth batch).**
 Owner screenshot from a live rebuild: the "Show the working" disclosure was
