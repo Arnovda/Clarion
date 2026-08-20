@@ -1,5 +1,11 @@
 backend + frontend
 
+# Re-applied 2026-08-20 (seventh): promotes image main-f60b91a — the Build
+# page's "Ask about your subjects" chat (coverage answers from the real
+# catalog) and the additive extend flow (one new subject next to the
+# existing build, collisions refused in code). Applied AFTER Build & Deploy
+# run 476 reported success.
+#
 # Re-applied 2026-08-20 (sixth): promotes image main-71f29a8 — the Build
 # page's working pane drops the streamer's diag plumbing (only real AI
 # reasoning renders) and the headline shows live design progress
