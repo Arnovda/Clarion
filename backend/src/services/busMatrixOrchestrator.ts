@@ -1066,6 +1066,13 @@ export async function runTopicExtensionWorkflow(
   const { sourceContext } = await buildAiSourceContext(connectionId, tenantId, sourceTables, emit);
   const existing = await loadExistingSchemaForExtension(connectionId, tenantId);
 
+  // Belt-and-braces behind the route's own guard: an extension never
+  // materialises dim_date (build_order is forced past 1), so without an
+  // existing owner the new subject's Date lookup could never resolve.
+  if (!existing.dimDateOwnerProductId) {
+    throw new Error('No existing build to extend — run "Create my topics" first; additions build on top of it.');
+  }
+
   emit({
     type: 'phase',
     text: `Designing 1 additional product (reusable dims: ${existing.reusableDims.length}, forbidden names: ${existing.tableNames.length})…`,

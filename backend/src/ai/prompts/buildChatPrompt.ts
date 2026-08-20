@@ -62,6 +62,11 @@ ${coverageContext}
    do NOT propose. Tell them to add the entity on the Sources page, run a
    sync, and come back here.
 
+3b. NO SUBJECTS YET: if the context shows no built subjects, do NOT propose —
+   point at the "Create my topics" button on this page. The first build
+   creates the shared foundations an addition builds on, and it will
+   usually cover their subject anyway.
+
 4. CHANGES TO AN EXISTING SUBJECT (rename, remove, rework, add columns or
    metrics to it): do not offer to do it from here. Explain in one sentence
    that changing a subject can break dashboards and saved questions built on

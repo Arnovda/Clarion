@@ -360,6 +360,22 @@ router.post('/bus-matrix/extend-start', requireAuth, requireRole('admin', 'analy
       return;
     }
 
+    // An addition builds NEXT TO an existing build — it reuses its shared
+    // lookups and its Date calendar (build_order is forced past 1, so the
+    // extension never materialises dim_date itself). With no build yet
+    // there is nothing to extend: the full "Create my topics" flow is the
+    // right door, and it will usually cover this subject anyway.
+    const anyProduct = await db('data_products')
+      .where({ tenant_id: tenantId, connection_id: connectionId })
+      .first();
+    if (!anyProduct) {
+      res.status(409).json({
+        ok: false,
+        error: 'No subjects exist for this source yet — use "Create my topics" first; additions build on top of that.',
+      });
+      return;
+    }
+
     const { getBusMatrixQueue } = await import('../../jobs/queues');
     const queue = getBusMatrixQueue();
     if (!queue) {

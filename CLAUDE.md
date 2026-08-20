@@ -90,6 +90,12 @@ record, each safety property enforced in CODE, not prompt hope:
   topic's own Manage mode; hide/show stays the Build page eye toggle. The
   chat prompt bans warehouse vocabulary in replies (subjects/shared data/
   tables, never fact/dimension/star schema/data product/SQL).
+- **An extension needs a build to extend**: with no products on the
+  connection the route 409s ("use Create my topics first" — an addition
+  reuses the existing shared lookups and Date calendar, and build_order is
+  forced past 1 so it never materialises dim_date itself); the workflow
+  re-checks the dim_date owner, and the chat prompt points at the full
+  build instead of proposing.
 - **Known caveat, stated on purpose:** a later full Rebuild is still
   retire-and-replace for the whole topic set — an added subject gets
   re-designed like everything else.

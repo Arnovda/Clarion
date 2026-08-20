@@ -139,6 +139,20 @@ describe('POST /api/products/bus-matrix/extend-start', () => {
     const res = await start(adminToken, { connectionId, name: 'Quotations', entities: [] });
     expect(res.status).toBe(400);
   });
+
+  it('409s when no build exists to extend (additions build on the full build)', async () => {
+    const db = getTestDb();
+    const [bareConn] = await db('connections')
+      .insert({ tenant_id: tenantId, name: 'Bare source', type: 'duckdb', config: JSON.stringify({}) })
+      .returning('id');
+    const bareConnId = Number((bareConn as { id?: number }).id ?? bareConn);
+    await db('source_tables').insert({
+      tenant_id: tenantId, connection_id: bareConnId, table_name: 'Quotations',
+    });
+    const res = await start(adminToken, { connectionId: bareConnId, name: 'Quotations', entities: ['Quotations'] });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain('Create my topics');
+  });
 });
 
 describe('POST /api/products/build-chat', () => {
