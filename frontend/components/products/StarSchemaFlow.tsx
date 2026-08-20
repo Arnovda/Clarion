@@ -59,6 +59,11 @@ export interface PTTable {
   description: string | null;
   table_role: string;
   columns: PTColumn[];
+  /** Relationship-endpoint columns the is_technical firewall keeps out of
+      `columns` (FKs, surrogate keys). The diagram needs them — without
+      these the join surface is empty and edges land on card edges instead
+      of named fields. Optional: older payloads simply lack the list. */
+  join_columns?: PTColumn[];
 }
 
 export interface PTRelationship {
@@ -312,6 +317,20 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
 
   const byName = useMemo(() => new Map(schema.tables.map((t) => [t.table_name, t])), [schema]);
 
+  // What a card can show: the firewalled column list PLUS the join columns
+  // the endpoint needs. Join columns lead — the linked fields are the answer
+  // to the question this canvas is asked, so they must never hide below a
+  // fold of attributes.
+  const effectiveColumns = useMemo(() => {
+    const m = new Map<number, PTColumn[]>();
+    for (const t of schema.tables) {
+      const have = new Set(t.columns.map((c) => c.column_name));
+      const extras = (t.join_columns ?? []).filter((c) => !have.has(c.column_name));
+      m.set(t.id, extras.length ? [...extras, ...t.columns] : t.columns);
+    }
+    return m;
+  }, [schema.tables]);
+
   // The join surface per table: every column that is an endpoint of a
   // relationship in this schema, in the table's own column order.
   const joinSurface = useMemo(() => {
@@ -332,11 +351,12 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
   }, [schema.relationships, byName]);
 
   const shownColumns = useCallback((t: PTTable): PTColumn[] => {
-    if (expanded.has(t.id)) return t.columns;
+    const all = effectiveColumns.get(t.id) ?? t.columns;
+    if (expanded.has(t.id)) return all;
     const names = joinSurface.get(t.id);
     if (!names || names.size === 0) return [];
-    return t.columns.filter((c) => names.has(c.column_name));
-  }, [expanded, joinSurface]);
+    return all.filter((c) => names.has(c.column_name));
+  }, [expanded, joinSurface, effectiveColumns]);
 
   const linkCounts = useMemo(() => {
     const counts = new Map<number, number>();
@@ -400,7 +420,8 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
     const heightOf = (id: number) => {
       const t = schema.tables.find((x) => x.id === id)!;
       const shown = shownColumns(t);
-      const hasFooter = t.columns.length > shown.length || expanded.has(t.id);
+      const total = (effectiveColumns.get(t.id) ?? t.columns).length;
+      const hasFooter = total > shown.length || expanded.has(t.id);
       return nodeHeight(shown.length, hasFooter);
     };
 
@@ -420,7 +441,7 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
           table: t,
           isFact: t.id === anchor.id,
           shown,
-          hiddenCount: t.columns.length - shown.length,
+          hiddenCount: (effectiveColumns.get(t.id) ?? t.columns).length - shown.length,
           showingAll: expanded.has(t.id),
           dimmed,
           litColumns: litByTable.get(t.id) ?? new Set<string>(),
@@ -465,7 +486,7 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
     }
 
     return { nodes, edges };
-  }, [schema, shownColumns, expanded, activeTableId, neighbours, litByTable, linkCounts, byName, toggleAll]);
+  }, [schema, shownColumns, effectiveColumns, expanded, activeTableId, neighbours, litByTable, linkCounts, byName, toggleAll]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     const id = Number(node.id);

@@ -191,11 +191,50 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
           .whereIn('pr.star_schema_id', schemaIds)
           .select(
             'pr.id', 'pr.star_schema_id',
+            'pr.from_table_id', 'pr.to_table_id',
             'ft.table_name as from_table_name', 'pr.from_column_name',
             'tt.table_name as to_table_name', 'pr.to_column_name',
             'pr.relationship_type',
           )
       : [];
+
+    // Join columns — the relationship-endpoint columns, fetched PAST the
+    // is_technical firewall above. The firewall rightly hides keys from the
+    // curatorial column lists (an FK is not something a curator describes),
+    // but the schema diagram's whole subject IS the keys: an edge must land
+    // on a named field at both ends, and with the endpoints filtered out the
+    // join surface renders empty. Shipped as a separate `join_columns` list
+    // so every other consumer of `columns` keeps the firewalled view.
+    // Underscore-prefixed names (`_row_hash` today, SCD2 metadata tomorrow)
+    // stay excluded by name — the firewall's real target can never ride
+    // along, even if a pathological relationship row were to reference one.
+    const endpointPairs = new Set<string>();
+    const endpointTableIds = new Set<number>();
+    const endpointNames = new Set<string>();
+    for (const r of relationships) {
+      endpointPairs.add(`${r.from_table_id}:${r.from_column_name}`);
+      endpointPairs.add(`${r.to_table_id}:${r.to_column_name}`);
+      endpointTableIds.add(r.from_table_id);
+      endpointTableIds.add(r.to_table_id);
+      endpointNames.add(r.from_column_name);
+      endpointNames.add(r.to_column_name);
+    }
+    const shippedPairs = new Set(columns.map((c: { product_table_id: number; column_name: string }) => `${c.product_table_id}:${c.column_name}`));
+    const joinColumnRows = endpointTableIds.size
+      ? await db('product_columns')
+          .whereIn('product_table_id', [...endpointTableIds])
+          .whereIn('column_name', [...endpointNames])
+          .orderBy(['sort_order', 'id'])
+      : [];
+    const joinColsByTable = new Map<number, typeof joinColumnRows>();
+    for (const c of joinColumnRows) {
+      if (c.column_name.startsWith('_')) continue;
+      const key = `${c.product_table_id}:${c.column_name}`;
+      if (!endpointPairs.has(key) || shippedPairs.has(key)) continue;
+      const arr = joinColsByTable.get(c.product_table_id) ?? [];
+      arr.push(c);
+      joinColsByTable.set(c.product_table_id, arr);
+    }
 
     // Transformation quality checks
     const checks = tableIds.length
@@ -224,10 +263,15 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       colsByTable.set(c.product_table_id, arr);
     }
 
-    const tablesBySchema = new Map<number, (typeof tables[0] & { columns: unknown[]; quality_checks: unknown[] })[]>();
+    const tablesBySchema = new Map<number, (typeof tables[0] & { columns: unknown[]; join_columns: unknown[]; quality_checks: unknown[] })[]>();
     for (const t of tables) {
       const arr = tablesBySchema.get(t.star_schema_id) ?? [];
-      arr.push({ ...t, columns: colsByTable.get(t.id) ?? [], quality_checks: checksByTable.get(t.id) ?? [] });
+      arr.push({
+        ...t,
+        columns: colsByTable.get(t.id) ?? [],
+        join_columns: joinColsByTable.get(t.id) ?? [],
+        quality_checks: checksByTable.get(t.id) ?? [],
+      });
       tablesBySchema.set(t.star_schema_id, arr);
     }
 

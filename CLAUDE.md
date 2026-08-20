@@ -31,7 +31,43 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-19 (Manage mode's two diagrams rebuilt: schema in the relations language, lineage on the one real surface)
+**Last updated:** 2026-08-20 (the schema diagram gets its keys back, and the missing dim_date links are synthesized)
+
+**THE JOIN SURFACE WAS EMPTY IN PRODUCTION — TWO GAPS THE OWNER'S FIRST
+SCREENSHOTS EXPOSED (2026-08-20).** The rebuilt "How it fits together"
+shipped, but on the live Inventory topic every card rendered zero field
+rows (edges landed on card edges, not named fields) and the Date lookup
+read "not linked yet". Both diagnosed to data, not rendering:
+- **The `is_technical` firewall was starving the diagram.** `GET
+  /products/:id` filters technical columns out of `columns`
+  (`core.ts:176`), and `inferIsTechnical` marks exactly the join roles
+  (foreign_key, surrogate_key) technical — so the relationship-endpoint
+  columns never reached the frontend and the join-surface filter matched
+  nothing. FIX: the payload now ships **`join_columns`** per table — the
+  relationship-endpoint columns fetched PAST the firewall, still excluding
+  underscore-prefixed names by name (`_row_hash` today, SCD2 metadata
+  tomorrow), and never duplicating a column `columns` already carries.
+  `StarSchemaFlow` merges them (join columns lead the expanded list). The
+  contract stays: every OTHER consumer of `columns` keeps the firewalled
+  view. Pinned in `products-detail-join-columns.test.ts` (3), including
+  that a pathological relationship row naming `_row_hash` cannot smuggle
+  it into any column list.
+- **The AI omits the relationships[] entries that touch dim_date** — the
+  prompt forbids listing dim_date as a table (auto-injected), and the
+  model reliably drops the relationships to it too, while the per-column
+  `fk_target_table/_column` metadata survives ("fact FKs point to
+  dim_date.date_key" is a prompt rule). FIX: new pure
+  `synthesizeFkRelationships()` (`busMatrixBuilder.ts`, 5 unit tests)
+  derives the missing rows from column metadata at persist time — only
+  FROM the product's own tables (so a shared dim stubbed into several
+  schemas can't re-emit its links per schema), only TO tables the schema
+  knows, never duplicating an existing assertion. Existing topics keep
+  their honest "not linked yet" until a rebuild re-persists them.
+- Validation: backend `npm run check` clean, full suite **33 files / 313
+  tests green** (8 new), all eight ratchets green, frontend `tsc` clean +
+  lint clean on touched files, `next build` green.
+
+**Prior last updated:** 2026-08-19 (Manage mode's two diagrams rebuilt: schema in the relations language, lineage on the one real surface)
 
 **"HOW IT FITS TOGETHER" NOW SPEAKS THE RELATIONS PANE'S LANGUAGE
 (2026-08-19, second batch).** Owner, from the AI-built Purchasing topic:

@@ -9,7 +9,58 @@
 import { semanticDb } from '../db/knex';
 import { deleteProductGraph } from '../db/semanticGraph';
 import { logger as rootLogger } from '../utils/logger';
-import type { BusMatrixOutput } from '../ai/prompts/busMatrixPrompt';
+import type { BusMatrixOutput, BusMatrixRelationship } from '../ai/prompts/busMatrixPrompt';
+
+/** The slice of a designed table `synthesizeFkRelationships` reads. */
+export interface SynthesizableTable {
+  table_name: string;
+  table_role: 'fact' | 'dimension';
+  columns: Array<{ column_name: string; fk_target_table?: string | null; fk_target_column?: string | null }>;
+}
+
+/**
+ * Derive the relationship rows the AI's `relationships[]` list is missing
+ * from per-column `fk_target_table/_column` metadata.
+ *
+ * The design carries every join TWICE: once in the relationships list and
+ * once on the FK column itself. The prompt forbids listing dim_date as a
+ * table (it is auto-injected), and the model reliably omits the
+ * relationships that touch it too — but the column metadata survives
+ * ("fact FKs point to dim_date.date_key" is a prompt rule). Without this,
+ * an AI-built topic renders its Date lookup as "not linked yet" and every
+ * reader of product_relationships misses the date joins.
+ *
+ * Pure on purpose (unit-tested without a DB). Emits only links whose target
+ * is a known table in the schema, skips self-references, and never
+ * duplicates an existing (from table, from column, to table) assertion.
+ */
+export function synthesizeFkRelationships(
+  tables: SynthesizableTable[],
+  existing: Array<Pick<BusMatrixRelationship, 'from_table_name' | 'from_column_name' | 'to_table_name'>>,
+  knownTables: ReadonlySet<string>,
+): BusMatrixRelationship[] {
+  const seen = new Set(existing.map((r) => `${r.from_table_name}|${r.from_column_name}|${r.to_table_name}`));
+  const out: BusMatrixRelationship[] = [];
+  for (const t of tables) {
+    for (const c of t.columns) {
+      const target = c.fk_target_table;
+      const targetColumn = c.fk_target_column;
+      if (!target || !targetColumn || target === t.table_name) continue;
+      if (!knownTables.has(target)) continue;
+      const key = `${t.table_name}|${c.column_name}|${target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        from_table_name: t.table_name,
+        from_column_name: c.column_name,
+        to_table_name: target,
+        to_column_name: targetColumn,
+        relationship_type: t.table_role === 'fact' ? 'fact_to_dim' : 'dim_to_dim',
+      });
+    }
+  }
+  return out;
+}
 
 const log = rootLogger.child({ mod: 'busMatrixBuilder' });
 
@@ -557,7 +608,27 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         });
       }
 
-      for (const rel of busMatrix.relationships) {
+      // The designed relationships, PLUS the ones only the column metadata
+      // asserts (the dim_date joins, chiefly — see synthesizeFkRelationships).
+      // Synthesis reads FROM this product's own tables only, so a shared dim
+      // stubbed into several schemas cannot re-emit its links per schema; a
+      // link TO a stubbed or auto-injected table is exactly the point.
+      const ownNames = new Set([...dp.fact_tables, ...dp.owned_dimensions]);
+      const ownDesignTables: SynthesizableTable[] = [
+        ...busMatrix.conformed_dimensions
+          .filter((d) => ownNames.has(d.table_name))
+          .map((d) => ({ table_name: d.table_name, table_role: 'dimension' as const, columns: d.columns })),
+        ...busMatrix.fact_tables
+          .filter((f) => ownNames.has(f.table_name))
+          .map((f) => ({ table_name: f.table_name, table_role: 'fact' as const, columns: f.columns })),
+      ];
+      const synthesized = synthesizeFkRelationships(
+        ownDesignTables,
+        busMatrix.relationships,
+        new Set(tableNameToId.keys()),
+      );
+
+      for (const rel of [...busMatrix.relationships, ...synthesized]) {
         const fromId = tableNameToId.get(rel.from_table_name);
         const toId = tableNameToId.get(rel.to_table_name);
         if (fromId && toId) {
