@@ -8,6 +8,7 @@
 
 import { semanticDb } from '../db/knex';
 import { deleteProductGraph } from '../db/semanticGraph';
+import { parseAliasMap, deriveColumnLineage, DerivedLineage } from './lineageDerivation';
 import { logger as rootLogger } from '../utils/logger';
 import type { BusMatrixOutput, BusMatrixRelationship } from '../ai/prompts/busMatrixPrompt';
 
@@ -417,6 +418,10 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           });
         }
 
+        const colAliasMap = parseAliasMap(dim.transformation_sql ?? '');
+        const colAllowed = new Set(dim.source_tables ?? []);
+        const colSole = colAllowed.size === 1 ? dim.source_tables[0] : undefined;
+
         for (const col of dim.columns) {
           const [colRow] = await trx('product_columns').insert({
             product_table_id: tableId,
@@ -436,7 +441,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           }).returning('id');
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
 
-          const validLineage = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          let validLineage: DerivedLineage[] = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          if (validLineage.length === 0) {
+            // The prompt tells the model to omit lineage for trivial columns
+            // (a sound token rule) — but a passthrough's lineage is exactly
+            // derivable from its expression. Derive it instead of leaving
+            // "Where it comes from" empty for most of an AI-built topic.
+            validLineage = deriveColumnLineage(col.transformation_expression, colAliasMap, colAllowed, colSole);
+          }
           if (validLineage.length) {
             await trx('column_lineage').insert(
               validLineage.map((l) => ({
@@ -483,6 +495,10 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           });
         }
 
+        const colAliasMap = parseAliasMap(fact.transformation_sql ?? '');
+        const colAllowed = new Set(fact.source_tables ?? []);
+        const colSole = colAllowed.size === 1 ? fact.source_tables[0] : undefined;
+
         for (const col of fact.columns) {
           const [colRow] = await trx('product_columns').insert({
             product_table_id: tableId,
@@ -502,7 +518,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           }).returning('id');
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
 
-          const validLineage = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          let validLineage: DerivedLineage[] = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          if (validLineage.length === 0) {
+            // The prompt tells the model to omit lineage for trivial columns
+            // (a sound token rule) — but a passthrough's lineage is exactly
+            // derivable from its expression. Derive it instead of leaving
+            // "Where it comes from" empty for most of an AI-built topic.
+            validLineage = deriveColumnLineage(col.transformation_expression, colAliasMap, colAllowed, colSole);
+          }
           if (validLineage.length) {
             await trx('column_lineage').insert(
               validLineage.map((l) => ({

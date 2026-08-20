@@ -31,7 +31,45 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (the schema diagram gets its keys back, and the missing dim_date links are synthesized)
+**Last updated:** 2026-08-20 (lineage is BUILT now, not hoped for: derived from the transformation SQL at persist time)
+
+**COLUMN LINEAGE IS DERIVED DETERMINISTICALLY AT BUILD TIME (2026-08-20,
+second batch).** Owner: *"I want you to build the lineage and visualize it
+correctly, like databricks lineage."* The blocker was data, not the viewer:
+the bus-matrix prompt tells the model to OMIT `lineage[]` for trivial
+columns (kept — it is a sound token rule), so AI-built topics wrote almost
+no `column_lineage` rows and "Where it comes from" showed the honest empty
+card. But a passthrough's lineage is not unknowable — `s.ItemCode` names
+its source exactly, no model required.
+- **New pure `services/lineageDerivation.ts`** (9 unit tests, no DB):
+  `parseAliasMap` reads the table's FROM/JOIN clauses (comments + string
+  literals stripped so they can't mint aliases; CTE names excluded — a ref
+  through a CTE is not attributable in v1), `deriveColumnLineage` scans the
+  column's `transformation_expression` for qualified refs. THE LOAD-BEARING
+  GUARD: only tables in the design's declared `source_tables[]` may become
+  a lineage source — fact SQL joins DIMENSION tables for surrogate keys,
+  and a `d.item_key` ref must never mint a `column_lineage` row
+  (`source_table_name` means a SOURCE-layer table; a product-table name
+  there renders as "no longer in the catalog"). A bare identifier resolves
+  only when the table reads exactly ONE source; two sources = ambiguous =
+  no guess. Pure passthroughs get `transformation_description: 'Copied
+  as-is'`; transforms get NULL and the lineage endpoint falls back to
+  showing the expression — the honest rendering.
+- **`busMatrixBuilder` wires it into BOTH column persist loops** (dims and
+  facts): when the AI's `lineage[]` is absent, derive. Template builds are
+  untouched (they author lineage). Existing topics fill in on their next
+  rebuild, same as the dim_date links.
+- **`LineageGraph` gained a row cap** (`ROW_CAP` 14, Databricks-style):
+  with every column now threaded, a measures table would render a ~1,900px
+  card. Cards cap with a "Show all N columns" toggle, and THE CAP YIELDS TO
+  THE SELECTION — any row the selected column connects to is always
+  included, so a thread can never point at a hidden row (the layout memo
+  re-derives on selection; geometry is deterministic, so this is cheap).
+- Validation: backend `npm run check` clean, full suite **36 files / 322
+  tests green**, eight ratchets green, frontend `tsc` + lint clean, `next
+  build` green.
+
+**Prior last updated:** 2026-08-20 (the schema diagram gets its keys back, and the missing dim_date links are synthesized)
 
 **THE JOIN SURFACE WAS EMPTY IN PRODUCTION — TWO GAPS THE OWNER'S FIRST
 SCREENSHOTS EXPOSED (2026-08-20).** The rebuilt "How it fits together"

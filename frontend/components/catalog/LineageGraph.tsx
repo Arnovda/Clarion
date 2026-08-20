@@ -77,15 +77,31 @@ type ColKey = string; // `s:${table}.${column}` | `p:${productColumnId}`
 function sKey(table: string, column: string): ColKey { return `s:${table}.${column}`; }
 function pKey(id: number): ColKey { return `p:${id}`; }
 
+/** A card identity that survives relayout, for the expand toggles. */
+type CardKey = string;
+
 interface Card {
+  key: CardKey;
   side: 'source' | 'product';
   top: number;
   height: number;
   node: SourceNode | ProductNode;
   /** Column render order — row index is the thread anchor. */
   rows: Array<{ key: ColKey; label: string; mono: string | null }>;
-  footer: string | null;
+  /** Rows hidden behind the cap (0 when expanded or under the cap). */
+  moreCount: number;
+  expanded: boolean;
+  footerNote: string | null;
 }
+
+/**
+ * Now that the builder derives lineage for every column, a measures table
+ * threads 60+ rows — a card that tall buries the picture. Cap the rows the
+ * way Databricks' lineage nodes do, with the cap yielding to the current
+ * selection: a thread must never point at a hidden row, so any row the
+ * selected column connects to is always included.
+ */
+const ROW_CAP = 14;
 
 function cardHeight(rowCount: number, hasFooter: boolean): number {
   return HEADER_H + rowCount * ROW_H + (hasFooter ? FOOTER_H : 0) + 8;
@@ -95,12 +111,14 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
   const [data, setData] = useState<LineageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ColKey | null>(null);
+  const [expandedCards, setExpandedCards] = useState<ReadonlySet<CardKey>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
     setData(null);
     setError(null);
     setSelected(null);
+    setExpandedCards(new Set());
     api.get(`/lineage/table?layer=${layer}&tableId=${tableId}`)
       .then((res) => { if (!cancelled) setData(res.data?.data ?? null); })
       .catch(() => { if (!cancelled) setError('Could not load lineage.'); });
@@ -109,32 +127,58 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
 
   const layout = useMemo(() => {
     if (!data) return null;
+
+    // Rows the current selection touches — these pierce the row cap, so a
+    // thread can never point at a hidden row.
+    const pinned = new Set<ColKey>();
+    if (selected) {
+      pinned.add(selected);
+      for (const e of edgesTouching(data.edges, selected)) {
+        pinned.add(sKey(e.sourceTable, e.sourceColumn));
+        pinned.add(pKey(e.productColumnId));
+      }
+    }
+
+    const capRows = (all: Card['rows'], expanded: boolean) => {
+      if (expanded || all.length <= ROW_CAP) return { rows: all, moreCount: 0 };
+      const rows = all.filter((r, i) => i < ROW_CAP || pinned.has(r.key));
+      return { rows, moreCount: all.length - rows.length };
+    };
+
     const sourceCards: Card[] = [];
     let y = LANE_PAD;
     for (const s of data.sources) {
-      const rows = s.columns.map((c) => ({
+      const all = s.columns.map((c) => ({
         key: sKey(s.tableName, c.name),
         label: c.displayName || c.name,
         mono: c.displayName ? c.name : null,
       }));
+      const cardKey = `s:${s.tableName}`;
+      const expanded = expandedCards.has(cardKey);
+      const { rows, moreCount } = capRows(all, expanded);
       const unfed = data.anchor.layer === 'source' && data.totalSourceColumns != null
         ? data.totalSourceColumns - s.columns.length
         : 0;
-      const footer = unfed > 0 ? `+ ${unfed} column${unfed === 1 ? '' : 's'} not feeding a topic yet` : null;
-      const height = cardHeight(rows.length, !!footer);
-      sourceCards.push({ side: 'source', top: y, height, node: s, rows, footer });
+      const footerNote = unfed > 0 ? `+ ${unfed} column${unfed === 1 ? '' : 's'} not feeding a topic yet` : null;
+      const hasFooter = !!footerNote || moreCount > 0 || expanded;
+      const height = cardHeight(rows.length, hasFooter);
+      sourceCards.push({ key: cardKey, side: 'source', top: y, height, node: s, rows, moreCount, expanded, footerNote });
       y += height + CARD_GAP;
     }
     const productCards: Card[] = [];
     y = LANE_PAD;
     for (const p of data.products) {
-      const rows = p.columns.map((c) => ({
+      const all = p.columns.map((c) => ({
         key: pKey(c.id),
         label: c.displayName || c.name,
         mono: c.displayName ? c.name : null,
       }));
-      const height = cardHeight(rows.length, false);
-      productCards.push({ side: 'product', top: y, height, node: p, rows, footer: null });
+      const cardKey = `p:${p.productTableId}`;
+      const expanded = expandedCards.has(cardKey);
+      const { rows, moreCount } = capRows(all, expanded);
+      const hasFooter = moreCount > 0 || expanded;
+      const height = cardHeight(rows.length, hasFooter);
+      productCards.push({ key: cardKey, side: 'product', top: y, height, node: p, rows, moreCount, expanded, footerNote: null });
       y += height + CARD_GAP;
     }
 
@@ -151,7 +195,7 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
     ) + LANE_PAD;
 
     return { sourceCards, productCards, rowY, height };
-  }, [data]);
+  }, [data, selected, expandedCards]);
 
   if (error) return <p className="px-6 py-6 text-[13px] text-err">{error}</p>;
   if (!data || !layout) {
@@ -234,7 +278,7 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
               : (node as ProductNode).productName;
             return (
               <div
-                key={`${card.side}-${isSource ? (node as SourceNode).tableName : (node as ProductNode).productTableId}`}
+                key={card.key}
                 className={cn(
                   'absolute rounded-[10px] border bg-raised',
                   anchorHere ? 'border-ocean shadow-1' : 'border-line',
@@ -263,8 +307,26 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
                     </button>
                   ))}
                 </div>
-                {card.footer && (
-                  <p className="px-3 pb-2 text-[10.5px] text-muted-2" style={{ height: FOOTER_H }}>{card.footer}</p>
+                {(card.footerNote || card.moreCount > 0 || card.expanded) && (
+                  <div className="flex items-baseline gap-2 px-3 pb-2" style={{ height: FOOTER_H }}>
+                    {(card.moreCount > 0 || card.expanded) && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedCards((cur) => {
+                          const next = new Set(cur);
+                          if (next.has(card.key)) next.delete(card.key);
+                          else next.add(card.key);
+                          return next;
+                        })}
+                        className="shrink-0 text-[10.5px] text-ocean hover:underline"
+                      >
+                        {card.expanded ? 'Show fewer' : `Show all ${card.rows.length + card.moreCount} columns`}
+                      </button>
+                    )}
+                    {card.footerNote && (
+                      <span className="min-w-0 truncate text-[10.5px] text-muted-2">{card.footerNote}</span>
+                    )}
+                  </div>
                 )}
               </div>
             );
