@@ -1,5 +1,10 @@
 backend + frontend
 
+# Re-applied 2026-08-20 (fourth): promotes image main-7bade8a — column
+# lineage derived deterministically from the transformation SQL at build
+# time, and the lineage graph's Databricks-style row cap. Applied AFTER
+# Build & Deploy run 469 reported success.
+#
 # Re-applied 2026-08-20 (third): promotes image main-b597605 — the schema
 # diagram's join columns ship past the is_technical firewall (edges land on
 # named fields again) and the builder synthesizes the dim_date relationship
