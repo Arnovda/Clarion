@@ -31,7 +31,31 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (Option A shipped: the Subjects hub replaces per-topic rail rows)
+**Last updated:** 2026-08-20 (the build's "working" pane is human now: no plumbing, live design progress)
+
+**THE WORKING PANE SHOWED A DEBUGGER — FIXED (2026-08-20, fourth batch).**
+Owner screenshot from a live rebuild: the "Show the working" disclosure was
+dominated by `diag` lines (`content_block_start`, `progress thinking=444c/12d
+text=6809c/37d`) — API-streaming plumbing meant for the /products workshop
+terminal. Root cause is structural: the long stretch of the AI design phase
+is the model WRITING the design (text deltas), during which no thinking
+arrives, so plumbing was ALL the pane had to show. Two changes:
+- **The Build page renders `thinking` only** — `diag` stays in the stream
+  (the workshop terminal keeps it) but no longer reaches the business
+  surface. The disclosure now appears only once real reasoning exists.
+- **New structured `design_progress` event** (`tablesDrafted`): the design
+  JSON must never stream to the Build page (raw SQL), but its shape gives
+  an honest progress signal for free — every drafted table carries one
+  `"table_name"` key. The orchestrator counts them as text deltas stream
+  (throttled ≥2.5s AND only on increase) and the Build page puts it on the
+  HEADLINE: "Writing the design — 12 tables drafted so far…" — alive for
+  everyone, not just disclosure-openers. Unknown event types are ignored by
+  the workshop (verified pattern), so no other consumer changes.
+- Validation: backend `npm run check` clean, full suite 36 files / 323
+  green, eight ratchets green, frontend `tsc` + lint clean, `next build`
+  green.
+
+**Prior last updated:** 2026-08-20 (Option A shipped: the Subjects hub replaces per-topic rail rows)
 
 **THE RAIL'S PER-TOPIC ROWS ARE GONE — OPTION A, THE OWNER'S PICK FROM
 THREE MOCKED DIRECTIONS (2026-08-20, third batch).** Owner: *"I'm starting

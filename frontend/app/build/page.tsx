@@ -185,9 +185,19 @@ function Build() {
             // `friendly` text, fall back to the technical one (refresh-mode
             // jobs and older log replays carry no friendly variant).
             setRun((r) => (r ? { ...r, phase: String(e.friendly ?? e.text ?? '') } : r));
-          } else if (type === 'thinking' || type === 'diag') {
-            const delta = type === 'diag' ? `\n· ${String(e.text ?? '')}\n` : String(e.text ?? '');
-            setRun((r) => (r ? { ...r, working: (r.working + delta).slice(-WORKING_CAP) } : r));
+          } else if (type === 'thinking') {
+            // Thinking ONLY — `diag` events are API-streaming plumbing
+            // (content_block markers, byte counters) for the /products
+            // workshop terminal, and rendering them here made "the working"
+            // read like a debugger (owner screenshot, 2026-08-20).
+            setRun((r) => (r ? { ...r, working: (r.working + String(e.text ?? '')).slice(-WORKING_CAP) } : r));
+          } else if (type === 'design_progress') {
+            // The design is being written: keep the headline alive with the
+            // honest count instead of one frozen sentence for minutes.
+            const n = Number(e.tablesDrafted ?? 0);
+            if (n > 0) {
+              setRun((r) => (r ? { ...r, phase: `Writing the design — ${n} table${n === 1 ? '' : 's'} drafted so far…` } : r));
+            }
           } else if (type === 'designed') {
             const topics = (Array.isArray(e.topics) ? e.topics : []).map((t) => ({
               ...(t as Omit<RunTopic, 'status' | 'note' | 'errors'>),

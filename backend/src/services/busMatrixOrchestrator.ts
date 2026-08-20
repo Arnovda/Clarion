@@ -29,6 +29,7 @@ export type OrchestratorEventType =
   | 'phase'      // human-readable phase change
   | 'thinking'   // AI thinking-token delta
   | 'diag'       // diagnostic from the AI streamer
+  | 'design_progress' // structured: the design is being WRITTEN — tables drafted so far
   | 'log'        // arbitrary log line
   | 'designed'   // structured: the design landed — topic list with ids (Build page cards)
   | 'product_start' // structured: product transformation started (Build page card → building)
@@ -69,6 +70,8 @@ export interface OrchestratorEvent {
   details?: unknown;
   /** designed: the topics the build is about to create (with real ids). */
   topics?: DesignedTopic[];
+  /** design_progress: how many tables the streaming design has drafted. */
+  tablesDrafted?: number;
   /** error_detail: which table inside `productName` failed. */
   tableName?: string;
   /** error_detail: the actual error message (e.g. "Column not found"). */
@@ -248,12 +251,35 @@ export async function runBusMatrixWorkflow(
     await checkCancelled(opts);
 
     // ── Phase B: AI design (cancellable) ───────────────────────────────
+    // The long stretch of this phase is the model WRITING the design (text
+    // deltas), during which no thinking arrives — left unreported, the run
+    // panel sat frozen on one sentence for minutes (owner screenshot,
+    // 2026-08-20). The design JSON itself must not stream to the Build page
+    // (raw SQL), but its shape gives an honest progress signal for free:
+    // every table the design drafts contains one "table_name" key. Count
+    // them as they stream and emit a throttled structured event the page
+    // can put on the headline: "12 tables drafted so far…".
+    let designText = '';
+    let lastDraftEmit = 0;
+    let lastDraftCount = 0;
     busMatrix = await generateBusMatrixStreaming(
       connection.name as string,
       sourceContext,
       (type, delta) => {
         if (type === 'thinking') emit({ type: 'thinking', text: delta });
         else if (type === 'diag') emit({ type: 'diag', text: delta });
+        else if (type === 'text') {
+          designText += delta;
+          const now = Date.now();
+          if (now - lastDraftEmit >= 2500) {
+            const drafted = (designText.match(/"table_name"/g) ?? []).length;
+            if (drafted > lastDraftCount) {
+              lastDraftEmit = now;
+              lastDraftCount = drafted;
+              emit({ type: 'design_progress', tablesDrafted: drafted });
+            }
+          }
+        }
       },
       opts.abortSignal,
     );
