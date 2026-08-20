@@ -1,5 +1,11 @@
 backend + frontend
 
+# Re-applied 2026-08-20 (sixth): promotes image main-71f29a8 — the Build
+# page's working pane drops the streamer's diag plumbing (only real AI
+# reasoning renders) and the headline shows live design progress
+# ("N tables drafted so far"). Applied AFTER Build & Deploy run 473
+# reported success.
+#
 # Re-applied 2026-08-20 (fifth): promotes image main-e5242da — the Subjects
 # hub under Uncover replaces the per-topic rail rows (Option A of the mocked
 # navigation directions). Applied AFTER Build & Deploy for e5242da reported
