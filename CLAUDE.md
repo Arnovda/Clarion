@@ -31,7 +31,39 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (multi-source strategy doc + the Build chat batch below)
+**Last updated:** 2026-08-21 (functionality gap analysis — doc only)
+
+**NEW DOC: `docs/backlog/functionality-gap-analysis.md` (2026-08-21, doc only).**
+Owner asked: walk through the app's functionality, think about what users do
+day to day, research broadly, and find what's missing. Method: a full
+code-verified inventory of the live feature surface crossed with external
+research (SMB owner daily-metrics literature, Fathom/Syft feature baselines,
+Tableau Pulse/ThoughtSpot push-BI, BI-adoption failure data, Belgium's Peppol
+B2B e-invoicing mandate live since 2026-01-01). **Verdict: Clarion is a strong
+PULL product whose primary user lives in a PUSH world** — the push skeleton is
+~80% built (pulse, morning brief, email schedules) but the brief never leaves
+the app, no metric has a user-set threshold, nothing renders on a phone; and
+the product is entirely backward-looking while the owner's #1 daily concern
+(cash/AR) is a forward view. Fifteen gaps G1–G15 in four tiers: T1 daily loop
+(G1 alerts+delivered brief — `morning_briefs.emailed_at` exists unused, G2
+mobile/PWA, G3 AR aging + chase list + cash-forward line on tables that
+already exist), T2 monthly loop (G4 targets/budgets — NO entity exists, only
+the bullet_chart contract; G5 spreadsheet connector — reconfirms multi-source
+P1 from the demand side; G6 external share links + server-side PDF report
+pack; G7 refreshable Excel), T3 adoption (G8 NL/FR i18n — zero i18n exists,
+`lang="en"` hardcoded; G9 onboarding mock still unwired; G10 built-but-buried:
+**`/investigate` is a fully-built root-cause agent with ZERO nav links**, and
+`/gaps` is orphaned; G11 connector breadth + a Peppol/UBL research spike; G12
+accountant portfolio tier), T4 collaboration (G13 comments/annotations, G14
+saved/scheduled questions, G15 benchmarking). Suggested order: items 1–3 are
+one release, "Clarion comes to you". §4 lists what NOT to build (no practice
+management, no driver-based forecasting, no reverse ETL, no embeds, no custom
+roles). **§6 corrects the record: the 2026-07-15 assessment is partly stale —
+data policies (row filter + column mask) EXIST with UI, audit log UI EXISTS
+(two), forecasting EXISTS in Ask AI.** Published as artifact "Clarion Gap
+Analysis". No code changed.
+
+**Prior last updated:** 2026-08-20 (multi-source strategy doc + the Build chat batch below)
 
 **NEW DOC: `docs/backlog/multi-source-strategy.md` (2026-08-20, doc only).**
 Owner asked how to tackle companies with multiple source systems, missing
