@@ -31,37 +31,52 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-21 (functionality gap analysis — doc only)
+**Last updated:** 2026-08-21 (functionality gap analysis v1.1 — doc only)
 
-**NEW DOC: `docs/backlog/functionality-gap-analysis.md` (2026-08-21, doc only).**
-Owner asked: walk through the app's functionality, think about what users do
-day to day, research broadly, and find what's missing. Method: a full
-code-verified inventory of the live feature surface crossed with external
-research (SMB owner daily-metrics literature, Fathom/Syft feature baselines,
-Tableau Pulse/ThoughtSpot push-BI, BI-adoption failure data, Belgium's Peppol
-B2B e-invoicing mandate live since 2026-01-01). **Verdict: Clarion is a strong
-PULL product whose primary user lives in a PUSH world** — the push skeleton is
-~80% built (pulse, morning brief, email schedules) but the brief never leaves
-the app, no metric has a user-set threshold, nothing renders on a phone; and
-the product is entirely backward-looking while the owner's #1 daily concern
-(cash/AR) is a forward view. Fifteen gaps G1–G15 in four tiers: T1 daily loop
-(G1 alerts+delivered brief — `morning_briefs.emailed_at` exists unused, G2
-mobile/PWA, G3 AR aging + chase list + cash-forward line on tables that
-already exist), T2 monthly loop (G4 targets/budgets — NO entity exists, only
-the bullet_chart contract; G5 spreadsheet connector — reconfirms multi-source
-P1 from the demand side; G6 external share links + server-side PDF report
-pack; G7 refreshable Excel), T3 adoption (G8 NL/FR i18n — zero i18n exists,
-`lang="en"` hardcoded; G9 onboarding mock still unwired; G10 built-but-buried:
+**NEW DOC: `docs/backlog/functionality-gap-analysis.md` (2026-08-21, doc
+only; v1.1 same day).** Owner asked: walk through the app's functionality,
+think about what users do day to day, research broadly, and find what's
+missing. Method: a full code-verified inventory of the live feature surface
+crossed with external research (SMB owner daily-metrics literature,
+Fathom/Syft baselines, Tableau Pulse/ThoughtSpot push-BI, Peliqan/Weld,
+BI-adoption failure data, Belgium's Peppol mandate live since 2026-01-01).
+**v1.1 is the version of record** — owner pushed back on v1.0's accounting
+lens (*"HR, operations, timesheets, ERP … will be onboarded too; the Excel
+part I agree with totally"*), so every gap is restated as a DOMAIN-AGNOSTIC
+primitive with finance examples marked as *first instances* (first only
+because the two live connectors are finance-shaped). **Verdict, three parts:
+(1) Clarion is a strong PULL product whose primary user lives in a PUSH
+world** — the push skeleton is ~80% built (pulse, morning brief, email
+schedules) but the brief never leaves the app, no metric has a user-set
+threshold, nothing renders on a phone; **(2) Clarion describes but never says
+what to DO** — no exception lists, no forward view, no targets; **(3) new G16,
+promoted by the owner's roadmap: the questions that justify multi-domain
+onboarding (revenue per FTE, labour cost vs project margin) are inexpressible
+while the query layer stays connection-scoped** — the first non-finance
+connector makes multi-source P3/P4 the product, not platform work. Sixteen
+gaps in four tiers: T1 daily loop (G1 alerts+delivered brief —
+`morning_briefs.emailed_at` exists unused; G2 mobile/PWA; G3 exception lists
++ forward view as a GENERIC primitive, first instance AR aging/chase
+list/cash line on tables that already exist), T2 multi-domain + monthly loop
+(G16 above; G4 generic targets on any KPI — NO entity exists, only the
+bullet_chart contract; G5 spreadsheet connector — owner-confirmed, reconfirms
+multi-source P1; G6 external share links + server-side PDF report pack; G7
+refreshable Excel), T3 adoption (G8 NL/FR i18n — zero i18n exists, `lang="en"`
+hardcoded; G9 onboarding mock still unwired; G10 built-but-buried:
 **`/investigate` is a fully-built root-cause agent with ZERO nav links**, and
-`/gaps` is orphaned; G11 connector breadth + a Peppol/UBL research spike; G12
-accountant portfolio tier), T4 collaboration (G13 comments/annotations, G14
+`/gaps` is orphaned; G11 connector breadth as the strategy — each new domain
+needs its template/KPI/pulse CONTENT and its own freshness cadence; Peppol
+demoted to a timeboxed spike; G12 portfolio tier — a generic seat, accountant
+is *a* channel not *the* channel), T4 collaboration (G13 comments, G14
 saved/scheduled questions, G15 benchmarking). Suggested order: items 1–3 are
-one release, "Clarion comes to you". §4 lists what NOT to build (no practice
-management, no driver-based forecasting, no reverse ETL, no embeds, no custom
-roles). **§6 corrects the record: the 2026-07-15 assessment is partly stale —
-data policies (row filter + column mask) EXIST with UI, audit log UI EXISTS
-(two), forecasting EXISTS in Ask AI.** Published as artifact "Clarion Gap
-Analysis". No code changed.
+one release ("Clarion comes to you"); item 8 ties G16+G11 to the first
+non-finance connector, incl. default-masking sensitive columns when HR lands.
+§4 what NOT to build (no practice management OR HR workflow tools, no
+driver-based forecasting, no reverse ETL, no embeds, no custom roles). **§6
+corrects the record: the 2026-07-15 assessment is partly stale — data
+policies (row filter + column mask) EXIST with UI, audit log UI EXISTS (two),
+forecasting EXISTS in Ask AI.** Published as artifact "Clarion Gap Analysis".
+No code changed.
 
 **Prior last updated:** 2026-08-20 (multi-source strategy doc + the Build chat batch below)
 
