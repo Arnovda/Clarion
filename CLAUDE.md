@@ -31,7 +31,109 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-21 (functionality gap analysis v1.1 — doc only)
+**Last updated:** 2026-08-21 (MANAGED GRIDS SHIPPED — "Your tables", the in-Clarion spreadsheet place)
+
+**MANAGED GRIDS — G5's IN-PRODUCT HALF IS BUILT (2026-08-21, same session as
+the gap analysis).** Owner: *"a sort of spreadsheet place in Clarion that we
+can use for mappings, budgets … that the user can edit in place in Clarion
+itself"* — then, on the security question, the shared-vs-per-tenant-tables
+discussion settled the design: **two fixed RLS-forced Postgres tables hold
+every grid of every tenant; a grid's schema is CONTENT (`columns` JSONB),
+its cells are JSONB rows — never dynamic DDL** (runtime CREATE TABLE would
+need DDL rights on `databridge_app` and re-establish RLS per table, the
+opposite of the 2026-08-06 hardening). Postgres is the truth users edit;
+every save materialises to the warehouse where the grid is an ordinary
+table. The integration is the ROLLUP pattern's four-surface contract applied
+a second time:
+- **Migration 81** (`managed_grids` + `managed_grid_rows`): canonical RLS
+  dance (ENABLE+FORCE+`tenant_isolation` with the NULLIF predicate), tenant
+  default from the session var, conditional app-role grants incl. sequences,
+  unique `(tenant_id, slug)` — the slug is FIXED at creation (renames change
+  display name only) because `grid_<slug>` is the view name saved dashboards
+  reference. `tenant_id` deliberately denormalised onto rows: RLS needs it
+  and `purgeTenant` enumerates BY tenant_id column (a rows table without one
+  is silently skipped by GDPR purge).
+- **`services/managedGrids.ts`**: pure derivation (slug/column keys, strict
+  `^[a-z][a-z0-9_]*$`, total functions), row coercion that reads
+  **spreadsheet-shaped values** — `parseFlexibleNumber` (`1.234,56` eu AND
+  `1,234.56` en, currency symbols, the rightmost-separator rule) and
+  `parseFlexibleDate` (`21/08/2026` day-first + ISO) — Belgian Excel paste
+  must just work; caps (10k rows — fits the 2mb body limit; 40 cols; 2k
+  chars/cell) with add-it-as-a-source guidance in the refusal. **Values are
+  data end to end** (JSONB → NDJSON → `read_json(columns={…})`); only
+  names/types interpolate, allow-list-checked twice (service + writer).
+- **`materializeGrid` writes a VERSIONED DIRECTORY** —
+  `gridBasePath(tenant, grid, version)` → `…/grids/grid_<id>_v<n>` — because
+  the DuckDB pool key includes every registered path, so a new URI is a new
+  key and **pooled-session staleness is structurally impossible** (the exact
+  trap the integration agent flagged for overwrite-in-place); old version
+  deleted best-effort after success; widget+filter caches invalidated local
+  + `publishInvalidation`. Directory-not-file URI on purpose: **the Azure
+  branch of `createScanView` cannot resolve a bare `.parquet` file path**
+  (found while grounding this — and NOTE: `rollup_path` stores a FILE path,
+  so rollup views are likely still silently skipped on Azure; not fixed
+  here, flagged as its own follow-up). Zero rows writes a schema-carrying
+  empty parquet (`SELECT NULL::type … WHERE FALSE`).
+- **`writeRowsParquet`** added to `services/warehouse/writer.ts` — the
+  connector-package NDJSON→parquet pattern ported into the backend (the
+  worker package deliberately shares no imports). New
+  `setupDuckDBForWarehouse(db, needAzure, { needDelta })` option (default
+  true, all callers unchanged): grids are plain parquet, and skipping
+  `LOAD delta` lets the writer work where the extension repo is unreachable.
+- **Query integration = one insertion point**: `createProductConnector`
+  registers `grid_<slug>` views (tenant-level, in EVERY connection's
+  product-layer session — which is what makes budget-vs-actual an ordinary
+  JOIN today, without waiting for query-layer un-scoping; grids never shadow
+  a product table name), and `productContext` appends a `## YOUR TABLES`
+  section + adds grids to the entity-matching catalog — the
+  fix-both-or-neither pair, honoured. `listManagedGridTables` lives in
+  tableCatalog (URI read back verbatim, never re-derived). Reaches Ask AI,
+  /think, /repair, /forecast, all dashboard paths, morning briefs,
+  investigations, report emails. KNOWN EDGE: a tenant with grids but no
+  built topics resolves to source layer and can't see grids in Ask AI.
+  Notebooks don't register grids (they don't register rollups either).
+- **Routes `/api/grids`** (admin+analyst, all mutating routes validate()'d
+  incl. a params-only schema on DELETE — the ratchet caught it; numeric-id
+  params schema so `/grids/abc` 400s instead of `WHERE id = NaN`):
+  list/create/read+rows/update/save-rows/delete. **Save is truth-first**:
+  rows commit in the request trx, materialisation failure lands in
+  `materialize_error` (shown in the UI) — never a lost edit, never a 500.
+  Full-replacement row save (coerce BEFORE delete so a 400 leaves old rows
+  intact). 409 on slug collision (pre-check + 23505 race catch). Audit
+  events on create/delete. purgeTenant needs no change (dynamic
+  enumeration).
+- **Frontend**: `/grids` (list + 3-template create modal: Budget/Mapping/
+  Blank) and `/grids/[id]` — the editor: always-editable typed cells (text /
+  number right-aligned tabular / native date / checkbox), **paste-from-Excel
+  block fill** (TSV from the focused cell, rows auto-grow, single-cell paste
+  falls through), column-header popover (rename keeps the KEY so row data
+  survives, type change, guarded delete), row delete on hover, windowed
+  rendering via the dashboards `useWindowedRows` hook above 150 rows,
+  floating save bar (Cmd/Ctrl+S, Discard), `beforeunload` guard, status line
+  "In answers as grid_x · updated …" / amber when materialisation failed.
+  Rail: **"Your tables"** (Table2 icon) in Studio directly under Sources;
+  CommandPalette action. Vocabulary rule holds with one deliberate
+  exception: the `grid_<slug>` name shows in the status line because it is
+  the name Ask AI will use.
+- **Deliberately NOT in v1** (owner-discussed): no formula engine (grids
+  hold facts; Clarion computes — Excel-file upload stays the P1 connector
+  for formula workbooks), no reference/dropdown columns validated against
+  dims (the mapping killer feature — next slice), no viewer read UI, no
+  xlsx file import (paste covers it).
+- Validation: backend `npm run check` clean; **full suite 38 files / 357
+  passed** (17 new in `managed-grids.test.ts`: derivation totality incl.
+  SQL-injection-shaped names, eu/en number + day-first date parsing,
+  coerceRow drops stale keys, create/collision/save/rename-keeps-slug,
+  tenant isolation as 404, viewer 403 on every route, row cap, delete
+  cascades); an end-to-end script proved write→register→readback and the
+  empty-schema view against real DuckDB; all eight ratchets green;
+  frontend `tsc` + lint clean, `next build` green (`/grids` 3.31 kB,
+  `/grids/[id]` 5.55 kB). SANDBOX NOTE: backend + connectors `npm install`
+  each build DuckDB natively (~15–25 min, background them); the DuckDB
+  extension repo is NOT reachable through the sandbox proxy — `needDelta:
+  false` paths work, anything needing `LOAD delta` does not.
+
+**Prior last updated:** 2026-08-21 (functionality gap analysis v1.1 — doc only)
 
 **NEW DOC: `docs/backlog/functionality-gap-analysis.md` (2026-08-21, doc
 only; v1.1 same day).** Owner asked: walk through the app's functionality,

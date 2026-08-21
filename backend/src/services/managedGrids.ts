@@ -314,7 +314,9 @@ export async function materializeGrid(input: MaterializeInput): Promise<string> 
 
   const db = await Database.create(':memory:');
   try {
-    await setupDuckDBForWarehouse(db, useAzure);
+    // Grids are plain Parquet — no Delta needed, so the writer works even
+    // where the extension repo is unreachable.
+    await setupDuckDBForWarehouse(db, useAzure, { needDelta: false });
     await writeRowsParquet(db, fileUri, input.rows, declaredColumnsFor(input.columns));
   } finally {
     await db.close();

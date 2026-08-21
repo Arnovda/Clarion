@@ -129,6 +129,7 @@ export function capResultRows(sql: string, cap = maxResultRows()): string {
 export async function setupDuckDBForWarehouse(
   db: Database,
   needAzure: boolean,
+  opts: { needDelta?: boolean } = {},
 ): Promise<void> {
   // ─── Resource guardrails ────────────────────────────────────────────────
   // Without these, DuckDB defaults to ~80% of container RAM and one thread
@@ -143,10 +144,16 @@ export async function setupDuckDBForWarehouse(
 
   // Delta extension is needed for both modes — source connector
   // ingestion writes Delta, even when the warehouse root is local.
-  try {
-    await db.exec('LOAD delta;');
-  } catch {
-    await db.exec('INSTALL delta; LOAD delta;');
+  // `needDelta: false` (default true) lets a session that only touches plain
+  // Parquet — the managed-grid writer — skip the load: parquet + json are
+  // statically linked, so such a session works even where the extension repo
+  // is unreachable (dev sandboxes behind a proxy).
+  if (opts.needDelta !== false) {
+    try {
+      await db.exec('LOAD delta;');
+    } catch {
+      await db.exec('INSTALL delta; LOAD delta;');
+    }
   }
 
   // Read-path caching — a free latency win on the long-lived pooled session.

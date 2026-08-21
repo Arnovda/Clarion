@@ -140,7 +140,7 @@ describe('/api/grids', () => {
   });
 
   it('creates a grid with derived keys and slug', async () => {
-    const res = await request()
+    const res = await (await request())
       .post('/api/grids')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
@@ -164,7 +164,7 @@ describe('/api/grids', () => {
   });
 
   it('refuses a name that collides on slug', async () => {
-    const res = await request()
+    const res = await (await request())
       .post('/api/grids')
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name: 'budget   2026!', columns: [{ name: 'A', type: 'text' }] });
@@ -172,7 +172,7 @@ describe('/api/grids', () => {
   });
 
   it('saves rows with spreadsheet-shaped values and updates the count', async () => {
-    const res = await request()
+    const res = await (await request())
       .put(`/api/grids/${gridId}/rows`)
       .set('Authorization', `Bearer ${analystToken}`)
       .send({
@@ -192,7 +192,7 @@ describe('/api/grids', () => {
   });
 
   it('rejects an invalid value with the row and column named', async () => {
-    const res = await request()
+    const res = await (await request())
       .put(`/api/grids/${gridId}/rows`)
       .set('Authorization', `Bearer ${analystToken}`)
       .send({ rows: [{ data: { category: 'X', amount: 'twelve' } }] });
@@ -205,7 +205,7 @@ describe('/api/grids', () => {
   });
 
   it('renaming keeps the slug; column update with preserved key survives', async () => {
-    const res = await request()
+    const res = await (await request())
       .put(`/api/grids/${gridId}`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
@@ -223,23 +223,23 @@ describe('/api/grids', () => {
   });
 
   it('lists the tenant grids', async () => {
-    const res = await request().get('/api/grids').set('Authorization', `Bearer ${analystToken}`);
+    const res = await (await request()).get('/api/grids').set('Authorization', `Bearer ${analystToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].rowCount).toBe(2);
   });
 
   it('is tenant-isolated: the other tenant sees nothing and gets 404 by id', async () => {
-    const list = await request().get('/api/grids').set('Authorization', `Bearer ${otherToken}`);
+    const list = await (await request()).get('/api/grids').set('Authorization', `Bearer ${otherToken}`);
     expect(list.body.data).toHaveLength(0);
     for (const [method, path] of [
       ['get', `/api/grids/${gridId}`],
       ['delete', `/api/grids/${gridId}`],
     ] as const) {
-      const res = await request()[method](path).set('Authorization', `Bearer ${otherToken}`);
+      const res = await (await request())[method](path).set('Authorization', `Bearer ${otherToken}`);
       expect(res.status).toBe(404);
     }
-    const rowsRes = await request()
+    const rowsRes = await (await request())
       .put(`/api/grids/${gridId}/rows`)
       .set('Authorization', `Bearer ${otherToken}`)
       .send({ rows: [] });
@@ -248,11 +248,11 @@ describe('/api/grids', () => {
 
   it('refuses viewers on every route', async () => {
     for (const res of await Promise.all([
-      request().get('/api/grids').set('Authorization', `Bearer ${viewerToken}`),
-      request().post('/api/grids').set('Authorization', `Bearer ${viewerToken}`).send({ name: 'X', columns: [{ name: 'A', type: 'text' }] }),
-      request().get(`/api/grids/${gridId}`).set('Authorization', `Bearer ${viewerToken}`),
-      request().put(`/api/grids/${gridId}/rows`).set('Authorization', `Bearer ${viewerToken}`).send({ rows: [] }),
-      request().delete(`/api/grids/${gridId}`).set('Authorization', `Bearer ${viewerToken}`),
+      (await request()).get('/api/grids').set('Authorization', `Bearer ${viewerToken}`),
+      (await request()).post('/api/grids').set('Authorization', `Bearer ${viewerToken}`).send({ name: 'X', columns: [{ name: 'A', type: 'text' }] }),
+      (await request()).get(`/api/grids/${gridId}`).set('Authorization', `Bearer ${viewerToken}`),
+      (await request()).put(`/api/grids/${gridId}/rows`).set('Authorization', `Bearer ${viewerToken}`).send({ rows: [] }),
+      (await request()).delete(`/api/grids/${gridId}`).set('Authorization', `Bearer ${viewerToken}`),
     ])) {
       expect(res.status).toBe(403);
     }
@@ -260,7 +260,7 @@ describe('/api/grids', () => {
 
   it('enforces the row cap with a business-language refusal', async () => {
     const rows = Array.from({ length: 10_001 }, () => ({ data: {} }));
-    const res = await request()
+    const res = await (await request())
       .put(`/api/grids/${gridId}/rows`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ rows });
@@ -268,7 +268,7 @@ describe('/api/grids', () => {
   });
 
   it('deletes the grid and its rows', async () => {
-    const res = await request()
+    const res = await (await request())
       .delete(`/api/grids/${gridId}`)
       .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
