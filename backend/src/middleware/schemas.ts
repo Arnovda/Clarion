@@ -645,3 +645,54 @@ export const measureRelationshipSchema = z.object({
     toColumnId: positiveInt,
   }),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Managed grids — the in-Clarion editable tables (budgets, mappings, lists)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A column as the client submits it. `key` is optional — the server derives
+ * one from the name when absent, and validates it strictly when present
+ * (it becomes a warehouse identifier). Deeper semantic validation (key
+ * uniqueness, count caps) lives in `services/managedGrids.normalizeColumns`.
+ */
+const gridColumnInput = z.object({
+  key: z.string().max(60).optional().nullable(),
+  name: z.string().min(1).max(80),
+  type: z.enum(['text', 'number', 'date', 'boolean']),
+});
+
+export const createManagedGridSchema = z.object({
+  body: z.object({
+    name: nonBlankString,
+    kind: z.enum(['budget', 'mapping', 'list']).optional(),
+    description: z.string().max(500).nullable().optional(),
+    columns: z.array(gridColumnInput).min(1).max(40),
+  }).passthrough(),
+});
+
+/** Numeric :id — a non-numeric id must 400, not turn into `WHERE id = NaN`. */
+const gridIdParams = z.object({ id: z.string().regex(/^\d+$/, 'Invalid id') }).passthrough();
+
+export const gridIdParamsSchema = z.object({ params: gridIdParams });
+
+export const updateManagedGridSchema = z.object({
+  params: gridIdParams,
+  body: z.object({
+    name: z.string().min(1).max(80).optional(),
+    description: z.string().max(500).nullable().optional(),
+    columns: z.array(gridColumnInput).min(1).max(40).optional(),
+  }).passthrough(),
+});
+
+/**
+ * Full row replacement — the save model is "the grid as the editor shows it".
+ * Row order in the array is the stored order. Cell values are validated per
+ * column type in the service (a Zod schema can't see the grid's columns).
+ */
+export const saveManagedGridRowsSchema = z.object({
+  params: gridIdParams,
+  body: z.object({
+    rows: z.array(z.object({ data: jsonObject }).passthrough()).max(10_000),
+  }).passthrough(),
+});

@@ -44,6 +44,7 @@ import {
   productBasePath,
   productTablePath,
   productSlug,
+  gridViewName,
 } from './warehouse';
 
 // ---------------------------------------------------------------------------
@@ -345,6 +346,55 @@ export async function publishRollup(
       rollup_row_count: rollup?.rowCount ?? null,
     }),
   );
+}
+
+/** A materialised managed grid, ready to register as a DuckDB view. */
+export interface ManagedGridTable {
+  gridId: number;
+  /** DuckDB view name — `grid_<slug>` via `gridViewName`. */
+  viewName: string;
+  /** Directory URI recorded at write time. */
+  uri: string;
+  displayName: string;
+  kind: string;
+  description: string | null;
+  rowCount: number;
+  /** Declared columns: [{ key, name, type }]. */
+  columns: Array<{ key: string; name: string; type: string }>;
+}
+
+/**
+ * List the tenant's materialised managed grids (the in-Clarion editable
+ * tables). Same catalog doctrine as `publishRollup`: the URI is read back
+ * verbatim from where the materialiser recorded it, never re-derived.
+ * Grids are TENANT-level, not connection-level — every product-layer
+ * session registers them, which is what makes budget-vs-actual an ordinary
+ * join.
+ */
+export async function listManagedGridTables(
+  tenantId: number | undefined,
+): Promise<ManagedGridTable[]> {
+  const rows = await tenantQuery(tenantId, (q) => {
+    let qb = q('managed_grids')
+      .whereNotNull('warehouse_path')
+      .select('id', 'slug', 'name', 'kind', 'description', 'row_count', 'columns', 'warehouse_path');
+    // Explicit tenant filter on top of RLS — same rule as every aggregate
+    // read (the pooled-connection tenant var races).
+    if (tenantId != null) qb = qb.where('tenant_id', tenantId);
+    return qb;
+  });
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    gridId: Number(r.id),
+    viewName: gridViewName(String(r.slug)),
+    uri: String(r.warehouse_path),
+    displayName: String(r.name),
+    kind: String(r.kind),
+    description: r.description == null ? null : String(r.description),
+    rowCount: Number(r.row_count) || 0,
+    columns: Array.isArray(r.columns)
+      ? (r.columns as Array<{ key: string; name: string; type: string }>)
+      : [],
+  }));
 }
 
 /**

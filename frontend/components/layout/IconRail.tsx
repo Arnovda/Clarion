@@ -7,7 +7,7 @@ import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
-  Blocks, Sparkles, Layers,
+  Blocks, Sparkles, Layers, Table2,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -57,6 +57,7 @@ const ICONS = {
   blocks:   <Blocks         className={ICON_CLASS} strokeWidth={1.5} />,
   sparkles: <Sparkles       className={ICON_CLASS} strokeWidth={1.5} />,
   layers:   <Layers         className={ICON_CLASS} strokeWidth={1.5} />,
+  table:    <Table2         className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -82,6 +83,10 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'uncover' },
   // ── Studio — the builder's pipeline, in pipeline order ───────────────────
   { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
+  // Managed grids — budgets, mappings and lists edited inside Clarion. Sits
+  // with Sources because it IS a source of data (the manual one); the rows
+  // live in Postgres and materialise into the warehouse on every save.
+  { key: 'grids',      href: '/grids',      label: 'Your tables',     icon: ICONS.table,   roles: ['admin', 'analyst'],            group: 'studio' },
   // Where a source becomes topics — the tenant-level front door to the
   // bus-matrix flow (build, show/hide, guarded rebuild). Tenant-level on
   // purpose: preparing data spans sources (shared data is conformed across

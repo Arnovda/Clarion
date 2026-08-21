@@ -51,6 +51,87 @@ export async function writeParquet(
 }
 
 /**
+ * A declared column for `rowsToParquetSelect`. Both halves are validated
+ * against strict allow-lists before interpolation — these strings end up
+ * inside a `read_json(columns={...})` clause.
+ */
+export interface DeclaredColumn {
+  name: string;
+  sqlType: string;
+}
+
+// Same allow-lists as the connector-package writers (ParquetWriter /
+// BlobSasWarehouseWriter) — duplicated here because the sync-worker package
+// deliberately shares no imports with the backend.
+const SAFE_SQL_TYPE_RE =
+  /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/;
+const SAFE_COLUMN_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function assertDeclaredColumns(columns: ReadonlyArray<DeclaredColumn>): void {
+  if (columns.length === 0) throw new Error('rowsToParquetSelect: at least one column is required');
+  for (const c of columns) {
+    if (!SAFE_COLUMN_NAME_RE.test(c.name) || c.name.length > 128) {
+      throw new Error(`rowsToParquetSelect: unsafe column name ${JSON.stringify(c.name)}`);
+    }
+    if (!SAFE_SQL_TYPE_RE.test(c.sqlType)) {
+      throw new Error(`rowsToParquetSelect: unsafe SQL type ${JSON.stringify(c.sqlType)}`);
+    }
+  }
+}
+
+/**
+ * Write ARBITRARY IN-MEMORY ROWS to `uri` as Parquet with a declared schema.
+ *
+ * The connector-package pattern (NDJSON staging file + `read_json` with
+ * explicit `columns={...}`), ported for backend features that hold their rows
+ * in Postgres rather than in a source system — managed grids being the first.
+ * Values travel as DATA through the staging file; only column names and types
+ * are interpolated, and both are allow-list validated above.
+ *
+ * Zero rows is a first-class case: the parquet is written from a
+ * `SELECT NULL::<type> AS "<name>" ... WHERE FALSE`, so the file still
+ * carries the declared schema and the registered view has real columns.
+ */
+export async function writeRowsParquet(
+  db: Database,
+  uri: string,
+  rows: ReadonlyArray<Record<string, unknown>>,
+  columns: ReadonlyArray<DeclaredColumn>,
+): Promise<void> {
+  assertDeclaredColumns(columns);
+
+  if (rows.length === 0) {
+    const emptySelect = columns
+      .map((c) => `NULL::${c.sqlType} AS "${c.name}"`)
+      .join(', ');
+    await writeParquet(db, uri, `SELECT ${emptySelect} WHERE FALSE`);
+    return;
+  }
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clarion-grid-'));
+  const ndPath = path.join(tmpDir, 'rows.ndjson');
+  try {
+    const stream = fs.createWriteStream(ndPath, { encoding: 'utf8' });
+    for (const row of rows) {
+      stream.write(JSON.stringify(row));
+      stream.write('\n');
+    }
+    await new Promise<void>((resolve, reject) => {
+      stream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
+
+    const struct = columns.map((c) => `'${c.name}': '${c.sqlType}'`).join(', ');
+    const projection = columns.map((c) => `"${c.name}"`).join(', ');
+    const escNd = sqlEscapePath(ndPath);
+    const selectSql =
+      `SELECT ${projection} FROM read_json('${escNd}', format='newline_delimited', columns={${struct}})`;
+    await writeParquet(db, uri, selectSql);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+/**
  * Local-stage-then-upload write to Azure. Internal — `writeParquet` is
  * the public entry point.
  */

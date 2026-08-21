@@ -163,7 +163,7 @@ export function createSourceConnector(conn: ConnectionRow): BaseConnector {
  * uses the same source-of-truth as /catalog, /quality, and the runner.
  */
 export async function createProductConnector(productWarehousePath: string, connectionId: number, tenantId?: number): Promise<BaseConnector> {
-  const { listProductTablesByConnection } = await import('../services/tableCatalog');
+  const { listProductTablesByConnection, listManagedGridTables } = await import('../services/tableCatalog');
   const productTables = await listProductTablesByConnection(tenantId, connectionId);
 
   // Build explicit table → path and table → schema mappings. The schema is the
@@ -191,6 +191,20 @@ export async function createProductConnector(productWarehousePath: string, conne
       if (t.productName) tableSchemas.set(rollupName, t.productName);
       tableNames.push(rollupName);
     }
+  }
+
+  // Managed grids — the in-Clarion editable tables (budgets, mappings, lists).
+  // Tenant-level, deliberately registered in EVERY connection's product-layer
+  // session: their whole value is joining against whichever connection holds
+  // the actuals. Registration and advertisement (`productContext`'s "your
+  // tables" section) are the same fix-both-or-neither pair as rollups above.
+  // No schema entry on purpose — grids live in the default namespace so
+  // `grid_budget_2026` resolves unqualified.
+  const grids = await listManagedGridTables(tenantId);
+  for (const g of grids) {
+    if (tablePaths.has(g.viewName)) continue; // never shadow a product table
+    tablePaths.set(g.viewName, g.uri);
+    tableNames.push(g.viewName);
   }
 
   const productCount = new Set(productTables.map((t) => t.productName)).size;

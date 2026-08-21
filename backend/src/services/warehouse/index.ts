@@ -30,6 +30,8 @@ export {
   productTablePath,
   productSlug,
   rollupViewName,
+  gridViewName,
+  gridBasePath,
   sqlEscapePath,
 } from './paths';
 export type { WarehouseLayoutVersion, WarehouseContainerMode } from './paths';
@@ -45,7 +47,8 @@ export {
 export { createScanView } from './views';
 export type { CreateScanViewOptions } from './views';
 
-export { writeParquet } from './writer';
+export { writeParquet, writeRowsParquet } from './writer';
+export type { DeclaredColumn } from './writer';
 
 export { deleteWarehousePath, deleteWarehousePaths } from './deleter';
 export type { DeleteResult } from './deleter';

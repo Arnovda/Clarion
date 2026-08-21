@@ -272,6 +272,45 @@ export function rollupViewName(factTableName: string): string {
 }
 
 /**
+ * Name of the DuckDB view a managed grid registers as.
+ *
+ * Same contract as `rollupViewName`: this one string has to agree across
+ * surfaces that never see each other — the materialiser writes the directory,
+ * the grid row records the URI, `ConnectorFactory` registers the view, and
+ * `productContext` tells the model the table exists. The `grid_` prefix keeps
+ * user tables visually distinct from `dim_`/`fact_` in generated SQL and can
+ * never collide with them.
+ */
+export function gridViewName(slug: string): string {
+  return `grid_${slug}`;
+}
+
+/**
+ * Managed-grid directory — versioned on purpose.
+ *
+ *   `<root>[/tenant_<tid>]/grids/grid_<gid>_v<version>`
+ *
+ * Every materialisation writes a NEW directory (and the previous one is
+ * deleted best-effort afterwards). The version in the path is what makes
+ * cache staleness structurally impossible: the pooled DuckDB session key
+ * includes every registered table's path, so a new URI is a new key and a
+ * fresh session — an overwritten-in-place URI would silently keep serving
+ * the pre-edit rows from the pool.
+ *
+ * This is a DIRECTORY URI (the parquet lands at `<dir>/data.parquet`).
+ * Register the directory, never the file: the Azure branch of
+ * `createScanView` cannot resolve a bare `.parquet` file path.
+ */
+export function gridBasePath(tenantId: number, gridId: number, version: number): string {
+  const root = warehouseRoot(tenantId);
+  if (isAzurePath(root)) {
+    const tenantSeg = tenantIsContainer() ? '' : `/tenant_${tenantId}`;
+    return `${root}${tenantSeg}/grids/grid_${gridId}_v${version}`;
+  }
+  return path.join(root, `tenant_${tenantId}`, 'grids', `grid_${gridId}_v${version}`);
+}
+
+/**
  * Normalise an arbitrary path string for use in DuckDB SQL. Forward
  * slashes only; single quotes escaped. Azure URIs pass through unchanged.
  */

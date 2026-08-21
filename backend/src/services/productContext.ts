@@ -9,7 +9,7 @@
 
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
-import { warehouseRoot, rollupViewName } from './warehouse';
+import { warehouseRoot, rollupViewName, gridViewName } from './warehouse';
 
 interface ProductTableRow {
   id: number;
@@ -306,6 +306,33 @@ export async function buildProductSemanticContext(
     ? `\n\n## ROLLUP TABLES — always prefer for aggregate time-series queries\n${rollupLines.join('\n')}`
     : '';
 
+  // --- Managed grids: tables the user maintains inside Clarion ---
+  // Tenant-level (not connection-scoped) on purpose; the views are registered
+  // by createProductConnector in every product-layer session, so advertising
+  // them here is the other half of the fix-both-or-neither pair. Tenancy is
+  // enforced by RLS on the passed trx, same as every query above.
+  const gridRows: Array<{
+    slug: string; name: string; kind: string; description: string | null;
+    row_count: number; columns: Array<{ key: string; name: string; type: string }>;
+  }> = await db('managed_grids')
+    .whereNotNull('warehouse_path')
+    .select('slug', 'name', 'kind', 'description', 'row_count', 'columns');
+
+  const gridLines = gridRows.map((g) => {
+    const cols = (Array.isArray(g.columns) ? g.columns : [])
+      .map((c) => `${c.key} (${c.type.toUpperCase()}${c.name !== c.key ? `, "${c.name}"` : ''})`)
+      .join(', ');
+    const rows = Number(g.row_count);
+    const size = Number.isFinite(rows) && rows > 0 ? ` ~${rows.toLocaleString('en-GB')} rows.` : ' (empty).';
+    const desc = g.description ? ` ${g.description}` : '';
+    return `- ${gridViewName(g.slug)} ("${g.name}", ${g.kind}):${desc} Columns: ${cols}.${size}`;
+  });
+  const gridSection = gridLines.length > 0
+    ? `\n\n## YOUR TABLES — data the user maintains directly in Clarion (budgets, mappings, lists)\n` +
+      `These are ordinary tables; JOIN them freely with the tables above (e.g. budget vs actuals).\n` +
+      gridLines.join('\n')
+    : '';
+
   // --- Build catalog for entity matching ---
   const catalog = tables.map((t) => ({
     tableName: t.table_name,
@@ -314,9 +341,16 @@ export async function buildProductSemanticContext(
       .filter((c) => c.product_table_id === t.id)
       .map((c) => c.column_name),
   }));
+  for (const g of gridRows) {
+    catalog.push({
+      tableName: gridViewName(g.slug),
+      displayName: g.name,
+      columnNames: (Array.isArray(g.columns) ? g.columns : []).map((c) => c.key),
+    });
+  }
 
   return {
-    semanticContext: semanticContext + rollupSection,
+    semanticContext: semanticContext + rollupSection + gridSection,
     relationshipContext,
     kpiFormulas,
     isProductLayer: true,
