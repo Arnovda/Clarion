@@ -31,7 +31,29 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-20 (Build has a chat: ask what's covered, add ONE subject additively)
+**Last updated:** 2026-08-20 (multi-source strategy doc + the Build chat batch below)
+
+**NEW DOC: `docs/backlog/multi-source-strategy.md` (2026-08-20, doc only).**
+Owner asked how to tackle companies with multiple source systems, missing
+connectors, acquisitions, and planning in Excel/SharePoint. Companion to
+`warehouse-value-for-smb.md` (that doc = the argument; this one = the
+operational inventory): ten concrete cases C1–C10 (second ERP, no-connector,
+Excel budgets, SharePoint satellites, legacy history, multi-entity, same
+connector twice, identity, semantic conflicts, grain mismatches) with what
+makes each hard; an honest built/planned/absent audit (notably: direct-DB
+sources WORK today via the legacy path; NOTHING reads a spreadsheet; query
+layer still connection-scoped); and a 7-phase build plan — P1 spreadsheet
+connector as an ordinary SourceConnector (the highest-leverage gap), P2 ten
+names + second-source mapping flow (§5.8 executed; the 2026-08-20 extension
+workflow is the architectural template), P3 identity crosswalk +Mapping
+primitive (deterministic before fuzzy, snapshot-and-merge), P4 un-scope the
+query layer (deliberately AFTER P3), P5 entity axis + group-lite, P6
+reconciliation-vs-source as a feature, P7 connector breadth via a REST kit +
+demand signal from the Build chat. Standing guardrails carried over (§5) and
+three owner decisions queued (§6). Published as artifact "Multi-Source
+Strategy".
+
+**Prior last updated:** 2026-08-20 (Build has a chat: ask what's covered, add ONE subject additively)
 
 **"ASK ABOUT YOUR SUBJECTS" — THE BUILD PAGE CHAT + ADDITIVE SUBJECT
 CREATION (2026-08-20, fifth batch).** Owner, after noticing Quotations was
