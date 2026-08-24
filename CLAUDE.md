@@ -175,6 +175,15 @@ a second time:
   click appends the missing values as rows). Mapping template's create flow
   asks "what are you mapping?" and the grid starts PRE-FILLED with every
   distinct value (client-side seed through the ordinary rows API).
+  (d2, v3.1 — owner feedback from first live use): **searchable
+  `LinkPicker`** (`app/grids/LinkPicker.tsx`) replaces both native selects —
+  filters across topic/table/column names at once, matches stay grouped per
+  table; and **TWO-FIELD COMBINATIONS** — a mapping can key on two columns
+  of the SAME topic table: `link-values` gained optional `column2` (both
+  columns existence-checked) returning distinct PAIRS, the create flow gains
+  "+ combine with a second field" (second picker restricted to the first
+  field's table) and seeds one row per combination. Coverage stays
+  per-column; pair-level coverage is a later slice.
   (e) **`/relationships` now has a Sources | Topics toggle.** New
   `GET /api/relationships/topics-graph` (read-only; ships product tables BY
   NAME with topic + join-surface columns — technical endpoint columns

@@ -37,6 +37,7 @@ import { formatRelative } from '@/lib/dates';
 import { useWindowedRows } from '@/app/dashboards/utils/useWindowedRows';
 import { readXlsx, type XlsxWorkbook } from '@/lib/xlsxRead';
 import { splitSheet, matchColumns, convertCell } from '../import';
+import LinkPicker from '../LinkPicker';
 import {
   COLUMN_TYPE_LABEL,
   deriveColumnKey,
@@ -1015,30 +1016,15 @@ function ColumnPopover({
         {col.type === 'text' && (
           <>
             <p className="mt-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Contains</p>
-            {linkable === null ? (
-              <p className="mt-1 text-[11.5px] font-normal normal-case tracking-normal text-muted-2">Loading your data…</p>
-            ) : (
-              <select
-                value={col.link ? `${col.link.table}::${col.link.column}` : ''}
-                onChange={(e) => {
-                  if (e.target.value === '') { onChange({ link: null }); return; }
-                  const [table, column] = e.target.value.split('::');
-                  onChange({ link: { table, column } });
-                }}
-                className="mt-1 w-full rounded-[8px] border border-line bg-bg px-2 py-1.5 text-[12px] font-normal normal-case tracking-normal text-ink focus:border-ocean focus:outline-none"
-              >
-                <option value="">Free text</option>
-                {linkable.map((t) => (
-                  <optgroup key={t.tableName} label={`${t.topic} · ${t.displayName ?? t.tableName}`}>
-                    {t.columns.map((c) => (
-                      <option key={c.name} value={`${t.tableName}::${c.name}`}>
-                        {c.displayName ?? c.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            )}
+            <div className="mt-1">
+              <LinkPicker
+                linkable={linkable}
+                value={col.link ?? null}
+                onChange={(link) => onChange({ link })}
+                clearLabel="Free text"
+                compact
+              />
+            </div>
             <p className="mt-1 text-[10.5px] font-normal normal-case tracking-normal leading-[1.5] text-muted-2">
               Linking tells answers how this table connects, fills the cell dropdown, and measures
               what&apos;s covered.

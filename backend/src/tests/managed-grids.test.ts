@@ -350,6 +350,11 @@ describe('/api/grids', () => {
       .get('/api/grids/link-values?table=dim_nope&column=whatever')
       .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(404);
+    // A two-field combination needs BOTH columns on the same table.
+    const res2 = await (await request())
+      .get('/api/grids/link-values?table=dim_customer&column=customer_name&column2=not_a_column')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res2.status).toBe(404);
   });
 
   it('coverage reports target-missing for a stale link, and nothing for no links', async () => {

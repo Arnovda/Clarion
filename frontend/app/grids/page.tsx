@@ -27,9 +27,11 @@ import {
   type GridColumnType,
   type GridKind,
   type GridSummary,
+  type GridColumnLink,
   type GridTemplate,
   type LinkableTable,
 } from './types';
+import LinkPicker, { linkLabel } from './LinkPicker';
 import { readXlsx, type XlsxWorkbook } from '@/lib/xlsxRead';
 import { splitSheet, guessColumnType } from './import';
 
@@ -69,7 +71,9 @@ function Grids() {
   // The mapping flow: pick which topic column the first column contains, and
   // the table starts pre-filled with every distinct value of it.
   const [linkable, setLinkable] = useState<LinkableTable[] | null>(null);
-  const [mapTarget, setMapTarget] = useState('');
+  const [mapLink, setMapLink] = useState<GridColumnLink | null>(null);
+  const [mapLink2, setMapLink2] = useState<GridColumnLink | null>(null);
+  const [showSecondField, setShowSecondField] = useState(false);
   const [mapToName, setMapToName] = useState('');
 
   useEffect(() => {
@@ -100,7 +104,9 @@ function Grids() {
   function openCreate(tpl: GridTemplate) {
     setCreating(tpl);
     setNewName(tpl.suggestedName);
-    setMapTarget('');
+    setMapLink(null);
+    setMapLink2(null);
+    setShowSecondField(false);
     setMapToName('');
   }
 
@@ -114,32 +120,40 @@ function Grids() {
       // column and the table starts pre-filled with its distinct values —
       // "here is the list, fill in the right-hand side".
       let columns: Array<{ name: string; type: GridColumnType; link?: { table: string; column: string } }> = creating.columns;
-      let seedValues: string[] | null = null;
-      if (creating.kind === 'mapping' && mapTarget) {
-        const [table, column] = mapTarget.split('::');
-        const lt = linkable?.find((t) => t.tableName === table);
-        const lc = lt?.columns.find((c) => c.name === column);
-        const fromName = lc?.displayName || lt?.displayName || column || 'From';
+      let seedRows: Array<string[]> | null = null;
+      const link2 = mapLink2 && mapLink && mapLink2.table === mapLink.table ? mapLink2 : null;
+      if (creating.kind === 'mapping' && mapLink) {
+        const colName = (l: GridColumnLink) => {
+          const lt = linkable?.find((t) => t.tableName === l.table);
+          return lt?.columns.find((c) => c.name === l.column)?.displayName || l.column;
+        };
         columns = [
-          { name: fromName, type: 'text', link: { table, column } },
+          { name: colName(mapLink), type: 'text', link: mapLink },
+          ...(link2 ? [{ name: colName(link2), type: 'text' as GridColumnType, link: link2 }] : []),
           { name: mapToName.trim() || 'To', type: 'text' },
         ];
         try {
-          const vres = await api.get('/grids/link-values', { params: { table, column } });
-          seedValues = ((vres.data?.data?.values ?? []) as string[]);
+          const vres = await api.get('/grids/link-values', {
+            params: { table: mapLink.table, column: mapLink.column, ...(link2 ? { column2: link2.column } : {}) },
+          });
+          seedRows = link2
+            ? ((vres.data?.data?.pairs ?? []) as Array<[string, string]>)
+            : ((vres.data?.data?.values ?? []) as string[]).map((v) => [v]);
         } catch {
-          seedValues = null; // grid still gets created; the list can come later
+          seedRows = null; // grid still gets created; the list can come later
         }
       }
       const res = await api.post('/grids', { name, kind: creating.kind, columns });
       const created = res.data?.data as GridSummary;
-      if (seedValues && seedValues.length > 0) {
-        const key = created.columns[0]?.key;
-        if (key) {
-          await api.put(`/grids/${created.id}/rows`, {
-            rows: seedValues.map((v) => ({ data: { [key]: v } })),
-          });
-        }
+      if (seedRows && seedRows.length > 0) {
+        const keys = created.columns.map((c) => c.key);
+        await api.put(`/grids/${created.id}/rows`, {
+          rows: seedRows.map((vals) => {
+            const data: Record<string, unknown> = {};
+            vals.forEach((v, i) => { data[keys[i]] = v; });
+            return { data };
+          }),
+        });
       }
       router.push(`/grids/${created.id}`);
     } catch (e) {
@@ -514,35 +528,57 @@ function Grids() {
                       <label className="block font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
                         What are you mapping?
                       </label>
-                      {linkable === null ? (
-                        <p className="mt-1.5 flex items-center gap-2 text-[12.5px] text-muted">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} aria-hidden /> Loading your data…
-                        </p>
-                      ) : (
-                        <select
-                          value={mapTarget}
-                          onChange={(e) => setMapTarget(e.target.value)}
-                          className="mt-1.5 w-full rounded-[8px] border border-line bg-raised px-2.5 py-2 text-[13px] text-ink focus:border-ocean focus:outline-none"
-                        >
-                          <option value="">Nothing specific — start with free text</option>
-                          {linkable.map((t) => (
-                            <optgroup key={t.tableName} label={`${t.topic} · ${t.displayName ?? t.tableName}`}>
-                              {t.columns.map((c) => (
-                                <option key={c.name} value={`${t.tableName}::${c.name}`}>
-                                  {c.displayName ?? c.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                          ))}
-                        </select>
-                      )}
-                      {mapTarget !== '' && (
+                      <div className="mt-1.5">
+                        <LinkPicker
+                          linkable={linkable}
+                          value={mapLink}
+                          onChange={(l) => { setMapLink(l); setMapLink2(null); setShowSecondField(false); }}
+                          clearLabel="Nothing specific — start with free text"
+                        />
+                      </div>
+                      {mapLink && (
                         <>
+                          {!showSecondField ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowSecondField(true)}
+                              className="mt-2 flex items-center gap-1 text-[12px] text-ocean underline-offset-2 hover:underline"
+                            >
+                              <Plus className="h-3 w-3" strokeWidth={2} aria-hidden /> combine with a second
+                              field of {linkLabel(linkable, mapLink)?.split(' · ')[0] ?? 'that table'}
+                            </button>
+                          ) : (
+                            <div className="mt-2">
+                              <div className="flex items-center gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <LinkPicker
+                                    linkable={linkable}
+                                    value={mapLink2}
+                                    onChange={setMapLink2}
+                                    restrictToTable={mapLink.table}
+                                    clearLabel="Pick the second field…"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => { setMapLink2(null); setShowSecondField(false); }}
+                                  className="rounded p-1 text-muted-2 hover:text-ink-3"
+                                  aria-label="Remove the second field"
+                                >
+                                  <X className="h-3.5 w-3.5" strokeWidth={2} />
+                                </button>
+                              </div>
+                              <p className="mt-1 text-[11px] leading-[1.5] text-muted-2">
+                                Each row becomes one combination of the two fields.
+                              </p>
+                            </div>
+                          )}
                           <p className="mt-2 text-[12px] leading-[1.55] text-muted-2">
-                            The table starts pre-filled with every value — you fill in the second column.
+                            The table starts pre-filled with every {mapLink2 ? 'combination' : 'value'} —
+                            you fill in the last column.
                           </p>
                           <label className="mt-2.5 block font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
-                            Second column name
+                            {mapLink2 ? 'Last column name' : 'Second column name'}
                           </label>
                           <input
                             value={mapToName}

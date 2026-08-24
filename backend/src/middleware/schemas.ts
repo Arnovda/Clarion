@@ -666,11 +666,15 @@ const gridColumnInput = z.object({
     .nullable().optional(),
 });
 
-/** ?table=&column= for the linked-column value list. */
+/**
+ * ?table=&column= for the linked-column value list; optional &column2= (same
+ * table) returns distinct PAIRS — the seed of a two-field mapping.
+ */
 export const gridLinkValuesSchema = z.object({
   query: z.object({
     table: z.string().min(1).max(128),
     column: z.string().min(1).max(128),
+    column2: z.string().min(1).max(128).optional(),
   }).passthrough(),
 });
 

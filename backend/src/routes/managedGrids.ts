@@ -317,10 +317,17 @@ router.get('/link-values', requireAuth, requireRole('admin', 'analyst'), validat
     const tenantId = req.user!.tenantId;
     const tableName = String(req.query.table);
     const columnName = String(req.query.column);
+    const columnName2 = req.query.column2 ? String(req.query.column2) : null;
 
     const target = await resolveLinkTarget(db, tenantId, tableName, columnName);
     if (!target) {
       res.status(404).json({ ok: false, error: 'That column is not available (the topic may have been rebuilt) — pick it again.' });
+      return;
+    }
+    // A two-field combination is two columns of the SAME table — distinct
+    // pairs are only meaningful within one table's rows.
+    if (columnName2 !== null && !(await resolveLinkTarget(db, tenantId, tableName, columnName2))) {
+      res.status(404).json({ ok: false, error: 'The second column is not available on that table — pick it again.' });
       return;
     }
 
@@ -332,6 +339,16 @@ router.get('/link-values', requireAuth, requireRole('admin', 'analyst'), validat
     const connector = await createProductConnector(productPath, target.connectionId, tenantId);
     await connector.connect();
     try {
+      if (columnName2 !== null) {
+        const result = await connector.executeQuery(
+          `SELECT DISTINCT CAST("${target.columnName}" AS VARCHAR) AS v1, CAST("${columnName2}" AS VARCHAR) AS v2 ` +
+          `FROM "${target.tableName}" WHERE "${target.columnName}" IS NOT NULL ORDER BY 1, 2 LIMIT 501`,
+        );
+        const rows = result.rows as Array<{ v1: unknown; v2: unknown }>;
+        const pairs = rows.slice(0, 500).map((r) => [String(r.v1), r.v2 == null ? '' : String(r.v2)] as [string, string]);
+        res.json({ ok: true, data: { pairs, truncated: rows.length > 500 } });
+        return;
+      }
       const result = await connector.executeQuery(
         `SELECT DISTINCT CAST("${target.columnName}" AS VARCHAR) AS v ` +
         `FROM "${target.tableName}" WHERE "${target.columnName}" IS NOT NULL ORDER BY 1 LIMIT 501`,
