@@ -81,7 +81,14 @@ router.post('/:id/run-full', requireAuth, requireRole('admin'), async (req: Requ
       const tables = schemaIds.length
         ? await db('product_tables')
             .whereIn('star_schema_id', schemaIds)
-            .whereNotNull('transformation_sql')
+            .where((qb) => {
+                // Stubs (shared dims from another product) carry no SQL — the
+                // runner's skip-path publishes them from the upstream owner, which
+                // is also what flips their status to 'success'. Excluding them
+                // left every stub at 'draft' forever (found 2026-08-24 via the
+                // topics canvas drawing zero relations).
+                qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
+              })
             .orderBy('dag_order', 'asc')
         : [];
 

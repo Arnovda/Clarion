@@ -31,7 +31,60 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-21 (MANAGED GRIDS SHIPPED — "Your tables", the in-Clarion spreadsheet place)
+**Last updated:** 2026-08-24 (topics canvas drew ZERO relations in production — stub rows were starving it; fixed at both ends)
+
+**THE TOPICS CANVAS WAS EMPTY OF EDGES IN PRODUCTION — TWO-SIDED FIX
+(2026-08-24).** Owner screenshot: `/relationships` → Topics showed every
+table but not one line ("I don't see any relations for my topics, like I
+have for my sources"). Root cause is a STATUS LIE about stubs, latent since
+the bus-matrix flow shipped:
+- **Every bus-matrix table load excludes stubs.** All six
+  `runProductTransformation` call sites that feed the AI build/refresh
+  flows load tables with `whereNotNull('transformation_sql')` — and a
+  shared-dim STUB has `transformation_sql = null` by construction. So the
+  runner's skip-path (`publishStubFromUpstream`, the thing that flips a
+  stub to `'success'` and mirrors the owner's `delta_path`) was DEAD CODE
+  in those flows: every stub sits at `transformation_status='draft'`
+  forever. The built relationships reference the STUB's id (that is how
+  buildBusMatrix persists a fact→shared-dim join), so `topics-graph`'s
+  `transformation_status='success'` filter dropped the stub rows AND, via
+  the both-endpoints `whereIn`, every fact→shared-dim edge with them.
+  Zero relations, exactly as screenshotted. (Only `pipelines.ts` passed
+  stubs — which is why the skip-path comment believed itself.)
+- **Fix 1 — the six loads include stubs now**
+  (`whereNotNull(transformation_sql) OR is_shared_dimension`):
+  busMatrixOrchestrator ×4 (build, pipeline, refresh, extension),
+  products/design.ts, products/build.ts. Stubs flow through the skip-path
+  again, so statuses and mirrored `delta_path` become truthful on the next
+  build/refresh. Safe by construction: the runner checks
+  `is_shared_dimension` BEFORE touching SQL, and pipelines has always
+  passed stubs through the same path.
+- **Fix 2 — `topics-graph` no longer trusts the status for stubs** (works
+  for EXISTING builds without a rebuild): stub rows ship regardless of
+  their own status (a stub's realness derives from its owner), each table
+  carries `isStub`, and the endpoint now also **derives name-level joins
+  from `product_columns.fk_target_table/_column`** where no relationship
+  row asserts them (negative ids mark derived edges) — the read-time twin
+  of `synthesizeFkRelationships`, covering fact→dim_date in non-owning
+  products (dim_date is deliberately never stubbed, so those rows could
+  not be persisted) and pre-2026-08-20 builds. Join-surface endpoint
+  columns are marked BY NAME across every copy of a table, so whichever
+  copy the client's dedupe keeps carries the join fields.
+- **`TopicsCanvas` groups shared dims under their OWNING topic**: dedupe
+  prefers the owner copy over stubs (then richest), and the sidebar lists
+  a shared dim once — under Reference, not under every topic that joins
+  it (which fix 2's stub-shipping would otherwise have caused).
+- Validation: backend `npm run check` clean; full suite **38 files / 363
+  passed** (1 new in `managed-grids.test.ts`: draft-stub edge survives,
+  fk-metadata join derived with negative id, asserted join not
+  duplicated, both copies ship with `isStub`); all eight ratchets green;
+  frontend `tsc` + lint + `next build` green (`/relationships` 2.82 kB).
+- **Watch on the next production build/refresh**: stubs now enter the
+  results list as success rows (cosmetic count change in "N ok"), and
+  stub `dag_order` is NULL (sorts last; harmless — the skip-path only
+  mirrors metadata).
+
+**Prior last updated:** 2026-08-21 (MANAGED GRIDS SHIPPED — "Your tables", the in-Clarion spreadsheet place)
 
 **MANAGED GRIDS — G5's IN-PRODUCT HALF IS BUILT (2026-08-21, same session as
 the gap analysis).** Owner: *"a sort of spreadsheet place in Clarion that we

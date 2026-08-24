@@ -409,6 +409,80 @@ describe('/api/grids', () => {
     expect(other.body.data.grids).toHaveLength(0);
   });
 
+  it('topics-graph keeps edges landing on draft stubs and derives fk-metadata joins', async () => {
+    // The production shape: a consuming product holds a STUB copy of a shared
+    // dim (transformation_sql null, status stuck at 'draft' — the bus-matrix
+    // flow never ran it through the skip-path), and the built relationship
+    // references the STUB's id. Filtering stubs out by status silently
+    // dropped every fact→shared-dim edge — the 2026-08-24 empty canvas.
+    const db = getTestDb();
+    const [p2] = await db('data_products')
+      .insert({ tenant_id: tenantId, connection_id: null, name: 'General Ledger', status: 'approved', kind: 'analytics' })
+      .returning('id');
+    const p2Id = Number((p2 as { id?: number }).id ?? p2);
+    const [s2] = await db('star_schemas')
+      .insert({ tenant_id: tenantId, data_product_id: p2Id, name: 'gl_star', fact_table_type: 'transaction' })
+      .returning('id');
+    const s2Id = Number((s2 as { id?: number }).id ?? s2);
+    const inserted = await db('product_tables')
+      .insert([
+        {
+          tenant_id: tenantId, star_schema_id: s2Id, table_name: 'dim_customer',
+          display_name: 'Customers', table_role: 'dimension', dag_order: 0,
+          is_shared_dimension: true, transformation_status: 'draft', transformation_sql: null,
+        },
+        {
+          tenant_id: tenantId, star_schema_id: s2Id, table_name: 'fact_gl',
+          display_name: 'GL lines', table_role: 'fact', dag_order: 1,
+          transformation_status: 'success', delta_path: '/tmp/x/fact_gl', row_count: 9,
+        },
+      ])
+      .returning('id');
+    const stubId = Number((inserted[0] as { id?: number }).id ?? inserted[0]);
+    const glFactId = Number((inserted[1] as { id?: number }).id ?? inserted[1]);
+    await db('product_columns').insert([
+      { tenant_id: tenantId, product_table_id: glFactId, column_name: 'amount', data_type: 'DOUBLE', column_role: 'measure', is_technical: false },
+      // Asserted by a relationship row below — synthesis must NOT duplicate it.
+      { tenant_id: tenantId, product_table_id: glFactId, column_name: 'customer_key', data_type: 'INTEGER', column_role: 'foreign_key', is_technical: true, fk_target_table: 'dim_customer', fk_target_column: 'customer_key' },
+      // No relationship row anywhere — must be derived from this metadata.
+      { tenant_id: tenantId, product_table_id: glFactId, column_name: 'owner_key', data_type: 'INTEGER', column_role: 'foreign_key', is_technical: true, fk_target_table: 'dim_customer', fk_target_column: 'customer_key' },
+    ]);
+    await db('product_relationships').insert({
+      tenant_id: tenantId, star_schema_id: s2Id,
+      from_table_id: glFactId, from_column_name: 'customer_key',
+      to_table_id: stubId, to_column_name: 'customer_key',
+      relationship_type: 'fact_to_dim',
+    });
+
+    const res = await (await request())
+      .get('/api/relationships/topics-graph')
+      .set('Authorization', `Bearer ${analystToken}`);
+    expect(res.status).toBe(200);
+    const data = res.body.data as {
+      tables: Array<{ tableName: string; topic: string; isStub: boolean }>;
+      relationships: Array<{ id: number; fromTable: string; fromColumn: string; toTable: string; toColumn: string }>;
+    };
+
+    // Both copies ship — the draft stub included — and say which is which.
+    const copies = data.tables.filter((t) => t.tableName === 'dim_customer');
+    expect(copies).toHaveLength(2);
+    expect(copies.filter((t) => t.isStub)).toHaveLength(1);
+    expect(copies.find((t) => t.isStub)!.topic).toBe('General Ledger');
+
+    // The edge landing on the draft stub survives.
+    const stubEdge = data.relationships.find((r) => r.fromTable === 'fact_gl' && r.fromColumn === 'customer_key');
+    expect(stubEdge).toBeDefined();
+    expect(stubEdge!.toTable).toBe('dim_customer');
+    expect(stubEdge!.id).toBeGreaterThan(0);
+
+    // The metadata-only join is derived; the asserted one is not duplicated.
+    const derived = data.relationships.filter((r) => r.fromTable === 'fact_gl' && r.fromColumn === 'owner_key');
+    expect(derived).toHaveLength(1);
+    expect(derived[0].id).toBeLessThan(0);
+    expect(derived[0].toColumn).toBe('customer_key');
+    expect(data.relationships.filter((r) => r.fromTable === 'fact_gl' && r.fromColumn === 'customer_key')).toHaveLength(1);
+  });
+
   it('deletes the grid and its rows', async () => {
     const res = await (await request())
       .delete(`/api/grids/${gridId}`)

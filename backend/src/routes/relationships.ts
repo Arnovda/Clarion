@@ -636,16 +636,29 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
       if (!tenantId) { res.status(404).json({ ok: false, error: 'Not found' }); return; }
 
       // Every query filters tenant_id explicitly (the reqDb pool-race rule).
+      //
+      // STUBS ARE IN ON PURPOSE. A shared dim lives once as the owner's row
+      // and again as a STUB in every consuming schema — and the built
+      // relationships reference the STUB's id, not the owner's. Stubs are
+      // supposed to be flipped to 'success' by the runner's skip-path, but
+      // the bus-matrix flow loads tables with whereNotNull(transformation_sql)
+      // so stubs never pass through it and sit at 'draft' forever. Filtering
+      // on status alone therefore dropped every fact→shared-dim edge (the
+      // exact defect the owner screenshotted on 2026-08-24: a topics canvas
+      // with zero relations). A stub's realness derives from its owner, so
+      // is_shared_dimension rows ship regardless of their own status.
       const tableRows = (await db('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .join('data_products as dp', 'ss.data_product_id', 'dp.id')
         .where('dp.tenant_id', tenantId)
         .whereIn('dp.status', ['approved', 'success'])
-        .where('pt.transformation_status', 'success')
+        .where((qb) => {
+          qb.where('pt.transformation_status', 'success').orWhere('pt.is_shared_dimension', true);
+        })
         .select(
-          'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role',
+          'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role', 'pt.is_shared_dimension',
           'dp.name as topic', 'dp.kind as topic_kind',
-        )) as Array<{ id: number; table_name: string; display_name: string | null; table_role: string; topic: string; topic_kind: string | null }>;
+        )) as Array<{ id: number; table_name: string; display_name: string | null; table_role: string; is_shared_dimension: boolean | null; topic: string; topic_kind: string | null }>;
 
       const tableIds = tableRows.map((t) => t.id);
       const idToName = new Map(tableRows.map((t) => [t.id, t.table_name]));
@@ -663,9 +676,10 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
       const colRows = tableIds.length
         ? ((await db('product_columns')
             .whereIn('product_table_id', tableIds)
-            .select('product_table_id', 'column_name', 'data_type', 'column_role', 'is_technical')) as Array<{
+            .select('product_table_id', 'column_name', 'data_type', 'column_role', 'is_technical', 'fk_target_table', 'fk_target_column')) as Array<{
               product_table_id: number; column_name: string; data_type: string | null;
               column_role: string | null; is_technical: boolean | null;
+              fk_target_table: string | null; fk_target_column: string | null;
             }>)
         : [];
 
@@ -677,24 +691,66 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
           warehouse_path: string | null;
         }>;
 
+      // The relationship rows only assert joins whose BOTH endpoints landed in
+      // one schema's persist loop — fact→dim_date in a non-owning product
+      // never got a row (dim_date is auto-injected and deliberately not
+      // stubbed), and pre-2026-08-20 builds persisted almost none. But every
+      // FK column still carries fk_target_table/_column metadata, so the
+      // missing joins are DERIVABLE by name — same reasoning as the builder's
+      // synthesizeFkRelationships, applied at read time so existing builds
+      // don't need a rebuild to draw complete. Never duplicates an asserted
+      // row; targets must be tables this graph ships; self-references skipped.
+      const namesInGraph = new Set(tableRows.map((t) => t.table_name));
+      const relKey = (from: string, fromCol: string, to: string) =>
+        `${from}|${fromCol}|${to}`;
+      const asserted = new Set(relRows.map((r) =>
+        relKey(idToName.get(r.from_table_id) ?? '', r.from_column_name, idToName.get(r.to_table_id) ?? '')));
+      const synthesized: Array<{ fromTable: string; fromColumn: string; toTable: string; toColumn: string }> = [];
+      for (const c of colRows) {
+        const target = c.fk_target_table;
+        if (!target || !namesInGraph.has(target)) continue;
+        const fromName = idToName.get(c.product_table_id);
+        if (!fromName || fromName === target) continue;
+        const key = relKey(fromName, c.column_name, target);
+        if (asserted.has(key)) continue;
+        asserted.add(key); // stub copies carry the same metadata — emit once
+        synthesized.push({
+          fromTable: fromName,
+          fromColumn: c.column_name,
+          toTable: target,
+          toColumn: c.fk_target_column ?? '',
+        });
+      }
+
       // Which technical columns still ship: relationship endpoints + grid link
-      // targets — the join surface. Underscore-prefixed names never ship.
+      // targets — the join surface. Marked by NAME (applied to every copy of
+      // the table) because the client dedupes shared dims to one card and the
+      // surviving copy must carry the join fields whichever schema it came
+      // from. Underscore-prefixed names never ship.
+      const idsByName = new Map<string, number[]>();
+      for (const t of tableRows) {
+        if (!idsByName.has(t.table_name)) idsByName.set(t.table_name, []);
+        idsByName.get(t.table_name)!.push(t.id);
+      }
       const endpointByTable = new Map<number, Set<string>>();
-      const addEndpoint = (tid: number, col: string) => {
-        if (!endpointByTable.has(tid)) endpointByTable.set(tid, new Set());
-        endpointByTable.get(tid)!.add(col);
+      const addEndpoint = (tableName: string, col: string) => {
+        if (col === '') return;
+        for (const tid of idsByName.get(tableName) ?? []) {
+          if (!endpointByTable.has(tid)) endpointByTable.set(tid, new Set());
+          endpointByTable.get(tid)!.add(col);
+        }
       };
       for (const r of relRows) {
-        addEndpoint(r.from_table_id, r.from_column_name);
-        addEndpoint(r.to_table_id, r.to_column_name);
+        addEndpoint(idToName.get(r.from_table_id) ?? '', r.from_column_name);
+        addEndpoint(idToName.get(r.to_table_id) ?? '', r.to_column_name);
       }
-      const nameToId = new Map(tableRows.map((t) => [t.table_name, t.id]));
+      for (const s of synthesized) {
+        addEndpoint(s.fromTable, s.fromColumn);
+        addEndpoint(s.toTable, s.toColumn);
+      }
       for (const g of gridRows) {
         for (const c of Array.isArray(g.columns) ? g.columns : []) {
-          if (c.link) {
-            const tid = nameToId.get(c.link.table);
-            if (tid !== undefined) addEndpoint(tid, c.link.column);
-          }
+          if (c.link) addEndpoint(c.link.table, c.link.column);
         }
       }
 
@@ -722,17 +778,29 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
             role: t.table_role,
             topic: t.topic,
             topicKind: t.topic_kind,
+            isStub: t.is_shared_dimension === true,
             columns: colsByTable.get(t.id) ?? [],
             columnCount: colCountByTable.get(t.id) ?? 0,
           })),
-          relationships: relRows.map((r) => ({
-            id: r.id,
-            fromTable: idToName.get(r.from_table_id) ?? '',
-            fromColumn: r.from_column_name,
-            toTable: idToName.get(r.to_table_id) ?? '',
-            toColumn: r.to_column_name,
-            type: r.relationship_type ?? 'fact_to_dim',
-          })),
+          relationships: [
+            ...relRows.map((r) => ({
+              id: r.id,
+              fromTable: idToName.get(r.from_table_id) ?? '',
+              fromColumn: r.from_column_name,
+              toTable: idToName.get(r.to_table_id) ?? '',
+              toColumn: r.to_column_name,
+              type: r.relationship_type ?? 'fact_to_dim',
+            })),
+            // Derived joins get negative ids: unique, and visibly not a row.
+            ...synthesized.map((s, i) => ({
+              id: -(i + 1),
+              fromTable: s.fromTable,
+              fromColumn: s.fromColumn,
+              toTable: s.toTable,
+              toColumn: s.toColumn,
+              type: 'fact_to_dim',
+            })),
+          ],
           grids: gridRows.map((g) => ({
             id: g.id,
             name: g.name,

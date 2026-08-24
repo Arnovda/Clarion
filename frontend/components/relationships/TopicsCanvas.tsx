@@ -46,6 +46,8 @@ interface TgTable {
   role: string;
   topic: string;
   topicKind: string | null;
+  /** True for a shared dim's copy inside a consuming schema — the owner's copy is elsewhere. */
+  isStub?: boolean;
   columns: TgColumn[];
   columnCount: number;
 }
@@ -265,11 +267,21 @@ function buildModel(graph: TopicsGraph): { nodes: Map<string, CanvasNode>; edges
   const nodes = new Map<string, CanvasNode>();
   const topics = new Map<string, string[]>();
 
-  // Shared dims are stubbed into several schemas, so the same table name can
-  // arrive more than once — keep the richest copy (most columns).
+  // Shared dims arrive more than once — the OWNER's row plus a stub copy per
+  // consuming schema. One card per name: prefer the owner (its topic is the
+  // honest home — GL Account belongs to Reference, not to every topic that
+  // joins it), then the richest copy. The sidebar groups by the winner, so a
+  // shared dim is listed once instead of under every topic.
+  const winners = new Map<string, TgTable>();
   for (const t of graph.tables) {
-    const existing = nodes.get(t.tableName);
-    const node: CanvasNode = {
+    const existing = winners.get(t.tableName);
+    const better = !existing
+      || (existing.isStub === true && t.isStub !== true)
+      || ((existing.isStub === true) === (t.isStub === true) && t.columns.length > existing.columns.length);
+    if (better) winners.set(t.tableName, t);
+  }
+  for (const t of winners.values()) {
+    nodes.set(t.tableName, {
       key: t.tableName,
       label: t.displayName || t.tableName,
       subtitle: `${t.topic} · ${t.role === 'fact' ? 'measures' : 'lookup'}`,
@@ -280,10 +292,9 @@ function buildModel(graph: TopicsGraph): { nodes: Map<string, CanvasNode>; edges
         isMeasure: c.role === 'measure',
       })),
       totalFields: Math.max(t.columnCount, t.columns.length),
-    };
-    if (!existing || node.fields.length > existing.fields.length) nodes.set(t.tableName, node);
+    });
     if (!topics.has(t.topic)) topics.set(t.topic, []);
-    if (!topics.get(t.topic)!.includes(t.tableName)) topics.get(t.topic)!.push(t.tableName);
+    topics.get(t.topic)!.push(t.tableName);
   }
 
   const gridKeys: string[] = [];
