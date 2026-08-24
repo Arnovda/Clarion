@@ -267,6 +267,143 @@ describe('/api/grids', () => {
     expect(res.status).toBe(400);
   });
 
+  // ─── Linked columns + the topics graph ───────────────────────────────────
+
+  it('links: round-trips a column link and refuses unsafe targets', async () => {
+    const res = await (await request())
+      .post('/api/grids')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Region mapping',
+        kind: 'mapping',
+        columns: [
+          { name: 'Customer', type: 'text', link: { table: 'dim_customer', column: 'customer_name' } },
+          { name: 'Region', type: 'text' },
+        ],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.data.columns[0].link).toEqual({ table: 'dim_customer', column: 'customer_name' });
+    expect(res.body.data.columns[1].link).toBeUndefined();
+
+    const bad = await (await request())
+      .post('/api/grids')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Bad link',
+        columns: [{ name: 'X', type: 'text', link: { table: 'dim; DROP', column: 'a' } }],
+      });
+    expect(bad.status).toBe(400);
+  });
+
+  it('linkable-columns lists built dimension columns, not measures or technical', async () => {
+    const db = getTestDb();
+    const [product] = await db('data_products')
+      .insert({ tenant_id: tenantId, connection_id: null, name: 'Sales', status: 'approved', kind: 'analytics' })
+      .returning('id');
+    const productId = Number((product as { id?: number }).id ?? product);
+    const [schema] = await db('star_schemas')
+      .insert({ tenant_id: tenantId, data_product_id: productId, name: 'sales_star', fact_table_type: 'transaction' })
+      .returning('id');
+    const schemaId = Number((schema as { id?: number }).id ?? schema);
+    const inserted = await db('product_tables')
+      .insert([
+        {
+          tenant_id: tenantId, star_schema_id: schemaId, table_name: 'dim_customer',
+          display_name: 'Customers', table_role: 'dimension', dag_order: 0,
+          transformation_status: 'success', delta_path: '/tmp/x/dim_customer', row_count: 57,
+        },
+        {
+          tenant_id: tenantId, star_schema_id: schemaId, table_name: 'fact_sales',
+          display_name: 'Sales', table_role: 'fact', dag_order: 1,
+          transformation_status: 'success', delta_path: '/tmp/x/fact_sales', row_count: 100,
+        },
+      ])
+      .returning('id');
+    const dimId = Number((inserted[0] as { id?: number }).id ?? inserted[0]);
+    const factId = Number((inserted[1] as { id?: number }).id ?? inserted[1]);
+    await db('product_columns').insert([
+      { tenant_id: tenantId, product_table_id: dimId, column_name: 'customer_name', data_type: 'VARCHAR', column_role: 'natural_key', is_technical: false },
+      { tenant_id: tenantId, product_table_id: dimId, column_name: 'lifetime_value', data_type: 'DOUBLE', column_role: 'measure', is_technical: false },
+      { tenant_id: tenantId, product_table_id: dimId, column_name: 'customer_key', data_type: 'INTEGER', column_role: 'surrogate_key', is_technical: true },
+      { tenant_id: tenantId, product_table_id: factId, column_name: 'amount', data_type: 'DOUBLE', column_role: 'measure', is_technical: false },
+    ]);
+    await db('product_relationships').insert({
+      tenant_id: tenantId, star_schema_id: schemaId,
+      from_table_id: factId, from_column_name: 'customer_key',
+      to_table_id: dimId, to_column_name: 'customer_key',
+      relationship_type: 'fact_to_dim',
+    });
+
+    const res = await (await request())
+      .get('/api/grids/linkable-columns')
+      .set('Authorization', `Bearer ${analystToken}`);
+    expect(res.status).toBe(200);
+    const tables = res.body.data as Array<{ tableName: string; columns: Array<{ name: string }> }>;
+    const dim = tables.find((t) => t.tableName === 'dim_customer');
+    expect(dim).toBeDefined();
+    expect(dim!.columns.map((c) => c.name)).toEqual(['customer_name']);
+    expect(tables.find((t) => t.tableName === 'fact_sales')).toBeUndefined();
+  });
+
+  it('link-values 404s for a target that does not resolve', async () => {
+    const res = await (await request())
+      .get('/api/grids/link-values?table=dim_nope&column=whatever')
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('coverage reports target-missing for a stale link, and nothing for no links', async () => {
+    const created = await (await request())
+      .post('/api/grids')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Stale map',
+        kind: 'mapping',
+        columns: [{ name: 'Old', type: 'text', link: { table: 'dim_gone', column: 'name' } }],
+      });
+    const staleId = created.body.data.id as number;
+    const cov = await (await request())
+      .get(`/api/grids/${staleId}/coverage`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(cov.status).toBe(200);
+    expect(cov.body.data.columns).toHaveLength(1);
+    expect(cov.body.data.columns[0].status).toBe('target-missing');
+
+    const noLinks = await (await request())
+      .get(`/api/grids/${gridId}/coverage`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(noLinks.status).toBe(200);
+    expect(noLinks.body.data.columns).toHaveLength(0);
+  });
+
+  it('topics-graph ships tables, relationships and grids with their links', async () => {
+    const res = await (await request())
+      .get('/api/relationships/topics-graph')
+      .set('Authorization', `Bearer ${analystToken}`);
+    expect(res.status).toBe(200);
+    const data = res.body.data as {
+      tables: Array<{ tableName: string; topic: string; columns: Array<{ name: string }> }>;
+      relationships: Array<{ fromTable: string; toTable: string; toColumn: string }>;
+      grids: Array<{ name: string; viewName: string; columns: Array<{ key: string; link?: unknown }> }>;
+    };
+    const dim = data.tables.find((t) => t.tableName === 'dim_customer');
+    expect(dim).toBeDefined();
+    expect(dim!.topic).toBe('Sales');
+    // The surrogate key is technical BUT a relationship endpoint — it ships.
+    expect(dim!.columns.map((c) => c.name)).toContain('customer_key');
+    expect(data.relationships.some((r) => r.fromTable === 'fact_sales' && r.toTable === 'dim_customer')).toBe(true);
+    const mapping = data.grids.find((g) => g.name === 'Region mapping');
+    expect(mapping).toBeDefined();
+    expect(mapping!.viewName).toBe('grid_region_mapping');
+    expect(mapping!.columns[0].link).toEqual({ table: 'dim_customer', column: 'customer_name' });
+    // Other tenant sees none of it.
+    const other = await (await request())
+      .get('/api/relationships/topics-graph')
+      .set('Authorization', `Bearer ${otherToken}`);
+    expect(other.body.data.tables).toHaveLength(0);
+    expect(other.body.data.grids).toHaveLength(0);
+  });
+
   it('deletes the grid and its rows', async () => {
     const res = await (await request())
       .delete(`/api/grids/${gridId}`)

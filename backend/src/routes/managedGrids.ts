@@ -25,6 +25,7 @@ import {
   updateManagedGridSchema,
   saveManagedGridRowsSchema,
   gridIdParamsSchema,
+  gridLinkValuesSchema,
 } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { recordAudit } from '../services/auditService';
@@ -32,6 +33,7 @@ import {
   normalizeColumns,
   deriveGridSlug,
   isValidGridSlug,
+  isValidLinkIdent,
   coerceRow,
   materializeGrid,
   GridValidationError,
@@ -40,6 +42,8 @@ import {
   type GridKind,
 } from '../services/managedGrids';
 import { gridViewName, deleteWarehousePath } from '../services/warehouse';
+import { getProductWarehousePath } from '../services/productContext';
+import { createProductConnector } from '../connectors/ConnectorFactory';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'routes-managed-grids' });
@@ -217,6 +221,207 @@ router.post('/', requireAuth, requireRole('admin', 'analyst'), validate(createMa
       .where({ id, tenant_id: tenantId })
       .first()) as GridRowRecord;
     res.json({ ok: true, data: toApi(created) });
+  } catch (err) { next(err); }
+});
+
+// ─── Linked columns ─────────────────────────────────────────────────────────
+// Literal routes registered BEFORE '/:id' so they aren't captured by it.
+
+/**
+ * Resolve a link target NAME pair to a real, materialised product column and
+ * its connection. Returns null when it doesn't resolve — a topic rebuild may
+ * have renamed the table, and the honest answer is "no longer found", never
+ * a guess. Explicit tenant filters throughout (reqDb pool-race rule).
+ */
+async function resolveLinkTarget(
+  db: ReturnType<typeof reqDb>,
+  tenantId: number,
+  tableName: string,
+  columnName: string,
+): Promise<{ connectionId: number; tableName: string; columnName: string } | null> {
+  if (!isValidLinkIdent(tableName) || !isValidLinkIdent(columnName)) return null;
+  const row = (await db('product_tables as pt')
+    .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+    .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+    .join('product_columns as pc', 'pc.product_table_id', 'pt.id')
+    .where('dp.tenant_id', tenantId)
+    .where('pt.table_name', tableName)
+    .where('pt.transformation_status', 'success')
+    .whereNotNull('pt.delta_path')
+    .where('pc.column_name', columnName)
+    .select('dp.connection_id')
+    .first()) as { connection_id: number } | undefined;
+  if (!row?.connection_id) return null;
+  return { connectionId: Number(row.connection_id), tableName, columnName };
+}
+
+/**
+ * The columns a grid column may link to: every non-technical, non-measure
+ * column of a built dimension/lookup table, grouped by topic. This is the
+ * picker behind "this column contains…".
+ */
+router.get('/linkable-columns', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user!.tenantId;
+    const rows = (await db('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .join('product_columns as pc', 'pc.product_table_id', 'pt.id')
+      .where('dp.tenant_id', tenantId)
+      .whereIn('dp.status', ['approved', 'success'])
+      .where('pt.transformation_status', 'success')
+      .whereNotNull('pt.delta_path')
+      .whereIn('pt.table_role', ['dimension', 'bridge'])
+      .where((qb) => qb.where('pc.is_technical', false).orWhereNull('pc.is_technical'))
+      .whereNot('pc.column_role', 'measure')
+      .select(
+        'dp.name as topic',
+        'pt.table_name',
+        'pt.display_name as table_display_name',
+        'pc.column_name',
+        'pc.display_name as column_display_name',
+      )
+      .orderBy(['dp.name', 'pt.table_name', 'pc.column_name'])) as Array<Record<string, unknown>>;
+
+    const byTable = new Map<string, {
+      topic: string; tableName: string; displayName: string | null;
+      columns: Array<{ name: string; displayName: string | null }>;
+    }>();
+    for (const r of rows) {
+      const key = String(r.table_name);
+      if (!byTable.has(key)) {
+        byTable.set(key, {
+          topic: String(r.topic),
+          tableName: key,
+          displayName: r.table_display_name == null ? null : String(r.table_display_name),
+          columns: [],
+        });
+      }
+      byTable.get(key)!.columns.push({
+        name: String(r.column_name),
+        displayName: r.column_display_name == null ? null : String(r.column_display_name),
+      });
+    }
+    res.json({ ok: true, data: [...byTable.values()] });
+  } catch (err) { next(err); }
+});
+
+/**
+ * Distinct values of a linked column — the list a mapping is made FROM, and
+ * the dropdown behind a linked cell. Capped at 500 (`truncated` says so).
+ */
+router.get('/link-values', requireAuth, requireRole('admin', 'analyst'), validate(gridLinkValuesSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user!.tenantId;
+    const tableName = String(req.query.table);
+    const columnName = String(req.query.column);
+
+    const target = await resolveLinkTarget(db, tenantId, tableName, columnName);
+    if (!target) {
+      res.status(404).json({ ok: false, error: 'That column is not available (the topic may have been rebuilt) — pick it again.' });
+      return;
+    }
+
+    const productPath = await getProductWarehousePath(target.connectionId, db);
+    if (!productPath) {
+      res.status(404).json({ ok: false, error: 'That topic has no data yet.' });
+      return;
+    }
+    const connector = await createProductConnector(productPath, target.connectionId, tenantId);
+    await connector.connect();
+    try {
+      const result = await connector.executeQuery(
+        `SELECT DISTINCT CAST("${target.columnName}" AS VARCHAR) AS v ` +
+        `FROM "${target.tableName}" WHERE "${target.columnName}" IS NOT NULL ORDER BY 1 LIMIT 501`,
+      );
+      const rows = result.rows as Array<{ v: unknown }>;
+      const values = rows.slice(0, 500).map((r) => String(r.v));
+      res.json({ ok: true, data: { values, truncated: rows.length > 500 } });
+    } finally {
+      await connector.disconnect();
+    }
+  } catch (err) { next(err); }
+});
+
+/**
+ * Coverage of every linked column: how many of the target's real values the
+ * grid maps, and a sample of the missing ones. This is what turns a mapping
+ * from a hope into a measured fact ("42 of 57 customers mapped").
+ */
+router.get('/:id/coverage', requireAuth, requireRole('admin', 'analyst'), validate(gridIdParamsSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user!.tenantId;
+    const id = Number(req.params.id);
+    const grid = (await db('managed_grids')
+      .where({ id, tenant_id: tenantId })
+      .first()) as GridRowRecord | undefined;
+    if (!grid) {
+      res.status(404).json({ ok: false, error: 'Table not found' });
+      return;
+    }
+
+    const linked = grid.columns.filter((c) => c.link);
+    const results: Array<{
+      key: string;
+      target: { table: string; column: string };
+      status: 'ok' | 'target-missing' | 'grid-not-ready';
+      total?: number; matched?: number; missing?: string[]; missingTruncated?: boolean;
+    }> = [];
+
+    const view = gridViewName(grid.slug);
+    for (const col of linked) {
+      const link = col.link!;
+      const target = await resolveLinkTarget(db, tenantId, link.table, link.column);
+      if (!target) {
+        results.push({ key: col.key, target: link, status: 'target-missing' });
+        continue;
+      }
+      if (!grid.warehouse_path) {
+        results.push({ key: col.key, target: link, status: 'grid-not-ready' });
+        continue;
+      }
+      const productPath = await getProductWarehousePath(target.connectionId, db);
+      if (!productPath) {
+        results.push({ key: col.key, target: link, status: 'target-missing' });
+        continue;
+      }
+      // One session holds both sides: createProductConnector registers the
+      // grid view alongside the topic's tables.
+      const connector = await createProductConnector(productPath, target.connectionId, tenantId);
+      await connector.connect();
+      try {
+        const tcol = `"${target.columnName}"`;
+        const ttab = `"${target.tableName}"`;
+        const countsResult = await connector.executeQuery(
+          `SELECT COUNT(DISTINCT ${tcol}) AS total, ` +
+          `COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM "${view}" g WHERE CAST(g."${col.key}" AS VARCHAR) = CAST(t.${tcol} AS VARCHAR)) THEN t.${tcol} END) AS matched ` +
+          `FROM ${ttab} t WHERE t.${tcol} IS NOT NULL`,
+        );
+        const counts = countsResult.rows[0] as { total: unknown; matched: unknown } | undefined;
+        const missingResult = await connector.executeQuery(
+          `SELECT DISTINCT CAST(t.${tcol} AS VARCHAR) AS v FROM ${ttab} t ` +
+          `WHERE t.${tcol} IS NOT NULL AND NOT EXISTS ` +
+          `(SELECT 1 FROM "${view}" g WHERE CAST(g."${col.key}" AS VARCHAR) = CAST(t.${tcol} AS VARCHAR)) ` +
+          `ORDER BY 1 LIMIT 26`,
+        );
+        const missingRows = missingResult.rows as Array<{ v: unknown }>;
+        results.push({
+          key: col.key,
+          target: link,
+          status: 'ok',
+          total: Number(counts?.total ?? 0),
+          matched: Number(counts?.matched ?? 0),
+          missing: missingRows.slice(0, 25).map((r) => String(r.v)),
+          missingTruncated: missingRows.length > 25,
+        });
+      } finally {
+        await connector.disconnect();
+      }
+    }
+    res.json({ ok: true, data: { columns: results } });
   } catch (err) { next(err); }
 });
 

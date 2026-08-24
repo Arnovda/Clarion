@@ -313,19 +313,28 @@ export async function buildProductSemanticContext(
   // enforced by RLS on the passed trx, same as every query above.
   const gridRows: Array<{
     slug: string; name: string; kind: string; description: string | null;
-    row_count: number; columns: Array<{ key: string; name: string; type: string }>;
+    row_count: number;
+    columns: Array<{ key: string; name: string; type: string; link?: { table: string; column: string } | null }>;
   }> = await db('managed_grids')
     .whereNotNull('warehouse_path')
     .select('slug', 'name', 'kind', 'description', 'row_count', 'columns');
 
   const gridLines = gridRows.map((g) => {
-    const cols = (Array.isArray(g.columns) ? g.columns : [])
+    const gcols = Array.isArray(g.columns) ? g.columns : [];
+    const cols = gcols
       .map((c) => `${c.key} (${c.type.toUpperCase()}${c.name !== c.key ? `, "${c.name}"` : ''})`)
       .join(', ');
     const rows = Number(g.row_count);
     const size = Number.isFinite(rows) && rows > 0 ? ` ~${rows.toLocaleString('en-GB')} rows.` : ' (empty).';
     const desc = g.description ? ` ${g.description}` : '';
-    return `- ${gridViewName(g.slug)} ("${g.name}", ${g.kind}):${desc} Columns: ${cols}.${size}`;
+    // Linked columns are the join contract: the user DECLARED what the
+    // column contains, so the model never has to guess the join.
+    const joins = gcols
+      .filter((c) => c.link)
+      .map((c) => `JOIN ${gridViewName(g.slug)}.${c.key} = ${c.link!.table}.${c.link!.column}`)
+      .join('; ');
+    const joinHint = joins ? ` ${joins}.` : '';
+    return `- ${gridViewName(g.slug)} ("${g.name}", ${g.kind}):${desc} Columns: ${cols}.${joinHint}${size}`;
   });
   const gridSection = gridLines.length > 0
     ? `\n\n## YOUR TABLES — data the user maintains directly in Clarion (budgets, mappings, lists)\n` +

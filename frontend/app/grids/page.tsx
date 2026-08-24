@@ -28,6 +28,7 @@ import {
   type GridKind,
   type GridSummary,
   type GridTemplate,
+  type LinkableTable,
 } from './types';
 import { readXlsx, type XlsxWorkbook } from '@/lib/xlsxRead';
 import { splitSheet, guessColumnType } from './import';
@@ -65,6 +66,23 @@ function Grids() {
     hasHeader: boolean;
   } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // The mapping flow: pick which topic column the first column contains, and
+  // the table starts pre-filled with every distinct value of it.
+  const [linkable, setLinkable] = useState<LinkableTable[] | null>(null);
+  const [mapTarget, setMapTarget] = useState('');
+  const [mapToName, setMapToName] = useState('');
+
+  useEffect(() => {
+    if (creating?.kind !== 'mapping' || linkable !== null) return;
+    (async () => {
+      try {
+        const res = await api.get('/grids/linkable-columns');
+        setLinkable((res.data?.data ?? []) as LinkableTable[]);
+      } catch {
+        setLinkable([]);
+      }
+    })();
+  }, [creating, linkable]);
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +100,8 @@ function Grids() {
   function openCreate(tpl: GridTemplate) {
     setCreating(tpl);
     setNewName(tpl.suggestedName);
+    setMapTarget('');
+    setMapToName('');
   }
 
   async function create() {
@@ -90,12 +110,37 @@ function Grids() {
     if (!name) return;
     setBusy(true);
     try {
-      const res = await api.post('/grids', {
-        name,
-        kind: creating.kind,
-        columns: creating.columns,
-      });
+      // A mapping with a chosen target: the first column LINKS to that topic
+      // column and the table starts pre-filled with its distinct values —
+      // "here is the list, fill in the right-hand side".
+      let columns: Array<{ name: string; type: GridColumnType; link?: { table: string; column: string } }> = creating.columns;
+      let seedValues: string[] | null = null;
+      if (creating.kind === 'mapping' && mapTarget) {
+        const [table, column] = mapTarget.split('::');
+        const lt = linkable?.find((t) => t.tableName === table);
+        const lc = lt?.columns.find((c) => c.name === column);
+        const fromName = lc?.displayName || lt?.displayName || column || 'From';
+        columns = [
+          { name: fromName, type: 'text', link: { table, column } },
+          { name: mapToName.trim() || 'To', type: 'text' },
+        ];
+        try {
+          const vres = await api.get('/grids/link-values', { params: { table, column } });
+          seedValues = ((vres.data?.data?.values ?? []) as string[]);
+        } catch {
+          seedValues = null; // grid still gets created; the list can come later
+        }
+      }
+      const res = await api.post('/grids', { name, kind: creating.kind, columns });
       const created = res.data?.data as GridSummary;
+      if (seedValues && seedValues.length > 0) {
+        const key = created.columns[0]?.key;
+        if (key) {
+          await api.put(`/grids/${created.id}/rows`, {
+            rows: seedValues.map((v) => ({ data: { [key]: v } })),
+          });
+        }
+      }
       router.push(`/grids/${created.id}`);
     } catch (e) {
       const ax = e as { response?: { data?: { error?: string } }; message?: string };
@@ -463,6 +508,52 @@ function Grids() {
                     ))}
                   </div>
                   <p className="mt-2 text-[12.5px] leading-[1.55] text-ink-3">{creating.description}</p>
+
+                  {creating.kind === 'mapping' && (
+                    <div className="mt-4 rounded-[10px] border border-line bg-bg px-4 py-3">
+                      <label className="block font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                        What are you mapping?
+                      </label>
+                      {linkable === null ? (
+                        <p className="mt-1.5 flex items-center gap-2 text-[12.5px] text-muted">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} aria-hidden /> Loading your data…
+                        </p>
+                      ) : (
+                        <select
+                          value={mapTarget}
+                          onChange={(e) => setMapTarget(e.target.value)}
+                          className="mt-1.5 w-full rounded-[8px] border border-line bg-raised px-2.5 py-2 text-[13px] text-ink focus:border-ocean focus:outline-none"
+                        >
+                          <option value="">Nothing specific — start with free text</option>
+                          {linkable.map((t) => (
+                            <optgroup key={t.tableName} label={`${t.topic} · ${t.displayName ?? t.tableName}`}>
+                              {t.columns.map((c) => (
+                                <option key={c.name} value={`${t.tableName}::${c.name}`}>
+                                  {c.displayName ?? c.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
+                      )}
+                      {mapTarget !== '' && (
+                        <>
+                          <p className="mt-2 text-[12px] leading-[1.55] text-muted-2">
+                            The table starts pre-filled with every value — you fill in the second column.
+                          </p>
+                          <label className="mt-2.5 block font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                            Second column name
+                          </label>
+                          <input
+                            value={mapToName}
+                            onChange={(e) => setMapToName(e.target.value)}
+                            placeholder="Region"
+                            className="mt-1.5 w-full rounded-[8px] border border-line bg-raised px-2.5 py-1.5 text-[13px] text-ink placeholder:text-muted-2 focus:border-ocean focus:outline-none"
+                          />
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   <label className="mt-5 block font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
                     Name

@@ -148,11 +148,52 @@ a second time:
   → Save. 10k row cap enforced client-side with the add-it-as-a-source
   message. `/grids` 4.53 kB, `/grids/[id]` 7.09 kB, tsc + lint + build
   green.
+- **v3 same day — LINKED COLUMNS + THE TOPICS RELATIONS CANVAS (owner: "I
+  create a mapping table, I select a column of a topic, I get the distinct
+  values, I make my mapping. Also a relation canvas for my topics… including
+  the budgets or mappings").** The reference-column killer feature, shipped:
+  (a) `GridColumn` gains optional `link {table, column}` — a PRODUCT-layer
+  column stored BY NAME (no ids: rebuild renames become a visible
+  "pick it again" state, never a silent break), validated against strict
+  ident rules in `normalizeColumns` and resolved at use time by
+  `resolveLinkTarget` (existence-checked against product_tables/columns with
+  explicit tenant filters).
+  (b) Three new endpoints on /api/grids (LITERAL routes registered before
+  `/:id`; `/api/grids` mount gained computeLimiter): `linkable-columns`
+  (built dimension/bridge tables' non-technical non-measure columns, grouped
+  by topic), `link-values` (≤500 distinct values via createProductConnector
+  — catalog-resolved identifiers only), and `/:id/coverage` — per linked
+  column: total distinct target values, matched, missing sample (≤25). ONE
+  DuckDB session holds both sides because createProductConnector already
+  registers grid views next to the topic's tables.
+  (c) The AI join contract: productContext's YOUR TABLES lines now carry
+  `JOIN grid_x.col = dim_y.col` per linked column — the model never guesses
+  the join again.
+  (d) Editor: column popover "Contains" picker (text columns), link icon in
+  the header, cell dropdowns via native datalist fed by link-values, and the
+  COVERAGE CHIP — "Customer: 42 of 57 mapped · add the 15 missing" (one
+  click appends the missing values as rows). Mapping template's create flow
+  asks "what are you mapping?" and the grid starts PRE-FILLED with every
+  distinct value (client-side seed through the ordinary rows API).
+  (e) **`/relationships` now has a Sources | Topics toggle.** New
+  `GET /api/relationships/topics-graph` (read-only; ships product tables BY
+  NAME with topic + join-surface columns — technical endpoint columns
+  included PAST the firewall, underscore names never; product_relationships;
+  grids with links) + `components/relationships/TopicsCanvas.tsx` — same
+  geometry/radialLayout imports as StarSchemaFlow, anchor + ring (≤12,
+  §2.4), sidebar grouped by topic + "Your tables", facts purple, lookups
+  ocean, GRIDS AMBER with dashed edges. Read-only on purpose: topic joins
+  are built artefacts, grid links are edited on the grid.
+  Validation: backend check clean, **38 files / 362 tests** (5 new: link
+  round-trip + unsafe-target 400, linkable-columns filtering, link-values
+  404, coverage target-missing/no-links, topics-graph incl. tenant
+  isolation), ratchets green, frontend tsc/lint/build green (`/grids/[id]`
+  8.22 kB, `/relationships` 2.82 kB).
 - **Deliberately NOT in v1** (owner-discussed): no formula engine (grids
   hold facts; Clarion computes — Excel-file upload stays the P1 connector
-  for formula workbooks), no reference/dropdown columns validated against
-  dims (the mapping killer feature — next slice), no viewer read UI, no
-  xlsx file import (paste covers it).
+  for formula workbooks), no viewer read UI. Next natural slices: surface a
+  covered mapping as an attribute of the dim itself; budget versioning;
+  an "everything else" fallback row.
 - Validation: backend `npm run check` clean; **full suite 38 files / 357
   passed** (17 new in `managed-grids.test.ts`: derivation totality incl.
   SQL-injection-shaped names, eu/en number + day-first date parsing,

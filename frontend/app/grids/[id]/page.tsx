@@ -28,7 +28,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ArrowLeft, Check, ChevronDown, FileUp, Loader2, Plus, Trash2, TriangleAlert, X,
+  ArrowLeft, Check, ChevronDown, FileUp, Link2, Loader2, Plus, Trash2, TriangleAlert, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
@@ -40,9 +40,11 @@ import { splitSheet, matchColumns, convertCell } from '../import';
 import {
   COLUMN_TYPE_LABEL,
   deriveColumnKey,
+  type ColumnCoverage,
   type GridColumn,
   type GridColumnType,
   type GridDetail,
+  type LinkableTable,
 } from '../types';
 
 type CellValue = string | boolean;
@@ -99,6 +101,11 @@ function GridEditor() {
   const [confirmDeleteTable, setConfirmDeleteTable] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [importDraft, setImportDraft] = useState<ImportDraft | null>(null);
+  // Linked-column machinery: the linkable targets (lazy), the value list per
+  // linked column (feeds the cell dropdowns), and the measured coverage.
+  const [linkable, setLinkable] = useState<LinkableTable[] | null>(null);
+  const [linkValues, setLinkValues] = useState<Record<string, string[]>>({});
+  const [coverage, setCoverage] = useState<ColumnCoverage[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sheetRef = useRef<HTMLDivElement | null>(null);
 
@@ -124,18 +131,44 @@ function GridEditor() {
     setDirty(false);
   }, []);
 
+  /**
+   * For every linked column of the SAVED grid: fetch the value list (feeds
+   * the cell dropdowns) and the coverage measurement ("42 of 57 mapped").
+   */
+  const refreshLinkData = useCallback(async (detail: { id: number; columns: GridColumn[] }) => {
+    const linked = detail.columns.filter((c) => c.link);
+    if (linked.length === 0) { setCoverage(null); return; }
+    for (const col of linked) {
+      try {
+        const res = await api.get('/grids/link-values', {
+          params: { table: col.link!.table, column: col.link!.column },
+        });
+        const values = (res.data?.data?.values ?? []) as string[];
+        setLinkValues((prev) => ({ ...prev, [col.key]: values }));
+      } catch { /* the dropdown simply stays empty */ }
+    }
+    try {
+      const res = await api.get(`/grids/${detail.id}/coverage`);
+      setCoverage((res.data?.data?.columns ?? []) as ColumnCoverage[]);
+    } catch { setCoverage(null); }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await api.get(`/grids/${gridId}`);
-        if (!cancelled) applyServer(res.data?.data as GridDetail);
+        if (!cancelled) {
+          const detail = res.data?.data as GridDetail;
+          applyServer(detail);
+          void refreshLinkData(detail);
+        }
       } catch {
         if (!cancelled) setLoadError('Could not load this table.');
       }
     })();
     return () => { cancelled = true; };
-  }, [gridId, applyServer]);
+  }, [gridId, applyServer, refreshLinkData]);
 
   // Warn before navigating away with unsaved edits.
   useEffect(() => {
@@ -144,6 +177,25 @@ function GridEditor() {
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [dirty]);
+
+  // The linkable targets load once a column popover opens (that's when the
+  // picker needs them).
+  useEffect(() => {
+    if (openColKey === null || linkable !== null) return;
+    (async () => {
+      try {
+        const res = await api.get('/grids/linkable-columns');
+        setLinkable((res.data?.data ?? []) as LinkableTable[]);
+      } catch { setLinkable([]); }
+    })();
+  }, [openColKey, linkable]);
+
+
+  /** Append the not-yet-mapped values as fresh rows, ready to fill in. */
+  function addMissing(colKey: string, missing: string[]) {
+    setRows((prev) => [...prev, ...missing.map((v) => makeRow({ [colKey]: v }))]);
+    setDirty(true);
+  }
 
   // ── Mutations on the draft ──
 
@@ -178,7 +230,7 @@ function GridEditor() {
     setDirty(true);
   }
 
-  function updateColumn(key: string, patch: Partial<Pick<GridColumn, 'name' | 'type'>>) {
+  function updateColumn(key: string, patch: Partial<Pick<GridColumn, 'name' | 'type' | 'link'>>) {
     setColumns((prev) => prev.map((c) => (c.key === key ? { ...c, ...patch } : c)));
     setDirty(true);
   }
@@ -336,6 +388,7 @@ function GridEditor() {
       // Keep the draft (it IS the saved state now); refresh server metadata.
       setGrid((prev) => (prev ? { ...prev, ...updated, rows: prev.rows } : prev));
       setDirty(false);
+      void refreshLinkData({ id: grid.id, columns });
       if (updated.materializeError) {
         toast.warn('Saved, but not usable in answers yet', { description: updated.materializeError });
       } else {
@@ -349,7 +402,7 @@ function GridEditor() {
     } finally {
       setSaving(false);
     }
-  }, [grid, saving, name, columns, rows, toast]);
+  }, [grid, saving, name, columns, rows, toast, refreshLinkData]);
 
   function discard() {
     if (!grid) return;
@@ -508,6 +561,47 @@ function GridEditor() {
             </div>
           </header>
 
+          {coverage && coverage.length > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {coverage.map((cov) => {
+                const col = columns.find((c) => c.key === cov.key);
+                if (!col) return null;
+                if (cov.status === 'target-missing') {
+                  return (
+                    <span key={cov.key} className="flex items-center gap-1.5 rounded-full bg-warn-soft px-3 py-1 text-[11.5px] text-ink-2">
+                      <TriangleAlert className="h-3 w-3 text-warn" strokeWidth={2} aria-hidden />
+                      {col.name}: the linked column is gone — pick it again in the column settings
+                    </span>
+                  );
+                }
+                if (cov.status !== 'ok') return null;
+                const total = cov.total ?? 0;
+                const matched = cov.matched ?? 0;
+                const missing = total - matched;
+                const complete = missing <= 0;
+                return (
+                  <span
+                    key={cov.key}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] ${complete ? 'bg-ok-soft text-ink-2' : 'bg-softer text-ink-2'}`}
+                  >
+                    <Link2 className={`h-3 w-3 ${complete ? 'text-ok' : 'text-ocean'}`} strokeWidth={2} aria-hidden />
+                    {col.name}: {matched.toLocaleString('en-GB')} of {total.toLocaleString('en-GB')} mapped
+                    {!complete && cov.missing && cov.missing.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => addMissing(cov.key, cov.missing!)}
+                        className="ml-1 text-ocean underline-offset-2 hover:underline"
+                        title={cov.missing.slice(0, 8).join(', ') + (cov.missing.length > 8 ? ', …' : '')}
+                      >
+                        add the {cov.missingTruncated ? 'first 25' : missing.toLocaleString('en-GB')} missing
+                      </button>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           {confirmDeleteTable && (
             <div className="mt-3 rounded-[10px] border border-line bg-warn-soft px-4 py-3">
               <p className="text-[13px] leading-[1.55] text-ink-2">
@@ -556,6 +650,7 @@ function GridEditor() {
                           className="flex w-full items-center gap-1.5 rounded px-2 py-2 text-left hover:bg-soft"
                           title="Column settings"
                         >
+                          {col.link && <Link2 className="h-3 w-3 shrink-0 text-ocean" strokeWidth={2} aria-hidden />}
                           <span className="truncate font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-muted">
                             {col.name}
                           </span>
@@ -567,6 +662,7 @@ function GridEditor() {
                         {openColKey === col.key && (
                           <ColumnPopover
                             col={col}
+                            linkable={linkable}
                             canDelete={columns.length > 1}
                             confirmingDelete={confirmDeleteCol}
                             onConfirmDelete={setConfirmDeleteCol}
@@ -613,6 +709,7 @@ function GridEditor() {
                               col={col}
                               rowIdx={absIdx}
                               value={row?.values[col.key]}
+                              listId={col.link && col.type === 'text' ? `grid-dl-${col.key}` : undefined}
                               onChange={(v) => setCellAt(absIdx, col.key, v)}
                             />
                           </td>
@@ -641,6 +738,11 @@ function GridEditor() {
                 </tbody>
               </table>
             </div>
+            {columns.filter((c) => c.link && c.type === 'text').map((c) => (
+              <datalist key={c.key} id={`grid-dl-${c.key}`}>
+                {(linkValues[c.key] ?? []).map((v) => <option key={v} value={v} />)}
+              </datalist>
+            ))}
           </div>
 
           <p className="mt-3 text-[12px] leading-[1.6] text-muted-2">
@@ -814,11 +916,12 @@ function GridEditor() {
 // ─── Cell ────────────────────────────────────────────────────────────────────
 
 function Cell({
-  col, rowIdx, value, onChange,
+  col, rowIdx, value, listId, onChange,
 }: {
   col: GridColumn;
   rowIdx: number;
   value: CellValue | undefined;
+  listId?: string;
   onChange: (v: CellValue) => void;
 }) {
   if (col.type === 'boolean') {
@@ -856,6 +959,7 @@ function Cell({
       value={typeof value === 'string' ? value : ''}
       onChange={(e) => onChange(e.target.value)}
       inputMode={col.type === 'number' ? 'decimal' : undefined}
+      list={listId}
       className={`${common} ${col.type === 'number' ? 'text-right font-mono text-[12.5px] tabular-nums' : 'text-[13px]'}`}
     />
   );
@@ -864,13 +968,14 @@ function Cell({
 // ─── Column settings popover ─────────────────────────────────────────────────
 
 function ColumnPopover({
-  col, canDelete, confirmingDelete, onConfirmDelete, onChange, onDelete, onClose,
+  col, linkable, canDelete, confirmingDelete, onConfirmDelete, onChange, onDelete, onClose,
 }: {
   col: GridColumn;
+  linkable: LinkableTable[] | null;
   canDelete: boolean;
   confirmingDelete: boolean;
   onConfirmDelete: (v: boolean) => void;
-  onChange: (patch: Partial<Pick<GridColumn, 'name' | 'type'>>) => void;
+  onChange: (patch: Partial<Pick<GridColumn, 'name' | 'type' | 'link'>>) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -907,6 +1012,39 @@ function ColumnPopover({
             </button>
           ))}
         </div>
+        {col.type === 'text' && (
+          <>
+            <p className="mt-2.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">Contains</p>
+            {linkable === null ? (
+              <p className="mt-1 text-[11.5px] font-normal normal-case tracking-normal text-muted-2">Loading your data…</p>
+            ) : (
+              <select
+                value={col.link ? `${col.link.table}::${col.link.column}` : ''}
+                onChange={(e) => {
+                  if (e.target.value === '') { onChange({ link: null }); return; }
+                  const [table, column] = e.target.value.split('::');
+                  onChange({ link: { table, column } });
+                }}
+                className="mt-1 w-full rounded-[8px] border border-line bg-bg px-2 py-1.5 text-[12px] font-normal normal-case tracking-normal text-ink focus:border-ocean focus:outline-none"
+              >
+                <option value="">Free text</option>
+                {linkable.map((t) => (
+                  <optgroup key={t.tableName} label={`${t.topic} · ${t.displayName ?? t.tableName}`}>
+                    {t.columns.map((c) => (
+                      <option key={c.name} value={`${t.tableName}::${c.name}`}>
+                        {c.displayName ?? c.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            )}
+            <p className="mt-1 text-[10.5px] font-normal normal-case tracking-normal leading-[1.5] text-muted-2">
+              Linking tells answers how this table connects, fills the cell dropdown, and measures
+              what&apos;s covered.
+            </p>
+          </>
+        )}
         {canDelete && (
           !confirmingDelete ? (
             <button

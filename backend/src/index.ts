@@ -240,7 +240,8 @@ app.use('/api/build',           buildRouter);
 app.use('/api/pulse',           pulseRouter);
 app.use('/api/briefs',          briefsRouter);
 app.use('/api/investigations',  investigationsRouter);
-app.use('/api/grids',           managedGridsRouter);
+// computeLimiter: link-values and coverage run DuckDB queries.
+app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
 

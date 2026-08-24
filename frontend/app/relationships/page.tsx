@@ -1,14 +1,22 @@
 'use client';
 
+import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import RequireRole from '@/components/RequireRole';
 
 /**
- * The relationship canvas.
+ * The relationship canvas — two layers behind one door.
  *
- * Loaded client-side only: ReactFlow measures the DOM to place edges, so there
- * is nothing useful to render on the server, and keeping it out of the initial
- * bundle stops a graph tool nobody has opened from costing every other page.
+ *   • Sources — the editing/measuring canvas over raw source tables
+ *     (draw, measure, confirm, flag).
+ *   • Topics  — the read-only canvas over built topics AND the user's own
+ *     tables (budgets, mappings), so "what's linked to what" is always
+ *     answerable after the build, grids included.
+ *
+ * Both are loaded client-side only: ReactFlow measures the DOM to place
+ * edges, so there is nothing useful to render on the server, and keeping
+ * them out of the initial bundle stops a graph tool nobody has opened from
+ * costing every other page.
  */
 const GraphCanvas = dynamic(() => import('@/components/relationships/GraphCanvas'), {
   ssr: false,
@@ -19,24 +27,49 @@ const GraphCanvas = dynamic(() => import('@/components/relationships/GraphCanvas
   ),
 });
 
+const TopicsCanvas = dynamic(() => import('@/components/relationships/TopicsCanvas'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center text-[13px] text-muted">
+      Loading…
+    </div>
+  ),
+});
+
+type Layer = 'sources' | 'topics';
+
 export default function RelationshipsPage() {
+  const [layer, setLayer] = useState<Layer>('sources');
+
   return (
     <RequireRole roles={['admin', 'analyst']}>
       <div className="flex h-full flex-col">
-        {/* One sentence. The header had three, describing gestures the screen
-            below already offers, on a page whose whole problem was that it was
-            busy — and a paragraph of instructions is read once and then costs
-            vertical space to the canvas on every visit afterwards. */}
-        <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-6 py-3">
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-6 py-3">
           <h1 className="font-serif text-[20px] leading-tight text-ink">
             How your data fits together
           </h1>
+          <div className="flex items-center rounded-[8px] border border-line bg-bg p-0.5">
+            {(['sources', 'topics'] as const).map((l) => (
+              <button
+                key={l}
+                type="button"
+                onClick={() => setLayer(l)}
+                className={`rounded-[6px] px-3 py-1 text-[12px] transition-colors ${
+                  layer === l ? 'bg-raised font-medium text-ink shadow-1' : 'text-muted hover:text-ink-3'
+                }`}
+              >
+                {l === 'sources' ? 'Sources' : 'Topics'}
+              </button>
+            ))}
+          </div>
           <p className="text-[12.5px] text-muted">
-            Pick a table to see what it connects to, and on which fields.
+            {layer === 'sources'
+              ? 'Pick a table to see what it connects to, and on which fields.'
+              : 'Your topics and your own tables (budgets, mappings) — and how they join.'}
           </p>
         </header>
         <div className="min-h-0 flex-1">
-          <GraphCanvas />
+          {layer === 'sources' ? <GraphCanvas /> : <TopicsCanvas />}
         </div>
       </div>
     </RequireRole>

@@ -54,16 +54,37 @@ export const GRID_MAX_CELL_CHARS = 2_000;
 export type GridColumnType = 'text' | 'number' | 'date' | 'boolean';
 export type GridKind = 'budget' | 'mapping' | 'list';
 
+/**
+ * A column's declared LINK to a product-layer column: "this column contains
+ * Customers (dim_customer.customer_name)". Stored by NAME and resolved at
+ * use time, so a topic rebuild that renames a table turns the link into a
+ * visible needs-relinking state instead of a silent break. The link is what
+ * buys pick-from-list entry, an explicit join hint for the AI, and the
+ * coverage measurement.
+ */
+export interface GridColumnLink {
+  table: string;
+  column: string;
+}
+
 export interface GridColumn {
   /** Warehouse identifier — `^[a-z][a-z0-9_]*$`, unique within the grid. */
   key: string;
   /** Display label the user sees and renames freely. */
   name: string;
   type: GridColumnType;
+  link?: GridColumnLink | null;
 }
 
 const COLUMN_KEY_RE = /^[a-z][a-z0-9_]*$/;
 const SLUG_RE = /^[a-z][a-z0-9_]*$/;
+// Product-layer identifiers a link may name. Same character set the catalog
+// enforces on product tables; anything outside it cannot be a real target.
+const LINK_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function isValidLinkIdent(s: string): boolean {
+  return LINK_IDENT_RE.test(s) && s.length <= 128;
+}
 
 const DUCKDB_TYPE: Record<GridColumnType, string> = {
   text: 'VARCHAR',
@@ -128,7 +149,12 @@ export function isValidGridSlug(slug: string): boolean {
  * Throws with a user-safe message on structural problems.
  */
 export function normalizeColumns(
-  input: ReadonlyArray<{ key?: string | null; name: string; type: string }>,
+  input: ReadonlyArray<{
+    key?: string | null;
+    name: string;
+    type: string;
+    link?: { table: string; column: string } | null;
+  }>,
 ): GridColumn[] {
   if (input.length === 0) throw new GridValidationError('A table needs at least one column.');
   if (input.length > GRID_MAX_COLUMNS) {
@@ -149,7 +175,14 @@ export function normalizeColumns(
     }
     if (key === '') key = deriveColumnKey(name, taken);
     taken.add(key);
-    out.push({ key, name, type });
+    let link: GridColumnLink | null = null;
+    if (col.link && typeof col.link.table === 'string' && typeof col.link.column === 'string') {
+      if (!isValidLinkIdent(col.link.table) || !isValidLinkIdent(col.link.column)) {
+        throw new GridValidationError(`Column "${name}" has an invalid link target.`);
+      }
+      link = { table: col.link.table, column: col.link.column };
+    }
+    out.push(link ? { key, name, type, link } : { key, name, type });
   }
   return out;
 }

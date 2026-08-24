@@ -611,4 +611,141 @@ router.get('/:id/values', requireAuth, requireRole('admin', 'analyst'),
   },
 );
 
+
+// ---------------------------------------------------------------------------
+// GET /api/relationships/topics-graph — the PRODUCT layer's relationship graph
+// ---------------------------------------------------------------------------
+//
+// The topics twin of /graph (owner, 2026-08-21: "I want a relation canvas for
+// my topics as well … so I can always see what's linked to what, including the
+// budgets or mappings"). Read-only: product relationships are built artefacts,
+// not something to edit here. Ships tables by NAME (product ids churn on
+// rebuild; names are what relationships and grid links reference), the
+// relationship rows, and the tenant's managed grids with their column LINKS —
+// the canvas derives grid edges from those links client-side.
+//
+// The is_technical firewall note: FK endpoint columns are exactly the join
+// surface this canvas exists to show, so endpoint columns are fetched PAST
+// the firewall (same decision as the topic page's `join_columns`), still
+// excluding underscore-prefixed names.
+router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const db = reqDb(req);
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) { res.status(404).json({ ok: false, error: 'Not found' }); return; }
+
+      // Every query filters tenant_id explicitly (the reqDb pool-race rule).
+      const tableRows = (await db('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+        .where('dp.tenant_id', tenantId)
+        .whereIn('dp.status', ['approved', 'success'])
+        .where('pt.transformation_status', 'success')
+        .select(
+          'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role',
+          'dp.name as topic', 'dp.kind as topic_kind',
+        )) as Array<{ id: number; table_name: string; display_name: string | null; table_role: string; topic: string; topic_kind: string | null }>;
+
+      const tableIds = tableRows.map((t) => t.id);
+      const idToName = new Map(tableRows.map((t) => [t.id, t.table_name]));
+
+      const relRows = tableIds.length
+        ? ((await db('product_relationships')
+            .whereIn('from_table_id', tableIds)
+            .whereIn('to_table_id', tableIds)
+            .select('id', 'from_table_id', 'from_column_name', 'to_table_id', 'to_column_name', 'relationship_type')) as Array<{
+              id: number; from_table_id: number; from_column_name: string;
+              to_table_id: number; to_column_name: string; relationship_type: string | null;
+            }>)
+        : [];
+
+      const colRows = tableIds.length
+        ? ((await db('product_columns')
+            .whereIn('product_table_id', tableIds)
+            .select('product_table_id', 'column_name', 'data_type', 'column_role', 'is_technical')) as Array<{
+              product_table_id: number; column_name: string; data_type: string | null;
+              column_role: string | null; is_technical: boolean | null;
+            }>)
+        : [];
+
+      const gridRows = (await db('managed_grids')
+        .where('tenant_id', tenantId)
+        .select('id', 'name', 'slug', 'kind', 'row_count', 'columns', 'warehouse_path')) as Array<{
+          id: number; name: string; slug: string; kind: string; row_count: number;
+          columns: Array<{ key: string; name: string; type: string; link?: { table: string; column: string } | null }>;
+          warehouse_path: string | null;
+        }>;
+
+      // Which technical columns still ship: relationship endpoints + grid link
+      // targets — the join surface. Underscore-prefixed names never ship.
+      const endpointByTable = new Map<number, Set<string>>();
+      const addEndpoint = (tid: number, col: string) => {
+        if (!endpointByTable.has(tid)) endpointByTable.set(tid, new Set());
+        endpointByTable.get(tid)!.add(col);
+      };
+      for (const r of relRows) {
+        addEndpoint(r.from_table_id, r.from_column_name);
+        addEndpoint(r.to_table_id, r.to_column_name);
+      }
+      const nameToId = new Map(tableRows.map((t) => [t.table_name, t.id]));
+      for (const g of gridRows) {
+        for (const c of Array.isArray(g.columns) ? g.columns : []) {
+          if (c.link) {
+            const tid = nameToId.get(c.link.table);
+            if (tid !== undefined) addEndpoint(tid, c.link.column);
+          }
+        }
+      }
+
+      const colsByTable = new Map<number, Array<{ name: string; dataType: string | null; role: string | null }>>();
+      const colCountByTable = new Map<number, number>();
+      for (const c of colRows) {
+        if (c.column_name.startsWith('_')) continue;
+        const isEndpoint = endpointByTable.get(c.product_table_id)?.has(c.column_name) ?? false;
+        if (c.is_technical === true && !isEndpoint) continue;
+        colCountByTable.set(c.product_table_id, (colCountByTable.get(c.product_table_id) ?? 0) + 1);
+        if (!colsByTable.has(c.product_table_id)) colsByTable.set(c.product_table_id, []);
+        colsByTable.get(c.product_table_id)!.push({
+          name: c.column_name,
+          dataType: c.data_type,
+          role: c.column_role,
+        });
+      }
+
+      res.json({
+        ok: true,
+        data: {
+          tables: tableRows.map((t) => ({
+            tableName: t.table_name,
+            displayName: t.display_name,
+            role: t.table_role,
+            topic: t.topic,
+            topicKind: t.topic_kind,
+            columns: colsByTable.get(t.id) ?? [],
+            columnCount: colCountByTable.get(t.id) ?? 0,
+          })),
+          relationships: relRows.map((r) => ({
+            id: r.id,
+            fromTable: idToName.get(r.from_table_id) ?? '',
+            fromColumn: r.from_column_name,
+            toTable: idToName.get(r.to_table_id) ?? '',
+            toColumn: r.to_column_name,
+            type: r.relationship_type ?? 'fact_to_dim',
+          })),
+          grids: gridRows.map((g) => ({
+            id: g.id,
+            name: g.name,
+            viewName: 'grid_' + g.slug,
+            kind: g.kind,
+            rowCount: g.row_count,
+            ready: g.warehouse_path !== null,
+            columns: Array.isArray(g.columns) ? g.columns : [],
+          })),
+        },
+      });
+    } catch (err) { next(err); }
+  },
+);
+
 export default router;

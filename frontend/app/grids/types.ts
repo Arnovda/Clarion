@@ -7,12 +7,43 @@
 export type GridColumnType = 'text' | 'number' | 'date' | 'boolean';
 export type GridKind = 'budget' | 'mapping' | 'list';
 
+/**
+ * "This column contains values of <topic table>.<column>" — the declaration
+ * that buys pick-from-list entry, an explicit join for answers, and the
+ * coverage measurement. Stored by name; a topic rebuild that renames the
+ * target shows as "needs relinking", never a silent break.
+ */
+export interface GridColumnLink {
+  table: string;
+  column: string;
+}
+
 export interface GridColumn {
   /** Stable identifier — becomes the column name in answers/dashboards. */
   key: string;
   /** Display label, renamed freely. */
   name: string;
   type: GridColumnType;
+  link?: GridColumnLink | null;
+}
+
+/** One linkable target from GET /grids/linkable-columns. */
+export interface LinkableTable {
+  topic: string;
+  tableName: string;
+  displayName: string | null;
+  columns: Array<{ name: string; displayName: string | null }>;
+}
+
+/** One linked column's coverage from GET /grids/:id/coverage. */
+export interface ColumnCoverage {
+  key: string;
+  target: GridColumnLink;
+  status: 'ok' | 'target-missing' | 'grid-not-ready';
+  total?: number;
+  matched?: number;
+  missing?: string[];
+  missingTruncated?: boolean;
 }
 
 export interface GridSummary {

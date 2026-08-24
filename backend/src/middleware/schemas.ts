@@ -660,6 +660,18 @@ const gridColumnInput = z.object({
   key: z.string().max(60).optional().nullable(),
   name: z.string().min(1).max(80),
   type: z.enum(['text', 'number', 'date', 'boolean']),
+  // "This column contains values of <product table>.<column>" — validated
+  // against strict identifier rules in the service, resolved at use time.
+  link: z.object({ table: z.string().max(128), column: z.string().max(128) })
+    .nullable().optional(),
+});
+
+/** ?table=&column= for the linked-column value list. */
+export const gridLinkValuesSchema = z.object({
+  query: z.object({
+    table: z.string().min(1).max(128),
+    column: z.string().min(1).max(128),
+  }).passthrough(),
 });
 
 export const createManagedGridSchema = z.object({
