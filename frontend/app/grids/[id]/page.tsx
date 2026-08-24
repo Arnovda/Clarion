@@ -1,15 +1,24 @@
 'use client';
 
 /**
- * /grids/[id] — the grid editor: an always-editable table with typed cells,
- * paste-from-Excel, column management, and a save bar.
+ * /grids/[id] — the grid editor: an Excel-like editing surface with typed
+ * cells, paste-from-Excel, file import with column mapping, column
+ * management, and a save bar.
+ *
+ * The Excel feel is deliberate (owner: "not adding row per row — scrollable,
+ * seeing all cells"): the sheet always shows a pad of empty rows below the
+ * data, typing in one materialises it, Enter walks down a column, Tab walks
+ * right, and a pasted block fills from the focused cell. There is no "add
+ * row" button — the empty cells ARE the affordance.
  *
  * Editing model: everything is a local draft (rows as strings/booleans,
- * columns, name, description). Save writes metadata + the FULL row set —
- * "the table exactly as you see it" — after which the backend materialises
- * the grid into the warehouse and it is queryable in answers/dashboards.
- * Numbers and dates are parsed server-side the way a spreadsheet writes
- * them (1.234,56 · 21/08/2026), so pasting from Excel just works.
+ * columns, name). Save writes metadata + the FULL row set — "the table
+ * exactly as you see it" — after which the backend materialises the grid
+ * into the warehouse and it is queryable in answers/dashboards. Numbers and
+ * dates are parsed server-side the way a spreadsheet writes them
+ * (1.234,56 · 21/08/2026). Excel import runs entirely client-side
+ * (lib/xlsxRead) and lands in the same draft → same save → same validation
+ * as typed-in rows; the server has no upload surface.
  *
  * Vocabulary rule applies (business words only), with one deliberate
  * exception: the table's name-in-answers (`grid_…`) is shown in the status
@@ -19,13 +28,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
-  ArrowLeft, Check, ChevronDown, Loader2, Plus, Trash2, TriangleAlert, X,
+  ArrowLeft, Check, ChevronDown, FileUp, Loader2, Plus, Trash2, TriangleAlert, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import RequireRole from '@/components/RequireRole';
 import { formatRelative } from '@/lib/dates';
 import { useWindowedRows } from '@/app/dashboards/utils/useWindowedRows';
+import { readXlsx, type XlsxWorkbook } from '@/lib/xlsxRead';
+import { splitSheet, matchColumns, convertCell } from '../import';
 import {
   COLUMN_TYPE_LABEL,
   deriveColumnKey,
@@ -42,6 +53,19 @@ interface EditRow {
 }
 
 const ROW_H = 37;
+/** Empty rows always visible below the data — the "sea of cells". */
+const PHANTOM_PAD = 30;
+const MAX_ROWS = 10_000;
+
+interface ImportDraft {
+  wb: XlsxWorkbook;
+  fileName: string;
+  sheetIdx: number;
+  hasHeader: boolean;
+  /** Per grid column: index into the sheet's columns, or null = skip. */
+  mapping: Array<number | null>;
+  mode: 'replace' | 'append';
+}
 
 export default function GridEditorPage() {
   return (
@@ -74,6 +98,9 @@ function GridEditor() {
   const [confirmDeleteCol, setConfirmDeleteCol] = useState(false);
   const [confirmDeleteTable, setConfirmDeleteTable] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [importDraft, setImportDraft] = useState<ImportDraft | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
 
   const makeRow = useCallback((values: Record<string, CellValue> = {}): EditRow => {
     return { localId: nextLocalId.current++, values };
@@ -120,15 +147,20 @@ function GridEditor() {
 
   // ── Mutations on the draft ──
 
-  function setCell(localId: number, key: string, value: CellValue) {
-    setRows((prev) => prev.map((r) => (r.localId === localId ? { ...r, values: { ...r.values, [key]: value } } : r)));
+  /**
+   * Set a cell by ABSOLUTE row index. Typing into a phantom row (an index at
+   * or past the end of the data) materialises it — that is how rows are
+   * added; there is no button.
+   */
+  const setCellAt = useCallback((absIdx: number, key: string, value: CellValue) => {
+    setRows((prev) => {
+      const next = [...prev];
+      while (next.length <= absIdx) next.push(makeRow());
+      next[absIdx] = { ...next[absIdx], values: { ...next[absIdx].values, [key]: value } };
+      return next;
+    });
     setDirty(true);
-  }
-
-  function addRow() {
-    setRows((prev) => [...prev, makeRow()]);
-    setDirty(true);
-  }
+  }, [makeRow]);
 
   function deleteRow(localId: number) {
     setRows((prev) => prev.filter((r) => r.localId !== localId));
@@ -156,6 +188,22 @@ function GridEditor() {
     setOpenColKey(null);
     setConfirmDeleteCol(false);
     setDirty(true);
+  }
+
+  // ── Keyboard: Enter walks down a column, Shift+Enter up ──
+  function onSheetKeyDown(e: React.KeyboardEvent) {
+    if (e.key !== 'Enter') return;
+    const target = e.target as HTMLElement;
+    const rowAttr = target.getAttribute('data-row');
+    const colAttr = target.getAttribute('data-col');
+    if (rowAttr === null || !colAttr) return;
+    e.preventDefault();
+    const nextRow = Number(rowAttr) + (e.shiftKey ? -1 : 1);
+    if (nextRow < 0) return;
+    const nextEl = sheetRef.current?.querySelector<HTMLElement>(
+      `[data-row="${nextRow}"][data-col="${colAttr}"]`,
+    );
+    nextEl?.focus();
   }
 
   // ── Paste from a spreadsheet ──
@@ -202,6 +250,63 @@ function GridEditor() {
     });
     setDirty(true);
     toast.info(`Pasted ${block.length} ${block.length === 1 ? 'row' : 'rows'}`);
+  }
+
+  // ── Excel import ──
+
+  async function onFilePicked(file: File) {
+    try {
+      const wb = await readXlsx(await file.arrayBuffer());
+      const sheetIdx = 0;
+      const { headers } = splitSheet(wb.sheets[sheetIdx], true);
+      setImportDraft({
+        wb,
+        fileName: file.name,
+        sheetIdx,
+        hasHeader: true,
+        mapping: matchColumns(headers, columns),
+        mode: 'replace',
+      });
+    } catch (err) {
+      toast.error('Could not read that file', {
+        description: err instanceof Error ? err.message : 'Is it an .xlsx workbook?',
+      });
+    }
+  }
+
+  function retargetImport(draft: ImportDraft, sheetIdx: number, hasHeader: boolean): ImportDraft {
+    const { headers } = splitSheet(draft.wb.sheets[sheetIdx], hasHeader);
+    return { ...draft, sheetIdx, hasHeader, mapping: matchColumns(headers, columns) };
+  }
+
+  function applyImport() {
+    if (!importDraft) return;
+    const { rows: fileRows } = splitSheet(importDraft.wb.sheets[importDraft.sheetIdx], importDraft.hasHeader);
+    const imported: EditRow[] = fileRows.map((fr) => {
+      const values: Record<string, CellValue> = {};
+      columns.forEach((col, i) => {
+        const srcIdx = importDraft.mapping[i];
+        if (srcIdx === null || srcIdx === undefined) return;
+        const converted = convertCell(fr[srcIdx] ?? null, col.type);
+        if (converted === null) return;
+        values[col.key] = col.type === 'boolean' ? converted === true : String(converted);
+      });
+      return makeRow(values);
+    }).filter((r) => Object.values(r.values).some((v) => v !== ''));
+
+    const base = importDraft.mode === 'append' ? rows : [];
+    if (base.length + imported.length > MAX_ROWS) {
+      toast.error(`That would be more than ${MAX_ROWS.toLocaleString('en-GB')} rows`, {
+        description: 'For data that size, add it as a source instead.',
+      });
+      return;
+    }
+    setRows([...base, ...imported]);
+    setDirty(true);
+    setImportDraft(null);
+    toast.success(`Imported ${imported.length.toLocaleString('en-GB')} rows`, {
+      description: 'Review the result, then Save to make it available in answers.',
+    });
   }
 
   // ── Save / discard ──
@@ -279,8 +384,10 @@ function GridEditor() {
     }
   }
 
-  // ── Windowed rendering for large grids ──
-  const windowed = useWindowedRows(rows, ROW_H, 150, 14);
+  // ── Windowed rendering over data + phantom pad ──
+  const totalRows = rows.length + PHANTOM_PAD;
+  const indexList = useMemo(() => Array.from({ length: totalRows }, (_, i) => i), [totalRows]);
+  const windowed = useWindowedRows(indexList, ROW_H, 150, 14);
 
   const status = useMemo(() => {
     if (!grid) return null;
@@ -314,6 +421,9 @@ function GridEditor() {
       </div>
     );
   }
+
+  const importSheet = importDraft ? importDraft.wb.sheets[importDraft.sheetIdx] : null;
+  const importSplit = importDraft && importSheet ? splitSheet(importSheet, importDraft.hasHeader) : null;
 
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden">
@@ -368,6 +478,24 @@ function GridEditor() {
               <span className="text-[12px] text-muted-2">
                 {rows.length.toLocaleString('en-GB')} {rows.length === 1 ? 'row' : 'rows'}
               </span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-1.5 rounded-[8px] border border-line px-3.5 py-1.5 text-[12.5px] text-ink-3 hover:border-ink-3"
+              >
+                <FileUp className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden /> Import Excel
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = '';
+                  if (f) void onFilePicked(f);
+                }}
+              />
               {!confirmDeleteTable ? (
                 <button
                   type="button"
@@ -407,12 +535,14 @@ function GridEditor() {
             </div>
           )}
 
-          {/* ── The grid ── */}
+          {/* ── The sheet ── */}
           <div className="mt-5 overflow-hidden rounded-[10px] border border-line bg-raised shadow-1">
             <div
-              className="max-h-[62vh] overflow-auto"
+              ref={sheetRef}
+              className="max-h-[68vh] overflow-auto"
               onScroll={windowed.onScroll}
               onPaste={onPaste}
+              onKeyDown={onSheetKeyDown}
             >
               <table className="w-full border-collapse text-[13px]">
                 <thead>
@@ -465,11 +595,16 @@ function GridEditor() {
                       <td colSpan={columns.length + 2} className="p-0" />
                     </tr>
                   )}
-                  {windowed.visible.map((row, i) => {
-                    const absIdx = windowed.startIndex + i;
+                  {windowed.visible.map((absIdx) => {
+                    const row = rows[absIdx] as EditRow | undefined;
+                    const isPhantom = !row;
                     return (
-                      <tr key={row.localId} className="group border-b border-line/60 last:border-b-0" style={{ height: ROW_H }}>
-                        <td className="px-2 py-0 text-right font-mono text-[10.5px] tabular-nums text-muted-2">
+                      <tr
+                        key={row ? row.localId : `p${absIdx}`}
+                        className="group border-b border-line/60 last:border-b-0"
+                        style={{ height: ROW_H }}
+                      >
+                        <td className={`px-2 py-0 text-right font-mono text-[10.5px] tabular-nums ${isPhantom ? 'text-line-strong' : 'text-muted-2'}`}>
                           {absIdx + 1}
                         </td>
                         {columns.map((col) => (
@@ -477,21 +612,23 @@ function GridEditor() {
                             <Cell
                               col={col}
                               rowIdx={absIdx}
-                              value={row.values[col.key]}
-                              onChange={(v) => setCell(row.localId, col.key, v)}
+                              value={row?.values[col.key]}
+                              onChange={(v) => setCellAt(absIdx, col.key, v)}
                             />
                           </td>
                         ))}
                         <td className="border-l border-line/40 px-2 py-0 text-center">
-                          <button
-                            type="button"
-                            onClick={() => deleteRow(row.localId)}
-                            className="rounded p-1 text-transparent transition-colors group-hover:text-muted-2 hover:!text-err"
-                            title="Delete row"
-                            aria-label={`Delete row ${absIdx + 1}`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
-                          </button>
+                          {!isPhantom && (
+                            <button
+                              type="button"
+                              onClick={() => deleteRow(row.localId)}
+                              className="rounded p-1 text-transparent transition-colors group-hover:text-muted-2 hover:!text-err"
+                              title="Delete row"
+                              aria-label={`Delete row ${absIdx + 1}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -504,22 +641,142 @@ function GridEditor() {
                 </tbody>
               </table>
             </div>
-            <button
-              type="button"
-              onClick={addRow}
-              className="flex w-full items-center gap-1.5 border-t border-line px-4 py-2.5 text-[12.5px] text-muted-2 hover:bg-softer hover:text-ink-3"
-            >
-              <Plus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden /> Add row
-            </button>
           </div>
 
           <p className="mt-3 text-[12px] leading-[1.6] text-muted-2">
-            Tip: copy a block of cells in Excel and paste it here — click the cell where the
-            top-left value should land first. Numbers like 1.234,56 and dates like 21/08/2026 are
-            understood.
+            Click any cell and type — Enter moves down, Tab moves right. Paste a block straight
+            from Excel (click where the top-left value should land first), or use Import Excel to
+            bring in a whole file. Numbers like 1.234,56 and dates like 21/08/2026 are understood.
           </p>
         </div>
       </div>
+
+      {/* ── Import modal ── */}
+      {importDraft && importSplit && (
+        <>
+          <div className="fixed inset-0 z-40 bg-ink/40 backdrop-blur-[2px]" onClick={() => setImportDraft(null)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-lg border border-line bg-raised shadow-2"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-6">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">Import Excel</p>
+                    <h2 className="font-display text-[22px] leading-tight tracking-[-0.01em] text-ink">
+                      {importDraft.fileName}
+                    </h2>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setImportDraft(null)}
+                    className="rounded p-1 text-muted-2 hover:text-ink-3"
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                </div>
+
+                {importDraft.wb.sheets.length > 1 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {importDraft.wb.sheets.map((s, i) => (
+                      <button
+                        key={s.name + i}
+                        type="button"
+                        onClick={() => setImportDraft(retargetImport(importDraft, i, importDraft.hasHeader))}
+                        className={`rounded-[8px] border px-3 py-1.5 text-[12.5px] transition-colors ${
+                          importDraft.sheetIdx === i
+                            ? 'border-ocean bg-ocean-softer text-ocean'
+                            : 'border-line text-ink-3 hover:border-ink-3'
+                        }`}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <label className="mt-4 flex items-center gap-2 text-[13px] text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={importDraft.hasHeader}
+                    onChange={(e) => setImportDraft(retargetImport(importDraft, importDraft.sheetIdx, e.target.checked))}
+                    className="h-3.5 w-3.5 rounded border-line accent-ocean"
+                  />
+                  The first row contains column names
+                </label>
+
+                <p className="mt-4 mb-2 font-mono text-[10px] uppercase tracking-[0.12em] text-muted">
+                  Which file column fills which table column?
+                </p>
+                <div className="grid gap-2">
+                  {columns.map((col, i) => (
+                    <div key={col.key} className="flex items-center gap-3">
+                      <span className="w-[38%] truncate text-[13px] text-ink">{col.name}
+                        <span className="ml-1.5 rounded-full bg-softer px-1.5 py-px font-mono text-[9px] text-muted-2">{COLUMN_TYPE_LABEL[col.type]}</span>
+                      </span>
+                      <span className="text-muted-2">←</span>
+                      <select
+                        value={importDraft.mapping[i] ?? ''}
+                        onChange={(e) => {
+                          const mapping = [...importDraft.mapping];
+                          mapping[i] = e.target.value === '' ? null : Number(e.target.value);
+                          setImportDraft({ ...importDraft, mapping });
+                        }}
+                        className="min-w-0 flex-1 rounded-[8px] border border-line bg-bg px-2.5 py-1.5 text-[13px] text-ink focus:border-ocean focus:outline-none"
+                      >
+                        <option value="">— leave empty —</option>
+                        {importSplit.headers.map((h, hi) => (
+                          <option key={hi} value={hi}>{h}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex items-center gap-4 text-[13px] text-ink-2">
+                  {(['replace', 'append'] as const).map((m) => (
+                    <label key={m} className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="import-mode"
+                        checked={importDraft.mode === m}
+                        onChange={() => setImportDraft({ ...importDraft, mode: m })}
+                        className="accent-ocean"
+                      />
+                      {m === 'replace' ? 'Replace the current rows' : 'Add below the current rows'}
+                    </label>
+                  ))}
+                </div>
+
+                <div className="mt-5 flex items-center justify-between">
+                  <span className="text-[12px] text-muted-2">
+                    {importSplit.rows.length.toLocaleString('en-GB')} rows in this sheet
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setImportDraft(null)}
+                      className="rounded-[8px] border border-line px-3.5 py-1.5 text-[12.5px] text-ink-3 hover:border-ink-3"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={applyImport}
+                      disabled={importDraft.mapping.every((m) => m === null)}
+                      className="rounded-[8px] bg-ocean px-4 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+                    >
+                      Import rows
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── Save bar ── */}
       {dirty && (

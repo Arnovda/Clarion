@@ -115,6 +115,39 @@ a second time:
   CommandPalette action. Vocabulary rule holds with one deliberate
   exception: the `grid_<slug>` name shows in the status line because it is
   the name Ask AI will use.
+- **v2 same day — the EXCEL-FEEL pass + XLSX UPLOAD (owner: "not adding row
+  per row, but scrollable, seeing all cells … upload their own excels to
+  map"). Frontend-only; the server has NO upload surface, by design.**
+  (a) The editor is a SHEET now: a PHANTOM_PAD of 30 empty rows always
+  renders below the data (windowed over indices, so the pad is free),
+  typing in one materialises it — the "Add row" button is GONE, the empty
+  cells are the affordance; Enter walks down a column, Shift+Enter up, Tab
+  right (nav via `data-row`/`data-col` querySelector inside the sheet ref).
+  (b) **`lib/xlsxRead.ts` — a dependency-free .xlsx reader** (~330 lines):
+  zip central-directory parse + `DecompressionStream('deflate-raw')`,
+  regex-scoped spreadsheetML (shared strings incl. runs, inline strings,
+  booleans, sparse cells via `r=` refs), and DATE handling done right —
+  styles.xml cellXfs → builtin (14-22,45-47,…) + custom formatCode date
+  detection, serials converted to ISO at read time, 1900 AND 1904 systems.
+  Deliberately NOT the npm `xlsx` package (unfixed high advisories → audit
+  gate) — same house call as the hand-rolled `xlsxBuilder`. No DOM APIs, so
+  it runs in Node ≥18: **verified by round-trip against `buildXlsx` output
+  plus a hand-built zip exercising date styles/runs/inline/sparse** (serial
+  46246 → 2026-08-12). Caps: 20k rows / 64 cols read.
+  (c) `app/grids/import.ts` (pure): `splitSheet` (header toggle),
+  `guessColumnType` (conservative — commits to number/date/boolean only on
+  unanimous non-empty values), `matchColumns` (normalized-name match, no
+  file column used twice), `convertCell` (incl. unstyled date serials when
+  the TARGET column is a date).
+  (d) Two flows: list page "Import Excel" / "From an Excel file" card →
+  sheet picker + first-row-is-names toggle + 5-row preview + name →
+  creates the grid (columns from headers, types guessed) and saves rows
+  through the SAME `/api/grids` calls a typed table uses; editor "Import
+  Excel" → per-column MAPPING selects (grid column ← file column,
+  auto-matched) + Replace/Append → lands in the local draft → user reviews
+  → Save. 10k row cap enforced client-side with the add-it-as-a-source
+  message. `/grids` 4.53 kB, `/grids/[id]` 7.09 kB, tsc + lint + build
+  green.
 - **Deliberately NOT in v1** (owner-discussed): no formula engine (grids
   hold facts; Clarion computes — Excel-file upload stays the P1 connector
   for formula workbooks), no reference/dropdown columns validated against
