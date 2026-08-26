@@ -31,7 +31,80 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-26 (dashboard experience assessment — doc only)
+**Last updated:** 2026-08-26 (dashboard Release 1 "Trust the loop" SHIPPED + the assessment doc)
+
+**DASHBOARD RELEASE 1 — "TRUST THE LOOP" IS BUILT (2026-08-26, same session
+as the assessment below; implements its §5 Release 1 plus the owner's AI-call
+policy).** Owner: *"what I don't want is AI calls every time I open a
+dashboard. Maybe once in the creation … the AI summary at the top I want
+triggerable."* Enforced in code, verified across every call site:
+- **AI-CALL POLICY: creation fires AI once (generation + validation + the one
+  automatic summary with real rows); OPENING A DASHBOARD MAKES ZERO AI
+  CALLS.** The insights strip is stored in `spec.insights {items,
+  generatedAt}` and rendered from the spec on open; it regenerates ONLY via
+  the explicit Summarize button / the strip's refresh icon
+  (`generateInsights`), which silently PATCHes the row on a saved owned
+  dashboard (a summary refresh must not flip the toolbar to unsaved). The
+  old auto-fire on every `!hasCachedData` execution is gone —
+  `pendingInsightsRef` (set only by createDashboard) gates the one
+  creation-time call. Explain/Fix/Story/refine were already button-only.
+- **THE SAVE-FORK BUG IS FIXED**: `saveDashboard` PATCHes in place when the
+  open dashboard is saved and owned (`PATCH /dashboards/:id` already accepted
+  spec); non-owners still POST their own copy. Pinned by a route test that
+  counts rows before/after.
+- **Context restore on open**: `openDashboard` restores the row's
+  `connection_id` (was: whatever connection happened to be selected — wrong
+  SQL target + wrong refine context) and `spec.productIds` (new spec field,
+  stamped server-side at generation; refine-spec prefers the spec's own stamp
+  over client state). The connections-list default uses a functional set so
+  it can't clobber a deep-link-restored connection.
+- **Refinement answers are honest now**: sent as `{question, answer}` PAIRS
+  (backend accepts legacy bare strings too), rendered into the prompt as
+  `- <question> → <answer>`; new `FilterSpec.defaultPreset`
+  (last_7/30/90_days, last_6/12_months, this_year, all_time) +
+  `defaultValue`, instructed in the prompt, declared in the JSON output
+  schema, and honoured by `buildDefaultFilters` — "Last 30 days" no longer
+  silently becomes the hard-coded 1-year default.
+- **Refine can't clobber the user's arrangement**: `layout` added to
+  `DASHBOARD_SPEC_JSON_SCHEMA` and both prompts' preserve clauses, AND
+  deterministically re-applied server-side by new pure
+  `services/dashboardSpecMerge.ts` (`preserveSpecCarryover` — runs after the
+  refine call AND after the repair call; also inherits productIds/dataLayer
+  and drops stale insights). View mode: the all-or-nothing
+  `allWidgetsHaveLayout` guard is replaced by `completeLayouts()` — one
+  AI-added layout-less widget now packs BELOW the arranged ones instead of
+  discarding the entire arrangement.
+- **The restore-net moved to `dashboardSpecMerge.restoreDroppedWidgets`**
+  (AIService imports it) and the remove-intent regex no longer matches bare
+  `\bweg\b` (Dutch words like "onderweg"/"wegens" were silently disabling
+  the net) — now `weghalen | haal … weg | verwijder | verberg | remove…`.
+- **Refine feedback**: refine-spec returns `changes {added, modified,
+  removed, filtersChanged}` (`diffSpecChanges`) and the chat replies
+  "Updated — changed **Revenue trend**; added **Orders by region**." instead
+  of a bare "Dashboard updated"; `widgetCacheRef` is cleared on refine so
+  widgets show skeletons instead of pre-refine rows behind a pulse dot, and
+  the stale summary disappears (Summarize regenerates on demand).
+- **Plumbing**: `/dashboards?id=N` deep link works now (Home + palette emit
+  it; read via `window.location` in a mount effect — no Suspense boundary);
+  generate failure returns to refining/choosing WITH the answers intact
+  (was: dumped to the empty hero); `beforeunload` guard while unsaved;
+  filter-option dropdowns load in parallel; dead
+  `selectedDomains`/`availableDomains` state deleted.
+- **Hygiene**: `/generate` + `/refine-spec` got Zod schemas
+  (`generateDashboardSchema`, `refineSpecSchema` — refine-spec was the one
+  dashboard AI route trusting `currentSpec` as arbitrary JSON) and both now
+  sit under `aiLimiter` (path-mounted before the router's `computeLimiter`).
+- Validation: backend `npm run check` clean; **full suite 39 files / 378
+  passed** (15 new: 10 in `dashboard-spec-merge.test.ts` incl. the Dutch
+  remove-intent cases, 5 route tests for validation 400s + PATCH-spec
+  in-place); all eight ratchets green (contract-sync included — both
+  contract copies updated together); frontend `tsc` + lint clean, `next
+  build` green (`/dashboards` 208 kB first-load, unchanged).
+- **NOT in this slice** (assessment §5 Releases 2–3): DSL
+  hero/sections/narrative/targets, conditional clarifying questions,
+  generated suggestion chips, per-widget AI edits, version history.
+
+**Prior last updated:** 2026-08-26 (dashboard experience assessment — doc only)
 
 **NEW DOC: `docs/backlog/dashboard-experience-assessment.md` (2026-08-26, doc
 only; no code changed).** Owner asked three questions about dashboard
