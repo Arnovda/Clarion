@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema } from '../middleware/schemas';
+import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
@@ -14,6 +14,7 @@ import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
 import { validateWidgetColumns } from '../shared/widgetContracts';
+import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
 import { startSSE } from '../services/sse';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
@@ -274,26 +275,32 @@ async function validateAndRepairSpec(
 // POST /api/dashboards/generate
 // ---------------------------------------------------------------------------
 
-router.post('/generate', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/generate', requireAuth, validate(generateDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, request, answers, productIds, dataLayer } = req.body as {
       connectionId: number;
       request: string;
-      answers?: string[];
+      /** {question, answer} pairs from the refinement step; legacy clients send bare strings. */
+      answers?: Array<string | { question: string; answer: string }>;
       productIds?: number[];
       dataLayer?: 'product' | 'source';
     };
 
-    if (!request?.trim()) {
-      res.status(400).json({ ok: false, error: 'request is required' });
-      return;
-    }
-
-    // Append any refinement answers to the request so the AI uses them
-    const nonEmptyAnswers = (answers ?? []).filter((a) => a?.trim());
-    const fullRequest = nonEmptyAnswers.length
-      ? `${request}\n\nAdditional requirements from the user:\n${nonEmptyAnswers.map((a) => `- ${a}`).join('\n')}`
+    // Append the refinement answers WITH their questions — an answer like
+    // "Last 30 days" carries no meaning as a bare bullet; the model needs to
+    // know what it was answering to honour it (e.g. as a filter defaultPreset).
+    const answerLines = (answers ?? [])
+      .map((a) => {
+        if (typeof a === 'string') return a.trim() ? `- ${a.trim()}` : null;
+        const q = a.question?.trim();
+        const ans = a.answer?.trim();
+        if (!ans) return null;
+        return q ? `- ${q} → ${ans}` : `- ${ans}`;
+      })
+      .filter((l): l is string => l !== null);
+    const fullRequest = answerLines.length
+      ? `${request}\n\nThe user answered these clarifying questions — honour every answer (time windows become the date filter's defaultPreset):\n${answerLines.join('\n')}`
       : request;
 
     // Default = product layer (cleaner Kimball star schema). Honour explicit
@@ -318,6 +325,12 @@ router.post('/generate', requireAuth, async (req: Request, res: Response, next: 
     );
 
     spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx);
+
+    // Stamp the generation context onto the spec so a saved dashboard restores
+    // the SAME context on open (refinements would otherwise fall back to every
+    // approved product on the wrong connection).
+    spec.dataLayer = dataLayer === 'source' ? 'source' : 'product';
+    if (productIds?.length) spec.productIds = productIds;
 
     res.json({ ok: true, data: { spec } });
   } catch (err) {
@@ -355,7 +368,7 @@ router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req:
 // POST /api/dashboards/refine-spec — update an existing spec based on user feedback
 // ---------------------------------------------------------------------------
 
-router.post('/refine-spec', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
@@ -366,28 +379,34 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
       dataLayer?: 'product' | 'source';
     };
 
-    if (!refinement?.trim()) {
-      res.status(400).json({ ok: false, error: 'refinement is required' });
-      return;
-    }
-    if (!currentSpec) {
-      res.status(400).json({ ok: false, error: 'currentSpec is required' });
-      return;
-    }
+    // Prefer the context stamped on the spec at generation time — a reopened
+    // dashboard's client state may not carry the original product scope.
+    const effectiveProductIds = productIds?.length ? productIds : currentSpec.productIds;
+    const effectiveLayer = dataLayer ?? currentSpec.dataLayer;
 
-    const productCtx = dataLayer === 'source'
+    const productCtx = effectiveLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds, db);
+      : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId);
+
+    // Strip app-managed noise from what the model sees: `insights` describe
+    // the pre-refine dashboard (stale after any change, and pure token cost),
+    // `validation` is a transient marker.
+    const { insights: _insights, validation: _validation, ...specForAI } = currentSpec;
     let spec = await refineDashboardSpec(
       refinement,
-      currentSpec,
+      specForAI as DashboardSpec,
       semanticCtx.semanticContext,
       semanticCtx.relationshipContext,
       productCtx?.kpiFormulas ?? '',
     );
+
+    // Deterministic carryover: user-arranged layout survives the full-spec
+    // regeneration even when the model failed to echo it; productIds/dataLayer
+    // are inherited; stale insights are dropped.
+    spec = preserveSpecCarryover(currentSpec, spec);
 
     // Validate only what the refinement actually changed — new widgets and
     // widgets whose SQL/type was rewritten. Untouched widgets were already
@@ -402,9 +421,18 @@ router.post('/refine-spec', requireAuth, async (req: Request, res: Response, nex
         })
         .map((w) => w.id),
     );
-    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, changedIds);
+    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, effectiveLayer, semanticCtx, changedIds);
+    // The repair call can also drop carryover fields — re-apply after it too.
+    spec = preserveSpecCarryover(currentSpec, spec);
+    // Stamp the context this refine actually ran against.
+    spec.dataLayer = effectiveLayer === 'source' ? 'source' : 'product';
+    if (effectiveProductIds?.length) spec.productIds = effectiveProductIds;
 
-    res.json({ ok: true, data: { spec } });
+    // Tell the client exactly what changed so it can say more than
+    // "Dashboard updated" — and clear its caches for just those widgets.
+    const changes = diffSpecChanges(currentSpec, spec);
+
+    res.json({ ok: true, data: { spec, changes } });
   } catch (err) {
     next(err);
   }

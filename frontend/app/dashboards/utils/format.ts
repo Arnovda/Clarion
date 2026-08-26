@@ -82,23 +82,38 @@ export function formatCompact(v: number): string {
 /**
  * Build an initial filter-value map from a dashboard's FilterSpec array.
  *
- * - date_range filters: {id}_from = 1 year ago, {id}_to = today
- * - select filters:     {id} = 'all'
+ * - date_range filters: honour the spec's `defaultPreset` when the AI set one
+ *   (it does so only when the user stated a time window — e.g. a refinement
+ *   answer of "Last 30 days" must NOT silently become a 1-year dashboard);
+ *   fall back to the app default of the last 12 months.
+ * - select filters: the spec's `defaultValue` when present, else 'all'.
  */
 export function buildDefaultFilters(
   filters: FilterSpec[],
 ): Record<string, string> {
   const values: Record<string, string> = {};
   const today = new Date();
-  const yearAgo = new Date(today);
-  yearAgo.setFullYear(today.getFullYear() - 1);
+
+  const presetFrom = (preset: NonNullable<FilterSpec['defaultPreset']>): Date => {
+    const d = new Date(today);
+    switch (preset) {
+      case 'last_7_days':    d.setDate(d.getDate() - 7); return d;
+      case 'last_30_days':   d.setDate(d.getDate() - 30); return d;
+      case 'last_90_days':   d.setDate(d.getDate() - 90); return d;
+      case 'last_6_months':  d.setMonth(d.getMonth() - 6); return d;
+      case 'last_12_months': d.setFullYear(d.getFullYear() - 1); return d;
+      case 'this_year':      return new Date(d.getFullYear(), 0, 1);
+      case 'all_time':       return new Date(1900, 0, 1);
+    }
+  };
 
   for (const f of filters) {
     if (f.type === 'date_range') {
-      values[`${f.id}_from`] = yearAgo.toISOString().slice(0, 10);
+      const from = presetFrom(f.defaultPreset ?? 'last_12_months');
+      values[`${f.id}_from`] = from.toISOString().slice(0, 10);
       values[`${f.id}_to`]   = today.toISOString().slice(0, 10);
     } else {
-      values[f.id] = 'all';
+      values[f.id] = f.defaultValue?.trim() || 'all';
     }
   }
 

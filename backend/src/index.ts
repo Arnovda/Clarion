@@ -213,6 +213,10 @@ app.use('/api/connections',  connectionsRouter);
 app.use('/api/semantic',     semanticRouter);
 app.use('/api/query',        aiLimiter, queryRouter);
 app.use('/api/reports',      reportsRouter);
+// The two heaviest AI routes on the dashboards surface (each is a 16k-output
+// Sonnet call, potentially twice) sit under the AI budget, not the compute
+// budget — the mount below still applies computeLimiter to everything else.
+app.use(['/api/dashboards/generate', '/api/dashboards/refine-spec'], aiLimiter);
 app.use('/api/dashboards',   computeLimiter, dashboardsRouter);
 app.use('/api/cross-views',  crossViewsRouter);
 app.use('/api/relationships', computeLimiter, relationshipsRouter);

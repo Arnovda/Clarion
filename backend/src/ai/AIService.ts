@@ -76,6 +76,7 @@ import {
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
 import { AI_OUTPUT_SCHEMAS, DASHBOARD_SPEC_JSON_SCHEMA } from './outputSchemas';
+import { restoreDroppedWidgets } from '../services/dashboardSpecMerge';
 import { BUILD_CHAT_SYSTEM, BuildChatResponse } from './prompts/buildChatPrompt';
 import {
   REFINE_PRODUCT_SYSTEM,
@@ -1474,34 +1475,20 @@ export async function refineDashboardSpec(
     refined.widgets.length,
   );
 
-  // Safety net: restore any widgets the model silently dropped.
-  // Match by ID first, then fall back to title similarity for cases where
-  // the model regenerates a widget with a new ID but same purpose.
-  const removeLike = /\b(remove|delete|drop|get rid of|hide|verwijder|weg)\b/i;
-  if (!removeLike.test(refinement)) {
-    const refinedIds = new Set(refined.widgets.map((w) => w.id));
-    const refinedTitles = new Set(refined.widgets.map((w) => w.title.toLowerCase().trim()));
-
-    const missing = currentSpec.widgets.filter((w) =>
-      !refinedIds.has(w.id) && !refinedTitles.has(w.title.toLowerCase().trim()),
+  // Safety net: restore any widgets the model silently dropped (unless the
+  // refinement expresses explicit remove-intent). Pure logic lives in
+  // services/dashboardSpecMerge.ts so it is unit-tested without an AI call.
+  const { widgets, restored } = restoreDroppedWidgets(currentSpec.widgets, refined.widgets, refinement);
+  if (restored.length > 0) {
+    logger.info(
+      {
+        missingIds: restored.map((w) => w.id),
+        missingTitles: restored.map((w) => w.title),
+      },
+      'refineDashboardSpec: restoring %d widget(s) the model dropped',
+      restored.length,
     );
-
-    if (missing.length > 0) {
-      logger.info(
-        {
-          missingIds: missing.map((w) => w.id),
-          missingTitles: missing.map((w) => w.title),
-          refinedIds: [...refinedIds],
-          refinedTitles: [...refinedTitles],
-        },
-        'refineDashboardSpec: restoring %d widget(s) the model dropped',
-        missing.length,
-      );
-      const originalOrder = new Map(currentSpec.widgets.map((w, i) => [w.id, i]));
-      const merged = [...refined.widgets, ...missing];
-      merged.sort((a, b) => (originalOrder.get(a.id) ?? 999) - (originalOrder.get(b.id) ?? 999));
-      refined.widgets = merged;
-    }
+    refined.widgets = widgets;
   }
 
   return refined;

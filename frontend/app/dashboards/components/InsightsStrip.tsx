@@ -1,14 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { Lightbulb, X } from 'lucide-react';
+import { Lightbulb, RefreshCw, X } from 'lucide-react';
 
 interface InsightsStripProps {
   insights: string[];
   onDismiss: () => void;
+  /** Re-run the AI summary on the CURRENT data — an explicit user action.
+   *  Opening a dashboard never calls the AI; this button is how the summary
+   *  updates after the data (or the dashboard) changed. */
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
-export function InsightsStrip({ insights, onDismiss }: InsightsStripProps) {
+export function InsightsStrip({ insights, onDismiss, onRefresh, refreshing }: InsightsStripProps) {
   const [expanded, setExpanded] = useState(true);
 
   if (!insights.length) return null;
@@ -23,6 +28,16 @@ export function InsightsStrip({ insights, onDismiss }: InsightsStripProps) {
           </span>
         </div>
         <div className="flex items-center gap-1">
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="p-1 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors disabled:opacity-50"
+              title="Update the summary from the current data"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+          )}
           <button
             onClick={() => setExpanded((v) => !v)}
             className="p-1 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors text-[11px] font-mono"

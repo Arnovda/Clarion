@@ -181,6 +181,14 @@ CRITICAL: Both filter types MUST include "table" and "column" — they are used 
 Never omit "table". Never omit "column". Never set them to null or undefined.
 Use exactly the real table name and column name from the schema context provided.
 
+Default values — honour what the user asked for:
+- date_range: when the user stated a time window (in the request or an answer like "Last 30 days"),
+  set "defaultPreset" to one of: last_7_days | last_30_days | last_90_days | last_6_months | last_12_months | this_year | all_time.
+  Example: { "id": "date_filter", "type": "date_range", "label": "Date Range", "table": "orders", "column": "order_date", "defaultPreset": "last_30_days" }
+  OMIT "defaultPreset" when the user did not specify a window (the app then defaults to the last 12 months).
+- select: when the user asked to focus on ONE specific value of the column (e.g. "only region West"),
+  set "defaultValue" to that exact value. Otherwise OMIT it (defaults to all values).
+
 ━━━ PERFORMANCE — USE ROLLUP TABLES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 If the schema context lists any tables whose names begin with rollup_monthly_,
@@ -411,7 +419,8 @@ Rules:
 - If the user asks to "focus on" a different metric, replace the most relevant existing widget
 - Always keep the total widget count between 4 and 9
 - Update the dashboard title only if the change meaningfully shifts the dashboard's purpose
-- CRITICAL: count the widgets in the input and count the widgets in your output. They must be equal unless the user asked to add or remove widgets.`;
+- CRITICAL: count the widgets in the input and count the widgets in your output. They must be equal unless the user asked to add or remove widgets.
+- CRITICAL: a widget may carry a "layout" field ({x,y,w,h}) — the user's own drag-arranged placement. Echo it back VERBATIM on every widget you keep. NEVER change, drop or invent "layout"; widgets you add get NO "layout" field (the app places them).`;
 
 export function buildRefineSpecUser(
   refinement: string,
@@ -524,8 +533,10 @@ Return the complete fixed DashboardSpec as JSON only — no prose, no markdown f
 
 8. MISSING REQUIRED COLUMNS (contractIssue present) → The widget renders EMPTY when its SQL doesn't return the exact column names the widget type requires. Rewrite the SELECT so columns are aliased to the required names stated in the contractIssue (e.g. "AS label", "AS value", "AS series", "AS row_label"). Keep the widget type and intent unchanged.
 
-PRESERVE: Keep all filter specs, widget order, colSpan, titles, and drillDownSql unless broken.
-Only change what is broken. Do not invent new widgets or remove working widgets.`;
+PRESERVE: Keep all filter specs (including defaultPreset/defaultValue), widget order, colSpan,
+"layout" ({x,y,w,h} — the user's own arrangement, echo it VERBATIM), featured, titles, and
+drillDownSql unless broken. Only change what is broken. Do not invent new widgets or remove
+working widgets.`;
 
 export function buildValidateUser(
   currentSpec: DashboardSpec,

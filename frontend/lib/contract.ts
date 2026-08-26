@@ -81,6 +81,25 @@ export interface FilterSpec {
   column: string;
   /** Optional label for the "all values" option of a select filter. */
   allLabel?: string;
+  /**
+   * Default time window for a date_range filter. Emitted by the AI ONLY when
+   * the user stated a window (e.g. a refinement answer of "Last 30 days");
+   * honoured by the frontend's buildDefaultFilters. Absent = the app default
+   * (last 12 months). Meaningless on select filters.
+   */
+  defaultPreset?:
+    | 'last_7_days'
+    | 'last_30_days'
+    | 'last_90_days'
+    | 'last_6_months'
+    | 'last_12_months'
+    | 'this_year'
+    | 'all_time';
+  /**
+   * Default selected value for a select filter — set ONLY when the user asked
+   * to focus on one specific value of the column. Absent = 'all'.
+   */
+  defaultValue?: string;
 }
 
 export interface WidgetSpec {
@@ -129,6 +148,23 @@ export interface DashboardSpec {
    * so subsequent re-executions hit the same connector. Default = 'product'.
    */
   dataLayer?: 'product' | 'source';
+  /**
+   * Product scope the spec was generated against. Persisted so that opening a
+   * saved dashboard restores the SAME semantic context for refinements —
+   * without it a refine falls back to every approved product on the
+   * connection, a wider (different) schema than generation saw.
+   */
+  productIds?: number[];
+  /**
+   * The AI summary strip ("things to notice"). Generated once when the
+   * dashboard is created and again ONLY on an explicit user trigger — never
+   * automatically on open, so viewing a saved dashboard costs zero AI calls.
+   * Cleared by a refinement (the items describe the pre-refine dashboard).
+   */
+  insights?: {
+    items: string[];
+    generatedAt: string;
+  };
   /**
    * Set ONLY when the post-generation validation pass could not run to
    * completion — the widgets were never executed, column-contract checked or

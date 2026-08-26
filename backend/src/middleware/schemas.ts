@@ -291,6 +291,40 @@ export const batchExecuteSchema = z.object({
   }).passthrough(),
 });
 
+// POST /dashboards/generate — the AI generation call. `answers` accepts both
+// the current {question, answer} pairs and the legacy bare-string form so an
+// older client (or a cached bundle) keeps working.
+export const generateDashboardSchema = z.object({
+  body: z.object({
+    connectionId: nullableId,
+    request: nonBlankString,
+    answers: z.array(
+      z.union([
+        z.string(),
+        z.object({ question: z.string(), answer: z.string() }).passthrough(),
+      ]),
+    ).optional(),
+    productIds: z.array(z.number().int()).optional(),
+    dataLayer: dataLayerEnum,
+  }).passthrough(),
+});
+
+// POST /dashboards/refine-spec — edits an existing spec. The handler still
+// owns the semantic checks; this guards the shape (was the one dashboard AI
+// route with no request validation).
+export const refineSpecSchema = z.object({
+  body: z.object({
+    connectionId: nullableId,
+    refinement: nonBlankString,
+    currentSpec: z.object({
+      widgets: z.array(z.object({ id: z.string() }).passthrough()).min(1),
+      filters: z.array(z.object({}).passthrough()),
+    }).passthrough(),
+    productIds: z.array(z.number().int()).optional(),
+    dataLayer: dataLayerEnum,
+  }).passthrough(),
+});
+
 // POST /dashboards/refine — clarifying-questions step before generation.
 // Passthrough: the frontend also sends `domains` which the handler ignores.
 export const refineDashboardSchema = z.object({

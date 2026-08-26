@@ -12,7 +12,7 @@ import { Copy, Star, X, Lightbulb, Zap, FileText, Settings, LayoutGrid, Check } 
 // selection state, so they can't use <SourceBadge> directly. Keeping the
 // grouping rule shared via the helpers preserves cross-page consistency.
 import { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
-import api, { apiGet, apiPost } from '@/lib/api';
+import api, { apiGet, apiPost, apiPatch } from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { streamSSE } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
@@ -105,6 +105,43 @@ function deriveRglLayout(widgets: WidgetSpec[]): RglLayout {
   }
   return items;
 }
+
+/**
+ * View-mode placement when AT LEAST ONE widget carries a stored layout.
+ * Widgets with a stored layout keep it verbatim; widgets without one (e.g.
+ * added by a refinement) are packed BELOW the arranged ones — so an AI-added
+ * widget can never discard or overlap the user's arrangement. (The previous
+ * all-or-nothing guard threw away the ENTIRE arrangement the moment a refine
+ * added a single layout-less widget.) Returns null when no widget has a
+ * layout — pure flow layout then applies.
+ */
+function completeLayouts(
+  widgets: WidgetSpec[],
+): Map<string, { x: number; y: number; w: number; h: number }> | null {
+  if (!widgets.some((w) => w.layout)) return null;
+  const map = new Map<string, { x: number; y: number; w: number; h: number }>();
+  let maxBottom = 0;
+  for (const w of widgets) {
+    if (w.layout) {
+      map.set(w.id, w.layout);
+      maxBottom = Math.max(maxBottom, w.layout.y + w.layout.h);
+    }
+  }
+  let x = 0;
+  let y = maxBottom;
+  let rowMaxH = 0;
+  for (const w of widgets) {
+    if (w.layout) continue;
+    const cols = widgetCol12(w);
+    const h = DEFAULT_ROWS[w.type] ?? 3;
+    if (x + cols > 12) { x = 0; y += rowMaxH; rowMaxH = 0; }
+    map.set(w.id, { x, y, w: cols, h });
+    x += cols;
+    rowMaxH = Math.max(rowMaxH, h);
+    if (x >= 12) { x = 0; y += rowMaxH; rowMaxH = 0; }
+  }
+  return map;
+}
 import { FilterBar } from './components/FilterBar';
 import { MarkdownAnswer } from './components/MarkdownAnswer';
 import { CreateInput } from './components/CreateInput';
@@ -158,8 +195,9 @@ export default function DashboardsPage() {
   // /query which has no dashboard context). Explicit toggle removes
   // the ambiguity.
   const [chatMode, setChatMode] = useState<'refine' | 'query'>('refine');
-  const [availableDomains,  setAvailableDomains]  = useState<string[]>([]);
-  const [selectedDomains,   setSelectedDomains]   = useState<string[]>([]);
+  // (Removed: availableDomains/selectedDomains — dead state. The setter was
+  // never called, nothing rendered the options, and the backend discarded the
+  // `domains` field they fed.)
   const [connectionId,      setConnectionId]      = useState<number>(1);
   const [fixingWidgets,     setFixingWidgets]     = useState<Set<string>>(new Set());
   const [editLayout,        setEditLayout]        = useState(false);
@@ -206,6 +244,15 @@ export default function DashboardsPage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const dashboardGridRef = useRef<HTMLDivElement>(null);
   const widgetCacheRef = useRef<Record<string, WidgetData>>({});
+  // AI-summary triggers — see the "AI summary" section below. The pending
+  // flag is set only by createDashboard (the one automatic generation); the
+  // function ref lets the memoized executeAllWidgets call the latest
+  // fireInsights without holding a stale closure.
+  const pendingInsightsRef = useRef(false);
+  const fireInsightsRef = useRef<(
+    spec: DashboardSpec,
+    results: Record<string, { rows?: Record<string, unknown>[]; error?: string }>,
+  ) => void>(() => {});
 
   // ── DuckDB-WASM "Fast mode" (Phase 5a, beta) ─────────────────────────────
   // Per-user opt-in. When on AND the cube fits the memory budget, every
@@ -354,20 +401,12 @@ export default function DashboardsPage() {
             }),
           );
 
-          // Insights fires once on first load, same as the server path.
-          if (!hasCachedData) {
-            const summaries = spec.widgets.map((w) => ({
-              title: w.title,
-              type: w.type,
-              rows: (finalResults[w.id]?.rows ?? []).slice(0, 5),
-            }));
-            setInsights(null);
-            setInsightsDismissed(false);
-            setInsightsLoading(true);
-            api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
-              .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
-              .catch(() => {})
-              .finally(() => setInsightsLoading(false));
+          // AI summary: ONLY when explicitly requested (dashboard creation
+          // sets the flag; the Summarize button calls generateInsights
+          // directly). Opening a dashboard costs zero AI calls.
+          if (pendingInsightsRef.current) {
+            pendingInsightsRef.current = false;
+            fireInsightsRef.current(spec, finalResults);
           }
           return;  // WASM path handled everything — skip server path
         }
@@ -445,21 +484,12 @@ export default function DashboardsPage() {
           },
         });
 
-        // Fire insights once on first load (not on filter/drill changes).
-        // Same behaviour as the old non-streaming path.
-        if (!hasCachedData) {
-          const summaries = spec.widgets.map((w) => ({
-            title: w.title,
-            type: w.type,
-            rows: (finalResults[w.id]?.rows ?? []).slice(0, 5),
-          }));
-          setInsights(null);
-          setInsightsDismissed(false);
-          setInsightsLoading(true);
-          api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: summaries })
-            .then((r) => { if (r.data.ok) setInsights(r.data.data.insights ?? []); })
-            .catch(() => {})
-            .finally(() => setInsightsLoading(false));
+        // AI summary: ONLY when explicitly requested — creation sets the
+        // flag once; every later regeneration is a user-triggered button
+        // (see generateInsights). Opening a dashboard costs zero AI calls.
+        if (pendingInsightsRef.current) {
+          pendingInsightsRef.current = false;
+          fireInsightsRef.current(spec, finalResults);
         }
       } catch (err: unknown) {
         if ((err as Error)?.name === 'AbortError') return; // unmounted mid-stream
@@ -475,20 +505,102 @@ export default function DashboardsPage() {
   // ── Load filter options ───────────────────────────────────────────────────
 
   async function loadFilterOptions(filters: FilterSpec[], connId: number, dataLayer?: 'product' | 'source') {
-    for (const f of filters) {
-      if (f.type === 'select' && f.table && f.column) {
-        try {
-          const res = await api.post('/dashboards/filter-options', {
-            connectionId: connId,
-            table: f.table,
-            column: f.column,
-            ...(dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
-          });
-          setFilterOptions((prev) => ({ ...prev, [f.id]: res.data.data.options }));
-        } catch {
-          // ignore
+    // In parallel — sequential awaits made the dropdowns populate one at a
+    // time after the dashboard was already on screen.
+    await Promise.all(
+      filters
+        .filter((f) => f.type === 'select' && f.table && f.column)
+        .map(async (f) => {
+          try {
+            const res = await api.post('/dashboards/filter-options', {
+              connectionId: connId,
+              table: f.table,
+              column: f.column,
+              ...(dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+            });
+            setFilterOptions((prev) => ({ ...prev, [f.id]: res.data.data.options }));
+          } catch {
+            // ignore
+          }
+        }),
+    );
+  }
+
+  // ── AI summary ("3 things to notice") — explicit triggers only ───────────
+  // Policy (owner decision, 2026-08-26): the summary is generated ONCE when a
+  // dashboard is created, and after that ONLY when the user presses the
+  // Summarize/refresh button. Opening a dashboard makes ZERO AI calls — it
+  // renders the summary stored in spec.insights. pendingInsightsRef is set by
+  // createDashboard so the post-generation widget execution fires the one
+  // creation-time summary with real rows.
+
+  function widgetSummaries(
+    spec: DashboardSpec,
+    results: Record<string, { rows?: Record<string, unknown>[]; error?: string }>,
+  ) {
+    return spec.widgets.map((w) => ({
+      title: w.title,
+      type: w.type,
+      rows: (results[w.id]?.rows ?? []).slice(0, 5),
+    }));
+  }
+
+  function fireInsights(
+    spec: DashboardSpec,
+    results: Record<string, { rows?: Record<string, unknown>[]; error?: string }>,
+  ) {
+    setInsights(null);
+    setInsightsDismissed(false);
+    setInsightsLoading(true);
+    api.post('/dashboards/insights', { dashboardTitle: spec.title, widgets: widgetSummaries(spec, results) })
+      .then((r) => {
+        if (!r.data.ok) return;
+        const items: string[] = r.data.data.insights ?? [];
+        setInsights(items);
+        // Stamp into the spec so the summary persists with the dashboard and
+        // reopening renders it without an AI call. Deliberately does NOT mark
+        // the dashboard unsaved — at creation it already is.
+        const stamp = { items, generatedAt: new Date().toISOString() };
+        setCurrentSpec((prev) => (prev ? { ...prev, insights: stamp } : prev));
+      })
+      .catch(() => {})
+      .finally(() => setInsightsLoading(false));
+  }
+  // Called from inside the memoized executeAllWidgets callback — routed
+  // through a ref so the callback never holds a stale closure of it.
+  fireInsightsRef.current = fireInsights;
+
+  /** The explicit user trigger — runs on the currently loaded widget data. */
+  async function generateInsights() {
+    if (!currentSpec || insightsLoading) return;
+    const results: Record<string, { rows?: Record<string, unknown>[] }> = {};
+    for (const [id, d] of Object.entries(widgetCacheRef.current)) results[id] = { rows: d.rows };
+    setInsightsDismissed(false);
+    setInsightsLoading(true);
+    try {
+      const r = await api.post('/dashboards/insights', {
+        dashboardTitle: currentSpec.title,
+        widgets: widgetSummaries(currentSpec, results),
+      });
+      if (r.data.ok) {
+        const items: string[] = r.data.data.insights ?? [];
+        setInsights(items);
+        const nextSpec: DashboardSpec = {
+          ...currentSpec,
+          insights: { items, generatedAt: new Date().toISOString() },
+        };
+        setCurrentSpec(nextSpec);
+        // On a saved dashboard the refreshed summary persists silently — a
+        // summary update must not flip the dashboard to "unsaved" and hide
+        // half the toolbar. Only the owner can PATCH.
+        if (activeId && !isUnsaved && dashboards.find((d) => d.id === activeId)?.is_owner) {
+          apiPatch(`/dashboards/${activeId}`, { spec: nextSpec }).catch(() => {});
         }
       }
+    } catch {
+      toast.error('Could not generate the summary — please try again');
+    } finally {
+      setInsightsLoading(false);
     }
   }
 
@@ -511,7 +623,6 @@ export default function DashboardsPage() {
       const res = await api.post('/dashboards/refine', {
         connectionId: connectionId,
         request: createInput.trim(),
-        ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
         ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
       });
@@ -526,7 +637,7 @@ export default function DashboardsPage() {
 
   // ── Step 2b / 3: generate the dashboard (optionally with answers) ─────────
 
-  async function createDashboard(answers?: string[]) {
+  async function createDashboard(answers?: Array<{ question: string; answer: string }>) {
     if (!createInput.trim() || createLoading) return;
     setCreateLoading(true);
     setCreateError('');
@@ -535,8 +646,9 @@ export default function DashboardsPage() {
       const res = await api.post('/dashboards/generate', {
         connectionId: connectionId,
         request: createInput.trim(),
-        answers: answers?.filter((a) => a.trim()),
-        ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
+        // {question, answer} pairs — the backend needs to know what each
+        // answer was answering ("Last 30 days" alone is meaningless).
+        answers,
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
         ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
       });
@@ -550,12 +662,19 @@ export default function DashboardsPage() {
       setChatMessages([]);
       setIsUnsaved(true);
       setMode('viewing');
+      // The one automatic AI summary: fires after the creation execution
+      // returns real rows. Never re-fires on open — only the button does.
+      setInsights(null);
+      setInsightsDismissed(false);
+      pendingInsightsRef.current = true;
       loadFilterOptions(spec.filters, connectionId, spec.dataLayer);
       executeAllWidgets(spec, defaults, null, connectionId);
       setCreateInput('');
     } catch {
       setCreateError('Failed to generate dashboard. Please try again.');
-      setMode('empty');
+      // Keep the user's work: drop back to the step they came from with the
+      // prompt and any refinement answers intact, instead of the empty hero.
+      setMode(refinementQuestions.length > 0 ? 'refining' : 'choosing');
     } finally {
       setCreateLoading(false);
     }
@@ -567,15 +686,27 @@ export default function DashboardsPage() {
     if (!currentSpec) return;
     setSaving(true);
     try {
-      const saved = await apiPost<{ id: number }>('/dashboards', {
-        connectionId: connectionId,
-        title: currentSpec.title,
-        description: currentSpec.description,
-        spec: currentSpec,
-      });
-      const savedId = saved?.id;
+      // An open SAVED dashboard updates in place — Save used to always POST a
+      // new row, so every refine/arrange/fix silently FORKED the dashboard
+      // (duplicate in the sidebar, original left stale). Only the owner can
+      // PATCH; a shared-editor's save still lands as their own copy.
+      const ownsActive = activeId != null && dashboards.find((d) => d.id === activeId)?.is_owner;
+      if (activeId != null && ownsActive) {
+        await apiPatch(`/dashboards/${activeId}`, {
+          title: currentSpec.title,
+          description: currentSpec.description,
+          spec: currentSpec,
+        });
+      } else {
+        const saved = await apiPost<{ id: number }>('/dashboards', {
+          connectionId: connectionId,
+          title: currentSpec.title,
+          description: currentSpec.description,
+          spec: currentSpec,
+        });
+        if (saved?.id) setActiveId(saved.id);
+      }
       setIsUnsaved(false);
-      if (savedId) setActiveId(savedId);
       await loadDashboards();
       toast.success('Dashboard saved');
     } catch (err) {
@@ -595,9 +726,16 @@ export default function DashboardsPage() {
 
   async function openDashboard(id: number) {
     try {
-      const row = await apiGet<{ spec: string | DashboardSpec }>(`/dashboards/${id}`);
+      const row = await apiGet<{ spec: string | DashboardSpec; connection_id?: number | null }>(`/dashboards/${id}`);
       const spec: DashboardSpec =
         typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec;
+      // Restore the dashboard's OWN context: its connection (the row carries
+      // it — using whatever connection happened to be selected executed SQL
+      // and built refine context against the wrong source) and its product
+      // scope (stamped on the spec at generation).
+      const connId = row.connection_id ?? connectionId;
+      if (row.connection_id) setConnectionId(row.connection_id);
+      setSelectedProductIds(spec.productIds ?? []);
       const defaults = buildDefaultFilters(spec.filters);
       // Clear client-side cache so new dashboard shows skeletons, not stale data
       widgetCacheRef.current = {};
@@ -609,10 +747,14 @@ export default function DashboardsPage() {
       setMode('viewing');
       setChatMessages([]);
       setSettingsOpen(false);
+      // Render the STORED summary — opening a dashboard makes no AI call.
+      setInsights(spec.insights?.items ?? null);
+      setInsightsLoading(false);
+      setInsightsDismissed(false);
       const saved = dashboards.find((d) => d.id === id);
       setAutoRefreshActive(!!(saved?.auto_refresh_seconds && saved.auto_refresh_seconds > 0));
-      loadFilterOptions(spec.filters, connectionId, spec.dataLayer);
-      executeAllWidgets(spec, defaults, null, connectionId);
+      loadFilterOptions(spec.filters, connId, spec.dataLayer);
+      executeAllWidgets(spec, defaults, null, connId);
     } catch {
       // ignore
     }
@@ -936,24 +1078,47 @@ export default function DashboardsPage() {
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
+        // Product scope: the spec's own stamp wins (a reopened dashboard's
+        // client state may not carry the original selection).
+        const scopeIds = currentSpec.productIds ?? (selectedProductIds.length > 0 ? selectedProductIds : undefined);
         const res = await api.post('/dashboards/refine-spec', {
           connectionId: connectionId,
           refinement: input,
           currentSpec,
-          ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
+          ...(scopeIds?.length ? { productIds: scopeIds } : {}),
           ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
         });
         const newSpec: DashboardSpec = res.data.data.spec;
+        const changes = res.data.data.changes as
+          | { added: string[]; modified: string[]; removed: string[]; filtersChanged: boolean }
+          | undefined;
         // Preserve the layer across refinements
-        newSpec.dataLayer = currentSpec.dataLayer ?? 'product';
+        newSpec.dataLayer = newSpec.dataLayer ?? currentSpec.dataLayer ?? 'product';
         const defaults = buildDefaultFilters(newSpec.filters);
+        // Drop the pre-refine rows — keeping the cache made widgets show the
+        // OLD data behind a subtle pulse after every refine.
+        widgetCacheRef.current = {};
         setCurrentSpec(newSpec);
         setFilterValues(defaults);
         setCrossFilter(null);
         setIsUnsaved(true);
+        // The stored summary described the pre-refine dashboard; the server
+        // cleared it. Regenerating is the user's call (Summarize button).
+        setInsights(newSpec.insights?.items ?? null);
         loadFilterOptions(newSpec.filters, connectionId, newSpec.dataLayer);
         executeAllWidgets(newSpec, defaults, null, connectionId);
-        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: `Dashboard updated -- "${newSpec.title}"`, type: 'refine' }]);
+        // Say WHAT changed, not just that something did.
+        const parts: string[] = [];
+        if (changes?.added.length) parts.push(`added ${changes.added.map((t) => `**${t}**`).join(', ')}`);
+        if (changes?.modified.length) parts.push(`changed ${changes.modified.map((t) => `**${t}**`).join(', ')}`);
+        if (changes?.removed.length) parts.push(`removed ${changes.removed.map((t) => `**${t}**`).join(', ')}`);
+        if (changes?.filtersChanged) parts.push('updated the filters');
+        const summary = parts.length
+          ? `Updated — ${parts.join('; ')}.`
+          : changes
+            ? 'No widgets changed — the request may already be satisfied, or it could not be applied.'
+            : `Dashboard updated — "${newSpec.title}"`;
+        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: summary, type: 'refine' }]);
       }
     } catch (err: unknown) {
       // Surface whatever detail the backend was willing to ship.
@@ -994,14 +1159,36 @@ export default function DashboardsPage() {
                 : [],
           }));
           setConnections(parsed);
-          setConnectionId(parsed[0].id);
-          api.get(`/semantic/domains?connectionId=${conns[0].id}`)
-            .then((dr) => setAvailableDomains(dr.data.data ?? []))
-            .catch(() => {});
+          // Default to the first connection — but never clobber a connection
+          // that openDashboard already restored from a saved row (the deep
+          // link below can win this race).
+          setConnectionId((prev) => (prev === 1 ? parsed[0].id : prev));
         }
       })
       .catch(() => {});
   }, [loadDashboards]);
+
+  // Deep link: /dashboards?id=N (emitted by Home's pinned dashboards and the
+  // command palette) opens that dashboard directly — it used to silently
+  // no-op onto the empty hero. Read from window.location to avoid a
+  // useSearchParams Suspense boundary.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('id');
+    if (id && /^\d+$/.test(id)) openDashboard(Number(id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Unsaved work (a refine, an arrangement, a fix) is only client state until
+  // Save — warn before a reload or nav-away silently discards it.
+  useEffect(() => {
+    if (!isUnsaved) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isUnsaved]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -1234,10 +1421,11 @@ export default function DashboardsPage() {
 
   // ── Render widget by type ─────────────────────────────────────────────────
 
-  // Explicit placement only applies when EVERY widget has a stored layout —
-  // a mixed spec (refine added a widget) falls back to flow layout so the
-  // new widget doesn't overlap arranged ones.
-  const allWidgetsHaveLayout = currentSpec ? currentSpec.widgets.every((w) => w.layout) : false;
+  // Explicit placement applies as soon as ANY widget has a stored layout —
+  // layout-less widgets (a refine just added one) are packed below the
+  // arranged ones by completeLayouts, so a mixed spec keeps the user's
+  // arrangement instead of silently discarding it.
+  const layoutPlacements = currentSpec ? completeLayouts(currentSpec.widgets) : null;
 
   function renderWidget(widget: WidgetSpec) {
     const data: WidgetData = widgetData[widget.id] ?? { rows: [], loading: true };
@@ -1295,7 +1483,7 @@ export default function DashboardsPage() {
       fixing: fixingWidgets.has(widget.id),
       // Layout: explicit CSS-grid placement when the user has arranged the
       // dashboard; height-fill inside the arrange grid.
-      gridPlacement: !editLayout && allWidgetsHaveLayout ? widget.layout : undefined,
+      gridPlacement: !editLayout && layoutPlacements ? layoutPlacements.get(widget.id) : undefined,
       fillHeight: editLayout,
     };
 
@@ -1715,7 +1903,11 @@ export default function DashboardsPage() {
 
                     <div className="flex gap-2 pt-2">
                       <button
-                        onClick={() => createDashboard(Object.values(refinementAnswers).filter(Boolean))}
+                        onClick={() => createDashboard(
+                          refinementQuestions
+                            .map((q, idx) => ({ question: q.question, answer: (refinementAnswers[idx] ?? '').trim() }))
+                            .filter((p) => p.answer),
+                        )}
                         disabled={createLoading}
                         className="flex-1 py-2.5 text-[13px] font-medium rounded-md text-white bg-ocean hover:bg-ocean-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
@@ -1736,6 +1928,7 @@ export default function DashboardsPage() {
                     >
                       ← Back
                     </button>
+                    {createError && <p className="text-[12px] text-err">{createError}</p>}
                   </div>
                 )}
               </motion.div>
@@ -2050,18 +2243,38 @@ export default function DashboardsPage() {
               <div className="flex-1 flex min-h-0 overflow-hidden">
                 {/* Grid area */}
                 <div className="flex-1 overflow-y-auto bg-bg min-w-0">
-                  {/* Insights strip */}
+                  {/* Insights strip — renders the STORED summary; the AI runs
+                      only at creation or when the user presses Summarize /
+                      the strip's refresh button. Never on open. */}
                   {!insightsDismissed && (insightsLoading || (insights && insights.length > 0)) && (
                     <div className="px-6 pt-6">
                       {insightsLoading ? (
                         <InsightsStripSkeleton />
                       ) : insights && insights.length > 0 ? (
-                        <InsightsStrip insights={insights} onDismiss={() => setInsightsDismissed(true)} />
+                        <InsightsStrip
+                          insights={insights}
+                          onDismiss={() => setInsightsDismissed(true)}
+                          onRefresh={generateInsights}
+                          refreshing={insightsLoading}
+                        />
                       ) : null}
                     </div>
                   )}
                   {/* Arrange toggle — drag/resize widgets; placements persist in the spec */}
                   <div className="px-6 pt-4 -mb-3 flex items-center justify-end gap-2">
+                    {/* Summarize — the explicit trigger for the AI summary when
+                        none is showing (dismissed, cleared by a refine, or an
+                        older dashboard saved before summaries persisted). */}
+                    {!insightsLoading && (insightsDismissed || !insights || insights.length === 0) && (
+                      <button
+                        onClick={() => { setInsightsDismissed(false); generateInsights(); }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-line text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ocean hover:border-ocean/40 transition-colors"
+                        title="Ask AI to summarize what stands out in this dashboard"
+                      >
+                        <Lightbulb className="w-3.5 h-3.5" strokeWidth={1.5} />
+                        Summarize
+                      </button>
+                    )}
                     {editLayout && (
                       <span className="text-[11px] text-muted">Drag to move · pull the corner to resize</span>
                     )}
@@ -2105,7 +2318,7 @@ export default function DashboardsPage() {
                         // With a user-arranged layout the grid uses explicit
                         // row placement — rows get a base height matching the
                         // arrange grid but stretch to fit content.
-                        gridAutoRows: allWidgetsHaveLayout ? `minmax(${RGL_ROW_HEIGHT}px, auto)` : 'min-content',
+                        gridAutoRows: layoutPlacements ? `minmax(${RGL_ROW_HEIGHT}px, auto)` : 'min-content',
                       }}
                       variants={containerVariants}
                       initial="hidden"

@@ -152,6 +152,13 @@ export const DASHBOARD_SPEC_JSON_SCHEMA: Record<string, unknown> = {
           table: { type: 'string' },
           column: { type: 'string' },
           allLabel: { type: 'string' },
+          defaultPreset: {
+            enum: [
+              'last_7_days', 'last_30_days', 'last_90_days', 'last_6_months',
+              'last_12_months', 'this_year', 'all_time',
+            ],
+          },
+          defaultValue: { type: 'string' },
         },
       },
     },
@@ -173,6 +180,21 @@ export const DASHBOARD_SPEC_JSON_SCHEMA: Record<string, unknown> = {
           colSpan: { enum: [1, 2, 3, 4] },
           featured: { type: 'boolean' },
           crossFilterKey: { type: 'string' },
+          // User-arranged placement — the refine prompt instructs the model to
+          // echo it verbatim; declaring it here keeps constrained decoding from
+          // ever mangling its shape. Deterministic preservation is layered on
+          // top in services/dashboardSpecMerge.ts.
+          layout: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['x', 'y', 'w', 'h'],
+            properties: {
+              x: { type: 'integer' },
+              y: { type: 'integer' },
+              w: { type: 'integer' },
+              h: { type: 'integer' },
+            },
+          },
         },
       },
     },
