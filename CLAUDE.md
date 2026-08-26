@@ -31,7 +31,44 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-24 (topics canvas drew ZERO relations in production — stub rows were starving it; fixed at both ends)
+**Last updated:** 2026-08-26 (dashboard experience assessment — doc only)
+
+**NEW DOC: `docs/backlog/dashboard-experience-assessment.md` (2026-08-26, doc
+only; no code changed).** Owner asked three questions about dashboard
+generation: is the creation flow optimal, are the dashboards too generic (up
+to "should the AI write HTML layouts?"), and does the change flow actually
+work. Method: three full code investigations (creation flow, refine flow,
+rendering layer — every claim carries file:line) crossed with external
+research (Databricks AI/BI, Power BI Copilot, Tableau Pulse, Omni, Hex,
+Luzmo, DashChat CHI 2026, VisEval/VisCoder2/DashArena). **Companion to
+`dashboard-architecture-plan.md`, which stays the plan of record for the
+rendering architecture; this doc covers the experience and found defects that
+doc predates.** Verdicts: (1) creation flow's SHAPE is right (prompt →
+optional questions → generate, matching industry) but the steering is
+theater — refinement answers are sent as anonymous bullets detached from
+their questions, nothing is schema-bound, and `buildDefaultFilters`
+hard-codes a 1-year window that silently overrides a "Last 30 days" answer;
+(2) the JSON-DSL architecture is right and AI-written HTML is measurably
+worse (do NOT switch) — genericness comes from a too-poor DSL vocabulary: the
+prompt hard-codes one skeleton ("4× kpi_card ALWAYS first"), `featured` is in
+the JSON schema but absent from the prompt so it is never emitted, and there
+is no hero/sections/narrative-widget/targets/semantic color; (3) the change
+flow's entry point is good (persistent chat bar, explicit Edit/Ask toggle)
+but the plumbing has the WORST bug found: **`saveDashboard` always POSTs —
+saving after a refine creates a DUPLICATE dashboard and the original is never
+updated** (`page.tsx:566-592`), plus reopened dashboards refine against the
+wrong connection (connection_id returned but ignored) and every product
+(productIds never persisted), refine can clobber Arrange layout (`layout`
+absent from prompts + output schema, all-or-nothing view-mode guard), no undo
+of any kind, stale widget cache + insights strip after refine. §4 is the
+consolidated 15-defect list; §5 sequences three releases (1: trust-the-loop
+bug fixes; 2: DSL vocabulary + hero-first recipe + Pulse-anatomy KPI card +
+streamed generation; 3: conditional questions + schema-bound answers +
+per-widget AI edits + version history + eval harness); §6 what NOT to do (no
+AI-HTML, no wizard, no patch protocol yet, no theming engine). Published as
+artifact "Dashboard Experience Assessment". No code changed.
+
+**Prior last updated:** 2026-08-24 (topics canvas drew ZERO relations in production — stub rows were starving it; fixed at both ends)
 
 **THE TOPICS CANVAS WAS EMPTY OF EDGES IN PRODUCTION — TWO-SIDED FIX
 (2026-08-24).** Owner screenshot: `/relationships` → Topics showed every
