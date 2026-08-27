@@ -16,15 +16,37 @@ import { describe, it, expect } from 'vitest';
 import { owns, ownedIds } from './tenantOwnership';
 
 /** Minimal Knex stand-in that records how it was queried. */
-function fakeDb(rows: Array<{ id: number }> = []) {
-  const calls: Array<{ table: string; where?: Record<string, unknown>; whereIn?: unknown[]; andWhere?: Record<string, unknown> }> = [];
+type Nested = { op: 'where' | 'orWhere'; col: string; val: unknown } | { op: 'whereIn' | 'orWhereIn'; col: string; ids: unknown[] };
+type CallRecord = {
+  table: string;
+  where?: Record<string, unknown>;
+  whereIn?: unknown[];
+  andWhere?: Record<string, unknown>;
+  /** Clauses recorded inside a grouped where/andWhere callback. */
+  nested?: Nested[];
+};
+function fakeDb(rows: Array<Record<string, unknown>> = []) {
+  const calls: CallRecord[] = [];
   const db = ((table: string) => {
-    const record: { table: string; where?: Record<string, unknown>; whereIn?: unknown[]; andWhere?: Record<string, unknown> } = { table };
+    const record: CallRecord = { table };
     calls.push(record);
+    const groupRecorder = () => {
+      const qb = {
+        where(col: string, val: unknown) { (record.nested ??= []).push({ op: 'where', col, val }); return qb; },
+        orWhere(col: string, val: unknown) { (record.nested ??= []).push({ op: 'orWhere', col, val }); return qb; },
+        whereIn(col: string, ids: unknown[]) { (record.nested ??= []).push({ op: 'whereIn', col, ids }); return qb; },
+        orWhereIn(col: string, ids: unknown[]) { (record.nested ??= []).push({ op: 'orWhereIn', col, ids }); return qb; },
+      };
+      return qb;
+    };
     const builder = {
       where(criteria: Record<string, unknown>) { record.where = criteria; return builder; },
       whereIn(_col: string, ids: unknown[]) { record.whereIn = ids; return builder; },
-      andWhere(criteria: Record<string, unknown>) { record.andWhere = criteria; return builder; },
+      andWhere(criteria: Record<string, unknown> | ((qb: unknown) => void)) {
+        if (typeof criteria === 'function') { criteria(groupRecorder()); return builder; }
+        record.andWhere = criteria;
+        return builder;
+      },
       first() { return Promise.resolve(rows[0]); },
       select() { return Promise.resolve(rows); },
     };
@@ -71,6 +93,37 @@ describe('owns', () => {
   });
 });
 
+describe('owns — graph-id-aliased tables (product_tables / product_columns)', () => {
+  // The graph mirror mints a separate id (`neo4j_pg_id`) for product entities,
+  // and every catalog/product-tree payload surfaces THAT id. The gate must
+  // accept both id spaces — checking only `id` made every product-table click
+  // 404 as "Table not found" (the 2026-08-27 catalog regression, latent since
+  // the gate shipped) — while keeping tenant_id in the predicate.
+  it('matches id OR neo4j_pg_id, still scoped by tenant_id', async () => {
+    const { db, calls } = fakeDb([{ id: 10 }]);
+    expect(await owns(db, 'product_tables', 900, 42)).toBe(true);
+    expect(calls[0].table).toBe('product_tables');
+    // Tenant is a top-level predicate — it applies whichever column matches.
+    expect(calls[0].where).toEqual({ tenant_id: 42 });
+    expect(calls[0].nested).toEqual([
+      { op: 'where', col: 'id', val: 900 },
+      { op: 'orWhere', col: 'neo4j_pg_id', val: 900 },
+    ]);
+  });
+
+  it('still refuses when no row matches either column for this tenant', async () => {
+    const { db } = fakeDb([]);
+    expect(await owns(db, 'product_columns', 900, 42)).toBe(false);
+  });
+
+  it('non-aliased tables keep the exact single-column predicate', async () => {
+    const { db, calls } = fakeDb([{ id: 7 }]);
+    await owns(db, 'source_tables', 7, 42);
+    expect(calls[0].where).toEqual({ id: 7, tenant_id: 42 });
+    expect(calls[0].nested).toBeUndefined();
+  });
+});
+
 describe('ownedIds', () => {
   it('returns only the ids the tenant owns', async () => {
     // The DB is the authority: it returns 1 and 3, so 2 was someone else's.
@@ -92,5 +145,24 @@ describe('ownedIds', () => {
     expect((await ownedIds(db, 'data_products', [], 42)).size).toBe(0);
     expect((await ownedIds(db, 'data_products', [1], undefined)).size).toBe(0);
     expect(calls).toHaveLength(0);
+  });
+
+  it('aliased tables: returns the INPUT ids that matched, whichever column matched', async () => {
+    // Row 10's graph id is 900. A caller holding the graph id must get 900
+    // back (that's the id it will test with), not the row's Postgres id.
+    const { db, calls } = fakeDb([{ id: 10, neo4j_pg_id: 900 }]);
+    const result = await ownedIds(db, 'product_tables', [900, 555], 42);
+    expect([...result]).toEqual([900]);
+    expect(calls[0].where).toEqual({ tenant_id: 42 });
+    expect(calls[0].nested).toEqual([
+      { op: 'whereIn', col: 'id', ids: [900, 555] },
+      { op: 'orWhereIn', col: 'neo4j_pg_id', ids: [900, 555] },
+    ]);
+  });
+
+  it('aliased tables: a caller holding the Postgres id also gets it back', async () => {
+    const { db } = fakeDb([{ id: 10, neo4j_pg_id: 900 }]);
+    const result = await ownedIds(db, 'product_tables', [10], 42);
+    expect([...result]).toEqual([10]);
   });
 });

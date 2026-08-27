@@ -31,7 +31,59 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-26 (dashboard Release 1 "Trust the loop" SHIPPED + the assessment doc)
+**Last updated:** 2026-08-27 (catalog product tables were 404ing since the 2026-07-28 gate — dual-id fix + filter provenance)
+
+**THE CATALOG'S PRODUCT TABLES WERE "TABLE NOT FOUND" SINCE 2026-07-28 —
+FOUND FROM THE OWNER'S FIRST CLICK, FIXED (2026-08-27).** Owner clicked
+Reference → Item in Data Catalog (Structure view) to verify a distrusted
+dashboard filter value and got "Table not found". Root cause is an ID
+VOCABULARY MISMATCH the tenant-isolation hardening never learned:
+`productGraphSync` mints a SEPARATE graph id per product table/column
+(`neo4j_pg_id`, from the shared semantic sequence so it can't collide with
+source-table graph ids) and the graph node's `pgId` — the id every
+catalog/product-tree payload surfaces — is that minted id, while
+`denyUnlessOwned('product_tables', id)` (added 2026-07-28 in front of
+`/semantic/product-columns`, PATCH product-tables/product-columns) checked it
+against `product_tables.id`. Never matches → 404 → the frontend loader's
+blanket catch → "Table not found" for EVERY product table, EVERY tenant —
+including the catalog's product-column semantic editing, which CLAUDE.md
+itself notes is the ONLY surface for that. This is EXACTLY the
+"ownership-refused / gate rejecting legitimate traffic" signature
+`.ops/prod-logs` watches for, flagged "unverified since 2026-07-28" — the
+logs will show `ownership check refused` for product_tables. `/product-tables/
+:id/sql` had already been patched for this individually (resolves
+neo4j_pg_id first) — the pattern existed, the gate never got it. Fixes, all
+deterministic (owner condition: no new AI calls — none of this calls AI):
+- **`tenantOwnership.ts`**: `GRAPH_ID_ALIAS` — for `product_tables`/
+  `product_columns`, `owns()`/`ownedIds()` match `id` OR `neo4j_pg_id`,
+  tenant_id stays a top-level predicate either way (no widening — whichever
+  column matches, the row must be the caller's tenant's). `ownedIds` returns
+  the INPUT ids that matched. 5 new tests (13 total in the file) incl. the
+  predicate-shape assertions.
+- **`semanticCacheScope.ts`**: product_tables/product_columns resolution
+  matches both id spaces, so catalog edits invalidate the right connection
+  instead of degrading to the global-wipe fallback.
+- **`/semantic/product-tree` now ships `pg_table_id`** per table (resolved
+  server-side via `neo4j_pg_id` → id; works for existing data, no graph
+  rewrite) — `ProductTableDetailPanel`'s `pg_table_id ?? tableId` fallback
+  finally gets the real Postgres id, so product-preview, SQL viewer and
+  lineage from the catalog work too. Both improve-description routes accept
+  either id space (grouped orWhere; RLS still scopes).
+- **Filter provenance "?" on the dashboard FilterBar** (the ideal-flow half:
+  the doubt is born on the filter, so the answer lives on the filter): a
+  popover per filter showing the humanized source table + field, the distinct
+  values already loaded for the dropdown, and — when only ONE value exists,
+  the owner's exact case ("Item group: Sales") — a pointer to check the field
+  in the Data Catalog or ask AI. ZERO AI calls, zero extra fetches: renders
+  the spec + already-loaded options.
+- Validation: backend check clean, **full suite 39 files / 383 passed** (5
+  new), all eight ratchets green, frontend tsc + lint + `next build` green.
+- **Residual known gap, deliberate**: PATCH /semantic/product-tables|columns
+  still write the GRAPH only (pre-existing dual-write gap, now merely
+  reachable again); catalog Browse-mode reference cards use Postgres ids and
+  never had the bug.
+
+**Prior last updated:** 2026-08-26 (dashboard Release 1 "Trust the loop" SHIPPED + the assessment doc)
 
 **DASHBOARD RELEASE 1 — "TRUST THE LOOP" IS BUILT (2026-08-26, same session
 as the assessment below; implements its §5 Release 1 plus the owner's AI-call

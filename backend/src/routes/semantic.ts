@@ -1735,6 +1735,20 @@ router.get('/product-tree', requireAuth, async (req: Request, res: Response, nex
       : [];
     const schemaMap = new Map(schemaRows.map((s: { id: number; data_product_id: number; name: string }) => [s.id, s]));
 
+    // The graph's table `id` is the MINTED neo4j_pg_id, not the Postgres
+    // product_tables.id — but the detail panel's preview/SQL/lineage calls
+    // need the Postgres id. Resolve it here (neo4j_pg_id → id) and ship it as
+    // `pg_table_id` on every table, so consumers never have to guess which id
+    // space they hold. Works for existing data — no graph rewrite needed.
+    const schemaIds = schemaRows.map((s: { id: number }) => s.id);
+    const pgRows = schemaIds.length
+      ? await db('product_tables').whereIn('star_schema_id', schemaIds).select('id', 'neo4j_pg_id')
+      : [];
+    const pgByGraphId = new Map<number, number>();
+    for (const r of pgRows as Array<{ id: number; neo4j_pg_id: number | null }>) {
+      if (r.neo4j_pg_id != null) pgByGraphId.set(Number(r.neo4j_pg_id), Number(r.id));
+    }
+
     const tree = products.map((p) => {
       const product = productMap.get(p.dataProductId);
       // Group tables by star_schema_id
@@ -1749,7 +1763,8 @@ router.get('/product-tree', requireAuth, async (req: Request, res: Response, nex
             tables: [],
           });
         }
-        schemaGroups.get(ssid)!.tables.push(table);
+        const pgTableId = pgByGraphId.get(Number(table.id)) ?? null;
+        schemaGroups.get(ssid)!.tables.push({ ...table, pg_table_id: pgTableId });
       }
 
       return {
@@ -1850,7 +1865,11 @@ router.post('/product-tables/:id/improve-description', requireAuth, requireRole(
     const instruction = readInstruction(req, res);
     if (instruction === null) return;
 
-    const table = await db('product_tables').where({ id }).first();
+    // The catalog panel holds the graph-minted id (neo4j_pg_id) — accept both
+    // id spaces. RLS on reqDb keeps this tenant-scoped either way.
+    const table = await db('product_tables')
+      .where((qb) => { qb.where('id', id).orWhere('neo4j_pg_id', id); })
+      .first();
     if (!table) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
 
     const proposal = await improveDescription({
@@ -1873,7 +1892,11 @@ router.post('/product-columns/:id/improve-description', requireAuth, requireRole
     const instruction = readInstruction(req, res);
     if (instruction === null) return;
 
-    const col = await db('product_columns').where({ id }).first();
+    // Same dual-id tolerance as product-tables above: the catalog panel sends
+    // the graph-minted id.
+    const col = await db('product_columns')
+      .where((qb) => { qb.where('id', id).orWhere('neo4j_pg_id', id); })
+      .first();
     if (!col) { res.status(404).json({ ok: false, error: 'Column not found' }); return; }
     const parent = col.product_table_id
       ? await db('product_tables').where({ id: col.product_table_id }).first()

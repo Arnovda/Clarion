@@ -55,6 +55,26 @@ export type OwnedTable =
 type Db = Knex | Knex.Transaction;
 
 /**
+ * Tables whose GRAPH entities are keyed by a MINTED id, not the Postgres id.
+ *
+ * `productGraphSync` allocates a separate `neo4j_pg_id` (from the shared
+ * semantic sequence, so it can't collide with source-table graph ids) and the
+ * graph node's `pgId` — the id every catalog/product-tree payload surfaces —
+ * is that minted id. Requests coming back from those surfaces therefore carry
+ * `neo4j_pg_id`, while requests from Postgres-fed surfaces carry `id`. The
+ * gate must accept BOTH or it refuses legitimate traffic: checking only `id`
+ * made every product-table click in the catalog 404 as "Table not found"
+ * (found 2026-08-27; latent since the gate shipped 2026-07-28 — this is
+ * exactly the "graph entity whose Postgres mirror row is missing" false
+ * refusal the log line below warns about). Tenant scoping is unchanged:
+ * whichever column matches, the row must still belong to the caller's tenant.
+ */
+const GRAPH_ID_ALIAS: Partial<Record<OwnedTable, string>> = {
+  product_tables: 'neo4j_pg_id',
+  product_columns: 'neo4j_pg_id',
+};
+
+/**
  * Does `id` in `table` belong to `tenantId`?
  *
  * Returns false for a missing tenant, a non-numeric id, or a row owned by
@@ -71,7 +91,13 @@ export async function owns(
     log.warn({ table, id, tenantId }, 'ownership check refused: missing tenant or malformed id');
     return false;
   }
-  const row = await db(table).where({ id: numericId, tenant_id: tenantId }).first('id');
+  const alias = GRAPH_ID_ALIAS[table];
+  const row = alias
+    ? await db(table)
+        .where({ tenant_id: tenantId })
+        .andWhere((qb) => { qb.where('id', numericId).orWhere(alias, numericId); })
+        .first('id')
+    : await db(table).where({ id: numericId, tenant_id: tenantId }).first('id');
   if (!row) {
     // Every refusal is logged, because this gate sits in front of ~30 endpoints
     // and a false refusal is indistinguishable from "not found" to the user. A
@@ -99,9 +125,29 @@ export async function ownedIds(
   if (!tenantId) return new Set();
   const numeric = [...new Set(ids.map(Number))].filter((n) => Number.isInteger(n) && n > 0);
   if (!numeric.length) return new Set();
+  const alias = GRAPH_ID_ALIAS[table];
+  if (!alias) {
+    const rows = await db(table)
+      .whereIn('id', numeric)
+      .andWhere({ tenant_id: tenantId })
+      .select('id');
+    return new Set(rows.map((r: { id: number }) => Number(r.id)));
+  }
+  // Graph-aliased tables: an input id may be either the Postgres id or the
+  // minted graph id (see GRAPH_ID_ALIAS). Return the INPUT ids that matched,
+  // whichever column they matched on, so callers can keep testing with the
+  // ids they hold.
   const rows = await db(table)
-    .whereIn('id', numeric)
-    .andWhere({ tenant_id: tenantId })
-    .select('id');
-  return new Set(rows.map((r: { id: number }) => Number(r.id)));
+    .where({ tenant_id: tenantId })
+    .andWhere((qb) => { qb.whereIn('id', numeric).orWhereIn(alias, numeric); })
+    .select('id', alias);
+  const inputSet = new Set(numeric);
+  const out = new Set<number>();
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const a = Number(r.id);
+    if (inputSet.has(a)) out.add(a);
+    const b = Number(r[alias]);
+    if (inputSet.has(b)) out.add(b);
+  }
+  return out;
 }

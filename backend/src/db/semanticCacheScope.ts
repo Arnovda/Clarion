@@ -87,11 +87,15 @@ function selectConnectionId(
         .where('table_relationships.id', id)
         .first('source_tables.connection_id as connection_id');
 
+    // Product entities: the id may be the Postgres id OR the minted graph id
+    // (`neo4j_pg_id`) — catalog/product-tree surfaces hand out the latter (see
+    // GRAPH_ID_ALIAS in db/tenantOwnership.ts). Matching both keeps the
+    // invalidation scoped instead of degrading to the global-wipe fallback.
     case 'product_tables':
       return db('product_tables')
         .join('star_schemas', 'star_schemas.id', 'product_tables.star_schema_id')
         .join('data_products', 'data_products.id', 'star_schemas.data_product_id')
-        .where('product_tables.id', id)
+        .where((qb) => { qb.where('product_tables.id', id).orWhere('product_tables.neo4j_pg_id', id); })
         .first('data_products.connection_id as connection_id');
 
     case 'product_columns':
@@ -99,7 +103,7 @@ function selectConnectionId(
         .join('product_tables', 'product_tables.id', 'product_columns.product_table_id')
         .join('star_schemas', 'star_schemas.id', 'product_tables.star_schema_id')
         .join('data_products', 'data_products.id', 'star_schemas.data_product_id')
-        .where('product_columns.id', id)
+        .where((qb) => { qb.where('product_columns.id', id).orWhere('product_columns.neo4j_pg_id', id); })
         .first('data_products.connection_id as connection_id');
   }
 }

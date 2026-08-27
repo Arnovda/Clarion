@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { HelpCircle } from 'lucide-react';
 import type { FilterSpec } from '../types';
 
 interface FilterBarProps {
@@ -90,6 +91,101 @@ function CommitOnBlurDateInput({
   );
 }
 
+/** "dim_item" → "Item", "fact_sales_invoice_lines" → "Sales Invoice Lines". */
+function humanizeTableName(t: string): string {
+  return t
+    .replace(/^(dim|fact|rollup_monthly)_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Per-filter provenance popover — answers "where do these options come from?"
+ * without leaving the dashboard. Entirely deterministic: it renders the
+ * filter spec's table/column and the option values ALREADY loaded for the
+ * dropdown. No AI call, no extra fetch. This is the trust affordance for the
+ * moment a user distrusts a filter value (e.g. an Item Group list with one
+ * suspicious entry): the answer is the source column and the full value list,
+ * two clicks from the doubt.
+ */
+function FilterProvenance({ filter, options }: { filter: FilterSpec; options: string[] }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  if (!filter.table || !filter.column) return null;
+  const shown = options.slice(0, 12);
+  const more = options.length - shown.length;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`p-0.5 rounded transition-colors ${open ? 'text-ocean' : 'text-muted-2 hover:text-ink-2'}`}
+        title="Where do these values come from?"
+        aria-expanded={open}
+      >
+        <HelpCircle className="w-3.5 h-3.5" strokeWidth={1.5} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-7 z-50 w-72 bg-raised border border-line rounded-lg shadow-2 p-4">
+          <p className="text-[10px] font-mono tracking-[0.1em] uppercase text-ocean mb-2">
+            Where these values come from
+          </p>
+          <p className="text-[12.5px] text-ink-2 leading-relaxed">
+            <span className="font-medium">{humanizeTableName(filter.table)}</span>
+            {' — field '}
+            <code className="text-[11px] font-mono bg-softer border border-line rounded px-1 py-0.5">
+              {filter.column}
+            </code>
+          </p>
+          {filter.type === 'select' ? (
+            <>
+              <p className="text-[11px] text-muted mt-2">
+                {options.length === 0
+                  ? 'No values loaded yet.'
+                  : `${options.length} distinct value${options.length === 1 ? '' : 's'} found in your data:`}
+              </p>
+              {shown.length > 0 && (
+                <ul className="mt-1.5 max-h-40 overflow-y-auto space-y-0.5">
+                  {shown.map((o) => (
+                    <li key={o} className="text-[12px] text-ink-2 truncate">· {o}</li>
+                  ))}
+                  {more > 0 && <li className="text-[11px] text-muted-2">+{more} more</li>}
+                </ul>
+              )}
+              {options.length === 1 && (
+                <p className="text-[11px] text-muted mt-2 leading-relaxed">
+                  Only one value exists — if you expected more, check this field on the{' '}
+                  {humanizeTableName(filter.table)} table in the Data Catalog, or ask AI about it.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-[11px] text-muted mt-2 leading-relaxed">
+              Every widget on this dashboard is filtered on this date field.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FilterBar({
   filters,
   filterValues,
@@ -123,6 +219,7 @@ export function FilterBar({
                 disabled={loading}
                 className={INPUT_CLASS}
               />
+              <FilterProvenance filter={f} options={[]} />
             </div>
           );
         }
@@ -147,6 +244,7 @@ export function FilterBar({
                 </option>
               ))}
             </select>
+            <FilterProvenance filter={f} options={opts} />
           </div>
         );
       })}
