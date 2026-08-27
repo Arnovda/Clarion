@@ -113,6 +113,17 @@ save, verify, pin, schedule, and the feedback loop closes into curation:**
   (c) `ThinkingBubble`'s 2-line reasoning clamp became a fixed-height
   (max-h-40) AUTO-SCROLLING pane showing the FULL live stream pinned to
   the tail — followable, scrollback available, layout still bounded.
+- **HOTFIX (same day): the Lint workflow was RED on main after the R3
+  push** — `sendScheduledQuestion` added 2 internal dynamic imports
+  (dynamic-import ratchet 92 vs baseline 90); the local run had masked
+  the ratchet's exit code behind a tail pipe (LESSON: capture `rc=$?`
+  per ratchet, and run them from the REPO ROOT). All three dynamic
+  imports in `reportEmailService` are static now — which exposed and
+  fixed a LATENT BUG: the dashboard-email product path passed the whole
+  product ROW to `getProductWarehousePath`, whose signature changed to
+  `connectionId` in the 2026-05-05 rebuild (hidden by the untyped
+  dynamic import; that path was silently broken). **Baseline lowered
+  90→89** per the covenant.
 - Validation: backend `npm run check` clean; **full suite 41 files / 400
   passed** (12 new in `saved-questions.test.ts`: normalization, unsafe-SQL
   400 + nothing stored, viewer-verified silently false, normalized-dup
