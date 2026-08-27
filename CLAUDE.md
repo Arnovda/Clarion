@@ -31,7 +31,103 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (Ask AI experience assessment — doc only; same day as data experience Release B)
+**Last updated:** 2026-08-27 (ASK AI RELEASES 1+2 SHIPPED — same day as the assessment below, which is their spec)
+
+**ASK AI RELEASE 1 "TELL THE TRUTH" + RELEASE 2 "THE ANSWER CARD" ARE BUILT
+(2026-08-27; implements the assessment's §6 R1+R2 with the owner's settled
+§8 decisions: hold-then-provisional during repair (~10s), analyst sees SQL
+per the role table, answers MIRROR the question's language).**
+- **CORRECTED ANSWERS PERSIST NOW (the assessment's #1 defect).** Migration
+  82 adds `conversation_messages.meta` (one JSONB bundle: assumptions,
+  subScores, uncertaintyNotes, clarify intent/options, visualization,
+  forecast, sources, answeredInMs, policyNotice, repairSummary — everything
+  `persistMessage` used to DROP); new
+  `PATCH /conversations/:id/messages/:messageId` (Zod, ownership via the
+  conversation's user_id, meta MERGES so a repair can't wipe the original's
+  assumptions, rows capped 200); **`/query/repair` persists its correction
+  SERVER-SIDE** (new `conversationId`+`messageServerId` body params,
+  `persisted` flag in `revised_answer`; client PATCHes as fallback) — reload
+  and export now show the corrected truth. Repair events are role-gated ON
+  THE WIRE (viewers get narrative + row counts; SQL/rows/raw-DB-errors only
+  to admin+analyst, errors as gated `detail` fields).
+- **Feedback gaps are reachable**: `/reports/gaps` LEFT-joins query_log
+  (thumbs-down gaps have NULL query_log_id and were structurally invisible);
+  gaps page leads with gap_description when question_text is null; 👎 now
+  collects an optional comment (column existed, no UI ever asked); feedback
+  works on blocked cards too.
+- **`applyDataPolicies` runs on ALL FIVE query paths** (was 1 of 5): POST /
+  both layers, /think both layers, /repair revised SQL, /cross-view,
+  /forecast — and `policyNotice` is finally rendered. Zod schemas on
+  /think, /repair, /cross-view, /forecast (validate-coverage ratchet
+  improved 166→160 unvalidated; **baseline LOWERED to 160**). Pre-flight
+  diagnostic SQL gained SAFE_IDENT guards + backslash-literal skip.
+- **Wire leaks closed**: `generateSqlStreaming`'s raw-JSON `text` deltas no
+  longer forwarded (full SQL streamed to every role and was discarded);
+  `sql_ready` emits only AFTER the safety gate and only to admin+analyst;
+  new `tables` event (names only) for every role feeds the timeline;
+  blocked payloads carry sql only for privileged + `adminNotified: true`
+  (notifyAdmins now fires on ALL blocked paths, was 1 of 4).
+- **Role model fixed**: `/query` uses `lib/role.ts` — `canSeeSql` =
+  admin+analyst gates SQL/confidence detail/error detail/source toggle
+  (analysts were treated as viewers); debug panel stays admin-only;
+  `InvestigationView` takes REQUIRED `canSeeSql` (it showed raw SQL to
+  every role — non-negotiable violation; both call sites updated).
+- **THE ANSWER CARD** (`MessageBubble.tsx` redesign): categorical trust
+  line for all roles — `✓ Checked against your data` / `✓ Checked &
+  corrected` / `△ Take with care` + answer-scoped **`Data as of …`**
+  (OLDEST source, coloured by ITS freshness) + `answered in Ns` — never a
+  numeric % for business users in either direction (refusal cards no longer
+  show confidence/sub-scores to viewers; they say "your admin has been
+  notified"). **"How I got this"** collapsed expander: humanized source
+  links to `/catalog?table=` (WidgetProvenance's pattern) with per-table
+  freshness, "What I checked" (repairSummary), and — analyst+ one level
+  deeper — confidence + sub-scores + layer + SQL + raw reasoning (the
+  brain-bubble that showed raw CoT to every role is GONE). Assumptions are
+  CLICKABLE CHIPS (click re-asks with that assumption flipped);
+  single-value answers render as a big KPI number (not a one-cell table);
+  the data table COLLAPSES behind "Show the N rows" when a chart is shown;
+  markdown-lite prose (`RichText`); deterministic follow-up chips; per-
+  message export filenames; confirm on delete/clear.
+- **THE PROGRESS TIMELINE** (`thinking.tsx` rewrite): named domain-language
+  steps (Understanding your question → Looking at <humanized tables> →
+  Running the numbers → Writing the answer) with a bounded 2-line live
+  reasoning tail — the 220ms/word reveal is gone; phase strings de-jargoned
+  server-side ("star schema" no longer reaches viewers; "Writing the
+  answer…"). **Repair = "Double-checking"**: new answers flagged by the
+  validator are HELD up to 10s (`RepairState.holdMsg`/`revealed`,
+  authoritative copy in a ref) — settle inside the hold and the answer
+  appears ONCE, already corrected; run long and it reveals marked "△ Being
+  double-checked"; the panel disappears once settled (the card's trust line
+  + What-I-checked are the receipt — a corrected answer costs one card, not
+  ~2,000px). Clarifications answered inline no longer wipe the trail.
+- **Dutch**: all four NL→SQL prompts + answer formatter + repair prompt
+  mirror the question's language (SQL/aliases stay English — the UI formats
+  by suffix); Dutch investigate patterns (`waarom`, `hoe komt het`…) and
+  forecast keywords (`voorspel`, `prognose`…); bare `project` keyword
+  REMOVED (matched "projects"); ONE locale (nl-BE) across KPI tiles, chart
+  axes, forecast tooltip. `formatAnswer` runs temperature 0 and is told the
+  TRUE row count. New `resolveAnswerSources()` in `routes/query.ts` (no AI,
+  explicit tenant filters) ships per-answer source freshness; the tenant-
+  wide banner now shows the OLDEST date coloured consistently.
+- Validation: backend `npm run check` clean; **full suite 40 files / 388
+  passed** (5 new in `conversations-meta.test.ts`: meta round-trip, PATCH
+  merge semantics + 200-row cap + foreign-user 404/empty 400, feedback gap
+  visible via LEFT join); all eight ratchets green; 83 migrations on a
+  fresh DB; frontend `tsc` + lint clean, `next build` green (`/query`
+  30.8 kB / 364 kB). SANDBOX NOTE: DuckDB builds natively TWICE here
+  (backend + packages/connectors, ~40-60 min each on shared CPU); the
+  connectors `dist` can be tsc-built before its native build finishes, and
+  the backend's built `duckdb.node` (same version) can be COPIED to
+  `packages/connectors/node_modules/duckdb/lib/binding/` to unblock the
+  suite.
+- **NOT in this slice** (assessment §6 R3 + deferred): pin-to-dashboard,
+  saved/Verified/scheduled questions, feedback→curation queue, "Since
+  yesterday" proactive empty state, investigate nav link, structured
+  `interpretation` field (assumption chips approximate it), server-side
+  intent classification, entity pre-flight on the product layer,
+  context-builder consolidation, chat on the SQL cache.
+
+**Prior last updated:** 2026-08-27 (Ask AI experience assessment — doc only; same day as data experience Release B)
 
 **NEW DOC: `docs/backlog/ask-ai-experience-assessment.md` (2026-08-27, doc
 only; no code changed).** Owner asked for a zoomed-out assessment of the Ask
