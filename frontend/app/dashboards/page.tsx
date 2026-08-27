@@ -670,8 +670,18 @@ export default function DashboardsPage() {
       loadFilterOptions(spec.filters, connectionId, spec.dataLayer);
       executeAllWidgets(spec, defaults, null, connectionId);
       setCreateInput('');
-    } catch {
-      setCreateError('Failed to generate dashboard. Please try again.');
+    } catch (err) {
+      // Surface whatever detail is available — the backend already gates real
+      // error text to admins (errorHandler.ts), and a client-side throw's
+      // message is the only trace of a render-path bug. A bare generic
+      // message made every failure undiagnosable.
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      const detail = e.response?.data?.error ?? e.message ?? '';
+      setCreateError(
+        detail && detail !== 'Something went wrong. Please try again.'
+          ? `Failed to generate dashboard — ${detail}`
+          : 'Failed to generate dashboard. Please try again.',
+      );
       // Keep the user's work: drop back to the step they came from with the
       // prompt and any refinement answers intact, instead of the empty hero.
       setMode(refinementQuestions.length > 0 ? 'refining' : 'choosing');

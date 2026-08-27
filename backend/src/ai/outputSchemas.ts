@@ -154,8 +154,8 @@ export const DASHBOARD_SPEC_JSON_SCHEMA: Record<string, unknown> = {
           allLabel: { type: 'string' },
           defaultPreset: {
             enum: [
-              'last_7_days', 'last_30_days', 'last_90_days', 'last_6_months',
-              'last_12_months', 'this_year', 'all_time',
+              'last_7_days', 'last_30_days', 'last_90_days', 'last_3_months',
+              'last_6_months', 'last_12_months', 'this_year', 'all_time',
             ],
           },
           defaultValue: { type: 'string' },

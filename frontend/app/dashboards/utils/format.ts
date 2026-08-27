@@ -94,26 +94,35 @@ export function buildDefaultFilters(
   const values: Record<string, string> = {};
   const today = new Date();
 
-  const presetFrom = (preset: NonNullable<FilterSpec['defaultPreset']>): Date => {
+  // TOLERANT by design: defaultPreset is MODEL OUTPUT. The enum is only
+  // enforced when structured outputs are on, so an off-list value like
+  // "last_3_months" or "last_year" must map to something sensible — and an
+  // unrecognisable one must fall back to the 12-month default, never crash
+  // the create/open path.
+  const presetFrom = (preset: string): Date => {
     const d = new Date(today);
-    switch (preset) {
-      case 'last_7_days':    d.setDate(d.getDate() - 7); return d;
-      case 'last_30_days':   d.setDate(d.getDate() - 30); return d;
-      case 'last_90_days':   d.setDate(d.getDate() - 90); return d;
-      case 'last_6_months':  d.setMonth(d.getMonth() - 6); return d;
-      case 'last_12_months': d.setFullYear(d.getFullYear() - 1); return d;
-      case 'this_year':      return new Date(d.getFullYear(), 0, 1);
-      case 'all_time':       return new Date(1900, 0, 1);
+    const p = preset.toLowerCase();
+    const monthsMatch = p.match(/(\d+)[_\s-]*month/);
+    const daysMatch = p.match(/(\d+)[_\s-]*day/);
+    if (p.includes('all')) return new Date(1900, 0, 1);
+    if (p.includes('this_year') || p.includes('year_to_date') || p === 'ytd') {
+      return new Date(d.getFullYear(), 0, 1);
     }
+    if (daysMatch) { d.setDate(d.getDate() - Number(daysMatch[1])); return d; }
+    if (monthsMatch) { d.setMonth(d.getMonth() - Number(monthsMatch[1])); return d; }
+    if (p.includes('week')) { d.setDate(d.getDate() - 7); return d; }
+    // Unknown (incl. "last_year") → the app default: last 12 months.
+    d.setFullYear(d.getFullYear() - 1);
+    return d;
   };
 
   for (const f of filters) {
     if (f.type === 'date_range') {
-      const from = presetFrom(f.defaultPreset ?? 'last_12_months');
+      const from = presetFrom(typeof f.defaultPreset === 'string' ? f.defaultPreset : 'last_12_months');
       values[`${f.id}_from`] = from.toISOString().slice(0, 10);
       values[`${f.id}_to`]   = today.toISOString().slice(0, 10);
     } else {
-      values[f.id] = f.defaultValue?.trim() || 'all';
+      values[f.id] = (typeof f.defaultValue === 'string' && f.defaultValue.trim()) || 'all';
     }
   }
 

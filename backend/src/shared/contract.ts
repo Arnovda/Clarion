@@ -91,10 +91,16 @@ export interface FilterSpec {
     | 'last_7_days'
     | 'last_30_days'
     | 'last_90_days'
+    | 'last_3_months'
     | 'last_6_months'
     | 'last_12_months'
     | 'this_year'
-    | 'all_time';
+    | 'all_time'
+    // Tolerated superset: this is MODEL OUTPUT, and the enum is only enforced
+    // when structured outputs are on. buildDefaultFilters parses any string
+    // tolerantly and falls back to the 12-month default — an off-list value
+    // must never crash the render path.
+    | (string & {});
   /**
    * Default selected value for a select filter — set ONLY when the user asked
    * to focus on one specific value of the column. Absent = 'all'.

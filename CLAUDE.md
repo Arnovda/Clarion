@@ -100,6 +100,18 @@ triggerable."* Enforced in code, verified across every call site:
   in-place); all eight ratchets green (contract-sync included — both
   contract copies updated together); frontend `tsc` + lint clean, `next
   build` green (`/dashboards` 208 kB first-load, unchanged).
+- **HOTFIX (2026-08-27, after the owner's first live generate failed):**
+  `defaultPreset` is MODEL OUTPUT and the enum is only enforced when
+  structured outputs are on — the model can emit e.g. `last_3_months` (the
+  refinement chips literally say "Last 3 months") and the frontend's
+  exhaustive switch returned `undefined` → `.toISOString()` threw → the
+  generic "Failed to generate dashboard". `presetFrom` is now a TOLERANT
+  string parser (regex on days/months/year/all, 12-month fallback — can
+  never crash), `last_3_months` was added to the enum on all three surfaces
+  (contract typed as a tolerated `string & {}` superset), and the create
+  path's catch now surfaces the real error detail instead of a blind
+  generic (backend already gates detail to admins). LESSON: any spec field
+  the model writes must be parsed tolerantly at every consumer.
 - **NOT in this slice** (assessment §5 Releases 2–3): DSL
   hero/sections/narrative/targets, conditional clarifying questions,
   generated suggestion chips, per-widget AI edits, version history.
