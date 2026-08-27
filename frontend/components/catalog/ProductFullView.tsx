@@ -250,7 +250,7 @@ export default function ProductFullView({ productId, onBack }: Props) {
             <TablesTab tables={allTables} productId={productId} palette={palette} isCurator={isCurator} />
           )}
           {tab === 'quality' && (
-            <QualityTab productId={productId} tables={allTables} palette={palette} />
+            <CatalogQualityTab tables={allTables} palette={palette} />
           )}
           {tab === 'lineage' && (
             <LineageTab data={data} palette={palette} />
@@ -470,10 +470,11 @@ function TableRow({
 // Quality tab — read-only summary of dataset_profiles
 // ───────────────────────────────────────────────────────────────────────────
 
-function QualityTab({
-  productId, tables, palette,
+// Named CatalogQualityTab to avoid confusion with app/products/QualityTab
+// (a different component with the same job on the workshop surface).
+function CatalogQualityTab({
+  tables, palette,
 }: {
-  productId: number;
   tables: ProductTable[];
   palette: SourcePalette;
 }) {

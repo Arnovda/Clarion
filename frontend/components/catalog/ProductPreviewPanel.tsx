@@ -10,10 +10,10 @@
  *   - Title, description, source tint, freshness
  *   - 3 starter questions (chips, deep-link to /query)
  *   - Top 5 metrics (name + description; no formula, no SQL)
- *   - At-a-glance counts (tables, dimensions, rows)
- *   - "See full details →" button → expands inline to ProductRootPanel
- *     with all the existing tabs intact (admin/analyst can still get to
- *     schema diagrams, SQL, history, etc.)
+ *   - At-a-glance counts (tables, metrics, rows, freshness)
+ *   - "Open full view →" button → the parent expands the panel to the
+ *     full-width ProductFullView (tables, quality, lineage — Release B's
+ *     one product page)
  *
  * The preview uses no AI tokens; starter questions are templated from
  * the product's KPI list. If a product has no KPIs we fall back to
@@ -23,11 +23,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Sparkles, BarChart3, Database, ChevronRight, X, Boxes } from 'lucide-react';
+import { ArrowRight, Sparkles, BarChart3, Database, X, Boxes } from 'lucide-react';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
-import ProductRootPanel from '@/components/products/ProductRootPanel';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 
 /**
@@ -96,31 +95,21 @@ interface Props {
    *  full width). Without it, the button falls back to inline expand
    *  inside the slide-over (useful in tests / standalone mounts). */
   onOpenFullView?: () => void;
-  onProductDeleted?: () => void;
   onClose?: () => void;
 }
 
-export default function ProductPreviewPanel({ productId, hint, onOpenFullView, onProductDeleted, onClose }: Props) {
+export default function ProductPreviewPanel({ productId, hint, onOpenFullView, onClose }: Props) {
   const router = useRouter();
   const [data, setData] = useState<ProductDetail | null>(null);
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [aiStarters, setAiStarters] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
-  // Inline showFull mode is now a fallback for when the parent doesn't
-  // provide an `onOpenFullView` callback — the catalog page DOES, so in
-  // practice this is always handled by parent expansion to full width.
-  const [showFull, setShowFull] = useState(false);
-
-  // Reset full-mode flag whenever the selected product changes — new
-  // selection always opens in preview, never carries over the previous
-  // product's expanded state.
-  useEffect(() => { setShowFull(false); }, [productId]);
 
   // Load product detail + KPIs + AI starters in parallel.
   //
   // - GET /products/:id   — heavier shape (star_schemas[].tables[]) but
-  //   it's the same payload ProductRootPanel will need when the user
-  //   clicks "See full details", so we warm the cache.
+  //   it's the same payload the full view needs when the user clicks
+  //   "Open full view", so we warm the cache.
   // - GET /products/:id/kpis — separate endpoint; the detail call
   //   doesn't include KPIs.
   // - GET /products/:id/starters — server-generated, AI-cached per
@@ -177,24 +166,12 @@ export default function ProductPreviewPanel({ productId, hint, onOpenFullView, o
     [data],
   );
 
-  // Stats — totals across all star schemas. Dimension count is the
-  // sum of columns whose role is descriptive (dimension / attribute /
-  // degenerate_dimension); we exclude technical roles like surrogate_key
-  // and natural_key from the user-facing count.
+  // Stats — totals across all star schemas.
   const stats = useMemo(() => {
     if (!data) return null;
-    let dimCount = 0;
-    for (const t of allTables) {
-      for (const c of t.columns ?? []) {
-        if (c.column_role === 'dimension' || c.column_role === 'attribute' || c.column_role === 'degenerate_dimension') {
-          dimCount++;
-        }
-      }
-    }
     const rowCount = allTables.reduce((s, t) => s + (Number(t.row_count) || 0), 0);
     return {
       tableCount: allTables.length,
-      dimensionCount: dimCount,
       rowCount,
       kpiCount: kpis.length,
     };
@@ -211,47 +188,6 @@ export default function ProductPreviewPanel({ productId, hint, onOpenFullView, o
     [aiStarters, data, allTables, kpis],
   );
   const topKpis = kpis.slice(0, 5);
-
-  // Full-detail mode: punt to the existing ProductRootPanel. Same
-  // selection, same component, same role-gated affordances. Adding a
-  // "back to summary" header so the user can return to the preview.
-  if (showFull) {
-    return (
-      <div className="flex flex-col h-full min-h-0">
-        <div className="flex items-center gap-2 px-5 py-2.5 bg-softer border-b border-line flex-shrink-0">
-          <button
-            type="button"
-            onClick={() => setShowFull(false)}
-            className="inline-flex items-center gap-1 px-2 py-1 text-[11.5px] font-medium text-muted hover:text-ink rounded hover:bg-soft transition-colors"
-            title="Back to summary"
-          >
-            <ChevronRight className="w-3.5 h-3.5 rotate-180" strokeWidth={2} />
-            Back to summary
-          </button>
-          <span className="text-[11px] font-mono text-muted-2 tracking-[0.08em] uppercase ml-auto">Full detail</span>
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
-              title="Close"
-            >
-              <X className="w-3.5 h-3.5" strokeWidth={2} />
-            </button>
-          )}
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <ProductRootPanel
-            key={`pr-${productId}`}
-            productId={productId}
-            onDeleted={onProductDeleted}
-            showBackButton={false}
-            embedAskAI={false}
-          />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
@@ -401,25 +337,26 @@ export default function ProductPreviewPanel({ productId, hint, onOpenFullView, o
           >
             {/* 2x2 grid (instead of 4 across) — at 480px panel width
                 4 columns squeeze the values into a hard-to-scan row. */}
+            {/* "Dimensions" (a column-role count) was dropped in Release B —
+                warehouse vocabulary, and the number answered no user
+                question. Freshness earns the fourth cell instead. */}
             <div className="grid grid-cols-2 gap-3">
               <Stat label="Tables" value={stats.tableCount} />
               <Stat label="Metrics" value={stats.kpiCount} />
-              <Stat label="Dimensions" value={stats.dimensionCount} />
               <Stat label="Rows" value={stats.rowCount} format="compact" />
+              <Stat label="Updated" value={refreshed} />
             </div>
           </Section>
         )}
 
         {/* ── Open full view ─────────────────────────────────────────────── */}
-        {/* Renamed from "See full details" because the action is bigger
-            than viewing detail — it expands the panel to full-width
-            (parent handles via onOpenFullView). The label "Open full
-            view" makes that intent obvious. Falls back to inline expand
-            if no callback (e.g. tests). */}
+        {/* The action is bigger than viewing detail — it expands the panel
+            to full width (parent handles via onOpenFullView) and renders
+            ProductFullView. */}
         <div className="mt-8 pt-6 border-t border-line">
           <button
             type="button"
-            onClick={() => onOpenFullView ? onOpenFullView() : setShowFull(true)}
+            onClick={() => onOpenFullView?.()}
             disabled={loading}
             className="group/full inline-flex items-center gap-2 text-[13px] font-medium text-ocean hover:text-ocean-hover transition-colors disabled:opacity-50"
           >
@@ -466,10 +403,12 @@ function Section({
   );
 }
 
-function Stat({ label, value, format }: { label: string; value: number; format?: 'compact' }) {
-  const display = format === 'compact'
-    ? compactNumber(value)
-    : value.toLocaleString();
+function Stat({ label, value, format }: { label: string; value: number | string; format?: 'compact' }) {
+  const display = typeof value === 'string'
+    ? value
+    : format === 'compact'
+      ? compactNumber(value)
+      : value.toLocaleString();
   return (
     <div className="px-3 py-2.5 bg-raised border border-line rounded-md">
       <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 mb-0.5">{label}</div>

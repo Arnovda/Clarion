@@ -223,6 +223,33 @@ Quality component. Net-negative diff; the risk is regression in curator
 editing, so it rides on the existing panel tests plus new ones for the
 merged panels.
 
+> **SHIPPED 2026-08-27** (same day as Release A), with three recorded
+> deviations from the letter of the plan:
+> 1. **The workshop's own Overview/Tables tabs were NOT trimmed** — only the
+>    catalog's EMBEDDING of the workshop components was removed. Trimming the
+>    workshop itself is Release C work (the cockpit merge decides what the
+>    workshop keeps), so doing it here would have pre-empted that decision.
+> 2. **No grain card on the merged table page** — the graph payload the panel
+>    reads carries no `business_grain`, and adding a field to the product-tree
+>    endpoint for a display nicety wasn't worth widening the slice. The
+>    description + "How it's built" copy already state the grain in prose
+>    where curated.
+> 3. **ProductPreviewPanel's "Dimensions" stat became "Updated"** — the
+>    column-role count was warehouse vocabulary answering no user question;
+>    freshness earns the cell.
+>
+> What shipped: ONE table page (`ProductTableDetailPanel`, dual-id lookup,
+> sample rows FIRST on Overview, compact inset mode + Full view expansion,
+> viewer read-only framing, curator editing intact, SQL last and
+> curator-only) serving Structure tree, Browse reference cards and
+> `?refTableId`/`?table=` deep links; ONE product page (`ProductFullView`)
+> serving Structure and Browse full view (`ProductRootPanel` no longer
+> mounts anywhere in the catalog); `ReferenceDetailPanel` DELETED;
+> `lib/humanize.ts` as the one raw-name → business-label rule (cards,
+> shared-data, filter provenance); hero stats speak
+> subjects/reference-tables; `ProductFullView`'s private QualityTab renamed
+> `CatalogQualityTab`.
+
 **Release C — "One cockpit" (owner decision first).** Manage mode ↔
 workshop unification per §3.
 

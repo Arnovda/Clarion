@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { HelpCircle } from 'lucide-react';
+import { humanizeTableName } from '@/lib/humanize';
 import type { FilterSpec } from '../types';
 
 interface FilterBarProps {
@@ -89,14 +90,6 @@ function CommitOnBlurDateInput({
       title={dirty ? 'Press Enter or click away to apply' : undefined}
     />
   );
-}
-
-/** "dim_item" → "Item", "fact_sales_invoice_lines" → "Sales Invoice Lines". */
-function humanizeTableName(t: string): string {
-  return t
-    .replace(/^(dim|fact|rollup_monthly)_/, '')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**

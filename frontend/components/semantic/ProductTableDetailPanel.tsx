@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import { format as formatSql } from 'sql-formatter';
-import { Gauge, X, Sparkles } from 'lucide-react';
+import { Gauge, X, Sparkles, Maximize2 } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem } from './types';
@@ -22,6 +22,8 @@ const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), 
 type ViewTab = 'overview' | 'columns' | 'lineage' | 'quality' | 'history';
 
 interface Props {
+  /** Graph id OR Postgres product_tables id — the panel resolves both
+   *  (Browse reference cards hold PG ids, the Structure tree graph ids). */
   tableId: number;
   productTree: ProductTreeItem[];
   columns: ProductColumn[];
@@ -31,6 +33,14 @@ interface Props {
    *  views can close the right inset; left unset when the panel is the
    *  whole pane (Structure mode), where there's nothing to close to. */
   onClose?: () => void;
+  /** True in the 480px catalog inset — hides the wide tabs (Lineage /
+   *  Quality / History) and shows a "Full view" button instead. This is
+   *  what lets ONE panel serve both the Browse card inset and the
+   *  full-pane Structure/full-view doors (the old ReferenceDetailPanel
+   *  is merged into this component — data-experience Release B). */
+  compact?: boolean;
+  /** Wired with `compact` — expands the inset to the full-screen view. */
+  onOpenFullView?: () => void;
 }
 
 const roleColor = (role: string | null): string => {
@@ -80,23 +90,30 @@ const columnCompleteness = (col: ProductColumn) =>
 
 export default function ProductTableDetailPanel({
   tableId, productTree, columns, focusColumnId, onSaved, onClose,
+  compact = false, onOpenFullView,
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
-  // Find the table in the product tree
+  // Find the table in the product tree. The incoming id may be the GRAPH id
+  // (Structure tree) or the Postgres id (Browse reference cards, ?refTableId
+  // deep links) — the tree rows carry both since 2026-08-27, so match either.
   let table: ProductTable | null = null;
   let pgTableId: number | null = null;
   let productConnectionId: number | null = null;
   let parentProductId: number | null = null;
+  let parentProductName: string | null = null;
   const usedByProducts: string[] = [];
   for (const product of productTree) {
     for (const schema of product.starSchemas) {
-      const found = schema.tables.find((t) => t.id === tableId);
+      const found = schema.tables.find(
+        (t) => t.id === tableId || (t as { pg_table_id?: number | null }).pg_table_id === tableId,
+      );
       if (found) {
         table = found;
         pgTableId = (found as { pg_table_id?: number }).pg_table_id ?? tableId;
         productConnectionId = product.connectionId;
         parentProductId = product.productId;
+        parentProductName = product.productName;
         break;
       }
     }
@@ -201,16 +218,20 @@ export default function ProductTableDetailPanel({
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
 
-  // History is curator-only — viewers don't need the audit log.
+  // History is curator-only — viewers don't need the audit log. In compact
+  // (480px inset) mode only Overview + Columns fit; the wide tabs live
+  // behind "Full view".
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
     // Lineage is a curator surface (transformation expressions; analyst+
     // endpoint), like History.
-    ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
-    { id: 'quality', label: 'Quality' },
-    ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
+    ...(!compact && curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
+    ...(!compact ? [{ id: 'quality' as const, label: 'Quality' }] : []),
+    ...(!compact && curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
+  // Snap back if the panel narrows while a wide tab is active.
+  if (compact && viewTab !== 'overview' && viewTab !== 'columns') setViewTab('overview');
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
@@ -218,7 +239,10 @@ export default function ProductTableDetailPanel({
       <div className="bg-raised border-b border-line px-6 pt-5 pb-0 flex-shrink-0">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="min-w-0">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Product table</p>
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">
+              {tbl.table_role === 'dimension' ? 'Reference data' : 'Product table'}
+              {parentProductName ? ` · ${parentProductName}` : ''}
+            </p>
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
                 {tbl.display_name || tbl.table_name}
@@ -264,6 +288,16 @@ export default function ProductTableDetailPanel({
 
           {/* Approval badge is governance — curator-only. */}
           <div className="flex items-start gap-2 flex-shrink-0">
+            {compact && onOpenFullView && (
+              <button
+                onClick={onOpenFullView}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted hover:text-ocean hover:bg-soft rounded transition-colors"
+                title="Open full view (Quality, Lineage, History)"
+              >
+                <Maximize2 className="w-3 h-3" strokeWidth={2} />
+                Full view
+              </button>
+            )}
             {curator && (
               <ApprovalBadge
                 entityType="product_table"
@@ -312,6 +346,29 @@ export default function ProductTableDetailPanel({
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+          {/* SAMPLE ROWS FIRST (data-experience Release B): a person opening
+              "Item" wants to see the items — metadata comes after. All roles
+              (the preview endpoint is all-roles since Release A). */}
+          <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
+            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">The data</p>
+            <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
+          </section>
+
+          {/* What is this — read-only for viewers; curators get the edit
+              form below instead. (The form used to render for viewers too,
+              offering a Save that the server would refuse.) */}
+          {!curator && (tbl.description || tbl.owner_name) && (
+            <section className="bg-raised border border-line rounded-lg p-6">
+              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">What is this?</p>
+              {tbl.description && (
+                <p className="text-[13px] text-ink-2 leading-relaxed">{tbl.description}</p>
+              )}
+              {tbl.owner_name && (
+                <p className="text-[11.5px] text-muted-2 mt-2">Owned by {tbl.owner_name}</p>
+              )}
+            </section>
+          )}
+
           {/* AI suggested banner — saving clears ai_draft via the update endpoint.
               Curator-only — viewers don't get the inline edit form. */}
           {curator && isAiDraft && (
@@ -327,7 +384,9 @@ export default function ProductTableDetailPanel({
             </section>
           )}
 
-          {/* Edit form */}
+          {/* Edit form — curator-only (curation is annotation of the thing
+              you're looking at; viewers got the read-only card above). */}
+          {curator && (
           <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
             <div className="grid grid-cols-2 gap-5">
               <div>
@@ -415,6 +474,7 @@ export default function ProductTableDetailPanel({
               )}
             </div>
           </section>
+          )}
 
           {/* Used in: products that share this dim */}
           {usedByProducts.length > 0 && (
@@ -430,15 +490,15 @@ export default function ProductTableDetailPanel({
             </section>
           )}
 
-          {/* Data preview + SQL view. SqlViewer is curator-only — the
-              transformation SQL is engineering content. Viewers see the
-              data preview only, which is what's useful for understanding
-              what the table actually contains. */}
-          <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data preview</p>
-            <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
-            {curator && <SqlViewer pgTableId={pgTableId ?? tableId} />}
-          </section>
+          {/* SQL LAST, curator-only, and skipped in the compact inset —
+              the transformation SQL is engineering content and the one
+              thing that must never lead this page. (The sample rows moved
+              to the top of this tab — Release B.) */}
+          {curator && !compact && (
+            <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
+              <SqlViewer pgTableId={pgTableId ?? tableId} />
+            </section>
+          )}
         </div>
       )}
 

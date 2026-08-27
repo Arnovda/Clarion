@@ -122,8 +122,8 @@ function CatalogInner() {
   const [sourceRootConnId, setSourceRootConnId] = useState<number | null>(null);
 
   // Cards-mode "Open full view" — when true, the slide-over expands to
-  // take the full screen width so ProductRootPanel renders with enough
-  // room for its 6 tabs. The cards grid hides while this is on. Resets
+  // take the full screen width so the full table/product view has room
+  // for its tabs. The cards grid hides while this is on. Resets
   // whenever the user closes the panel or selects a different product.
   const [productFullView, setProductFullView] = useState(false);
   useEffect(() => { setProductFullView(false); }, [productRootId]);
@@ -298,8 +298,9 @@ function CatalogInner() {
     router.replace(`/catalog?productId=${productId}`);
   }, [router]);
 
-  // Click on a ReferenceCard → open ReferenceDetailPanel in the same inset
-  // that today shows ProductPreviewPanel for analytics. We track the
+  // Click on a ReferenceCard → open the merged ProductTableDetailPanel
+  // (compact) in the same inset that shows ProductPreviewPanel for
+  // analytics. We track the
   // wrapping productId too because it disambiguates the few cases where
   // the same table_name appears in multiple reference products (rare,
   // but possible during AI-design churn).
@@ -352,13 +353,13 @@ function CatalogInner() {
   // in structure mode the layout is the legacy tree + center detail.
   const detailOpen = selection.scope !== 'empty';
 
-  // Subtitle stats — "N sources · N analytics · N dimensions" — computed
-  // from the catalog blocks. Used in the body hero (cards mode only).
+  // Subtitle stats — "N sources · N subjects · N reference tables" —
+  // computed from the catalog blocks. Used in the body hero (cards mode only).
   const headerStats = useMemo(() => {
     const sources = catalogBlocks.length;
-    const analytics = catalogBlocks.reduce((a, b) => a + b.analytics.length, 0);
-    const dimensions = catalogBlocks.reduce((a, b) => a + b.reference.length, 0);
-    return { sources, analytics, dimensions };
+    const subjects = catalogBlocks.reduce((a, b) => a + b.analytics.length, 0);
+    const referenceTables = catalogBlocks.reduce((a, b) => a + b.reference.length, 0);
+    return { sources, subjects, referenceTables };
   }, [catalogBlocks]);
 
   return (
@@ -594,8 +595,8 @@ function CardsBody(props: {
   search: string;
   onSearchChange: (s: string) => void;
   layout: CardsLayout;
-  /** Counts shown in the hero subtitle — N sources / analytics / dimensions. */
-  headerStats: { sources: number; analytics: number; dimensions: number };
+  /** Counts shown in the hero subtitle — N sources / subjects / reference tables. */
+  headerStats: { sources: number; subjects: number; referenceTables: number };
   selectedId: number | null;
   selectedReferenceTableId: number | null;
   onSelectProduct: (id: number) => void;
@@ -614,8 +615,8 @@ function CardsBody(props: {
    *  matching products. */
   glossary: GlossaryEntry[];
   /** When true, the slide-over expands to take the full screen for
-   *  the ProductRootPanel layout. Cards grid hides. Triggered by the
-   *  "Open full view" button inside ProductPreviewPanel. */
+   *  the full-width detail layout. Cards grid hides. Triggered by the
+   *  "Open full view" / "Full view" buttons inside the inset panels. */
   fullView: boolean;
   onRequestFullView: () => void;
   onExitFullView: () => void;
@@ -636,18 +637,13 @@ function CardsBody(props: {
   } | undefined;
 }) {
   // Full-view mode: hide the cards grid + render the detail panel
-  // edge-to-edge with the legacy ProductRootPanel (full-width tabs).
-  // Top bar adds a "Back to catalog" button so users can return to
-  // the grid without using the IconRail.
-  // Full-view mode for product-root selections renders the consumer-grade
-  // <ProductFullView> (Phase 6) — Overview / Metrics / Tables / Quality
-  // / Lineage tabs, all read-only. The legacy ProductRootPanel (operator
-  // surface) is reachable via "Open in Build" in ProductFullView's header
-  // for admin/analyst.
-  //
-  // Other selection scopes (source-root, source-table, product-table —
-  // only reachable from Structure mode) fall back to EntityDetailPanel
-  // since they need the legacy panels.
+  // edge-to-edge. Top bar adds a "Back to catalog" button so users can
+  // return to the grid without using the IconRail.
+  // Product-root selections render the consumer-grade <ProductFullView>
+  // (Overview / Metrics / Tables / Quality / Lineage). Reference and
+  // product tables render the merged ProductTableDetailPanel with every
+  // tab (Release B: one page per thing — the workshop is a deep link,
+  // never the landing of a content click).
   if (props.fullView && props.detailOpen && props.selection.scope === 'product-root') {
     return (
       <ProductFullView
@@ -737,7 +733,7 @@ function CardsBody(props: {
           summary (starter questions, key metrics, "Open full view" button)
           for product-root selections. The "Open full view" button signals
           the parent (this component) to render the full-width view above
-          instead of cramming the legacy ProductRootPanel into 480px. */}
+          instead of cramming the full tabbed layout into 480px. */}
       {props.detailOpen && (
         <div className="hidden lg:flex w-[480px] flex-shrink-0 min-h-0 flex-col border-l border-line bg-canvas overflow-hidden relative">
           <EntityDetailPanel
@@ -879,7 +875,7 @@ function LayerChips({ value, onChange }: { value: LayerFilter; onChange: (v: Lay
  * <CatalogHero> — the page header for cards mode.
  *
  *   Data Catalog                        ┌────────────────────┐
- *   2 sources · 3 analytics · 11 dimensions   │ search…            │
+ *   2 sources · 3 subjects · 11 reference tables   │ search…            │
  *                                       └────────────────────┘
  *
  * Display-font title on the left, mono-uppercase subtitle counts below
@@ -889,7 +885,7 @@ function LayerChips({ value, onChange }: { value: LayerFilter; onChange: (v: Lay
 function CatalogHero({
   stats, search, onSearchChange,
 }: {
-  stats: { sources: number; analytics: number; dimensions: number };
+  stats: { sources: number; subjects: number; referenceTables: number };
   search: string;
   onSearchChange: (s: string) => void;
 }) {
@@ -910,9 +906,9 @@ function CatalogHero({
       <p className="text-[11px] font-mono tracking-[0.08em] text-muted-2 tabular-nums mt-3.5">
         {stats.sources} {stats.sources === 1 ? 'source' : 'sources'}
         <span className="text-muted-2/40 mx-1.5">·</span>
-        {stats.analytics} {stats.analytics === 1 ? 'analytic' : 'analytics'}
+        {stats.subjects} {stats.subjects === 1 ? 'subject' : 'subjects'}
         <span className="text-muted-2/40 mx-1.5">·</span>
-        {stats.dimensions} {stats.dimensions === 1 ? 'dimension' : 'dimensions'}
+        {stats.referenceTables} {stats.referenceTables === 1 ? 'reference table' : 'reference tables'}
       </p>
     </header>
   );

@@ -6,9 +6,11 @@
  * Given a typed selection, dispatches to the right detail surface and fetches
  * the data each surface needs. The three flavours are:
  *
- *   - source-table   → <TableDetailPanel>  (existing semantic-layer panel)
- *   - product-table  → <ProductTableDetailPanel>  (existing product-layer panel)
- *   - product-root   → <ProductRootPanel>  (full product detail with tabs)
+ *   - source-table              → <TableDetailPanel>  (semantic-layer panel)
+ *   - product-table / reference-table → <ProductTableDetailPanel>  (the ONE
+ *     merged table page — Release B; reference cards and the Structure tree
+ *     land on the same panel, compact in the narrow inset)
+ *   - product-root   → <ProductPreviewPanel> (cards inset) / <ProductFullView>
  *
  * The caller stays free of the per-flavour fetch/cache choreography.
  */
@@ -19,13 +21,13 @@ import api from '@/lib/api';
 import dynamic from 'next/dynamic';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
-import ProductRootPanel from '@/components/products/ProductRootPanel';
 import SourceRootPanel from '@/components/catalog/SourceRootPanel';
 import ProductPreviewPanel from '@/components/catalog/ProductPreviewPanel';
 
-// Lazy: pulls in recharts via refresh-history chart, not needed on most loads.
-const ReferenceDetailPanel = dynamic(
-  () => import('@/components/catalog/ReferenceDetailPanel'),
+// Lazy: the full product page pulls in preview tables etc. — only needed
+// when a product is actually opened from the Structure tree.
+const ProductFullView = dynamic(
+  () => import('@/components/catalog/ProductFullView'),
   { ssr: false },
 );
 import type {
@@ -39,11 +41,10 @@ export type EntitySelection =
   | { scope: 'source-table'; tableId: number; connectionId: number; columnId?: number | null }
   | { scope: 'product-table'; tableId: number; productId?: number; columnId?: number | null }
   /**
-   * `reference-table` — same data shape as `product-table`, but routed
-   * to ReferenceDetailPanel. Used by the new two-column /catalog when
-   * the user clicks a reference (dim) card. Distinct scope so the
-   * detail panel can lead with reference-flavoured framing (definition,
-   * Used-by, sample) instead of the analytics-flavoured tabs.
+   * `reference-table` — same panel as `product-table` (Release B merged
+   * them), but the tableId is a POSTGRES product_tables id (reference
+   * cards / deep links) rather than a graph id, and the compact inset
+   * treatment applies in cards mode.
    */
   | { scope: 'reference-table'; tableId: number; productId: number }
   | { scope: 'product-root'; productId: number }
@@ -90,17 +91,19 @@ interface Props {
    *  user just clicked. */
   productHint?: ProductHint;
   /** Called when the user clicks "Open full view" inside the preview.
-   *  The parent expands the slide-over to full-screen for the proper
-   *  ProductRootPanel layout (tabs need width). */
+   *  The parent expands the slide-over to full-screen so the full
+   *  tabbed layout gets the width it needs. */
   onOpenFullView?: () => void;
   /** Close handler — slides the detail panel away. */
   onClose?: () => void;
 }
 
+// Note: `onProductDeleted` stays in Props for caller compatibility but is
+// currently unconsumed — product deletion lives in the workshop
+// (/products/[id]), not on the catalog's understanding surfaces.
 export default function EntityDetailPanel({
   selection,
   onSaved,
-  onProductDeleted,
   connections = [],
   productPreview,
   productHint,
@@ -118,9 +121,10 @@ export default function EntityDetailPanel({
   }
   if (selection.scope === 'product-root') {
     // Browse mode (cards UX) defaults to the clean preview, with a
-    // "See full details" button inside that flips to ProductRootPanel
-    // for the full tabbed experience. Structure mode keeps the legacy
-    // full panel as the default for analyst workflows.
+    // "See full details" button inside that expands to ProductFullView.
+    // Structure mode renders ProductFullView directly — ONE product page
+    // for both doors (Release B: the workshop's OverviewSection embedding
+    // is retired from the catalog).
     if (productPreview) {
       return (
         <ProductPreviewPanel
@@ -128,20 +132,11 @@ export default function EntityDetailPanel({
           productId={selection.productId}
           hint={productHint}
           onOpenFullView={onOpenFullView}
-          onProductDeleted={onProductDeleted}
           onClose={onClose}
         />
       );
     }
-    return (
-      <ProductRootPanel
-        key={`pr-${selection.productId}`}
-        productId={selection.productId}
-        onDeleted={onProductDeleted}
-        showBackButton={false}
-        embedAskAI={false}
-      />
-    );
+    return <ProductFullView key={`pf-${selection.productId}`} productId={selection.productId} />;
   }
   if (selection.scope === 'source-table') {
     return (
@@ -168,22 +163,22 @@ export default function EntityDetailPanel({
     );
   }
   if (selection.scope === 'reference-table') {
-    // Lazy import keeps the bundle slim until the user actually opens a
-    // reference card — the panel pulls in recharts via the refresh-history
-    // chart and isn't needed on the discovery view.
+    // Release B: reference cards land on the SAME merged table panel as the
+    // Structure tree (ProductTableDetailPanel) — one table page per thing.
     //
     // productPreview doubles as the "are we in the narrow inset?" hint:
     // when true (cards-mode default), the panel runs in `compact` mode
-    // (Overview/Columns/Used-in only, plus an "Open full view" button
-    // wired to onOpenFullView). When false (full-screen wrapper) the
-    // panel shows all six tabs including Sample/Quality/History.
+    // (Overview/Columns only, plus a "Full view" button wired to
+    // onOpenFullView). When false (full-screen wrapper) the panel shows
+    // every tab including Quality/History/Lineage.
     return (
-      <ReferenceLoader
+      <ProductTableLoader
         key={`rt-${selection.tableId}`}
         tableId={selection.tableId}
-        productId={selection.productId}
+        focusColumnId={null}
         compact={productPreview === true}
         onOpenFullView={onOpenFullView}
+        onSaved={onSaved}
         onClose={onClose}
       />
     );
@@ -246,10 +241,14 @@ function SourceTableLoader({
 }
 
 function ProductTableLoader({
-  tableId, focusColumnId, onSaved, onClose,
+  tableId, focusColumnId, compact, onOpenFullView, onSaved, onClose,
 }: {
+  /** Graph id (Structure tree) OR Postgres product_tables id (reference
+   *  cards / ?refTableId deep links) — resolved against the tree below. */
   tableId: number;
   focusColumnId: number | null;
+  compact?: boolean;
+  onOpenFullView?: () => void;
   onSaved?: () => void;
   onClose?: () => void;
 }) {
@@ -260,11 +259,20 @@ function ProductTableLoader({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [treeRes, colRes] = await Promise.all([
-        api.get('/semantic/product-tree'),
-        api.get(`/semantic/product-columns?tablePgId=${tableId}`),
-      ]);
-      setTree(treeRes.data.data ?? []);
+      // Sequential on purpose: the columns endpoint matches GRAPH ids only
+      // (getProductColumnsByTablePgId), while reference cards hand us the
+      // Postgres id. Resolve through the tree (which carries both ids since
+      // Release A's pg_table_id) before asking for columns.
+      const treeRes = await api.get('/semantic/product-tree');
+      const items: ProductTreeItem[] = treeRes.data.data ?? [];
+      setTree(items);
+      const found = items
+        .flatMap((p) => p.starSchemas ?? [])
+        .flatMap((s) => s.tables ?? [])
+        .find((t) => t.id === tableId
+          || (t as { pg_table_id?: number | null }).pg_table_id === tableId);
+      const graphId = found?.id ?? tableId;
+      const colRes = await api.get(`/semantic/product-columns?tablePgId=${graphId}`);
       setCols(colRes.data.data ?? []);
     } catch {
       setTree([]);
@@ -276,7 +284,7 @@ function ProductTableLoader({
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <Spinner label="Loading product table" />;
+  if (loading) return <Spinner label="Loading table" />;
 
   return (
     <ProductTableDetailPanel
@@ -284,30 +292,9 @@ function ProductTableLoader({
       productTree={tree}
       columns={cols}
       focusColumnId={focusColumnId}
-      onSaved={() => { load(); onSaved?.(); }}
-      onClose={onClose}
-    />
-  );
-}
-
-// ── Reference loader ───────────────────────────────────────────────────────
-
-function ReferenceLoader({
-  tableId, productId, compact, onOpenFullView, onClose,
-}: {
-  tableId: number;
-  productId: number;
-  compact?: boolean;
-  onOpenFullView?: () => void;
-  onClose?: () => void;
-}) {
-  return (
-    <ReferenceDetailPanel
-      key={`rd-${tableId}`}
-      tableId={tableId}
-      productId={productId}
       compact={compact}
       onOpenFullView={onOpenFullView}
+      onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
     />
   );

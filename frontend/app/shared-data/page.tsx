@@ -31,6 +31,7 @@ import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
 import { formatRelativeLong } from '@/lib/dates';
+import { humanizeTableName, looksLikeRawTableName } from '@/lib/humanize';
 import { iconForReference } from '@/components/catalog/entityIcons';
 
 interface ReferenceCard {
@@ -116,7 +117,10 @@ function SharedData() {
             )}
             <div className="grid gap-3 sm:grid-cols-2">
               {block.reference.map((card) => {
-                const Glyph = iconForReference(card.name);
+                // Never render a raw dim_* name to a business user.
+                const label = looksLikeRawTableName(card.name)
+                  ? humanizeTableName(card.name) : card.name;
+                const Glyph = iconForReference(label);
                 return (
                   <a
                     key={card.tableId}
@@ -129,7 +133,7 @@ function SharedData() {
                     <div className="flex items-center gap-2.5">
                       <Glyph className="h-4 w-4 shrink-0 text-ocean" strokeWidth={1.6} aria-hidden />
                       <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink group-hover:text-ocean">
-                        {card.name}
+                        {label}
                       </span>
                       {card.rowCount != null && (
                         <span className="shrink-0 font-mono text-[10.5px] tabular-nums text-muted-2">

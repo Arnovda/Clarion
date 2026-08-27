@@ -31,7 +31,67 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (data experience Release A "Every door leads somewhere true" SHIPPED)
+**Last updated:** 2026-08-27 (data experience Release B "One page per thing" SHIPPED — same day as Release A)
+
+**DATA EXPERIENCE RELEASE B IS BUILT (2026-08-27, frontend-only; implements
+the consolidation plan's §5 Release B — the component merges. The catalog
+now has ONE table page and ONE product page, whatever door you came
+through):**
+- **ONE TABLE PAGE: `ProductTableDetailPanel` is the merged panel.**
+  Structure-tree clicks, Browse reference cards and `?refTableId`/`?table=`
+  deep links all land on it. It gained: **dual-id lookup** (the incoming
+  tableId may be a GRAPH id from the tree or a POSTGRES id from cards/deep
+  links — matched against `id` OR the tree's `pg_table_id`, and the panel's
+  data fetches use `pgTableId ?? tableId`); **sample rows FIRST** on
+  Overview (PreviewTable on `/semantic/product-preview`, all roles per the
+  Release A decision); a `compact` mode for the 480px cards inset
+  (Overview + Columns only, wide tabs snap back, a **Full view** button
+  wired to the parent's full-screen expansion); a "Reference data ·
+  <product>" / "Product table · <product>" eyebrow; a read-only "What is
+  this?" card for viewers with curator editing (and the SQL viewer, last,
+  `curator && !compact`) intact. PATCHes still send the graph id — the
+  Release A `GRAPH_ID_ALIAS` gate accepts both.
+- **`ReferenceDetailPanel.tsx` is DELETED** (the second, read-only,
+  role-blind table panel). `EntityDetailPanel`'s `reference-table` scope now
+  routes to `ProductTableLoader`, whose fetch is **sequential on purpose**:
+  product-tree first, resolve the graph id (`t.id === tableId ||
+  t.pg_table_id === tableId`), THEN `/semantic/product-columns` with the
+  resolved graph id — because that endpoint matches graph ids only, while
+  reference cards hand over Postgres ids.
+- **ONE PRODUCT PAGE: `ProductFullView` everywhere in the catalog.**
+  `EntityDetailPanel`'s product-root non-preview branch (Structure mode) and
+  `ProductPreviewPanel`'s "Open full view" both render it;
+  **`ProductRootPanel` no longer mounts anywhere under /catalog** (its
+  inline-fallback block in ProductPreviewPanel is deleted; the workshop
+  keeps it at `/products/[id]`, reachable via the curator "Open in Build"
+  link — trimming the workshop itself is Release C work).
+  ProductPreviewPanel's At-a-glance swapped the "Dimensions" column-role
+  count (warehouse vocabulary, answered nothing) for an **"Updated"** cell;
+  `Stat` accepts strings now.
+- **`lib/humanize.ts` (new)** — the ONE raw-name → business-label rule
+  (`humanizeTableName`, `looksLikeRawTableName`). Used by the dashboard
+  filter-provenance popover (its local copy deleted), `ReferenceCard` and
+  `/shared-data` cards, so a stored raw `dim_*` display name can no longer
+  reach a business user.
+- **Vocabulary sweep**: the catalog hero counts say "N sources · N subjects
+  · N reference tables" (was "analytics"/"dimensions");
+  `ProductFullView`'s private `QualityTab` renamed `CatalogQualityTab`
+  (name-collided with the workshop's `app/products/QualityTab`); every
+  stale ProductRootPanel/ReferenceDetailPanel comment in the catalog
+  updated.
+- **Deviations from the plan's letter, recorded in the doc**: workshop
+  Overview/Tables tabs NOT trimmed (Release C decides what the workshop
+  keeps); no grain card (the graph payload has no `business_grain`);
+  otherwise per plan.
+- Validation: frontend `tsc` clean, touched files lint-clean, `next build`
+  green (`/catalog` 54.8 kB / 370 kB, `/shared-data` 1.95 kB); backend
+  untouched this slice — `npm run check` clean and all eight ratchets green
+  re-confirmed on the same tree (full suite unchanged from Release A's 39
+  files / 383 passed).
+- **NOT in this slice**: Release C (the Manage-mode ↔ workshop cockpit
+  merge; notebook pane survives it by owner constraint).
+
+**Prior last updated:** 2026-08-27 (data experience Release A "Every door leads somewhere true" SHIPPED)
 
 **DATA EXPERIENCE RELEASE A IS BUILT (2026-08-27, same day as the plan
 below; implements its §5 Release A with the owner's settled decisions:

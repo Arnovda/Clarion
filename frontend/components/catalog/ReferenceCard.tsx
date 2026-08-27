@@ -19,6 +19,7 @@
  */
 
 import { cn } from '@/lib/cn';
+import { humanizeTableName, looksLikeRawTableName } from '@/lib/humanize';
 import { iconForReference } from './entityIcons';
 import type { SourcePalette } from './sourcePalette';
 
@@ -50,7 +51,10 @@ function formatRecords(n: number): string {
 export default function ReferenceCard({
   data, selected, onSelect, palette,
 }: Props) {
-  const Glyph = iconForReference(data.name);
+  // A display name should never read `dim_*` — when the stored name is (or
+  // still looks like) the raw warehouse name, humanize it for the card.
+  const label = looksLikeRawTableName(data.name) ? humanizeTableName(data.name) : data.name;
+  const Glyph = iconForReference(label);
 
   return (
     <button
@@ -78,7 +82,7 @@ export default function ReferenceCard({
           'font-medium text-[14px] tracking-[-0.005em] leading-tight truncate transition-colors',
           selected ? 'text-ocean' : 'text-ink group-hover:text-ocean',
         )}>
-          {data.name}
+          {label}
         </h4>
       </div>
 
