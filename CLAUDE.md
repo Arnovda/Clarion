@@ -31,7 +31,53 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (data experience Release B "One page per thing" SHIPPED — same day as Release A)
+**Last updated:** 2026-08-27 (Ask AI experience assessment — doc only; same day as data experience Release B)
+
+**NEW DOC: `docs/backlog/ask-ai-experience-assessment.md` (2026-08-27, doc
+only; no code changed).** Owner asked for a zoomed-out assessment of the Ask
+AI chat: what an optimal experience looks like, how to show reasoning/
+assumptions/trust, and how to fix the named pain that a self-correcting
+answer produces "a really long chat and think process". Method: three full
+code investigations (frontend surface, backend flow, trust adjacencies —
+every claim file:line) crossed with 2025–26 external research (Genie, Spotter
+3, Cortex Analyst/Snowflake Intelligence, QuickSight Q, Power BI Copilot,
+Tableau Pulse, Perplexity/ChatGPT reasoning display, NN/g + PAIR trust
+research). **Verdict: the engine is ahead of the experience** — Clarion
+already computes nearly every trust signal the leaders display (assumptions,
+sub-scores, tables used, streamed reasoning, repair loop, per-table
+freshness, provenance ladder, lineage) and shows them to the wrong people at
+the wrong moments. Headline findings: **trust display is inverted**
+(confidence + sub-scores shown to ALL roles on refusals, admin-only on
+success — `MessageBubble.tsx:1094` vs `:959`; industry shows business users
+categorical marks, never percentages); **corrected answers are never
+persisted** (reload resurrects the wrong answer, export downloads
+pre-correction rows) while the repair transcript runs ~1,500–2,500px and
+never collapses; **thumbs-down gaps are structurally invisible** (NULL
+`query_log_id` vs inner join in `/reports/gaps`); **analysts are treated as
+viewers** (`isAdmin` keys everything, `lib/role.ts` unused);
+`InvestigationView` shows raw SQL to every role (non-negotiable violation);
+`applyDataPolicies` runs on 1 of 5 query paths; the chat never uses the SQL
+cache; no prompt answers in the user's language (Dutch questions get English
+answers); three parallel context-builder implementations have drifted. §5
+designs the target: ONE answer card (interpretation chips à la QuickSight
+restatement, categorical trust line Checked/Verified/Take-with-care,
+answer-scoped freshness via the already-built `widget-context` endpoint,
+"How I got this" plain-language expander with humanized catalog links, SQL
+one level deeper for analyst+), ONE progress timeline (Perplexity-style named
+steps → collapsed "Answered in 9s · checked" receipt), repair folded in as a
+"Double-checking" step framed as diligence (Spotter pattern), one
+clarification system, answers-as-destinations (pin to dashboard, saved +
+Verified questions, schedule, feedback→curation), Dutch answer mirroring,
+"Since yesterday" proactive empty state from the existing briefs endpoint.
+§6 sequences three releases (1 tell-the-truth foundations, 2 the answer
+card, 3 answers go somewhere); §7 what NOT to do (no raw CoT ever, no
+numeric confidence for business users, don't hide that correction happened,
+no agent-workspace chrome); §8 queues 4 owner decisions (provisional-answer
+policy during repair, analyst SQL visibility, verified-answer matching
+scope, language default). Published as artifact "Ask AI Experience". No code
+changed.
+
+**Prior last updated:** 2026-08-27 (data experience Release B "One page per thing" SHIPPED — same day as Release A)
 
 **DATA EXPERIENCE RELEASE B IS BUILT (2026-08-27, frontend-only; implements
 the consolidation plan's §5 Release B — the component merges. The catalog
