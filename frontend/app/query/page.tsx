@@ -257,6 +257,7 @@ function QueryPageInner() {
         ...(msg.answeredInMs ? { answeredInMs: msg.answeredInMs } : {}),
         ...(msg.policyNotice ? { policyNotice: msg.policyNotice } : {}),
         ...(msg.adminNotified ? { adminNotified: msg.adminNotified } : {}),
+        ...(msg.verified ? { verified: msg.verified } : {}),
         ...(msg.repairSummary?.length ? { repairSummary: msg.repairSummary } : {}),
       };
       const res = await api.post(`/conversations/${conversationId}/messages`, {
@@ -389,6 +390,7 @@ function QueryPageInner() {
           policyNotice: meta.policyNotice as string | undefined,
           adminNotified: meta.adminNotified as boolean | undefined,
           repairSummary: meta.repairSummary as string[] | undefined,
+          verified: meta.verified as boolean | undefined,
           flagReason: meta.flagReason as string | undefined,
           ...(isInvestigation ? { mode: 'investigate' as const, investigation } : {}),
         };
@@ -1052,6 +1054,7 @@ function QueryPageInner() {
               answeredInMs?: number;
               policyNotice?: string;
               adminNotified?: boolean;
+              verified?: boolean;
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
@@ -1069,6 +1072,7 @@ function QueryPageInner() {
               answeredInMs: d.answeredInMs,
               policyNotice: d.policyNotice,
               adminNotified: d.adminNotified,
+              verified: d.verified,
             };
 
             const needsRepair = !!(d.warning && !d.blocked && d.sql && d.rows);
@@ -1283,7 +1287,7 @@ function QueryPageInner() {
               <div className="space-y-4">
                 {messages.map((m) => (
                   <div key={m.id}>
-                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} canSeeSql={canSeeSql} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} onReplayInvestigation={handleReplayInvestigation} />
+                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} canSeeSql={canSeeSql} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} connectionId={selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : null} onReplayInvestigation={handleReplayInvestigation} />
                     {/* The live double-check panel shows only WHILE the loop
                         runs (or waits on a clarification). Once settled it
                         disappears — the answer card's trust line and "What I
@@ -1391,7 +1395,9 @@ function QueryPageInner() {
                     </span>
                   ) : detectedMode === 'investigate' && !canInvestigate ? (
                     <span className="text-amber-700">
-                      🕵️ Investigate needs a product · ask mode used
+                      🕵️ Investigate needs a topic ·{' '}
+                      <a href="/investigate" className="underline hover:text-ocean">pick one here</a>
+                      {' '}· ask mode used
                     </span>
                   ) : (
                     <span className="flex items-center gap-1.5">

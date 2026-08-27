@@ -9,17 +9,19 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import api from '@/lib/api';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, PieChart, Pie, Cell,
   ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
-import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff, ChevronRight } from 'lucide-react';
+import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff, ChevronRight, BookmarkPlus, Pin } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { RichText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
 import { humanizeTableName } from '@/lib/humanize';
+import { getTokenPayload } from '@/lib/auth';
 import { formatRelativeTime, getFreshnessStatus } from '@/lib/freshness';
 import type { AnswerSource, DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
 import InvestigationView from '@/components/investigate/InvestigationView';
@@ -715,6 +717,8 @@ interface MessageBubbleProps {
   onFeedback:     (msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) => void;
   onExport:       (format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) => void;
   conversationId: number | null;
+  /** Active connection — needed by the Save-question / Pin-to-dashboard actions. */
+  connectionId:   number | null;
   /** Optional: re-fetch a persisted investigation's full trail from
    *  /api/investigations/:id and hydrate the message in place. Called by
    *  the "Replay full trail" button on rehydrated investigate-mode
@@ -724,7 +728,7 @@ interface MessageBubbleProps {
 }
 
 export default function MessageBubble({
-  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, onReplayInvestigation,
+  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, connectionId, onReplayInvestigation,
 }: MessageBubbleProps) {
   const [replayLoading, setReplayLoading] = useState(false);
 
@@ -1119,6 +1123,15 @@ export default function MessageBubble({
                   {fu}
                 </button>
               ))}
+              {/* Save + Pin — answers are destinations, not dead ends (R3).
+                  Both need the answer's SQL and a concrete connection; the
+                  server re-guards the SQL (assertSafeReadQuery) either way. */}
+              {msg.question && msg.sql && connectionId != null && (
+                <SaveQuestionButton msg={msg} connectionId={connectionId} />
+              )}
+              {msg.sql && connectionId != null && (
+                <PinToDashboard msg={msg} connectionId={connectionId} />
+              )}
               {/* Export buttons */}
               {msg.rows && msg.rows.length > 0 && conversationId && (
                 <div className="flex items-center gap-1 ml-auto">
@@ -1172,9 +1185,12 @@ function TrustLine({ msg }: { msg: Message }) {
     ? null // the checking strip at the top of the card already says it
     : msg.warning
       ? { cls: 'text-warn', text: msg.wasRepaired ? '△ Corrected — take with care' : '△ Take with care' }
-      : msg.wasRepaired
-        ? { cls: 'text-ok', text: '✓ Checked & corrected' }
-        : { cls: 'text-ok', text: '✓ Checked against your data' };
+      : msg.verified
+        // The strongest tier — a HUMAN approved this exact question's SQL.
+        ? { cls: 'text-ok', text: '★ Verified by your team' }
+        : msg.wasRepaired
+          ? { cls: 'text-ok', text: '✓ Checked & corrected' }
+          : { cls: 'text-ok', text: '✓ Checked against your data' };
 
   if (!mark && !oldest && !msg.answeredInMs) return null;
 
@@ -1587,4 +1603,203 @@ function buildFollowUps(): string[] {
     'Which segments contributed most?',
     'How does this compare to last year?',
   ];
+}
+
+// ─── Save question — feed the saved/Verified questions library ───────────────
+//
+// One click stores this answer's question + SQL via POST /api/saved-questions.
+// A curator can later mark it Verified, at which point Ask AI reuses the SQL
+// on an exact match and the trust line reads "Verified by your team".
+
+function SaveQuestionButton({ msg, connectionId }: { msg: Message; connectionId: number }) {
+  const [state, setState] = useState<'idle' | 'saving' | 'saved' | 'exists'>('idle');
+
+  const save = async () => {
+    if (state !== 'idle') return;
+    setState('saving');
+    try {
+      await api.post('/saved-questions', {
+        question: msg.question,
+        sql: msg.sql,
+        tablesUsed: msg.tablesUsed,
+        visualization: msg.visualization ?? undefined,
+        connectionId,
+        dataLayer: msg.queryLayer,
+      });
+      setState('saved');
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setState(status === 409 ? 'exists' : 'idle');
+    }
+  };
+
+  const label = state === 'saved' ? 'Saved' : state === 'exists' ? 'Already saved' : state === 'saving' ? 'Saving…' : 'Save question';
+  return (
+    <button
+      onClick={save}
+      disabled={state !== 'idle'}
+      className={`flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase rounded transition-colors ${
+        state === 'saved' || state === 'exists'
+          ? 'text-ok'
+          : 'text-muted-2 hover:text-ocean hover:bg-ocean-softer'
+      }`}
+      title="Save this question so anyone can re-ask it (and a curator can verify it)"
+    >
+      <BookmarkPlus className="w-3 h-3" strokeWidth={2} />
+      {label}
+    </button>
+  );
+}
+
+// ─── Pin to dashboard — the ThoughtSpot "Pin" pattern ────────────────────────
+//
+// The widget SQL is derived HERE (client) from the answer's SQL + the
+// visualization hint, wrapped to the widget column contract
+// (label/value/series — see shared/widgetContracts.ts). The server guards it
+// with assertSafeReadQuery and appends it to an owned dashboard's spec, or
+// starts a new dashboard from it. Zero AI calls.
+
+type PinWidgetType = 'kpi_card' | 'bar_chart' | 'line_chart' | 'stacked_bar_chart' | 'pie_chart' | 'data_table';
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+function widgetFromMessage(msg: Message): { type: PinWidgetType; title: string; sql: string } {
+  const base = (msg.sql ?? '').trim().replace(/;+\s*$/g, '');
+  const title = (msg.question ?? 'Pinned answer').replace(/\?+\s*$/, '').trim().slice(0, 120) || 'Pinned answer';
+  const rows = msg.rows ?? [];
+  const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+
+  // A single scalar → KPI card.
+  if (rows.length === 1 && cols.length === 1) {
+    return { type: 'kpi_card', title, sql: `SELECT ${quoteIdent(cols[0])} AS value FROM (${base}) AS _pin` };
+  }
+
+  // Chartable shape per the answer's own visualization hint — only when the
+  // hinted keys actually exist in the result columns.
+  const viz = msg.visualization;
+  const has = (k?: string): k is string => !!k && cols.includes(k);
+  if (viz && has(viz.xKey) && has(viz.yKey)) {
+    if (viz.type === 'stacked_bar' && has(viz.groupBy)) {
+      return {
+        type: 'stacked_bar_chart',
+        title,
+        sql: `SELECT ${quoteIdent(viz.xKey)} AS label, ${quoteIdent(viz.groupBy)} AS series, ${quoteIdent(viz.yKey)} AS value FROM (${base}) AS _pin`,
+      };
+    }
+    if (viz.type === 'bar' || viz.type === 'line' || viz.type === 'pie') {
+      const type: PinWidgetType = viz.type === 'bar' ? 'bar_chart' : viz.type === 'line' ? 'line_chart' : 'pie_chart';
+      return { type, title, sql: `SELECT ${quoteIdent(viz.xKey)} AS label, ${quoteIdent(viz.yKey)} AS value FROM (${base}) AS _pin` };
+    }
+  }
+
+  // Everything else keeps its own columns as a data table.
+  return { type: 'data_table', title, sql: base };
+}
+
+function PinToDashboard({ msg, connectionId }: { msg: Message; connectionId: number }) {
+  const [open, setOpen] = useState(false);
+  const [dashboards, setDashboards] = useState<Array<{ id: number; title: string }> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pinnedTo, setPinnedTo] = useState<{ id: number; title: string } | null>(null);
+
+  const toggle = async () => {
+    if (busy) return;
+    setError(null);
+    const next = !open;
+    setOpen(next);
+    if (next && dashboards === null) {
+      try {
+        const res = await api.get('/dashboards');
+        const me = getTokenPayload()?.sub;
+        const rows = (res.data?.data ?? []) as Array<{ id: number; title: string; user_id: number }>;
+        // Pin appends only to OWNED dashboards (the server enforces it too).
+        setDashboards(rows.filter((d) => me == null || Number(d.user_id) === Number(me)).map((d) => ({ id: d.id, title: d.title })));
+      } catch {
+        setDashboards([]);
+      }
+    }
+  };
+
+  const pin = async (dashboardId?: number) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const widget = widgetFromMessage(msg);
+      const res = await api.post('/dashboards/pin-widget', {
+        dashboardId,
+        connectionId,
+        title: widget.title,
+        widget,
+      });
+      const id = res.data?.data?.id as number;
+      const target = dashboardId ? dashboards?.find((d) => d.id === dashboardId) : null;
+      setPinnedTo({ id, title: target?.title ?? widget.title });
+      setOpen(false);
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      setError(detail ?? 'Could not pin this answer.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (pinnedTo) {
+    return (
+      <Link
+        href={`/dashboards?id=${pinnedTo.id}`}
+        className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase text-ok hover:bg-ok-soft rounded transition-colors"
+        title="Open the dashboard this answer was pinned to"
+      >
+        <Pin className="w-3 h-3" strokeWidth={2} />
+        Pinned — open →
+      </Link>
+    );
+  }
+
+  return (
+    <span className="relative inline-flex">
+      <button
+        onClick={toggle}
+        disabled={busy}
+        className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 hover:text-ocean hover:bg-ocean-softer rounded transition-colors"
+        title="Pin this answer to a dashboard"
+      >
+        <Pin className="w-3 h-3" strokeWidth={2} />
+        {busy ? 'Pinning…' : 'Pin to dashboard'}
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 mb-1 z-20 w-56 rounded-lg border border-line bg-surface shadow-lg p-1">
+          <p className="px-2 py-1 text-[9.5px] font-mono uppercase tracking-[0.1em] text-muted-2">Pin to…</p>
+          <div className="max-h-44 overflow-y-auto">
+            {(dashboards ?? []).map((d) => (
+              <button
+                key={d.id}
+                onClick={() => pin(d.id)}
+                className="w-full text-left px-2 py-1.5 text-[12px] text-ink-2 hover:bg-ocean-softer rounded truncate"
+              >
+                {d.title}
+              </button>
+            ))}
+            {dashboards !== null && dashboards.length === 0 && (
+              <p className="px-2 py-1.5 text-[11px] text-muted italic">No dashboards of your own yet.</p>
+            )}
+            {dashboards === null && (
+              <p className="px-2 py-1.5 text-[11px] text-muted italic">Loading…</p>
+            )}
+          </div>
+          <button
+            onClick={() => pin(undefined)}
+            className="w-full text-left px-2 py-1.5 text-[12px] text-ocean hover:bg-ocean-softer rounded border-t border-line mt-1"
+          >
+            + New dashboard from this answer
+          </button>
+          {error && <p className="px-2 py-1 text-[11px] text-err">{error}</p>}
+        </div>
+      )}
+    </span>
+  );
 }

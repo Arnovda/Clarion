@@ -65,6 +65,7 @@ import pulseRouter           from './routes/pulse';
 import briefsRouter          from './routes/briefs';
 import investigationsRouter  from './routes/investigations';
 import managedGridsRouter    from './routes/managedGrids';
+import savedQuestionsRouter  from './routes/savedQuestions';
 import aiUsageRouter         from './routes/aiUsage';
 import aiRoutingRouter       from './routes/aiRouting';
 import { startWorkers, stopWorkers } from './jobs/workers';
@@ -246,6 +247,7 @@ app.use('/api/briefs',          briefsRouter);
 app.use('/api/investigations',  investigationsRouter);
 // computeLimiter: link-values and coverage run DuckDB queries.
 app.use('/api/grids',           computeLimiter, managedGridsRouter);
+app.use('/api/saved-questions', savedQuestionsRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
 

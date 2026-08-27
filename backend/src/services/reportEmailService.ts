@@ -134,9 +134,14 @@ function buildHtmlEmail(
 // ---------------------------------------------------------------------------
 
 export async function sendScheduledReport(scheduleId: number): Promise<void> {
-  // 1. Load schedule + dashboard
+  // 1. Load schedule + target (dashboard XOR saved question — migration 83)
   const schedule = await semanticDb('email_schedules').where({ id: scheduleId }).first();
   if (!schedule || !schedule.enabled) return;
+
+  if (schedule.saved_question_id) {
+    await sendScheduledQuestion(schedule);
+    return;
+  }
 
   const dashboard = await semanticDb('dashboards').where({ id: schedule.dashboard_id }).first();
   if (!dashboard) {
@@ -256,4 +261,82 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
     .update({ last_run_at: new Date(), updated_at: new Date() });
 
   logger.info({ scheduleId, recipients: recipients.length }, '[report-email] Sent');
+}
+
+// ---------------------------------------------------------------------------
+// Saved-question schedules (Ask AI Release 3) — "email me this every Monday"
+// from a chat answer. One stored, safety-checked SQL; a table + optional AI
+// sentence. Deliberately reuses the same email chrome as dashboard reports.
+// ---------------------------------------------------------------------------
+
+async function sendScheduledQuestion(schedule: {
+  id: number;
+  saved_question_id: number;
+  recipients: string[] | string;
+  ai_summary: boolean;
+}): Promise<void> {
+  const sq = await semanticDb('saved_questions').where({ id: schedule.saved_question_id }).first();
+  if (!sq) {
+    logger.warn({ scheduleId: schedule.id }, '[report-email] Saved question not found');
+    return;
+  }
+  const recipients: string[] = Array.isArray(schedule.recipients)
+    ? schedule.recipients
+    : JSON.parse(schedule.recipients as string);
+  if (!recipients.length) return;
+
+  const connection = await semanticDb('connections').where({ id: sq.connection_id }).first();
+  if (!connection) {
+    logger.warn({ scheduleId: schedule.id }, '[report-email] Connection not found');
+    return;
+  }
+
+  let rows: Record<string, unknown>[] = [];
+  let execError: string | undefined;
+  try {
+    let connector;
+    if (sq.data_layer === 'product') {
+      const { getProductWarehousePath } = await import('./productContext');
+      const warehousePath = await getProductWarehousePath(sq.connection_id);
+      if (!warehousePath) throw new Error('product warehouse not materialised');
+      connector = await createProductConnector(warehousePath, sq.connection_id as number, sq.tenant_id as number);
+    } else {
+      connector = await createConnector(connection);
+    }
+    await connector.connect();
+    try {
+      const result = await connector.executeQuery(sq.sql as string);
+      rows = result.rows;
+    } finally {
+      connector.disconnect();
+    }
+  } catch (err) {
+    execError = 'Could not load data';
+    logger.warn({ scheduleId: schedule.id, err }, '[report-email] Saved question SQL error');
+  }
+
+  let summary: string | null = null;
+  if (schedule.ai_summary && rows.length > 0) {
+    try {
+      const { formatAnswer } = await import('../ai/AIService');
+      summary = await formatAnswer(sq.question as string, rows);
+    } catch (err) {
+      logger.warn({ scheduleId: schedule.id, err }, '[report-email] answer summary failed — sending without it');
+    }
+  }
+
+  const html = buildHtmlEmail(sq.question as string, summary, [
+    { title: 'Result', rows: execError ? null : rows, error: execError },
+  ]);
+  await sendEmail({
+    to: recipients,
+    subject: `${sq.question} — Clarion`,
+    html,
+  });
+
+  await semanticDb('email_schedules')
+    .where({ id: schedule.id })
+    .update({ last_run_at: new Date(), updated_at: new Date() });
+
+  logger.info({ scheduleId: schedule.id, recipients: recipients.length }, '[report-email] Saved-question report sent');
 }

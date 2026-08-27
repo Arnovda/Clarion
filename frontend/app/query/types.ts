@@ -128,6 +128,12 @@ export interface Message {
   policyNotice?:       string;
   /** Blocked answers: the backend notified the tenant's admins of the gap. */
   adminNotified?:      boolean;
+  /**
+   * The answer was served from a curator-approved saved question (exact
+   * normalized match) — human-attributed trust, the strongest tier. The
+   * trust line renders "Verified by your team".
+   */
+  verified?:           boolean;
   reasoning?:          string;             // Claude's extended thinking, stored for replay
   queryLayer?:         'product' | 'source'; // which data layer was queried
   feedback?:           'up' | 'down' | null;

@@ -67,6 +67,7 @@ function resolveDataLayer(requested: unknown, hasProduct: boolean): DataLayer {
 // Sub-score confidence check — blocks if overall < 0.7 OR any sub-score < 0.5
 import type { NlToSqlOutput } from '../ai/prompts/nlToSqlPrompt';
 import { buildCacheKey, getCachedSql, putCachedSql } from '../services/queryCache';
+import { findVerifiedQuestion, recordVerifiedUse } from '../services/savedQuestions';
 import { isSafeReadQuery, assertSafeReadQuery } from '../utils/sqlGuard';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import { logger as rootLogger } from '../utils/logger';
@@ -1236,6 +1237,82 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     const conversationHistory = conversationId
       ? await loadConversationHistory(db, conversationId)
       : undefined;
+
+    // ── VERIFIED SAVED QUESTION — exact match, fresh questions only ────────
+    // A curator-approved question skips generation entirely and runs its
+    // approved SQL: the Genie trusted-asset / Cortex verified-query pattern,
+    // exact-match only (owner decision §8.3). Follow-ups never match — the
+    // history changes what "the same question" means. Any failure here
+    // (schema drifted, warehouse away) falls through to normal generation.
+    if (!conversationHistory || conversationHistory.length === 0) {
+      try {
+        const vq = await findVerifiedQuestion(db, req.user!.tenantId, connectionId, question);
+        if (vq) {
+          emit({ type: 'phase', text: 'Loading context…' });
+          if (vq.tables_used?.length) emit({ type: 'tables', tables: vq.tables_used });
+          const vPriv = req.user?.role === 'admin' || req.user?.role === 'analyst';
+          if (vPriv) emit({ type: 'sql_ready', sql: vq.sql, confidence: 1, tablesUsed: vq.tables_used ?? [] });
+
+          emit({ type: 'phase', text: 'Running your query…' });
+          const vPolicy = await applyDataPolicies(vq.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
+          let vRows: Record<string, unknown>[];
+          if (vq.data_layer === 'product') {
+            const vTenantId = req.user!.tenantId;
+            const vWarehouse = await semanticDb.transaction(async (trx) => {
+              if (vTenantId) await trx.raw(`SET LOCAL app.current_tenant = '${Number(vTenantId)}'`);
+              return getProductWarehousePath(connectionId, trx);
+            });
+            if (!vWarehouse) throw new Error('product warehouse not materialised');
+            const vConnection = await db('connections').where({ id: connectionId }).first();
+            const vConnector = await createProductConnector(vWarehouse, vConnection.id, vTenantId);
+            await vConnector.connect();
+            try { vRows = (await vConnector.executeQuery(vPolicy.sql)).rows; }
+            finally { vConnector.disconnect(); }
+          } else {
+            const vConnection = await db('connections').where({ id: connectionId }).first();
+            const vConnector = await createConnector(vConnection);
+            await vConnector.connect();
+            try { vRows = (await vConnector.executeQuery(vPolicy.sql)).rows; }
+            finally { vConnector.disconnect(); }
+          }
+
+          emit({ type: 'phase', text: 'Writing the answer…' });
+          const [vAnswer, vSources] = await Promise.all([
+            formatAnswer(question, vRows),
+            resolveAnswerSources(db, req.user!.tenantId, vq.tables_used ?? []),
+          ]);
+          await db('query_log').insert({
+            tenant_id: req.user!.tenantId, user_id: req.user!.sub,
+            question_text: question, generated_sql: vq.sql,
+            confidence_score: 1, was_flagged: false,
+            executed: true, result_summary: vAnswer,
+          });
+          // Usage accounting rides the ROOT pool, never the request trx — a
+          // failed counter update must not poison the shared transaction
+          // (25P02) under the answer that already streamed. The service also
+          // swallows internally; the catch is belt-and-braces.
+          recordVerifiedUse(semanticDb, vq.id).catch(() => {}); // fire-and-forget
+
+          emit({ type: 'done', data: {
+            answer: vAnswer, confidence: 1,
+            blocked: false, verified: true,
+            tablesUsed: vq.tables_used ?? [], queryLayer: vq.data_layer,
+            ...(vPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
+            rows: vRows.slice(0, 200), sql: vq.sql,
+            sources: vSources,
+            answeredInMs: Date.now() - askedAt,
+            ...(vq.visualization && typeof vq.visualization.type === 'string' ? { visualization: vq.visualization } : {}),
+            debug: { hint: 'Answered from a verified saved question — the approved SQL was reused, no generation ran.' },
+          }});
+          sse.end();
+          return;
+        }
+      } catch (err) {
+        // Fall through to normal generation — a verified row must never be
+        // able to break the question it was meant to speed up.
+        log.warn({ err }, '[/think] verified saved question failed — falling back to generation');
+      }
+    }
 
     // ── 0. Resolve data layer (default = product when available) ───────────
     emit({ type: 'phase', text: 'Loading context…' });

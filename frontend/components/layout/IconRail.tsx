@@ -76,6 +76,9 @@ const NAV_ITEMS: NavItem[] = [
   // ── Uncover — the ways you interrogate the data ──────────────────────────
   { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  // The root-cause agent — fully built since months but had ZERO nav links
+  // (gap analysis G10). Ask AI's "Why?" chips escalate here too.
+  { key: 'investigate', href: '/investigate', label: 'Investigate',   icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   // The Subjects hub — every topic plus Shared data, with the descriptions
   // and freshness a rail row could never show. Stays lit on /topics/* and
   // /shared-data via ROUTE_ALIASES so deep links don't orphan the state.

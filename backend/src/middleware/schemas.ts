@@ -476,6 +476,49 @@ export const updateConversationSchema = z.object({
   }).passthrough(),
 });
 
+// ---------------------------------------------------------------------------
+// Saved questions (Ask AI Release 3)
+// ---------------------------------------------------------------------------
+
+export const createSavedQuestionSchema = z.object({
+  body: z.object({
+    question: nonBlankString,
+    sql: nonBlankString,
+    tablesUsed: z.array(z.string()).optional(),
+    visualization: jsonObject.optional(),
+    connectionId: positiveInt,
+    dataLayer: dataLayerEnum,
+    // Honoured only for admin/analyst callers; forced false otherwise.
+    verified: z.boolean().optional(),
+  }).passthrough(),
+});
+
+export const verifySavedQuestionSchema = z.object({
+  params: z.object({ id: positiveInt }),
+  body: z.object({ verified: z.boolean() }).passthrough(),
+});
+
+export const deleteSavedQuestionSchema = z.object({
+  params: z.object({ id: positiveInt }),
+});
+
+// POST /dashboards/pin-widget — append a chat answer to a dashboard (or start
+// a new one from it). The widget SQL is client-derived from the answer's SQL
+// + visualization hint; it is still guarded (assertSafeReadQuery) and runs
+// under the same sqlGuard + policy machinery as every dashboard widget.
+export const pinWidgetSchema = z.object({
+  body: z.object({
+    dashboardId: optionalPositiveInt,
+    connectionId: positiveInt,
+    title: optionalString,
+    widget: z.object({
+      type: z.enum(['kpi_card', 'bar_chart', 'line_chart', 'stacked_bar_chart', 'pie_chart', 'data_table']),
+      title: nonBlankString,
+      sql: nonBlankString,
+    }).passthrough(),
+  }).passthrough(),
+});
+
 // PATCH /conversations/:id/messages/:messageId — in-place update of a stored
 // message (the repair loop's corrected-answer persistence). Every field is
 // optional; the handler 400s when nothing updatable was sent.

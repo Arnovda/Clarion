@@ -11,10 +11,29 @@
 
 import { useEffect, useState, type FormEvent } from 'react';
 import api from '@/lib/api';
+import { getTokenPayload } from '@/lib/auth';
+import { BadgeCheck, Clock3, Trash2 } from 'lucide-react';
 
 interface PersonalisedStarter {
   question: string;
   kind: 'trend' | 'compare' | 'rank' | 'why' | 'state';
+}
+
+/** One movement bullet from today's morning brief (services/morningBriefService). */
+interface BriefBullet {
+  kind:   'movement' | 'steady' | 'warn';
+  label:  string;
+  delta:  string;
+  detail: string;
+}
+
+interface SavedQuestionRow {
+  id:           number;
+  question:     string;
+  verified:     boolean;
+  times_used:   number;
+  creator_name: string | null;
+  created_by:   number;
 }
 
 const FALLBACK_STARTERS: PersonalisedStarter[] = [
@@ -51,9 +70,22 @@ export default function EmptyState({
   // Personalised starters — fetched once on mount, cached on the server
   // for 24h. Falls back to generic starters until the response lands.
   const [personalised, setPersonalised] = useState<PersonalisedStarter[] | null>(null);
+  // Proactive "Since yesterday" — today's morning brief bullets, reused as
+  // clickable entry points (the brief already exists server-side; zero AI
+  // calls here). Null until (and unless) a brief exists.
+  const [briefBullets, setBriefBullets] = useState<BriefBullet[] | null>(null);
+  // Saved questions — the tenant's library, Verified first.
+  const [saved, setSaved] = useState<SavedQuestionRow[] | null>(null);
   useEffect(() => {
-    if (productContext) return;  // product context wins; skip the network
     let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.get('/saved-questions');
+        const rows = (res.data?.data ?? []) as SavedQuestionRow[];
+        if (!cancelled) setSaved(rows);
+      } catch { /* the block simply doesn't render */ }
+    })();
+    if (productContext) return () => { cancelled = true; };  // product context wins for starters/brief
     (async () => {
       try {
         const res = await api.get('/query/starters');
@@ -63,8 +95,57 @@ export default function EmptyState({
         }
       } catch { /* fall through to defaults */ }
     })();
+    (async () => {
+      try {
+        const res = await api.get('/briefs/today');
+        const content = res.data?.data?.content as { bullets?: BriefBullet[] } | undefined;
+        if (!cancelled && content?.bullets && content.bullets.length > 0) {
+          setBriefBullets(content.bullets.slice(0, 3));
+        }
+      } catch { /* no brief yet — nothing to show */ }
+    })();
     return () => { cancelled = true; };
   }, [productContext]);
+
+  // ── Saved-question curator actions (admin + analyst) ──
+  // `canQuerySource` is already "admin or analyst" per the role table, which
+  // is exactly the curator set — reused rather than adding a second prop.
+  const canCurate = !!canQuerySource;
+  const [schedulingId, setSchedulingId] = useState<number | null>(null);
+  const [scheduledIds, setScheduledIds] = useState<Set<number>>(new Set());
+
+  const toggleVerify = async (q: SavedQuestionRow) => {
+    try {
+      await api.patch(`/saved-questions/${q.id}/verify`, { verified: !q.verified });
+      setSaved((prev) => (prev ?? []).map((r) => (r.id === q.id ? { ...r, verified: !q.verified } : r)));
+    } catch { /* leave as-is */ }
+  };
+
+  const removeSaved = async (q: SavedQuestionRow) => {
+    if (!window.confirm(`Remove the saved question "${q.question}"?`)) return;
+    try {
+      await api.delete(`/saved-questions/${q.id}`);
+      setSaved((prev) => (prev ?? []).filter((r) => r.id !== q.id));
+    } catch { /* leave as-is */ }
+  };
+
+  const scheduleSaved = async (q: SavedQuestionRow, cadence: 'daily' | 'weekly') => {
+    const email = getTokenPayload()?.email;
+    if (!email) return;
+    try {
+      await api.post('/email-schedules', {
+        saved_question_id: q.id,
+        name: `${q.question.replace(/\?+\s*$/, '').slice(0, 80)} (${cadence})`,
+        recipients: [email],
+        // 08:00 daily / Monday 08:00 — server-side cron, same vehicle as
+        // dashboard report schedules.
+        cron_expression: cadence === 'daily' ? '0 8 * * *' : '0 8 * * 1',
+      });
+      setScheduledIds((prev) => new Set(prev).add(q.id));
+    } catch { /* leave as-is */ } finally {
+      setSchedulingId(null);
+    }
+  };
 
   // Resolution order: product-context KPIs → personalised → fallback.
   const kpiQuestions = (productContext?.kpis ?? []).slice(0, 4).map((kpi) => ({
@@ -137,6 +218,111 @@ export default function EmptyState({
           </div>
         </div>
       </form>
+
+      {/* Proactive entry — today's brief bullets as clickable "why" doors.
+          Only renders when a brief exists; deliberately quiet otherwise. */}
+      {briefBullets && briefBullets.length > 0 && (
+        <div className="mt-10 w-full">
+          <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2 font-medium mb-3 text-left">
+            Since yesterday
+          </div>
+          <div className="space-y-2">
+            {briefBullets.map((b) => (
+              <button
+                key={b.label + b.delta}
+                type="button"
+                onClick={() => onStarter(`Why did ${b.label} change since yesterday?`)}
+                className="w-full text-left px-4 py-3 rounded-sm border border-line bg-raised hover:border-line-strong hover:bg-softer transition-colors duration-1 ease-observatory group flex items-start gap-3"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`mt-[5px] w-2 h-2 rounded-full shrink-0 ${
+                    b.kind === 'warn' ? 'bg-warn' : b.kind === 'movement' ? 'bg-ocean' : 'bg-line-strong'
+                  }`}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[13.5px] text-ink-2 group-hover:text-ink leading-snug">
+                    <span className="font-medium">{b.label}</span>
+                    {b.delta && b.delta !== '—' && <span className="text-muted"> · {b.delta}</span>}
+                  </span>
+                  <span className="block mt-0.5 text-[12px] text-muted leading-snug">{b.detail}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* The saved-questions library — Verified first. Clicking asks it;
+          curators can verify, schedule an email, or remove. */}
+      {saved && saved.length > 0 && (
+        <div className="mt-10 w-full">
+          <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2 font-medium mb-3 text-left">
+            Your saved questions
+          </div>
+          <div className="space-y-1.5">
+            {saved.slice(0, 6).map((q) => (
+              <div
+                key={q.id}
+                className="flex items-center gap-2 px-3 py-2 rounded-sm border border-line bg-raised hover:border-line-strong transition-colors duration-1 ease-observatory group"
+              >
+                <button
+                  type="button"
+                  onClick={() => onStarter(q.question)}
+                  className="flex-1 min-w-0 text-left text-[13.5px] text-ink-2 group-hover:text-ink leading-snug truncate"
+                  title={q.question}
+                >
+                  {q.question}
+                </button>
+                {q.verified && (
+                  <span className="inline-flex items-center gap-1 text-[9.5px] font-mono uppercase tracking-[0.08em] text-ok shrink-0" title="A curator approved this question's query — Ask AI reuses it verbatim">
+                    <BadgeCheck className="w-3 h-3" strokeWidth={2} />
+                    Verified
+                  </span>
+                )}
+                {canCurate && (
+                  <span className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      type="button"
+                      onClick={() => toggleVerify(q)}
+                      className={`p-1 rounded hover:bg-softer ${q.verified ? 'text-ok' : 'text-muted-2 hover:text-ok'}`}
+                      title={q.verified ? 'Remove verification' : 'Verify — Ask AI will reuse this exact query for this question'}
+                    >
+                      <BadgeCheck className="w-3.5 h-3.5" strokeWidth={2} />
+                    </button>
+                    {scheduledIds.has(q.id) ? (
+                      <span className="px-1 text-[9.5px] font-mono uppercase tracking-[0.08em] text-ok">Scheduled</span>
+                    ) : schedulingId === q.id ? (
+                      <span className="flex items-center gap-1 text-[10px]">
+                        <button type="button" onClick={() => scheduleSaved(q, 'daily')} className="px-1.5 py-0.5 rounded border border-line hover:border-ocean text-ink-3 hover:text-ocean">Daily</button>
+                        <button type="button" onClick={() => scheduleSaved(q, 'weekly')} className="px-1.5 py-0.5 rounded border border-line hover:border-ocean text-ink-3 hover:text-ocean">Weekly</button>
+                        <button type="button" onClick={() => setSchedulingId(null)} className="px-1 text-muted-2 hover:text-ink-3">✕</button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setSchedulingId(q.id)}
+                        className="p-1 rounded text-muted-2 hover:text-ocean hover:bg-softer"
+                        title="Email me this answer on a schedule"
+                      >
+                        <Clock3 className="w-3.5 h-3.5" strokeWidth={2} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeSaved(q)}
+                      className="p-1 rounded text-muted-2 hover:text-err hover:bg-softer"
+                      title="Remove this saved question"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
+                    </button>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mt-10 w-full">
         <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2 font-medium mb-3 text-left">

@@ -324,6 +324,9 @@ router.patch('/messages/:id/feedback', async (req: Request, res: Response, next:
           trx('definition_gaps').insert({
             tenant_id: req.user!.tenantId,
             gap_description: `User reported incorrect answer. Question: "${fullMsg.question}"${comment ? `. Comment: "${comment}"` : ''}`,
+            // Link to the exchange so the gaps page can show the answer +
+            // SQL and offer one-click "fix & verify" (Release 3 curation).
+            conversation_message_id: messageId,
             resolved: false,
           }),
         undefined);

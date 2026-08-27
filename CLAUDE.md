@@ -31,7 +31,85 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (ASK AI RELEASES 1+2 SHIPPED — same day as the assessment below, which is their spec)
+**Last updated:** 2026-08-27 (ASK AI RELEASE 3 "ANSWERS GO SOMEWHERE" SHIPPED — third slice of the same day; R1+R2 below are on main)
+
+**ASK AI RELEASE 3 "ANSWERS GO SOMEWHERE" IS BUILT (2026-08-27; implements
+the assessment's §6 R3 with the owner's §8.3 decision: verified-answer
+matching is EXACT normalized match only). Answers are destinations now —
+save, verify, pin, schedule, and the feedback loop closes into curation:**
+- **Migration 83 (`saved_questions` + schedule/gap wiring):**
+  `saved_questions` (canonical RLS dance; `normalized_question`, `sql`,
+  `tables_used`/`visualization` jsonb, `connection_id`, `data_layer`,
+  `verified`/`verified_by`/`verified_at`, `times_used`/`last_used_at`;
+  UNIQUE `(tenant_id, connection_id, normalized_question)`);
+  `email_schedules.dashboard_id` dropped NOT NULL + new `saved_question_id`
+  FK + CHECK exactly-one-target; `definition_gaps.conversation_message_id`
+  FK (SET NULL).
+- **THE VERIFIED TIER — human-attributed trust, the strongest mark.**
+  `services/savedQuestions.ts`: `normalizeQuestion` (lowercase, collapse
+  whitespace, strip trailing punctuation — deliberately conservative, a
+  false match serves someone else's SQL), `findVerifiedQuestion` (exact
+  match, explicit tenant filter), `recordVerifiedUse`. `/query/think`
+  checks it FIRST (fresh questions only, no conversation history): on a hit
+  the approved SQL runs (policies still applied, product or source layer),
+  the answer formats + sources resolve as usual, `done` carries
+  `{verified: true, confidence: 1}`, and the trust line reads **"★ Verified
+  by your team"**. ANY error falls through to normal generation
+  (`log.warn`) — a verified row must never break the question it speeds up.
+  Usage counter rides the ROOT pool, not the request trx (the
+  shared-trx-catch ratchet caught the first version).
+- **Routes `/api/saved-questions`** (list all roles; save all roles with
+  `assertSafeReadQuery` at SAVE time — an unsafe query must never be
+  stored, since verified rows bypass generation; `verified` honoured only
+  for admin/analyst; 409 on normalized duplicate; PATCH `/:id/verify`
+  admin+analyst; DELETE creator-or-curator; every mutation explicit
+  tenant_id filter, foreign ids 404). All Zod-validated.
+- **`POST /api/dashboards/pin-widget`** (Zod; widget type enum kpi_card |
+  bar/line/stacked_bar/pie chart | data_table): appends a widget to an
+  OWNED dashboard's spec or creates a new dashboard from the answer
+  ("Pinned from Ask AI"). The widget SQL is derived CLIENT-side
+  (`widgetFromMessage` in MessageBubble: single scalar → kpi_card `SELECT
+  x AS value FROM (…) AS _pin`; viz hint bar/line/pie → label/value;
+  stacked → +series; else data_table; identifiers double-quote-escaped,
+  trailing semicolons stripped, hint keys used only when actually present
+  in the result columns) and re-guarded SERVER-side. Zero AI calls.
+- **Scheduled question emails**: `email_schedules` rows targeting a saved
+  question; `reportEmailService.sendScheduledReport` branches to
+  `sendScheduledQuestion` (runs the saved SQL on the right layer, optional
+  AI summary, one-section HTML email). `emailSchedules` routes accept
+  either target (exactly-one enforced + 404 on missing question);
+  list leftJoins both and ships `saved_question_text`.
+- **Answer card actions (MessageBubble)**: **Save question** (POST, states
+  saving/saved/already-saved) and **Pin to dashboard** (popover: owned
+  dashboards — filtered by the JWT sub — or "+ New dashboard from this
+  answer"; after pinning the button becomes a link `/dashboards?id=N`).
+  Both render only when the message has SQL and a concrete `c:` connection.
+- **EmptyState is proactive now**: **"Since yesterday"** — today's morning
+  brief bullets (GET /briefs/today, zero AI calls) as clickable doors →
+  "Why did <label> change since yesterday?"; **"Your saved questions"** —
+  the library, Verified badge first, click asks it; curators (the existing
+  admin+analyst prop) get inline verify-toggle / delete / schedule
+  (Daily/Weekly → POST /email-schedules with the caller's own email,
+  08:00 cron).
+- **The feedback loop closes on /gaps**: feedback gaps now show the answer
+  the user was given (`message_answer` snippet via the R1 LEFT join), and
+  a **"Fix & verify"** button saves question+SQL as a VERIFIED saved
+  question (409 tolerated) then resolves the gap — thumbs-down →
+  curation → the next asker gets the approved answer. `/reports/gaps`
+  ships `message_question/answer/sql/query_layer/source_key`.
+- **Investigate is on the rail** (gap analysis G10 closed): Uncover group,
+  all roles, Search icon — the fully-built root-cause agent had ZERO nav
+  links since it shipped.
+- Validation: backend `npm run check` clean; **full suite 41 files / 400
+  passed** (12 new in `saved-questions.test.ts`: normalization, unsafe-SQL
+  400 + nothing stored, viewer-verified silently false, normalized-dup
+  409, tenant isolation as 404 on list/verify/delete, viewer 403s,
+  pin-widget create/append/foreign-404/unsafe-400); all eight ratchets
+  green (shared-trx-catch caught + fixed the verified-use counter on the
+  request trx); frontend `tsc` clean, touched files lint-clean, `next
+  build` green.
+
+**Prior last updated:** 2026-08-27 (ASK AI RELEASES 1+2 SHIPPED — same day as the assessment below, which is their spec)
 
 **ASK AI RELEASE 1 "TELL THE TRUTH" + RELEASE 2 "THE ANSWER CARD" ARE BUILT
 (2026-08-27; implements the assessment's §6 R1+R2 with the owner's settled

@@ -1,11 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema } from '../middleware/schemas';
+import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema, pinWidgetSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
-import { DashboardSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
+import { DashboardSpec, WidgetSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
@@ -1426,6 +1426,85 @@ router.post('/', requireAuth, validate(createDashboardSchema), async (req: Reque
 
     const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
     res.json({ ok: true, data: { id } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/pin-widget — pin a chat answer as a dashboard widget
+//
+// Ask AI Release 3: answers are destinations, not dead ends (the ThoughtSpot
+// Spotter "Pin" pattern). The widget's SQL is derived client-side from the
+// answer's SQL + visualization hint (column aliases wrapped to the widget
+// contract); here it is guarded (assertSafeReadQuery) and appended to an
+// OWNED dashboard's spec — or a new dashboard is started from it when no
+// dashboardId is given. Zero AI calls.
+// ---------------------------------------------------------------------------
+
+router.post('/pin-widget', requireAuth, validate(pinWidgetSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { dashboardId, connectionId, title, widget } = req.body as {
+      dashboardId?: number;
+      connectionId: number;
+      title?: string;
+      widget: { type: WidgetSpec['type']; title: string; sql: string };
+    };
+
+    try {
+      assertSafeReadQuery(widget.sql);
+    } catch {
+      res.status(400).json({ ok: false, error: 'Only read-only queries can be pinned.' });
+      return;
+    }
+
+    const newWidget: WidgetSpec = {
+      id: `pin_${Date.now()}`,
+      type: widget.type,
+      title: widget.title.slice(0, 120),
+      sql: widget.sql,
+      colSpan: widget.type === 'kpi_card' ? 1 : widget.type === 'data_table' ? 4 : 2,
+    };
+
+    if (dashboardId) {
+      // Append to an OWNED dashboard (same ownership rule as PATCH /:id).
+      const row = await db('dashboards')
+        .where({ id: dashboardId, user_id: req.user!.sub })
+        .first();
+      if (!row) {
+        res.status(404).json({ ok: false, error: 'Dashboard not found or not owned by you' });
+        return;
+      }
+      const spec = (typeof row.spec === 'string' ? JSON.parse(row.spec) : row.spec) as DashboardSpec;
+      spec.widgets = [...(spec.widgets ?? []), newWidget];
+      await db('dashboards').where({ id: row.id }).update({
+        spec: JSON.stringify(spec),
+        updated_at: new Date().toISOString(),
+      });
+      res.json({ ok: true, data: { id: row.id, widgetId: newWidget.id } });
+      return;
+    }
+
+    // No target — start a new dashboard from this one answer.
+    const spec: DashboardSpec = {
+      title: (title ?? widget.title).slice(0, 120),
+      description: 'Pinned from Ask AI',
+      filters: [],
+      widgets: [newWidget],
+      dataLayer: 'product',
+    };
+    const [row] = await db('dashboards')
+      .insert({
+        user_id: req.user!.sub,
+        connection_id: connectionId,
+        title: spec.title,
+        description: spec.description,
+        spec: JSON.stringify(spec),
+      })
+      .returning('id');
+    const id: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+    res.json({ ok: true, data: { id, widgetId: newWidget.id, created: true } });
   } catch (err) {
     next(err);
   }

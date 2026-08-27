@@ -18,6 +18,13 @@ interface Gap {
   hit_count: number;
   last_hit_at: string;
   created_at: string;
+  // Present for feedback-reported gaps since R3 (LEFT join on the flagged
+  // conversation message) — powers "Fix & verify".
+  message_question?: string | null;
+  message_answer?: string | null;
+  message_sql?: string | null;
+  message_query_layer?: 'product' | 'source' | null;
+  message_source_key?: string | null; // "c:<connectionId>" or "v:<viewId>"
 }
 
 interface QueryLogRow {
@@ -118,6 +125,40 @@ function GapsPageInner() {
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Please try again.';
       toast.error('Could not resolve gap', { description: msg });
+    }
+  }
+
+  // "Fix & verify" — a thumbs-down gap whose corrected/current SQL is on the
+  // flagged message becomes a VERIFIED saved question in one click: the next
+  // time anyone asks this exact question, Ask AI runs the approved SQL and the
+  // answer card says "Verified by your team". Then the gap is resolved.
+  const [fixingId, setFixingId] = useState<number | null>(null);
+  async function fixAndVerify(g: Gap) {
+    const question = g.message_question ?? g.question_text;
+    const sourceKey = g.message_source_key ?? '';
+    if (!question || !g.message_sql || !sourceKey.startsWith('c:')) return;
+    setFixingId(g.id);
+    try {
+      try {
+        await api.post('/saved-questions', {
+          question,
+          sql: g.message_sql,
+          connectionId: Number(sourceKey.slice(2)),
+          dataLayer: g.message_query_layer ?? 'product',
+          verified: true,
+        });
+      } catch (err) {
+        // Already saved is fine — the question exists; still resolve the gap.
+        if ((err as { response?: { status?: number } })?.response?.status !== 409) throw err;
+      }
+      await api.patch(`/reports/gaps/${g.id}/resolve`);
+      await loadGaps();
+      toast.success('Saved as a verified question', { description: 'Ask AI will reuse this exact query for this question.' });
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Please try again.';
+      toast.error('Could not verify', { description: msg });
+    } finally {
+      setFixingId(null);
     }
   }
 
@@ -252,6 +293,15 @@ function GapsPageInner() {
                         {g.question_text && (
                           <p className="text-[13px] text-ink-3 mt-2 leading-relaxed">{g.gap_description}</p>
                         )}
+                        {/* Feedback gap with the flagged message attached —
+                            show what the user was told, so the reviewer can
+                            judge the answer without leaving this page. */}
+                        {g.message_answer && (
+                          <p className="text-[12.5px] text-muted mt-2 leading-relaxed line-clamp-3">
+                            <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-muted-2 mr-1.5">Answer given</span>
+                            {g.message_answer}
+                          </p>
+                        )}
                         <div className="flex items-center gap-2 mt-3">
                           {g.hit_count > 1 && (
                             <span className={`${BADGE_CLS} bg-ocean-softer text-ocean`}>
@@ -261,12 +311,22 @@ function GapsPageInner() {
                           <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2">{new Date(g.created_at).toLocaleDateString('nl-BE')}</span>
                         </div>
                       </div>
-                      <div className="shrink-0">
+                      <div className="shrink-0 flex flex-col items-end gap-2">
                         {!g.resolved ? (
-                          <button onClick={() => resolveGap(g.id)}
-                            className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors">
-                            Mark resolved
-                          </button>
+                          <>
+                            {(g.message_question ?? g.question_text) && g.message_sql && (g.message_source_key ?? '').startsWith('c:') && (
+                              <button onClick={() => fixAndVerify(g)}
+                                disabled={fixingId === g.id}
+                                title="Save this question with its query as team-verified, then resolve the gap"
+                                className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors disabled:opacity-50">
+                                {fixingId === g.id ? 'Verifying…' : 'Fix & verify'}
+                              </button>
+                            )}
+                            <button onClick={() => resolveGap(g.id)}
+                              className="px-3 py-1.5 text-[12px] font-medium border border-line text-ink-3 rounded-md hover:border-line-strong hover:text-ink transition-colors">
+                              Mark resolved
+                            </button>
+                          </>
                         ) : (
                           <span className={`${BADGE_CLS} bg-ok-soft text-ok`}>Resolved</span>
                         )}

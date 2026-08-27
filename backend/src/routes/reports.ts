@@ -94,10 +94,25 @@ router.get('/gaps', requireAuth, requireRole('admin'), async (req: Request, res:
     // this page — the 2026-08-27 Ask AI assessment's defect A6. Their
     // question text lives inside gap_description instead.
     const baseQuery = db('definition_gaps')
-      .leftJoin('query_log', 'definition_gaps.query_log_id', 'query_log.id');
+      .leftJoin('query_log', 'definition_gaps.query_log_id', 'query_log.id')
+      // Feedback-reported gaps carry the exchange they report (Release 3):
+      // question + answer + SQL + the conversation's source, so a curator
+      // can judge the answer and promote a corrected one into the verified
+      // set without hunting through chat history. Admin-only route, so the
+      // SQL is safe to ship here.
+      .leftJoin('conversation_messages as cm', 'definition_gaps.conversation_message_id', 'cm.id')
+      .leftJoin('conversations as cc', 'cm.conversation_id', 'cc.id');
     const [{ count: total }] = await baseQuery.clone().count('* as count');
     const rows = await baseQuery
-      .select('definition_gaps.*', 'query_log.question_text')
+      .select(
+        'definition_gaps.*',
+        'query_log.question_text',
+        'cm.question as message_question',
+        'cm.content as message_answer',
+        'cm.sql as message_sql',
+        'cm.query_layer as message_query_layer',
+        'cc.source_key as message_source_key',
+      )
       .orderByRaw('definition_gaps.resolved ASC, definition_gaps.hit_count DESC, definition_gaps.last_hit_at DESC')
       .limit(limit)
       .offset(offset);

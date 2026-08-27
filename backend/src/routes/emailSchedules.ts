@@ -27,16 +27,21 @@ const router = Router();
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { dashboardId } = req.query;
+    const { dashboardId, savedQuestionId } = req.query;
+    // LEFT joins since migration 83: a schedule targets a dashboard XOR a
+    // saved question.
     let query = db('email_schedules')
       .select(
         'email_schedules.*',
         'dashboards.title as dashboard_title',
+        'saved_questions.question as saved_question_text',
       )
-      .join('dashboards', 'dashboards.id', 'email_schedules.dashboard_id')
+      .leftJoin('dashboards', 'dashboards.id', 'email_schedules.dashboard_id')
+      .leftJoin('saved_questions', 'saved_questions.id', 'email_schedules.saved_question_id')
       .orderBy('email_schedules.created_at', 'desc');
 
     if (dashboardId) query = query.where({ 'email_schedules.dashboard_id': Number(dashboardId) });
+    if (savedQuestionId) query = query.where({ 'email_schedules.saved_question_id': Number(savedQuestionId) });
 
     const rows = await query;
     res.json({ ok: true, data: rows });
@@ -63,15 +68,22 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 router.post('/', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { dashboard_id, name, recipients, cron_expression, enabled = true, ai_summary = true } = req.body;
+    const { dashboard_id, saved_question_id, name, recipients, cron_expression, enabled = true, ai_summary = true } = req.body;
 
-    if (!dashboard_id || !name || !cron_expression) {
-      res.status(400).json({ ok: false, error: 'dashboard_id, name, and cron_expression are required' });
+    // Exactly one target — dashboard XOR saved question (migration 83's CHECK
+    // backs this at the schema level).
+    const targets = [dashboard_id, saved_question_id].filter(Boolean).length;
+    if (targets !== 1 || !name || !cron_expression) {
+      res.status(400).json({ ok: false, error: 'Exactly one of dashboard_id / saved_question_id, plus name and cron_expression, are required' });
       return;
     }
     if (!Array.isArray(recipients) || recipients.length === 0) {
       res.status(400).json({ ok: false, error: 'recipients must be a non-empty array of email addresses' });
       return;
+    }
+    if (saved_question_id) {
+      const sq = await db('saved_questions').where({ id: Number(saved_question_id) }).first();
+      if (!sq) { res.status(404).json({ ok: false, error: 'Saved question not found' }); return; }
     }
 
     // Pull from the authenticated JWT, NOT a hypothetical req.tenantId
@@ -84,7 +96,8 @@ router.post('/', requireAuth, requireRole('admin', 'analyst'), async (req: Reque
     const [row] = await db('email_schedules')
       .insert({
         tenant_id: tenantId,
-        dashboard_id,
+        dashboard_id: dashboard_id ?? null,
+        saved_question_id: saved_question_id ?? null,
         name,
         recipients: JSON.stringify(recipients),
         cron_expression,
