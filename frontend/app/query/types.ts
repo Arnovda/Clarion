@@ -61,6 +61,20 @@ export interface ClarifyOption {
   interpretation: string;
 }
 
+/**
+ * One table this answer was computed from, with its own freshness — resolved
+ * server-side (routes/query.ts resolveAnswerSources) with zero AI calls.
+ * Drives the answer card's "Data as of …" trust line and the "How I got
+ * this" source list with catalog deep links.
+ */
+export interface AnswerSource {
+  name:            string;
+  kind:            'product' | 'source' | 'unknown';
+  lastRefreshedAt: string | null;
+  productName?:    string | null;
+  sourceName?:     string | null;
+}
+
 export interface Message {
   id:                  number;
   role:                'user' | 'assistant';
@@ -95,7 +109,25 @@ export interface Message {
   errorStack?:         string;             // stack trace (admin/analyst only)
   debug?:              DebugInfo;
   rows?:               Record<string, unknown>[];
-  wasRepaired?:        boolean;            // prevents re-triggering repair on already-fixed answers
+  wasRepaired?:        boolean;            // the answer was corrected by the repair loop
+  /**
+   * The repair loop is still running on this answer — it was revealed
+   * provisionally after the ~10s hold (owner decision 2026-08-27: hold up to
+   * 10s, then show marked-provisional rather than an unmarked answer that
+   * silently changes under the reader). Cleared when the loop settles.
+   */
+  checking?:           boolean;
+  /** Plain-language trail of what the repair loop checked — "What I checked"
+   *  in the How-I-got-this expander. Persisted in meta. */
+  repairSummary?:      string[];
+  /** Per-answer source freshness (see AnswerSource). Persisted in meta. */
+  sources?:            AnswerSource[];
+  /** Wall-clock time to answer, for the "answered in 9s" receipt. */
+  answeredInMs?:       number;
+  /** Present when data access policies filtered this result. */
+  policyNotice?:       string;
+  /** Blocked answers: the backend notified the tenant's admins of the gap. */
+  adminNotified?:      boolean;
   reasoning?:          string;             // Claude's extended thinking, stored for replay
   queryLayer?:         'product' | 'source'; // which data layer was queried
   feedback?:           'up' | 'down' | null;
@@ -135,19 +167,32 @@ export interface Conversation {
   messages:  Message[];
 }
 
-// ── Ephemeral repair state — never serialised ────────────────────────────────
+// ── Ephemeral repair state ───────────────────────────────────────────────────
+//
+// The live event feed stays ephemeral (the corrected ANSWER is persisted —
+// server-side by /query/repair, plus the plain-language repairSummary in
+// meta — but the block-by-block feed is progress narration, not the record).
+// SQL/rows fields are optional because the backend strips them for viewers.
 
 export type RepairEventKind =
-  | { kind: 'thinking';      text: string }
-  | { kind: 'data_query';    sql: string }
-  | { kind: 'query_result';  rows: Record<string, unknown>[]; rowCount: number }
-  | { kind: 'revised_sql';   sql: string }
+  | { kind: 'thinking';      text: string; detail?: string }
+  | { kind: 'data_query';    sql?: string }
+  | { kind: 'query_result';  rowCount: number; rows?: Record<string, unknown>[] }
+  | { kind: 'revised_sql';   sql?: string }
   | { kind: 'clarification'; question: string };
 
 export interface RepairState {
   forMessageId:          number;
   events:                RepairEventKind[];
   isActive:              boolean;
+  /**
+   * The answer being double-checked, HELD OUT of the transcript while the
+   * repair loop runs (up to ~10s) so a wrong number is never shown, read,
+   * and then silently swapped. After the hold expires it is appended with
+   * `checking: true`; `revealed` tracks whether that has happened.
+   */
+  holdMsg?:              Message;
+  revealed:              boolean;
   pendingClarification?: string;
   pendingHistory?:       Array<{ role: 'user' | 'assistant'; content: string }>;
 }

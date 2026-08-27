@@ -237,6 +237,60 @@ export const askQuestionSchema = z.object({
   }).passthrough(),
 });
 
+// POST /query/think — the streaming chat path. Same contract as POST /query
+// plus the optional product focus. Validation runs BEFORE the SSE stream
+// opens, so a malformed body gets a normal 400 JSON response.
+export const thinkQuerySchema = z.object({
+  body: z.object({
+    question: nonBlankString,
+    connectionId: positiveInt,
+    domains: z.array(z.string()).optional(),
+    conversationId: nullableId,
+    dataLayer: dataLayerEnum,
+    productId: optionalPositiveInt,
+  }).passthrough(),
+});
+
+// POST /query/repair — the agentic repair loop. The client echoes back the
+// original SQL/rows/warning plus (on clarification resume) the accumulated
+// model conversation. Bounded here so a hostile client can't feed the model
+// arbitrary megabytes: history capped at 40 turns, rows at 200.
+export const repairQuerySchema = z.object({
+  body: z.object({
+    connectionId: positiveInt,
+    question: nonBlankString,
+    originalSql: nonBlankString,
+    originalRows: z.array(z.record(z.string(), z.unknown())).max(200),
+    warning: z.string(),
+    conversationHistory: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().max(200_000),
+    })).max(40).optional(),
+    clarificationAnswer: optionalString,
+    dataLayer: dataLayerEnum,
+    conversationId: optionalPositiveInt,
+    messageServerId: optionalPositiveInt,
+  }).passthrough(),
+});
+
+// POST /query/cross-view
+export const crossViewQuerySchema = z.object({
+  body: z.object({
+    viewId: positiveInt,
+    question: nonBlankString,
+    conversationId: nullableId,
+  }).passthrough(),
+});
+
+// POST /query/forecast
+export const forecastQuerySchema = z.object({
+  body: z.object({
+    connectionId: positiveInt,
+    question: nonBlankString,
+    domains: z.array(z.string()).optional(),
+  }).passthrough(),
+});
+
 // ---------------------------------------------------------------------------
 // Dashboards
 // ---------------------------------------------------------------------------
@@ -419,6 +473,25 @@ export const createConversationSchema = z.object({
 export const updateConversationSchema = z.object({
   body: z.object({
     title: nonBlankString,
+  }).passthrough(),
+});
+
+// PATCH /conversations/:id/messages/:messageId — in-place update of a stored
+// message (the repair loop's corrected-answer persistence). Every field is
+// optional; the handler 400s when nothing updatable was sent.
+export const updateConversationMessageSchema = z.object({
+  params: z.object({
+    id: positiveInt,
+    messageId: positiveInt,
+  }),
+  body: z.object({
+    content: optionalString,
+    sql: optionalString,
+    rows: z.array(z.record(z.string(), z.unknown())).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+    warning: nullableOptionalString,
+    wasRepaired: z.boolean().optional(),
+    meta: jsonObject.optional(),
   }).passthrough(),
 });
 

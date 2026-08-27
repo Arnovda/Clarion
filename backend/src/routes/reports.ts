@@ -88,8 +88,13 @@ router.get('/gaps', requireAuth, requireRole('admin'), async (req: Request, res:
   try {
     const db = reqDb(req);
     const { page, limit, offset } = parsePagination(req.query, { limit: 50 });
+    // LEFT join, not inner: gaps created by thumbs-down feedback carry no
+    // query_log_id (routes/conversations.ts feedback handler), and an inner
+    // join made every user-reported bad answer structurally invisible on
+    // this page — the 2026-08-27 Ask AI assessment's defect A6. Their
+    // question text lives inside gap_description instead.
     const baseQuery = db('definition_gaps')
-      .join('query_log', 'definition_gaps.query_log_id', 'query_log.id');
+      .leftJoin('query_log', 'definition_gaps.query_log_id', 'query_log.id');
     const [{ count: total }] = await baseQuery.clone().count('* as count');
     const rows = await baseQuery
       .select('definition_gaps.*', 'query_log.question_text')

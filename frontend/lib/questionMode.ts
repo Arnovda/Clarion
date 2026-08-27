@@ -36,10 +36,21 @@ const INVESTIGATE_PATTERNS: RegExp[] = [
   /^find out why\b/i,                     // "Find out why..."
   /^tell me why\b/i,                      // "Tell me why..."
 
+  // Dutch — the user base is Belgian; "Waarom daalde de omzet?" used to
+  // silently degrade to ask mode because every pattern was English.
+  /^waarom\b/i,                           // "Waarom daalde..."
+  /^hoe komt het\b/i,                     // "Hoe komt het dat..."
+  /^wat (veroorzaakte|verklaart|dreef)\b/i,
+  /^verklaar waarom\b/i,
+  /^zoek uit waarom\b/i,
+  /^onderzoek\b/i,                        // "Onderzoek de daling..."
+
   // Mid-sentence causal phrasings — slightly more permissive
   /\bwhy did .+ (drop|fall|rise|spike|jump|crash|change)/i,
   /\b(reason|cause|root cause) for\b/i,
   /\bwhat (made|made our) /i,
+  /\bwaarom (is|zijn|daalde|steeg|zakte|veranderde)\b/i,
+  /\b(reden|oorzaak) (voor|van)\b/i,
 ];
 
 /**

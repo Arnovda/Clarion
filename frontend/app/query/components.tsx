@@ -66,6 +66,39 @@ export function BoldText({ text }: { text: string }) {
   );
 }
 
+// ─── RichText — markdown-lite for answer prose ──────────────────────────────
+//
+// The answer formatter writes 1–3 sentences but legitimately uses line
+// breaks and "- " lists for enumerations. BoldText alone flattened those
+// into one run-on paragraph. Deliberately NOT a markdown library: bold,
+// line breaks and dash lists are the whole vocabulary the prompt allows.
+
+export function RichText({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const blocks: Array<{ kind: 'p' | 'li'; text: string }> = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^[-•]\s+/.test(trimmed)) blocks.push({ kind: 'li', text: trimmed.replace(/^[-•]\s+/, '') });
+    else blocks.push({ kind: 'p', text: trimmed });
+  }
+  if (blocks.length <= 1) return <BoldText text={blocks[0]?.text ?? text} />;
+  return (
+    <span className="block space-y-1.5">
+      {blocks.map((b, i) =>
+        b.kind === 'li' ? (
+          <span key={i} className="flex gap-2">
+            <span className="text-muted-2 flex-shrink-0">–</span>
+            <span><BoldText text={b.text} /></span>
+          </span>
+        ) : (
+          <span key={i} className="block"><BoldText text={b.text} /></span>
+        ),
+      )}
+    </span>
+  );
+}
+
 // ─── ConfidenceBadge ─────────────────────────────────────────────────────────
 
 export function ConfidenceBadge({ value }: { value: number }) {

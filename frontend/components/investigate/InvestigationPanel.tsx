@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Search } from 'lucide-react';
 import api from '@/lib/api';
+import { useRole, canCurate } from '@/lib/role';
 import InvestigationView from './InvestigationView';
 import { runInvestigation } from '@/lib/investigateRunner';
 import {
@@ -57,6 +58,8 @@ export default function InvestigationPanel({
   question, focus, dataProductId, pulseEntryId, briefId,
   existingId,
 }: Props) {
+  const role = useRole();
+  const canSeeSqlRole = canCurate(role); // admin + analyst, per the role table
   const [investigation, setInvestigation] = useState<Investigation | null>(null);
   const [steps, setSteps] = useState<InvestigationStep[]>([]);
   const [streamStatus, setStreamStatus] = useState<InvestigationStreamStatus>('idle');
@@ -161,6 +164,7 @@ export default function InvestigationPanel({
           steps={steps}
           streamStatus={streamStatus}
           errorReason={errorReason}
+          canSeeSql={canSeeSqlRole}
         />
       </div>
     </div>

@@ -1408,10 +1408,12 @@ export async function formatAnswer(
   // need frontier-model quality; Haiku is ~12× cheaper and runs on every
   // successful query. cacheSystem: the ANSWER_FORMAT_SYSTEM prompt is a
   // small stable string — marginal caching value but zero downside.
+  // temperature 0: everything else on the query path is deterministic — a
+  // cached SQL re-run must not narrate the identical rows differently.
   return callClaude(
     ANSWER_FORMAT_SYSTEM,
     buildAnswerFormatUser(question, rows),
-    { model: MODEL_HAIKU, cacheSystem: true, kind: 'row' },
+    { model: MODEL_HAIKU, cacheSystem: true, temperature: 0, kind: 'row' },
   );
 }
 

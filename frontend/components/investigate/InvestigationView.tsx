@@ -32,10 +32,19 @@ interface Props {
   steps: InvestigationStep[];
   streamStatus: InvestigationStreamStatus;
   errorReason: string | null;
+  /**
+   * REQUIRED, same contract as app/query/thinking.tsx — see the SQL
+   * VISIBILITY note there. Step cards expand to raw SQL + result previews;
+   * CLAUDE.md's non-negotiable is "never show raw SQL to a business user",
+   * and this view renders inside the chat bubble for every role. Required
+   * rather than optional-defaulting-to-false so a new call site must make
+   * the decision explicitly.
+   */
+  canSeeSql: boolean;
 }
 
 export default function InvestigationView({
-  investigation, steps, streamStatus, errorReason,
+  investigation, steps, streamStatus, errorReason, canSeeSql,
 }: Props) {
   return (
     <div>
@@ -95,7 +104,7 @@ export default function InvestigationView({
 
           <div className="space-y-2">
             {steps.map((step) => (
-              <StepCard key={step.id} step={step} />
+              <StepCard key={step.id} step={step} canSeeSql={canSeeSql} />
             ))}
           </div>
 
@@ -115,7 +124,7 @@ export default function InvestigationView({
 // Step card — renders one step's hypothesis, status, finding, optional SQL
 // ───────────────────────────────────────────────────────────────────────────
 
-function StepCard({ step }: { step: InvestigationStep }) {
+function StepCard({ step, canSeeSql }: { step: InvestigationStep; canSeeSql: boolean }) {
   const [showDetails, setShowDetails] = useState(false);
   return (
     <div className="border border-line rounded-md overflow-hidden bg-raised">
@@ -136,15 +145,17 @@ function StepCard({ step }: { step: InvestigationStep }) {
             </div>
           )}
         </div>
-        <button
-          onClick={() => setShowDetails((v) => !v)}
-          className="p-1 rounded hover:bg-soft text-muted-2"
-          title={showDetails ? 'Hide details' : 'Show SQL + preview'}
-        >
-          {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </button>
+        {canSeeSql && (
+          <button
+            onClick={() => setShowDetails((v) => !v)}
+            className="p-1 rounded hover:bg-soft text-muted-2"
+            title={showDetails ? 'Hide details' : 'Show SQL + preview'}
+          >
+            {showDetails ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+        )}
       </div>
-      {showDetails && (
+      {canSeeSql && showDetails && (
         <div className="px-3 pb-3 border-t border-line bg-bg space-y-2 pt-2.5">
           {step.query_sql && (
             <div>

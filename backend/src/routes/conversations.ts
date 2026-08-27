@@ -8,6 +8,7 @@
  * DELETE /api/conversations/:id            — delete conversation + messages
  * PATCH  /api/conversations/:id/star       — toggle starred
  * POST   /api/conversations/:id/messages   — append a message
+ * PATCH  /api/conversations/:id/messages/:messageId — update a message in place
  * PATCH  /api/conversations/messages/:id/feedback — set feedback on a message
  * GET    /api/conversations/:id/export/csv   — export results as CSV
  * GET    /api/conversations/:id/export/xlsx  — export results as Excel
@@ -16,7 +17,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createConversationSchema, updateConversationSchema } from '../middleware/schemas';
+import { createConversationSchema, updateConversationSchema, updateConversationMessageSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { safeQuery } from '../db/safeQuery';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
@@ -163,6 +164,9 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
       wasRepaired?: boolean;
       reasoning?: string;
       queryLayer?: string;
+      /** Display metadata bundle — assumptions, sub-scores, clarify options,
+       *  visualization hint, forecast, sources, repair summary… (migration 82). */
+      meta?: Record<string, unknown>;
     };
 
     if (!msg.role || !msg.content) {
@@ -194,6 +198,7 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
         was_repaired: msg.wasRepaired ?? false,
         reasoning: msg.reasoning ?? null,
         query_layer: msg.queryLayer ?? null,
+        meta: msg.meta && typeof msg.meta === 'object' ? JSON.stringify(msg.meta) : null,
       })
       .returning('*');
 
@@ -211,6 +216,71 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
     await db('conversations').where({ id: conversationId }).update(update);
 
     res.json({ ok: true, data: saved });
+  } catch (err) { next(err); }
+});
+
+// ─── UPDATE a message in place ───────────────────────────────────────────────
+//
+// Exists for the repair loop: a corrected answer must overwrite the wrong one
+// it replaces, or a reload resurrects the wrong number and CSV/Excel export
+// downloads the pre-correction rows (the exact defect the 2026-08-27 Ask AI
+// assessment ranked #1). Called by the /query/repair route server-side after
+// a successful `revised_sql` turn — deliberately NOT trusted to the browser
+// alone, so a viewer whose events are SQL-stripped still gets a persisted
+// correction. Ownership is proven through the conversation's user_id.
+router.patch('/:id/messages/:messageId', validate(updateConversationMessageSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const conversationId = Number(req.params.id);
+    const messageId = Number(req.params.messageId);
+
+    const conv = await db('conversations')
+      .where({ id: conversationId, user_id: req.user!.sub })
+      .first();
+    if (!conv) { res.status(404).json({ ok: false, error: 'Conversation not found' }); return; }
+
+    const body = req.body as {
+      content?: string;
+      sql?: string;
+      rows?: unknown[];
+      confidence?: number;
+      warning?: string | null;
+      wasRepaired?: boolean;
+      meta?: Record<string, unknown>;
+    };
+
+    const update: Record<string, unknown> = {};
+    if (typeof body.content === 'string') update.content = body.content;
+    if (typeof body.sql === 'string') update.sql = body.sql;
+    if (Array.isArray(body.rows)) update.rows = JSON.stringify(body.rows.slice(0, 200));
+    if (typeof body.confidence === 'number') update.confidence = body.confidence;
+    if ('warning' in body) update.warning = body.warning ?? null;
+    if (typeof body.wasRepaired === 'boolean') update.was_repaired = body.wasRepaired;
+    if (body.meta && typeof body.meta === 'object') {
+      // Merge into the existing meta so a repair update can't wipe the
+      // assumptions/visualization the original persist wrote.
+      const existing = await db('conversation_messages')
+        .where({ id: messageId, conversation_id: conversationId })
+        .select('meta')
+        .first();
+      if (!existing) { res.status(404).json({ ok: false, error: 'Message not found' }); return; }
+      const prev = existing.meta
+        ? (typeof existing.meta === 'string' ? JSON.parse(existing.meta) : existing.meta)
+        : {};
+      update.meta = JSON.stringify({ ...prev, ...body.meta });
+    }
+
+    if (Object.keys(update).length === 0) {
+      res.status(400).json({ ok: false, error: 'Nothing to update' });
+      return;
+    }
+
+    const count = await db('conversation_messages')
+      .where({ id: messageId, conversation_id: conversationId })
+      .update(update);
+    if (count === 0) { res.status(404).json({ ok: false, error: 'Message not found' }); return; }
+
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
@@ -304,7 +374,9 @@ router.get('/:id/export/csv', async (req: Request, res: Response, next: NextFunc
     }
 
     const csv = csvLines.join('\r\n');
-    const filename = `clarion-export-${conv.id}.csv`;
+    // Per-message filename — two exports from the same chat must not collide
+    // in the downloads folder.
+    const filename = `clarion-export-${conv.id}${messageId ? `-${messageId}` : ''}.csv`;
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -342,7 +414,7 @@ router.get('/:id/export/xlsx', async (req: Request, res: Response, next: NextFun
     // Build XLSX using a minimal OOXML generator (no external dependency)
     const columns = Object.keys(rows[0]);
     const xlsx = buildXlsxFromRows(columns, rows);
-    const filename = `clarion-export-${conv.id}.xlsx`;
+    const filename = `clarion-export-${conv.id}${messageId ? `-${messageId}` : ''}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

@@ -3,110 +3,133 @@
 /**
  * Two components for visualising what Claude is doing while a query runs.
  *
- * - `ThinkingBubble`: live phase + word-by-word reasoning during a fresh query.
- * - `ThinkingPanel`:  events from the repair loop (diagnostic SQL, revised SQL,
- *                     clarifying questions) and the clarification input.
+ * - `ThinkingBubble`: the PROGRESS TIMELINE — named steps in domain language
+ *   ("Understanding your question" → "Looking at Sales, Receivables" →
+ *   "Running the numbers" → "Writing the answer"), with a bounded two-line
+ *   tail of live reasoning under the active step. This replaced the old
+ *   220ms/word reveal of the raw thinking stream, which was always truncated
+ *   mid-stream and grew without bound (2026-08-27 Ask AI assessment §5.2 —
+ *   the Perplexity progress model). The component unmounts when the answer
+ *   lands; the durable receipt is the answer card's trust line.
+ * - `ThinkingPanel`:  the repair loop, framed as DILIGENCE — "Double-checking
+ *   the result", not an incident log. Renders the loop's narrative events
+ *   and the inline clarification input.
  *
  * Both consume ephemeral state that is never persisted to the conversation.
  *
  * SQL VISIBILITY — read before adding a prop or a call site.
- * These panels stream the generated SQL, the repair loop's diagnostic SQL and
- * its revised SQL. CLAUDE.md's non-negotiable is "never show raw SQL to a
- * business user", and the role table puts the show-query toggle out of a
- * viewer's reach. Both components therefore take a REQUIRED `canSeeSql` flag
- * and hide every SQL block when it is false. It is required rather than
- * optional-defaulting-to-false on purpose: a new call site must make the
- * decision explicitly instead of inheriting a default nobody reads. Without
- * it these panels silently made the admin-only toggle on `MessageBubble`
- * cosmetic, because the same SQL streamed past every role while the query ran.
+ * These panels can show the generated SQL, the repair loop's diagnostic SQL
+ * and its revised SQL. CLAUDE.md's non-negotiable is "never show raw SQL to
+ * a business user"; the role table gives the show-query toggle to admin AND
+ * analyst (owner decision 2026-08-27) and to nobody else. Both components
+ * therefore take a REQUIRED `canSeeSql` flag and hide every SQL block when
+ * it is false. Since the same date, the backend ALSO strips SQL/rows/raw
+ * errors from the repair events for viewer roles — the prop is the second
+ * fence, not the only one.
  *
- * The progress narrative (phase, reasoning text, row COUNTS, clarifying
- * questions) stays visible to everyone — it is what makes the wait legible,
- * and it carries no query text.
+ * The progress narrative (steps, table names, reasoning tail, row COUNTS,
+ * clarifying questions) stays visible to everyone — it is what makes the
+ * wait legible, and it carries no query text.
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Loader2 } from 'lucide-react';
 import { formatSql } from './utils';
+import { humanizeTableName } from '@/lib/humanize';
 import type { RepairState } from './types';
 
-// ─── Live thinking bubble ────────────────────────────────────────────────────
+// ─── Progress timeline ───────────────────────────────────────────────────────
+
+type StepState = 'done' | 'active' | 'pending';
+
+function StepDot({ state }: { state: StepState }) {
+  if (state === 'done') {
+    return <span className="w-2 h-2 rounded-full bg-ok flex-shrink-0" />;
+  }
+  if (state === 'active') {
+    return (
+      <span className="relative flex-shrink-0 w-2 h-2">
+        <span className="absolute inset-0 rounded-full bg-ocean animate-ping opacity-40" />
+        <span className="absolute inset-0 rounded-full bg-ocean" />
+      </span>
+    );
+  }
+  return <span className="w-2 h-2 rounded-full bg-line-strong flex-shrink-0" />;
+}
 
 export function ThinkingBubble({
-  phase, liveText, sql, confidence, canSeeSql,
+  phase, liveText, sql, confidence, tables, canSeeSql,
 }: {
   phase:      string;
   liveText:   string;
   sql:        string | null;
   confidence: number | null;
+  /** Table names from the `tables` SSE event — labels the "Looking at …" step. */
+  tables:     string[];
   /** See the SQL VISIBILITY note at the top of this file. */
   canSeeSql:  boolean;
 }) {
-  // Word-by-word display of live reasoning — ~220 ms/word (readable pace)
-  const [displayed, setDisplayed] = useState('');
-  const fullRef = useRef('');
-  const posRef  = useRef(0);
+  // Map the backend's phase strings onto the step sequence. Unknown phases
+  // (e.g. 'Generating forecast...') fall back to the first step staying
+  // active, which is honest enough.
+  const running = phase === 'Running your query…';
+  const writing = phase === 'Writing the answer…' || phase === 'Formatting answer…';
+  const understandingDone = tables.length > 0 || running || writing;
 
-  useEffect(() => { fullRef.current = liveText; }, [liveText]);
+  const tableLabel = tables.slice(0, 3).map(humanizeTableName).join(', ')
+    + (tables.length > 3 ? '…' : '');
 
-  useEffect(() => {
-    if (liveText === '') { setDisplayed(''); posRef.current = 0; }
-  }, [liveText]);
-
-  useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      if (!alive) return;
-      const full = fullRef.current;
-      let pos = posRef.current;
-      if (pos >= full.length) { setTimeout(tick, 40); return; }
-      while (pos < full.length && (full[pos] === ' ' || full[pos] === '\n')) pos++;
-      while (pos < full.length && full[pos] !== ' '  && full[pos] !== '\n') pos++;
-      if (pos < full.length && full[pos] === ' ') pos++;
-      posRef.current = pos;
-      setDisplayed(full.slice(0, pos));
-      setTimeout(tick, 220);
-    };
-    const t = setTimeout(tick, 100);
-    return () => { alive = false; clearTimeout(t); };
-  }, []);
-
-  const isExecuting = phase === 'Running your query…' || phase === 'Formatting answer…';
+  const steps: Array<{ key: string; label: string; state: StepState; sub?: string }> = [
+    {
+      key: 'understand',
+      label: 'Understanding your question',
+      state: understandingDone ? 'done' : 'active',
+      // Bounded tail of the live reasoning — two clamped lines, replaced as
+      // the stream advances. Never the full accumulating dump.
+      sub: !understandingDone && liveText ? liveText.slice(-220) : undefined,
+    },
+    ...(tables.length > 0
+      ? [{ key: 'tables', label: `Looking at ${tableLabel}`, state: 'done' as StepState }]
+      : []),
+    {
+      key: 'run',
+      label: 'Running the numbers',
+      state: running ? 'active' : writing ? 'done' : 'pending',
+    },
+    {
+      key: 'write',
+      label: 'Writing the answer',
+      state: writing ? 'active' : 'pending',
+    },
+  ];
 
   return (
     <div className="flex justify-start gap-2">
-      {/* Pulsing brain while thinking */}
       <div className="flex-shrink-0 w-7 h-7 mt-1 rounded-full bg-ai-soft border border-line flex items-center justify-center animate-pulse">
         <span className="text-sm">🧠</span>
       </div>
 
       <div className="max-w-[85%] w-full bg-raised border border-line rounded-lg overflow-hidden">
-        {/* Phase header */}
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line bg-softer">
-          {isExecuting ? (
-            <Loader2 className="w-3.5 h-3.5 text-ok animate-spin flex-shrink-0" strokeWidth={2} />
-          ) : (
-            <span className="flex gap-0.5 flex-shrink-0">
-              {[0,1,2].map((i) => (
-                <span key={i} className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce"
-                  style={{ animationDelay: `${i * 0.15}s` }} />
-              ))}
-            </span>
-          )}
-          <span className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">{phase || 'Loading…'}</span>
+        <div className="px-4 py-3 space-y-2">
+          {steps.map((s) => (
+            <div key={s.key} className="flex items-start gap-2.5">
+              <span className="mt-[5px]"><StepDot state={s.state} /></span>
+              <div className="min-w-0 flex-1">
+                <span className={`text-[12.5px] leading-snug ${s.state === 'pending' ? 'text-muted-2' : s.state === 'active' ? 'text-ink' : 'text-ink-3'}`}>
+                  {s.label}{s.state === 'active' ? '…' : ''}
+                </span>
+                {s.sub && (
+                  <p className="text-[11px] text-muted leading-relaxed mt-0.5 line-clamp-2 break-words">
+                    {s.sub}
+                  </p>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
 
-        {/* Word-by-word reasoning — plain grey text, no scroll, grows naturally */}
-        {displayed && (
-          <div className="px-4 pt-3 pb-2">
-            <p className="text-[12px] text-ink-3 leading-relaxed whitespace-pre-wrap">
-              {displayed}
-              <span className="inline-block w-[2px] h-[11px] bg-muted ml-[1px] align-middle animate-pulse" />
-            </p>
-          </div>
-        )}
-
-        {/* SQL preview once generated — privileged roles only */}
+        {/* SQL preview once generated — privileged roles only. The backend
+            only emits sql_ready to admin/analyst since 2026-08-27; this is
+            the client-side fence on top. */}
         {canSeeSql && sql && (
           <div className="px-4 py-2.5 border-t border-line bg-ink space-y-1">
             <div className="flex items-center justify-between mb-1">
@@ -127,7 +150,7 @@ export function ThinkingBubble({
   );
 }
 
-// ─── Repair-loop thinking panel — Observatory-styled ─────────────────────────
+// ─── Repair panel — "Double-checking", framed as diligence ───────────────────
 
 export function ThinkingPanel({
   repair, onClarify, canSeeSql,
@@ -149,7 +172,7 @@ export function ThinkingPanel({
       <div className="max-w-[85%] w-full">
         <div className="bg-raised border border-line rounded-lg overflow-hidden shadow-1 text-[12px]">
 
-          {/* Header */}
+          {/* Header — diligence vocabulary, never "investigation failed" drama */}
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line bg-softer">
             {repair.isActive ? (
               <span className="flex gap-0.5">
@@ -162,7 +185,7 @@ export function ThinkingPanel({
               <span className="text-ok">✓</span>
             )}
             <span className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">
-              {repair.isActive ? 'Investigating…' : 'Investigation complete'}
+              {repair.isActive ? 'Double-checking the result…' : 'Double-checked'}
             </span>
           </div>
 
@@ -172,7 +195,12 @@ export function ThinkingPanel({
               if (ev.kind === 'thinking') return (
                 <div key={i} className="flex gap-2.5">
                   <span className="text-muted-2 flex-shrink-0 mt-0.5">💭</span>
-                  <p className="text-ink-3 leading-relaxed">{ev.text}</p>
+                  <div className="min-w-0">
+                    <p className="text-ink-3 leading-relaxed">{ev.text}</p>
+                    {canSeeSql && ev.detail && (
+                      <p className="text-[10.5px] font-mono text-muted mt-0.5 break-words">{ev.detail}</p>
+                    )}
+                  </div>
                 </div>
               );
 
@@ -180,9 +208,9 @@ export function ThinkingPanel({
                 <div key={i} className="space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-ocean flex-shrink-0">🔍</span>
-                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ocean">Running diagnostic</span>
+                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ocean">Checking the data</span>
                   </div>
-                  {canSeeSql && (
+                  {canSeeSql && ev.sql && (
                     <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
                       {formatSql(ev.sql)}
                     </pre>
@@ -193,11 +221,11 @@ export function ThinkingPanel({
               if (ev.kind === 'query_result') return (
                 <div key={i} className="ml-6 space-y-1">
                   <p className="text-muted text-[10px] font-mono tracking-[0.06em] uppercase">
-                    → {ev.rowCount} row{ev.rowCount !== 1 ? 's' : ''} returned
+                    → checked {ev.rowCount} row{ev.rowCount !== 1 ? 's' : ''}
                   </p>
                   {/* Raw diagnostic rows are internal reasoning, not the answer —
                       the row count above is the part that makes the wait legible. */}
-                  {canSeeSql && ev.rows.length > 0 && (
+                  {canSeeSql && ev.rows && ev.rows.length > 0 && (
                     <pre className="text-ink-3 font-mono text-[10px] bg-softer border border-line rounded-md px-3 py-2 overflow-x-auto max-h-28 leading-relaxed">
                       {JSON.stringify(ev.rows.slice(0, 6), null, 2)}
                     </pre>
@@ -209,9 +237,9 @@ export function ThinkingPanel({
                 <div key={i} className="space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-warn flex-shrink-0">✏️</span>
-                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn">Revised query</span>
+                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn">Correcting the query</span>
                   </div>
-                  {canSeeSql && (
+                  {canSeeSql && ev.sql && (
                     <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
                       {formatSql(ev.sql)}
                     </pre>
@@ -229,7 +257,8 @@ export function ThinkingPanel({
               return null;
             })}
 
-            {/* Clarification input */}
+            {/* Clarification input — answered IN PLACE, never as a fake user
+                message in the transcript. */}
             {repair.pendingClarification && repair.pendingHistory && (
               <div className="ml-6 flex gap-2 pt-1">
                 <input

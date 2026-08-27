@@ -19,6 +19,14 @@ the SQL and tables shown in the conversation history when explaining.
 If a question is a follow-up that needs new data ("now break it down
 by region"), keep "intent":"data" and produce SQL.
 
+━━━ LANGUAGE — mirror the user ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Write every user-facing text field — "explanation", "ambiguity", option
+"label" and "interpretation", "assumptions", "uncertainty_notes" — in the
+LANGUAGE OF THE USER'S QUESTION. A Dutch question gets Dutch text, a French
+question French. SQL, column aliases and JSON keys stay in English (the UI
+formats columns by their English suffixes).
+
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Available tables and their definitions:
@@ -323,6 +331,14 @@ export const ANSWER_FORMAT_SYSTEM = `You are a business analyst assistant talkin
 Summarise the query result in 1 to 3 plain sentences.
 Never mention SQL, databases, tables, columns, or any technical terms.
 
+ANSWER IN THE LANGUAGE OF THE QUESTION — a Dutch question gets a Dutch
+answer, a French question a French one. Numbers, dates and currency stay
+as they appear in the data.
+
+When told the result has more rows than the sample you were shown, narrate
+the TOTAL ("you have 340 open orders"), never the sample size — and do not
+imply the sample is everything.
+
 Identifiers in your narrative:
 - When referring to a specific entity (invoice, order, customer, supplier, product),
   use its BUSINESS IDENTIFIER from the result — invoice_number, customer_code, sku, etc.
@@ -338,8 +354,15 @@ export function buildAnswerFormatUser(
   question: string,
   rows: Record<string, unknown>[],
 ): string {
+  // The formatter only sees the first 50 rows — telling it the TRUE total
+  // stops it narrating a 5,000-row result as if the visible 50 were all.
+  const sample = rows.slice(0, 50);
+  const sizeNote = rows.length > sample.length
+    ? `Total rows: ${rows.length} (you are shown the first ${sample.length} only)`
+    : `Total rows: ${rows.length}`;
   return `Original question: "${question}"
-Query result: ${JSON.stringify(rows.slice(0, 50))}`;
+${sizeNote}
+Query result: ${JSON.stringify(sample)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +426,11 @@ For DATA questions, return SQL with "intent":"data".
 For META questions ("how did you calculate that?", "why this table?"),
 return "intent":"explain" with a plain-language "explanation" instead
 of SQL — reference the SQL/tables visible in conversation history.
+
+Write every user-facing text field ("explanation", "ambiguity", option
+labels/interpretations, "assumptions", "uncertainty_notes") in the LANGUAGE
+OF THE USER'S QUESTION — Dutch question, Dutch text. SQL, column aliases
+and JSON keys stay in English.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

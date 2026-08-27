@@ -23,6 +23,14 @@ For META questions about a prior answer ("how did you calculate that?",
 with a plain-language "explanation" field — reference the SQL/tables
 visible in conversation history. Do NOT generate SQL for meta questions.
 
+━━━ LANGUAGE — mirror the user ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Write every user-facing text field — "explanation", "ambiguity", option
+"label" and "interpretation", "assumptions", "uncertainty_notes" — in the
+LANGUAGE OF THE USER'S QUESTION. A Dutch question gets Dutch text, a French
+question French. SQL, column aliases and JSON keys stay in English (the UI
+formats columns by their English suffixes like _pct and _count).
+
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Available tables and their definitions:
@@ -287,6 +295,11 @@ For META questions about a prior answer ("how did you calculate that?",
 "why this table?", "explain your approach"), return "intent":"explain"
 with a plain-language "explanation" field — reference the SQL/tables
 visible in conversation history. Do NOT generate SQL for meta questions.
+
+Write every user-facing text field ("explanation", "ambiguity", option
+labels/interpretations, "assumptions", "uncertainty_notes") in the LANGUAGE
+OF THE USER'S QUESTION — Dutch question, Dutch text. SQL, column aliases
+and JSON keys stay in English.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

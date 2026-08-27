@@ -7,19 +7,21 @@
  * Only `MessageBubble` is exported publicly; the helpers stay module-private.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, PieChart, Pie, Cell,
   ResponsiveContainer, ComposedChart, Line, Area, ReferenceLine,
 } from 'recharts';
-import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff } from 'lucide-react';
+import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff, ChevronRight } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { BoldText, ConfidenceBadge, QueryLayerBadge } from './components';
+import { RichText, ConfidenceBadge, QueryLayerBadge } from './components';
 import { formatSql, formatCellValue, pickLabelColumn } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
-import type { DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
+import { humanizeTableName } from '@/lib/humanize';
+import { formatRelativeTime, getFreshnessStatus } from '@/lib/freshness';
+import type { AnswerSource, DebugInfo, ForecastData, Message, VisualizationHint, VisualizationType } from './types';
 import InvestigationView from '@/components/investigate/InvestigationView';
 import type { Investigation } from '@/lib/investigationTypes';
 
@@ -232,11 +234,21 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
         </div>
       )}
 
-      <ResultDataTable
-        rows={rows}
-        columns={columns}
-        numericCols={numericCols}
-      />
+      {/* When a chart is shown, the full table collapses behind a disclosure —
+          rendering both doubled the card's height for every charted answer. */}
+      {active === 'table' ? (
+        <ResultDataTable rows={rows} columns={columns} numericCols={numericCols} />
+      ) : (
+        <details className="group">
+          <summary className="cursor-pointer list-none text-[11px] font-mono tracking-[0.06em] uppercase text-muted hover:text-ocean transition-colors select-none">
+            <span className="group-open:hidden">Show the {rows.length} row{rows.length === 1 ? '' : 's'}</span>
+            <span className="hidden group-open:inline">Hide the rows</span>
+          </summary>
+          <div className="mt-2">
+            <ResultDataTable rows={rows} columns={columns} numericCols={numericCols} />
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -388,7 +400,9 @@ function ForecastChart({ forecast }: { forecast: ForecastData }) {
                 if (name === 'range') return [null as unknown as string, null as unknown as string];
                 const label = name === 'historical' ? 'Actual' : 'Forecast';
                 const n = typeof value === 'number' ? value : Number(value);
-                return [n.toLocaleString('en-US', { maximumFractionDigits: 2 }), label];
+                // nl-BE like every other number on this surface — one bubble
+                // used to mix three locales.
+                return [n.toLocaleString('nl-BE', { maximumFractionDigits: 2 }), label];
               }}
             />
             {/* Vertical reference line at the boundary between historical and forecast */}
@@ -534,15 +548,19 @@ function BlockReasonPanel({ msg }: { msg: Message }) {
 
 function LowConfidenceGuide({ confidence, debug }: { confidence?: number; debug?: DebugInfo }) {
   if (confidence === undefined || confidence >= 0.5) return null;
+  // The product layer sends no confirmed* counters — without this guard the
+  // guide read the absent fields as zeros and falsely advised "run Setup to
+  // profile your database first" on every low-confidence product answer.
+  if (debug?.confirmedTables === undefined) return null;
   const issues: string[] = [];
   if ((debug?.confirmedTables ?? 0) === 0)
     issues.push('No table definitions found — run Setup to profile your database first.');
   else if ((debug?.confirmedColumns ?? 0) === 0)
-    issues.push('Column descriptions are missing — open Definitions → Tables & Columns.');
+    issues.push('Column descriptions are missing — open the Data Catalog and describe the tables in play.');
   if ((debug?.confirmedRelationships ?? 0) === 0 && (debug?.confirmedTables ?? 0) > 0)
-    issues.push('No relationships defined — open Definitions → Relationships.');
+    issues.push('No relationships defined — open Relations in Studio.');
   if ((debug?.confirmedKpis ?? 0) === 0 && (debug?.confirmedTables ?? 0) > 0)
-    issues.push('No KPI formulas defined — open Definitions → KPIs.');
+    issues.push('No KPI formulas defined — add them on the topic page.');
 
   return (
     <div className="mt-3 rounded-md border border-line bg-warn-soft px-4 py-3 text-[12px] text-ink-2 space-y-2">
@@ -559,15 +577,15 @@ function LowConfidenceGuide({ confidence, debug }: { confidence?: number; debug?
         </ul>
       ) : (
         <p className="text-ink-3">
-          Try rephrasing, or improve descriptions in{' '}
-          <Link href="/catalog" className="underline text-ocean hover:text-ocean-hover">Definitions</Link>.
+          Try rephrasing, or improve descriptions in the{' '}
+          <Link href="/catalog" className="underline text-ocean hover:text-ocean-hover">Data Catalog</Link>.
         </p>
       )}
       <Link
         href="/catalog"
         className="inline-flex items-center gap-1 mt-1 px-3 py-1.5 bg-raised border border-line rounded-md text-[11px] font-mono tracking-[0.06em] uppercase text-ink-2 hover:text-ocean hover:border-ocean/40 transition-colors"
       >
-        Open Definitions →
+        Open the Data Catalog →
       </Link>
     </div>
   );
@@ -686,7 +704,13 @@ function AdminDebugPanel({ msg }: { msg: Message }) {
 interface MessageBubbleProps {
   msg:            Message;
   showSql:        boolean;
+  /** Admin-only affordances: the debug panel. */
   isAdmin:        boolean;
+  /** Admin + analyst, per the role table (owner decision 2026-08-27): SQL,
+   *  confidence numbers, sub-scores, error details, curator guidance. The
+   *  chat used to key everything off isAdmin, wrongly treating analysts as
+   *  viewers. */
+  canSeeSql:      boolean;
   onSend:         (q: string) => void;
   onFeedback:     (msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) => void;
   onExport:       (format: 'csv' | 'xlsx', conversationId: number, messageServerId?: number) => void;
@@ -700,27 +724,9 @@ interface MessageBubbleProps {
 }
 
 export default function MessageBubble({
-  msg, showSql, isAdmin, onSend, onFeedback, onExport, conversationId, onReplayInvestigation,
+  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, onReplayInvestigation,
 }: MessageBubbleProps) {
-  const [sqlOpen,       setSqlOpen]       = useState(false);
-  const [reasoningOpen, setReasoningOpen] = useState(false);
   const [replayLoading, setReplayLoading] = useState(false);
-  const brainRef = useRef<HTMLDivElement>(null);
-
-  function toggleReasoning() {
-    setReasoningOpen((o) => !o);
-  }
-
-  useEffect(() => {
-    if (!reasoningOpen) return;
-    function handleClickOutside(e: MouseEvent) {
-      if (brainRef.current && !brainRef.current.contains(e.target as Node)) {
-        setReasoningOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [reasoningOpen]);
 
   if (msg.role === 'user') {
     return (
@@ -769,6 +775,7 @@ export default function MessageBubble({
               steps={inv.steps}
               streamStatus={inv.streamStatus}
               errorReason={inv.failureReason}
+              canSeeSql={canSeeSql}
             />
           </div>
           {/* Replay full trail — only when this is a rehydrated message
@@ -948,6 +955,10 @@ export default function MessageBubble({
     }
 
     // ── Standard blocked / low-confidence ────────────────────────────────────
+    // Trust-display rule (2026-08-27 assessment V1): business users never see
+    // confidence percentages or sub-score pills — in EITHER direction. On a
+    // refusal they get plain language + "your admin has been notified"; the
+    // numeric detail is admin/analyst material.
     return (
       <div className="flex justify-start">
         <div className="max-w-[85%] space-y-2">
@@ -956,14 +967,26 @@ export default function MessageBubble({
               <span className="text-warn mt-0.5 flex-shrink-0">⚠</span>
               <p className="leading-relaxed">{msg.text}</p>
             </div>
-            {(msg.confidence !== undefined || msg.queryLayer) && (
+            {!canSeeSql && msg.adminNotified && (
+              <p className="mt-2 pl-5 text-[12px] text-ink-3">
+                Your admin has been notified, so this can be added to what Clarion knows.
+              </p>
+            )}
+            {canSeeSql && (msg.confidence !== undefined || msg.queryLayer) && (
               <div className="mt-2 pl-5 flex items-center gap-2">
                 {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
                 {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
               </div>
             )}
-            <BlockReasonPanel msg={msg} />
-            <LowConfidenceGuide confidence={msg.confidence} debug={msg.debug} />
+            {canSeeSql && <BlockReasonPanel msg={msg} />}
+            {canSeeSql && <LowConfidenceGuide confidence={msg.confidence} debug={msg.debug} />}
+            {/* The answers most worth reporting used to be the only ones you
+                could NOT thumbs-down. */}
+            {msg.serverId && (
+              <div className="mt-3 pl-5">
+                <FeedbackRow msg={msg} onFeedback={onFeedback} />
+              </div>
+            )}
           </div>
           {isAdmin && <AdminDebugPanel msg={msg} />}
         </div>
@@ -979,7 +1002,9 @@ export default function MessageBubble({
             <span className="flex-shrink-0 mt-0.5 text-err">✕</span>
             <p className="leading-relaxed">{msg.text}</p>
           </div>
-          {isAdmin && (msg.errorDetail || msg.errorStack) && (
+          {/* Backend sends error details to admin AND analyst — the UI used
+              to hide them from the analysts it was sending them to. */}
+          {canSeeSql && (msg.errorDetail || msg.errorStack) && (
             <ErrorDetail detail={msg.errorDetail} stack={msg.errorStack} />
           )}
         </div>
@@ -987,64 +1012,23 @@ export default function MessageBubble({
     );
   }
 
+  // ── The answer card ─────────────────────────────────────────────────────
+  // One card, three depths (2026-08-27 assessment §5.1): the answer at a
+  // glance for everyone; "How I got this" for the curious; SQL + numeric
+  // confidence one level deeper for admin/analyst. Certainty is categorical
+  // — Checked / Checked & corrected / Take with care — never a percentage.
   return (
-    <div className="flex justify-start gap-2 items-start">
-      {/* Left column: brain button — speech bubble floats absolutely so layout never shifts */}
-      <div ref={brainRef} className="relative flex-shrink-0 pt-1">
-        {msg.reasoning ? (
-          <button
-            onClick={toggleReasoning}
-            title={reasoningOpen ? 'Hide reasoning' : 'Show reasoning'}
-            className={`w-7 h-7 rounded-full flex items-center justify-center transition-all ${
-              reasoningOpen
-                ? 'bg-ai text-white shadow-2'
-                : 'bg-ai-soft hover:bg-ai/15 border border-line'
-            }`}
-          >
-            <span className="text-sm leading-none">🧠</span>
-          </button>
-        ) : (
-          <div className="w-7" />
-        )}
-
-        {/* Comic speech bubble — absolutely positioned, overlays chat, never shifts layout */}
-        {reasoningOpen && msg.reasoning && (
-          <div
-            className="absolute z-30 top-0 left-9 w-72"
-            style={{ filter: 'drop-shadow(0 6px 18px rgba(13,28,47,0.12))' }}
-          >
-            {/* Tail pointing left toward the brain */}
-            <div className="absolute -left-[9px] top-[10px] w-0 h-0"
-              style={{ borderTop:'8px solid transparent', borderBottom:'8px solid transparent', borderRight:'9px solid var(--line)' }} />
-            <div className="absolute -left-[7px] top-[11px] w-0 h-0"
-              style={{ borderTop:'7px solid transparent', borderBottom:'7px solid transparent', borderRight:'8px solid var(--surface-raised)' }} />
-
-            {/* Bubble body */}
-            <div className="bg-raised border border-line rounded-lg overflow-hidden shadow-2">
-              <div className="px-3 py-1.5 bg-softer border-b border-line flex items-center gap-1.5">
-                <span className="text-[9px] font-mono font-semibold text-ai uppercase tracking-[0.12em]">Reasoning</span>
-              </div>
-              <div className="px-3 py-2.5 max-h-64 overflow-y-auto">
-                <p className="text-[11px] text-ink-3 leading-relaxed whitespace-pre-wrap">
-                  {msg.reasoning}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Right column: answer bubble — shape never changes */}
-      <div className="flex-1 min-w-0 space-y-2">
+    <div className="flex justify-start">
+      <div className="w-full min-w-0 space-y-2">
         <div className={`bg-raised border border-line rounded-lg px-5 py-4 text-[14px] space-y-3 ${
-          msg.wasRepaired ? 'border-l-2 border-l-ocean' : ''
+          msg.checking ? 'border-l-2 border-l-warn' : msg.wasRepaired ? 'border-l-2 border-l-ocean' : ''
         }`}>
-          {msg.wasRepaired && (
-            <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.08em] uppercase text-ok">
-              <span>✓</span> Corrected after investigation
+          {msg.checking && (
+            <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.08em] uppercase text-warn">
+              <span>△</span> Being double-checked — this number may still be adjusted
             </div>
           )}
-          <p className="text-ink leading-relaxed"><BoldText text={msg.text} /></p>
+          <div className="text-ink leading-relaxed"><RichText text={msg.text} /></div>
 
           {/* Clarify intent — show ambiguity + clickable interpretation chips.
               The chips send the interpretation as a follow-up message via onSend,
@@ -1068,99 +1052,73 @@ export default function MessageBubble({
           {msg.forecast
             ? <ForecastChart forecast={msg.forecast} />
             : (msg.rows && msg.rows.length > 0 && (
-                isKpiShaped(msg.rows)
-                  ? <AnswerKpis row={msg.rows[0]} />
-                  : <ResultVisualizer rows={msg.rows} hint={msg.visualization} />
+                isSingleValue(msg.rows)
+                  ? <SingleValueAnswer row={msg.rows[0]} />
+                  : isKpiShaped(msg.rows)
+                    ? <AnswerKpis row={msg.rows[0]} />
+                    : <ResultVisualizer rows={msg.rows} hint={msg.visualization} />
               ))}
 
-          {/* Assumptions footnote — small italic line under the answer.
-              Stays subtle so it doesn't compete with the main result. Each
-              assumption stands on its own line for scanability. */}
+          {/* Interpretation chips — the assumptions the model committed to,
+              stated where the reader can see AND CHANGE them (QuickSight's
+              restatement pattern). Clicking a chip re-asks with that
+              assumption flipped; conversation history carries the context. */}
           {msg.assumptions && msg.assumptions.length > 0 && (
-            <div className="text-[11px] text-ink-3 italic leading-relaxed border-t border-line/60 pt-2">
-              <span className="font-mono not-italic uppercase tracking-[0.08em] text-muted text-[10px] mr-1">Assumed</span>
-              {msg.assumptions.map((a, i) => (
-                <span key={i} className="block">— {a}</span>
-              ))}
+            <div className="border-t border-line/60 pt-2">
+              <span className="font-mono uppercase tracking-[0.08em] text-muted text-[10px] mr-2">Assumed</span>
+              <div className="inline-flex flex-wrap gap-1.5 align-middle">
+                {msg.assumptions.map((a, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onSend(`Same question, but change this assumption: "${a}". Use a different interpretation and tell me which one you picked.`)}
+                    title="Click to redo the answer with a different interpretation"
+                    className="px-2 py-0.5 rounded-full border border-line-strong bg-raised text-[11px] text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors text-left"
+                  >
+                    {a}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
-          {msg.warning && !msg.wasRepaired && (
-            <div className="flex items-start gap-2 bg-warn-soft border border-line rounded-md px-3 py-2 text-[12px] text-ink-2">
-              <span className="flex-shrink-0 mt-0.5 text-warn">⚠</span>
-              <span>{msg.warning}</span>
-            </div>
+          {msg.policyNotice && (
+            <p className="text-[11px] text-muted italic">{msg.policyNotice}</p>
           )}
-          {isAdmin && (msg.confidence !== undefined || msg.sql) && (
-            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-line">
-              {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
-              {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
-              {msg.tablesUsed && msg.tablesUsed.length > 0 && (
-                <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted">tables: {msg.tablesUsed.join(', ')}</span>
-              )}
-              {msg.sql && showSql && (
-                <button onClick={() => setSqlOpen((o) => !o)}
-                  className="ml-auto text-[10px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ocean transition-colors flex items-center gap-1">
-                  <Code className="w-3 h-3" strokeWidth={2} />
-                  {sqlOpen ? 'Hide SQL' : 'View SQL'}
-                </button>
-              )}
-            </div>
-          )}
-          {isAdmin && showSql && sqlOpen && msg.sql && (
-            <pre className="text-[11px] bg-ink text-white/90 rounded-md p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono">
-              {formatSql(msg.sql)}
-            </pre>
-          )}
-          {/* Feedback + Export row */}
+
+          {/* Trust line — categorical, all roles, never a percentage. */}
+          <TrustLine msg={msg} />
+
+          <HowIGotThis msg={msg} canSeeSql={canSeeSql} showSql={showSql} />
+
+          {/* Feedback + follow-ups + export row */}
           {msg.role === 'assistant' && !msg.error && !msg.blocked && (
-            <div className="flex items-center gap-2 pt-2 border-t border-line">
-              {/* Feedback buttons */}
-              {msg.serverId && (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => onFeedback(msg.id, msg.serverId!, msg.feedback === 'up' ? null : 'up')}
-                    className={`p-1 rounded transition-colors ${msg.feedback === 'up' ? 'text-ok bg-ok-soft' : 'text-muted-2 hover:text-ok'}`}
-                    title="Good answer"
-                  >
-                    <ThumbsUp
-                      className="w-3.5 h-3.5"
-                      strokeWidth={2}
-                      fill={msg.feedback === 'up' ? 'currentColor' : 'none'}
-                    />
-                  </button>
-                  <button
-                    onClick={() => onFeedback(msg.id, msg.serverId!, msg.feedback === 'down' ? null : 'down')}
-                    className={`p-1 rounded transition-colors ${msg.feedback === 'down' ? 'text-err bg-err-soft' : 'text-muted-2 hover:text-err'}`}
-                    title="Incorrect answer"
-                  >
-                    <ThumbsDown
-                      className="w-3.5 h-3.5"
-                      strokeWidth={2}
-                      fill={msg.feedback === 'down' ? 'currentColor' : 'none'}
-                    />
-                  </button>
-                  {msg.feedback && (
-                    <span className={`text-[10px] font-mono tracking-[0.06em] uppercase ml-1 ${msg.feedback === 'up' ? 'text-ok' : 'text-err'}`}>
-                      {msg.feedback === 'up' ? 'Helpful' : 'Reported'}
-                    </span>
-                  )}
-                </div>
-              )}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-line">
+              {msg.serverId && <FeedbackRow msg={msg} onFeedback={onFeedback} />}
               {/* Why? chip — escalates the answered question into an investigation.
                   The heuristic classifier in `lib/questionMode.ts` picks up the
                   "why" prefix and routes back to investigate mode (when a
                   product context is active). */}
-              {msg.question && !msg.error && !msg.blocked && (
+              {msg.question && (
                 <button
                   onClick={() => onSend(`Why ${cleanForWhy(msg.question!)}?`)}
-                  className="ml-2 flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 hover:text-ocean hover:bg-ocean-softer rounded transition-colors"
+                  className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 hover:text-ocean hover:bg-ocean-softer rounded transition-colors"
                   title="Investigate the cause"
                 >
                   <span aria-hidden="true">🕵️</span>
                   Why?
                 </button>
               )}
+              {/* Generated follow-up chips — deterministic, from the result
+                  shape. Answers should invite the next question, not dead-end. */}
+              {answerFollowUps(msg).map((fu) => (
+                <button
+                  key={fu}
+                  onClick={() => onSend(fu)}
+                  className="px-2.5 py-1 text-[11.5px] rounded-full border border-ocean/30 text-ocean hover:bg-ocean-softer transition-colors"
+                >
+                  {fu}
+                </button>
+              ))}
               {/* Export buttons */}
               {msg.rows && msg.rows.length > 0 && conversationId && (
                 <div className="flex items-center gap-1 ml-auto">
@@ -1187,6 +1145,273 @@ export default function MessageBubble({
         </div>
         {isAdmin && <AdminDebugPanel msg={msg} />}
       </div>
+    </div>
+  );
+}
+
+// ─── Trust line — categorical certainty + answer-scoped freshness ───────────
+//
+// Three states a business user can act on (Checked / Checked & corrected /
+// Take with care) instead of a number nobody can act on. Freshness is scoped
+// to THE TABLES THIS ANSWER USED — the oldest one, honestly — replacing the
+// tenant-wide banner that showed the newest date coloured by the worst
+// unrelated connection.
+
+function oldestSourceDate(sources?: AnswerSource[]): string | null {
+  const dates = (sources ?? []).map((s) => s.lastRefreshedAt).filter(Boolean) as string[];
+  if (dates.length === 0) return null;
+  return dates.reduce((a, b) => (new Date(a).getTime() <= new Date(b).getTime() ? a : b));
+}
+
+function TrustLine({ msg }: { msg: Message }) {
+  const oldest = oldestSourceDate(msg.sources);
+  const fStatus = oldest ? getFreshnessStatus(oldest) : 'unknown';
+  const freshClass = fStatus === 'old' ? 'text-err' : fStatus === 'stale' ? 'text-warn' : 'text-muted';
+
+  const mark = msg.checking
+    ? null // the checking strip at the top of the card already says it
+    : msg.warning
+      ? { cls: 'text-warn', text: msg.wasRepaired ? '△ Corrected — take with care' : '△ Take with care' }
+      : msg.wasRepaired
+        ? { cls: 'text-ok', text: '✓ Checked & corrected' }
+        : { cls: 'text-ok', text: '✓ Checked against your data' };
+
+  if (!mark && !oldest && !msg.answeredInMs) return null;
+
+  return (
+    <div className="border-t border-line pt-2 space-y-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
+        {mark && <span className={`font-medium ${mark.cls}`}>{mark.text}</span>}
+        {oldest && (
+          <span className={freshClass}>Data as of {formatRelativeTime(oldest)}</span>
+        )}
+        {msg.answeredInMs != null && msg.answeredInMs > 0 && (
+          <span className="text-muted-2 font-mono text-[10.5px]">answered in {Math.max(1, Math.round(msg.answeredInMs / 1000))}s</span>
+        )}
+      </div>
+      {msg.warning && !msg.checking && (
+        <p className="text-[12px] text-ink-3 leading-relaxed">{msg.warning}</p>
+      )}
+    </div>
+  );
+}
+
+// ─── "How I got this" — the plain-language method expander ──────────────────
+//
+// Collapsed by default (the answer is the product; this is the audit trail).
+// Everyone gets: the tables behind the answer, humanized and deep-linked to
+// the Data Catalog (the same trust loop the dashboards' provenance panel
+// closes — /catalog?table= degrades to search on a miss, never a dead end),
+// plus the repair loop's "What I checked". Admin/analyst additionally get
+// the numeric confidence detail, the SQL and the raw model reasoning —
+// which used to float over the chat in a speech bubble, for every role.
+
+function HowIGotThis({ msg, canSeeSql, showSql }: { msg: Message; canSeeSql: boolean; showSql: boolean }) {
+  const [sqlOpen, setSqlOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(false);
+
+  const sources: AnswerSource[] = msg.sources?.length
+    ? msg.sources
+    : (msg.tablesUsed ?? []).map((name) => ({
+        name: name.split('.').pop() ?? name,
+        kind: 'unknown' as const,
+        lastRefreshedAt: null,
+      }));
+
+  const hasContent = sources.length > 0 || (msg.repairSummary?.length ?? 0) > 0 || canSeeSql;
+  if (!hasContent) return null;
+
+  return (
+    <details className="border-t border-line pt-2 group">
+      <summary className="cursor-pointer list-none flex items-center gap-1 text-[11.5px] font-medium text-ocean hover:text-ocean-hover transition-colors select-none">
+        <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" strokeWidth={2} />
+        How I got this
+      </summary>
+      <div className="pt-2.5 pl-4 space-y-3 text-[12px]">
+        {sources.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted">From</div>
+            {sources.map((s) => (
+              <div key={s.name} className="flex items-baseline gap-2 flex-wrap">
+                <Link
+                  href={`/catalog?table=${encodeURIComponent(s.name)}`}
+                  className="text-ocean hover:underline font-medium"
+                >
+                  {humanizeTableName(s.name)}
+                </Link>
+                {(s.productName || s.sourceName) && (
+                  <span className="text-muted-2 text-[11px]">{s.productName ?? s.sourceName}</span>
+                )}
+                {s.lastRefreshedAt && (
+                  <span className="text-muted-2 font-mono text-[10.5px]">refreshed {formatRelativeTime(s.lastRefreshedAt)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {msg.repairSummary && msg.repairSummary.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted">What I checked</div>
+            {msg.repairSummary.map((line, i) => (
+              <p key={i} className="text-ink-3 leading-relaxed">— {line}</p>
+            ))}
+          </div>
+        )}
+        {canSeeSql && (msg.confidence !== undefined || msg.queryLayer || msg.sql || msg.reasoning) && (
+          <div className="space-y-2 border-t border-line/60 pt-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {msg.confidence !== undefined && <ConfidenceBadge value={msg.confidence} />}
+              {msg.subScores && (
+                <span className="text-[10px] font-mono tracking-[0.04em] text-muted">
+                  schema {Math.round((msg.subScores.schema ?? 0) * 100)} · joins {Math.round((msg.subScores.join ?? 0) * 100)} · formula {Math.round((msg.subScores.formula ?? 0) * 100)}
+                </span>
+              )}
+              {msg.queryLayer && <QueryLayerBadge layer={msg.queryLayer} />}
+              {msg.sql && showSql && (
+                <button onClick={() => setSqlOpen((o) => !o)}
+                  className="ml-auto text-[10px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ocean transition-colors flex items-center gap-1">
+                  <Code className="w-3 h-3" strokeWidth={2} />
+                  {sqlOpen ? 'Hide SQL' : 'View SQL'}
+                </button>
+              )}
+            </div>
+            {showSql && sqlOpen && msg.sql && (
+              <pre className="text-[11px] bg-ink text-white/90 rounded-md p-3 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono">
+                {formatSql(msg.sql)}
+              </pre>
+            )}
+            {msg.reasoning && (
+              <div>
+                <button onClick={() => setReasoningOpen((o) => !o)}
+                  className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ocean transition-colors">
+                  {reasoningOpen ? 'Hide model reasoning' : 'Model reasoning'}
+                </button>
+                {reasoningOpen && (
+                  <p className="mt-1.5 text-[11px] text-ink-3 leading-relaxed whitespace-pre-wrap max-h-64 overflow-y-auto border border-line rounded-md px-3 py-2 bg-softer">
+                    {msg.reasoning}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ─── Feedback row — thumbs + optional one-line comment on 👎 ────────────────
+//
+// The feedback_comment column existed since the conversations migration but
+// no UI ever collected it. A thumbs-down now asks (optionally) what was
+// wrong — that sentence is what makes the resulting definition gap fixable.
+
+function FeedbackRow({
+  msg, onFeedback,
+}: {
+  msg: Message;
+  onFeedback: (msgId: number, serverId: number, feedback: 'up' | 'down' | null, comment?: string) => void;
+}) {
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [comment, setComment] = useState('');
+  if (!msg.serverId) return null;
+
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      <button
+        onClick={() => onFeedback(msg.id, msg.serverId!, msg.feedback === 'up' ? null : 'up')}
+        className={`p-1 rounded transition-colors ${msg.feedback === 'up' ? 'text-ok bg-ok-soft' : 'text-muted-2 hover:text-ok'}`}
+        title="Good answer"
+      >
+        <ThumbsUp className="w-3.5 h-3.5" strokeWidth={2} fill={msg.feedback === 'up' ? 'currentColor' : 'none'} />
+      </button>
+      <button
+        onClick={() => {
+          if (msg.feedback === 'down') {
+            onFeedback(msg.id, msg.serverId!, null);
+            setCommentOpen(false);
+          } else {
+            onFeedback(msg.id, msg.serverId!, 'down');
+            setCommentOpen(true);
+          }
+        }}
+        className={`p-1 rounded transition-colors ${msg.feedback === 'down' ? 'text-err bg-err-soft' : 'text-muted-2 hover:text-err'}`}
+        title="Incorrect answer"
+      >
+        <ThumbsDown className="w-3.5 h-3.5" strokeWidth={2} fill={msg.feedback === 'down' ? 'currentColor' : 'none'} />
+      </button>
+      {msg.feedback && !commentOpen && (
+        <span className={`text-[10px] font-mono tracking-[0.06em] uppercase ml-1 ${msg.feedback === 'up' ? 'text-ok' : 'text-err'}`}>
+          {msg.feedback === 'up' ? 'Helpful' : 'Reported'}
+        </span>
+      )}
+      {commentOpen && msg.feedback === 'down' && (
+        <span className="flex items-center gap-1 ml-1">
+          <input
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onFeedback(msg.id, msg.serverId!, 'down', comment.trim() || undefined);
+                setCommentOpen(false);
+              }
+              if (e.key === 'Escape') setCommentOpen(false);
+            }}
+            placeholder="What was wrong? (optional)"
+            autoFocus
+            className="w-52 bg-raised border border-line text-ink rounded px-2 py-1 text-[11.5px] placeholder:text-muted-2 outline-none focus:border-ocean"
+          />
+          <button
+            onClick={() => {
+              onFeedback(msg.id, msg.serverId!, 'down', comment.trim() || undefined);
+              setCommentOpen(false);
+            }}
+            className="text-[10px] font-mono uppercase tracking-[0.06em] text-ocean hover:underline"
+          >
+            Send
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ─── Follow-up chips — deterministic, from the result shape ─────────────────
+
+function answerFollowUps(msg: Message): string[] {
+  if (!msg.rows || msg.rows.length === 0 || msg.forecast || msg.intent === 'clarify') return [];
+  if (msg.rows.length === 1) return ['Break this down by month'];
+  const cols = Object.keys(msg.rows[0] ?? {});
+  const hasDate = cols.some((c) => /(date|month|year|week|period)/i.test(c));
+  return hasDate ? ['How does this compare to last year?'] : ['Show how this changed over time'];
+}
+
+// ─── Single-value answers — one row, one number, shown as THE number ────────
+//
+// The most common answer shape ("what was revenue last month?") used to fall
+// through to a one-cell data table with an inert "Table" pill restating the
+// sentence above it. A single value is a KPI, not a table.
+
+function isSingleValue(rows: Record<string, unknown>[]): boolean {
+  if (!rows || rows.length !== 1) return false;
+  const entries = Object.entries(rows[0]).filter(([, v]) => v !== null && v !== undefined && v !== '');
+  if (entries.length !== 1) return false;
+  const v = entries[0][1];
+  return typeof v === 'number' || (typeof v === 'string' && v !== '' && !Number.isNaN(Number(v)));
+}
+
+function SingleValueAnswer({ row }: { row: Record<string, unknown> }) {
+  const entry = Object.entries(row).find(([, v]) => v !== null && v !== undefined && v !== '');
+  if (!entry) return null;
+  const [key, value] = entry;
+  return (
+    <div className="mt-1">
+      <p className="font-mono text-[30px] leading-none tabular-nums tracking-[-0.01em] text-ink">
+        {formatKpiValue(value, key)}
+      </p>
+      <p className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted mt-1.5">
+        {humaniseKpiLabel(key)}
+      </p>
     </div>
   );
 }
@@ -1303,14 +1528,16 @@ function formatKpiValue(value: unknown, key: string): string {
   const isMoney = /(amount|revenue|cost|price|total|value|spend|cogs|gmv|arr|mrr)/i.test(key);
   const num = typeof value === 'number' ? value : Number(value);
   if (Number.isFinite(num)) {
-    if (isPct) return `${num.toLocaleString('en-GB', { maximumFractionDigits: 1 })}%`;
+    // nl-BE, matching formatCellValue and the chart axes — the KPI tiles used
+    // to render en-GB above an nl-BE axis, showing the same number two ways.
+    if (isPct) return `${num.toLocaleString('nl-BE', { maximumFractionDigits: 1 })}%`;
     if (isMoney) {
-      if (Math.abs(num) >= 1_000_000) return `€${(num / 1_000_000).toLocaleString('en-GB', { maximumFractionDigits: 2 })}M`;
-      if (Math.abs(num) >= 1_000) return `€${(num / 1_000).toLocaleString('en-GB', { maximumFractionDigits: 1 })}k`;
-      return `€${num.toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
+      if (Math.abs(num) >= 1_000_000) return `€${(num / 1_000_000).toLocaleString('nl-BE', { maximumFractionDigits: 2 })}M`;
+      if (Math.abs(num) >= 1_000) return `€${(num / 1_000).toLocaleString('nl-BE', { maximumFractionDigits: 1 })}k`;
+      return `€${num.toLocaleString('nl-BE', { maximumFractionDigits: 0 })}`;
     }
-    if (Math.abs(num) >= 10_000) return num.toLocaleString('en-GB', { maximumFractionDigits: 0 });
-    return num.toLocaleString('en-GB', { maximumFractionDigits: 2 });
+    if (Math.abs(num) >= 10_000) return num.toLocaleString('nl-BE', { maximumFractionDigits: 0 });
+    return num.toLocaleString('nl-BE', { maximumFractionDigits: 2 });
   }
   return formatCellValue(value);
 }

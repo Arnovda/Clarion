@@ -31,7 +31,8 @@ interface EmptyStateProps {
   setInput:       (v: string) => void;
   onSubmit:       (e: FormEvent) => void;
   loading?:       boolean;
-  isAdmin?:       boolean;
+  /** Admin + analyst per the role table — gates the source-layer toggle. */
+  canQuerySource?: boolean;
   useSourceLayer?: boolean;
   setUseSourceLayer?: (v: boolean) => void;
 }
@@ -43,7 +44,7 @@ export default function EmptyState({
   setInput,
   onSubmit,
   loading,
-  isAdmin,
+  canQuerySource,
   useSourceLayer,
   setUseSourceLayer,
 }: EmptyStateProps) {
@@ -115,7 +116,7 @@ export default function EmptyState({
             ⌘ + Enter to send
           </span>
           <div className="flex items-center gap-4">
-            {isAdmin && setUseSourceLayer && (
+            {canQuerySource && setUseSourceLayer && (
               <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[10.5px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
                 <input
                   type="checkbox"

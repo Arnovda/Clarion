@@ -12,7 +12,7 @@ import { useToast } from '@/components/ui/Toast';
 
 interface Gap {
   id: number;
-  question_text: string;
+  question_text: string | null; // null for feedback-reported gaps (no query_log row)
   gap_description: string;
   resolved: boolean;
   hit_count: number;
@@ -243,8 +243,15 @@ function GapsPageInner() {
                     }`}>
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 min-w-0">
-                        <p className="font-display text-[18px] italic text-ink-2 leading-snug">&ldquo;{g.question_text}&rdquo;</p>
-                        <p className="text-[13px] text-ink-3 mt-2 leading-relaxed">{g.gap_description}</p>
+                        {/* Feedback-reported gaps have no query_log row — their
+                            question lives inside gap_description, so lead with
+                            that instead of empty quotes. */}
+                        <p className="font-display text-[18px] italic text-ink-2 leading-snug">
+                          {g.question_text ? <>&ldquo;{g.question_text}&rdquo;</> : g.gap_description}
+                        </p>
+                        {g.question_text && (
+                          <p className="text-[13px] text-ink-3 mt-2 leading-relaxed">{g.gap_description}</p>
+                        )}
                         <div className="flex items-center gap-2 mt-3">
                           {g.hit_count > 1 && (
                             <span className={`${BADGE_CLS} bg-ocean-softer text-ocean`}>

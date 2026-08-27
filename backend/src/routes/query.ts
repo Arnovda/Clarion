@@ -4,7 +4,13 @@ import Database from 'better-sqlite3';
 import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { askQuestionSchema } from '../middleware/schemas';
+import {
+  askQuestionSchema,
+  thinkQuerySchema,
+  repairQuerySchema,
+  crossViewQuerySchema,
+  forecastQuerySchema,
+} from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { reqDb } from '../db/reqDb';
 import { startSSE } from '../services/sse';
@@ -14,10 +20,8 @@ import { buildProductSemanticContext, getProductWarehousePath } from '../service
 import { applyDataPolicies } from '../services/policyEngine';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
 import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResultIfNeeded, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
-import { isForecastQuestion } from '../ai/prompts/forecastPrompt';
 import { computeForecast, TimeSeriesPoint } from '../services/forecastEngine';
 import {
-  REPAIR_SYSTEM,
   getRepairSystem,
   buildRepairContext,
   buildRepairQueryResult,
@@ -98,6 +102,11 @@ function buildGapDescription(question: string, r: NlToSqlOutput): string {
   const notes = r.uncertainty_notes.length ? ` | Notes: ${r.uncertainty_notes.join('; ')}` : '';
   return `Blocked (${parts.join(', ')}) for question: "${question}"${notes}`;
 }
+
+// Entity pre-flight interpolates catalog-derived table/column names into
+// diagnostic SQL. Catalog names are tenant data, not code — refuse anything
+// that isn't a plain identifier so a hostile display name can't smuggle SQL.
+const SAFE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function blockedUserMessage(r: NlToSqlOutput): string {
   if (r.uncertainty_notes.length > 0) {
@@ -200,6 +209,82 @@ async function loadConversationHistory(
     });
   } catch {
     // If the conversation doesn't exist or the query fails, return empty — non-blocking
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-answer source freshness — which tables fed this answer, and how fresh
+// each one is. Deterministic lookups only (NO AI call — this runs on every
+// answered question). Same resolution rule as the dashboards' widget-context
+// endpoint: product tables carry their own last_run_at; source tables borrow
+// the connection's last_synced_at. The frontend renders this as the answer's
+// "Data as of …" trust line and the "How I got this" source list, replacing
+// the old tenant-wide freshness banner that coloured the NEWEST date by the
+// WORST unrelated connection.
+// ---------------------------------------------------------------------------
+export type AnswerSource = {
+  name: string;
+  kind: 'product' | 'source' | 'unknown';
+  lastRefreshedAt: string | null;
+  productName?: string | null;
+  sourceName?: string | null;
+};
+
+async function resolveAnswerSources(
+  db: Knex | Knex.Transaction,
+  tenantId: number | undefined,
+  tablesUsed: string[] | undefined,
+): Promise<AnswerSource[]> {
+  const names = [...new Set(
+    (tablesUsed ?? [])
+      .map((n) => String(n).split('.').pop() ?? '')
+      .filter(Boolean),
+  )].slice(0, 12);
+  if (names.length === 0) return [];
+  try {
+    const ptQuery = db('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .whereIn('pt.table_name', names)
+      .select('pt.table_name', 'pt.last_run_at', 'dp.name as product_name');
+    // Explicit tenant filter — reqDb can fall back to the pool whose
+    // session-level tenant var races (the standing CLAUDE.md rule).
+    if (tenantId != null) ptQuery.where('pt.tenant_id', tenantId);
+    const ptRows: Array<{ table_name: string; last_run_at: Date | string | null; product_name: string | null }> = await ptQuery;
+    const ptByName = new Map(ptRows.map((r) => [r.table_name, r]));
+
+    const stQuery = db('source_tables as st')
+      .join('connections as c', 'st.connection_id', 'c.id')
+      .whereIn('st.table_name', names)
+      .where({ 'st.is_active': true })
+      .select('st.table_name', 'c.last_synced_at', 'c.name as connection_name');
+    if (tenantId != null) stQuery.where('st.tenant_id', tenantId);
+    const stRows: Array<{ table_name: string; last_synced_at: Date | string | null; connection_name: string }> = await stQuery;
+    const stByName = new Map(stRows.map((r) => [r.table_name, r]));
+
+    return names.map((name): AnswerSource => {
+      const pt = ptByName.get(name);
+      if (pt) {
+        return {
+          name, kind: 'product',
+          lastRefreshedAt: pt.last_run_at ? String(pt.last_run_at) : null,
+          productName: pt.product_name,
+        };
+      }
+      const st = stByName.get(name);
+      if (st) {
+        return {
+          name, kind: 'source',
+          lastRefreshedAt: st.last_synced_at ? String(st.last_synced_at) : null,
+          sourceName: st.connection_name,
+        };
+      }
+      return { name, kind: 'unknown', lastRefreshedAt: null };
+    });
+  } catch (err) {
+    // Freshness is a bonus on the answer, never a reason to fail it.
+    log.warn({ err }, '[query] resolveAnswerSources failed');
     return [];
   }
 }
@@ -364,6 +449,12 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 
       if (blockCheck.blocked) {
         await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, tenantId);
+        if (tenantId) {
+          notifyAdmins(tenantId, 'new_gap', 'New definition gap', {
+            message: `Question blocked (confidence ${(nlResult.confidence * 100).toFixed(0)}%): "${question.slice(0, 80)}"`,
+            link: '/gaps',
+          }).catch(() => {});
+        }
         res.json({
           ok: true,
           data: {
@@ -912,10 +1003,6 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     // 5. Entity pre-flight check — look for string literals in the generated SQL
     //    that don't match anything in the source data for dimension columns.
     //    If we find a mismatch we return a clarification prompt before executing.
-    const config = typeof connection.config === 'string'
-      ? JSON.parse(connection.config)
-      : connection.config;
-
     const entityCheckConnector = await createConnector(connection);
     await entityCheckConnector.connect();
 
@@ -936,14 +1023,18 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     const ambiguities: Ambiguity[] = [];
 
     for (const literal of stringLiterals) {
-      // Skip very short or purely numeric strings (IDs, dates, etc.)
-      if (literal.length < 3 || /^\d+$/.test(literal)) continue;
+      // Skip very short or purely numeric strings (IDs, dates, etc.).
+      // Backslash-bearing literals are skipped too: quote-doubling is correct
+      // escaping for the engines we probe, but backslash semantics differ per
+      // engine — not worth the risk for a best-effort check.
+      if (literal.length < 3 || /^\d+$/.test(literal) || literal.includes('\\')) continue;
 
       let found       = false;
       let ambiguous   = false;
       let alternatives: string[] = [];
 
       for (const col of dimColumns as { table_name: string; column_name: string }[]) {
+        if (!SAFE_IDENT.test(col.table_name) || !SAFE_IDENT.test(col.column_name)) continue;
         try {
           // How many rows match this literal exactly?
           const exact = await entityCheckConnector.executeQuery(
@@ -1039,6 +1130,10 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     }
 
     // 6. Execute SQL — cross-source via ATTACH DATABASE, or single-source normally
+    // Data access policies apply on EVERY execution path, not just the product
+    // layer (they used to run on 1 of 5 paths — assessment defect A2).
+    const srcPolicyResult = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
+    const srcExecSql = srcPolicyResult.sql;
     let execRows: Record<string, unknown>[];
 
     if (isCrossSourceQuery && crossConnAliasMap && crossConnAliasMap.size > 0) {
@@ -1048,14 +1143,14 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
         for (const [, { alias, filepath }] of crossConnAliasMap) {
           inMemDb.exec(`ATTACH DATABASE '${filepath.replace(/'/g, "''")}' AS "${alias}"`);
         }
-        execRows = inMemDb.prepare(nlResult.sql).all() as Record<string, unknown>[];
+        execRows = inMemDb.prepare(srcExecSql).all() as Record<string, unknown>[];
       } finally {
         inMemDb.close();
       }
     } else {
       const queryConnector = await createConnector(connection);
       await queryConnector.connect();
-      const queryResult = await queryConnector.executeQuery(nlResult.sql);
+      const queryResult = await queryConnector.executeQuery(srcExecSql);
       queryConnector.disconnect();
       execRows = queryResult.rows;
     }
@@ -1089,6 +1184,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
         crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
         queryLayer:  'source',
+        ...(srcPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
         // Sanity-check warning — shown to all users when validation flags a concern
         ...(validation.ok ? {} : { warning: validation.warning }),
         // Raw rows — used by the frontend to render a table / chart
@@ -1118,10 +1214,15 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 // render them in real time. Final result arrives as a single 'done' event.
 // ---------------------------------------------------------------------------
 
-router.post('/think', requireAuth, async (req: Request, res: Response) => {
+router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Request, res: Response) => {
   const sse = startSSE(res);
 
   const emit = (data: object) => sse.emit(data);
+  // Generated SQL and confidence internals go to admin+analyst only, per the
+  // role table. The progress narrative (phases, table names, reasoning tail)
+  // stays visible to everyone — it is what makes the wait legible.
+  const privileged = req.user?.role === 'admin' || req.user?.role === 'analyst';
+  const askedAt = Date.now();
 
   try {
     const db = reqDb(req);
@@ -1130,11 +1231,6 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       dataLayer?: 'product' | 'source';
       productId?: number;
     };
-
-    if (!question?.trim()) {
-      emit({ type: 'error', message: 'question is required' });
-      sse.end(); return;
-    }
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId
@@ -1160,10 +1256,14 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       const connection = await db('connections').where({ id: connectionId }).first();
       const dialect: SqlDialect = 'duckdb';
 
-      emit({ type: 'phase', text: 'Reasoning about your question (star schema)…' });
+      // Vocabulary rule: viewers hear phases too — never "star schema".
+      emit({ type: 'phase', text: 'Reasoning about your question…' });
       const nlResult = await generateSqlStreaming(
         question, thinkProductCtx.semanticContext, thinkProductCtx.relationshipContext, thinkProductCtx.kpiFormulas,
-        (type, delta) => emit({ type, text: delta }),
+        // Forward ONLY the thinking deltas. The 'text' deltas are the model's
+        // raw JSON payload (SQL + confidence) — streaming them shipped the
+        // full SQL to every role, which the frontend then silently dropped.
+        (type, delta) => { if (type === 'thinking') emit({ type: 'thinking', text: delta }); },
         dialect,
         conversationHistory,
       );
@@ -1210,7 +1310,12 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         return;
       }
 
-      emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+      // Table names go to every role — they label the "Looking at …" progress
+      // step (humanized client-side, same vocabulary as the topic pages).
+      // The SQL itself waits for the safety gate and is privileged-only.
+      if (nlResult.tables_used?.length) {
+        emit({ type: 'tables', tables: nlResult.tables_used });
+      }
 
       const thinkBlockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await db('query_log').insert({
@@ -1223,31 +1328,47 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
       if (thinkBlockCheck.blocked) {
         await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
+        if (thinkTenantId) {
+          notifyAdmins(thinkTenantId, 'new_gap', 'New definition gap', {
+            message: `Question blocked (confidence ${(nlResult.confidence * 100).toFixed(0)}%): "${question.slice(0, 80)}"`,
+            link: '/gaps',
+          }).catch(() => {});
+        }
         emit({ type: 'done', data: {
           answer: blockedUserMessage(nlResult), confidence: nlResult.confidence,
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
           uncertaintyNotes: nlResult.uncertainty_notes,
           flagReason: thinkBlockCheck.reason,
-          blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'product',
+          blocked: true, tablesUsed: nlResult.tables_used, queryLayer: 'product',
+          adminNotified: true,
+          ...(privileged ? { sql: nlResult.sql } : {}),
         }});
         sse.end(); return;
       }
 
-      emit({ type: 'phase', text: 'Running query on star schema…' });
+      // SQL is shipped only after it passed the safety + confidence gate,
+      // and only to roles the role table lets see it.
+      if (privileged) {
+        emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+      }
+
+      emit({ type: 'phase', text: 'Running your query…' });
+      const thinkPolicyResult = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
       const connector = await createProductConnector(thinkProductWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       let queryRows: Record<string, unknown>[];
       try {
-        const result = await connector.executeQuery(nlResult.sql);
+        const result = await connector.executeQuery(thinkPolicyResult.sql);
         queryRows = result.rows;
       } finally {
         connector.disconnect();
       }
 
-      emit({ type: 'phase', text: 'Formatting answer…' });
-      const [answer, validation] = await Promise.all([
+      emit({ type: 'phase', text: 'Writing the answer…' });
+      const [answer, validation, sources] = await Promise.all([
         formatAnswer(question, queryRows),
-        validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryRows),
+        validateQueryResultIfNeeded(nlResult.confidence, question, thinkPolicyResult.sql, queryRows),
+        resolveAnswerSources(db, thinkTenantId, nlResult.tables_used),
       ]);
       await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
 
@@ -1257,7 +1378,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
         assumptions: nlResult.assumptions ?? [],
         blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
+        ...(thinkPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
         rows: queryRows.slice(0, 200), sql: nlResult.sql,
+        sources,
+        answeredInMs: Date.now() - askedAt,
         ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
         debug: { hint: `Query executed against product layer with confidence ${Math.round(nlResult.confidence * 100)}%.` },
       }});
@@ -1377,7 +1501,9 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     const nlResult = await generateSqlStreaming(
       question, fullContext, thinkRelCtx, kpiFormulas,
-      (type, delta) => emit({ type, text: delta }),
+      // Thinking deltas only — the 'text' deltas are the raw JSON payload
+      // (SQL + confidence) and must not stream to every role.
+      (type, delta) => { if (type === 'thinking') emit({ type: 'thinking', text: delta }); },
       dialect,
       conversationHistory,
     );
@@ -1428,7 +1554,10 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       return;
     }
 
-    emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+    // Table names for the progress step — every role. SQL waits for the gate.
+    if (nlResult.tables_used?.length) {
+      emit({ type: 'tables', tables: nlResult.tables_used });
+    }
 
     // ── 4. Log ──────────────────────────────────────────────────────────────
     const thinkBlockCheck = shouldBlockQuery(nlResult);
@@ -1446,20 +1575,32 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     // ── 5. Block low-confidence (overall < 0.7 OR any sub-score < 0.5) ────
     if (thinkBlockCheck.blocked) {
       await upsertDefinitionGap(db, queryLogId, buildGapDescription(question, nlResult), question, thinkTenantId);
+      if (thinkTenantId) {
+        notifyAdmins(thinkTenantId, 'new_gap', 'New definition gap', {
+          message: `Question blocked (confidence ${(nlResult.confidence * 100).toFixed(0)}%): "${question.slice(0, 80)}"`,
+          link: '/gaps',
+        }).catch(() => {});
+      }
       emit({ type: 'done', data: {
         answer: blockedUserMessage(nlResult),
         confidence: nlResult.confidence,
         subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
         uncertaintyNotes: nlResult.uncertainty_notes,
         flagReason: thinkBlockCheck.reason,
-        blocked: true, sql: nlResult.sql, tablesUsed: nlResult.tables_used, queryLayer: 'source',
+        blocked: true, tablesUsed: nlResult.tables_used, queryLayer: 'source',
+        adminNotified: true,
+        ...(privileged ? { sql: nlResult.sql } : {}),
         debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length, hint: thinkBlockCheck.reason, semanticContext, relationshipContext, kpiFormulas },
       }});
       sse.end(); return;
     }
 
+    // Gate passed — privileged roles get the generated SQL preview now.
+    if (privileged) {
+      emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+    }
+
     // ── 6. Entity pre-flight check ──────────────────────────────────────────
-    const cfg = typeof connection.config === 'string' ? JSON.parse(connection.config) : connection.config;
     const entityCheckConnector = await createConnector(connection);
     await entityCheckConnector.connect();
 
@@ -1477,10 +1618,13 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
     const ambiguities: Ambiguity[] = [];
 
     for (const literal of stringLiterals) {
-      if (literal.length < 3 || /^\d+$/.test(literal)) continue;
+      // Same skip rules as the POST / copy — incl. backslash literals (engine-
+      // dependent escape semantics; not worth the risk for a best-effort check).
+      if (literal.length < 3 || /^\d+$/.test(literal) || literal.includes('\\')) continue;
       let found = false, ambiguous = false;
       let alternatives: string[] = [];
       for (const col of dimColumns as { table_name: string; column_name: string }[]) {
+        if (!SAFE_IDENT.test(col.table_name) || !SAFE_IDENT.test(col.column_name)) continue;
         try {
           const exact = await entityCheckConnector.executeQuery(
             `SELECT COUNT(*) as cnt FROM "${col.table_name}" WHERE "${col.column_name}" = '${literal.replace(/'/g, "''")}'`,
@@ -1529,16 +1673,18 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
     emit({ type: 'phase', text: 'Running your query…' });
+    const thinkSrcPolicy = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
     const queryConnector = await createConnector(connection);
     await queryConnector.connect();
-    const queryResult = await queryConnector.executeQuery(nlResult.sql);
+    const queryResult = await queryConnector.executeQuery(thinkSrcPolicy.sql);
     queryConnector.disconnect();
 
     // ── 8. Format answer ────────────────────────────────────────────────────
-    emit({ type: 'phase', text: 'Formatting answer…' });
-    const [answer, validation] = await Promise.all([
+    emit({ type: 'phase', text: 'Writing the answer…' });
+    const [answer, validation, sources] = await Promise.all([
       formatAnswer(question, queryResult.rows),
-      validateQueryResultIfNeeded(nlResult.confidence, question, nlResult.sql, queryResult.rows),
+      validateQueryResultIfNeeded(nlResult.confidence, question, thinkSrcPolicy.sql, queryResult.rows),
+      resolveAnswerSources(db, thinkTenantId, nlResult.tables_used),
     ]);
 
     await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
@@ -1550,8 +1696,11 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
       assumptions: nlResult.assumptions ?? [],
       blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'source',
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
+      ...(thinkSrcPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
       rows: queryResult.rows.slice(0, 200),
       sql: nlResult.sql,
+      sources,
+      answeredInMs: Date.now() - askedAt,
       ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
       debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length,
         hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
@@ -1580,7 +1729,7 @@ router.post('/think', requireAuth, async (req: Request, res: Response) => {
 // POST /api/query/repair — agentic repair loop, streams SSE events
 // ---------------------------------------------------------------------------
 
-router.post('/repair', requireAuth, async (req: Request, res: Response) => {
+router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Request, res: Response) => {
   // SSE headers
   const sse = startSSE(res);
 
@@ -1588,6 +1737,11 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
     sse.emit({ type, ...data });
     (res as unknown as { flush?: () => void }).flush?.();
   }
+
+  // Diagnostic SQL, raw rows and raw DB errors are privileged content —
+  // viewers get the narrative (reasoning, row counts) only. Gated HERE, on
+  // the wire, not just in the component that happens to render the events.
+  const privileged = req.user?.role === 'admin' || req.user?.role === 'analyst';
 
   let sqliteConnector: import('../connectors/BaseConnector').BaseConnector | null = null;
 
@@ -1597,6 +1751,7 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
       connectionId, question, originalSql, originalRows, warning,
       conversationHistory, clarificationAnswer,
       dataLayer: requestedLayer,
+      conversationId, messageServerId,
     } = req.body as {
       connectionId: number;
       question: string;
@@ -1606,6 +1761,11 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
       conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
       clarificationAnswer?: string;
       dataLayer?: 'product' | 'source';
+      /** When both are present, a successful correction is persisted onto the
+       *  stored message SERVER-SIDE — reload and export then show the
+       *  corrected answer instead of resurrecting the wrong one. */
+      conversationId?: number;
+      messageServerId?: number;
     };
 
     // ── Resolve data layer: stay on the same layer the original query used.
@@ -1697,10 +1857,17 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
     if (clarificationAnswer && conversationHistory) {
       messages = [...messages, { role: 'user', content: buildRepairClarificationAnswer(clarificationAnswer) }];
-      send('thinking', { text: `Got it — "${clarificationAnswer}". Resuming investigation…` });
+      send('thinking', { text: `Got it — "${clarificationAnswer}". Continuing the check…` });
     } else {
-      send('thinking', { text: `Validator flagged: "${warning}". Starting investigation…` });
+      // Diligence framing, not incident framing: the automatic check noticed
+      // something and the agent is double-checking — "Validator flagged" is
+      // plumbing vocabulary.
+      send('thinking', { text: `The automatic check noticed something: ${warning} Double-checking against your data…` });
     }
+
+    // Plain-language trail of what the agent checked — becomes the answer
+    // card's "What I checked" section and is persisted with the correction.
+    const repairTrail: string[] = [];
 
     // ── Repair loop (max 5 turns) ──
     const MAX_TURNS = 5;
@@ -1741,18 +1908,29 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
       if (action.type === 'data_query') {
         send('thinking', { text: action.reasoning });
-        send('data_query', { sql: action.sql });
+        repairTrail.push(action.reasoning);
+        send('data_query', privileged ? { sql: action.sql } : {});
 
         try {
           const result = await sqliteConnector!.executeQuery(assertSafeReadQuery(action.sql));
-          send('query_result', { rows: result.rows.slice(0, 20), rowCount: result.rows.length });
+          // Row COUNT for everyone (it makes the wait legible); raw rows are
+          // privileged content, same rule as the SQL.
+          send('query_result', {
+            rowCount: result.rows.length,
+            ...(privileged ? { rows: result.rows.slice(0, 20) } : {}),
+          });
           messages = [
             ...messages,
             { role: 'user', content: buildRepairQueryResult(result.rows, result.rows.length) },
           ];
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          send('thinking', { text: `Diagnostic query failed: ${msg}. Trying a different approach.` });
+          // Raw DB errors leak paths/SQL — the model gets the real message
+          // (it needs it to correct course); the wire gets a plain sentence.
+          send('thinking', {
+            text: 'That check could not run — trying a different approach.',
+            ...(privileged ? { detail: msg } : {}),
+          });
           messages = [
             ...messages,
             { role: 'user', content: `That query failed: ${msg}. Please try a different diagnostic or proceed with what you know.` },
@@ -1765,14 +1943,21 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
       } else if (action.type === 'revised_sql') {
         send('thinking', { text: action.reasoning });
-        send('revised_sql', { sql: action.sql });
+        repairTrail.push(action.reasoning);
+        send('revised_sql', privileged ? { sql: action.sql } : {});
+
+        // Same policy application as every other execution path.
+        const repairPolicy = await applyDataPolicies(action.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
 
         let result: { rows: Record<string, unknown>[] };
         try {
-          result = await sqliteConnector!.executeQuery(assertSafeReadQuery(action.sql));
+          result = await sqliteConnector!.executeQuery(assertSafeReadQuery(repairPolicy.sql));
         } catch (execErr: unknown) {
           const msg = execErr instanceof Error ? execErr.message : String(execErr);
-          send('thinking', { text: `⚠ Revised query failed to execute: ${msg}. Adding this to the context and retrying…` });
+          send('thinking', {
+            text: 'The corrected query did not run cleanly — refining it…',
+            ...(privileged ? { detail: msg } : {}),
+          });
           messages = [
             ...messages,
             { role: 'user', content: `That revised SQL failed with error: "${msg}". Please fix the SQL and try again.` },
@@ -1782,15 +1967,59 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 
         const [answer, validation] = await Promise.all([
           formatAnswer(question, result.rows),
-          validateQueryResultIfNeeded(action.confidence, question, action.sql, result.rows),
+          validateQueryResultIfNeeded(action.confidence, question, repairPolicy.sql, result.rows),
         ]);
+        const cappedRows = result.rows.slice(0, 200);
+        const finalWarning = validation.ok ? null : (validation.warning ?? null);
+
+        // Persist the correction SERVER-SIDE before telling the client.
+        // Without this, reload resurrected the wrong answer and export
+        // downloaded the pre-correction rows — the assessment's #1 defect.
+        // Ownership is proven through the conversation's user_id; failure is
+        // reported to the client so the UI never claims a durability it
+        // doesn't have.
+        let persisted = false;
+        if (conversationId && messageServerId) {
+          try {
+            const conv = await db('conversations')
+              .where({ id: conversationId, user_id: req.user!.sub })
+              .first();
+            if (conv) {
+              const existing = await db('conversation_messages')
+                .where({ id: messageServerId, conversation_id: conversationId })
+                .select('meta')
+                .first();
+              if (existing) {
+                const prevMeta = existing.meta
+                  ? (typeof existing.meta === 'string' ? JSON.parse(existing.meta) : existing.meta)
+                  : {};
+                await db('conversation_messages')
+                  .where({ id: messageServerId, conversation_id: conversationId })
+                  .update({
+                    content: answer,
+                    sql: action.sql,
+                    rows: JSON.stringify(cappedRows),
+                    confidence: action.confidence,
+                    warning: finalWarning,
+                    was_repaired: true,
+                    meta: JSON.stringify({ ...prevMeta, repairSummary: repairTrail }),
+                  });
+                persisted = true;
+              }
+            }
+          } catch (persistErr) {
+            log.warn({ err: persistErr }, '[Repair] failed to persist corrected answer');
+          }
+        }
 
         send('revised_answer', {
           answer,
-          sql:        action.sql,
-          rows:       result.rows.slice(0, 200),
+          rows:       cappedRows,
           confidence: action.confidence,
-          warning:    validation.ok ? null : validation.warning,
+          warning:    finalWarning,
+          repairSummary: repairTrail,
+          persisted,
+          ...(privileged ? { sql: action.sql } : {}),
         });
         break;
 
@@ -1804,7 +2033,10 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err }, '[Repair] investigation failed');
-    send('error', { text: `Investigation failed: ${msg}` });
+    send('error', {
+      text: 'The double-check hit an error — the original answer is unchanged.',
+      ...(privileged ? { detail: msg } : {}),
+    });
     sse.end();
   } finally {
     sqliteConnector?.disconnect();
@@ -1815,16 +2047,11 @@ router.post('/repair', requireAuth, async (req: Request, res: Response) => {
 // POST /api/query/cross-view — query across multiple SQLite sources via ATTACH
 // ---------------------------------------------------------------------------
 
-router.post('/cross-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/cross-view', requireAuth, validate(crossViewQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
   let inMemDb: Database.Database | null = null;
   try {
     const db = reqDb(req);
     const { viewId, question, conversationId } = req.body as { viewId: number; question: string; conversationId?: number };
-
-    if (!question?.trim()) {
-      res.status(400).json({ ok: false, error: 'question is required' });
-      return;
-    }
 
     // Load conversation history for follow-up context (if conversationId provided)
     const conversationHistory = conversationId
@@ -1948,12 +2175,14 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
       return;
     }
 
-    // 10. Execute SQL: open in-memory DB, ATTACH all sources, run query
+    // 10. Execute SQL: open in-memory DB, ATTACH all sources, run query.
+    //     Data access policies apply here like every other execution path.
+    const xPolicy = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
     inMemDb = new Database(':memory:');
     for (const [, { alias, filepath }] of connAliasMap) {
       inMemDb.exec(`ATTACH DATABASE '${filepath.replace(/'/g, "''")}' AS "${alias}"`);
     }
-    const rows = inMemDb.prepare(nlResult.sql).all() as Record<string, unknown>[];
+    const rows = inMemDb.prepare(xPolicy.sql).all() as Record<string, unknown>[];
     inMemDb.close();
     inMemDb = null;
 
@@ -1973,6 +2202,7 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
         blocked:     false,
         crossSource: true,
         tablesUsed:  nlResult.tables_used,
+        ...(xPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
         rows:        rows.slice(0, 200),
         sql:         nlResult.sql,
         ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
@@ -2000,17 +2230,12 @@ router.post('/cross-view', requireAuth, async (req: Request, res: Response, next
 // forecast, and returns both historical + predicted data for visualization.
 // ---------------------------------------------------------------------------
 
-router.post('/forecast', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, question, domains } = req.body as {
       connectionId: number; question: string; domains?: string[];
     };
-
-    if (!question?.trim()) {
-      res.status(400).json({ ok: false, error: 'question is required' });
-      return;
-    }
 
     // 1. Build semantic context (same as the main query path)
     const productCtx = await buildProductSemanticContext(connectionId, undefined, db);
@@ -2086,7 +2311,9 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
       return;
     }
 
-    // 3. Execute the historical SQL to get time-series data
+    // 3. Execute the historical SQL to get time-series data.
+    //    Policies apply here like every other execution path.
+    const fcPolicy = await applyDataPolicies(fcResult.historicalSql, req.user!.sub, req.user!.role, req.user!.tenantId);
     let histRows: Record<string, unknown>[];
 
     if (productCtx && productWarehouse) {
@@ -2094,7 +2321,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
       const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
       try {
-        const result = await connector.executeQuery(fcResult.historicalSql);
+        const result = await connector.executeQuery(fcPolicy.sql);
         histRows = result.rows;
       } finally {
         connector.disconnect();
@@ -2104,7 +2331,7 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
       const connector = await createConnector(connection);
       await connector.connect();
       try {
-        const result = await connector.executeQuery(fcResult.historicalSql);
+        const result = await connector.executeQuery(fcPolicy.sql);
         histRows = result.rows;
       } finally {
         connector.disconnect();
@@ -2154,6 +2381,8 @@ router.post('/forecast', requireAuth, async (req: Request, res: Response, next: 
         confidence: fcResult.confidence,
         blocked: false,
         tablesUsed: fcResult.tables_used,
+        queryLayer: (productCtx && productWarehouse ? 'product' : 'source') as 'product' | 'source',
+        ...(fcPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
         sql: fcResult.historicalSql,
         rows: histRows.slice(0, 200),
         forecast: {

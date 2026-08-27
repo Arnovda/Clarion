@@ -1,14 +1,14 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
-import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
-import { getToken, getTokenPayload } from '@/lib/auth';
+import { getToken } from '@/lib/auth';
+import { useRole, canCurate } from '@/lib/role';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
-import { formatRelativeTime, getOverallFreshnessStatus, getFreshnessTextColor } from '@/lib/freshness';
+import { formatRelativeTime, getOverallFreshnessStatus } from '@/lib/freshness';
 import { X, Loader2, ArrowRight } from 'lucide-react';
 import { type DataSource } from './components';
 import MessageBubble from './MessageBubble';
@@ -16,6 +16,7 @@ import { ThinkingBubble, ThinkingPanel } from './thinking';
 import ChatSidebar from './ChatSidebar';
 import EmptyState from './EmptyState';
 import type {
+  AnswerSource,
   DebugInfo,
   EntityMismatch,
   EntityAmbiguity,
@@ -40,10 +41,16 @@ function QueryPageInner() {
   const [input,         setInput]         = useState('');
   const [loading,        setLoading]        = useState(false);
   const [showSql,        setShowSql]        = useState(false);
-  const [isAdmin,        setIsAdmin]        = useState(false);
+  // Role model (lib/role.ts) — the chat used to key EVERYTHING off a local
+  // isAdmin flag, which treated analysts as viewers against the role table.
+  // canSeeSql (admin + analyst) gates SQL, confidence detail, error detail
+  // and the source-layer toggle; isAdmin keeps only the debug panel.
+  const role = useRole();
+  const isAdmin = role === 'admin';
+  const canSeeSql = canCurate(role);
   const [starFilter,     setStarFilter]     = useState(false);
   // Default = product layer (cleaner star schema).
-  // Toggle visible to admin/analyst only — viewers always stay on the product layer.
+  // Toggle visible to admin/analyst — viewers always stay on the product layer.
   const [useSourceLayer, setUseSourceLayer] = useState(false);
 
   // URL params (e.g. ?connectionId=5&productId=3&productName=Sales from Data Products)
@@ -56,14 +63,14 @@ function QueryPageInner() {
   const [productContext, setProductContext] = useState<{ name: string; kpis: string[] } | null>(null);
 
   // Data source selection (silent — no UI picker)
-  const [sources,       setSources]       = useState<DataSource[]>([]);
   const [selectedSource, setSelectedSource] = useState<string>('');
 
-  // Domain filter
-  const [availableDomains, setAvailableDomains] = useState<string[]>([]);
-  const [selectedDomains,  setSelectedDomains]  = useState<string[]>([]);
+  // Domain filter — sent with every request; there has never been UI to set
+  // it, so it stays empty (kept for the request contract).
+  const [selectedDomains] = useState<string[]>([]);
 
-  // Ephemeral repair state — never persisted
+  // Repair state — the live event feed is ephemeral; the corrected ANSWER
+  // is persisted (server-side by /query/repair). See the repair section below.
   const [repairState, setRepairState] = useState<RepairState | null>(null);
 
   // Data freshness indicator
@@ -74,6 +81,9 @@ function QueryPageInner() {
   const [thinkingText,  setThinkingText]  = useState<string>('');
   const [thinkingSql,   setThinkingSql]   = useState<string | null>(null);
   const [thinkingConf,  setThinkingConf]  = useState<number | null>(null);
+  // Table names from the `tables` SSE event — labels the timeline's
+  // "Looking at Sales, Receivables" step for every role.
+  const [thinkingTables, setThinkingTables] = useState<string[]>([]);
 
   // Mode override for the next question. 'auto' uses the heuristic
   // classifier; 'ask' / 'investigate' force a specific path. Resets to
@@ -130,8 +140,6 @@ function QueryPageInner() {
     repairAbortRef.current?.abort();
   }, []);
 
-  useEffect(() => { setIsAdmin(getTokenPayload()?.role === 'admin'); }, []);
-
   // Fetch data freshness info
   useEffect(() => {
     api.get('/connections/freshness').then(r => {
@@ -182,7 +190,6 @@ function QueryPageInner() {
         ...conns.map((c) => ({ type: 'connection' as const, id: c.id, label: c.name })),
         ...views.map((v) => ({ type: 'view' as const, id: v.id, label: v.name })),
       ];
-      setSources(all);
 
       // Priority: URL param > localStorage > first source
       if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
@@ -196,13 +203,6 @@ function QueryPageInner() {
         } else if (all.length > 0) {
           setSelectedSource(`c:${all[0].id}`);
         }
-      }
-      // Load domain tags for the first connection
-      const firstConn = conns[0];
-      if (firstConn) {
-        api.get(`/semantic/domains?connectionId=${firstConn.id}`)
-          .then((r) => setAvailableDomains(r.data.data ?? []))
-          .catch(() => {});
       }
     });
   }, []);
@@ -237,9 +237,28 @@ function QueryPageInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [starFilter]);
 
-  // Helper: persist a message to the server
+  // Helper: persist a message to the server. The `meta` bundle carries the
+  // display metadata that used to be DROPPED on persist (assumptions, clarify
+  // options, sub-scores, visualization, forecast, sources, …) — on reload
+  // the answer no longer looks more certain than it was.
   async function persistMessage(conversationId: number, msg: Partial<Message> & { role: string; text: string }): Promise<number | undefined> {
     try {
+      const meta: Record<string, unknown> = {
+        ...(msg.assumptions?.length ? { assumptions: msg.assumptions } : {}),
+        ...(msg.subScores ? { subScores: msg.subScores } : {}),
+        ...(msg.uncertaintyNotes?.length ? { uncertaintyNotes: msg.uncertaintyNotes } : {}),
+        ...(msg.intent && msg.intent !== 'data' ? { intent: msg.intent } : {}),
+        ...(msg.options?.length ? { options: msg.options } : {}),
+        ...(msg.ambiguity ? { ambiguity: msg.ambiguity } : {}),
+        ...(msg.visualization ? { visualization: msg.visualization } : {}),
+        ...(msg.forecast ? { forecast: msg.forecast } : {}),
+        ...(msg.flagReason ? { flagReason: msg.flagReason } : {}),
+        ...(msg.sources?.length ? { sources: msg.sources } : {}),
+        ...(msg.answeredInMs ? { answeredInMs: msg.answeredInMs } : {}),
+        ...(msg.policyNotice ? { policyNotice: msg.policyNotice } : {}),
+        ...(msg.adminNotified ? { adminNotified: msg.adminNotified } : {}),
+        ...(msg.repairSummary?.length ? { repairSummary: msg.repairSummary } : {}),
+      };
       const res = await api.post(`/conversations/${conversationId}/messages`, {
         role: msg.role,
         content: msg.text,
@@ -258,6 +277,7 @@ function QueryPageInner() {
         wasRepaired: msg.wasRepaired,
         reasoning: msg.reasoning,
         queryLayer: msg.queryLayer,
+        ...(Object.keys(meta).length > 0 ? { meta } : {}),
       });
       return res.data.data?.id as number | undefined;
     } catch (err) {
@@ -285,7 +305,7 @@ function QueryPageInner() {
       setConversations((prev) => [conv, ...prev]);
       setActiveId(conv.id);
       setMessages([]);
-      setRepairState(null);
+      resetRepair();
       nextId.current = 0;
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch {
@@ -294,7 +314,7 @@ function QueryPageInner() {
       setConversations((prev) => [{ id: tempId, title: 'New conversation', starred: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] }, ...prev]);
       setActiveId(tempId);
       setMessages([]);
-      setRepairState(null);
+      resetRepair();
       nextId.current = 0;
     }
   }
@@ -302,12 +322,16 @@ function QueryPageInner() {
   async function selectConversation(id: number) {
     if (id === activeId) return;
     setActiveId(id);
-    setRepairState(null);
+    resetRepair();
     try {
       const res = await api.get(`/conversations/${id}`);
       const data = res.data.data;
       const msgs: Message[] = (data.messages ?? []).map((m: Record<string, unknown>) => {
         const debug = m.debug ? (typeof m.debug === 'string' ? JSON.parse(m.debug as string) : m.debug) : undefined;
+        // The meta bundle (migration 82) — restore what the answer card needs.
+        const meta = (m.meta
+          ? (typeof m.meta === 'string' ? JSON.parse(m.meta as string) : m.meta)
+          : {}) as Record<string, unknown>;
         // Rehydrate investigate-mode messages from the `debug` marker we
         // wrote on persist. Steps aren't stored — `Replay full trail`
         // re-fetches them from /api/investigations/:id on demand.
@@ -350,6 +374,22 @@ function QueryPageInner() {
           queryLayer: m.query_layer as 'product' | 'source' | undefined,
           feedback: m.feedback as 'up' | 'down' | null,
           feedbackComment: m.feedback_comment as string | undefined,
+          // Restored meta — assumptions, clarify chips, chart hint, forecast,
+          // sources and the repair trail all survive a reload now.
+          assumptions: meta.assumptions as string[] | undefined,
+          subScores: meta.subScores as Message['subScores'],
+          uncertaintyNotes: meta.uncertaintyNotes as string[] | undefined,
+          intent: meta.intent as Message['intent'],
+          options: meta.options as Message['options'],
+          ambiguity: meta.ambiguity as string | undefined,
+          visualization: meta.visualization as Message['visualization'],
+          forecast: meta.forecast as Message['forecast'],
+          sources: meta.sources as AnswerSource[] | undefined,
+          answeredInMs: meta.answeredInMs as number | undefined,
+          policyNotice: meta.policyNotice as string | undefined,
+          adminNotified: meta.adminNotified as boolean | undefined,
+          repairSummary: meta.repairSummary as string[] | undefined,
+          flagReason: meta.flagReason as string | undefined,
           ...(isInvestigation ? { mode: 'investigate' as const, investigation } : {}),
         };
       });
@@ -362,13 +402,14 @@ function QueryPageInner() {
   }
 
   async function deleteConversation(id: number) {
+    if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
     try { await api.delete(`/conversations/${id}`); } catch { /* non-fatal */ }
     setConversations((prev) => {
       const next = prev.filter((c) => c.id !== id);
       if (id === activeId) {
         if (next.length > 0) { selectConversation(next[0].id); }
         else { setActiveId(null); setMessages([]); }
-        setRepairState(null);
+        resetRepair();
       }
       return next;
     });
@@ -433,14 +474,71 @@ function QueryPageInner() {
       .then((blob) => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `clarion-export-${conversationId}.${format}`;
+        // Per-message filename — two exports from one chat must not collide.
+        a.download = `clarion-export-${conversationId}${messageServerId ? `-${messageServerId}` : ''}.${format}`;
         a.click();
         URL.revokeObjectURL(a.href);
       })
       .catch(() => alert('Export failed'));
   }
 
-  // ── Repair stream ──
+  // ── Repair stream — the "double-checking" flow ────────────────────────────
+  //
+  // Owner decision (2026-08-27 assessment §8.1): when the validator flags an
+  // answer, HOLD it out of the transcript while the repair loop runs, up to
+  // ~10 seconds — a wrong number must never be shown, read, and then silently
+  // swapped under the reader. If the loop settles inside the hold the answer
+  // appears ONCE, already corrected. If it runs long, the provisional answer
+  // is revealed clearly marked "being double-checked" and updated in place.
+  //
+  // The authoritative copy of the repair state lives in a ref (all writers
+  // are SSE callbacks and timers, not renders); setRepairState mirrors it.
+  const repairRef = useRef<RepairState | null>(null);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const REPAIR_HOLD_MS = 10_000;
+
+  function updateRepair(mutator: (prev: RepairState | null) => RepairState | null) {
+    repairRef.current = mutator(repairRef.current);
+    setRepairState(repairRef.current);
+  }
+
+  function clearHoldTimer() {
+    if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+  }
+
+  /** Append the held answer to the transcript, marked as still being checked. */
+  function revealProvisional() {
+    clearHoldTimer();
+    const prev = repairRef.current;
+    if (!prev || prev.revealed || !prev.holdMsg) return;
+    const provisional: Message = { ...prev.holdMsg, checking: true };
+    setMessages((ms) => [...ms, provisional]);
+    updateRepair((p) => p ? { ...p, revealed: true, holdMsg: provisional } : p);
+  }
+
+  /** The repair loop ended without a correction — release the original answer. */
+  function releaseHeldAnswer() {
+    clearHoldTimer();
+    const prev = repairRef.current;
+    if (!prev) return;
+    if (!prev.revealed && prev.holdMsg) {
+      const original = { ...prev.holdMsg, checking: false };
+      setMessages((ms) => [...ms, original]);
+      updateRepair((p) => p ? { ...p, revealed: true, holdMsg: original, isActive: false } : p);
+    } else if (prev.revealed) {
+      setMessages((ms) => ms.map((m) => m.id === prev.forMessageId ? { ...m, checking: false } : m));
+      updateRepair((p) => p ? { ...p, isActive: false } : p);
+    }
+  }
+
+  /** Drop all repair state — timer, stream, panel. */
+  function resetRepair() {
+    clearHoldTimer();
+    repairAbortRef.current?.abort();
+    repairAbortRef.current = null;
+    repairRef.current = null;
+    setRepairState(null);
+  }
 
   async function startRepair(params: {
     messageId: number;
@@ -450,39 +548,53 @@ function QueryPageInner() {
     warning: string;
     conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
     clarificationAnswer?: string;
+    /** Server-side persistence of the correction (see /query/repair). */
+    conversationId?: number;
+    messageServerId?: number;
   }) {
-    setRepairState({ forMessageId: params.messageId, events: [], isActive: true });
+    // Fresh loop (not a clarification resume): initialise the panel state.
+    // The /think done-handler pre-seeds it with the HELD message; callers
+    // whose message is already in the transcript (cross-view) start revealed.
+    if (!repairRef.current || repairRef.current.forMessageId !== params.messageId) {
+      updateRepair(() => ({ forMessageId: params.messageId, events: [], isActive: true, revealed: true }));
+    }
 
-    // Defined before the stream starts so it can be passed as the handler cleanly
+    let sawRevisedAnswer = false;
+    let sawClarification = false;
+
     const handleEvent = (event: Record<string, unknown>) => {
       const type = event.type as string;
 
       if (type === 'thinking') {
-        setRepairState((prev) => prev
-          ? { ...prev, events: [...prev.events, { kind: 'thinking', text: event.text as string }] }
+        updateRepair((prev) => prev
+          ? { ...prev, events: [...prev.events, { kind: 'thinking', text: event.text as string, detail: event.detail as string | undefined }] }
           : null);
 
       } else if (type === 'data_query') {
-        setRepairState((prev) => prev
-          ? { ...prev, events: [...prev.events, { kind: 'data_query', sql: event.sql as string }] }
+        updateRepair((prev) => prev
+          ? { ...prev, events: [...prev.events, { kind: 'data_query', sql: event.sql as string | undefined }] }
           : null);
 
       } else if (type === 'query_result') {
-        setRepairState((prev) => prev
+        updateRepair((prev) => prev
           ? { ...prev, events: [...prev.events, {
               kind: 'query_result',
-              rows: event.rows as Record<string, unknown>[],
               rowCount: event.rowCount as number,
+              rows: event.rows as Record<string, unknown>[] | undefined,
             }] }
           : null);
 
       } else if (type === 'revised_sql') {
-        setRepairState((prev) => prev
-          ? { ...prev, events: [...prev.events, { kind: 'revised_sql', sql: event.sql as string }] }
+        updateRepair((prev) => prev
+          ? { ...prev, events: [...prev.events, { kind: 'revised_sql', sql: event.sql as string | undefined }] }
           : null);
 
       } else if (type === 'clarification') {
-        setRepairState((prev) => prev
+        // The agent needs the user's input — reveal the provisional answer so
+        // the question has visible context, then pause for the inline reply.
+        sawClarification = true;
+        revealProvisional();
+        updateRepair((prev) => prev
           ? {
               ...prev,
               isActive: false,
@@ -493,24 +605,45 @@ function QueryPageInner() {
           : null);
 
       } else if (type === 'revised_answer') {
-        setMessages((prev) => prev.map((m) =>
-          m.id === params.messageId
-            ? {
-                ...m,
-                text:        event.answer as string,
-                sql:         event.sql    as string,
-                rows:        event.rows   as Record<string, unknown>[],
-                confidence:  event.confidence as number,
-                warning:     (event.warning as string | null) ?? undefined,
-                wasRepaired: true,
-              }
-            : m,
-        ));
-        setRepairState((prev) => prev ? { ...prev, isActive: false } : null);
+        sawRevisedAnswer = true;
+        clearHoldTimer();
+        const corrected = (base: Message): Message => ({
+          ...base,
+          text:          event.answer as string,
+          sql:           (event.sql as string | undefined) ?? base.sql,
+          rows:          event.rows as Record<string, unknown>[],
+          confidence:    event.confidence as number,
+          warning:       (event.warning as string | null) ?? undefined,
+          wasRepaired:   true,
+          checking:      false,
+          repairSummary: (event.repairSummary as string[] | undefined) ?? [],
+        });
+        const prev = repairRef.current;
+        if (prev && !prev.revealed && prev.holdMsg) {
+          // Settled inside the hold — the answer appears once, correct.
+          setMessages((ms) => [...ms, corrected(prev.holdMsg!)]);
+          updateRepair((p) => p ? { ...p, revealed: true, isActive: false } : p);
+        } else {
+          setMessages((ms) => ms.map((m) => m.id === params.messageId ? corrected(m) : m));
+          updateRepair((p) => p ? { ...p, isActive: false } : p);
+        }
+        // The backend persisted the correction when it had the ids; fall back
+        // to a client-side PATCH when it reported otherwise.
+        if (event.persisted !== true && params.conversationId && params.messageServerId) {
+          api.patch(`/conversations/${params.conversationId}/messages/${params.messageServerId}`, {
+            content: event.answer,
+            ...(event.sql ? { sql: event.sql } : {}),
+            rows: event.rows,
+            confidence: event.confidence,
+            warning: (event.warning as string | null) ?? null,
+            wasRepaired: true,
+            meta: { repairSummary: (event.repairSummary as string[] | undefined) ?? [] },
+          }).catch(() => {});
+        }
 
       } else if (type === 'error') {
-        setRepairState((prev) => prev
-          ? { ...prev, isActive: false, events: [...prev.events, { kind: 'thinking', text: `⚠ ${event.text as string}` }] }
+        updateRepair((prev) => prev
+          ? { ...prev, isActive: false, events: [...prev.events, { kind: 'thinking', text: `⚠ ${event.text as string}`, detail: event.detail as string | undefined }] }
           : null);
       }
     };
@@ -527,6 +660,8 @@ function QueryPageInner() {
           warning:             params.warning,
           conversationHistory: params.conversationHistory,
           clarificationAnswer: params.clarificationAnswer,
+          conversationId:      params.conversationId,
+          messageServerId:     params.messageServerId,
           ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
         },
         signal: ctrl.signal,
@@ -534,27 +669,34 @@ function QueryPageInner() {
       });
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return; // unmounted mid-repair
-      setRepairState((prev) => prev
+      updateRepair((prev) => prev
         ? { ...prev, isActive: false, events: [...prev.events, { kind: 'thinking', text: '⚠ Could not reach the backend. Please try again.' }] }
         : null,
       );
+      releaseHeldAnswer();
       return;
     } finally {
       if (repairAbortRef.current === ctrl) repairAbortRef.current = null;
     }
 
-    setRepairState((prev) => prev ? { ...prev, isActive: false } : null);
+    // Stream ended. If no correction (and no pending clarification), the
+    // original answer stands — release it with its warning intact.
+    if (!sawRevisedAnswer && !sawClarification) releaseHeldAnswer();
+    else updateRepair((prev) => prev ? { ...prev, isActive: false } : null);
   }
 
   function handleClarify(answer: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) {
-    if (!repairState) return;
-    // Find the question for this message
-    const msgId = repairState.forMessageId;
-    const assistantMsg = messages.find((m) => m.id === msgId);
+    const prev = repairRef.current;
+    if (!prev) return;
+    const msgId = prev.forMessageId;
+    // The held/revealed message carries the original question + SQL.
+    const assistantMsg = prev.holdMsg ?? messages.find((m) => m.id === msgId);
     if (!assistantMsg) return;
 
-    setRepairState((prev) => prev
-      ? { ...prev, isActive: true, pendingClarification: undefined, pendingHistory: undefined }
+    // Keep the existing event trail — answering a clarifying question used to
+    // wipe the whole visible investigation and restart the panel from scratch.
+    updateRepair((p) => p
+      ? { ...p, isActive: true, pendingClarification: undefined, pendingHistory: undefined }
       : null,
     );
 
@@ -566,6 +708,8 @@ function QueryPageInner() {
       warning:             assistantMsg.warning ?? '',
       conversationHistory: history,
       clarificationAnswer: answer,
+      conversationId:      activeId && activeId > 0 ? activeId : undefined,
+      messageServerId:     assistantMsg.serverId,
     });
   }
 
@@ -575,7 +719,11 @@ function QueryPageInner() {
     const q = question.trim();
     if (!q || loading) return;
 
-    setRepairState(null); // clear any active repair when asking a new question
+    // A new question ends any running double-check: release a still-held
+    // answer into the transcript first (its original form was persisted), then
+    // drop the panel.
+    if (repairRef.current && !repairRef.current.revealed) releaseHeldAnswer();
+    resetRepair();
 
     let cid = activeId;
     if (!cid) {
@@ -618,6 +766,7 @@ function QueryPageInner() {
     setThinkingText('');
     setThinkingSql(null);
     setThinkingConf(null);
+    setThinkingTables([]);
 
     // Resolve mode: explicit override > heuristic. Investigate also requires
     // a resolved product (URL `productId` or default product for the active
@@ -749,6 +898,7 @@ function QueryPageInner() {
         setThinkingText('');
         setThinkingSql(null);
         setThinkingConf(null);
+        setThinkingTables([]);
         setTimeout(() => inputRef.current?.focus(), 50);
       }
       return;
@@ -785,17 +935,26 @@ function QueryPageInner() {
         }
         setMessages((prev) => [...prev, assistantMsg]);
         if (d.warning && !d.blocked && d.sql && d.rows) {
-          startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
+          startRepair({
+            messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning,
+            conversationId: cid && cid > 0 ? cid : undefined,
+            messageServerId: assistantMsg.serverId,
+          });
         }
         return;
       }
 
       // Forecast detection — lightweight keyword check before the main query path
+      // NOTE: bare 'project' was removed — it substring-matched "projects"
+      // and misrouted ordinary questions to the forecast path. Dutch keywords
+      // added: the user base is Belgian.
       const FORECAST_KEYWORDS = [
         'predict', 'forecast', 'will be', 'next quarter', 'next month', 'next year',
-        'next week', 'expect', 'project', 'projection', 'trend going forward',
+        'next week', 'expect', 'projection', 'trend going forward',
         'future', 'going to be', 'estimated', 'estimation', 'outlook',
         'projected', 'anticipated', 'upcoming', 'trajectory',
+        'voorspel', 'prognose', 'verwacht', 'volgend kwartaal', 'volgende maand',
+        'volgend jaar', 'volgende week', 'toekomst', 'schatting', 'vooruitzicht',
       ];
       const qLower = q.toLowerCase();
       const isForecast = FORECAST_KEYWORDS.some((kw) => qLower.includes(kw));
@@ -834,6 +993,7 @@ function QueryPageInner() {
           setThinkingText('');
           setThinkingSql(null);
           setThinkingConf(null);
+          setThinkingTables([]);
           setTimeout(() => inputRef.current?.focus(), 50);
         }
         return;
@@ -866,6 +1026,9 @@ function QueryPageInner() {
             accumulatedThinking += event.text as string;
             setThinkingText((prev) => prev + (event.text as string));
 
+          } else if (type === 'tables') {
+            setThinkingTables((event.tables as string[]) ?? []);
+
           } else if (type === 'sql_ready') {
             setThinkingSql(event.sql as string);
             setThinkingConf(event.confidence as number);
@@ -885,6 +1048,10 @@ function QueryPageInner() {
               ambiguity?: string;
               options?: import('./types').ClarifyOption[];
               visualization?: import('./types').VisualizationHint;
+              sources?: AnswerSource[];
+              answeredInMs?: number;
+              policyNotice?: string;
+              adminNotified?: boolean;
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
@@ -898,18 +1065,53 @@ function QueryPageInner() {
               reasoning: accumulatedThinking || undefined,
               queryLayer: d.queryLayer,
               visualization: d.visualization,
+              sources: d.sources,
+              answeredInMs: d.answeredInMs,
+              policyNotice: d.policyNotice,
+              adminNotified: d.adminNotified,
             };
-            // Persist to server
-            if (cid && cid > 0) {
-              persistMessage(cid, assistantMsg).then((serverId) => {
-                if (serverId) {
-                  setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, serverId } : m));
+
+            const needsRepair = !!(d.warning && !d.blocked && d.sql && d.rows);
+            if (!needsRepair) {
+              // Persist to server
+              if (cid && cid > 0) {
+                persistMessage(cid, assistantMsg).then((serverId) => {
+                  if (serverId) {
+                    setMessages((prev) => prev.map((m) => m.id === assistantId ? { ...m, serverId } : m));
+                  }
+                });
+              }
+              setMessages((prev) => [...prev, assistantMsg]);
+            } else {
+              // The double-checking flow: HOLD the flagged answer out of the
+              // transcript (owner decision — up to ~10s, then reveal it
+              // clearly marked). Persist the original first so the repair
+              // route can persist its correction onto the same row.
+              void (async () => {
+                let serverId: number | undefined;
+                if (cid && cid > 0) {
+                  serverId = await persistMessage(cid, assistantMsg);
+                  if (serverId) assistantMsg.serverId = serverId;
                 }
-              });
-            }
-            setMessages((prev) => [...prev, assistantMsg]);
-            if (d.warning && !d.blocked && d.sql && d.rows) {
-              startRepair({ messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning });
+                updateRepair(() => ({
+                  forMessageId: assistantMsg.id,
+                  events: [],
+                  isActive: true,
+                  holdMsg: assistantMsg,
+                  revealed: false,
+                }));
+                clearHoldTimer();
+                holdTimerRef.current = setTimeout(revealProvisional, REPAIR_HOLD_MS);
+                startRepair({
+                  messageId: assistantMsg.id,
+                  question: q,
+                  originalSql: d.sql!,
+                  originalRows: d.rows!,
+                  warning: d.warning!,
+                  conversationId: cid && cid > 0 ? cid : undefined,
+                  messageServerId: serverId,
+                });
+              })();
             }
 
           } else if (type === 'error') {
@@ -953,10 +1155,14 @@ function QueryPageInner() {
       setThinkingText('');
       setThinkingSql(null);
       setThinkingConf(null);
+      setThinkingTables([]);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
+  // useSourceLayer is a dep on purpose: it used to be read through a stale
+  // closure, so the first question after flipping the toggle ran against the
+  // PREVIOUS layer.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, activeId, selectedSource, modeOverride, resolvedProductId]);
+  }, [loading, activeId, selectedSource, modeOverride, resolvedProductId, useSourceLayer]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -1032,7 +1238,7 @@ function QueryPageInner() {
             ) : null}
           </div>
           <div className="flex items-center gap-4">
-            {isAdmin && (
+            {canSeeSql && (
               <label className="flex items-center gap-2 text-[11px] font-mono tracking-[0.08em] uppercase text-muted cursor-pointer select-none">
                 <div onClick={() => setShowSql((s) => !s)}
                   className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showSql ? 'bg-ocean' : 'bg-line-strong'}`}>
@@ -1043,11 +1249,13 @@ function QueryPageInner() {
             )}
             {messages.length > 0 && (
               <button onClick={() => {
+                // This DELETES the conversation, it doesn't just clear the view.
+                if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
                 if (activeId && activeId > 0) {
                   api.delete(`/conversations/${activeId}`).catch(() => {});
                   setConversations((prev) => prev.filter((c) => c.id !== activeId));
                 }
-                setActiveId(null); setMessages([]); setRepairState(null);
+                setActiveId(null); setMessages([]); resetRepair();
               }}
                 className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 transition-colors">
                 Clear chat
@@ -1067,7 +1275,7 @@ function QueryPageInner() {
                 setInput={setInput}
                 onSubmit={handleSubmit}
                 loading={loading}
-                isAdmin={isAdmin}
+                canQuerySource={canSeeSql}
                 useSourceLayer={useSourceLayer}
                 setUseSourceLayer={setUseSourceLayer}
               />
@@ -1075,10 +1283,16 @@ function QueryPageInner() {
               <div className="space-y-4">
                 {messages.map((m) => (
                   <div key={m.id}>
-                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} onReplayInvestigation={handleReplayInvestigation} />
-                    {repairState?.forMessageId === m.id && (
+                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} canSeeSql={canSeeSql} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} onReplayInvestigation={handleReplayInvestigation} />
+                    {/* The live double-check panel shows only WHILE the loop
+                        runs (or waits on a clarification). Once settled it
+                        disappears — the answer card's trust line and "What I
+                        checked" are the durable receipt, so a corrected
+                        answer costs one card, not 2,000px of transcript. */}
+                    {repairState?.forMessageId === m.id && repairState.revealed
+                      && (repairState.isActive || repairState.pendingClarification) && (
                       <div className="mt-3">
-                        <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={isAdmin} />
+                        <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
                       </div>
                     )}
                   </div>
@@ -1089,8 +1303,14 @@ function QueryPageInner() {
                     liveText={thinkingText}
                     sql={thinkingSql}
                     confidence={thinkingConf}
-                    canSeeSql={isAdmin}
+                    tables={thinkingTables}
+                    canSeeSql={canSeeSql}
                   />
+                )}
+                {/* Double-checking panel while the answer is still HELD —
+                    it has no message to attach to yet. */}
+                {repairState && !repairState.revealed && (
+                  <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
                 )}
                 <div ref={bottomRef} />
               </div>
@@ -1101,16 +1321,21 @@ function QueryPageInner() {
         {/* Input (pinned at bottom during active conversation) */}
         {(messages.length > 0 || loading) && (
           <div className="flex-shrink-0 px-4 py-3 border-t border-line bg-raised">
-            {/* Freshness banner */}
+            {/* Freshness banner — worst-source status with the OLDEST date, so the
+                sentence and the colour describe the same thing (it used to show
+                the NEWEST date coloured by the worst unrelated source). The
+                per-answer "Data as of …" on each card is the primary signal;
+                this is the tenant-wide catch-all. */}
             {(() => {
               const validDates = freshnessDates.filter(Boolean) as string[];
               if (validDates.length === 0) return null;
-              const mostRecent = new Date(Math.max(...validDates.map(d => new Date(d).getTime())));
               const status = getOverallFreshnessStatus(freshnessDates);
               if (status === 'fresh' || status === 'unknown') return null;
+              const oldest = new Date(Math.min(...validDates.map(d => new Date(d).getTime())));
+              const colour = status === 'old' ? 'text-err' : 'text-warn';
               return (
-                <div className={`max-w-2xl mx-auto mb-2 text-center font-mono text-[10.5px] uppercase tracking-[0.08em] ${getFreshnessTextColor(status)}`}>
-                  Data last refreshed {formatRelativeTime(mostRecent)}
+                <div className={`max-w-2xl mx-auto mb-2 text-center font-mono text-[10.5px] uppercase tracking-[0.08em] ${colour}`}>
+                  Some of your data was last refreshed {formatRelativeTime(oldest)}
                 </div>
               );
             })()}
@@ -1186,7 +1411,7 @@ function QueryPageInner() {
                   <span>&nbsp;</span>
                 )}
               </div>
-              {isAdmin && (
+              {canSeeSql && (
                 <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
                   <input
                     type="checkbox"
